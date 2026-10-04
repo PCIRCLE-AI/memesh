@@ -13,8 +13,8 @@
     },
     {
       "path": ".codex-plugin/mcp.json",
-      "sha256": "76c471140774d0da42019a626eb7327da04c669fb03c5e77d3549636814dd512",
-      "bytes": 182
+      "sha256": "10dfaa60080f29b79ebd6e3f9073c625a694fb0f4bb2ded6ae500b49c3add516",
+      "bytes": 205
     },
     {
       "path": ".codex-plugin/plugin.json",

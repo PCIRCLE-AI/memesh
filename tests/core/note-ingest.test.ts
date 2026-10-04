@@ -79,6 +79,83 @@ describe('ingestNoteDirectory', () => {
     expect(kg().search('gamma').map((e) => e.name)).toContain('note_c');
   });
 
+  it('a note first stored with no project is updated in place by a run that names one, and stays without a project', () => {
+    const dir = makeDir({
+      'a.md': note('note_a', 'Alpha', 'decision', 'alpha one'),
+      'b.md': note('note_b', 'Beta', 'lesson', 'beta one'),
+    });
+    ingestNoteDirectory({ dir });
+    fs.writeFileSync(path.join(dir, 'a.md'), note('note_a', 'Alpha', 'decision', 'alpha two'));
+    fs.writeFileSync(path.join(dir, 'b.md'), note('note_b', 'Beta', 'lesson', 'beta two'));
+    fs.writeFileSync(path.join(dir, 'c.md'), note('note_c', 'Gamma', 'decision', 'gamma one'));
+    const second = ingestNoteDirectory({ dir, project: 'proj' });
+    expect(second.replaced.sort()).toEqual(['note_a', 'note_b']);
+    expect(second.created).toEqual(['note_c']);
+    expect(kg().getEntity('note_a')!.observations).toEqual(['alpha two']);
+    expect(kg().getEntity('note_b')!.observations).toEqual(['beta two']);
+    expect(kg().getEntity('note_a')!.tags.filter((t) => t.startsWith('project:'))).toEqual([]);
+    expect(kg().getEntity('note_b')!.tags.filter((t) => t.startsWith('project:'))).toEqual([]);
+    expect(kg().getEntity('note_c')!.tags).toContain('project:proj');
+    expect(ingestNoteDirectory({ dir, project: 'proj' })).toMatchObject({ created: [], replaced: [], unchanged: 3 });
+  });
+
+  it('an edited note whose memory already belongs to two projects is updated, keeps both, and does not stop the run', () => {
+    const dir = makeDir({
+      'a.md': note('note_a', 'Alpha', 'decision', 'alpha one'),
+      'b.md': note('note_b', 'Beta', 'lesson', 'beta one'),
+    });
+    ingestNoteDirectory({ dir, project: 'A' });
+    // An older memory that two projects share, last seen missing.
+    const db = getDatabase();
+    const id = (db.prepare('SELECT id FROM entities WHERE name = ?').get('note_a') as { id: number }).id;
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, 'project:B');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, NOTE_FILE_MISSING_TAG);
+
+    fs.writeFileSync(path.join(dir, 'a.md'), note('note_a', 'Alpha', 'decision', 'alpha two'));
+    fs.writeFileSync(path.join(dir, 'b.md'), note('note_b', 'Beta', 'lesson', 'beta two'));
+    const r = ingestNoteDirectory({ dir, project: 'A' });
+    expect(r.skipped).toEqual([]);
+    expect(r.replaced.sort()).toEqual(['note_a', 'note_b']);
+    const a = kg().getEntity('note_a')!;
+    expect(a.observations).toEqual(['alpha two']);
+    expect(a.tags.filter((t) => t.startsWith('project:')).sort()).toEqual(['project:A', 'project:B']);
+    expect(a.tags).toContain(NOTE_FILE_TAG);
+    expect(a.tags).not.toContain(NOTE_FILE_MISSING_TAG);
+    expect(kg().getEntity('note_b')!.observations).toEqual(['beta two']);
+    // A write that itself names two projects is still refused.
+    expect(() => remember({ name: 'two-new', type: 'fact', observations: ['x'], tags: ['project:A', 'project:B'] }))
+      .toThrow(/more than one project tag/);
+  });
+
+  it('a shared memory is not updated by a run of a project it does not belong to; the file is reported and the rest is read', () => {
+    const dir = makeDir({
+      'a.md': note('note_a', 'Alpha', 'decision', 'alpha one'),
+      'b.md': note('note_b', 'Beta', 'lesson', 'beta one'),
+    });
+    ingestNoteDirectory({ dir, project: 'A' });
+    const db = getDatabase();
+    const id = (db.prepare('SELECT id FROM entities WHERE name = ?').get('note_a') as { id: number }).id;
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, 'project:B');
+
+    fs.writeFileSync(path.join(dir, 'a.md'), note('note_a', 'Alpha', 'decision', 'alpha two'));
+    fs.writeFileSync(path.join(dir, 'b.md'), note('note_b', 'Beta', 'lesson', 'beta two'));
+    const r = ingestNoteDirectory({ dir, project: 'C' });
+    expect(r.skipped).toEqual([{ path: 'a.md', reason: expect.stringContaining('belongs to several projects (A, B)') }]);
+    expect(r.refusedNow).toBe(1);
+    expect(r.replaced).toEqual(['note_b']);
+    expect(kg().getEntity('note_a')!.observations).toEqual(['alpha one']);
+    expect(kg().getEntity('note_b')!.observations).toEqual(['beta two']);
+
+    // The same refusal again is not news, but the file is still read:
+    const again = ingestNoteDirectory({ dir, project: 'C' });
+    expect(again.skipped).toHaveLength(1);
+    expect(again.refusedNow).toBe(0);
+    // so a run of a project it belongs to updates it, file unchanged since.
+    const member = ingestNoteDirectory({ dir, project: 'A' });
+    expect(member.replaced).toEqual(['note_a']);
+    expect(kg().getEntity('note_a')!.observations).toEqual(['alpha two']);
+  });
+
   it('re-import of unchanged files is a no-op; editing one replaces that entity only', () => {
     const dir = makeDir({
       'a.md': note('note_a', 'Alpha', 'decision', 'old alpha text'),

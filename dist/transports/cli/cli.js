@@ -4107,7 +4107,13 @@ function dropUbiquitousTerms(db2, terms) {
     return terms;
   }
 }
-var MAX_QUERY_TERMS, UBIQUITOUS_TERM_FRACTION, MIN_ROWS_FOR_DF_GUARD, MAX_DF_LOOKUP_TERMS, LATIN_FOLDABLE, KnowledgeGraph;
+function projectScopeFilter(scope) {
+  return scope === null ? { sql: `AND (${NO_PROJECT_TAG} OR e.namespace = 'global')`, params: [] } : {
+    sql: `AND (EXISTS (SELECT 1 FROM tags st WHERE st.entity_id = e.id AND st.tag = ?) OR ${NO_PROJECT_TAG} OR e.namespace = 'global')`,
+    params: [scope]
+  };
+}
+var MAX_QUERY_TERMS, UBIQUITOUS_TERM_FRACTION, MIN_ROWS_FOR_DF_GUARD, MAX_DF_LOOKUP_TERMS, LATIN_FOLDABLE, NO_PROJECT_TAG, KnowledgeGraph;
 var init_knowledge_graph = __esm({
   "dist/knowledge-graph.js"() {
     "use strict";
@@ -4121,6 +4127,7 @@ var init_knowledge_graph = __esm({
     MIN_ROWS_FOR_DF_GUARD = 25;
     MAX_DF_LOOKUP_TERMS = 256;
     LATIN_FOLDABLE = /^[\p{Script=Latin}\p{M}\p{N}]+$/u;
+    NO_PROJECT_TAG = "NOT EXISTS (SELECT 1 FROM tags sp WHERE sp.entity_id = e.id AND sp.tag LIKE 'project:%')";
     KnowledgeGraph = class {
       db;
       constructor(db2) {
@@ -4380,6 +4387,9 @@ var init_knowledge_graph = __esm({
           if (opts?.tag) {
             return this.listRecentByTag(opts.tag, limit, opts?.includeArchived, opts?.namespace, countAsAccess);
           }
+          if (opts?.projectScope !== void 0) {
+            return this.listRecentInScope(opts.projectScope, limit, opts?.includeArchived, opts?.namespace, countAsAccess);
+          }
           return this.listRecent(limit, opts?.includeArchived, opts?.namespace, countAsAccess);
         }
         const matchExpressions = buildRecallMatchExpressions(this.db, query);
@@ -4388,10 +4398,14 @@ var init_knowledge_graph = __esm({
         }
         const statusFilter = opts?.includeArchived ? "" : "AND e.status = 'active'";
         const namespaceFilter = opts?.namespace ? "AND e.namespace = ?" : "";
-        const tagFilter = opts?.tag ? "AND EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?)" : "";
+        const scope = opts?.tag ? void 0 : opts?.projectScope;
+        const scoped = scope === void 0 ? void 0 : projectScopeFilter(scope);
+        const tagFilter = opts?.tag ? "AND EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?)" : scoped ? scoped.sql : "";
         const filterParams = [];
         if (opts?.tag)
           filterParams.push(opts.tag);
+        else if (scoped)
+          filterParams.push(...scoped.params);
         if (opts?.namespace)
           filterParams.push(opts.namespace);
         filterParams.push(limit);
@@ -4434,7 +4448,7 @@ var init_knowledge_graph = __esm({
         const seenIds = new Set(ftsIds);
         if (opts?.includeArchived) {
           const tagJoin = opts?.tag ? "JOIN tags t ON t.entity_id = e.id" : "";
-          const tagFilter2 = opts?.tag ? "AND t.tag = ?" : "";
+          const tagFilter2 = opts?.tag ? "AND t.tag = ?" : scoped ? scoped.sql : "";
           const archivedNamespaceFilter = opts?.namespace ? "AND e.namespace = ?" : "";
           const likeTerms = archivedLikeTerms(this.db, query);
           registerNfcFunction(this.db);
@@ -4442,6 +4456,8 @@ var init_knowledge_graph = __esm({
           const archivedParams = likeTerms.flatMap((t) => [t, t, t]);
           if (opts?.tag)
             archivedParams.push(opts.tag);
+          else if (scoped)
+            archivedParams.push(...scoped.params);
           if (opts?.namespace)
             archivedParams.push(opts.namespace);
           const archivedRows = this.db.prepare(`SELECT DISTINCT e.id, e.name
@@ -4494,6 +4510,20 @@ var init_knowledge_graph = __esm({
         params.push(limit ?? 20);
         const rows = this.db.prepare(`SELECT id FROM entities WHERE type = ? ${statusFilter} ${namespaceFilter} ORDER BY id DESC LIMIT ?`).all(...params);
         return this.getEntitiesByIds(rows.map((r) => r.id), { includeArchived, namespace });
+      }
+      listRecentInScope(scope, limit, includeArchived, namespace, countAsAccess = true) {
+        const statusFilter = includeArchived ? "" : "AND e.status = 'active'";
+        const namespaceFilter = namespace ? "AND e.namespace = ?" : "";
+        const scoped = projectScopeFilter(scope);
+        const params = [...scoped.params];
+        if (namespace)
+          params.push(namespace);
+        params.push(limit);
+        const rows = this.db.prepare(`SELECT e.id FROM entities e WHERE 1=1 ${scoped.sql} ${statusFilter} ${namespaceFilter} ORDER BY e.id DESC LIMIT ?`).all(...params);
+        const results = this.getEntitiesByIds(rows.map((r) => r.id), { includeArchived, namespace });
+        if (countAsAccess)
+          this.trackAccess(results.map((e) => e.id));
+        return results;
       }
       listRecentByTag(tag, limit, includeArchived, namespace, countAsAccess = true) {
         const statusFilter = includeArchived ? "" : "AND e.status = 'active'";
@@ -6272,6 +6302,28 @@ var init_db = __esm({
   }
 });
 
+// dist/storage/memory-mutation.js
+function projectOwnershipRefusal(db2, name, project) {
+  const row = db2.prepare("SELECT id FROM entities WHERE name = ?").get(name);
+  if (!row)
+    return void 0;
+  const projects = db2.prepare("SELECT tag FROM tags WHERE entity_id = ? AND tag LIKE 'project:%' ORDER BY tag").all(row.id).map((t) => t.tag);
+  if (project === null) {
+    if (projects.length === 0)
+      return void 0;
+    return `a memory named ${JSON.stringify(name)} already exists and belongs to ${projects.join(", ")}; a write without a project cannot change it. Use a different name, or write it with that project`;
+  }
+  if (projects.includes(`project:${project}`))
+    return void 0;
+  const owner = projects.length > 0 ? `it belongs to ${projects.join(", ")}` : "it has no project tag";
+  return `a memory named ${JSON.stringify(name)} already exists and ${owner}, not project ${project}. Use a different name`;
+}
+var init_memory_mutation = __esm({
+  "dist/storage/memory-mutation.js"() {
+    "use strict";
+  }
+});
+
 // dist/core/scoring.js
 function recencyScore(lastAccessedAt) {
   if (!lastAccessedAt)
@@ -6328,7 +6380,8 @@ var init_scoring = __esm({
 // dist/core/lesson-engine.js
 function createExplicitLesson(error51, fix, projectName, opts) {
   const errorPattern = opts?.errorPattern || inferErrorPattern(error51);
-  const name = opts?.errorPattern ? `lesson-${projectName}-${errorPattern}` : `lesson-${projectName}-${lessonSlug(error51)}`;
+  const scope = projectName ?? "no-project";
+  const name = opts?.errorPattern ? `lesson-${scope}-${errorPattern}` : `lesson-${scope}-${lessonSlug(error51)}`;
   remember({
     name,
     type: "lesson_learned",
@@ -6339,12 +6392,13 @@ function createExplicitLesson(error51, fix, projectName, opts) {
       `Prevention: ${opts?.prevention || "Review similar code paths"}`
     ],
     tags: [
-      `project:${projectName}`,
+      ...projectName === null ? [] : [`project:${projectName}`],
       `error-pattern:${errorPattern}`,
       `severity:${opts?.severity || "minor"}`,
       "source:explicit"
     ],
-    sourceHost: opts?.sourceHost
+    sourceHost: opts?.sourceHost,
+    project: projectName
   });
   getDatabase().prepare("UPDATE entities SET confidence = 1.0 WHERE name = ?").run(name);
   return { name };
@@ -6509,7 +6563,7 @@ function packObservations(observations, budgetBytes) {
   }
   return { kept, total, cutMidway };
 }
-function capEntityForAgent(entity) {
+function capEntityForAgent(entity, labelProject) {
   const visibleTags = (entity.tags ?? []).filter((t) => !t.startsWith("file:"));
   const observations = entity.observations ?? [];
   const tagsResult = packTags(visibleTags, RECALL_ENTITY_CONTENT_MAX_BYTES);
@@ -6524,12 +6578,14 @@ function capEntityForAgent(entity) {
     truncated.tags = { shown: tagsResult.kept.length, total: tagsResult.total };
   }
   const capped = { ...entity, tags: tagsResult.kept, observations: obsResult.kept };
+  if (labelProject)
+    capped.projects = (entity.tags ?? []).filter((t) => t.startsWith("project:")).map((t) => t.slice("project:".length)).sort();
   if (Object.keys(truncated).length > 0)
     capped.truncated = truncated;
   return capped;
 }
-function capRecallForAgent(result) {
-  const cappedEntities = result.entities.map(capEntityForAgent);
+function capRecallForAgent(result, scope) {
+  const cappedEntities = result.entities.map((e) => capEntityForAgent(e, scope !== void 0));
   const totalEntities = cappedEntities.length;
   const responseBudget = RECALL_RESPONSE_MAX_BYTES - RESPONSE_METADATA_RESERVE_BYTES;
   let shownCount = 0;
@@ -6537,7 +6593,8 @@ function capRecallForAgent(result) {
     const candidateBytes = byteLength(JSON.stringify({
       entities: cappedEntities.slice(0, count),
       conflicts: result.conflicts,
-      retrieval: result.retrieval
+      retrieval: result.retrieval,
+      scope
     }));
     if (candidateBytes <= responseBudget) {
       shownCount = count;
@@ -6556,6 +6613,8 @@ function capRecallForAgent(result) {
     envelope.truncated = true;
   if (entitiesDropped)
     envelope.entities_omitted = { shown: shownCount, total: totalEntities };
+  if (scope)
+    envelope.scope = scope;
   return envelope;
 }
 function agentRecallEnvelope(r) {
@@ -6564,7 +6623,8 @@ function agentRecallEnvelope(r) {
     retrieval: r.retrieval,
     ...r.conflicts.length > 0 ? { conflicts: r.conflicts } : {},
     ...r.truncated ? { truncated: r.truncated } : {},
-    ...r.entities_omitted ? { entities_omitted: r.entities_omitted } : {}
+    ...r.entities_omitted ? { entities_omitted: r.entities_omitted } : {},
+    ...r.scope ? { scope: r.scope } : {}
   };
 }
 var RECALL_ENTITY_CONTENT_MAX_BYTES, RECALL_RESPONSE_MAX_BYTES, RESPONSE_METADATA_RESERVE_BYTES;
@@ -7028,6 +7088,25 @@ function resolveRememberInput(input) {
 }
 function rememberInTransaction(args, derived, typeGiven, db2, kg) {
   const existing = db2.prepare("SELECT id, namespace, type, title, status FROM entities WHERE name = ?").get(args.name);
+  const tagProjects = [...new Set((args.tags ?? []).filter((t) => t.startsWith("project:")).map((t) => t.slice("project:".length)))];
+  if (tagProjects.length > 1) {
+    throw new Error(`MeMesh did not store this memory: it has more than one project tag (${tagProjects.map((p) => `project:${p}`).join(", ")}); a memory belongs to one project.`);
+  }
+  if (args.project !== void 0 && tagProjects.length === 1 && tagProjects[0] !== args.project) {
+    throw new Error(`MeMesh did not store this memory: its project tag project:${tagProjects[0]} contradicts ${args.project === null ? "project: none" : `project ${args.project}`}.`);
+  }
+  const declaredProject = args.project !== void 0 ? args.project : tagProjects[0];
+  if (declaredProject !== void 0) {
+    const touched = [
+      ...existing ? [args.name] : [],
+      ...(args.relations ?? []).filter((rel) => rel.type === "supersedes").map((rel) => rel.to)
+    ];
+    for (const name of touched) {
+      const refusal = projectOwnershipRefusal(db2, name, declaredProject);
+      if (refusal !== void 0)
+        throw new Error(`MeMesh did not store this memory: ${refusal}.`);
+    }
+  }
   if (args.replace && existing && existing.status === "archived") {
     throw new Error(`"${args.name}" was archived with forget; \`replace\` will not overwrite it. Remember it again without \`replace\` to bring it back, then replace it.`);
   }
@@ -7059,6 +7138,9 @@ function rememberInTransaction(args, derived, typeGiven, db2, kg) {
     title = void 0;
     const stored = new Set(db2.prepare("SELECT content FROM observations WHERE entity_id = ?").all(existing.id).map((o) => o.content));
     observations = observations?.filter((o) => !stored.has(o));
+  }
+  if (typeof args.project === "string" && !(tags ?? []).includes(`project:${args.project}`)) {
+    tags = [...tags ?? [], `project:${args.project}`];
   }
   const entityId = kg.createEntity(args.name, entityType, {
     observations,
@@ -7126,6 +7208,7 @@ function searchAndScore(args) {
   const kg = new KnowledgeGraph(getDatabase());
   const entities = summarizeReplacedHistory(kg.search(args.query, {
     tag: recallTagFilter(args),
+    projectScope: args.cross_project ? void 0 : args.projectScope,
     limit: args.limit,
     includeArchived: args.include_archived,
     namespace: args.namespace
@@ -7155,11 +7238,11 @@ async function recallWithConflicts(args) {
   const conflicts = kg.findConflicts(entities.map((e) => e.name));
   return { entities, conflicts, retrieval };
 }
-async function recallForAgent(args) {
-  return capRecallForAgent(await recallWithConflicts(args));
+async function recallForAgent(args, scope) {
+  return capRecallForAgent(await recallWithConflicts(args), scope);
 }
 function learn(args) {
-  const projectName = getProjectName();
+  const projectName = args.project !== void 0 ? args.project : getProjectName();
   const result = createExplicitLesson(args.error, args.fix, projectName, {
     rootCause: args.root_cause,
     prevention: args.prevention,
@@ -7211,6 +7294,7 @@ var init_operations = __esm({
   "dist/core/operations.js"() {
     "use strict";
     init_db();
+    init_memory_mutation();
     init_knowledge_graph();
     init_scoring();
     init_paths();
@@ -24494,7 +24578,30 @@ var init_agent_messaging = __esm({
 });
 
 // dist/transports/schemas.js
-var sanitizeName, nameField, titleField, observationField, workPackageText, digestWorkPackageRef, transcriptWorkPackageRef, workPackageIdentity, WORK_PACKAGE_RESULT_MAX_BYTES, WorkPackageSchema, RememberSchema, RecallSchema, ForgetSchema, ExportSchema, ExportResultSchema, ImportSchema, LearnSchema, TaskStateSchema, nonBlankBounded, agentScopeId, BriefingSchema, WhySchema, UserPatternsSchema, ImprovementSchema, messageProject, messageRecipient, messageSender, messageId, messageCursor, messageIdempotencyKey, messageReceiptBase, MessageSchema;
+function refineRemember(data, ctx) {
+  if (data.note === void 0) {
+    if (data.name === void 0)
+      ctx.addIssue({ code: "custom", path: ["name"], message: "name is required (or pass `note` to have it derived)" });
+    if (data.type === void 0 && !(data.replace && data.name !== void 0))
+      ctx.addIssue({ code: "custom", path: ["type"], message: 'type is required (or pass `note`, which defaults it to "note", or `replace: true` with a `name` to keep the type that memory already has)' });
+    return;
+  }
+  for (const key of ["title", "observations"]) {
+    if (data[key] !== void 0) {
+      ctx.addIssue({ code: "custom", path: [key], message: `${key} cannot be combined with note \u2014 note derives it; to correct the derived ${key}, call again with name, replace: true and a structured ${key} (pass \`type\` only to also change the memory's type)` });
+    }
+  }
+  if (data.replace && data.name === void 0) {
+    ctx.addIssue({ code: "custom", path: ["name"], message: "replace with note needs an explicit name \u2014 a derived name changes with the text, so there is nothing to replace" });
+  }
+  const derived = deriveNote(data.note);
+  if (!derived) {
+    ctx.addIssue({ code: "custom", path: ["note"], message: "note must contain some text" });
+  } else if (derived.observations.length > NOTE_MAX_OBSERVATIONS) {
+    ctx.addIssue({ code: "custom", path: ["note"], message: `note yields ${derived.observations.length} observations; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory` });
+  }
+}
+var sanitizeName, nameField, titleField, observationField, workPackageText, digestWorkPackageRef, transcriptWorkPackageRef, workPackageIdentity, WORK_PACKAGE_RESULT_MAX_BYTES, WorkPackageSchema, rememberShape, RememberSchema, mcpProjectField, McpRememberSchema, recallShape, RecallSchema, McpRecallSchema, ForgetSchema, ExportSchema, ExportResultSchema, ImportSchema, learnShape, LearnSchema, McpLearnSchema, TaskStateSchema, nonBlankBounded, agentScopeId, BriefingSchema, WhySchema, UserPatternsSchema, ImprovementSchema, messageProject, messageRecipient, messageSender, messageId, messageCursor, messageIdempotencyKey, messageReceiptBase, MessageSchema;
 var init_schemas3 = __esm({
   "dist/transports/schemas.js"() {
     "use strict";
@@ -24548,7 +24655,7 @@ var init_schemas3 = __esm({
         reason: external_exports.literal("not_now")
       }).strict()
     ]);
-    RememberSchema = external_exports.object({
+    rememberShape = {
       name: nameField.optional(),
       type: external_exports.string().min(1).max(100).optional(),
       title: titleField,
@@ -24558,37 +24665,20 @@ var init_schemas3 = __esm({
       tags: external_exports.array(external_exports.string().max(255)).max(50).optional(),
       relations: external_exports.array(external_exports.object({ to: external_exports.string().min(1).max(255), type: external_exports.string().min(1).max(100) }).strict()).max(50).optional(),
       namespace: external_exports.enum(NAMESPACES).optional()
-    }).strict().superRefine((data, ctx) => {
-      if (data.note === void 0) {
-        if (data.name === void 0)
-          ctx.addIssue({ code: "custom", path: ["name"], message: "name is required (or pass `note` to have it derived)" });
-        if (data.type === void 0 && !(data.replace && data.name !== void 0))
-          ctx.addIssue({ code: "custom", path: ["type"], message: 'type is required (or pass `note`, which defaults it to "note", or `replace: true` with a `name` to keep the type that memory already has)' });
-        return;
-      }
-      for (const key of ["title", "observations"]) {
-        if (data[key] !== void 0) {
-          ctx.addIssue({ code: "custom", path: [key], message: `${key} cannot be combined with note \u2014 note derives it; to correct the derived ${key}, call again with name, replace: true and a structured ${key} (pass \`type\` only to also change the memory's type)` });
-        }
-      }
-      if (data.replace && data.name === void 0) {
-        ctx.addIssue({ code: "custom", path: ["name"], message: "replace with note needs an explicit name \u2014 a derived name changes with the text, so there is nothing to replace" });
-      }
-      const derived = deriveNote(data.note);
-      if (!derived) {
-        ctx.addIssue({ code: "custom", path: ["note"], message: "note must contain some text" });
-      } else if (derived.observations.length > NOTE_MAX_OBSERVATIONS) {
-        ctx.addIssue({ code: "custom", path: ["note"], message: `note yields ${derived.observations.length} observations; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory` });
-      }
-    });
-    RecallSchema = external_exports.object({
+    };
+    RememberSchema = external_exports.object(rememberShape).strict().superRefine(refineRemember);
+    mcpProjectField = external_exports.union([external_exports.string().min(1).max(200), external_exports.literal(false)]).optional();
+    McpRememberSchema = external_exports.object({ ...rememberShape, project: mcpProjectField }).strict().superRefine(refineRemember);
+    recallShape = {
       query: external_exports.string().max(1e3).optional(),
       tag: external_exports.string().max(255).optional(),
       limit: external_exports.number().int().min(1).max(100).optional(),
       include_archived: external_exports.boolean().optional(),
       namespace: external_exports.enum(NAMESPACES).optional(),
       cross_project: external_exports.boolean().optional()
-    }).strict();
+    };
+    RecallSchema = external_exports.object(recallShape).strict();
+    McpRecallSchema = external_exports.object({ ...recallShape, project: mcpProjectField }).strict();
     ForgetSchema = external_exports.object({
       name: nameField,
       observation: external_exports.string().min(1).max(1e4).optional()
@@ -24618,13 +24708,15 @@ var init_schemas3 = __esm({
       merge_strategy: external_exports.enum(["skip", "overwrite", "append"]),
       restore_archived: external_exports.boolean().optional()
     }).strict();
-    LearnSchema = external_exports.object({
+    learnShape = {
       error: external_exports.string().min(1).max(5e3),
       fix: external_exports.string().min(1).max(5e3),
       root_cause: external_exports.string().max(5e3).optional(),
       prevention: external_exports.string().max(5e3).optional(),
       severity: external_exports.enum(["critical", "major", "minor"]).optional()
-    }).strict();
+    };
+    LearnSchema = external_exports.object(learnShape).strict();
+    McpLearnSchema = external_exports.object({ ...learnShape, project: mcpProjectField }).strict();
     TaskStateSchema = external_exports.object({
       project: external_exports.string().min(1).max(200).optional(),
       goal: external_exports.string().max(1e3).optional(),
@@ -61838,16 +61930,27 @@ function ingestNoteDirectory(opts) {
       touchedIds.add(existing.id);
       continue;
     }
-    const currentTags = existing ? db2.prepare("SELECT tag FROM tags WHERE entity_id = ?").all(existing.id).map((t) => t.tag) : [];
-    const keptTags = currentTags.filter((t) => !t.startsWith("source:"));
-    const hasProject = keptTags.some((t) => t.startsWith("project:"));
-    const tags = [NOTE_FILE_TAG, ...keptTags, ...!hasProject && opts.project ? [`project:${opts.project}`] : []];
-    const written = remember({
+    let project;
+    if (existing) {
+      const projects = db2.prepare("SELECT tag FROM tags WHERE entity_id = ? AND tag LIKE 'project:%' ORDER BY tag").all(existing.id).map((t) => t.tag.slice("project:".length));
+      if (projects.length === 1)
+        project = projects[0];
+      else if (projects.length > 1) {
+        if (!opts.project || !projects.includes(opts.project)) {
+          const reason = `memory "${name}" belongs to several projects (${projects.join(", ")}); ${opts.project ? `this run's project ${opts.project} is not one of them` : "this run names no project"}, so it was not updated`;
+          report(owner.rel, reason);
+          nextSkips[owner.rel] = { mtime: owner.stat.mtimeMs, size: owner.stat.size, reason, name: owner.name, reportOnly: true };
+          continue;
+        }
+        project = opts.project;
+      }
+    }
+    const fields = {
       name,
       type: owner.type,
       title: owner.title,
       observations: owner.observations,
-      tags,
+      ...existing ? { project } : { tags: [NOTE_FILE_TAG, ...opts.project ? [`project:${opts.project}`] : []] },
       replace: true,
       trustOverride: "untrusted",
       provenanceOverride: {
@@ -61860,7 +61963,25 @@ function ingestNoteDirectory(opts) {
         note_ino: owner.stat.ino
       },
       sourceHost: "note-file"
-    });
+    };
+    let written;
+    try {
+      written = db2.transaction(() => {
+        const stored = remember(fields);
+        if (existing) {
+          db2.prepare("DELETE FROM tags WHERE entity_id = ? AND tag LIKE 'source:%' AND tag <> ?").run(existing.id, NOTE_FILE_TAG);
+          db2.prepare("INSERT OR IGNORE INTO tags (entity_id, tag) VALUES (?, ?)").run(existing.id, NOTE_FILE_TAG);
+        }
+        return stored;
+      }).immediate();
+    } catch (err) {
+      if (err instanceof Error && err.message.startsWith("MeMesh did not store this memory")) {
+        report(owner.rel, err.message);
+        nextSkips[owner.rel] = { mtime: owner.stat.mtimeMs, size: owner.stat.size, reason: err.message, name: owner.name, reportOnly: true };
+        continue;
+      }
+      throw err;
+    }
     touchedIds.add(written.entityId);
     (existing ? result.replaced : result.created).push(name);
   }

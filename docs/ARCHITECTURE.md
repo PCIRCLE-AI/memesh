@@ -208,12 +208,12 @@ Thin adapter: imports shared Zod schemas from `transports/schemas.ts`, validates
 | Tool | Schema | Handler |
 |------|--------|---------|
 | `work_package` | WorkPackageSchema | Delegates to `core/dreamer.executeWorkPackage()` with the MCP client's bounded workspace-root context |
-| `remember` | RememberSchema | Delegates to `operations.remember()` |
-| `recall` | RecallSchema | Delegates to `operations.recallForAgent()` (backed by `recallWithConflicts()` / `recallEnhanced()`, capped for size by `core/recall-agent-view.ts` — #494) |
+| `remember` | McpRememberSchema | Delegates to `operations.remember()` |
+| `recall` | McpRecallSchema | Delegates to `operations.recallForAgent()` (backed by `recallWithConflicts()` / `recallEnhanced()`, capped for size by `core/recall-agent-view.ts` — #494) |
 | `forget` | ForgetSchema | Delegates to `operations.forget()` |
 | `export` | ExportSchema | Delegates to `operations.exportMemories()` |
 | `import` | ImportSchema | Delegates to `operations.importMemories()` |
-| `learn` | LearnSchema | Delegates to `operations.learn()` |
+| `learn` | McpLearnSchema | Delegates to `operations.learn()` |
 | `task_state` | TaskStateSchema | Delegates to `core/task-state-store` (`getTaskState()` with no fields, `setTaskState()` otherwise) |
 | `briefing` | BriefingSchema | Delegates to `core/briefing.assembleBriefing()` |
 | `user_patterns` | UserPatternsSchema | Delegates to `core/patterns.computePatterns()` |
@@ -257,7 +257,7 @@ The dashboard is a client of the ordinary HTTP API — no private endpoints — 
 ```
 Tool call: remember({name, type, observations, tags, relations})
        or: remember({note})                      # free text, #324
-  -> Zod validation (RememberSchema)
+  -> Zod validation (MCP: McpRememberSchema; HTTP/CLI: RememberSchema)
   -> resolveRememberInput()
      -> deriveNote() when `note` was given
         -> title from the first line, one observation per paragraph
@@ -267,6 +267,10 @@ Tool call: remember({name, type, observations, tags, relations})
      -> snapshot the previous title/observations/tags FIRST
      -> KnowledgeGraph.clearEntityData(name)   # the snapshot must precede this
      -> stored type is kept unless a different `type` was passed
+  -> declared project (MCP `project` argument, else one `project:` tag, else the bound project; `false` = none):
+     refuse two project tags, or an argument that contradicts the tag;
+     refuse a name or `supersedes` target another project, or no project, holds (no project: one a project holds);
+     add `project:<id>` when the argument or binding named it
   -> KnowledgeGraph.createEntity(name, type, {observations, tags})
      -> canonicalEntityType(type): `lesson` or `mistake` is stored as `lesson_learned` (#451)
   -> replace: true only: the snapshot -> metadata.replaced_history (after the write)
@@ -309,7 +313,7 @@ not a second durable registry, and the read creates no message or receipt facts.
 
 ```
 Tool call: recall({query, tag, limit})
-  -> Zod validation (RecallSchema)
+  -> Zod validation (MCP: McpRecallSchema; HTTP/CLI: RecallSchema)
   -> MCP + CLI: recallForAgent() in core/operations       HTTP: recallWithConflicts() directly
        -> recallWithConflicts()                                (same, minus the next line)
           -> recallEnhanced()
@@ -651,6 +655,8 @@ An existing entity that is archived (forgotten) is left untouched by `overwrite`
 ### Cross-Project Recall
 
 `recall` accepts a `cross_project: true` flag. When set, the project-tag filter is lifted and FTS5 search spans all namespaces. The same multi-factor scoring applies.
+
+Over MCP, a `recall` with no `tag` and no `cross_project` is scoped to one project — the `project` argument, else the session's bound project (`MEMESH_PROJECT_ROOT`, or the client's single workspace root) — plus memories with no project tag and `global`-namespace memories, under the same archive, namespace and ranking rules. `project: false`, or a session with nothing bound, leaves only the last two; a launch or workspace root that is set but cannot be resolved, or roots that disagree, are refused with their reason; another project's memories are never included. The scope is one internal search option (`projectScope`: a project tag, or `null` for none). The single agent-facing cap (`capRecallForAgent`) labels each memory with its projects (`projects`, from the uncapped tags), and carries the `scope` it was given, inside the same response budget.
 
 ### Personal Backup and Cross-Agent Transfer
 

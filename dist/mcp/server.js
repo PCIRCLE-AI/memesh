@@ -3229,8 +3229,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path11) {
-      let input = path11;
+    function removeDotSegments(path12) {
+      let input = path12;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3482,8 +3482,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path11, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path11 && path11 !== "/" ? path11 : void 0;
+        const [path12, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path12 && path12 !== "/" ? path12 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -6902,12 +6902,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f;
     };
-    function addFormats(ajv, list, fs14, exportName) {
+    function addFormats(ajv, list, fs15, exportName) {
       var _a3;
       var _b;
       (_a3 = (_b = ajv.opts.code).formats) !== null && _a3 !== void 0 ? _a3 : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs14[f]);
+        ajv.addFormat(f, fs15[f]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -6916,8 +6916,8 @@ var require_dist = __commonJS({
 });
 
 // dist/mcp/server.js
-import fs13 from "fs";
-import path10 from "path";
+import fs14 from "fs";
+import path11 from "path";
 
 // node_modules/zod/v4/core/index.js
 var core_exports2 = {};
@@ -7442,10 +7442,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path11) {
-  if (!path11)
+function getElementAtPath(obj, path12) {
+  if (!path12)
     return obj;
-  return path11.reduce((acc, key) => acc?.[key], obj);
+  return path12.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -7854,11 +7854,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path11, issues) {
+function prefixIssues(path12, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path11);
+    iss.path.unshift(path12);
     return iss;
   });
 }
@@ -8005,16 +8005,16 @@ function flattenError(error51, mapper = (issue2) => issue2.message) {
 }
 function formatError(error51, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error52, path11 = []) => {
+  const processError = (error52, path12 = []) => {
     for (const issue2 of error52.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path11, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path12, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path11, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path12, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path11, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path12, ...issue2.path]);
       } else {
-        const fullpath = [...path11, ...issue2.path];
+        const fullpath = [...path12, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -8041,17 +8041,17 @@ function formatError(error51, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error51, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error52, path11 = []) => {
+  const processError = (error52, path12 = []) => {
     var _a3, _b;
     for (const issue2 of error52.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path11, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path12, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path11, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path12, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path11, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path12, ...issue2.path]);
       } else {
-        const fullpath = [...path11, ...issue2.path];
+        const fullpath = [...path12, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -8083,8 +8083,8 @@ function treeifyError(error51, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path11 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path11) {
+  const path12 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path12) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -21082,13 +21082,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path11 = ref.slice(1).split("/").filter(Boolean);
-  if (path11.length === 0) {
+  const path12 = ref.slice(1).split("/").filter(Boolean);
+  if (path12.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path11[0] === defsKey) {
-    const key = path11[1];
+  if (path12[0] === defsKey) {
+    const key = path12[1];
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -24793,7 +24793,7 @@ var StdioServerTransport = class {
 };
 
 // dist/mcp/server.js
-import { fileURLToPath as fileURLToPath3 } from "url";
+import { fileURLToPath as fileURLToPath4 } from "url";
 
 // dist/storage/sqlite.js
 import { createRequire } from "node:module";
@@ -24819,8 +24819,8 @@ var { DatabaseSync } = loadNodeSqlite();
 var BUSY_TIMEOUT_MS = 3e4;
 var MemeshDatabase = class extends DatabaseSync {
   #depth = 0;
-  constructor(path11, options = {}) {
-    super(path11, options);
+  constructor(path12, options = {}) {
+    super(path12, options);
     this.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
   }
   pragma(statement) {
@@ -25401,6 +25401,13 @@ function dropUbiquitousTerms(db2, terms) {
     return terms;
   }
 }
+var NO_PROJECT_TAG = "NOT EXISTS (SELECT 1 FROM tags sp WHERE sp.entity_id = e.id AND sp.tag LIKE 'project:%')";
+function projectScopeFilter(scope) {
+  return scope === null ? { sql: `AND (${NO_PROJECT_TAG} OR e.namespace = 'global')`, params: [] } : {
+    sql: `AND (EXISTS (SELECT 1 FROM tags st WHERE st.entity_id = e.id AND st.tag = ?) OR ${NO_PROJECT_TAG} OR e.namespace = 'global')`,
+    params: [scope]
+  };
+}
 var KnowledgeGraph = class {
   db;
   constructor(db2) {
@@ -25660,6 +25667,9 @@ var KnowledgeGraph = class {
       if (opts?.tag) {
         return this.listRecentByTag(opts.tag, limit, opts?.includeArchived, opts?.namespace, countAsAccess);
       }
+      if (opts?.projectScope !== void 0) {
+        return this.listRecentInScope(opts.projectScope, limit, opts?.includeArchived, opts?.namespace, countAsAccess);
+      }
       return this.listRecent(limit, opts?.includeArchived, opts?.namespace, countAsAccess);
     }
     const matchExpressions = buildRecallMatchExpressions(this.db, query);
@@ -25668,10 +25678,14 @@ var KnowledgeGraph = class {
     }
     const statusFilter = opts?.includeArchived ? "" : "AND e.status = 'active'";
     const namespaceFilter = opts?.namespace ? "AND e.namespace = ?" : "";
-    const tagFilter = opts?.tag ? "AND EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?)" : "";
+    const scope = opts?.tag ? void 0 : opts?.projectScope;
+    const scoped = scope === void 0 ? void 0 : projectScopeFilter(scope);
+    const tagFilter = opts?.tag ? "AND EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?)" : scoped ? scoped.sql : "";
     const filterParams = [];
     if (opts?.tag)
       filterParams.push(opts.tag);
+    else if (scoped)
+      filterParams.push(...scoped.params);
     if (opts?.namespace)
       filterParams.push(opts.namespace);
     filterParams.push(limit);
@@ -25714,7 +25728,7 @@ var KnowledgeGraph = class {
     const seenIds = new Set(ftsIds);
     if (opts?.includeArchived) {
       const tagJoin = opts?.tag ? "JOIN tags t ON t.entity_id = e.id" : "";
-      const tagFilter2 = opts?.tag ? "AND t.tag = ?" : "";
+      const tagFilter2 = opts?.tag ? "AND t.tag = ?" : scoped ? scoped.sql : "";
       const archivedNamespaceFilter = opts?.namespace ? "AND e.namespace = ?" : "";
       const likeTerms = archivedLikeTerms(this.db, query);
       registerNfcFunction(this.db);
@@ -25722,6 +25736,8 @@ var KnowledgeGraph = class {
       const archivedParams = likeTerms.flatMap((t) => [t, t, t]);
       if (opts?.tag)
         archivedParams.push(opts.tag);
+      else if (scoped)
+        archivedParams.push(...scoped.params);
       if (opts?.namespace)
         archivedParams.push(opts.namespace);
       const archivedRows = this.db.prepare(`SELECT DISTINCT e.id, e.name
@@ -25774,6 +25790,20 @@ var KnowledgeGraph = class {
     params.push(limit ?? 20);
     const rows = this.db.prepare(`SELECT id FROM entities WHERE type = ? ${statusFilter} ${namespaceFilter} ORDER BY id DESC LIMIT ?`).all(...params);
     return this.getEntitiesByIds(rows.map((r) => r.id), { includeArchived, namespace });
+  }
+  listRecentInScope(scope, limit, includeArchived, namespace, countAsAccess = true) {
+    const statusFilter = includeArchived ? "" : "AND e.status = 'active'";
+    const namespaceFilter = namespace ? "AND e.namespace = ?" : "";
+    const scoped = projectScopeFilter(scope);
+    const params = [...scoped.params];
+    if (namespace)
+      params.push(namespace);
+    params.push(limit);
+    const rows = this.db.prepare(`SELECT e.id FROM entities e WHERE 1=1 ${scoped.sql} ${statusFilter} ${namespaceFilter} ORDER BY e.id DESC LIMIT ?`).all(...params);
+    const results = this.getEntitiesByIds(rows.map((r) => r.id), { includeArchived, namespace });
+    if (countAsAccess)
+      this.trackAccess(results.map((e) => e.id));
+    return results;
   }
   listRecentByTag(tag, limit, includeArchived, namespace, countAsAccess = true) {
     const statusFilter = includeArchived ? "" : "AND e.status = 'active'";
@@ -27434,6 +27464,23 @@ function getDatabase() {
 import fs12 from "node:fs";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
+// dist/storage/memory-mutation.js
+function projectOwnershipRefusal(db2, name, project) {
+  const row = db2.prepare("SELECT id FROM entities WHERE name = ?").get(name);
+  if (!row)
+    return void 0;
+  const projects = db2.prepare("SELECT tag FROM tags WHERE entity_id = ? AND tag LIKE 'project:%' ORDER BY tag").all(row.id).map((t) => t.tag);
+  if (project === null) {
+    if (projects.length === 0)
+      return void 0;
+    return `a memory named ${JSON.stringify(name)} already exists and belongs to ${projects.join(", ")}; a write without a project cannot change it. Use a different name, or write it with that project`;
+  }
+  if (projects.includes(`project:${project}`))
+    return void 0;
+  const owner = projects.length > 0 ? `it belongs to ${projects.join(", ")}` : "it has no project tag";
+  return `a memory named ${JSON.stringify(name)} already exists and ${owner}, not project ${project}. Use a different name`;
+}
+
 // dist/core/scoring.js
 var DEFAULT_WEIGHTS = {
   searchRelevance: 0.3,
@@ -27484,7 +27531,8 @@ function rankEntities(entities, searchRelevanceValues, weights) {
 // dist/core/lesson-engine.js
 function createExplicitLesson(error51, fix, projectName, opts) {
   const errorPattern = opts?.errorPattern || inferErrorPattern(error51);
-  const name = opts?.errorPattern ? `lesson-${projectName}-${errorPattern}` : `lesson-${projectName}-${lessonSlug(error51)}`;
+  const scope = projectName ?? "no-project";
+  const name = opts?.errorPattern ? `lesson-${scope}-${errorPattern}` : `lesson-${scope}-${lessonSlug(error51)}`;
   remember({
     name,
     type: "lesson_learned",
@@ -27495,12 +27543,13 @@ function createExplicitLesson(error51, fix, projectName, opts) {
       `Prevention: ${opts?.prevention || "Review similar code paths"}`
     ],
     tags: [
-      `project:${projectName}`,
+      ...projectName === null ? [] : [`project:${projectName}`],
       `error-pattern:${errorPattern}`,
       `severity:${opts?.severity || "minor"}`,
       "source:explicit"
     ],
-    sourceHost: opts?.sourceHost
+    sourceHost: opts?.sourceHost,
+    project: projectName
   });
   getDatabase().prepare("UPDATE entities SET confidence = 1.0 WHERE name = ?").run(name);
   return { name };
@@ -27642,7 +27691,7 @@ function packObservations(observations, budgetBytes) {
   }
   return { kept, total, cutMidway };
 }
-function capEntityForAgent(entity) {
+function capEntityForAgent(entity, labelProject) {
   const visibleTags = (entity.tags ?? []).filter((t) => !t.startsWith("file:"));
   const observations = entity.observations ?? [];
   const tagsResult = packTags(visibleTags, RECALL_ENTITY_CONTENT_MAX_BYTES);
@@ -27657,12 +27706,14 @@ function capEntityForAgent(entity) {
     truncated.tags = { shown: tagsResult.kept.length, total: tagsResult.total };
   }
   const capped = { ...entity, tags: tagsResult.kept, observations: obsResult.kept };
+  if (labelProject)
+    capped.projects = (entity.tags ?? []).filter((t) => t.startsWith("project:")).map((t) => t.slice("project:".length)).sort();
   if (Object.keys(truncated).length > 0)
     capped.truncated = truncated;
   return capped;
 }
-function capRecallForAgent(result) {
-  const cappedEntities = result.entities.map(capEntityForAgent);
+function capRecallForAgent(result, scope) {
+  const cappedEntities = result.entities.map((e) => capEntityForAgent(e, scope !== void 0));
   const totalEntities = cappedEntities.length;
   const responseBudget = RECALL_RESPONSE_MAX_BYTES - RESPONSE_METADATA_RESERVE_BYTES;
   let shownCount = 0;
@@ -27670,7 +27721,8 @@ function capRecallForAgent(result) {
     const candidateBytes = byteLength(JSON.stringify({
       entities: cappedEntities.slice(0, count),
       conflicts: result.conflicts,
-      retrieval: result.retrieval
+      retrieval: result.retrieval,
+      scope
     }));
     if (candidateBytes <= responseBudget) {
       shownCount = count;
@@ -27689,6 +27741,8 @@ function capRecallForAgent(result) {
     envelope.truncated = true;
   if (entitiesDropped)
     envelope.entities_omitted = { shown: shownCount, total: totalEntities };
+  if (scope)
+    envelope.scope = scope;
   return envelope;
 }
 function agentRecallEnvelope(r) {
@@ -27697,7 +27751,8 @@ function agentRecallEnvelope(r) {
     retrieval: r.retrieval,
     ...r.conflicts.length > 0 ? { conflicts: r.conflicts } : {},
     ...r.truncated ? { truncated: r.truncated } : {},
-    ...r.entities_omitted ? { entities_omitted: r.entities_omitted } : {}
+    ...r.entities_omitted ? { entities_omitted: r.entities_omitted } : {},
+    ...r.scope ? { scope: r.scope } : {}
   };
 }
 
@@ -28127,6 +28182,25 @@ function resolveRememberInput(input) {
 }
 function rememberInTransaction(args, derived, typeGiven, db2, kg) {
   const existing = db2.prepare("SELECT id, namespace, type, title, status FROM entities WHERE name = ?").get(args.name);
+  const tagProjects = [...new Set((args.tags ?? []).filter((t) => t.startsWith("project:")).map((t) => t.slice("project:".length)))];
+  if (tagProjects.length > 1) {
+    throw new Error(`MeMesh did not store this memory: it has more than one project tag (${tagProjects.map((p) => `project:${p}`).join(", ")}); a memory belongs to one project.`);
+  }
+  if (args.project !== void 0 && tagProjects.length === 1 && tagProjects[0] !== args.project) {
+    throw new Error(`MeMesh did not store this memory: its project tag project:${tagProjects[0]} contradicts ${args.project === null ? "project: none" : `project ${args.project}`}.`);
+  }
+  const declaredProject = args.project !== void 0 ? args.project : tagProjects[0];
+  if (declaredProject !== void 0) {
+    const touched = [
+      ...existing ? [args.name] : [],
+      ...(args.relations ?? []).filter((rel) => rel.type === "supersedes").map((rel) => rel.to)
+    ];
+    for (const name of touched) {
+      const refusal = projectOwnershipRefusal(db2, name, declaredProject);
+      if (refusal !== void 0)
+        throw new Error(`MeMesh did not store this memory: ${refusal}.`);
+    }
+  }
   if (args.replace && existing && existing.status === "archived") {
     throw new Error(`"${args.name}" was archived with forget; \`replace\` will not overwrite it. Remember it again without \`replace\` to bring it back, then replace it.`);
   }
@@ -28158,6 +28232,9 @@ function rememberInTransaction(args, derived, typeGiven, db2, kg) {
     title = void 0;
     const stored = new Set(db2.prepare("SELECT content FROM observations WHERE entity_id = ?").all(existing.id).map((o) => o.content));
     observations = observations?.filter((o) => !stored.has(o));
+  }
+  if (typeof args.project === "string" && !(tags ?? []).includes(`project:${args.project}`)) {
+    tags = [...tags ?? [], `project:${args.project}`];
   }
   const entityId = kg.createEntity(args.name, entityType, {
     observations,
@@ -28225,6 +28302,7 @@ function searchAndScore(args) {
   const kg = new KnowledgeGraph(getDatabase());
   const entities = summarizeReplacedHistory(kg.search(args.query, {
     tag: recallTagFilter(args),
+    projectScope: args.cross_project ? void 0 : args.projectScope,
     limit: args.limit,
     includeArchived: args.include_archived,
     namespace: args.namespace
@@ -28254,11 +28332,11 @@ async function recallWithConflicts(args) {
   const conflicts = kg.findConflicts(entities.map((e) => e.name));
   return { entities, conflicts, retrieval };
 }
-async function recallForAgent(args) {
-  return capRecallForAgent(await recallWithConflicts(args));
+async function recallForAgent(args, scope) {
+  return capRecallForAgent(await recallWithConflicts(args), scope);
 }
 function learn(args) {
-  const projectName = getProjectName();
+  const projectName = args.project !== void 0 ? args.project : getProjectName();
   const result = createExplicitLesson(args.error, args.fix, projectName, {
     rootCause: args.root_cause,
     prevention: args.prevention,
@@ -30916,7 +30994,7 @@ var WorkPackageSchema = external_exports.discriminatedUnion("action", [
     reason: external_exports.literal("not_now")
   }).strict()
 ]);
-var RememberSchema = external_exports.object({
+var rememberShape = {
   name: nameField.optional(),
   type: external_exports.string().min(1).max(100).optional(),
   title: titleField,
@@ -30926,7 +31004,8 @@ var RememberSchema = external_exports.object({
   tags: external_exports.array(external_exports.string().max(255)).max(50).optional(),
   relations: external_exports.array(external_exports.object({ to: external_exports.string().min(1).max(255), type: external_exports.string().min(1).max(100) }).strict()).max(50).optional(),
   namespace: external_exports.enum(NAMESPACES).optional()
-}).strict().superRefine((data, ctx) => {
+};
+function refineRemember(data, ctx) {
   if (data.note === void 0) {
     if (data.name === void 0)
       ctx.addIssue({ code: "custom", path: ["name"], message: "name is required (or pass `note` to have it derived)" });
@@ -30948,15 +31027,20 @@ var RememberSchema = external_exports.object({
   } else if (derived.observations.length > NOTE_MAX_OBSERVATIONS) {
     ctx.addIssue({ code: "custom", path: ["note"], message: `note yields ${derived.observations.length} observations; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory` });
   }
-});
-var RecallSchema = external_exports.object({
+}
+var RememberSchema = external_exports.object(rememberShape).strict().superRefine(refineRemember);
+var mcpProjectField = external_exports.union([external_exports.string().min(1).max(200), external_exports.literal(false)]).optional();
+var McpRememberSchema = external_exports.object({ ...rememberShape, project: mcpProjectField }).strict().superRefine(refineRemember);
+var recallShape = {
   query: external_exports.string().max(1e3).optional(),
   tag: external_exports.string().max(255).optional(),
   limit: external_exports.number().int().min(1).max(100).optional(),
   include_archived: external_exports.boolean().optional(),
   namespace: external_exports.enum(NAMESPACES).optional(),
   cross_project: external_exports.boolean().optional()
-}).strict();
+};
+var RecallSchema = external_exports.object(recallShape).strict();
+var McpRecallSchema = external_exports.object({ ...recallShape, project: mcpProjectField }).strict();
 var ForgetSchema = external_exports.object({
   name: nameField,
   observation: external_exports.string().min(1).max(1e4).optional()
@@ -30986,13 +31070,15 @@ var ImportSchema = external_exports.object({
   merge_strategy: external_exports.enum(["skip", "overwrite", "append"]),
   restore_archived: external_exports.boolean().optional()
 }).strict();
-var LearnSchema = external_exports.object({
+var learnShape = {
   error: external_exports.string().min(1).max(5e3),
   fix: external_exports.string().min(1).max(5e3),
   root_cause: external_exports.string().max(5e3).optional(),
   prevention: external_exports.string().max(5e3).optional(),
   severity: external_exports.enum(["critical", "major", "minor"]).optional()
-}).strict();
+};
+var LearnSchema = external_exports.object(learnShape).strict();
+var McpLearnSchema = external_exports.object({ ...learnShape, project: mcpProjectField }).strict();
 var TaskStateSchema = external_exports.object({
   project: external_exports.string().min(1).max(200).optional(),
   goal: external_exports.string().max(1e3).optional(),
@@ -32314,6 +32400,26 @@ function updateNoticeForEntryPoint(input) {
 }
 
 // dist/transports/mcp/handlers.js
+var UNBOUND = { error: "workspace_unavailable", reason: "No project is bound to this MCP session.", unbound: true };
+var BIND_WORKSPACE = "Start the MCP server with MEMESH_PROJECT_ROOT set to the project directory, or from a client that reports one workspace root.";
+function projectFor(explicit, context, action) {
+  if (explicit !== void 0)
+    return { project: explicit };
+  const binding = context.projectBinding ?? UNBOUND;
+  if ("project" in binding)
+    return { project: binding.project };
+  return { result: fail(`${binding.error}: ${binding.reason} ${action}`) };
+}
+var PROJECT_ACTION = `Pass project ("<id>", or a "project:<id>" tag), or project: false for a memory that belongs to no project (a preference, a general lesson), or bind the session: ${BIND_WORKSPACE}`;
+function writeProject(arg, tags, context) {
+  if (arg === false)
+    return { project: null };
+  if (arg !== void 0)
+    return { project: arg };
+  if ((tags ?? []).some((t) => t.startsWith("project:")))
+    return { project: void 0 };
+  return projectFor(void 0, context, PROJECT_ACTION);
+}
 function resolveTranscriptWorkspace(project, rootUris) {
   if (!rootUris)
     return { transcriptWorkspaceError: "workspace_unavailable" };
@@ -32376,7 +32482,7 @@ var TOOL_DEFINITIONS = [
         tags: {
           type: "array",
           items: { type: "string" },
-          description: 'Tags for filtering (e.g., "project:<id>" where <id> is the `project` field of the `briefing` result (CLI: `memesh briefing --json`), "topic:database"). A plain repository name is a different project scope.'
+          description: 'Tags for filtering by subject (e.g. "topic:database"). A "project:<id>" tag is the same as passing `project` (<id> is the `project` field of the `briefing` result; CLI: `memesh briefing --json`); a plain repository name is a different project. At most one project.'
         },
         relations: {
           type: "array",
@@ -32398,6 +32504,10 @@ var TOOL_DEFINITIONS = [
           type: "string",
           enum: ["personal", "team", "global"],
           description: 'Namespace for organizing the entity. Omit it to leave an existing memory where it is \u2014 supplying it MOVES a memory that already exists, and it drops out of every other scoped view. New memories default to "personal".'
+        },
+        project: {
+          anyOf: [{ type: "string", minLength: 1 }, { const: false }],
+          description: 'The project this memory belongs to. Omit it to use a "project:<id>" tag if you gave one, else the project this session is bound to (MEMESH_PROJECT_ROOT, or the client\u2019s workspace root). Pass false for a memory that belongs to no project \u2014 a preference, a general lesson, team knowledge; it needs no binding. With no project, no tag and no binding the call is refused with workspace_unavailable. A write may change only a memory of the same project (or, with false, one that has none).'
         }
       },
       additionalProperties: false,
@@ -32410,7 +32520,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "recall",
-    description: "Search and retrieve stored knowledge. Uses full-text search with optional project tag filtering. Call with no query to list recent memories. One- and two-term queries use OR matching; queries with three or more terms try strict all-term matching first and fall back to OR only when strict matching has no hits, with results ranked by relevance. Results are capped for size: each entity's observations+tags at 8 KB, the whole response at 32 KB; a capped entity carries `truncated` with the full shown/total counts, and the response carries `truncated`/`entities_omitted` when anything was cut. `file:*` tags are never included \u2014 they exist for pre-edit lookups, not for reading.",
+    description: "Search and retrieve stored knowledge. Uses full-text search. Selectors: `project` (that project, memories with no project, and global ones; false = only memories with no project and global ones), `tag` (exactly that tag) or `cross_project` (every project; a `tag` given with it is ignored). `project` cannot be combined with `tag` or `cross_project`. With none, it uses the project this session is bound to (MEMESH_PROJECT_ROOT, or the client\u2019s workspace root) the same way, or only memories with no project and global ones when nothing is bound; a launch or workspace root that is set but cannot be resolved is refused with the reason; the response says what it searched (`scope`) and each result carries its `projects` ([] for none). Call with no query to list recent memories. One- and two-term queries use OR matching; queries with three or more terms try strict all-term matching first and fall back to OR only when strict matching has no hits, with results ranked by relevance. Results are capped for size: each entity's observations+tags at 8 KB, the whole response at 32 KB; a capped entity carries `truncated` with the full shown/total counts, and the response carries `truncated`/`entities_omitted` when anything was cut. `file:*` tags are never included \u2014 they exist for pre-edit lookups, not for reading.",
     inputSchema: {
       type: "object",
       properties: {
@@ -32437,7 +32547,11 @@ var TOOL_DEFINITIONS = [
         },
         cross_project: {
           type: "boolean",
-          description: "Ignore the optional tag filter and search across project tags. Default false keeps the supplied tag filter, if any; it does not implicitly limit results to the current project."
+          description: "Search every project; a `tag` given with it is ignored. Cannot be combined with `project`."
+        },
+        project: {
+          anyOf: [{ type: "string", minLength: 1 }, { const: false }],
+          description: "Search this project plus memories with no project and global ones; false searches only memories with no project and global ones. Cannot be combined with `tag` or `cross_project`. Omit it to use the bound project."
         }
       },
       additionalProperties: false
@@ -32496,7 +32610,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "learn",
-    description: "Record a structured lesson from a mistake or discovery. Creates a lesson_learned entity with error, root cause, fix, and prevention. Use it when something went wrong and the cause and fix are known; for a choice between options, use `remember` with type decision. The project's lessons are shown at the start of later sessions.",
+    description: "Record a structured lesson from a mistake or discovery. Creates a lesson_learned entity with error, root cause, fix, and prevention. Use it when something went wrong and the cause and fix are known; for a choice between options, use `remember` with type decision. The lesson belongs to `project`, or to the project this session is bound to (MEMESH_PROJECT_ROOT, or the client\u2019s workspace root); pass project false for a general lesson that belongs to no project. With no project and no binding the call is refused with workspace_unavailable. The project's lessons are shown at the start of later sessions.",
     inputSchema: {
       type: "object",
       properties: {
@@ -32508,6 +32622,10 @@ var TOOL_DEFINITIONS = [
           type: "string",
           enum: ["critical", "major", "minor"],
           description: "Severity level (default: minor)"
+        },
+        project: {
+          anyOf: [{ type: "string", minLength: 1 }, { const: false }],
+          description: "The project the lesson belongs to; false for a general lesson with no project. Omit it to use the bound project."
         }
       },
       required: ["error", "fix"],
@@ -32522,7 +32640,7 @@ var TOOL_DEFINITIONS = [
       properties: {
         project: {
           type: "string",
-          description: "Project name. Omit to use the current working directory\u2019s project."
+          description: "Project name. Omit to use the project this session is bound to (MEMESH_PROJECT_ROOT, or the client\u2019s workspace root); with no binding the call is refused with workspace_unavailable."
         },
         goal: { type: "string", description: "What this work is FOR \u2014 the outcome being aimed at" },
         next: { type: "string", description: "The next concrete step" },
@@ -32540,7 +32658,7 @@ var TOOL_DEFINITIONS = [
       properties: {
         project: {
           type: "string",
-          description: "Project name. Omit to use the current working directory\u2019s project."
+          description: "Project name. Omit to use the project this session is bound to (MEMESH_PROJECT_ROOT, or the client\u2019s workspace root); with no binding the call is refused with workspace_unavailable."
         },
         recipient: {
           type: "string",
@@ -32661,8 +32779,8 @@ function fail(message) {
   return { content: [{ type: "text", text: message }], isError: true };
 }
 function formatIssue(issue2) {
-  const path11 = issue2.path.join(".");
-  return path11 ? `${path11}: ${issue2.message}` : issue2.message;
+  const path12 = issue2.path.join(".");
+  return path12 ? `${path12}: ${issue2.message}` : issue2.message;
 }
 function stripNullProps(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value))
@@ -32747,16 +32865,42 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
       return result.status === "error" ? { ...ok(result), isError: true } : ok(result);
     }
     if (name === "remember") {
-      const r = parseOrFail(RememberSchema, args);
+      const r = parseOrFail(McpRememberSchema, args);
       if (!r.ok)
         return r.result;
-      return ok(remember({ ...r.data, sourceHost }));
+      const { project: projectArg, ...input } = r.data;
+      const resolved = writeProject(projectArg, input.tags, requestContext);
+      if ("result" in resolved)
+        return resolved.result;
+      return ok(remember({ ...input, sourceHost, project: resolved.project }));
     }
     if (name === "recall") {
-      const r = parseOrFail(RecallSchema, args);
+      const r = parseOrFail(McpRecallSchema, args);
       if (!r.ok)
         return r.result;
-      return ok(agentRecallEnvelope(await recallForAgent(r.data)));
+      const { project: projectArg, ...input } = r.data;
+      const tag = input.tag === "" ? void 0 : input.tag;
+      if (projectArg !== void 0 && (tag !== void 0 || input.cross_project)) {
+        return fail("recall takes one selector: project, tag or cross_project \u2014 not several. Use project for one project plus memories with no project and global ones; tag for exactly one tag; cross_project for every project.");
+      }
+      if (tag !== void 0 || input.cross_project) {
+        return ok(agentRecallEnvelope(await recallForAgent({ ...input, tag })));
+      }
+      let boundProject;
+      if (projectArg !== void 0) {
+        boundProject = projectArg === false ? null : projectArg;
+      } else {
+        const binding = requestContext.projectBinding ?? UNBOUND;
+        if ("error" in binding && !binding.unbound) {
+          return fail(`${binding.error}: ${binding.reason} Pass project, tag or cross_project.`);
+        }
+        boundProject = "project" in binding ? binding.project : null;
+      }
+      const scope = {
+        project: boundProject,
+        searched: boundProject === null ? `memories with no project, and global memories${projectArg === false ? "" : " (no project is bound to this session)"}` : `project ${boundProject}, memories with no project, and global memories`
+      };
+      return ok(agentRecallEnvelope(await recallForAgent({ ...input, tag, projectScope: boundProject === null ? null : `project:${boundProject}` }, scope)));
     }
     if (name === "forget") {
       const r = parseOrFail(ForgetSchema, args);
@@ -32784,16 +32928,24 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
       return ok(importMemories(r.data));
     }
     if (name === "learn") {
-      const r = parseOrFail(LearnSchema, args);
+      const r = parseOrFail(McpLearnSchema, args);
       if (!r.ok)
         return r.result;
-      return ok(learn({ ...r.data, sourceHost }));
+      const { project: projectArg, ...input } = r.data;
+      const resolved = writeProject(projectArg, void 0, requestContext);
+      if ("result" in resolved)
+        return resolved.result;
+      return ok(learn({ ...input, sourceHost, project: resolved.project ?? null }));
     }
     if (name === "task_state") {
       const r = parseOrFail(TaskStateSchema, args);
       if (!r.ok)
         return r.result;
-      const { project, ...patch } = r.data;
+      const { project: explicit, ...patch } = r.data;
+      const bound = projectFor(explicit, requestContext, "Pass project explicitly.");
+      if ("result" in bound)
+        return bound.result;
+      const { project } = bound;
       if (Object.keys(patch).length === 0)
         return ok(getTaskState(project));
       return ok(setTaskState({ project, patch, sourceHost }));
@@ -32802,7 +32954,10 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
       const r = parseOrFail(BriefingSchema, args);
       if (!r.ok)
         return r.result;
-      return ok(assembleBriefing(r.data.project, r.data.recipient));
+      const bound = projectFor(r.data.project, requestContext, "Pass project explicitly.");
+      if ("result" in bound)
+        return bound.result;
+      return ok(assembleBriefing(bound.project, r.data.recipient));
     }
     if (name === "user_patterns") {
       const r = parseOrFail(UserPatternsSchema, args);
@@ -32890,9 +33045,81 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
   }
 }
 
+// dist/transports/mcp/project-context.js
+import fs13 from "node:fs";
+import path10 from "node:path";
+import { fileURLToPath as fileURLToPath3 } from "node:url";
+function existingDirectory(candidate) {
+  try {
+    const real = fs13.realpathSync(candidate);
+    return fs13.statSync(real).isDirectory() ? real : null;
+  } catch {
+    return null;
+  }
+}
+function rootDirectory(uri) {
+  if (/^file:(\/\/)?$/i.test(uri))
+    return null;
+  try {
+    const parsed = new URL(uri);
+    return parsed.protocol === "file:" ? existingDirectory(fileURLToPath3(parsed)) : null;
+  } catch {
+    return null;
+  }
+}
+function resolveMcpProject(launchRoot, rootUris) {
+  if (rootUris === null) {
+    return {
+      error: "workspace_unavailable",
+      reason: "The client advertises workspace roots but did not return them."
+    };
+  }
+  const fromRoots = /* @__PURE__ */ new Set();
+  for (const uri of rootUris) {
+    const directory = rootDirectory(uri);
+    if (!directory) {
+      return {
+        error: "workspace_unavailable",
+        reason: `A workspace root from the client is not an existing local directory: ${JSON.stringify(uri)}.`
+      };
+    }
+    fromRoots.add(getProjectName(directory));
+  }
+  if (launchRoot !== void 0) {
+    const directory = path10.isAbsolute(launchRoot) ? existingDirectory(launchRoot) : null;
+    if (!directory) {
+      return {
+        error: "workspace_unavailable",
+        reason: `MEMESH_PROJECT_ROOT is not an existing absolute directory: ${JSON.stringify(launchRoot)}.`
+      };
+    }
+    const project = getProjectName(directory);
+    if ([...fromRoots].some((other) => other !== project)) {
+      return {
+        error: "workspace_ambiguous",
+        reason: "MEMESH_PROJECT_ROOT and the client's workspace root name different projects."
+      };
+    }
+    return { project };
+  }
+  if (fromRoots.size === 1)
+    return { project: [...fromRoots][0] };
+  if (fromRoots.size > 1) {
+    return {
+      error: "workspace_ambiguous",
+      reason: "The client's workspace roots name more than one project."
+    };
+  }
+  return {
+    error: "workspace_unavailable",
+    reason: "No project is bound to this MCP session (no workspace root and no MEMESH_PROJECT_ROOT).",
+    unbound: true
+  };
+}
+
 // dist/mcp/server.js
-var packageJsonPath2 = path10.resolve(path10.dirname(fileURLToPath3(import.meta.url)), "../../package.json");
-var packageVersion2 = JSON.parse(fs13.readFileSync(packageJsonPath2, "utf8")).version ?? "0.0.0";
+var packageJsonPath2 = path11.resolve(path11.dirname(fileURLToPath4(import.meta.url)), "../../package.json");
+var packageVersion2 = JSON.parse(fs14.readFileSync(packageJsonPath2, "utf8")).version ?? "0.0.0";
 configureVersionSource(packageVersion2, packageJsonPath2);
 var server = new Server({ name: "memesh", version: packageVersion2 }, { capabilities: { tools: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -32906,8 +33133,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   const { name, arguments: args } = request.params;
   const record2 = args && typeof args === "object" ? args : void 0;
   const ref = record2?.ref && typeof record2.ref === "object" ? record2.ref : void 0;
-  const needsWorkspaceRoots = name === "work_package" && (record2?.kind === "transcript" || ref?.kind === "transcript");
-  let workspaceRootUris;
+  const needsProjectBinding = (name === "task_state" || name === "briefing") && record2?.project == null || name === "learn" && record2?.project == null || name === "remember" && record2?.project == null && !(Array.isArray(record2?.tags) && record2.tags.some((t) => typeof t === "string" && t.startsWith("project:"))) || name === "recall" && record2?.project == null && (record2?.tag == null || record2.tag === "") && record2?.cross_project !== true;
+  const needsWorkspaceRoots = needsProjectBinding || name === "work_package" && (record2?.kind === "transcript" || ref?.kind === "transcript");
+  let workspaceRootUris = [];
+  let rootsUnreadable = false;
   if (needsWorkspaceRoots) {
     if (!server.getClientCapabilities()?.roots) {
       workspaceRootUris = [];
@@ -32921,10 +33150,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         workspaceRootUris = listed.roots.map((root) => root.uri);
       } catch {
         workspaceRootUris = [];
+        rootsUnreadable = true;
       }
     }
   }
-  return handleTool(name, args, normalizeClientHost(server.getClientVersion()?.name), extra.signal, { workspaceRootUris });
+  const projectBinding = needsProjectBinding ? resolveMcpProject(process.env.MEMESH_PROJECT_ROOT, rootsUnreadable ? null : workspaceRootUris) : void 0;
+  return handleTool(name, args, normalizeClientHost(server.getClientVersion()?.name), extra.signal, { workspaceRootUris, projectBinding });
 });
 async function main() {
   openDatabase();

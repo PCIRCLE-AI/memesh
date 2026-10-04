@@ -31,13 +31,13 @@ describe('MCP first tool call carries the update notice (#308: any entry point)'
       currentVersion: CURRENT_VERSION, latestVersion: '99.0.0', checkSucceeded: true,
       lastSuccessfulCheckAt: new Date().toISOString(), lastAttemptAt: new Date().toISOString(),
     }));
-    const first = await handleTool('recall', { query: 'anything' });
+    const first = await handleTool('recall', { cross_project: true, query: 'anything' });
     expect(first.isError).toBeFalsy();
     // Gemini parses content[0] as JSON into structuredContent: it must still be the object envelope.
     expect(JSON.parse(first.content[0].text)).toHaveProperty('entities');
     expect(first.content).toHaveLength(2);
     expect(first.content[1].text).toContain('[memesh update] 99.0.0 is available');
-    const second = await handleTool('recall', { query: 'anything' });
+    const second = await handleTool('recall', { cross_project: true, query: 'anything' });
     expect(second.content).toHaveLength(1);
   });
 
@@ -47,7 +47,7 @@ describe('MCP first tool call carries the update notice (#308: any entry point)'
       lastSuccessfulCheckAt: new Date().toISOString(), lastAttemptAt: new Date().toISOString(),
     }));
     fs.writeFileSync(path.join(tmpDir, 'update-snooze.json'), JSON.stringify({ target: '99.0.0', level: 1, since: new Date().toISOString() }));
-    const quiet = await handleTool('recall', { query: 'anything' });
+    const quiet = await handleTool('recall', { cross_project: true, query: 'anything' });
     expect(quiet.content).toHaveLength(1);
     resetFirstCallNoticeForTests();
     fs.rmSync(path.join(tmpDir, 'update-snooze.json'));

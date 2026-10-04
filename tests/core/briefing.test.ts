@@ -765,7 +765,7 @@ describe('assembleBriefing', () => {
     expect(t).not.toContain('Imported wisdom');
     expect(t).toContain('Use PKCE for the CLI');
 
-    const recall = await handleTool('recall', { query: 'Imported wisdom' });
+    const recall = await handleTool('recall', { cross_project: true, query: 'Imported wisdom' });
     const recalled = JSON.parse(recall.content[0].text).entities as Array<{ name: string }>;
     expect(recalled.map((entity) => entity.name)).toContain('imported-note');
   });

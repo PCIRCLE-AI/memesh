@@ -276,6 +276,24 @@ function dropUbiquitousTerms(db: MemeshDatabase, terms: string[]): string[] {
   }
 }
 
+/** Memories that carry no project tag at all (entity alias `e`). */
+const NO_PROJECT_TAG = "NOT EXISTS (SELECT 1 FROM tags sp WHERE sp.entity_id = e.id AND sp.tag LIKE 'project:%')";
+
+/**
+ * A default recall's scope over the entity alias `e`. A project tag: that
+ * project's memories, memories with no project, and global ones. null (no
+ * bound project): memories with no project and global ones. Never another
+ * project's memories.
+ */
+function projectScopeFilter(scope: string | null): { sql: string; params: string[] } {
+  return scope === null
+    ? { sql: `AND (${NO_PROJECT_TAG} OR e.namespace = 'global')`, params: [] }
+    : {
+      sql: `AND (EXISTS (SELECT 1 FROM tags st WHERE st.entity_id = e.id AND st.tag = ?) OR ${NO_PROJECT_TAG} OR e.namespace = 'global')`,
+      params: [scope],
+    };
+}
+
 export class KnowledgeGraph {
   constructor(private db: MemeshDatabase) {}
 
@@ -866,6 +884,9 @@ export class KnowledgeGraph {
       if (opts?.tag) {
         return this.listRecentByTag(opts.tag, limit, opts?.includeArchived, opts?.namespace, countAsAccess);
       }
+      if (opts?.projectScope !== undefined) {
+        return this.listRecentInScope(opts.projectScope, limit, opts?.includeArchived, opts?.namespace, countAsAccess);
+      }
       return this.listRecent(limit, opts?.includeArchived, opts?.namespace, countAsAccess);
     }
 
@@ -901,11 +922,15 @@ export class KnowledgeGraph {
     // order below; `tests/recall-relevance.test.ts` pins it.
     const statusFilter = opts?.includeArchived ? '' : "AND e.status = 'active'";
     const namespaceFilter = opts?.namespace ? 'AND e.namespace = ?' : '';
+    // A default recall's project scope sits in the tag's place: an explicit tag wins.
+    const scope = opts?.tag ? undefined : opts?.projectScope;
+    const scoped = scope === undefined ? undefined : projectScopeFilter(scope);
     const tagFilter = opts?.tag
       ? 'AND EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?)'
-      : '';
+      : scoped ? scoped.sql : '';
     const filterParams: (string | number)[] = [];
     if (opts?.tag) filterParams.push(opts.tag);
+    else if (scoped) filterParams.push(...scoped.params);
     if (opts?.namespace) filterParams.push(opts.namespace);
     filterParams.push(limit);
     let ftsRows: Array<{ id: number }>;
@@ -969,7 +994,7 @@ export class KnowledgeGraph {
     // beyond what the user asked for.
     if (opts?.includeArchived) {
       const tagJoin = opts?.tag ? 'JOIN tags t ON t.entity_id = e.id' : '';
-      const tagFilter = opts?.tag ? 'AND t.tag = ?' : '';
+      const tagFilter = opts?.tag ? 'AND t.tag = ?' : scoped ? scoped.sql : '';
       const archivedNamespaceFilter = opts?.namespace ? 'AND e.namespace = ?' : '';
       const likeTerms = archivedLikeTerms(this.db, query);
       // `memesh_nfc(...)` on the STORED side. The terms are already NFC —
@@ -993,6 +1018,7 @@ export class KnowledgeGraph {
         .join(strictSelected ? ' AND ' : ' OR ');
       const archivedParams: (string | number)[] = likeTerms.flatMap((t) => [t, t, t]);
       if (opts?.tag) archivedParams.push(opts.tag);
+      else if (scoped) archivedParams.push(...scoped.params);
       if (opts?.namespace) archivedParams.push(opts.namespace);
 
       const archivedRows = this.db
@@ -1088,6 +1114,23 @@ export class KnowledgeGraph {
       rows.map((r) => r.id),
       { includeArchived, namespace }
     );
+  }
+
+  /** `listRecentByTag` for a default recall's scope (see projectScopeFilter). */
+  private listRecentInScope(scope: string | null, limit: number, includeArchived?: boolean, namespace?: string, countAsAccess = true): Entity[] {
+    const statusFilter = includeArchived ? '' : "AND e.status = 'active'";
+    const namespaceFilter = namespace ? 'AND e.namespace = ?' : '';
+    const scoped = projectScopeFilter(scope);
+    const params: (string | number)[] = [...scoped.params];
+    if (namespace) params.push(namespace);
+    params.push(limit);
+    const rows = this.db
+      .prepare(`SELECT e.id FROM entities e WHERE 1=1 ${scoped.sql} ${statusFilter} ${namespaceFilter} ORDER BY e.id DESC LIMIT ?`)
+      .all(...params) as { id: number }[];
+    // Batch-hydrate (see listRecent) — order-preserving, same fields/filters.
+    const results = this.getEntitiesByIds(rows.map((r) => r.id), { includeArchived, namespace });
+    if (countAsAccess) this.trackAccess(results.map((e) => e.id));
+    return results;
   }
 
   private listRecentByTag(tag: string, limit: number, includeArchived?: boolean, namespace?: string, countAsAccess = true): Entity[] {

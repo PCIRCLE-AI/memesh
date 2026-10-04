@@ -10,13 +10,14 @@
 // =============================================================================
 
 import { getDatabase } from '../db.js';
+import { projectOwnershipRefusal } from '../storage/memory-mutation.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { rankEntities } from './scoring.js';
 import { getProjectName } from './paths.js';
 import { createExplicitLesson } from './lesson-engine.js';
 import { deriveNote, NOTE_DEFAULT_TYPE, type DerivedNote } from './note-derive.js';
 import { canonicalEntityType } from './work-topology.js';
-import { capRecallForAgent, type RecallForAgentResult } from './recall-agent-view.js';
+import { capRecallForAgent, type RecallForAgentResult, type RecallScope } from './recall-agent-view.js';
 import type {
   RememberInput,
   RememberResult,
@@ -183,6 +184,32 @@ function rememberInTransaction(
   // the recovery named here is a real one — pinned by a test, because an
   // error message that recommends something that does not work is its own
   // defect.
+  // The project this write declares: the one the transport set (null = it
+  // intentionally has none), else its one explicit project tag. A memory
+  // belongs to one project, so two different project tags, or a tag that
+  // contradicts the declared project, are refused before anything is written.
+  const tagProjects = [...new Set((args.tags ?? []).filter((t) => t.startsWith('project:')).map((t) => t.slice('project:'.length)))];
+  if (tagProjects.length > 1) {
+    throw new Error(`MeMesh did not store this memory: it has more than one project tag (${tagProjects.map((p) => `project:${p}`).join(', ')}); a memory belongs to one project.`);
+  }
+  if (args.project !== undefined && tagProjects.length === 1 && tagProjects[0] !== args.project) {
+    throw new Error(`MeMesh did not store this memory: its project tag project:${tagProjects[0]} contradicts ${args.project === null ? 'project: none' : `project ${args.project}`}.`);
+  }
+  const declaredProject = args.project !== undefined ? args.project : tagProjects[0];
+  if (declaredProject !== undefined) {
+    // The memory itself, and every memory a `supersedes` relation would
+    // archive: a write that declares its project (or declares none) may
+    // change only memories of that same project (or of none).
+    const touched = [
+      ...(existing ? [args.name] : []),
+      ...(args.relations ?? []).filter((rel) => rel.type === 'supersedes').map((rel) => rel.to),
+    ];
+    for (const name of touched) {
+      const refusal = projectOwnershipRefusal(db, name, declaredProject);
+      if (refusal !== undefined) throw new Error(`MeMesh did not store this memory: ${refusal}.`);
+    }
+  }
+
   if (args.replace && existing && existing.status === 'archived') {
     throw new Error(
       `"${args.name}" was archived with forget; \`replace\` will not overwrite it. `
@@ -259,6 +286,12 @@ function rememberInTransaction(
     const stored = new Set((db.prepare('SELECT content FROM observations WHERE entity_id = ?').all(existing.id) as { content: string }[])
       .map((o) => o.content));
     observations = observations?.filter((o) => !stored.has(o));
+  }
+
+  // A bound write carries its project. After the replace branch, so a
+  // replace that keeps the stored tags keeps the project tag they hold.
+  if (typeof args.project === 'string' && !(tags ?? []).includes(`project:${args.project}`)) {
+    tags = [...(tags ?? []), `project:${args.project}`];
   }
 
   // Trust signal MUST arrive at createEntity time so the confidence-
@@ -413,6 +446,7 @@ function searchAndScore(args: RecallInput): { entities: Entity[]; relevanceMap: 
   // cross_project=true means don't filter by project tag — pass no tag to search all projects
   const entities = summarizeReplacedHistory(kg.search(args.query, {
     tag: recallTagFilter(args),
+    projectScope: args.cross_project ? undefined : args.projectScope,
     limit: args.limit,
     includeArchived: args.include_archived,
     namespace: args.namespace,
@@ -473,8 +507,8 @@ export async function recallWithConflicts(args: RecallInput) {
  * HTTP API (the dashboard's data source) calls `recallWithConflicts`
  * directly and is deliberately NOT capped — see recall-agent-view.ts.
  */
-export async function recallForAgent(args: RecallInput): Promise<RecallForAgentResult> {
-  return capRecallForAgent(await recallWithConflicts(args));
+export async function recallForAgent(args: RecallInput, scope?: RecallScope): Promise<RecallForAgentResult> {
+  return capRecallForAgent(await recallWithConflicts(args), scope);
 }
 
 // --- Serialization (extracted to serializer.ts) ---
@@ -491,7 +525,7 @@ export { exportMemories, importMemories } from './serializer.js';
  * Uses createExplicitLesson from lesson-engine to build and store the entity.
  */
 export function learn(args: LearnInput): LearnResult {
-  const projectName = getProjectName();
+  const projectName = args.project !== undefined ? args.project : getProjectName();
 
   const result = createExplicitLesson(
     args.error,

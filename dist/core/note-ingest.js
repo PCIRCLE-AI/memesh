@@ -375,18 +375,28 @@ export function ingestNoteDirectory(opts) {
             touchedIds.add(existing.id);
             continue;
         }
-        const currentTags = existing
-            ? db.prepare('SELECT tag FROM tags WHERE entity_id = ?').all(existing.id).map((t) => t.tag)
-            : [];
-        const keptTags = currentTags.filter((t) => !t.startsWith('source:'));
-        const hasProject = keptTags.some((t) => t.startsWith('project:'));
-        const tags = [NOTE_FILE_TAG, ...keptTags, ...(!hasProject && opts.project ? [`project:${opts.project}`] : [])];
-        const written = remember({
+        let project;
+        if (existing) {
+            const projects = db.prepare("SELECT tag FROM tags WHERE entity_id = ? AND tag LIKE 'project:%' ORDER BY tag").all(existing.id)
+                .map((t) => t.tag.slice('project:'.length));
+            if (projects.length === 1)
+                project = projects[0];
+            else if (projects.length > 1) {
+                if (!opts.project || !projects.includes(opts.project)) {
+                    const reason = `memory "${name}" belongs to several projects (${projects.join(', ')}); ${opts.project ? `this run's project ${opts.project} is not one of them` : 'this run names no project'}, so it was not updated`;
+                    report(owner.rel, reason);
+                    nextSkips[owner.rel] = { mtime: owner.stat.mtimeMs, size: owner.stat.size, reason, name: owner.name, reportOnly: true };
+                    continue;
+                }
+                project = opts.project;
+            }
+        }
+        const fields = {
             name,
             type: owner.type,
             title: owner.title,
             observations: owner.observations,
-            tags,
+            ...(existing ? { project } : { tags: [NOTE_FILE_TAG, ...(opts.project ? [`project:${opts.project}`] : [])] }),
             replace: true,
             trustOverride: 'untrusted',
             provenanceOverride: {
@@ -399,7 +409,26 @@ export function ingestNoteDirectory(opts) {
                 note_ino: owner.stat.ino,
             },
             sourceHost: 'note-file',
-        });
+        };
+        let written;
+        try {
+            written = db.transaction(() => {
+                const stored = remember(fields);
+                if (existing) {
+                    db.prepare("DELETE FROM tags WHERE entity_id = ? AND tag LIKE 'source:%' AND tag <> ?").run(existing.id, NOTE_FILE_TAG);
+                    db.prepare('INSERT OR IGNORE INTO tags (entity_id, tag) VALUES (?, ?)').run(existing.id, NOTE_FILE_TAG);
+                }
+                return stored;
+            }).immediate();
+        }
+        catch (err) {
+            if (err instanceof Error && err.message.startsWith('MeMesh did not store this memory')) {
+                report(owner.rel, err.message);
+                nextSkips[owner.rel] = { mtime: owner.stat.mtimeMs, size: owner.stat.size, reason: err.message, name: owner.name, reportOnly: true };
+                continue;
+            }
+            throw err;
+        }
         touchedIds.add(written.entityId);
         (existing ? result.replaced : result.created).push(name);
     }

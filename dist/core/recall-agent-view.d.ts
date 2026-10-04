@@ -14,7 +14,12 @@ export interface RecallTruncationInfo {
 }
 export type AgentRecallEntity = Entity & {
     truncated?: RecallTruncationInfo;
+    projects?: string[];
 };
+export interface RecallScope {
+    project: string | null;
+    searched: string;
+}
 export interface RecallForAgentResult {
     entities: AgentRecallEntity[];
     conflicts: string[];
@@ -24,13 +29,15 @@ export interface RecallForAgentResult {
         shown: number;
         total: number;
     };
+    scope?: RecallScope;
 }
 export declare function capRecallForAgent(result: {
     entities: Entity[];
     conflicts: string[];
     retrieval: RetrievalMeta;
-}): RecallForAgentResult;
+}, scope?: RecallScope): RecallForAgentResult;
 export declare function agentRecallEnvelope(r: RecallForAgentResult): {
+    scope?: RecallScope | undefined;
     entities_omitted?: {
         shown: number;
         total: number;

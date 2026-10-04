@@ -54,7 +54,7 @@ export const WorkPackageSchema = z.discriminatedUnion('action', [
         reason: z.literal('not_now'),
     }).strict(),
 ]);
-export const RememberSchema = z.object({
+const rememberShape = {
     name: nameField.optional(),
     type: z.string().min(1).max(100).optional(),
     title: titleField,
@@ -67,7 +67,8 @@ export const RememberSchema = z.object({
         .max(50)
         .optional(),
     namespace: z.enum(NAMESPACES).optional(),
-}).strict().superRefine((data, ctx) => {
+};
+function refineRemember(data, ctx) {
     if (data.note === undefined) {
         if (data.name === undefined)
             ctx.addIssue({ code: 'custom', path: ['name'], message: 'name is required (or pass `note` to have it derived)' });
@@ -90,15 +91,20 @@ export const RememberSchema = z.object({
     else if (derived.observations.length > NOTE_MAX_OBSERVATIONS) {
         ctx.addIssue({ code: 'custom', path: ['note'], message: `note yields ${derived.observations.length} observations; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory` });
     }
-});
-export const RecallSchema = z.object({
+}
+export const RememberSchema = z.object(rememberShape).strict().superRefine(refineRemember);
+const mcpProjectField = z.union([z.string().min(1).max(200), z.literal(false)]).optional();
+export const McpRememberSchema = z.object({ ...rememberShape, project: mcpProjectField }).strict().superRefine(refineRemember);
+const recallShape = {
     query: z.string().max(1000).optional(),
     tag: z.string().max(255).optional(),
     limit: z.number().int().min(1).max(100).optional(),
     include_archived: z.boolean().optional(),
     namespace: z.enum(NAMESPACES).optional(),
     cross_project: z.boolean().optional(),
-}).strict();
+};
+export const RecallSchema = z.object(recallShape).strict();
+export const McpRecallSchema = z.object({ ...recallShape, project: mcpProjectField }).strict();
 export const ForgetSchema = z.object({
     name: nameField,
     observation: z.string().min(1).max(10000).optional(),
@@ -128,13 +134,15 @@ export const ImportSchema = z.object({
     merge_strategy: z.enum(['skip', 'overwrite', 'append']),
     restore_archived: z.boolean().optional(),
 }).strict();
-export const LearnSchema = z.object({
+const learnShape = {
     error: z.string().min(1).max(5000),
     fix: z.string().min(1).max(5000),
     root_cause: z.string().max(5000).optional(),
     prevention: z.string().max(5000).optional(),
     severity: z.enum(['critical', 'major', 'minor']).optional(),
-}).strict();
+};
+export const LearnSchema = z.object(learnShape).strict();
+export const McpLearnSchema = z.object({ ...learnShape, project: mcpProjectField }).strict();
 export const TaskStateSchema = z.object({
     project: z.string().min(1).max(200).optional(),
     goal: z.string().max(1000).optional(),

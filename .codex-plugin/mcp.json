@@ -4,7 +4,7 @@
       "command": "node",
       "args": ["./dist/mcp/server.js"],
       "cwd": ".",
-      "env_vars": ["MEMESH_DIR", "MEMESH_DB_PATH"]
+      "env_vars": ["MEMESH_DIR", "MEMESH_DB_PATH", "MEMESH_PROJECT_ROOT"]
     }
   }
 }

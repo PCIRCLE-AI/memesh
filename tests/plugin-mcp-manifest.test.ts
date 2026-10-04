@@ -188,12 +188,13 @@ describe('Codex and Claude plugin MCP manifests', () => {
     const codexServer = codexManifest.mcpServers.memesh;
     // Codex passes an MCP server only the variables it names (#482). Without
     // these, a custom MEMESH_DIR reached the CLI and hooks but not this server,
-    // which then read and wrote the default database.
+    // which then read and wrote the default database. MEMESH_PROJECT_ROOT binds
+    // a call that names no project, since this server's cwd is the plugin's.
     expect(codexServer).toEqual({
       command: 'node',
       args: ['./dist/mcp/server.js'],
       cwd: '.',
-      env_vars: ['MEMESH_DIR', 'MEMESH_DB_PATH'],
+      env_vars: ['MEMESH_DIR', 'MEMESH_DB_PATH', 'MEMESH_PROJECT_ROOT'],
     });
 
     const claudeTarget = mcpEntry(repoRoot);

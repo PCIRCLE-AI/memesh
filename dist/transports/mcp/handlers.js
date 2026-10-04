@@ -11,11 +11,31 @@ import { getTaskState, setTaskState } from '../../core/task-state-store.js';
 import { getProductImprovementStatus, stageProductImprovement, } from '../../core/product-improvements.js';
 import { executeAgentMessageAction } from '../agent-messaging.js';
 import { hostSessionFromEnv } from '../../core/host-session.js';
-import { RememberSchema, RecallSchema, ForgetSchema, BriefingSchema, ExportSchema, ImportSchema, LearnSchema, TaskStateSchema, UserPatternsSchema, ImprovementSchema, MessageSchema, WorkPackageSchema, } from '../schemas.js';
+import { McpRememberSchema, McpRecallSchema, ForgetSchema, BriefingSchema, ExportSchema, ImportSchema, McpLearnSchema, TaskStateSchema, UserPatternsSchema, ImprovementSchema, MessageSchema, WorkPackageSchema, } from '../schemas.js';
 import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../../core/agent-messaging.js';
 import { getProjectName, memeshDir } from '../../core/paths.js';
 import { updateNoticeForEntryPoint, updateCheckEnabledIn } from '../../core/update-entrypoint.js';
 import { staleRunningProcessNotice } from '../../core/update-notice.js';
+const UNBOUND = { error: 'workspace_unavailable', reason: 'No project is bound to this MCP session.', unbound: true };
+const BIND_WORKSPACE = 'Start the MCP server with MEMESH_PROJECT_ROOT set to the project directory, or from a client that reports one workspace root.';
+function projectFor(explicit, context, action) {
+    if (explicit !== undefined)
+        return { project: explicit };
+    const binding = context.projectBinding ?? UNBOUND;
+    if ('project' in binding)
+        return { project: binding.project };
+    return { result: fail(`${binding.error}: ${binding.reason} ${action}`) };
+}
+const PROJECT_ACTION = `Pass project ("<id>", or a "project:<id>" tag), or project: false for a memory that belongs to no project (a preference, a general lesson), or bind the session: ${BIND_WORKSPACE}`;
+function writeProject(arg, tags, context) {
+    if (arg === false)
+        return { project: null };
+    if (arg !== undefined)
+        return { project: arg };
+    if ((tags ?? []).some((t) => t.startsWith('project:')))
+        return { project: undefined };
+    return projectFor(undefined, context, PROJECT_ACTION);
+}
 export function resolveTranscriptWorkspace(project, rootUris) {
     if (!rootUris)
         return { transcriptWorkspaceError: 'workspace_unavailable' };
@@ -81,7 +101,7 @@ export const TOOL_DEFINITIONS = [
                 tags: {
                     type: 'array',
                     items: { type: 'string' },
-                    description: 'Tags for filtering (e.g., "project:<id>" where <id> is the `project` field of the `briefing` result (CLI: `memesh briefing --json`), "topic:database"). A plain repository name is a different project scope.',
+                    description: 'Tags for filtering by subject (e.g. "topic:database"). A "project:<id>" tag is the same as passing `project` (<id> is the `project` field of the `briefing` result; CLI: `memesh briefing --json`); a plain repository name is a different project. At most one project.',
                 },
                 relations: {
                     type: 'array',
@@ -108,6 +128,10 @@ export const TOOL_DEFINITIONS = [
                     enum: ['personal', 'team', 'global'],
                     description: 'Namespace for organizing the entity. Omit it to leave an existing memory where it is — supplying it MOVES a memory that already exists, and it drops out of every other scoped view. New memories default to "personal".',
                 },
+                project: {
+                    anyOf: [{ type: 'string', minLength: 1 }, { const: false }],
+                    description: 'The project this memory belongs to. Omit it to use a "project:<id>" tag if you gave one, else the project this session is bound to (MEMESH_PROJECT_ROOT, or the client’s workspace root). Pass false for a memory that belongs to no project — a preference, a general lesson, team knowledge; it needs no binding. With no project, no tag and no binding the call is refused with workspace_unavailable. A write may change only a memory of the same project (or, with false, one that has none).',
+                },
             },
             additionalProperties: false,
             anyOf: [
@@ -119,7 +143,7 @@ export const TOOL_DEFINITIONS = [
     },
     {
         name: 'recall',
-        description: 'Search and retrieve stored knowledge. Uses full-text search with optional project tag filtering. Call with no query to list recent memories. One- and two-term queries use OR matching; queries with three or more terms try strict all-term matching first and fall back to OR only when strict matching has no hits, with results ranked by relevance. Results are capped for size: each entity\'s observations+tags at 8 KB, the whole response at 32 KB; a capped entity carries `truncated` with the full shown/total counts, and the response carries `truncated`/`entities_omitted` when anything was cut. `file:*` tags are never included — they exist for pre-edit lookups, not for reading.',
+        description: 'Search and retrieve stored knowledge. Uses full-text search. Selectors: `project` (that project, memories with no project, and global ones; false = only memories with no project and global ones), `tag` (exactly that tag) or `cross_project` (every project; a `tag` given with it is ignored). `project` cannot be combined with `tag` or `cross_project`. With none, it uses the project this session is bound to (MEMESH_PROJECT_ROOT, or the client’s workspace root) the same way, or only memories with no project and global ones when nothing is bound; a launch or workspace root that is set but cannot be resolved is refused with the reason; the response says what it searched (`scope`) and each result carries its `projects` ([] for none). Call with no query to list recent memories. One- and two-term queries use OR matching; queries with three or more terms try strict all-term matching first and fall back to OR only when strict matching has no hits, with results ranked by relevance. Results are capped for size: each entity\'s observations+tags at 8 KB, the whole response at 32 KB; a capped entity carries `truncated` with the full shown/total counts, and the response carries `truncated`/`entities_omitted` when anything was cut. `file:*` tags are never included — they exist for pre-edit lookups, not for reading.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -146,7 +170,11 @@ export const TOOL_DEFINITIONS = [
                 },
                 cross_project: {
                     type: 'boolean',
-                    description: 'Ignore the optional tag filter and search across project tags. Default false keeps the supplied tag filter, if any; it does not implicitly limit results to the current project.',
+                    description: 'Search every project; a `tag` given with it is ignored. Cannot be combined with `project`.',
+                },
+                project: {
+                    anyOf: [{ type: 'string', minLength: 1 }, { const: false }],
+                    description: 'Search this project plus memories with no project and global ones; false searches only memories with no project and global ones. Cannot be combined with `tag` or `cross_project`. Omit it to use the bound project.',
                 },
             },
             additionalProperties: false,
@@ -205,7 +233,7 @@ export const TOOL_DEFINITIONS = [
     },
     {
         name: 'learn',
-        description: 'Record a structured lesson from a mistake or discovery. Creates a lesson_learned entity with error, root cause, fix, and prevention. Use it when something went wrong and the cause and fix are known; for a choice between options, use `remember` with type decision. The project\'s lessons are shown at the start of later sessions.',
+        description: 'Record a structured lesson from a mistake or discovery. Creates a lesson_learned entity with error, root cause, fix, and prevention. Use it when something went wrong and the cause and fix are known; for a choice between options, use `remember` with type decision. The lesson belongs to `project`, or to the project this session is bound to (MEMESH_PROJECT_ROOT, or the client’s workspace root); pass project false for a general lesson that belongs to no project. With no project and no binding the call is refused with workspace_unavailable. The project\'s lessons are shown at the start of later sessions.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -217,6 +245,10 @@ export const TOOL_DEFINITIONS = [
                     type: 'string',
                     enum: ['critical', 'major', 'minor'],
                     description: 'Severity level (default: minor)',
+                },
+                project: {
+                    anyOf: [{ type: 'string', minLength: 1 }, { const: false }],
+                    description: 'The project the lesson belongs to; false for a general lesson with no project. Omit it to use the bound project.',
                 },
             },
             required: ['error', 'fix'],
@@ -231,7 +263,7 @@ export const TOOL_DEFINITIONS = [
             properties: {
                 project: {
                     type: 'string',
-                    description: 'Project name. Omit to use the current working directory’s project.',
+                    description: 'Project name. Omit to use the project this session is bound to (MEMESH_PROJECT_ROOT, or the client’s workspace root); with no binding the call is refused with workspace_unavailable.',
                 },
                 goal: { type: 'string', description: 'What this work is FOR — the outcome being aimed at' },
                 next: { type: 'string', description: 'The next concrete step' },
@@ -249,7 +281,7 @@ export const TOOL_DEFINITIONS = [
             properties: {
                 project: {
                     type: 'string',
-                    description: 'Project name. Omit to use the current working directory’s project.',
+                    description: 'Project name. Omit to use the project this session is bound to (MEMESH_PROJECT_ROOT, or the client’s workspace root); with no binding the call is refused with workspace_unavailable.',
                 },
                 recipient: {
                     type: 'string',
@@ -465,16 +497,45 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
             return result.status === 'error' ? { ...ok(result), isError: true } : ok(result);
         }
         if (name === 'remember') {
-            const r = parseOrFail(RememberSchema, args);
+            const r = parseOrFail(McpRememberSchema, args);
             if (!r.ok)
                 return r.result;
-            return ok(remember({ ...r.data, sourceHost }));
+            const { project: projectArg, ...input } = r.data;
+            const resolved = writeProject(projectArg, input.tags, requestContext);
+            if ('result' in resolved)
+                return resolved.result;
+            return ok(remember({ ...input, sourceHost, project: resolved.project }));
         }
         if (name === 'recall') {
-            const r = parseOrFail(RecallSchema, args);
+            const r = parseOrFail(McpRecallSchema, args);
             if (!r.ok)
                 return r.result;
-            return ok(agentRecallEnvelope(await recallForAgent(r.data)));
+            const { project: projectArg, ...input } = r.data;
+            const tag = input.tag === '' ? undefined : input.tag;
+            if (projectArg !== undefined && (tag !== undefined || input.cross_project)) {
+                return fail('recall takes one selector: project, tag or cross_project — not several. Use project for one project plus memories with no project and global ones; tag for exactly one tag; cross_project for every project.');
+            }
+            if (tag !== undefined || input.cross_project) {
+                return ok(agentRecallEnvelope(await recallForAgent({ ...input, tag })));
+            }
+            let boundProject;
+            if (projectArg !== undefined) {
+                boundProject = projectArg === false ? null : projectArg;
+            }
+            else {
+                const binding = requestContext.projectBinding ?? UNBOUND;
+                if ('error' in binding && !binding.unbound) {
+                    return fail(`${binding.error}: ${binding.reason} Pass project, tag or cross_project.`);
+                }
+                boundProject = 'project' in binding ? binding.project : null;
+            }
+            const scope = {
+                project: boundProject,
+                searched: boundProject === null
+                    ? `memories with no project, and global memories${projectArg === false ? '' : ' (no project is bound to this session)'}`
+                    : `project ${boundProject}, memories with no project, and global memories`,
+            };
+            return ok(agentRecallEnvelope(await recallForAgent({ ...input, tag, projectScope: boundProject === null ? null : `project:${boundProject}` }, scope)));
         }
         if (name === 'forget') {
             const r = parseOrFail(ForgetSchema, args);
@@ -504,16 +565,24 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
             return ok(importMemories(r.data));
         }
         if (name === 'learn') {
-            const r = parseOrFail(LearnSchema, args);
+            const r = parseOrFail(McpLearnSchema, args);
             if (!r.ok)
                 return r.result;
-            return ok(learn({ ...r.data, sourceHost }));
+            const { project: projectArg, ...input } = r.data;
+            const resolved = writeProject(projectArg, undefined, requestContext);
+            if ('result' in resolved)
+                return resolved.result;
+            return ok(learn({ ...input, sourceHost, project: resolved.project ?? null }));
         }
         if (name === 'task_state') {
             const r = parseOrFail(TaskStateSchema, args);
             if (!r.ok)
                 return r.result;
-            const { project, ...patch } = r.data;
+            const { project: explicit, ...patch } = r.data;
+            const bound = projectFor(explicit, requestContext, 'Pass project explicitly.');
+            if ('result' in bound)
+                return bound.result;
+            const { project } = bound;
             if (Object.keys(patch).length === 0)
                 return ok(getTaskState(project));
             return ok(setTaskState({ project, patch, sourceHost }));
@@ -522,7 +591,10 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
             const r = parseOrFail(BriefingSchema, args);
             if (!r.ok)
                 return r.result;
-            return ok(assembleBriefing(r.data.project, r.data.recipient));
+            const bound = projectFor(r.data.project, requestContext, 'Pass project explicitly.');
+            if ('result' in bound)
+                return bound.result;
+            return ok(assembleBriefing(bound.project, r.data.recipient));
         }
         if (name === 'user_patterns') {
             const r = parseOrFail(UserPatternsSchema, args);

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { remember } from '../../src/core/operations.js';
+import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import { getDatabase } from '../../src/db.js';
 import { listProjectTags, openReadOnlyForPreview, renameProjectTag } from '../../src/core/project-tags.js';
 import { sendAgentMessage, pollAgentEvents } from '../../src/core/agent-messaging.js';
@@ -53,8 +54,9 @@ describe('project-tags: renameProjectTag', () => {
   });
 
   it('merges (not duplicates) when an entity already has the target tag — respects UNIQUE(entity_id, tag)', () => {
-    // Entity carries BOTH the old and new tag (the split case).
-    remember({ name: 'a', type: 'note', tags: ['project:tim', 'project:TIM'] });
+    // Entity carries BOTH the old and new tag (the split case). remember()
+    // refuses two project tags now, so the legacy split is seeded below it.
+    new KnowledgeGraph(getDatabase()).createEntity('a', 'note', { tags: ['project:tim', 'project:TIM'] });
     remember({ name: 'b', type: 'note', tags: ['project:tim'] });
     const r = renameProjectTag('tim', 'TIM', { apply: true });
     expect(r.affectedEntities).toBe(2);

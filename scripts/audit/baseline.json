@@ -221,21 +221,6 @@
       "reason": "retired message lives in RETIRED_ROUTES; remaining source asserts pin the wiring (CLI signpost text, 410 registration), sibling of consolidate-retired.test.ts with the same classification",
       "triaged": "2026-08-13 (verify_agent_work retirement)"
     },
-    "C5 src/knowledge-graph.ts:369": {
-      "class": "SAFE-ACCUMULATOR",
-      "reason": "write-time signal-score inputs; empty means the caller passed no observations/tags, which is the correct identity for scoring",
-      "triaged": "2026-08-09 (re-keyed: review fixes — busy_timeout, vector-index guards and the .mcp.json entry check — shifted these lines; same statements, same classification); re-keyed 2026-08-14 (UX-1 title column added lines above; same statement — verified against the line content); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-26 360→369 (#451: canonicalEntityType import plus the createEntityInner canonicalization comment block added above; statement byte-identical)"
-    },
-    "C5 src/knowledge-graph.ts:370": {
-      "class": "SAFE-ACCUMULATOR",
-      "reason": "write-time signal-score inputs; empty means the caller passed no observations/tags, which is the correct identity for scoring",
-      "triaged": "2026-08-09 (re-keyed: review fixes — busy_timeout, vector-index guards and the .mcp.json entry check — shifted these lines; same statements, same classification); re-keyed 2026-08-14 (UX-1 title column added lines above; same statement — verified against the line content); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-26 361→370 (#451: canonicalEntityType import plus the createEntityInner canonicalization comment block added above; statement byte-identical)"
-    },
-    "C5 src/knowledge-graph.ts:506": {
-      "class": "SAFE-ACCUMULATOR",
-      "reason": "missing observations means no new observation, so the confidence bump fails closed",
-      "triaged": "2026-08-09 (re-keyed: review fixes — busy_timeout, vector-index guards and the .mcp.json entry check — shifted these lines; same statements, same classification); re-keyed 2026-08-10 (review pass 2: redactUserPaths moved to core/paths, namespace breadcrumb, dreamer retirement); re-keyed 2026-08-14 (UX-1 title column added lines above; same statement — verified against the line content); re-keyed 2026-08-15 411→429 (merge main shifted lines +18; same statement — verified); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-26 497→506 (#451: canonicalEntityType import plus the createEntityInner canonicalization comment block added above; statement byte-identical)"
-    },
     "C1 tests/core/task-state-store.test.ts": {
       "class": "DETECTOR-HEURISTIC",
       "reason": "Same shape as the sibling file: `changed` is asserted `[]` for a no-op write and `['blocked']` when a clear actually happens, and `expect(row).toBeUndefined()` for the no-op is pinned by four other tests that read the row back and assert its tag, title and observations. Not vacuous; the pin is just not in a shape the regex matches.",
@@ -305,26 +290,6 @@
       "class": "SAFE-GUARDED",
       "reason": "readSettings throws on unparseable input; absent hooks truthfully means none wired",
       "triaged": "2026-08-04; re-keyed 2026-08-13 (agentic-orchestration removal shifted lines up; same statement, classification unchanged); re-keyed 2026-08-13 (review-fix commit shifted lines; same statement, classification unchanged — verified); re-keyed 2026-08-16 (merge of memesh-setup onto main: +6 README Step 1.5 / +3 install-hooks export comment / +2 cli imports; byte-identical vs origin/main — NOTE C7 339 slid onto a colliding key, whole set re-verified); re-keyed 2026-08-16 (release-prep: settingsHaveMemeshHooks added above in install-hooks / wireUserHooks helper above in cli; byte-identical vs HEAD); re-keyed 2026-08-24 (uninstallHooks parses settings before deleting the rule file; same statement, classification unchanged); re-keyed 2026-08-30 454→451 after install-hooks relocation comments changed above; statement byte-identical; re-keyed 2026-08-30 451→455 after mixed-registry plugin detection added four lines above; statement byte-identical"
-    },
-    "C5 src/knowledge-graph.ts:814": {
-      "class": "SAFE-ACCUMULATOR",
-      "reason": "batch-hydrate lookups; confidence bump fails closed",
-      "triaged": "2026-08-09 (re-keyed: review fixes — busy_timeout, vector-index guards and the .mcp.json entry check — shifted these lines; same statements, same classification); re-keyed 2026-08-10 (review pass 2: redactUserPaths moved to core/paths, namespace breadcrumb, dreamer retirement); re-keyed 2026-08-14 (UX-1 title column added lines above; same statement — verified against the line content); re-keyed 2026-08-15 631→649 (merge main shifted lines +18; same statement — verified); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-04 683→754 (rebase onto main after createEntity dedup-guard scope widened to any entity; same statement — verified against actual C5 regex hit); re-keyed 2026-09-04 754→769 (fix/lesson-dedup-guard-trusts-stored-type added a comment block above explaining the security-review fix; same statement — verified against actual C5 regex hit); re-keyed 2026-09-26 805→814 (#451: canonicalEntityType import plus the createEntityInner canonicalization comment block added above; statement byte-identical)"
-    },
-    "C5 src/knowledge-graph.ts:815": {
-      "class": "SAFE-ACCUMULATOR",
-      "reason": "batch-hydrate lookups; confidence bump fails closed",
-      "triaged": "2026-08-09 (re-keyed: review fixes — busy_timeout, vector-index guards and the .mcp.json entry check — shifted these lines; same statements, same classification); re-keyed 2026-08-10 (review pass 2: redactUserPaths moved to core/paths, namespace breadcrumb, dreamer retirement); re-keyed 2026-08-14 (UX-1 title column added lines above; same statement — verified against the line content); re-keyed 2026-08-15 629→647 (merge main shifted lines +18; same statement — verified); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-04 684→755 (rebase onto main after createEntity dedup-guard scope widened to any entity; same statement — verified against actual C5 regex hit); re-keyed 2026-09-04 755→770 (fix/lesson-dedup-guard-trusts-stored-type added a comment block above explaining the security-review fix; same statement — verified against actual C5 regex hit); re-keyed 2026-09-26 806→815 (#451: canonicalEntityType import plus the createEntityInner canonicalization comment block added above; statement byte-identical)"
-    },
-    "C5 src/knowledge-graph.ts:816": {
-      "class": "SAFE-ACCUMULATOR",
-      "reason": "batch-hydrate lookups; confidence bump fails closed",
-      "triaged": "2026-08-09 (re-keyed: review fixes — busy_timeout, vector-index guards and the .mcp.json entry check — shifted these lines; same statements, same classification); re-keyed 2026-08-10 (review pass 2: redactUserPaths moved to core/paths, namespace breadcrumb, dreamer retirement); re-keyed 2026-08-14 (UX-1 title column added lines above; same statement — verified against the line content); re-keyed 2026-08-15 630→648 (merge main shifted lines +18; same statement — verified); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-04 685→756 (rebase onto main after createEntity dedup-guard scope widened to any entity; same statement — verified against actual C5 regex hit); re-keyed 2026-09-04 756→771 (fix/lesson-dedup-guard-trusts-stored-type added a comment block above explaining the security-review fix; same statement — verified against actual C5 regex hit); re-keyed 2026-09-26 807→816 (#451: canonicalEntityType import plus the createEntityInner canonicalization comment block added above; statement byte-identical)"
-    },
-    "C5 src/knowledge-graph.ts:863": {
-      "class": "SAFE-BY-CONSTRUCTION",
-      "reason": "`opts?.countAsAccess ?? true` in search(): the default is the CONSERVATIVE direction, not the convenient one. Absent means 'this is an ordinary recall, count it' — the behaviour every caller had before the option existed. Only the one read that must NOT count (exportMemories: a backup is not a use) says so explicitly, and tests/core/reads-that-were-writes.test.ts pins both directions.",
-      "triaged": "2026-08-24 (full-codebase review, R9-a); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-04 732→803 (rebase onto main after createEntity dedup-guard scope widened to any entity; same statement — verified against actual C5 regex hit); re-keyed 2026-09-04 803→818 (fix/lesson-dedup-guard-trusts-stored-type added a comment block above explaining the security-review fix; same statement — verified against actual C5 regex hit); re-keyed 2026-09-26 854→863 (#451: canonicalEntityType import plus the createEntityInner canonicalization comment block added above; statement byte-identical)"
     },
     "C1 tests/cli/a-partial-backup-says-so.test.ts": {
       "class": "SAFE",
@@ -521,16 +486,6 @@
       "reason": "Read-only status of the verify receipt (fresh / stale / missing) for a person to run by hand. Before 2026-09-20 its automated caller was the maintainer's local git commit/push hook shims in .git/hooks/ (never tracked — .git/ itself is never version-controlled), installed by scripts/sdlc/install-git-hooks.mjs; those shims exec'd scripts/sdlc/git-gate.mjs, which WAS tracked here (one of this change's deletions) and read the receipt via receiptStatus() in-process rather than by spawning this file. Those hooks left with the rest of the SDLC loop, so nothing in this repository invokes it under either name now — the classification is unchanged.",
       "triaged": "2026-09-14 SDLC loop install (chore/sdlc-loop); re-triaged 2026-09-20 (SDLC loop removal: reason updated to name the caller as local-only, not in-repo); corrected 2026-09-20 (git-gate.mjs was tracked and just deleted, not never-tracked; the never-tracked part is the .git/hooks/ shim)"
     },
-    "C5 src/core/recall-agent-view.ts:153": {
-      "class": "SAFE-OPTIONAL-OBJECT",
-      "reason": "entity.tags is typed string[] (non-optional) on every Entity recallWithConflicts() returns; the ?? [] is defensive against a malformed/legacy row, matching operations.ts's existing provenance-object defaults, not a fallback that turns a real absence into a false success.",
-      "triaged": "2026-09-28 #494 recall-response-size: recall-agent-view.ts introduced; re-keyed 2026-09-28 (bytesWith()/cutToFit added and packObservations' early return removed, all above, across several passes); currently :153, statement byte-identical to the pre-simplification-pass :154"
-    },
-    "C5 src/core/recall-agent-view.ts:154": {
-      "class": "SAFE-OPTIONAL-OBJECT",
-      "reason": "entity.observations is typed string[] (non-optional) on every Entity recallWithConflicts() returns; same defensive-only ?? [] as the tags line immediately above.",
-      "triaged": "2026-09-28 #494 recall-response-size: recall-agent-view.ts introduced; re-keyed 2026-09-28 (bytesWith()/cutToFit added and packObservations' early return removed, all above, across several passes); currently :154, statement byte-identical to the pre-simplification-pass :155"
-    },
     "C5 src/core/capture-liveness.ts:757": {
       "class": "SAFE-MAP-ABSENCE",
       "reason": "`file.hooks[hook] ?? []` in summarizeHookOutcomes: a hook with no recorded outcomes correctly summarises to an empty window (0 runs, 0 writes), the honest reading — absence of records is reported as no runs, not masked as success.",
@@ -540,21 +495,6 @@
       "class": "SAFE-OPTIONAL-COLLECTION",
       "reason": "`input.neverRanHooks ?? []` in captureLivenessVerdict: when the caller supplies no heartbeat-never-ran list there is no dead hook, so deadHooks is emptily computed — and the FAIL branch only fires when a FAIL-eligible hook is actually absent past the grace, never from the missing default itself.",
       "triaged": "2026-09-11 #327 capture-liveness; re-keyed 2026-09-11 (dead-code cleanup shifted the unchanged statement); re-keyed 2026-09-12 (#327 review fixes shifted the unchanged statement); re-keyed 2026-09-12 (#327 re-review fixes shifted the unchanged statement); re-keyed 2026-09-12 (#327 round-3 doc comment shifted the unchanged statement); re-keyed 2026-09-12 (#324 src/core fix round shifted the unchanged statement); re-keyed 2026-09-12 (merge of origin/main into feat/324-on327 shifted the unchanged statement); re-keyed 2026-09-13 (#322 alreadyCaptured LEGACY comment shifted the unchanged statement, twice as the comment was revised); re-keyed 2026-09-13 (#322 noRuleMatched SKIP_REASON added above shifted the unchanged statement); re-keyed 2026-09-13 814→820 (#322 round-2 review fixes: noRuleMatched paragraph extension in the file header shifted the unchanged statement); re-keyed 2026-09-13 820→831 (#322 round-4 fix-verifier findings: allMatchedEntitiesArchived SKIP_REASON added above shifted the unchanged statement); re-keyed 2026-09-14 831→841 (#321 skip reasons shifted the unchanged statement); re-keyed 2026-09-20 841→852 (#358 round 3 item 2: candidateWindowTruncated SKIP_REASON doc comment added above shifted the unchanged statement); re-keyed 2026-09-24 852→864 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-24 864→869 (session-handoff review fixes: doc lines added above shifted the unchanged statement); re-keyed 2026-09-24 869→870 (session-handoff: a comment line added above shifted the unchanged statement); re-keyed 2026-09-27 870→887 (#468 stop-message-gate CAPTURE_HOOKS/UNCLASSIFIED_SKIP_HOOKS/SKIP_REASONS entries added above shifted the unchanged statement); re-keyed 2026-09-27 887→893 (#468 fallbackProjectMismatch SKIP_REASON and stop-message-gate CAPTURE_HOOKS comment added above shifted the unchanged statement); re-keyed 2026-09-27 893→887 (#474 fallbackProjectMismatch SKIP_REASON and its doc comment removed above shifted the unchanged statement back); re-keyed 2026-09-28 887→886 (#492 stopHookActive SKIP_REASON entry removed above; statement byte-identical); re-keyed 2026-09-28 886→893 (#497 /clear SKIP_REASONS entries added above; statement byte-identical); re-keyed 2026-09-28 893→894 (#497 /clear SKIP_REASONS reworked above; statement byte-identical); re-keyed 2026-09-29 894→895 (#497 sessionLauncherNoDatabase SKIP_REASON added above; statement byte-identical); re-keyed 2026-09-30 895→897 (#521 recallAlreadyShown SKIP_REASON added above; statement byte-identical)"
-    },
-    "C5 src/core/operations.ts:44": {
-      "class": "SAFE-OPTIONAL-OBJECT",
-      "reason": "A new entity legitimately starts with empty metadata before local fields are applied.",
-      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-26 40→41 (#451: canonicalEntityType import added above; statement byte-identical); re-keyed 2026-09-28 41→42 (#494: one import line added above; statement byte-identical); re-keyed 2026-09-30 42→44 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged)"
-    },
-    "C5 src/core/operations.ts:47": {
-      "class": "SAFE-OPTIONAL-OBJECT",
-      "reason": "Missing provenance legitimately starts an empty provenance object before local fields are applied.",
-      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-26 43→44 (#451: canonicalEntityType import added above; statement byte-identical); re-keyed 2026-09-28 44→45 (#494: one import line added above; statement byte-identical); re-keyed 2026-09-30 45→47 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged)"
-    },
-    "C5 src/core/operations.ts:50": {
-      "class": "SAFE-OPTIONAL-OBJECT",
-      "reason": "Absent provenance overrides correctly add no fields to the generated provenance.",
-      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-26 46→47 (#451: canonicalEntityType import added above; statement byte-identical); re-keyed 2026-09-28 47→48 (#494: one import line added above; statement byte-identical); re-keyed 2026-09-30 48→50 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged)"
     },
     "C5 src/core/serializer.ts:533": {
       "class": "SAFE-ACCUMULATOR",
@@ -586,10 +526,100 @@
       "reason": "entity.observations can be genuinely undefined for a raw import bundle — describeInvalidEntity (this file) explicitly permits the field to be absent, only rejecting it if present-and-not-an-array. The ?? [] covers that documented-optional case, not a hidden failure.",
       "triaged": "2026-08-24; re-keyed 2026-09-07 after per-entity transaction refactor shifted the unchanged statement; re-keyed 2026-09-20 318→784 (#359/#361: the import metadata allow-list and its validators were added above; statement byte-identical, classification unchanged); re-keyed 2026-09-21 784→796 (#363: the archived-import guard was added above it; statement byte-identical, classification unchanged); re-keyed 2026-09-21 796→808 (#363: the restore_archived-with-skip refusal was added above; statement byte-identical, classification unchanged); re-keyed 2026-09-21 808→818 (#363: the non-boolean restore_archived refusal was added above; statement byte-identical, classification unchanged); re-keyed 2026-09-26 818→848 (#407: buildImportedMetadata's `trust` option, its doc comment, and the preserveTrust conditional were added above; statement byte-identical, classification unchanged); re-keyed 2026-09-30 852→850 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged); re-keyed 2026-09-30 850→863 (#530 review follow-up: storedContentOf helper and the identical-version check added above; statement byte-identical, classification unchanged); re-keyed 2026-10-01 863→881 (#530: the duplicate-name preflight and the JSDoc move were added above; statement byte-identical, classification unchanged); re-keyed 2026-10-01 881→887 (#530: the lone-surrogate key in the duplicate preflight was added above; statement byte-identical, classification unchanged); re-keyed 2026-10-01 887→884 (#530: that key became a UTF-8 round trip and its regex constant was removed; statement byte-identical, classification unchanged)"
     },
-    "C5 src/core/operations.ts:299": {
+    "C5 src/knowledge-graph.ts:387": {
+      "class": "SAFE-ACCUMULATOR",
+      "reason": "write-time signal-score inputs; empty means the caller passed no observations/tags, which is the correct identity for scoring",
+      "triaged": "2026-08-09 (re-keyed: review fixes — busy_timeout, vector-index guards and the .mcp.json entry check — shifted these lines; same statements, same classification); re-keyed 2026-08-14 (UX-1 title column added lines above; same statement — verified against the line content); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-26 360→369 (#451: canonicalEntityType import plus the createEntityInner canonicalization comment block added above; statement byte-identical); re-keyed 2026-10-03 369→387 (M1 project binding added lines above; statement byte-identical)"
+    },
+    "C5 src/knowledge-graph.ts:388": {
+      "class": "SAFE-ACCUMULATOR",
+      "reason": "write-time signal-score inputs; empty means the caller passed no observations/tags, which is the correct identity for scoring",
+      "triaged": "2026-08-09 (re-keyed: review fixes — busy_timeout, vector-index guards and the .mcp.json entry check — shifted these lines; same statements, same classification); re-keyed 2026-08-14 (UX-1 title column added lines above; same statement — verified against the line content); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-26 361→370 (#451: canonicalEntityType import plus the createEntityInner canonicalization comment block added above; statement byte-identical); re-keyed 2026-10-03 370→388 (M1 project binding added lines above; statement byte-identical)"
+    },
+    "C5 src/knowledge-graph.ts:524": {
+      "class": "SAFE-ACCUMULATOR",
+      "reason": "missing observations means no new observation, so the confidence bump fails closed",
+      "triaged": "2026-08-09 (re-keyed: review fixes — busy_timeout, vector-index guards and the .mcp.json entry check — shifted these lines; same statements, same classification); re-keyed 2026-08-10 (review pass 2: redactUserPaths moved to core/paths, namespace breadcrumb, dreamer retirement); re-keyed 2026-08-14 (UX-1 title column added lines above; same statement — verified against the line content); re-keyed 2026-08-15 411→429 (merge main shifted lines +18; same statement — verified); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-26 497→506 (#451: canonicalEntityType import plus the createEntityInner canonicalization comment block added above; statement byte-identical); re-keyed 2026-10-03 506→524 (M1 project binding added lines above; statement byte-identical)"
+    },
+    "C5 src/knowledge-graph.ts:832": {
+      "class": "SAFE-ACCUMULATOR",
+      "reason": "batch-hydrate lookups; confidence bump fails closed",
+      "triaged": "2026-08-09 (re-keyed: review fixes — busy_timeout, vector-index guards and the .mcp.json entry check — shifted these lines; same statements, same classification); re-keyed 2026-08-10 (review pass 2: redactUserPaths moved to core/paths, namespace breadcrumb, dreamer retirement); re-keyed 2026-08-14 (UX-1 title column added lines above; same statement — verified against the line content); re-keyed 2026-08-15 631→649 (merge main shifted lines +18; same statement — verified); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-04 683→754 (rebase onto main after createEntity dedup-guard scope widened to any entity; same statement — verified against actual C5 regex hit); re-keyed 2026-09-04 754→769 (fix/lesson-dedup-guard-trusts-stored-type added a comment block above explaining the security-review fix; same statement — verified against actual C5 regex hit); re-keyed 2026-09-26 805→814 (#451: canonicalEntityType import plus the createEntityInner canonicalization comment block added above; statement byte-identical); re-keyed 2026-10-03 814→832 (M1 project binding added lines above; statement byte-identical)"
+    },
+    "C5 src/knowledge-graph.ts:833": {
+      "class": "SAFE-ACCUMULATOR",
+      "reason": "batch-hydrate lookups; confidence bump fails closed",
+      "triaged": "2026-08-09 (re-keyed: review fixes — busy_timeout, vector-index guards and the .mcp.json entry check — shifted these lines; same statements, same classification); re-keyed 2026-08-10 (review pass 2: redactUserPaths moved to core/paths, namespace breadcrumb, dreamer retirement); re-keyed 2026-08-14 (UX-1 title column added lines above; same statement — verified against the line content); re-keyed 2026-08-15 629→647 (merge main shifted lines +18; same statement — verified); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-04 684→755 (rebase onto main after createEntity dedup-guard scope widened to any entity; same statement — verified against actual C5 regex hit); re-keyed 2026-09-04 755→770 (fix/lesson-dedup-guard-trusts-stored-type added a comment block above explaining the security-review fix; same statement — verified against actual C5 regex hit); re-keyed 2026-09-26 806→815 (#451: canonicalEntityType import plus the createEntityInner canonicalization comment block added above; statement byte-identical); re-keyed 2026-10-03 815→833 (M1 project binding added lines above; statement byte-identical)"
+    },
+    "C5 src/knowledge-graph.ts:834": {
+      "class": "SAFE-ACCUMULATOR",
+      "reason": "batch-hydrate lookups; confidence bump fails closed",
+      "triaged": "2026-08-09 (re-keyed: review fixes — busy_timeout, vector-index guards and the .mcp.json entry check — shifted these lines; same statements, same classification); re-keyed 2026-08-10 (review pass 2: redactUserPaths moved to core/paths, namespace breadcrumb, dreamer retirement); re-keyed 2026-08-14 (UX-1 title column added lines above; same statement — verified against the line content); re-keyed 2026-08-15 630→648 (merge main shifted lines +18; same statement — verified); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-04 685→756 (rebase onto main after createEntity dedup-guard scope widened to any entity; same statement — verified against actual C5 regex hit); re-keyed 2026-09-04 756→771 (fix/lesson-dedup-guard-trusts-stored-type added a comment block above explaining the security-review fix; same statement — verified against actual C5 regex hit); re-keyed 2026-09-26 807→816 (#451: canonicalEntityType import plus the createEntityInner canonicalization comment block added above; statement byte-identical); re-keyed 2026-10-03 816→834 (M1 project binding added lines above; statement byte-identical)"
+    },
+    "C5 src/knowledge-graph.ts:881": {
+      "class": "SAFE-BY-CONSTRUCTION",
+      "reason": "`opts?.countAsAccess ?? true` in search(): the default is the CONSERVATIVE direction, not the convenient one. Absent means 'this is an ordinary recall, count it' — the behaviour every caller had before the option existed. Only the one read that must NOT count (exportMemories: a backup is not a use) says so explicitly, and tests/core/reads-that-were-writes.test.ts pins both directions.",
+      "triaged": "2026-08-24 (full-codebase review, R9-a); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-04 732→803 (rebase onto main after createEntity dedup-guard scope widened to any entity; same statement — verified against actual C5 regex hit); re-keyed 2026-09-04 803→818 (fix/lesson-dedup-guard-trusts-stored-type added a comment block above explaining the security-review fix; same statement — verified against actual C5 regex hit); re-keyed 2026-09-26 854→863 (#451: canonicalEntityType import plus the createEntityInner canonicalization comment block added above; statement byte-identical); re-keyed 2026-10-03 863→881 (M1 project binding added lines above; statement byte-identical)"
+    },
+    "C5 src/core/recall-agent-view.ts:162": {
+      "class": "SAFE-OPTIONAL-OBJECT",
+      "reason": "entity.tags is typed string[] (non-optional) on every Entity recallWithConflicts() returns; the ?? [] is defensive against a malformed/legacy row, matching operations.ts's existing provenance-object defaults, not a fallback that turns a real absence into a false success.",
+      "triaged": "2026-09-28 #494 recall-response-size: recall-agent-view.ts introduced; re-keyed 2026-09-28 (bytesWith()/cutToFit added and packObservations' early return removed, all above, across several passes); currently :153, statement byte-identical to the pre-simplification-pass :154; re-keyed 2026-10-03 153→162 (M1 project binding added lines above; statement byte-identical)"
+    },
+    "C5 src/core/recall-agent-view.ts:163": {
+      "class": "SAFE-OPTIONAL-OBJECT",
+      "reason": "entity.observations is typed string[] (non-optional) on every Entity recallWithConflicts() returns; same defensive-only ?? [] as the tags line immediately above.",
+      "triaged": "2026-09-28 #494 recall-response-size: recall-agent-view.ts introduced; re-keyed 2026-09-28 (bytesWith()/cutToFit added and packObservations' early return removed, all above, across several passes); currently :154, statement byte-identical to the pre-simplification-pass :155; re-keyed 2026-10-03 154→163 (M1 project binding added lines above; statement byte-identical)"
+    },
+    "C5 src/core/operations.ts:45": {
+      "class": "SAFE-OPTIONAL-OBJECT",
+      "reason": "A new entity legitimately starts with empty metadata before local fields are applied.",
+      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-26 40→41 (#451: canonicalEntityType import added above; statement byte-identical); re-keyed 2026-09-28 41→42 (#494: one import line added above; statement byte-identical); re-keyed 2026-09-30 42→44 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged); re-keyed 2026-10-03 44→45 (M1 project binding added lines above; statement byte-identical)"
+    },
+    "C5 src/core/operations.ts:48": {
+      "class": "SAFE-OPTIONAL-OBJECT",
+      "reason": "Missing provenance legitimately starts an empty provenance object before local fields are applied.",
+      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-26 43→44 (#451: canonicalEntityType import added above; statement byte-identical); re-keyed 2026-09-28 44→45 (#494: one import line added above; statement byte-identical); re-keyed 2026-09-30 45→47 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged); re-keyed 2026-10-03 47→48 (M1 project binding added lines above; statement byte-identical)"
+    },
+    "C5 src/core/operations.ts:51": {
+      "class": "SAFE-OPTIONAL-OBJECT",
+      "reason": "Absent provenance overrides correctly add no fields to the generated provenance.",
+      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-26 46→47 (#451: canonicalEntityType import added above; statement byte-identical); re-keyed 2026-09-28 47→48 (#494: one import line added above; statement byte-identical); re-keyed 2026-09-30 48→50 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged); re-keyed 2026-10-03 50→51 (M1 project binding added lines above; statement byte-identical)"
+    },
+    "C5 src/core/operations.ts:332": {
       "class": "SAFE-OPTIONAL-OBJECT",
       "reason": "Absent caller provenance overrides correctly preserve generated provenance unchanged.",
-      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-07 after transaction-boundary refactor shifted the unchanged statement; re-keyed 2026-09-12 (#324 src/core fix round shifted the unchanged statement); re-keyed again 2026-09-12 (#324 T4 root-cause fix shifted the same statement from :299 to :327); re-keyed 2026-09-26 327→334 (#451: canonicalEntityType import plus the entityType canonicalization comment block added above; statement byte-identical); re-keyed 2026-09-28 334→335 (#494: one import line added above; statement byte-identical); re-keyed 2026-09-30 335→300 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged); re-keyed 2026-09-30 300→299 (#530 review follow-up: a stray blank line removed above; statement byte-identical)"
+      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-07 after transaction-boundary refactor shifted the unchanged statement; re-keyed 2026-09-12 (#324 src/core fix round shifted the unchanged statement); re-keyed again 2026-09-12 (#324 T4 root-cause fix shifted the same statement from :299 to :327); re-keyed 2026-09-26 327→334 (#451: canonicalEntityType import plus the entityType canonicalization comment block added above; statement byte-identical); re-keyed 2026-09-28 334→335 (#494: one import line added above; statement byte-identical); re-keyed 2026-09-30 335→300 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged); re-keyed 2026-09-30 300→299 (#530 review follow-up: a stray blank line removed above; statement byte-identical); re-keyed 2026-10-03 299→332 (M1 project binding added lines above; statement byte-identical)"
+    },
+    "C5 src/core/operations.ts:191": {
+      "class": "SAFE-OPTIONAL-COLLECTION",
+      "reason": "Omitted tags are no tags, so no project tag: the write then declares a project only through its argument, or none. Two project tags, or one contradicting the argument, are refused right below.",
+      "triaged": "2026-10-03 (M1 binding separated; classification carried from C5 src/core/operations.ts:227 at tree 16cc446c, statement byte-identical)"
+    },
+    "C5 src/core/operations.ts:205": {
+      "class": "SAFE-OPTIONAL-COLLECTION",
+      "reason": "No relations means no supersedes target to check; the bound-project check then covers only the memory itself. Fails closed: each listed target is checked before any write.",
+      "triaged": "2026-10-03 (M1 binding separated; classification carried from C5 src/core/operations.ts:241 at tree 16cc446c, statement byte-identical)"
+    },
+    "C5 src/core/operations.ts:293": {
+      "class": "SAFE-OPTIONAL-COLLECTION",
+      "reason": "Omitted tags are no tags; this only decides whether the named project tag is already present before adding it. Nothing reads as success from it.",
+      "triaged": "2026-10-03 (M1 binding separated; classification carried from C5 src/core/operations.ts:329 at tree 16cc446c, statement byte-identical)"
+    },
+    "C5 src/core/operations.ts:294": {
+      "class": "SAFE-OPTIONAL-COLLECTION",
+      "reason": "Omitted tags are no tags; the bound project tag is appended to them.",
+      "triaged": "2026-10-03 (M1 binding separated; classification carried from C5 src/core/operations.ts:330 at tree 16cc446c, statement byte-identical)"
+    },
+    "C5 src/core/recall-agent-view.ts:181": {
+      "class": "SAFE-OPTIONAL-COLLECTION",
+      "reason": "Omitted tags are no tags, so the memory belongs to no project: projects is [], which the response reports as exactly that. Nothing reads as success from it.",
+      "triaged": "2026-10-03 (M1 binding separated; classification carried from C5 src/core/recall-agent-view.ts:181 at tree 16cc446c, statement byte-identical)"
+    },
+    "C5 src/transports/mcp/handlers.ts:67": {
+      "class": "SAFE-OPTIONAL-COLLECTION",
+      "reason": "No tags means no project tag, which fails closed: the call then needs a bound project and is refused without one.",
+      "triaged": "2026-10-03 (M1 binding separated; classification carried from C5 src/transports/mcp/handlers.ts:67 at tree 16cc446c, statement byte-identical)"
     }
   }
 }

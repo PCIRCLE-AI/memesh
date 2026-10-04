@@ -1,6 +1,8 @@
 import { z } from 'zod';
+import type { McpProjectResolution } from './project-context.js';
 export interface McpRequestContext {
     workspaceRootUris?: readonly string[];
+    projectBinding?: McpProjectResolution;
 }
 export declare function resolveTranscriptWorkspace(project: string, rootUris: readonly string[] | undefined): {
     transcriptWorkspace?: string;
@@ -162,7 +164,7 @@ export declare const TOOL_DEFINITIONS: readonly [{
                 readonly items: {
                     readonly type: "string";
                 };
-                readonly description: "Tags for filtering (e.g., \"project:<id>\" where <id> is the `project` field of the `briefing` result (CLI: `memesh briefing --json`), \"topic:database\"). A plain repository name is a different project scope.";
+                readonly description: "Tags for filtering by subject (e.g. \"topic:database\"). A \"project:<id>\" tag is the same as passing `project` (<id> is the `project` field of the `briefing` result; CLI: `memesh briefing --json`); a plain repository name is a different project. At most one project.";
             };
             readonly relations: {
                 readonly type: "array";
@@ -188,6 +190,15 @@ export declare const TOOL_DEFINITIONS: readonly [{
                 readonly enum: readonly ["personal", "team", "global"];
                 readonly description: "Namespace for organizing the entity. Omit it to leave an existing memory where it is — supplying it MOVES a memory that already exists, and it drops out of every other scoped view. New memories default to \"personal\".";
             };
+            readonly project: {
+                readonly anyOf: readonly [{
+                    readonly type: "string";
+                    readonly minLength: 1;
+                }, {
+                    readonly const: false;
+                }];
+                readonly description: "The project this memory belongs to. Omit it to use a \"project:<id>\" tag if you gave one, else the project this session is bound to (MEMESH_PROJECT_ROOT, or the client’s workspace root). Pass false for a memory that belongs to no project — a preference, a general lesson, team knowledge; it needs no binding. With no project, no tag and no binding the call is refused with workspace_unavailable. A write may change only a memory of the same project (or, with false, one that has none).";
+            };
         };
         readonly additionalProperties: false;
         readonly anyOf: readonly [{
@@ -205,7 +216,7 @@ export declare const TOOL_DEFINITIONS: readonly [{
     };
 }, {
     readonly name: "recall";
-    readonly description: "Search and retrieve stored knowledge. Uses full-text search with optional project tag filtering. Call with no query to list recent memories. One- and two-term queries use OR matching; queries with three or more terms try strict all-term matching first and fall back to OR only when strict matching has no hits, with results ranked by relevance. Results are capped for size: each entity's observations+tags at 8 KB, the whole response at 32 KB; a capped entity carries `truncated` with the full shown/total counts, and the response carries `truncated`/`entities_omitted` when anything was cut. `file:*` tags are never included — they exist for pre-edit lookups, not for reading.";
+    readonly description: "Search and retrieve stored knowledge. Uses full-text search. Selectors: `project` (that project, memories with no project, and global ones; false = only memories with no project and global ones), `tag` (exactly that tag) or `cross_project` (every project; a `tag` given with it is ignored). `project` cannot be combined with `tag` or `cross_project`. With none, it uses the project this session is bound to (MEMESH_PROJECT_ROOT, or the client’s workspace root) the same way, or only memories with no project and global ones when nothing is bound; a launch or workspace root that is set but cannot be resolved is refused with the reason; the response says what it searched (`scope`) and each result carries its `projects` ([] for none). Call with no query to list recent memories. One- and two-term queries use OR matching; queries with three or more terms try strict all-term matching first and fall back to OR only when strict matching has no hits, with results ranked by relevance. Results are capped for size: each entity's observations+tags at 8 KB, the whole response at 32 KB; a capped entity carries `truncated` with the full shown/total counts, and the response carries `truncated`/`entities_omitted` when anything was cut. `file:*` tags are never included — they exist for pre-edit lookups, not for reading.";
     readonly inputSchema: {
         readonly type: "object";
         readonly properties: {
@@ -232,7 +243,16 @@ export declare const TOOL_DEFINITIONS: readonly [{
             };
             readonly cross_project: {
                 readonly type: "boolean";
-                readonly description: "Ignore the optional tag filter and search across project tags. Default false keeps the supplied tag filter, if any; it does not implicitly limit results to the current project.";
+                readonly description: "Search every project; a `tag` given with it is ignored. Cannot be combined with `project`.";
+            };
+            readonly project: {
+                readonly anyOf: readonly [{
+                    readonly type: "string";
+                    readonly minLength: 1;
+                }, {
+                    readonly const: false;
+                }];
+                readonly description: "Search this project plus memories with no project and global ones; false searches only memories with no project and global ones. Cannot be combined with `tag` or `cross_project`. Omit it to use the bound project.";
             };
         };
         readonly additionalProperties: false;
@@ -307,7 +327,7 @@ export declare const TOOL_DEFINITIONS: readonly [{
     };
 }, {
     readonly name: "learn";
-    readonly description: "Record a structured lesson from a mistake or discovery. Creates a lesson_learned entity with error, root cause, fix, and prevention. Use it when something went wrong and the cause and fix are known; for a choice between options, use `remember` with type decision. The project's lessons are shown at the start of later sessions.";
+    readonly description: "Record a structured lesson from a mistake or discovery. Creates a lesson_learned entity with error, root cause, fix, and prevention. Use it when something went wrong and the cause and fix are known; for a choice between options, use `remember` with type decision. The lesson belongs to `project`, or to the project this session is bound to (MEMESH_PROJECT_ROOT, or the client’s workspace root); pass project false for a general lesson that belongs to no project. With no project and no binding the call is refused with workspace_unavailable. The project's lessons are shown at the start of later sessions.";
     readonly inputSchema: {
         readonly type: "object";
         readonly properties: {
@@ -332,6 +352,15 @@ export declare const TOOL_DEFINITIONS: readonly [{
                 readonly enum: readonly ["critical", "major", "minor"];
                 readonly description: "Severity level (default: minor)";
             };
+            readonly project: {
+                readonly anyOf: readonly [{
+                    readonly type: "string";
+                    readonly minLength: 1;
+                }, {
+                    readonly const: false;
+                }];
+                readonly description: "The project the lesson belongs to; false for a general lesson with no project. Omit it to use the bound project.";
+            };
         };
         readonly required: readonly ["error", "fix"];
         readonly additionalProperties: false;
@@ -344,7 +373,7 @@ export declare const TOOL_DEFINITIONS: readonly [{
         readonly properties: {
             readonly project: {
                 readonly type: "string";
-                readonly description: "Project name. Omit to use the current working directory’s project.";
+                readonly description: "Project name. Omit to use the project this session is bound to (MEMESH_PROJECT_ROOT, or the client’s workspace root); with no binding the call is refused with workspace_unavailable.";
             };
             readonly goal: {
                 readonly type: "string";
@@ -373,7 +402,7 @@ export declare const TOOL_DEFINITIONS: readonly [{
         readonly properties: {
             readonly project: {
                 readonly type: "string";
-                readonly description: "Project name. Omit to use the current working directory’s project.";
+                readonly description: "Project name. Omit to use the project this session is bound to (MEMESH_PROJECT_ROOT, or the client’s workspace root); with no binding the call is refused with workspace_unavailable.";
             };
             readonly recipient: {
                 readonly type: "string";

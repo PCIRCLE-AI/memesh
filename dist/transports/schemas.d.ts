@@ -69,7 +69,39 @@ export declare const RememberSchema: z.ZodObject<{
         global: "global";
     }>>;
 }, z.core.$strict>;
+export declare const McpRememberSchema: z.ZodObject<{
+    project: z.ZodOptional<z.ZodUnion<readonly [z.ZodString, z.ZodLiteral<false>]>>;
+    name: z.ZodOptional<z.ZodPipe<z.ZodString, z.ZodTransform<string, string>>>;
+    type: z.ZodOptional<z.ZodString>;
+    title: z.ZodOptional<z.ZodPipe<z.ZodPipe<z.ZodString, z.ZodTransform<string, string>>, z.ZodTransform<string | undefined, string>>>;
+    observations: z.ZodOptional<z.ZodArray<z.ZodString>>;
+    note: z.ZodOptional<z.ZodString>;
+    replace: z.ZodOptional<z.ZodBoolean>;
+    tags: z.ZodOptional<z.ZodArray<z.ZodString>>;
+    relations: z.ZodOptional<z.ZodArray<z.ZodObject<{
+        to: z.ZodString;
+        type: z.ZodString;
+    }, z.core.$strict>>>;
+    namespace: z.ZodOptional<z.ZodEnum<{
+        personal: "personal";
+        team: "team";
+        global: "global";
+    }>>;
+}, z.core.$strict>;
 export declare const RecallSchema: z.ZodObject<{
+    query: z.ZodOptional<z.ZodString>;
+    tag: z.ZodOptional<z.ZodString>;
+    limit: z.ZodOptional<z.ZodNumber>;
+    include_archived: z.ZodOptional<z.ZodBoolean>;
+    namespace: z.ZodOptional<z.ZodEnum<{
+        personal: "personal";
+        team: "team";
+        global: "global";
+    }>>;
+    cross_project: z.ZodOptional<z.ZodBoolean>;
+}, z.core.$strict>;
+export declare const McpRecallSchema: z.ZodObject<{
+    project: z.ZodOptional<z.ZodUnion<readonly [z.ZodString, z.ZodLiteral<false>]>>;
     query: z.ZodOptional<z.ZodString>;
     tag: z.ZodOptional<z.ZodString>;
     limit: z.ZodOptional<z.ZodNumber>;
@@ -142,6 +174,18 @@ export declare const ImportSchema: z.ZodObject<{
     restore_archived: z.ZodOptional<z.ZodBoolean>;
 }, z.core.$strict>;
 export declare const LearnSchema: z.ZodObject<{
+    error: z.ZodString;
+    fix: z.ZodString;
+    root_cause: z.ZodOptional<z.ZodString>;
+    prevention: z.ZodOptional<z.ZodString>;
+    severity: z.ZodOptional<z.ZodEnum<{
+        critical: "critical";
+        major: "major";
+        minor: "minor";
+    }>>;
+}, z.core.$strict>;
+export declare const McpLearnSchema: z.ZodObject<{
+    project: z.ZodOptional<z.ZodUnion<readonly [z.ZodString, z.ZodLiteral<false>]>>;
     error: z.ZodString;
     fix: z.ZodString;
     root_cause: z.ZodOptional<z.ZodString>;

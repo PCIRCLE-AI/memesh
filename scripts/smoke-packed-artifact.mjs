@@ -244,7 +244,7 @@ assert.deepEqual(codexMcp, {
   command: 'node',
   args: ['./dist/mcp/server.js'],
   cwd: '.',
-  env_vars: ['MEMESH_DIR', 'MEMESH_DB_PATH'],
+  env_vars: ['MEMESH_DIR', 'MEMESH_DB_PATH', 'MEMESH_PROJECT_ROOT'],
 });
 assert.equal(
   codexMcp.args[0].replace(/^\.\//, ''),
@@ -367,14 +367,14 @@ const transport = new StdioClientTransport({
 const client = new Client({ name: 'memesh-stale-notice-smoke', version: '1.0.0' });
 try {
   await client.connect(transport);
-  const before = await client.callTool({ name: 'recall', arguments: { query: 'anything' } });
+  const before = await client.callTool({ name: 'recall', arguments: { query: 'anything', cross_project: true } });
   assert.equal(before.content.length, 1, 'first call must carry no stale-process notice yet');
 
   const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
   pkg.version = ${JSON.stringify(bumpedVersion)};
   fs.writeFileSync(packageJsonPath, JSON.stringify(pkg));
 
-  const after = await client.callTool({ name: 'recall', arguments: { query: 'anything' } });
+  const after = await client.callTool({ name: 'recall', arguments: { query: 'anything', cross_project: true } });
   assert.equal(after.content.length, 2, 'second call must carry exactly one appended notice');
   const noticeText = after.content[1].text;
   assert.ok(noticeText.includes('This session started on'), 'must be the stale-process notice');
@@ -382,7 +382,7 @@ try {
   assert.ok(noticeText.includes(${JSON.stringify(bumpedVersion)}), 'must name the version now on disk');
   assert.ok(noticeText.includes('Restart this session'), 'must tell the user how to pick up the change');
 
-  const third = await client.callTool({ name: 'recall', arguments: { query: 'anything' } });
+  const third = await client.callTool({ name: 'recall', arguments: { query: 'anything', cross_project: true } });
   assert.equal(third.content.length, 1, 'third call must not repeat the notice once this process already gave it');
 } finally {
   await client.close();
@@ -469,6 +469,11 @@ const protocolMemeshDir = path.join(protocolHome, '.memesh');
 fs.mkdirSync(protocolMemeshDir, { recursive: true });
 const protocolDbPath = path.join(protocolMemeshDir, 'knowledge-graph.db');
 const protocolServer = path.join(installedRoot, 'dist', 'mcp', 'server.js');
+// The project this MCP session is bound to, as a host launched for one
+// project sets it. remember and learn with no project need the binding;
+// a default recall searches the bound project.
+const protocolProjectRoot = path.join(smokeDir, 'protocol-project');
+fs.mkdirSync(protocolProjectRoot, { recursive: true });
 execFileSync(
   process.execPath,
   [
@@ -485,7 +490,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 const transport = new StdioClientTransport({
   command: process.execPath,
   args: [${JSON.stringify(protocolServer)}],
-  env: { ...process.env, MEMESH_AUTO_CAPTURE: 'false' },
+  env: { ...process.env, MEMESH_AUTO_CAPTURE: 'false', MEMESH_PROJECT_ROOT: ${JSON.stringify(protocolProjectRoot)} },
 });
 const client = new Client({ name: 'memesh-packaged-smoke', version: '1.0.0' });
 try {
@@ -512,6 +517,7 @@ try {
 
   const recalled = await client.callTool({
     name: 'recall',
+    // remember filed it under the bound project, so the default recall finds it.
     arguments: { query: 'packaged-protocol-smoke', limit: 5 },
   });
   assert.notEqual(recalled.isError, true, 'recall returned an MCP tool error');
@@ -519,6 +525,16 @@ try {
     JSON.stringify(recalled),
     /packaged-protocol-smoke/,
     'recall did not return the memory written through MCP'
+  );
+  // The binding came from MEMESH_PROJECT_ROOT: the memory carries that project, and the recall searched it.
+  const { getProjectName } = await import(${JSON.stringify(pathToFileURL(path.join(installedRoot, 'dist', 'core', 'paths.js')).href)});
+  const boundProject = getProjectName(${JSON.stringify(protocolProjectRoot)});
+  const recalledBody = JSON.parse(recalled.content[0].text);
+  assert.equal(recalledBody.scope?.project, boundProject, 'the default recall did not search the bound project');
+  assert.deepEqual(
+    recalledBody.entities.find((entity) => entity.name === 'packaged-protocol-smoke')?.projects,
+    [boundProject],
+    'remember did not file the memory under the bound project'
   );
 
   const learned = await client.callTool({

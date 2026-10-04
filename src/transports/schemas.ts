@@ -95,7 +95,7 @@ export const WorkPackageSchema = z.discriminatedUnion('action', [
 // observations and — when absent — name (core/note-derive.ts). The refine
 // below names the exact missing or conflicting key, because a caller told
 // "invalid input" cannot fix its call.
-export const RememberSchema = z.object({
+const rememberShape = {
   name: nameField.optional(),
   type: z.string().min(1).max(100).optional(),
   title: titleField,
@@ -108,7 +108,9 @@ export const RememberSchema = z.object({
     .max(50)
     .optional(),
   namespace: z.enum(NAMESPACES).optional(),
-}).strict().superRefine((data, ctx) => {
+};
+
+function refineRemember(data: z.infer<z.ZodObject<typeof rememberShape>>, ctx: z.RefinementCtx): void {
   if (data.note === undefined) {
     if (data.name === undefined) ctx.addIssue({ code: 'custom', path: ['name'], message: 'name is required (or pass `note` to have it derived)' });
     // `replace` on a named memory inherits the type it already has —
@@ -140,16 +142,34 @@ export const RememberSchema = z.object({
     // note-ingest.ts says the same thing in the same unit for a note file.
     ctx.addIssue({ code: 'custom', path: ['note'], message: `note yields ${derived.observations.length} observations; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory` });
   }
-});
+}
 
-export const RecallSchema = z.object({
+export const RememberSchema = z.object(rememberShape).strict().superRefine(refineRemember);
+
+/**
+ * The MCP write's project: a project id, or the literal `false` for a memory
+ * that intentionally belongs to no project. Not `null`: MCP drops a null
+ * parameter as "left blank" (Gemini CLI fills every blank with null), so null
+ * means the same as omitting it. MCP only; HTTP and the CLI keep their own
+ * project rules.
+ */
+const mcpProjectField = z.union([z.string().min(1).max(200), z.literal(false)]).optional();
+
+export const McpRememberSchema = z.object({ ...rememberShape, project: mcpProjectField }).strict().superRefine(refineRemember);
+
+const recallShape = {
   query: z.string().max(1000).optional(),
   tag: z.string().max(255).optional(),
   limit: z.number().int().min(1).max(100).optional(),
   include_archived: z.boolean().optional(),
   namespace: z.enum(NAMESPACES).optional(),
   cross_project: z.boolean().optional(),
-}).strict();
+};
+
+export const RecallSchema = z.object(recallShape).strict();
+
+/** MCP recall: `project` (an id, or false for memories with no project) selects the scope explicitly. */
+export const McpRecallSchema = z.object({ ...recallShape, project: mcpProjectField }).strict();
 // Deliberately NO refine requiring query/tag: `{}` is the documented
 // list-recent mode (tests/transports/http.test.ts pins it). The P7 audit
 // initially read the empty-DB `[]` answer as a silent failure; it is the
@@ -224,13 +244,17 @@ export const ImportSchema = z.object({
   restore_archived: z.boolean().optional(),
 }).strict();
 
-export const LearnSchema = z.object({
+const learnShape = {
   error: z.string().min(1).max(5000),
   fix: z.string().min(1).max(5000),
   root_cause: z.string().max(5000).optional(),
   prevention: z.string().max(5000).optional(),
   severity: z.enum(['critical', 'major', 'minor']).optional(),
-}).strict();
+};
+
+export const LearnSchema = z.object(learnShape).strict();
+
+export const McpLearnSchema = z.object({ ...learnShape, project: mcpProjectField }).strict();
 
 // Every field optional, including the project: a call with no fields at all is
 // the READ. Empty string is meaningful and therefore allowed — it is how a

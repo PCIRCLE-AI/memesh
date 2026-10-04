@@ -592,19 +592,36 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     // Tags: the file owns `source:*`; everything else a person added
     // survives a file change. The project tag is set on first ingestion and
     // then kept — the CLI and the hook may run from different directories.
-    const currentTags = existing
-      ? (db.prepare('SELECT tag FROM tags WHERE entity_id = ?').all(existing.id) as { tag: string }[]).map((t) => t.tag)
-      : [];
-    const keptTags = currentTags.filter((t) => !t.startsWith('source:'));
-    const hasProject = keptTags.some((t) => t.startsWith('project:'));
-    const tags = [NOTE_FILE_TAG, ...keptTags, ...(!hasProject && opts.project ? [`project:${opts.project}`] : [])];
-
-    const written = remember({
+    // An existing memory keeps its stored tags: `replace` without `tags`
+    // puts them back, so a memory two projects already share is not sent as
+    // a new two-project write. The write names one project it belongs to, so
+    // the ownership check still runs: its only project, or — when it has
+    // several — this run's project if it is one of them; otherwise the file
+    // is reported and left as it is rather than guessed. A memory first
+    // stored with no project stays that way.
+    let project: string | undefined;
+    if (existing) {
+      const projects = (db.prepare("SELECT tag FROM tags WHERE entity_id = ? AND tag LIKE 'project:%' ORDER BY tag").all(existing.id) as { tag: string }[])
+        .map((t) => t.tag.slice('project:'.length));
+      if (projects.length === 1) project = projects[0];
+      else if (projects.length > 1) {
+        if (!opts.project || !projects.includes(opts.project)) {
+          const reason = `memory "${name}" belongs to several projects (${projects.join(', ')}); ${opts.project ? `this run's project ${opts.project} is not one of them` : 'this run names no project'}, so it was not updated`;
+          report(owner.rel, reason);
+          // Remembered so it is not news again; still read next run, so a run
+          // of a member project updates it (same as `skipAll`).
+          nextSkips[owner.rel] = { mtime: owner.stat.mtimeMs, size: owner.stat.size, reason, name: owner.name, reportOnly: true };
+          continue;
+        }
+        project = opts.project;
+      }
+    }
+    const fields = {
       name,
       type: owner.type!,
       title: owner.title,
       observations: owner.observations,
-      tags,
+      ...(existing ? { project } : { tags: [NOTE_FILE_TAG, ...(opts.project ? [`project:${opts.project}`] : [])] }),
       replace: true,
       // Same stance as the JSON importer: text from a file is not a trusted
       // re-assertion and must not lift confidence.
@@ -619,7 +636,29 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
         note_ino: owner.stat.ino,
       },
       sourceHost: 'note-file',
-    });
+    } as const;
+    let written: ReturnType<typeof remember>;
+    try {
+      written = db.transaction(() => {
+        const stored = remember(fields);
+        if (existing) {
+          // The file owns `source:*`: whatever a missing file left behind goes,
+          // and the note tag is there. Tags are not in the keyword index.
+          db.prepare("DELETE FROM tags WHERE entity_id = ? AND tag LIKE 'source:%' AND tag <> ?").run(existing.id, NOTE_FILE_TAG);
+          db.prepare('INSERT OR IGNORE INTO tags (entity_id, tag) VALUES (?, ?)').run(existing.id, NOTE_FILE_TAG);
+        }
+        return stored;
+      }).immediate();
+    } catch (err) {
+      // A refused write (ownership, project tags) leaves this memory as it was
+      // and is reported; the rest of the directory is still read.
+      if (err instanceof Error && err.message.startsWith('MeMesh did not store this memory')) {
+        report(owner.rel, err.message);
+        nextSkips[owner.rel] = { mtime: owner.stat.mtimeMs, size: owner.stat.size, reason: err.message, name: owner.name, reportOnly: true };
+        continue;
+      }
+      throw err;
+    }
     touchedIds.add(written.entityId);
     (existing ? result.replaced : result.created).push(name);
   }

@@ -170,6 +170,7 @@ describe('G1 — confidence bump paths', () => {
     // First: simulate a prior decayed lesson_learned for this project.
     kg.createEntity('lesson-test-project-network-error', 'lesson_learned', {
       observations: ['Error: stale', 'Root cause: stale', 'Fix: stale', 'Prevention: stale'],
+      tags: ['project:test-project'],
     });
     db.prepare('UPDATE entities SET confidence = 0.3 WHERE name = ?').run('lesson-test-project-network-error');
 

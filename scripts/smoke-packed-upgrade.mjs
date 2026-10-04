@@ -232,7 +232,7 @@ function runMcp(serverPath, packageRoot, env, mode, requiredTools) {
       } else {
         const recalled = await client.callTool({
           name: 'recall',
-          arguments: { query: 'packed-upgrade-existing-memory', limit: 5 },
+          arguments: { query: 'packed-upgrade-existing-memory', limit: 5, cross_project: true },
         });
         assert.notEqual(recalled.isError, true, 'candidate MCP recall failed');
         assert.match(JSON.stringify(recalled), /packed-upgrade-existing-memory/,
