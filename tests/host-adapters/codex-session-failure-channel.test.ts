@@ -115,6 +115,11 @@ function end(f: Fixture) {
 function companionLog(f: Fixture) {
   try { return fs.readFileSync(path.join(f.d, 'codex-companion.log'), 'utf8'); } catch { return ''; }
 }
+/** Whether a record other than the `old` token's is in place now. */
+function recordReplaced(read: () => string | undefined, old: string): boolean {
+  const current = read();
+  return current !== undefined && current !== old;
+}
 /** A preload that makes `fs.<call>` throw EACCES for paths containing `match`, once `flag` exists. */
 function faultAfterFlag(f: Fixture, call: string, match: string, flag: string, name: string) {
   const preload = path.join(f.d, name);
@@ -362,10 +367,19 @@ describe.skipIf(process.platform === 'win32')('#518 companion failure channel', 
     expect(fs.existsSync(controlSocket(f))).toBe(true);
     const q = launch(f);
     const token = () => { try { return JSON.parse(fs.readFileSync(path.join(f.life, `${thread}.json`), 'utf8')).token; } catch { return undefined; } };
-    await wait(() => (token() !== undefined && token() !== record.token) || q.c.exitCode !== null);
+    await wait(() => recordReplaced(token, record.token) || q.c.exitCode !== null);
     expect(q.c.exitCode).toBeNull();
     // The dead companion's record was cleared and its socket removed (a new socket may reuse the inode number).
     expect(companionLog(f)).toContain(`cleared the record of companion ${companion}, which had exited; removed its socket ${controlSocket(f)}`);
+  });
+  it('the wait for a new record reads the record once per check', () => {
+    // The clearing start moves the old record away before writing its own, so a
+    // read can see the old token and the next one nothing. Neither is a new record.
+    const reads = (...values: (string | undefined)[]) => () => values.shift();
+    expect(recordReplaced(reads('old', undefined), 'old')).toBe(false);
+    expect(recordReplaced(reads(undefined), 'old')).toBe(false);
+    expect(recordReplaced(reads('old'), 'old')).toBe(false);
+    expect(recordReplaced(reads('new'), 'old')).toBe(true);
   });
   it('SessionEnd with a dead companion\'s record from before #518 ends cleanly, leaves its socket and asks nothing', async () => {
     const f = await setup(); const legacy = legacySocket(f);
