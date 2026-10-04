@@ -36,6 +36,8 @@ import {
   openMemeshDb,
 } from './_shared.js';
 import { pruneSessionState, recallListName, SESSION_ID_RE } from './_stop-notes.js';
+import { readSnippets, toTopologyEntity } from './_generated/briefing-pools.js';
+import { LESSON_TYPE_LIST } from './_generated/work-topology.js';
 
 const dbPath = getDbPath();
 const memeshDir = getMemeshDirFromDbPath();
@@ -473,13 +475,33 @@ process.stdin.on('end', () => {
 
           if (!recallFault && results.length > 0) {
             try {
-              // Fetch first observation for each result
+              // First observation of each non-lesson row.
               const getObs = db.prepare(
                 'SELECT content FROM observations WHERE entity_id = ? ORDER BY id ASC LIMIT 1'
               );
 
+              const shownRows = results.slice(0, MAX_RESULTS);
+              // A lesson reads through the briefing's own rule (toTopologyEntity):
+              // its newest `Fix: …` first, then what went wrong, so the reminder
+              // at the edit says what to do, not only what failed. The text is
+              // cut first and the `[mem:N]` handle appended after it, so the line
+              // ends with a handle the cut never removes.
+              const lessonSnippets = readSnippets(
+                db,
+                shownRows.filter((r) => LESSON_TYPE_LIST.includes(r.type)).map((r) => r.id),
+              );
+
               const snippetLines = [`Relevant memories for ${fileName}:`];
-              for (const r of results.slice(0, MAX_RESULTS)) {
+              for (const r of shownRows) {
+                if (LESSON_TYPE_LIST.includes(r.type)) {
+                  const shown = toTopologyEntity(r, lessonSnippets);
+                  const text = shown.title || shown.snippet;
+                  snippetLines.push(text
+                    ? `• ${r.name} (${r.type}): ${text.slice(0, 120)} [mem:${r.id}]`
+                    : `• ${r.name} (${r.type}) [mem:${r.id}]`
+                  );
+                  continue;
+                }
                 const obs = getObs.get(r.id);
                 const snippet = obs ? obs.content.slice(0, 120) : '';
                 snippetLines.push(snippet
