@@ -30,6 +30,7 @@ import {
 } from '../core/agent-router.js';
 import { getAgentRouterSocketPath } from '../core/paths.js';
 import { sessionAliasChain } from '../core/agent-message-inbox.js';
+import { jsonStringLiteral } from '../core/work-topology.js';
 
 export type AgentMessageActionInput = z.infer<typeof MessageSchema>;
 
@@ -532,7 +533,7 @@ function sendPrincipalFallback(
   if (!session) {
     throw new AgentRecipientUnavailableError(
       `There is no principal fallback: session ${JSON.stringify(refused.recipient)} has never registered in project `
-      + `${JSON.stringify(refused.project)}, so its principal is unknown. Send to the principal yourself with `
+      + `${jsonStringLiteral(refused.project)}, so its principal is unknown. Send to the principal yourself with `
       + `intended_session ${JSON.stringify(refused.recipient)}.`,
     );
   }

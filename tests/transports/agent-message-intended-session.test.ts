@@ -122,6 +122,18 @@ describe('Feature: #497 send can fall back to the principal and keep the intende
     });
   });
 
+  it('names a project with line separators as one escaped literal in the no-fallback refusal', async () => {
+    const project = 'sep\u2028line\u2029para';
+    const err = await executeAgentMessageAction(getDatabase(), sessionSend({ project }), {
+      transport: 'mcp', sourceHost: 'codex',
+    }, refused).then(() => null, (e: Error) => e);
+    expect(err?.message).toMatch(/no principal fallback/);
+    expect(err!.message).not.toMatch(/[\u2028\u2029]/);
+    const m = err!.message.match(/in project ("(?:[^"\\]|\\.)*")/);
+    expect(m, err!.message).not.toBeNull();
+    expect(JSON.parse(m![1])).toBe(project);
+  });
+
   it('does not fall back from a refused acp session: nothing there could ever record intake for it', async () => {
     registerAgentSession(PROJECT, 'acp-principal', { sessionId: SESSION_A, disconnected: true, adapterKind: 'acp' });
 

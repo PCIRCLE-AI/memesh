@@ -60,6 +60,7 @@ import {
   isAutoInjectable,
   joinedLength,
   prioritizeDecisions,
+  jsonStringLiteral,
   projectLabel,
   type TopologyEntity,
 } from './work-topology.js';
@@ -345,7 +346,7 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
     }));
   } catch (err) {
     if (!(err instanceof TaskStateUnreadableError)) throw err;
-    taskLines = [`task state for ${projectLabel(projectName)}: ${err.message}`];
+    taskLines = [`task state for ${jsonStringLiteral(projectLabel(projectName))}: ${err.message}`];
   }
   const inboxRecipient = recipient === undefined ? undefined : canonicalAgentScopeId(recipient);
   // The inbox line rides WITH the stated lines, not among the ranked

@@ -127,13 +127,13 @@ export function groupTopology(entities, projectName) {
         list.sort(bySignal);
     const sections = [];
     if (decisions.length)
-        sections.push({ heading: `Decisions and direction for "${projectLabel(projectName)}":`, entities: decisions });
+        sections.push({ heading: `Decisions and direction for ${jsonStringLiteral(projectLabel(projectName))}:`, entities: decisions });
     if (lessons.length)
-        sections.push({ heading: `Lessons from "${projectLabel(projectName)}" — do not repeat these:`, entities: lessons });
+        sections.push({ heading: `Lessons from ${jsonStringLiteral(projectLabel(projectName))} — do not repeat these:`, entities: lessons });
     if (knowledge.length)
-        sections.push({ heading: `What is known about "${projectLabel(projectName)}":`, entities: knowledge });
+        sections.push({ heading: `What is known about ${jsonStringLiteral(projectLabel(projectName))}:`, entities: knowledge });
     if (evidence.length)
-        sections.push({ heading: `Recent activity in "${projectLabel(projectName)}":`, entities: evidence });
+        sections.push({ heading: `Recent activity in ${jsonStringLiteral(projectLabel(projectName))}:`, entities: evidence });
     if (global.length)
         sections.push({ heading: 'Global memory — applies across projects:', entities: global });
     if (foreign.length)
@@ -295,6 +295,9 @@ const PROJECT_ID_HASH_SUFFIX = /~[0-9a-f]{32}$/;
 export function projectLabel(projectId) {
     const label = projectId.replace(PROJECT_ID_HASH_SUFFIX, '');
     return label === '' ? projectId : label;
+}
+export function jsonStringLiteral(value) {
+    return JSON.stringify(String(value)).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
 }
 export function stripControlChars(s) {
     return s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]+/g, ' ');

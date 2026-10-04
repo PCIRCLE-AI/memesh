@@ -33,6 +33,8 @@
 // scripts/generate-hook-core.mjs, exactly like task-state.ts, so SessionStart
 // and the MCP/CLI briefing surface cannot disagree on this trust boundary.
 
+import { jsonStringLiteral } from './work-topology.js';
+
 /** Minimal database shape shared by node:sqlite and the hook's wrapper. */
 interface InboxDb {
   prepare(sql: string): { get(...params: unknown[]): unknown };
@@ -419,8 +421,9 @@ export function unreadInboxLines(
   if (!recipient) return [];
   // CLI callers bypass Zod and project/recipient values become model-facing
   // text. JSON quoting keeps quotes, control characters, and newlines from
-  // forging a second briefing line while the SQL query still uses originals.
-  const displayProject = JSON.stringify(project);
+  // forging a second briefing line while the SQL query still uses originals;
+  // the project goes through the shared formatter, which also escapes U+2028/U+2029.
+  const displayProject = jsonStringLiteral(project);
   const displayRecipient = JSON.stringify(recipient);
   if (count > 0) {
     const noun = count === 1 ? 'message' : 'messages';

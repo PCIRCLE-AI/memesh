@@ -10,7 +10,7 @@ import { canonicalAgentScopeId } from './agent-scope-id.js';
 import { briefingTaskStateLines } from './task-state.js';
 import { handoffLines, SESSION_HANDOFF_TYPE, sessionHandoffName } from './session-handoff.js';
 import { INDEX_CANDIDATE_CAP, INDEX_EXCLUDED_TYPES, INDEX_SNIPPET_FETCH_CHARS, buildBriefingIndex, injectedIndexReserve, } from './briefing-index.js';
-import { DECISION_LAYER_TYPES, DEFAULT_TOPOLOGY_BUDGET, GLOBAL_TOPOLOGY_LIMIT, LESSON_TYPE_LIST, SNIPPET_FETCH_CHARS, TOPOLOGY_CANDIDATE_CAP, assembleTopologyBlock, boundTaskStateLines, buildReferenceContext, hasBriefingContent, isAutoInjectable, joinedLength, prioritizeDecisions, projectLabel, } from './work-topology.js';
+import { DECISION_LAYER_TYPES, DEFAULT_TOPOLOGY_BUDGET, GLOBAL_TOPOLOGY_LIMIT, LESSON_TYPE_LIST, SNIPPET_FETCH_CHARS, TOPOLOGY_CANDIDATE_CAP, assembleTopologyBlock, boundTaskStateLines, buildReferenceContext, hasBriefingContent, isAutoInjectable, joinedLength, prioritizeDecisions, jsonStringLiteral, projectLabel, } from './work-topology.js';
 import { briefingLevelPolicy, resolveBriefingLevel, } from './briefing-level.js';
 const PROJECT_LIMIT = 30;
 const RECENT_LIMIT = 5;
@@ -125,7 +125,7 @@ export function assembleBriefing(project, recipient) {
     catch (err) {
         if (!(err instanceof TaskStateUnreadableError))
             throw err;
-        taskLines = [`task state for ${projectLabel(projectName)}: ${err.message}`];
+        taskLines = [`task state for ${jsonStringLiteral(projectLabel(projectName))}: ${err.message}`];
     }
     const inboxRecipient = recipient === undefined ? undefined : canonicalAgentScopeId(recipient);
     const unreadCount = unreadDeliveryCount(db, canonicalAgentScopeId(projectName), inboxRecipient, hostSessionFromEnv());

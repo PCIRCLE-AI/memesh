@@ -51,5 +51,6 @@ export declare function boundTaskStateLines(lines: readonly string[]): string[];
 export declare function hasBriefingContent(lines: readonly string[]): boolean;
 export declare function buildReferenceContext(memoryLines: ReadonlyArray<string | null | undefined>): string;
 export declare function projectLabel(projectId: string): string;
+export declare function jsonStringLiteral(value: string): string;
 export declare function stripControlChars(s: string): string;
 //# sourceMappingURL=work-topology.d.ts.map

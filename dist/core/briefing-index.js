@@ -1,5 +1,5 @@
 import { redactSecrets, redactUserPaths } from './paths.js';
-import { EVIDENCE_LAYER_TYPES, isAutoInjectable, projectLabel, topologyLine } from './work-topology.js';
+import { EVIDENCE_LAYER_TYPES, isAutoInjectable, jsonStringLiteral, projectLabel, topologyLine } from './work-topology.js';
 import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
 export const INDEX_MAX_LINES = 40;
 export const INDEX_MAX_BYTES = 3072;
@@ -72,10 +72,10 @@ export function injectedIndexReserve(projectName) {
     return Math.max(len(worst), len(empty));
 }
 function indexHeading(projectName) {
-    return `Index of durable memories for "${projectLabel(projectName)}" (newest first):`;
+    return `Index of durable memories for ${jsonStringLiteral(projectLabel(projectName))} (newest first):`;
 }
 function indexEmptyLine(projectName) {
-    return `- No durable memories (decisions, lessons, patterns, references) for "${projectLabel(projectName)}" yet.`;
+    return `- No durable memories (decisions, lessons, patterns, references) for ${jsonStringLiteral(projectLabel(projectName))} yet.`;
 }
 function moreLine(n, truncated) {
     return `- ${n}${truncated ? '+' : ''} more — memesh recall --tag "project:…"`;

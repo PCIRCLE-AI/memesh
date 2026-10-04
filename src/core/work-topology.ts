@@ -308,10 +308,10 @@ export function groupTopology(entities: TopologyEntity[], projectName: string): 
   for (const list of [lessons, knowledge, evidence, global, foreign]) list.sort(bySignal);
 
   const sections: TopologySection[] = [];
-  if (decisions.length) sections.push({ heading: `Decisions and direction for "${projectLabel(projectName)}":`, entities: decisions });
-  if (lessons.length) sections.push({ heading: `Lessons from "${projectLabel(projectName)}" — do not repeat these:`, entities: lessons });
-  if (knowledge.length) sections.push({ heading: `What is known about "${projectLabel(projectName)}":`, entities: knowledge });
-  if (evidence.length) sections.push({ heading: `Recent activity in "${projectLabel(projectName)}":`, entities: evidence });
+  if (decisions.length) sections.push({ heading: `Decisions and direction for ${jsonStringLiteral(projectLabel(projectName))}:`, entities: decisions });
+  if (lessons.length) sections.push({ heading: `Lessons from ${jsonStringLiteral(projectLabel(projectName))} — do not repeat these:`, entities: lessons });
+  if (knowledge.length) sections.push({ heading: `What is known about ${jsonStringLiteral(projectLabel(projectName))}:`, entities: knowledge });
+  if (evidence.length) sections.push({ heading: `Recent activity in ${jsonStringLiteral(projectLabel(projectName))}:`, entities: evidence });
   if (global.length) sections.push({ heading: 'Global memory — applies across projects:', entities: global });
   if (foreign.length) sections.push({ heading: 'From your other projects (may or may not apply here):', entities: foreign });
   return sections;
@@ -681,6 +681,16 @@ const PROJECT_ID_HASH_SUFFIX = /~[0-9a-f]{32}$/;
 export function projectLabel(projectId: string): string {
   const label = projectId.replace(PROJECT_ID_HASH_SUFFIX, '');
   return label === '' ? projectId : label;
+}
+
+/** A value as a JSON string literal, for model-facing text: the quotes, backslashes and line breaks of a value such
+ *  as a project id or label (whose readable part is a directory's own name, any character allowed) are escaped, so the
+ *  line stays one line and the literal decodes back to the exact value. U+2028/U+2029 are escaped too: JSON.stringify
+ *  leaves them raw, and they break lines in many readers. Escaping fixes the string's boundary only; the quoted value
+ *  is data, not an instruction, and this does not make arbitrary text safe to inject. A plain name renders as
+ *  `"name"`, unchanged. */
+export function jsonStringLiteral(value: string): string {
+  return JSON.stringify(String(value)).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
 }
 
 /**
