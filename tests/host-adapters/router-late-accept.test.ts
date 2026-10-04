@@ -28,7 +28,8 @@ afterEach(async () => {
   tempDir = undefined;
 });
 
-describe('#532 a delivery the host finishes after the router timeout', () => {
+// The router refuses to start on Windows (unsupported_secure_host_runtime).
+describe.skipIf(process.platform === 'win32')('#532 a delivery the host finishes after the router timeout', () => {
   it('is executed once, not again after the session registers anew', async () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-late-accept-'));
     fs.chmodSync(tempDir, 0o700);
@@ -109,7 +110,8 @@ describe('#532 a delivery the host finishes after the router timeout', () => {
 });
 
 /** The late path accepts exactly the timed-out attempt on its current connection, nothing else. */
-describe('#532 late host acceptance guards', () => {
+// The router refuses to start on Windows (unsupported_secure_host_runtime).
+describe.skipIf(process.platform === 'win32')('#532 late host acceptance guards', () => {
   async function timedOutAttempt() {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-late-guard-'));
     fs.chmodSync(tempDir, 0o700);
