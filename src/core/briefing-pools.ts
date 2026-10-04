@@ -275,42 +275,65 @@ export function selectBriefingPools(db: MemeshDatabase, projectName: string, opt
   };
 }
 
+/** What a row shows: its first non-empty observation and, when it has one,
+ *  its latest structured `Fix: …` observation (the shape `learn` stores). */
+export interface Snippet {
+  first: string | null;
+  fix: string | null;
+}
+
 /**
- * The first non-empty observation of each row, bounded in SQL to
- * SNIPPET_FETCH_CHARS, then whitespace flattened and cut to a few line-widths
- * (the final cut is the renderer's, on a word boundary). One query for all of
- * them — this runs before the first turn.
+ * Each row's first non-empty observation and its latest `Fix: …` observation,
+ * bounded in SQL to SNIPPET_FETCH_CHARS, then whitespace flattened and cut to
+ * a few line-widths (the final cut is the renderer's, on a word boundary). One
+ * query for all of them — this runs before the first turn.
  */
-export function readSnippets(db: MemeshDatabase, ids: readonly number[]): Map<number, string> {
+export function readSnippets(db: MemeshDatabase, ids: readonly number[]): Map<number, Snippet> {
   const unique = [...new Set(ids)];
-  const snippets = new Map<number, string>();
+  const snippets = new Map<number, Snippet>();
   if (unique.length === 0) return snippets;
   const rows = db.prepare(
     `SELECT entity_id, substr(content, 1, ${SNIPPET_FETCH_CHARS}) AS content FROM observations
      WHERE entity_id IN (${unique.map(() => '?').join(',')})
      ORDER BY id ASC`,
   ).all(...unique) as Array<{ entity_id: number; content: string | null }>;
+  const shown = (content: string) => content.replace(/\s+/g, ' ').trim().slice(0, SNIPPET_FETCH_CHARS) || null;
   for (const row of rows) {
-    // The FIRST observation: observations are append-only, so it is the
-    // defining statement and later ones are refinements.
-    if (snippets.has(row.entity_id)) continue;
-    const text = String(row.content ?? '').replace(/\s+/g, ' ').trim().slice(0, SNIPPET_FETCH_CHARS);
-    if (text) snippets.set(row.entity_id, text);
+    const content = String(row.content ?? '');
+    const entry = snippets.get(row.entity_id) ?? { first: null, fix: null };
+    // The first NON-EMPTY observation: observations are append-only, so it is
+    // the defining statement and later ones are refinements.
+    if (entry.first === null) entry.first = shown(content);
+    // The LATEST fix: learning the same error again appends a corrected one.
+    if (content.startsWith('Fix: ')) entry.fix = shown(content);
+    snippets.set(row.entity_id, entry);
   }
   return snippets;
 }
 
-/** A selected row as the shared assembler renders it. */
-export function toTopologyEntity(row: PoolRow, snippets: ReadonlyMap<number, string>): TopologyEntity {
+/**
+ * A selected row as the shared assembler renders it. A lesson that carries a
+ * structured fix leads with it — "Fix: … — <what happened>" — so a line cut to
+ * its budget still says what to do; without it a lesson told an agent only
+ * what went wrong.
+ */
+export function toTopologyEntity(row: PoolRow, snippets: ReadonlyMap<number, Snippet>): TopologyEntity {
   const signal = parseMetadata(row.metadata)?.signal_score;
-  const snippet = snippets.get(row.id) ?? null;
+  const snippet = snippets.get(row.id);
+  const title = row.title ?? null;
+  const first = snippet?.first ?? null;
+  const fix = row.type && LESSON_TYPE_LIST.includes(row.type) ? snippet?.fix ?? null : null;
+  // Shown after the fix, unless it IS the fix (a lesson whose only content, or
+  // whose title, is its fix), so a line never reads "Fix: X — Fix: X".
+  const background = title || first;
+  const after = background === fix ? null : background;
   return {
     name: row.name,
     type: row.type || 'memory',
     // The citation handle `[mem:<id>]`, the same on every surface.
     id: row.id,
-    title: row.title ?? null,
-    snippet,
+    title: fix ? (after ? `${fix} — ${after}` : fix) : title,
+    snippet: first,
     signalScore: typeof signal === 'number' ? signal : null,
     recency: row.recency ?? null,
   };

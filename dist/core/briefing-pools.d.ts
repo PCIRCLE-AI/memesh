@@ -38,8 +38,12 @@ export interface PoolOptions {
     onError?: (label: 'handoff' | 'decisions' | 'lessons', err: unknown) => void;
 }
 export declare function selectBriefingPools(db: MemeshDatabase, projectName: string, options: PoolOptions): BriefingPools;
-export declare function readSnippets(db: MemeshDatabase, ids: readonly number[]): Map<number, string>;
-export declare function toTopologyEntity(row: PoolRow, snippets: ReadonlyMap<number, string>): TopologyEntity;
+export interface Snippet {
+    first: string | null;
+    fix: string | null;
+}
+export declare function readSnippets(db: MemeshDatabase, ids: readonly number[]): Map<number, Snippet>;
+export declare function toTopologyEntity(row: PoolRow, snippets: ReadonlyMap<number, Snippet>): TopologyEntity;
 export declare function readIndexCandidates(db: MemeshDatabase, projectName: string): {
     candidates: Array<IndexCandidate & {
         name: string;
