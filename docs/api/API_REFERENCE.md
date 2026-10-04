@@ -214,15 +214,29 @@ not — a memory written before titles existed, or by a caller that sent none.
 Show it where you would otherwise show `name`; `name` is the identifier the
 other tools address the memory by, not a label meant to be read.
 
-**Retrieval metadata (`retrieval`)**: every recall envelope states that local
-FTS answered the query. `truncated: true` means the results filled `limit` and
+**Retrieval metadata (`retrieval`)**: every recall envelope says how the query
+was answered. `mode: "fts"` with `degraded: false`: the keyword index answered.
+`mode: "scan"` with `degraded: true` and `reason: "index_out_of_date"`: the
+keyword index was built by an older version and could not be rebuilt (the
+database file is read-only, or a failed rebuild is waiting for its retry), so
+the memories in scope were found by scanning their stored text for the same
+terms. The candidates are the newest memories that hold those terms (up to
+`limit`); they are then ranked as usual, with their candidate position standing
+in for the index's order (see `match`). The plain-text CLI output adds a line
+saying the index is out of date and a stored-text scan answered. The index is
+rebuilt on the next writable open
+(or with `memesh reindex --fts`). A recall with no query lists recent memories
+from the tables and is never marked degraded. `truncated: true` means the results filled `limit` and
 more may exist — a small hit count is a window, not a graph-wide count, and
 this flag is the difference between "that is all" and "that is all I was
 allowed to return". The CLI prints a `(search limit reached — more may match;
 raise --limit)` note when truncated.
 
 **Provenance (`match`)**: when the call has a query, every result carries
-`"source": "keyword"` and the normalized FTS relevance score. The empty-query
+`"source": "keyword"` and `relevance`, a value from 0 to 1 derived from the
+result's position in the search's own candidate order — the keyword index's
+BM25 order, or newest first when `retrieval.mode` is `"scan"` — which feeds the
+ranking; it is not the raw BM25 score. The empty-query
 listing (recent memories) carries no `match` field — a listing is not a match.
 In CLI (non-`--json`) output, observations longer than 500 characters are
 additionally capped on display with `… (+N more chars)`, and an observation

@@ -3,6 +3,7 @@ import { findConflicts, trackAccess } from './storage/conflicts.js';
 import { indexedObservationText, insertFtsRow, joinIndexedObservations, removeFromFts, tokenizeQuery, renderMatchExpression, registerNfcFunction, SQL_NFC_FUNCTION, } from './storage/fts-index.js';
 import { computeSignalScore } from './core/signal-scorer.js';
 import { dropEntityFromIndexes } from './storage/entity-index.js';
+import { ftsIndexIsCurrent } from './storage/schema.js';
 import { canonicalEntityType } from './core/work-topology.js';
 const MAX_QUERY_TERMS = 32;
 function buildMatchExpression(db, query) {
@@ -20,13 +21,15 @@ function buildRecallMatchExpressions(db, query) {
     }
     return { strict: broad.replaceAll(' OR ', ' '), broad };
 }
+function likeTerm(term) {
+    return `%${term.replace(/[\\%_]/g, '\\$&')}%`;
+}
 function archivedLikeTerms(db, query) {
-    const escapeLike = (v) => v.replace(/[\\%_]/g, '\\$&');
     const terms = tokenizeQuery(query);
     const kept = (terms.length > 1 ? dropUbiquitousTerms(db, terms) : terms).slice(0, MAX_QUERY_TERMS);
     if (kept.length === 0)
-        return [`%${escapeLike(query)}%`];
-    return kept.map((t) => `%${escapeLike(t)}%`);
+        return [likeTerm(query)];
+    return kept.map(likeTerm);
 }
 const UBIQUITOUS_TERM_FRACTION = 0.5;
 const MIN_ROWS_FOR_DF_GUARD = 25;
@@ -382,20 +385,23 @@ export class KnowledgeGraph {
         }));
     }
     search(query, opts) {
+        return this.searchWithFacts(query, opts).entities;
+    }
+    searchWithFacts(query, opts) {
         const limit = opts?.limit ?? 20;
         const countAsAccess = opts?.countAsAccess ?? true;
         if (!query || query.trim() === '') {
             if (opts?.tag) {
-                return this.listRecentByTag(opts.tag, limit, opts?.includeArchived, opts?.namespace, countAsAccess);
+                return { entities: this.listRecentByTag(opts.tag, limit, opts?.includeArchived, opts?.namespace, countAsAccess), fallback: null };
             }
             if (opts?.projectScope !== undefined) {
-                return this.listRecentInScope(opts.projectScope, limit, opts?.includeArchived, opts?.namespace, countAsAccess);
+                return { entities: this.listRecentInScope(opts.projectScope, limit, opts?.includeArchived, opts?.namespace, countAsAccess), fallback: null };
             }
-            return this.listRecent(limit, opts?.includeArchived, opts?.namespace, countAsAccess);
+            return { entities: this.listRecent(limit, opts?.includeArchived, opts?.namespace, countAsAccess), fallback: null };
         }
         const matchExpressions = buildRecallMatchExpressions(this.db, query);
         if (matchExpressions === null) {
-            return [];
+            return { entities: [], fallback: null };
         }
         const statusFilter = opts?.includeArchived ? '' : "AND e.status = 'active'";
         const namespaceFilter = opts?.namespace ? 'AND e.namespace = ?' : '';
@@ -414,6 +420,7 @@ export class KnowledgeGraph {
         filterParams.push(limit);
         let ftsRows;
         let strictSelected = false;
+        const fallback = ftsIndexIsCurrent(this.db) ? null : 'index_out_of_date';
         const findFtsRows = (ftsQuery) => {
             const queryParams = [ftsQuery, ...filterParams];
             return this.db
@@ -433,19 +440,26 @@ export class KnowledgeGraph {
            LIMIT ?`)
                 .all(...queryParams);
         };
-        try {
-            ftsRows = findFtsRows(matchExpressions.strict);
-            if (ftsRows.length === 0 && matchExpressions.strict !== matchExpressions.broad) {
-                ftsRows = findFtsRows(matchExpressions.broad);
-            }
-            else if (ftsRows.length > 0 && matchExpressions.strict !== matchExpressions.broad) {
-                strictSelected = true;
-            }
+        if (fallback) {
+            const scanned = this.scanActiveRows(query, tagFilter, namespaceFilter, filterParams);
+            ftsRows = scanned.rows;
+            strictSelected = scanned.strictSelected;
         }
-        catch (err) {
-            if (err instanceof Error && err.message?.includes('fts5'))
-                return [];
-            throw err;
+        else {
+            try {
+                ftsRows = findFtsRows(matchExpressions.strict);
+                if (ftsRows.length === 0 && matchExpressions.strict !== matchExpressions.broad) {
+                    ftsRows = findFtsRows(matchExpressions.broad);
+                }
+                else if (ftsRows.length > 0 && matchExpressions.strict !== matchExpressions.broad) {
+                    strictSelected = true;
+                }
+            }
+            catch (err) {
+                if (err instanceof Error && err.message?.includes('fts5'))
+                    return { entities: [], fallback: null };
+                throw err;
+            }
         }
         const ftsIds = ftsRows.map(r => r.id);
         const results = this.getEntitiesByIds(ftsIds, {
@@ -492,7 +506,30 @@ export class KnowledgeGraph {
         }
         if (countAsAccess)
             this.trackAccess(results.map((e) => e.id));
-        return results;
+        return { entities: results, fallback };
+    }
+    scanActiveRows(query, tagFilter, namespaceFilter, filterParams) {
+        const allTerms = tokenizeQuery(query);
+        const terms = allTerms.slice(0, MAX_QUERY_TERMS).map(likeTerm);
+        registerNfcFunction(this.db);
+        const termArm = `(${SQL_NFC_FUNCTION}(e.name) LIKE ? ESCAPE '\\' ` +
+            `OR ${SQL_NFC_FUNCTION}(COALESCE(e.title, '')) LIKE ? ESCAPE '\\' ` +
+            `OR EXISTS (SELECT 1 FROM observations o WHERE o.entity_id = e.id AND ${SQL_NFC_FUNCTION}(o.content) LIKE ? ESCAPE '\\'))`;
+        const run = (joiner) => this.db
+            .prepare(`SELECT e.id FROM entities e
+           WHERE (${terms.map(() => termArm).join(joiner)})
+             ${tagFilter}
+             AND e.status = 'active'
+             ${namespaceFilter}
+           ORDER BY e.id DESC
+           LIMIT ?`)
+            .all(...terms.flatMap((t) => [t, t, t]), ...filterParams);
+        if (allTerms.length >= 3) {
+            const strict = run(' AND ');
+            if (strict.length > 0)
+                return { rows: strict, strictSelected: true };
+        }
+        return { rows: run(' OR '), strictSelected: false };
     }
     trackAccess(entityIds) {
         trackAccess(this.db, entityIds);

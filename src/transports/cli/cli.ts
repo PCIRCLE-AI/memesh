@@ -309,6 +309,8 @@ const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
 
 /** How human-readable `recall` says the size cap (#494) left results out. */
 const RECALL_OMITTED_HINT = 'omitted to keep the response under size — narrow the query, or open the dashboard for the full text';
+/** Plain-text recall: the keyword index was out of date, so a stored-text scan answered (#571). */
+const RECALL_SCAN_NOTE = 'The search index is out of date; these results come from a scan of the stored text.';
 
 const program = new Command();
 program
@@ -592,8 +594,14 @@ program
         // so, never "No results found" for results that exist.
         if (entities_omitted) {
           console.log(`${entities_omitted.total} result(s) found, all ${RECALL_OMITTED_HINT}.`);
+          if (retrieval.mode === 'scan') console.log(RECALL_SCAN_NOTE);
         } else {
-          console.log(query ? 'No results found in the keyword index.' : 'No results found.');
+          // A scan is not the keyword index: say which answered.
+          console.log(!query
+            ? 'No results found.'
+            : retrieval.mode === 'scan'
+              ? 'No results found by a scan of the stored text (the search index is out of date).'
+              : 'No results found in the keyword index.');
         }
       } else {
         for (const e of entities) {
@@ -631,6 +639,7 @@ program
         }
         const truncatedNote = retrieval.truncated ? ' (search limit reached — more may match; raise --limit)' : '';
         console.log(`\n${entities.length} result(s)${truncatedNote}`);
+        if (retrieval.mode === 'scan') console.log(RECALL_SCAN_NOTE);
         if (entities_omitted) {
           console.log(`(${entities_omitted.total - entities_omitted.shown} more result(s) ${RECALL_OMITTED_HINT})`);
         }

@@ -213,20 +213,22 @@ export function recall(args) {
 }
 function searchAndScore(args) {
     const kg = new KnowledgeGraph(getDatabase());
-    const entities = summarizeReplacedHistory(kg.search(args.query, {
+    const searched = kg.searchWithFacts(args.query, {
         tag: recallTagFilter(args),
         projectScope: args.cross_project ? undefined : args.projectScope,
         limit: args.limit,
         includeArchived: args.include_archived,
         namespace: args.namespace,
-    }));
+    });
+    const entities = summarizeReplacedHistory(searched.entities);
     return {
         entities,
         relevanceMap: args.query ? buildRelevanceMap(entities) : new Map(),
+        fallback: searched.fallback,
     };
 }
 export async function recallEnhanced(args) {
-    const { entities, relevanceMap } = searchAndScore(args);
+    const { entities, relevanceMap, fallback } = searchAndScore(args);
     if (args.query) {
         for (const entity of entities) {
             entity.match = { source: 'keyword', relevance: relevanceMap.get(entity.name) ?? 0 };
@@ -236,7 +238,9 @@ export async function recallEnhanced(args) {
     const ranked = rankEntities(entities, relevanceMap).slice(0, limit);
     return {
         entities: ranked,
-        retrieval: { mode: 'fts', degraded: false, truncated: ranked.length === limit },
+        retrieval: fallback
+            ? { mode: 'scan', degraded: true, reason: fallback, truncated: ranked.length === limit }
+            : { mode: 'fts', degraded: false, truncated: ranked.length === limit },
     };
 }
 export async function recallWithConflicts(args) {

@@ -3,11 +3,16 @@ import type { RememberInput, RememberResult, RecallInput, ForgetInput, ForgetRes
 export { REPLACED_HISTORY_MAX, REPLACED_HISTORY_MAX_BYTES, type ReplacedVersion } from './replaced-history.js';
 export declare function remember(input: RememberInput): RememberResult;
 export declare function recall(args: RecallInput): Entity[];
-export interface RetrievalMeta {
+export type RetrievalMeta = {
     mode: 'fts';
     degraded: false;
     truncated: boolean;
-}
+} | {
+    mode: 'scan';
+    degraded: true;
+    reason: 'index_out_of_date';
+    truncated: boolean;
+};
 export declare function recallEnhanced(args: RecallInput): Promise<{
     entities: Entity[];
     retrieval: RetrievalMeta;

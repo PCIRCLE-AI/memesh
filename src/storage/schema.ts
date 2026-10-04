@@ -857,3 +857,28 @@ export function ensureFtsSegmentation(db: MemeshDatabase): void {
     migrate: rebuildFtsIndex,
   });
 }
+
+/**
+ * Was `entities_fts` built with today's segmentation? The same marker test
+ * `runOnceMigration` makes, as a read, so it also answers on a read-only file
+ * or during the rebuild's retry back-off (#571, #568), where the rebuild could
+ * not run and the index still holds an older build's tokens.
+ *
+ * A database older than `memesh_metadata` has no marker and an index from
+ * before segmentation, so it is not current. A marker that is not a plain
+ * number was not written by the migration, so it does not vouch for the index
+ * either (`parseInt` would read "3x" as 3). Any other error is not an answer
+ * about the index and is thrown.
+ */
+export function ftsIndexIsCurrent(db: MemeshDatabase): boolean {
+  let row: { value: string } | undefined;
+  try {
+    row = db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get('fts_segmentation_version') as
+      | { value: string }
+      | undefined;
+  } catch (err) {
+    if (err instanceof Error && /no such table: memesh_metadata/.test(err.message)) return false;
+    throw err;
+  }
+  return row !== undefined && /^\d+$/.test(row.value) && Number(row.value) >= FTS_SEGMENTATION_VERSION;
+}

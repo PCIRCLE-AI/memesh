@@ -108,8 +108,8 @@
     },
     {
       "path": "scripts/hooks/_generated/schema.js",
-      "sha256": "5e4ca92ee2b2b27379005a136824c1c70e9f866aa07acefbff8c2d01c99c79d7",
-      "bytes": 25791
+      "sha256": "5c861255f3bbb6d5a1b0c031c6f5954bff5a4460dc8d87dcc62aeb6a79d3e3eb",
+      "bytes": 26234
     },
     {
       "path": "scripts/hooks/_generated/session-handoff.js",
