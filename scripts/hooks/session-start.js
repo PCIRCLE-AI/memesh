@@ -2,9 +2,9 @@
 
 import { createRequire } from 'module';
 import { spawn } from 'child_process';
-import { join } from 'path';
+import { join, isAbsolute } from 'path';
 import { pathToFileURL } from 'url';
-import { existsSync, readFileSync, unlinkSync, mkdirSync, accessSync, constants as fsConstants } from 'fs';
+import { existsSync, readFileSync, unlinkSync, mkdirSync, accessSync, statSync, constants as fsConstants } from 'fs';
 import { channelFlagWarningFor, resolveClaudeLauncher } from './_claude-channel.js';
 import {
   buildReferenceContext,
@@ -74,6 +74,7 @@ import {
   writeAutoUpdateConsent,
   writePrivateJson,
   openMemeshDb,
+  sessionProjectLine,
 } from './_shared.js';
 import { recordSessionLauncher } from './_clear-alias.js';
 import { recallListName, SESSION_ID_RE } from './_stop-notes.js';
@@ -927,6 +928,15 @@ process.stdin.on('end', async () => {
     hookPayload = data;
 
     const projectName = getProjectName(data.cwd);
+    // Only from the cwd this host reported for this session: without one,
+    // getProjectName falls back to this process's own cwd, which under a
+    // plugin is the plugin directory, not the user's project.
+    let cwdIsDirectory = false;
+    try {
+      cwdIsDirectory = typeof data.cwd === 'string' && isAbsolute(data.cwd) && statSync(data.cwd).isDirectory();
+    } catch { /* missing or unreadable: no project line, recorded below */ }
+    if (!cwdIsDirectory) record({ outcome: 'skipped', reason: SKIP_REASONS.projectLineNoCwd });
+    sessionProjectContext = cwdIsDirectory ? sessionProjectLine(projectName) : null;
 
     // #360 — resolve the briefing level ONCE, before any exit path, so every
     // emit below (including the no-database and empty-database early
@@ -2121,6 +2131,13 @@ process.stdin.on('end', async () => {
 // memoryContext (or `workPackageNotice`, already gated) explicitly;
 // `undefined` here means "this exit has nothing to add", not "fall back to
 // the notice".
+// This session's exact project id, so the agent can pass it as `project`
+// without guessing (set once per invocation from the host's cwd; null without
+// a usable one). Session context, not memory data: output() puts it ahead of
+// the memory block on every exit path, outside the memory budget, and the
+// outcome below is still decided by the memory context alone.
+let sessionProjectContext = null;
+
 function output(text, memoryContext = undefined, recorded = null) {
   // session-start's only effect is the context it injects, so it records
   // `notified`, not `wrote`: doctor's `writes` answers "is memory capture
@@ -2131,10 +2148,13 @@ function output(text, memoryContext = undefined, recorded = null) {
   // `recorded` overrides the outcome for the one path that is not a write
   // (the recall flow threw): still one emit, still exactly one record.
   const payload = { systemMessage: text };
-  if (memoryContext) {
+  const additionalContext = sessionProjectContext
+    ? (memoryContext ? `${sessionProjectContext}\n\n${memoryContext}` : sessionProjectContext)
+    : memoryContext;
+  if (additionalContext) {
     payload.hookSpecificOutput = {
       hookEventName: 'SessionStart',
-      additionalContext: memoryContext,
+      additionalContext,
     };
   }
   console.log(JSON.stringify(payload));

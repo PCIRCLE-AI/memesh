@@ -193,6 +193,13 @@ import { automaticCodexSessionPrincipal, isValidCodexThreadId, resolveCodexSessi
 // thread id that could never have been typed, let alone typo'd).
 export { automaticCodexSessionPrincipal };
 
+/** SessionStart's one line naming this session's exact project id — single
+ *  owner, shared with the tests that compare the hook's memory block. */
+export function sessionProjectLine(projectName) {
+  return `MeMesh project for this session: "${projectName}". Pass project: "${projectName}" to remember, learn and recall `
+    + 'for this project\'s memories, or project: false for a memory that belongs to no project (a preference, a general lesson).';
+}
+
 // The hook-only work-package notice's literal text — ONE declaration,
 // exported so both `session-start.js` (which appends it) and the test
 // suite (which needs to assert the hook's `full`-level remainder is

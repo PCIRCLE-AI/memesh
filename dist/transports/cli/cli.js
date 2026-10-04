@@ -56865,6 +56865,7 @@ var init_capture_liveness = __esm({
       noSessionOrTranscript: "neither session_id nor transcript_path in the payload",
       emptyStdin: "empty stdin",
       cwdAbsent: "cwd absent in payload \u2014 cannot resolve project",
+      projectLineNoCwd: "no usable session cwd \u2014 the project line was not shown",
       notAgenticLoop: "not an agentic loop",
       transcriptPathAbsent: "transcript_path absent",
       transcriptGone: "the transcript file named by the payload is gone",

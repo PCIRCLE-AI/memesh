@@ -44,7 +44,19 @@ import { removeTempDir } from '../helpers/temp-dir.js';
 // The hook-only work-package notice's literal text — single owner in
 // `_shared.js`, so this file never hardcodes a second copy to compare
 // against.
-import { WORK_PACKAGE_NOTICE } from '../../scripts/hooks/_shared.js';
+import { WORK_PACKAGE_NOTICE, sessionProjectLine } from '../../scripts/hooks/_shared.js';
+
+/** The hook's memory context: its additionalContext minus the leading line
+ *  naming the session's project (hook-only session context, not briefing
+ *  content). The line must be there, exactly once, first. */
+function hookMemoryContext(hookOut: string, cwd: string): string | undefined {
+  const context = JSON.parse(hookOut.trim().split('\n').filter(Boolean).at(-1)!).hookSpecificOutput?.additionalContext as string | undefined;
+  const line = sessionProjectLine(getProjectName(cwd));
+  expect(context?.startsWith(line), 'the hook states the session project first').toBe(true);
+  expect(context!.split(line).length, 'and only once').toBe(2);
+  const rest = context!.slice(line.length).replace(/^\n\n/, '');
+  return rest === '' ? undefined : rest;
+}
 
 let tmpDir: string;
 let dbPath: string;
@@ -869,9 +881,7 @@ describe('assembleBriefing', () => {
       encoding: 'utf8',
       timeout: 15000,
     });
-    const injected: string =
-      JSON.parse(hookOut.trim().split('\n').filter(Boolean).at(-1)!)
-        .hookSpecificOutput.additionalContext;
+    const injected = hookMemoryContext(hookOut, cwd)!;
 
     openDatabase(dbPath);
     const previousBriefingEnv = process.env.MEMESH_BRIEFING;
@@ -968,9 +978,7 @@ describe('assembleBriefing', () => {
       encoding: 'utf8',
       timeout: 15000,
     });
-    const injected: string =
-      JSON.parse(hookOut.trim().split('\n').filter(Boolean).at(-1)!)
-        .hookSpecificOutput.additionalContext;
+    const injected = hookMemoryContext(hookOut, cwd)!;
 
     openDatabase(dbPath);
     const previousBriefingEnv = process.env.MEMESH_BRIEFING;
@@ -1041,9 +1049,7 @@ describe('assembleBriefing', () => {
       const hookOut = execFileSync('node', [path.resolve('scripts/hooks/session-start.js')], {
         input: JSON.stringify({ cwd }), env: noSetting, encoding: 'utf8', timeout: 15000,
       });
-      const injected: string =
-        JSON.parse(hookOut.trim().split('\n').filter(Boolean).at(-1)!)
-          .hookSpecificOutput.additionalContext;
+      const injected = hookMemoryContext(hookOut, cwd)!;
 
       const cliJson = runCli(noSetting);
       expect(cliJson.level, 'CLI: the level nothing set').toBe('minimal');
@@ -1118,9 +1124,7 @@ describe('assembleBriefing', () => {
       encoding: 'utf8',
       timeout: 60000,
     });
-    const injected: string =
-      JSON.parse(hookOut.trim().split('\n').filter(Boolean).at(-1)!)
-        .hookSpecificOutput.additionalContext;
+    const injected = hookMemoryContext(hookOut, cwd)!;
 
     openDatabase(dbPath);
     const previousBriefingEnv = process.env.MEMESH_BRIEFING;
@@ -1165,8 +1169,7 @@ describe('assembleBriefing', () => {
       encoding: 'utf8',
       timeout: 15000,
     });
-    const hookPayload = JSON.parse(hookOut.trim().split('\n').filter(Boolean).at(-1)!);
-    expect(hookPayload.hookSpecificOutput, 'hook: no hookSpecificOutput at all when empty').toBeUndefined();
+    expect(hookMemoryContext(hookOut, cwd), 'hook: nothing but the project line when empty').toBeUndefined();
 
     // --- the real BUILT CLI (dist/, not the TS source — what a user runs) ---
     const cliJsonOut = execFileSync(
@@ -1231,8 +1234,7 @@ describe('assembleBriefing', () => {
       encoding: 'utf8',
       timeout: 15000,
     });
-    const hookPayload = JSON.parse(hookOut.trim().split('\n').filter(Boolean).at(-1)!);
-    const hookCtx = (hookPayload.hookSpecificOutput as { additionalContext: string } | undefined)?.additionalContext;
+    const hookCtx = hookMemoryContext(hookOut, cwd);
     expect(hookCtx, 'hook full: must inject something (the empty-index line, at least)').toBeTruthy();
     expect(hookCtx).toContain('No durable memories');
     const noticeIndex = hookCtx!.indexOf(WORK_PACKAGE_NOTICE);
@@ -1726,7 +1728,7 @@ describe('decisions first, one budget — both readers (#434 step 3)', () => {
       timeout: 30_000,
     });
     openDatabase(dbPath);
-    const context: string = JSON.parse(out.trim().split('\n').filter(Boolean).at(-1)!).hookSpecificOutput.additionalContext;
+    const context = hookMemoryContext(out, cwd)!;
     const sessionsDir = path.join(tmpDir, 'sessions');
     const newest = fs.readdirSync(sessionsDir).filter((f) => f.endsWith('.json'))
       .map((f) => path.join(sessionsDir, f)).sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0];
