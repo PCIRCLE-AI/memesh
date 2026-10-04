@@ -63,8 +63,8 @@
     },
     {
       "path": "scripts/hooks/_generated/briefing-pools.js",
-      "sha256": "8fb927620c8c0cff11a442b66eb468e8d4a0e19db970f7672ac10c36c6bfbf1e",
-      "bytes": 9371
+      "sha256": "e6919cc7725702190fe622108b2836c3b90934a6bb71d068adec86a20f8740af",
+      "bytes": 9880
     },
     {
       "path": "scripts/hooks/_generated/capture-flag.js",

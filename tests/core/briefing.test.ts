@@ -34,7 +34,7 @@ vi.mock('../../src/core/task-state-store.js', async (importOriginal) => {
   };
 });
 import { taskStateName } from '../../src/core/task-state.js';
-import { remember } from '../../src/core/operations.js';
+import { learn, remember } from '../../src/core/operations.js';
 import { executeAgentMessageAction } from '../../src/transports/agent-messaging.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import { DEFAULT_TOPOLOGY_BUDGET, SNIPPET_FETCH_CHARS, TOPOLOGY_CANDIDATE_CAP, groupTopology, projectLabel } from '../../src/core/work-topology.js';
@@ -1952,6 +1952,76 @@ describe('decisions first, one budget — both readers (#434 step 3)', () => {
     expect(result.empty).toBe(false);
     expect(result.text).toContain('NOPROJ-ONLY');
     expect(hook).toBe(result.text);
+  }, 60_000);
+
+  // A lesson's fix never reached the next session: the line showed its title,
+  // else its first observation ("Error: …"). A lesson with a structured
+  // "Fix: …" observation (the shape `learn` stores) now leads with it, so an
+  // agent is told what to do, not only what went wrong.
+  it('a lesson leads with its fix on both readers; titled, long-error and fix-less lessons included', () => {
+    learn({ error: 'okapi run ran out of memory after raising the batch size', fix: 'export OKAPI_MEM_LIMIT=8g before raising the batch size', project });
+    remember({ name: 'titled-lesson', type: 'lesson_learned', title: 'TITLED-LESSON key rotation outage',
+      observations: ['Error: the deploy key expired', 'Fix: rotate the deploy key every 90 days'], project });
+    learn({ error: `LONG-ERROR ${'the importer stalled on a malformed row '.repeat(12)}`, fix: 'skip rows that fail schema validation', project });
+    remember({ name: 'fixless-lesson', type: 'lesson_learned', observations: ['FIXLESS keep migrations idempotent'], project });
+    remember({ name: 'fix-shaped-fact', type: 'fact', observations: ['FACT-FIRST the cache is warm', 'Fix: FACT-FIX not a lesson'], project });
+    const hook = runHook('minimal', 30).context;
+    const briefing = core('minimal');
+    for (const text of [hook, briefing]) {
+      const line = (needle: string) => text.split('\n').find((l) => l.includes(needle)) ?? '';
+      expect(line('OKAPI_MEM_LIMIT')).toMatch(/^- \[lesson_learned\] Fix: export OKAPI_MEM_LIMIT=8g before raising the batch size — Error: okapi run ran out of memory/);
+      expect(line('rotate the deploy key')).toMatch(/Fix: rotate the deploy key every 90 days — TITLED-LESSON key rotation outage/);
+      expect(line('skip rows that fail schema validation')).toMatch(/^- \[lesson_learned\] Fix: skip rows that fail schema validation — Error: LONG-ERROR/);
+      expect(line('FIXLESS')).toMatch(/^- \[lesson_learned\] FIXLESS keep migrations idempotent/);
+      expect(text).not.toContain('FACT-FIX');
+    }
+    expect(hook).toBe(briefing);
+  }, 60_000);
+
+  // Learning the same error again appends a new Fix to the same lesson; the
+  // session must be told the corrected fix, not the one it replaced.
+  it('a lesson learned again with a new fix leads with the newest fix, on both readers', () => {
+    learn({ error: 'REFIX the importer stalled on a malformed row', fix: 'OLD-FIX retry the import once', project });
+    learn({ error: 'REFIX the importer stalled on a malformed row', fix: 'NEW-FIX skip rows that fail schema validation', project });
+    const db = getDatabase();
+    const ids = db.prepare("SELECT DISTINCT entity_id FROM observations WHERE content LIKE 'Fix: %-FIX %'").all();
+    expect(ids).toHaveLength(1);
+    const hook = runHook('minimal', 30).context;
+    const briefing = core('minimal');
+    for (const text of [hook, briefing]) {
+      const line = text.split('\n').find((l) => l.includes('REFIX')) ?? '';
+      expect(line).toMatch(/^- \[lesson_learned\] Fix: NEW-FIX skip rows that fail schema validation — Error: REFIX the importer stalled/);
+      expect(text).not.toContain('OLD-FIX');
+    }
+    expect(hook).toBe(briefing);
+  }, 60_000);
+
+  // A lesson whose only content is its fix, or whose title is the fix, shows
+  // the fix once, not "Fix: X — Fix: X".
+  it('a lesson whose fix is also its first observation or its title shows the fix once, on both readers', () => {
+    remember({ name: 'fix-only-lesson', type: 'lesson_learned', observations: ['Fix: FIXONLY pin the toolchain version'], project });
+    remember({ name: 'fix-titled-lesson', type: 'lesson_learned', title: 'Fix: FIXTITLE rotate the token',
+      observations: ['Fix: FIXTITLE rotate the token'], project });
+    const hook = runHook('minimal', 30).context;
+    const briefing = core('minimal');
+    for (const text of [hook, briefing]) {
+      const line = (needle: string) => text.split('\n').find((l) => l.includes(needle)) ?? '';
+      expect(line('FIXONLY')).toMatch(/^- \[lesson_learned\] Fix: FIXONLY pin the toolchain version \[mem:\d+\]$/);
+      expect(line('FIXTITLE')).toMatch(/^- \[lesson_learned\] Fix: FIXTITLE rotate the token \[mem:\d+\]$/);
+    }
+    expect(hook).toBe(briefing);
+  }, 60_000);
+
+  it('a memory whose first observation is blank shows its first non-empty one, on both readers', () => {
+    const db = getDatabase();
+    const id = db.prepare("INSERT INTO entities (name, type, status) VALUES ('blank-first', 'fact', 'active')").run().lastInsertRowid as number;
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(id, '   ');
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(id, 'LATER-CONTENT shown instead');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, `project:${project}`);
+    const hook = runHook('minimal', 30).context;
+    const briefing = core('minimal');
+    for (const text of [hook, briefing]) expect(text).toMatch(/- \[fact\] LATER-CONTENT shown instead/);
+    expect(hook).toBe(briefing);
   }, 60_000);
 
   it('F2/F3: the newest ELIGIBLE decision takes the slot; blocked, archived, foreign and global ones never do', () => {

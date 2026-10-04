@@ -25573,24 +25573,32 @@ function readSnippets(db2, ids) {
   const rows = db2.prepare(`SELECT entity_id, substr(content, 1, ${SNIPPET_FETCH_CHARS}) AS content FROM observations
      WHERE entity_id IN (${unique.map(() => "?").join(",")})
      ORDER BY id ASC`).all(...unique);
+  const shown = (content) => content.replace(/\s+/g, " ").trim().slice(0, SNIPPET_FETCH_CHARS) || null;
   for (const row of rows) {
-    if (snippets.has(row.entity_id))
-      continue;
-    const text = String(row.content ?? "").replace(/\s+/g, " ").trim().slice(0, SNIPPET_FETCH_CHARS);
-    if (text)
-      snippets.set(row.entity_id, text);
+    const content = String(row.content ?? "");
+    const entry = snippets.get(row.entity_id) ?? { first: null, fix: null };
+    if (entry.first === null)
+      entry.first = shown(content);
+    if (content.startsWith("Fix: "))
+      entry.fix = shown(content);
+    snippets.set(row.entity_id, entry);
   }
   return snippets;
 }
 function toTopologyEntity(row, snippets) {
   const signal = parseMetadata(row.metadata)?.signal_score;
-  const snippet = snippets.get(row.id) ?? null;
+  const snippet = snippets.get(row.id);
+  const title = row.title ?? null;
+  const first = snippet?.first ?? null;
+  const fix = row.type && LESSON_TYPE_LIST.includes(row.type) ? snippet?.fix ?? null : null;
+  const background = title || first;
+  const after = background === fix ? null : background;
   return {
     name: row.name,
     type: row.type || "memory",
     id: row.id,
-    title: row.title ?? null,
-    snippet,
+    title: fix ? after ? `${fix} \u2014 ${after}` : fix : title,
+    snippet: first,
     signalScore: typeof signal === "number" ? signal : null,
     recency: row.recency ?? null
   };
