@@ -92,7 +92,7 @@ src/
 │   ├── serializer.ts      # Export/import memory snapshots (extracted from operations)
 │   ├── config.ts          # Owner-local reads and safe partial updates for retained non-model settings
 │   ├── paths.ts           # Centralised path helpers (homeDir, memeshDir, getDbPath, getProjectName)
-│   ├── scoring.ts         # Multi-factor scoring engine (rankEntities) + SESSION_START_WEIGHT_RATIO
+│   ├── scoring.ts         # Multi-factor scoring engine (rankEntities)
 │   ├── extractor.ts       # Deterministic session knowledge extraction
 │   ├── lifecycle.ts       # Auto-decay + weekly noise compression
 │   ├── lesson-engine.ts   # Structured lesson creation, upsert, project query
@@ -149,7 +149,7 @@ src/
 
 **scoring.ts** — Multi-factor scoring engine. `scoreEntity()` combines five signals from `DEFAULT_WEIGHTS`: search relevance (0.30), recency via exponential decay (0.25), access frequency via log normalization (0.18), confidence (0.17), and recall-effectiveness impact via Laplace smoothing (0.10). `rankEntities()` sorts any entity list by score descending. Applied in all recall paths (`recall()` and `recallEnhanced()`).
 
-Session-start hook ranking is a SQL-only subset (no FTS query, no impact pass) that uses three of the five factors. `SESSION_START_WEIGHT_RATIO` exports the renormalised weights so the hook's hard-coded SQL stays in sync; a drift-guard test in `tests/core/scoring.test.ts` asserts the magic numbers in `scripts/hooks/session-start.js` match. The hook SQL uses SQLite's `exp()`/`log()` (present in Node's bundled SQLite) to match the core math exactly, with a runtime probe + linear/rational fallback for stripped-down builds without `-DSQLITE_ENABLE_MATH_FUNCTIONS`.
+The session-start hook and `briefing` rank through the same selection, `src/core/briefing-pools.ts`, which uses `rankEntities` with no search term (relevance is a constant there). The hook loads its generated copy `scripts/hooks/_generated/briefing-pools.js` (a runtime leaf, like the other `_generated` modules), so it needs no `dist/`. Recall hits and misses are observed use signals for that ranking, not proof that a memory is correct.
 
 Recall is intentionally one local FTS5 path. There is no provider, embedding,
 vector supplement, or model-powered query expansion to configure or diagnose.
@@ -622,10 +622,10 @@ For release safety, `npm run test:packaged` creates a real npm tarball, extracts
 - The Dashboard does not prepare packages and cannot start or wake an agent.
 
 ### Smart Session-Start
-- Session-start hook loads top-N entities by weighted score
-- Score = recency (~42%) + frequency (30%) + confidence (~28%) — the `SESSION_START_WEIGHT_RATIO` constants in `src/core/scoring.ts`, derived from `DEFAULT_WEIGHTS`; this line previously said 40/30/30 with confidence first, which matched no version of the code
-- Default N=10, configurable via MEMESH_SESSION_LIMIT
-- Equal scores resolve newest first (`id DESC`, the last ORDER BY key of every scored query; "newest" is creation order, the key `src/core/briefing.ts` sorts by too) and the lesson query orders newest first too. The daily decay multiplies the confidence of never-accessed memories by 0.9, so the memories captured since its last run all score alike, and without this the oldest of them would fill the window (#401); `src/core/briefing.ts` reaches the same order through a stable sort over a newest-first window
+- Session-start hook loads top-N entities through the shared selection (`src/core/briefing-pools.ts`): each pool reads its newest candidates (up to 400), ranks them with `rankEntities` (recency, frequency, confidence and recall impact; no search term), gates and caps them. Older ordinary memories can fall outside that window; `recall` reaches them
+- Default N=10, configurable via MEMESH_SESSION_LIMIT (`briefing` uses 30)
+- Memories with no project tag (preferences and general lessons stored with `project: false`, or older untagged rows) get their own pool of up to five at every level, shown under their own heading after the project's sections; global rows keep their own pool, and at `full` the other-projects pool takes only rows that carry a project tag
+- Equal scores resolve newest first: candidates arrive newest first and the sort is stable (#401). The daily decay multiplies the confidence of never-accessed memories by 0.9, so the memories captured since its last run all score alike, and without this the oldest of them would fill the window. The lesson query orders newest first too
 - Concise format: "• name (type): first observation"
 
 ---

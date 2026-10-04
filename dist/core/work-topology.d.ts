@@ -16,6 +16,7 @@ export interface TopologyEntity {
     recency?: string | null;
     global?: boolean;
     foreign?: boolean;
+    noProject?: boolean;
 }
 export declare function topologyLine(entity: TopologyEntity, maxChars: number): string;
 export declare function extractCitedMemoryIds(text: string): Set<number>;
@@ -38,6 +39,7 @@ export interface TopologyPool {
     entities: TopologyEntity[];
     foreign: boolean;
     global?: boolean;
+    noProject?: boolean;
 }
 export declare function assembleTopologyBlock(stateLines: readonly string[], pools: readonly TopologyPool[], projectName: string, budget?: TopologyBudget, { reserve }?: {
     reserve?: number;

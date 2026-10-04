@@ -37,7 +37,7 @@ import { taskStateName } from '../../src/core/task-state.js';
 import { remember } from '../../src/core/operations.js';
 import { executeAgentMessageAction } from '../../src/transports/agent-messaging.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
-import { DEFAULT_TOPOLOGY_BUDGET, TOPOLOGY_CANDIDATE_CAP, groupTopology, projectLabel } from '../../src/core/work-topology.js';
+import { DEFAULT_TOPOLOGY_BUDGET, SNIPPET_FETCH_CHARS, TOPOLOGY_CANDIDATE_CAP, groupTopology, projectLabel } from '../../src/core/work-topology.js';
 import { getProjectName } from '../../src/core/paths.js';
 import { HANDOFF_MAX_CHARS, sessionHandoffName, SESSION_HANDOFF_TYPE } from '../../src/core/session-handoff.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
@@ -1165,9 +1165,11 @@ describe('assembleBriefing', () => {
   // old commits and old lessons and never the decision made minutes ago. Every
   // fixture above gives its memories distinct confidences, which is exactly why
   // nothing caught it.
+  // The hook used to rank in its own SQL, with a second, linear form for
+  // SQLite builds without exp/log; both readers now rank through the one shared
+  // selection, so a single form remains.
   it.each([
-    ['exp/log ranking', {}],
-    ['legacy ranking (no SQLite math functions)', { MEMESH_TEST_FORCE_LEGACY_SCORING_SQL: '1' }],
+    ['shared core ranking', {}],
   ])('parity holds when every memory ties on score: both sides keep the newest — %s', (_label, hookEnv) => {
     const cwd = path.join(tmpDir, 'proj-ties');
     fs.mkdirSync(cwd, { recursive: true });
@@ -1835,14 +1837,121 @@ describe('decisions first, one budget — both readers (#434 step 3)', () => {
 
     expect(ranked(core('minimal'))).toContain('LONE-DECISION');
     expect(ranked(core('standard'))).toContain('LONE-DECISION');
-    for (const env of [{}, { MEMESH_TEST_FORCE_LEGACY_SCORING_SQL: '1' }]) {
-      Object.assign(process.env, env);
-      try {
-        expect(ranked(runHook('standard', 1).context), JSON.stringify(env)).toContain('LONE-DECISION');
-      } finally {
-        delete process.env.MEMESH_TEST_FORCE_LEGACY_SCORING_SQL;
-      }
+    expect(ranked(runHook('standard', 1).context)).toContain('LONE-DECISION');
+  }, 60_000);
+
+  // M2-a D1: the hook used to rank in its own SQL without the recall-impact
+  // term core's rankEntities uses. On this fixture it showed [40..33] — the
+  // memories agents had passed over — while core showed this order. Hits and
+  // misses are observed use signals, not proof a memory is correct.
+  it('D1: both readers rank with recall impact, the same way', () => {
+    const db = getDatabase();
+    db.exec('BEGIN');
+    for (let i = 1; i <= 40; i++) add(`d1-${i}`, 'commit', `D1 commit ${i}`, { obs: [ts(1)] });
+    db.exec('COMMIT');
+    db.prepare("UPDATE entities SET recall_hits = 20, recall_misses = 0 WHERE name IN ('d1-1','d1-2','d1-3','d1-4','d1-5')").run();
+    db.prepare("UPDATE entities SET recall_hits = 0, recall_misses = 20 WHERE name IN ('d1-36','d1-37','d1-38','d1-39','d1-40')").run();
+    const order = (text: string) => [...text.matchAll(/D1 commit (\d+)/g)].map((m) => Number(m[1]));
+    const hook = runHook('minimal', 30).context;
+    const briefing = core('minimal');
+    expect(order(hook)).toEqual([5, 4, 3, 2, 1, 35, 34, 33]);
+    expect(hook).toBe(briefing);
+  }, 60_000);
+
+  // M2-a: both readers take each pool's newest 400 candidates and rank those.
+  // The hook used to rank ALL of a project's rows in SQL, so a heavily used
+  // memory older than the window still reached it; now neither reader shows it
+  // (recall does). Decisions and lessons keep their own newest-first paths.
+  it('more than 400 rows: one candidate window on both readers; older decision and lesson keep their paths; no foreign rows', () => {
+    add('old-decision', 'decision', 'OLD-DECISION use one writer', { obs: [ts(30)] });
+    add('old-lesson', 'lesson_learned', 'OLD-LESSON read the exit code', { obs: [ts(30)] });
+    add('foreign-decision', 'decision', 'FOREIGN-DECISION of another project', { obs: [ts(0)], tag: 'project:someone-else' });
+    const db = getDatabase();
+    db.exec('BEGIN');
+    for (let i = 0; i < TOPOLOGY_CANDIDATE_CAP + 50; i++) add(`w-${i}`, 'commit', `window commit ${i}`, { obs: [ts(1)] });
+    db.exec('COMMIT');
+    db.prepare("UPDATE entities SET access_count = 100, last_accessed_at = datetime('now') WHERE name = 'w-0'").run();
+    const hook = runHook('standard', 30).context;
+    const briefing = core('standard');
+    for (const text of [hook, briefing]) {
+      expect(ranked(text)).toContain('OLD-DECISION');
+      expect(ranked(text)).toContain('OLD-LESSON');
+      expect(text).not.toContain('FOREIGN-DECISION');
+      expect(ranked(text)).not.toMatch(/window commit 0\b/);
+      expect(ranked(text)).toContain(`window commit ${TOPOLOGY_CANDIDATE_CAP + 49}`);
     }
+    expect(hook).toBe(briefing);
+  }, 120_000);
+
+  // M2-a: memories that belong to no project (stored with project: false, or
+  // legacy rows that never had a tag) reach the next session of EVERY project,
+  // at every level, under their own heading — same active/trust/ranking rules.
+  it('no-project memories reach both readers at every level, in every project, labelled; ineligible ones never do', () => {
+    add('own-decision', 'decision', 'OWN-DECISION of this project', { obs: [ts(1)] });
+    add('pref', 'preference', 'NOPROJ-PREF prefer tabs over spaces', { obs: [ts(2)], tag: null, namespace: 'personal' });
+    add('legacy-untagged', 'lesson_learned', 'NOPROJ-LEGACY lesson stored before projects', { obs: [ts(3)], tag: null });
+    add('archived-pref', 'preference', 'ARCHIVED-PREF', { obs: [ts(1)], tag: null, status: 'archived' });
+    add('untrusted-pref', 'preference', 'UNTRUSTED-PREF', { obs: [ts(1)], tag: null, metadata: JSON.stringify({ trust: 'untrusted' }) });
+    add('foreign-fact', 'fact', 'FOREIGN-FACT of another project', { obs: [ts(0)], tag: 'project:someone-else' });
+    add('global-rule', 'pattern', 'GLOBAL-RULE for every project', { obs: [ts(1)], tag: null, namespace: 'global' });
+    const heading = 'Your memories with no project (preferences, general lessons):';
+    for (const level of ['minimal', 'standard', 'full']) {
+      const hook = runHook(level, 30).context;
+      const briefing = core(level);
+      for (const text of [hook, briefing]) {
+        const body = ranked(text);
+        expect(body, level).toContain('NOPROJ-PREF');
+        expect(body, level).toContain('NOPROJ-LEGACY');
+        expect(body.indexOf('OWN-DECISION'), level).toBeLessThan(body.indexOf(heading));
+        expect(body.indexOf(heading), level).toBeLessThan(body.indexOf('NOPROJ-PREF'));
+        for (const out of ['ARCHIVED-PREF', 'UNTRUSTED-PREF']) expect(text, `${level} ${out}`).not.toContain(out);
+        // Another project's memory: never under this project or the no-project
+        // heading; at `full` only, under "From your other projects".
+        if (level === 'full') expect(body.split('From your other projects')[1] ?? '', level).toContain('FOREIGN-FACT');
+        else expect(text, level).not.toContain('FOREIGN-FACT');
+        expect(body.split(heading)[1]?.split('\n\n')[0] ?? '', level).not.toContain('FOREIGN-FACT');
+        // A global row is global, never also "no project".
+        expect(body.split(heading)[1]?.split('\n\n')[0] ?? '', level).not.toContain('GLOBAL-RULE');
+        expect(body.split('GLOBAL-RULE').length - 1, level).toBeLessThanOrEqual(1);
+      }
+      // At `full` the hook appends its own work-package notice; the rest is the same block.
+      const hookBlock = level === 'full' ? hook.slice(0, hook.indexOf(WORK_PACKAGE_NOTICE)).replace(/\n\n$/, '') : hook;
+      expect(hookBlock, level).toBe(briefing);
+    }
+    // Another project's briefing shows the same no-project memories, not this project's.
+    vi.stubEnv('MEMESH_BRIEFING', 'minimal');
+    const other = assembleBriefing('someone-else').text;
+    expect(other).toContain('NOPROJ-PREF');
+    expect(other).not.toContain('OWN-DECISION');
+  }, 120_000);
+
+  // M2-a named delta: both readers now read a snippet as the SQL-bounded first
+  // observation (SNIPPET_FETCH_CHARS), flattened, then cut. The hook used to read
+  // the whole observation before flattening, so text that starts only after
+  // that many characters of whitespace reached the hook but never `briefing`.
+  it('snippets: SQL-bounded first observation, whitespace flattened, the same on both readers', () => {
+    const db = getDatabase();
+    const split = add('ws-split', 'commit', '', { obs: [ts(1)] });
+    const late = add('ws-late', 'commit', '', { obs: [ts(2)] });
+    db.prepare('UPDATE observations SET content = ? WHERE entity_id = ?').run('WS-SPLIT first\n\n   second\tthird', split);
+    db.prepare('UPDATE observations SET content = ? WHERE entity_id = ?').run(`${' '.repeat(SNIPPET_FETCH_CHARS)}WS-BEYOND-BOUND`, late);
+    const hook = runHook('minimal', 30).context;
+    const briefing = core('minimal');
+    for (const text of [hook, briefing]) {
+      expect(ranked(text)).toContain('WS-SPLIT first second third');
+      expect(text).not.toContain('WS-BEYOND-BOUND');
+    }
+    expect(hook).toBe(briefing);
+  }, 60_000);
+
+  it('a project with nothing of its own still shows the no-project memories, on both readers', () => {
+    add('pref', 'preference', 'NOPROJ-ONLY prefer short answers', { obs: [ts(1)], tag: null });
+    const hook = runHook('minimal', 30).context;
+    vi.stubEnv('MEMESH_BRIEFING', 'minimal');
+    const result = assembleBriefing(project);
+    expect(result.empty).toBe(false);
+    expect(result.text).toContain('NOPROJ-ONLY');
+    expect(hook).toBe(result.text);
   }, 60_000);
 
   it('F2/F3: the newest ELIGIBLE decision takes the slot; blocked, archived, foreign and global ones never do', () => {

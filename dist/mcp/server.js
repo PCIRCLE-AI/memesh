@@ -25421,12 +25421,12 @@ function safeAlter(db2, sql) {
   }
 }
 function migrateEntitiesSchema(db2) {
-  const entityColumns = new Set(db2.prepare("PRAGMA table_info(entities)").all().map((c) => c.name));
+  const entityColumns2 = new Set(db2.prepare("PRAGMA table_info(entities)").all().map((c) => c.name));
   const addColumn = (column, sql) => {
-    if (entityColumns.has(column))
+    if (entityColumns2.has(column))
       return;
     safeAlter(db2, sql);
-    entityColumns.add(column);
+    entityColumns2.add(column);
   };
   addColumn("status", "ALTER TABLE entities ADD COLUMN status TEXT NOT NULL DEFAULT 'active'");
   addColumn("access_count", "ALTER TABLE entities ADD COLUMN access_count INTEGER DEFAULT 0");
@@ -25693,12 +25693,17 @@ function groupTopology(entities, projectName) {
   const knowledge = [];
   const evidence = [];
   const global = [];
+  const noProject = [];
   const foreign = [];
   for (const e of entities) {
     if (e.type === "task-state" || e.type === "session-handoff")
       continue;
     if (e.global) {
       global.push(e);
+      continue;
+    }
+    if (e.noProject) {
+      noProject.push(e);
       continue;
     }
     if (e.foreign) {
@@ -25720,7 +25725,7 @@ function groupTopology(entities, projectName) {
       decisions.push(e);
   }
   decisions.sort(byRecency);
-  for (const list of [lessons, knowledge, evidence, global, foreign])
+  for (const list of [lessons, knowledge, evidence, noProject, global, foreign])
     list.sort(bySignal);
   const sections = [];
   if (decisions.length)
@@ -25731,6 +25736,8 @@ function groupTopology(entities, projectName) {
     sections.push({ heading: `What is known about ${jsonStringLiteral(projectLabel(projectName))}:`, entities: knowledge });
   if (evidence.length)
     sections.push({ heading: `Recent activity in ${jsonStringLiteral(projectLabel(projectName))}:`, entities: evidence });
+  if (noProject.length)
+    sections.push({ heading: "Your memories with no project (preferences, general lessons):", entities: noProject });
   if (global.length)
     sections.push({ heading: "Global memory \u2014 applies across projects:", entities: global });
   if (foreign.length)
@@ -25787,7 +25794,7 @@ function assembleTopologyBlock(stateLines, pools, projectName, budget = DEFAULT_
       if (pool.global) {
         globalCandidates.push(e.global ? e : { ...e, global: true });
       } else {
-        candidates.push(pool.foreign && !e.foreign ? { ...e, foreign: true } : e);
+        candidates.push(pool.noProject ? { ...e, noProject: true } : pool.foreign && !e.foreign ? { ...e, foreign: true } : e);
       }
     }
   }
@@ -27534,14 +27541,6 @@ var DEFAULT_WEIGHTS = {
   confidence: 0.17,
   impact: 0.1
 };
-var SESSION_START_WEIGHT_RATIO = (() => {
-  const sub = DEFAULT_WEIGHTS.recency + DEFAULT_WEIGHTS.frequency + DEFAULT_WEIGHTS.confidence;
-  return {
-    recency: DEFAULT_WEIGHTS.recency / sub,
-    frequency: DEFAULT_WEIGHTS.frequency / sub,
-    confidence: DEFAULT_WEIGHTS.confidence / sub
-  };
-})();
 function recencyScore(lastAccessedAt) {
   if (!lastAccessedAt)
     return 0.5;
@@ -29928,6 +29927,188 @@ function buildBriefingIndex(candidates, projectName, now, options = {}) {
   return { ...closed, shown: rendered.length, more, older, truncated, ids };
 }
 
+// dist/core/briefing-pools.js
+var LESSON_POOL_LIMIT = 50;
+var LESSON_LIMIT = 5;
+var RECENT_LIMIT = 5;
+var NO_PROJECT_LIMIT = 5;
+var SCORING_COLUMNS = ["access_count", "last_accessed_at", "confidence", "recall_hits", "recall_misses"];
+function entityColumns(db2) {
+  const names = new Set(db2.prepare("PRAGMA table_info(entities)").all().map((c) => c.name));
+  return {
+    status: names.has("status"),
+    title: names.has("title"),
+    namespace: names.has("namespace"),
+    scoring: new Set(SCORING_COLUMNS.filter((c) => names.has(c)))
+  };
+}
+function trustedForAutoContext(rawMetadata) {
+  if (rawMetadata == null)
+    return true;
+  const parsed = parseMetadata(rawMetadata);
+  return parsed !== null && isAutoInjectable(parsed);
+}
+function parseMetadata(raw) {
+  if (!raw)
+    return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+var active = (cols) => cols.status ? " AND e.status = 'active'" : "";
+var nonGlobal = (cols) => cols.namespace ? " AND (e.namespace IS NULL OR e.namespace <> 'global')" : "";
+var NO_PROJECT_TAG2 = "NOT EXISTS (SELECT 1 FROM tags pt WHERE pt.entity_id = e.id AND pt.tag LIKE 'project:%')";
+var titleCol = (cols) => cols.title ? "e.title" : "NULL AS title";
+var candidateColumns = (cols) => [
+  "e.id",
+  "e.name",
+  "e.type",
+  titleCol(cols),
+  "e.metadata",
+  ...SCORING_COLUMNS.map((c) => cols.scoring.has(c) ? `e.${c}` : `NULL AS ${c}`)
+].join(", ");
+var toPoolRow = (row) => ({
+  id: row.id,
+  name: row.name,
+  type: row.type,
+  title: row.title,
+  metadata: row.metadata,
+  access_count: row.access_count ?? void 0,
+  last_accessed_at: row.last_accessed_at ?? void 0,
+  confidence: row.confidence ?? void 0,
+  recall_hits: row.recall_hits ?? void 0,
+  recall_misses: row.recall_misses ?? void 0,
+  recency: row.recency ?? null
+});
+function selectPool(rows, cap) {
+  return rankEntities(rows.map(toPoolRow), /* @__PURE__ */ new Map()).filter((row) => trustedForAutoContext(row.metadata)).slice(0, cap);
+}
+var RECENCY_SQL = `COALESCE(
+  (SELECT MAX(replace(o.created_at, 'T', ' ')) FROM observations o
+    WHERE o.entity_id = e.id
+      AND replace(o.created_at, 'T', ' ') = strftime('%Y-%m-%d %H:%M:%S', o.created_at)
+      AND replace(o.created_at, 'T', ' ') <= strftime('%Y-%m-%d %H:%M:%S', 'now', '+5 minutes')),
+  CASE WHEN replace(e.created_at, 'T', ' ') = strftime('%Y-%m-%d %H:%M:%S', e.created_at)
+        AND replace(e.created_at, 'T', ' ') <= strftime('%Y-%m-%d %H:%M:%S', 'now', '+5 minutes')
+       THEN replace(e.created_at, 'T', ' ') END)`;
+function guarded(label, fallback, read, onError) {
+  if (!onError)
+    return read();
+  try {
+    return read();
+  } catch (err) {
+    onError(label, err);
+    return fallback;
+  }
+}
+function selectBriefingPools(db2, projectName, options) {
+  const cols = entityColumns(db2);
+  const projectTag = `project:${projectName}`;
+  const columns = candidateColumns(cols);
+  const handoffRead = guarded("handoff", void 0, () => db2.prepare(`SELECT e.id, e.name, e.metadata, o.content AS text, o.created_at AS observedAt
+     FROM entities e JOIN observations o ON o.entity_id = e.id
+     WHERE e.name = ? AND e.type = ?${active(cols)}
+     ORDER BY o.id DESC
+     LIMIT 1`).get(sessionHandoffName(projectName), SESSION_HANDOFF_TYPE), options.onError);
+  const handoffTrusted = !!handoffRead && trustedForAutoContext(handoffRead.metadata);
+  const projectRows = db2.prepare(`SELECT DISTINCT ${columns}
+     FROM entities e JOIN tags t ON t.entity_id = e.id
+     WHERE t.tag = ?${active(cols)} AND e.type <> ?${nonGlobal(cols)}
+     ORDER BY e.id DESC
+     LIMIT ?`).all(projectTag, SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP);
+  const decisions = guarded("decisions", [], () => db2.prepare(`SELECT DISTINCT ${columns}, ${RECENCY_SQL} AS recency
+     FROM entities e JOIN tags t ON t.entity_id = e.id
+     WHERE t.tag = ?${active(cols)}${nonGlobal(cols)}
+       AND e.type IN (${DECISION_LAYER_TYPES.map(() => "?").join(",")})
+     ORDER BY recency IS NULL, recency DESC, e.id DESC
+     LIMIT ?`).all(projectTag, ...DECISION_LAYER_TYPES, TOPOLOGY_CANDIDATE_CAP).map(toPoolRow).filter((row) => trustedForAutoContext(row.metadata)), options.onError);
+  const project = prioritizeDecisions(decisions, selectPool(projectRows, TOPOLOGY_CANDIDATE_CAP), options.projectLimit);
+  const lessonRows = guarded("lessons", [], () => db2.prepare(`SELECT DISTINCT ${columns}
+     FROM entities e JOIN tags t ON t.entity_id = e.id
+     WHERE e.type IN (${LESSON_TYPE_LIST.map(() => "?").join(", ")})${active(cols)}${nonGlobal(cols)} AND t.tag = ?
+     ORDER BY e.id DESC
+     LIMIT ${LESSON_POOL_LIMIT}`).all(...LESSON_TYPE_LIST, projectTag).map(toPoolRow).filter((row) => trustedForAutoContext(row.metadata)), options.onError);
+  const noProject = selectPool(db2.prepare(`SELECT ${columns} FROM entities e
+     WHERE ${NO_PROJECT_TAG2} AND e.type <> ?${active(cols)}${nonGlobal(cols)}
+     ORDER BY e.id DESC
+     LIMIT ?`).all(SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP), NO_PROJECT_LIMIT);
+  const global = options.global && cols.namespace ? selectPool(db2.prepare(`SELECT ${columns} FROM entities e
+       WHERE e.namespace = 'global'${active(cols)}
+       ORDER BY e.id DESC
+       LIMIT ?`).all(TOPOLOGY_CANDIDATE_CAP), GLOBAL_TOPOLOGY_LIMIT) : [];
+  const recent = options.foreign ? selectPool(db2.prepare(`SELECT ${columns} FROM entities e
+       WHERE NOT ${NO_PROJECT_TAG2} AND e.type <> ?${active(cols)}${nonGlobal(cols)}
+       ORDER BY e.id DESC
+       LIMIT ?`).all(SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP), RECENT_LIMIT) : [];
+  return {
+    handoff: handoffTrusted ? handoffRead : void 0,
+    handoffHidden: handoffRead && !handoffTrusted ? "untrusted" : void 0,
+    lessonCount: lessonRows.length,
+    lessons: lessonRows.slice(0, LESSON_LIMIT),
+    project,
+    noProject,
+    global,
+    recent
+  };
+}
+function readSnippets(db2, ids) {
+  const unique = [...new Set(ids)];
+  const snippets = /* @__PURE__ */ new Map();
+  if (unique.length === 0)
+    return snippets;
+  const rows = db2.prepare(`SELECT entity_id, substr(content, 1, ${SNIPPET_FETCH_CHARS}) AS content FROM observations
+     WHERE entity_id IN (${unique.map(() => "?").join(",")})
+     ORDER BY id ASC`).all(...unique);
+  for (const row of rows) {
+    if (snippets.has(row.entity_id))
+      continue;
+    const text = String(row.content ?? "").replace(/\s+/g, " ").trim().slice(0, SNIPPET_FETCH_CHARS);
+    if (text)
+      snippets.set(row.entity_id, text);
+  }
+  return snippets;
+}
+function toTopologyEntity(row, snippets) {
+  const signal = parseMetadata(row.metadata)?.signal_score;
+  const snippet = snippets.get(row.id) ?? null;
+  return {
+    name: row.name,
+    type: row.type || "memory",
+    id: row.id,
+    title: row.title ?? null,
+    snippet,
+    signalScore: typeof signal === "number" ? signal : null,
+    recency: row.recency ?? null
+  };
+}
+function readIndexCandidates(db2, projectName) {
+  const cols = entityColumns(db2);
+  const excluded = INDEX_EXCLUDED_TYPES.map(() => "?").join(",");
+  const rows = db2.prepare(`SELECT e.id, e.name, e.type, ${titleCol(cols)}, e.metadata,
+       (SELECT substr(o.content, 1, ${INDEX_SNIPPET_FETCH_CHARS}) FROM observations o
+         WHERE o.entity_id = e.id ORDER BY o.id ASC LIMIT 1) AS snippet,
+       max(e.created_at, COALESCE((SELECT MAX(o2.created_at) FROM observations o2
+         WHERE o2.entity_id = e.id), e.created_at)) AS last_activity
+     FROM entities e
+     WHERE e.id IN (SELECT entity_id FROM tags WHERE tag = ?)${active(cols)}${nonGlobal(cols)}
+       AND e.type NOT IN (${excluded})
+     ORDER BY last_activity DESC, e.id DESC
+     LIMIT ?`).all(`project:${projectName}`, ...INDEX_EXCLUDED_TYPES, INDEX_CANDIDATE_CAP);
+  const candidates = rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    type: row.type,
+    title: row.title,
+    snippet: row.snippet,
+    lastActivity: row.last_activity,
+    metadata: row.metadata
+  }));
+  return { candidates, truncated: rows.length >= INDEX_CANDIDATE_CAP };
+}
+
 // dist/core/briefing-level.js
 var BRIEFING_LEVELS = ["minimal", "standard", "full"];
 var DEFAULT_BRIEFING_LEVEL = "minimal";
@@ -30003,85 +30184,6 @@ function briefingLevelPolicy(level) {
 
 // dist/core/briefing.js
 var PROJECT_LIMIT = 30;
-var RECENT_LIMIT = 5;
-var LESSON_LIMIT = 5;
-var CANDIDATE_COLUMNS = "e.id, e.name, e.type, e.title, e.metadata, e.access_count, e.last_accessed_at, e.confidence, e.recall_hits, e.recall_misses";
-function parseMetadata(raw) {
-  if (!raw)
-    return null;
-  try {
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-var RECENCY_SQL = `COALESCE(
-  (SELECT MAX(replace(o.created_at, 'T', ' ')) FROM observations o
-    WHERE o.entity_id = e.id
-      AND replace(o.created_at, 'T', ' ') = strftime('%Y-%m-%d %H:%M:%S', o.created_at)
-      AND replace(o.created_at, 'T', ' ') <= strftime('%Y-%m-%d %H:%M:%S', 'now', '+5 minutes')),
-  CASE WHEN replace(e.created_at, 'T', ' ') = strftime('%Y-%m-%d %H:%M:%S', e.created_at)
-        AND replace(e.created_at, 'T', ' ') <= strftime('%Y-%m-%d %H:%M:%S', 'now', '+5 minutes')
-       THEN replace(e.created_at, 'T', ' ') END)`;
-function toPoolRow(row) {
-  const meta3 = parseMetadata(row.metadata);
-  return {
-    id: row.id,
-    name: row.name,
-    type: row.type,
-    title: row.title,
-    meta: meta3,
-    autoInjectable: (row.metadata == null || meta3 !== null) && isAutoInjectable(meta3),
-    access_count: row.access_count ?? void 0,
-    last_accessed_at: row.last_accessed_at ?? void 0,
-    confidence: row.confidence ?? void 0,
-    recall_hits: row.recall_hits ?? void 0,
-    recall_misses: row.recall_misses ?? void 0,
-    recency: row.recency ?? null
-  };
-}
-function selectPool(rows, cap) {
-  const withMeta = rows.map(toPoolRow);
-  return rankEntities(withMeta, /* @__PURE__ */ new Map()).filter((row) => row.autoInjectable).slice(0, cap);
-}
-function toTopologyEntity(row, snippet) {
-  const signal = row.meta?.signal_score;
-  return {
-    name: row.name,
-    type: row.type || "memory",
-    id: row.id,
-    title: row.title,
-    snippet,
-    signalScore: typeof signal === "number" ? signal : null,
-    recency: row.recency ?? null
-  };
-}
-function readIndexCandidates(db2, projectName) {
-  const hasNamespace = db2.prepare("PRAGMA table_info(entities)").all().some((column) => column.name === "namespace");
-  const nonGlobal = hasNamespace ? " AND (e.namespace IS NULL OR e.namespace <> 'global')" : "";
-  const excluded = INDEX_EXCLUDED_TYPES.map(() => "?").join(",");
-  const rows = db2.prepare(`SELECT e.id, e.type, e.title, e.metadata,
-       (SELECT substr(o.content, 1, ${INDEX_SNIPPET_FETCH_CHARS}) FROM observations o
-         WHERE o.entity_id = e.id ORDER BY o.id ASC LIMIT 1) AS snippet,
-       max(e.created_at, COALESCE((SELECT MAX(o2.created_at) FROM observations o2
-         WHERE o2.entity_id = e.id), e.created_at)) AS last_activity
-     FROM entities e
-     WHERE e.id IN (SELECT entity_id FROM tags WHERE tag = ?)
-       AND e.status = 'active'${nonGlobal}
-       AND e.type NOT IN (${excluded})
-     ORDER BY last_activity DESC, e.id DESC
-     LIMIT ?`).all(`project:${projectName}`, ...INDEX_EXCLUDED_TYPES, INDEX_CANDIDATE_CAP);
-  const candidates = rows.map((row) => ({
-    id: row.id,
-    type: row.type,
-    title: row.title,
-    snippet: row.snippet,
-    lastActivity: row.last_activity,
-    metadata: row.metadata
-  }));
-  return { candidates, truncated: rows.length >= INDEX_CANDIDATE_CAP };
-}
 function assembleBriefing(project, recipient) {
   const projectName = project ?? getProjectName();
   const db2 = getDatabase();
@@ -30110,72 +30212,26 @@ function assembleBriefing(project, recipient) {
   const inboxRecipient = recipient === void 0 ? void 0 : canonicalAgentScopeId(recipient);
   const unreadCount = unreadDeliveryCount(db2, canonicalAgentScopeId(projectName), inboxRecipient, hostSessionFromEnv());
   const everSeen = inboxRecipient !== void 0 && unreadCount === 0 ? recipientEverSeen(db2, canonicalAgentScopeId(projectName), inboxRecipient) : void 0;
-  const handoffRow = db2.prepare(`SELECT e.id, e.metadata, o.content AS text, o.created_at AS observedAt
-     FROM entities e JOIN observations o ON o.entity_id = e.id
-     WHERE e.name = ? AND e.type = ? AND e.status = 'active'
-     ORDER BY o.id DESC
-     LIMIT 1`).get(sessionHandoffName(projectName), SESSION_HANDOFF_TYPE);
-  const handoffMeta = handoffRow ? parseMetadata(handoffRow.metadata) : null;
-  const handoffTrusted = !!handoffRow && (handoffRow.metadata === null || handoffMeta !== null) && isAutoInjectable(handoffMeta);
-  const handoff = handoffTrusted ? handoffLines(handoffRow) : [];
+  const pools = selectBriefingPools(db2, projectName, {
+    projectLimit: PROJECT_LIMIT,
+    global: policy.global,
+    foreign: policy.foreign
+  });
+  const handoff = pools.handoff ? handoffLines(pools.handoff) : [];
   const stateLines = [
     ...handoff,
     ...taskLines,
     ...unreadInboxLines(unreadCount, canonicalAgentScopeId(projectName), inboxRecipient, everSeen)
   ];
-  const hasNamespace = db2.prepare("PRAGMA table_info(entities)").all().some((column) => column.name === "namespace");
-  const nonGlobal = hasNamespace ? " AND (e.namespace IS NULL OR e.namespace <> 'global')" : "";
-  const projectRows = db2.prepare(`SELECT DISTINCT ${CANDIDATE_COLUMNS}
-     FROM entities e JOIN tags t ON t.entity_id = e.id
-     WHERE t.tag = ? AND e.status = 'active' AND e.type <> ?${nonGlobal}
-     ORDER BY e.id DESC
-     LIMIT ?`).all(`project:${projectName}`, SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP);
-  const decisionRows = db2.prepare(`SELECT DISTINCT ${CANDIDATE_COLUMNS}, ${RECENCY_SQL} AS recency
-     FROM entities e JOIN tags t ON t.entity_id = e.id
-     WHERE t.tag = ? AND e.status = 'active' AND e.type IN (${DECISION_LAYER_TYPES.map(() => "?").join(",")})${nonGlobal}
-     ORDER BY recency IS NULL, recency DESC, e.id DESC
-     LIMIT ?`).all(`project:${projectName}`, ...DECISION_LAYER_TYPES, TOPOLOGY_CANDIDATE_CAP);
-  const decisionPool = decisionRows.map(toPoolRow).filter((row) => row.autoInjectable);
-  const projectPool = prioritizeDecisions(decisionPool, selectPool(projectRows, TOPOLOGY_CANDIDATE_CAP), PROJECT_LIMIT);
-  const lessonPool = db2.prepare(`SELECT DISTINCT ${CANDIDATE_COLUMNS}
-     FROM entities e JOIN tags t ON t.entity_id = e.id
-     WHERE e.type IN (${LESSON_TYPE_LIST.map(() => "?").join(", ")}) AND e.status = 'active'${nonGlobal} AND t.tag = ?
-     ORDER BY e.id DESC
-     LIMIT 50`).all(...LESSON_TYPE_LIST, `project:${projectName}`).map(toPoolRow).filter((row) => row.autoInjectable).slice(0, LESSON_LIMIT);
-  const globalRows = policy.global && hasNamespace ? db2.prepare(`SELECT ${CANDIDATE_COLUMNS}
-       FROM entities e
-       WHERE e.namespace = 'global' AND e.status = 'active'
-       ORDER BY e.id DESC
-       LIMIT ?`).all(TOPOLOGY_CANDIDATE_CAP) : [];
-  const globalPool = selectPool(globalRows, GLOBAL_TOPOLOGY_LIMIT);
-  const recentRows = policy.foreign ? db2.prepare(`SELECT ${CANDIDATE_COLUMNS}
-       FROM entities e
-       WHERE e.status = 'active' AND e.type <> ?${nonGlobal}
-       ORDER BY e.id DESC
-       LIMIT ?`).all(SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP) : [];
-  const recentPool = selectPool(recentRows, RECENT_LIMIT);
-  const survivorIds = [...new Set([...lessonPool, ...projectPool, ...globalPool, ...recentPool].map((row) => row.id))];
-  const snippets = /* @__PURE__ */ new Map();
-  if (survivorIds.length > 0) {
-    const placeholders = survivorIds.map(() => "?").join(",");
-    const obsRows = db2.prepare(`SELECT entity_id, substr(content, 1, ${SNIPPET_FETCH_CHARS}) AS content
-       FROM observations WHERE entity_id IN (${placeholders})
-       ORDER BY id ASC`).all(...survivorIds);
-    for (const row of obsRows) {
-      if (snippets.has(row.entity_id))
-        continue;
-      const text = String(row.content ?? "").trim();
-      if (text)
-        snippets.set(row.entity_id, text);
-    }
-  }
-  const toEntities = (pool) => pool.map((row) => toTopologyEntity(row, snippets.get(row.id) ?? null));
+  const snippets = readSnippets(db2, [...pools.lessons, ...pools.project, ...pools.noProject, ...pools.global, ...pools.recent].map((row) => row.id));
+  const toEntities = (pool) => pool.map((row) => toTopologyEntity(row, snippets));
   const indexReserve = policy.index ? injectedIndexReserve(projectName) + 2 : 0;
   const lines = assembleTopologyBlock(stateLines, [
-    { entities: toEntities(lessonPool), foreign: false },
-    { entities: toEntities(projectPool), foreign: false },
-    { entities: toEntities(globalPool), foreign: false, global: true },
-    { entities: toEntities(recentPool), foreign: true }
+    { entities: toEntities(pools.lessons), foreign: false },
+    { entities: toEntities(pools.project), foreign: false },
+    { entities: toEntities(pools.noProject), foreign: false, noProject: true },
+    { entities: toEntities(pools.global), foreign: false, global: true },
+    { entities: toEntities(pools.recent), foreign: true }
   ], projectName, DEFAULT_TOPOLOGY_BUDGET, { reserve: indexReserve });
   const withRepo = lines.length > 0 && repoLines.length > 0 ? [...repoLines, "", ...lines] : lines;
   const now = Date.now();
@@ -32699,7 +32755,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "briefing",
-    description: "The work topology for a project, assembled and ready to use \u2014 assembled under the same rules as Claude Code\u2019s session-start memory block (at `full`, the SessionStart hook additionally appends a work-package notice; that notice is a host-agent instruction, not memory, and is never part of this tool\u2019s output). An eligible exact-project handoff precedes ranked memories at every level, after optional repository facts: fresh through 72 hours, marked stale through 14 days, omitted when older, undatable, or implausibly future-dated. Imported or archived handoffs are not auto-injected. Recent project decisions take priority over routine activity; up to five project lessons are selected separately. The handoff, displayed task state, ranked and global memories, and injected index share a 4000-character memory-block limit. How much else is assembled follows the `briefing` setting: `minimal` (the default) includes this project\u2019s decisions and direction, lessons, known facts and recent activity, no fresh task state (a stale or unknown-age one still collapses to a one-line flag at every level) and no index, and may be empty; `standard` adds a fresh goal / next / blocked / done and closes with a capped index of durable memories; `full` additionally includes other projects and global memory. Whatever the level, the result\u2019s `index` field carries the standalone index, which can show more than the index inside a crowded briefing. Call it at the start of a session only when the host has not already injected this block (the MeMesh SessionStart hook does under Claude Code, and under the Codex plugin once Codex runs its hooks; it runs again after context compaction), or when the user asks what is remembered; use recall for specific questions. Content is wrapped as untrusted background data.",
+    description: "The work topology for a project, assembled and ready to use \u2014 assembled under the same rules as Claude Code\u2019s session-start memory block (at `full`, the SessionStart hook additionally appends a work-package notice; that notice is a host-agent instruction, not memory, and is never part of this tool\u2019s output). An eligible exact-project handoff precedes ranked memories at every level, after optional repository facts: fresh through 72 hours, marked stale through 14 days, omitted when older, undatable, or implausibly future-dated. Imported or archived handoffs are not auto-injected. Recent project decisions take priority over routine activity; up to five project lessons are selected separately. The handoff, displayed task state, ranked and global memories, and injected index share a 4000-character memory-block limit. How much else is assembled follows the `briefing` setting: `minimal` (the default) includes this project\u2019s decisions and direction, lessons, known facts and recent activity, plus up to five memories that belong to no project, no fresh task state (a stale or unknown-age one still collapses to a one-line flag at every level) and no index, and may be empty; `standard` adds a fresh goal / next / blocked / done and closes with a capped index of durable memories; `full` additionally includes other projects and global memory. Whatever the level, the result\u2019s `index` field carries the standalone index, which can show more than the index inside a crowded briefing. Call it at the start of a session only when the host has not already injected this block (the MeMesh SessionStart hook does under Claude Code, and under the Codex plugin once Codex runs its hooks; it runs again after context compaction), or when the user asks what is remembered; use recall for specific questions. Content is wrapped as untrusted background data.",
     inputSchema: {
       type: "object",
       properties: {

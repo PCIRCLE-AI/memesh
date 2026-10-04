@@ -6,11 +6,6 @@ export interface ScoringWeights {
     impact: number;
 }
 export declare const DEFAULT_WEIGHTS: ScoringWeights;
-export declare const SESSION_START_WEIGHT_RATIO: {
-    recency: number;
-    frequency: number;
-    confidence: number;
-};
 export declare function recencyScore(lastAccessedAt: string | null | undefined): number;
 export declare function frequencyScore(accessCount: number, maxAccessCount: number): number;
 export declare function impactScore(recallHits: number, recallMisses: number): number;

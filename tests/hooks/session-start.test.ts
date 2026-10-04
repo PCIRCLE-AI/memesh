@@ -470,6 +470,9 @@ describe('Feature: Session Start Hook', () => {
     const db = createTestDb();
     db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('some-entity', 'note');
     db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(1, 'A note about something');
+    // Another project's memory: a row with no project tag at all is a
+    // no-project memory now, shown at every level under its own heading.
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(1, projTag('some-other-project'));
     db.close();
 
     // #360: the "recent" (foreign) pool is full-only: `minimal` (the default)
@@ -939,10 +942,13 @@ describe('Feature: Session Start Hook', () => {
 
     // #360: the "recent" (foreign) pool is full-only: `minimal` (the default)
     // and `standard` never query it.
+    // The row has no project tag, so it is a no-project memory (shown at
+    // every level since M2-a); the point here is that a schema without
+    // `status` still yields it.
     const output = runHook({ cwd: '/tmp/anyproject' }, { MEMESH_BRIEFING: 'full' });
     const msg = (output as { systemMessage: string }).systemMessage;
     expect(msg).toContain('◉ MeMesh');
-    expect(msg).toMatch(/\d+ recent/);
+    expect(msg).toMatch(/1 no-project/);
     const session = readLatestSessionFile();
     expect(session?.entityNames).toContain('legacy-entity');
   });
@@ -1176,40 +1182,6 @@ syncBuiltinESMExports();
   });
 
 
-  describe('Scenario: Legacy SQLite build (no exp/log functions)', () => {
-    it('falls back to linear/rational scoring SQL and still ranks entities', () => {
-      const db = createScoringDb();
-      // Insert 3 entities with distinct access_count + last_accessed_at so
-      // the legacy formula has signal to rank on.
-      db.prepare("INSERT INTO entities (name, type, access_count, last_accessed_at, confidence) VALUES (?, ?, ?, datetime('now'), ?)")
-        .run('hot', 'note', 50, 1.0);
-      db.prepare("INSERT INTO entities (name, type, access_count, last_accessed_at, confidence) VALUES (?, ?, ?, datetime('now', '-30 days'), ?)")
-        .run('warm', 'note', 10, 0.7);
-      db.prepare("INSERT INTO entities (name, type, access_count, last_accessed_at, confidence) VALUES (?, ?, ?, datetime('now', '-60 days'), ?)")
-        .run('cold', 'note', 1, 0.2);
-      for (let i = 1; i <= 3; i++) {
-        db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(i, `obs-${i}`);
-        db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(i, projTag('legacysql'));
-      }
-      db.close();
-
-      const output = runHook(
-        { cwd: '/tmp/legacysql' },
-        { MEMESH_TEST_FORCE_LEGACY_SCORING_SQL: '1' },
-      );
-      const msg = (output as { systemMessage: string }).systemMessage;
-      // Tree summary still produced (legacy SQL works, just with different math)
-      expect(msg).toContain('◉ MeMesh');
-      expect(msg).toMatch(/3 project/);
-
-      // Persisted entityNames preserve the ranking; "hot" should outrank "cold"
-      // under both math variants because every weighted factor agrees.
-      const session = readLatestSessionFile();
-      const names = session?.entityNames ?? [];
-      expect(names.indexOf('hot')).toBeLessThan(names.indexOf('cold'));
-    });
-  });
-
   // #401: equal scores resolve newest-first. Auto-captured memories carry one
   // confidence value and have never been accessed, so they score EXACTLY alike,
   // and SQLite returns equal scores in ascending id order (measured): the cut used
@@ -1223,9 +1195,10 @@ syncBuiltinESMExports();
         db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(i, projTag('ties'));
       }
     };
+    // One ranking now (the shared core selection); the hook's second, linear
+    // SQL form for SQLite builds without exp/log is gone.
     const BOTH_FORMS: Array<[string, Record<string, string>]> = [
-      ['exp/log ranking', {}],
-      ['legacy ranking (no SQLite math functions)', { MEMESH_TEST_FORCE_LEGACY_SCORING_SQL: '1' }],
+      ['shared core ranking', {}],
     ];
 
     it.each(BOTH_FORMS)('with a limit of 3 the injected memories are the newest three — %s', (_label, env) => {

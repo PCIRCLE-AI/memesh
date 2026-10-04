@@ -1,3 +1,11 @@
+// ============================================================================
+// AUTO-GENERATED from src/core/scoring.ts — DO NOT EDIT BY HAND.
+// Regenerate with: npm run build  (scripts/generate-hook-core.mjs)
+//
+// Claude Code hooks import this committed copy instead of dist/, so the
+// always-on capture path survives a missing or stale dist/ while staying
+// byte-locked to core — eliminating the hand-mirror drift behind the P0 FTS bug.
+// ============================================================================
 export const DEFAULT_WEIGHTS = {
     searchRelevance: 0.30,
     recency: 0.25,
@@ -35,4 +43,3 @@ export function rankEntities(entities, searchRelevanceValues, weights) {
         return scoreB - scoreA;
     });
 }
-//# sourceMappingURL=scoring.js.map

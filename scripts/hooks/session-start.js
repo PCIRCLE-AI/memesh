@@ -18,10 +18,6 @@ import {
   assembleTopologyBlock,
   projectLabel,
   DEFAULT_TOPOLOGY_BUDGET,
-  GLOBAL_TOPOLOGY_LIMIT,
-  SNIPPET_FETCH_CHARS,
-  TOPOLOGY_CANDIDATE_CAP,
-  isTrustedForAutoContext,
   parseEntityMetadata,
   // Aliased: this file already has a local `const memeshDir` (a resolved
   // db-path-derived directory string) — the helper here is the MEMESH_DIR/
@@ -79,22 +75,11 @@ import {
 } from './_shared.js';
 import { recordSessionLauncher } from './_clear-alias.js';
 import { recallListName, SESSION_ID_RE } from './_stop-notes.js';
-import {
-  buildBriefingIndex,
-  injectedIndexReserve,
-  INDEX_CANDIDATE_CAP,
-  INDEX_EXCLUDED_TYPES,
-  INDEX_SNIPPET_FETCH_CHARS,
-} from './_generated/briefing-index.js';
-import { handoffView, SESSION_HANDOFF_TYPE, sessionHandoffName } from './_generated/session-handoff.js';
+import { buildBriefingIndex, injectedIndexReserve } from './_generated/briefing-index.js';
+import { handoffView } from './_generated/session-handoff.js';
 import { recipientEverSeenAnywhere, unknownRecipientHint } from './_generated/agent-message-inbox.js';
-import {
-  boundTaskStateLines,
-  DECISION_LAYER_TYPES,
-  joinedLength,
-  LESSON_TYPE_LIST,
-  prioritizeDecisions,
-} from './_generated/work-topology.js';
+import { boundTaskStateLines, joinedLength } from './_generated/work-topology.js';
+import { readIndexCandidates, readSnippets, selectBriefingPools, toTopologyEntity } from './_generated/briefing-pools.js';
 
 const require = createRequire(import.meta.url);
 
@@ -1218,276 +1203,36 @@ process.stdin.on('end', async () => {
         return;
       }
 
-      // Inspect available columns for backward compat
-      const columns = db.prepare("PRAGMA table_info(entities)").all();
-      const colNames = new Set(columns.map(col => col.name));
-
-      const hasStatus = colNames.has('status');
-      const hasScoringCols = colNames.has('access_count') && colNames.has('last_accessed_at') && colNames.has('confidence');
-
-      const statusFilter = hasStatus ? "AND e.status = 'active'" : '';
-      // (Note: a previous `recentStatusFilter` constant lived here; the
-      // refactor that introduced `buildScoringQuery` aliased the table
-      // as `e` for both the project- and recent-pool queries, so the
-      // bare-column `WHERE status = 'active'` form was replaced by the
-      // qualified `WHERE e.status = 'active'` computed inline below.)
-
-      // Scoring math is aligned to src/core/scoring.ts exactly:
-      //   - confidence  weight 0.2833  (core 0.17 / 0.60 sub-total)
-      //   - frequency   weight 0.3000  (core 0.18 / 0.60)
-      //   - recency     weight 0.4167  (core 0.25 / 0.60)
-      // Sub-total excludes searchRelevance + impact, which session-start
-      // can't compute without an FTS query. The renormalised ratios are
-      // exported from core/scoring.ts as `SESSION_START_WEIGHT_RATIO`;
-      // a drift-guard test in tests/core/scoring.test.ts asserts the SQL
-      // here stays in sync.
-      //
-      // Functions:
-      //   - frequency: log(c+1) / log(max(maxAccess,1) + 1)  (matches frequencyScore)
-      //   - recency:   exp(-(now - lastAccessed_days) / 30)  (matches recencyScore)
-      // SQLite >= 3.35 with -DSQLITE_ENABLE_MATH_FUNCTIONS provides exp/log,
-      // which Node's bundled SQLite has. We probe once per process and fall
-      // back to the legacy linear/rational forms if a stripped-down build is
-      // detected, so ranking degrades gracefully rather than throwing.
-      // Test-only seam: force the legacy linear/rational fallback so the
-      // pre-math-functions code path is reachable in CI on builds where
-      // exp/log ARE available. Production callers never set this.
-      let hasSqliteMath = false;
-      if (process.env.MEMESH_TEST_FORCE_LEGACY_SCORING_SQL !== '1') {
-        try {
-          db.prepare('SELECT exp(1.0), log(2.0)').get();
-          hasSqliteMath = true;
-        } catch {
-          // Legacy SQLite build without math functions — keep linear fallback.
-        }
-      }
-
-      // The legacy schema (createTestDb in tests, plus very old installs)
-      // doesn't have confidence/access_count/last_accessed_at, so the
-      // SELECT can't reference them. Build the column list to match
-      // what the schema actually supports.
-      // `title` is an ALTER-added column (UX-1) and gets the same
-      // legacy-schema guard as the scoring columns: a database that predates
-      // it must still produce an injection, falling back to the observation
-      // snippet for its display text.
-      const hasTitle = colNames.has('title');
-      const baseCols = `e.id, e.name, e.type,${hasTitle ? ' e.title,' : ''} e.created_at, e.metadata`;
-      const scoringCols = hasScoringCols
-        ? `, e.confidence, e.access_count, e.last_accessed_at`
-        : '';
-
-      // Equal scores resolve newest-first: `id DESC` is the last ORDER BY key of
-      // both scored forms, and the schema without scoring columns already orders
-      // by it alone. The daily decay multiplies the confidence of never-accessed
-      // rows by 0.9, so the rows captured since its last run carry one confidence
-      // value and, never accessed, score EXACTLY alike (so do old rows that have
-      // sunk to the decay floor), and SQLite hands equal scores back in ascending
-      // id order (measured, not promised): before #401 the cut kept the OLDEST of
-      // such a tie, so a decision made minutes ago could not be injected. "Newest"
-      // is creation order (id), the key core's briefing sorts by too (briefing.ts:
-      // a stable sort over `ORDER BY e.id DESC`); tests/core/briefing.test.ts pins
-      // the two together with a fixture in which every memory ties. The lesson
-      // query below is not scored at all and orders by the same key.
-      const buildScoringQuery = (joinClause, whereClause) => {
-        const poolSelect = `SELECT DISTINCT ${baseCols}${scoringCols} FROM entities e ${joinClause}`;
-        if (!hasScoringCols) {
-          return `${poolSelect} ${whereClause} ORDER BY e.id DESC LIMIT ?`;
-        }
-        if (hasSqliteMath) {
-          return `WITH pool AS (
-              ${poolSelect} ${whereClause}
-            ),
-            pool_stats AS (
-              SELECT COALESCE(MAX(access_count), 0) AS max_access FROM pool
-            )
-            SELECT p.id, p.name, p.type,${hasTitle ? ' p.title,' : ''} p.created_at, p.metadata
-            FROM pool p, pool_stats s
-            ORDER BY
-              COALESCE(p.confidence, 1.0) * 0.2833
-              + (CASE WHEN s.max_access <= 0 THEN 0
-                      ELSE log(COALESCE(p.access_count, 0) + 1) / log(max(s.max_access, 1) + 1) END) * 0.3000
-              + (CASE WHEN p.last_accessed_at IS NULL THEN 0.5
-                      ELSE exp(-(julianday('now') - julianday(p.last_accessed_at)) / 30.0) END) * 0.4167
-              DESC,
-              p.id DESC
-            LIMIT ?`;
-        }
-        // Legacy fallback (SQLite without math functions): linear cap + rational decay.
-        // Same direction as core ranking; absolute scores differ slightly.
-        return `${poolSelect} ${whereClause}
-          ORDER BY
-            COALESCE(e.confidence, 1.0) * 0.2833
-            + CASE WHEN e.access_count IS NULL THEN 0
-                   ELSE MIN(CAST(e.access_count AS REAL) / 50.0, 1.0) END * 0.3000
-            + CASE WHEN e.last_accessed_at IS NULL THEN 0.5
-                   ELSE MIN(1.0, 1.0 / (1.0 + (julianday('now') - julianday(e.last_accessed_at)) / 30.0)) END * 0.4167
-            DESC,
-            e.id DESC
-          LIMIT ?`;
-      };
-
-      const projectTag = `project:${projectName}`;
-      const notGlobal = colNames.has('namespace')
-        ? "AND (e.namespace IS NULL OR e.namespace <> 'global')"
-        : '';
-      // The session handoff is not a ranked memory — it leads the block on its
-      // own (below). Excluded in SQL, before the LIMIT: excluded only after it,
-      // enough handoff rows ahead of real memories could fill the window.
-      // A constant, not user input, so it is safe inline.
-      const notHandoff = `AND e.type <> '${SESSION_HANDOFF_TYPE}'`;
-      const projectQuery = buildScoringQuery(
-        `JOIN tags t ON t.entity_id = e.id`,
-        `WHERE t.tag = ? ${notGlobal} ${statusFilter} ${notHandoff}`,
-      );
-      // Over-fetch WIDE, then filter. The window used to be `sessionLimit * 3`
-      // and the trust filter ran after it — so a class of entity that ranks
-      // high can consume the entire window and leave nothing. That was not
-      // hypothetical: measured on a real graph, all 30 top-ranked rows were
-      // filtered out and the "project memory" section rendered empty while 92
-      // eligible entities sat below the cut. The filter is a JS predicate with
-      // one owner (`isTrustedForAutoContext`); rather than restate it as SQL
-      // and own it twice, the window is made wide enough that the filtered
-      // class cannot fill it. CANDIDATE_CAP bounds the work for a large graph.
-      // Shared with the briefing surface via the leaf, so the two sides'
-      // candidate windows cannot drift apart.
-      const CANDIDATE_CAP = TOPOLOGY_CANDIDATE_CAP;
-      const projectOnly = db.prepare(projectQuery).all(projectTag, CANDIDATE_CAP)
-        .filter(entity => isTrustedForAutoContext(entity.metadata));
-
-      // The `global` namespace is the documented way to store something that
-      // is not tied to one project — and the injection selected purely by
-      // `project:` tag, so a global memory with no project tag was reachable
-      // by nobody (#242): 1814 entities, 2 global, one of them structurally
-      // uninjectable. A standing behaviour rule sat in that state for months.
-      //
-      // Global rows ride in a SEPARATE, small window and the shared assembler
-      // gives them a separate render budget. The project keeps `sessionLimit`
-      // slots and its full character budget. The column is absent on
-      // pre-namespace schemas; then this branch is simply empty.
-      // #360: minimal/standard skip these two queries outright rather than
-      // fetch-then-not-render — the whole point of the level is to stop
-      // paying for what is not the current project.
-      let globalEntities = [];
-      if (briefingPolicy.global && colNames.has('namespace')) {
-        const globalQuery = buildScoringQuery('', `WHERE e.namespace = 'global' ${statusFilter}`);
-        globalEntities = db.prepare(globalQuery).all(CANDIDATE_CAP)
-          .filter(entity => isTrustedForAutoContext(entity.metadata))
-          .slice(0, GLOBAL_TOPOLOGY_LIMIT);
-      }
-      // Decisions first (#434 step 3): the project's newest trusted
-      // decision-layer rows take slots before the score-ordered candidates
-      // fill the rest, so a burst of commits can neither push them out of the
-      // candidate window nor out of the project's slots. Same cap as before.
-      // Recency is the latest VALID activity — the same expression as
-      // RECENCY_SQL in src/core/briefing.ts (a hook cannot import it): a
-      // timestamp counts only if it round-trips through strftime unchanged
-      // and is not more than 5 minutes in the future. NULL sorts last.
-      // A failed read is recorded and falls back to score order alone.
-      let decisionEntities = [];
-      try {
-        const recencySql = `COALESCE(
-          (SELECT MAX(replace(o.created_at, 'T', ' ')) FROM observations o
-            WHERE o.entity_id = e.id
-              AND replace(o.created_at, 'T', ' ') = strftime('%Y-%m-%d %H:%M:%S', o.created_at)
-              AND replace(o.created_at, 'T', ' ') <= strftime('%Y-%m-%d %H:%M:%S', 'now', '+5 minutes')),
-          CASE WHEN replace(e.created_at, 'T', ' ') = strftime('%Y-%m-%d %H:%M:%S', e.created_at)
-                AND replace(e.created_at, 'T', ' ') <= strftime('%Y-%m-%d %H:%M:%S', 'now', '+5 minutes')
-               THEN replace(e.created_at, 'T', ' ') END)`;
-        decisionEntities = db.prepare(
-          `SELECT DISTINCT ${baseCols}, ${recencySql} AS recency
-           FROM entities e JOIN tags t ON t.entity_id = e.id
-           WHERE t.tag = ? ${notGlobal} ${statusFilter}
-             AND e.type IN (${DECISION_LAYER_TYPES.map(() => '?').join(',')})
-           ORDER BY recency IS NULL, recency DESC, e.id DESC
-           LIMIT ?`,
-        ).all(projectTag, ...DECISION_LAYER_TYPES, CANDIDATE_CAP)
-          .filter(entity => isTrustedForAutoContext(entity.metadata));
-      } catch (err) {
-        decisionEntities = [];
-        try { process.stderr.write(`[memesh session-start] decisions: ${err?.message || err}\n`); } catch {}
-        record({
-          outcome: 'error',
-          reason: `decisions: ${hookErrorReason(err)}`,
-        });
-      }
-      const projectEntities = prioritizeDecisions(decisionEntities, projectOnly, sessionLimit);
-
-      // recentStatusFilter is "WHERE status = 'active'" or "" — the bare-column
-      // form is fine when there's no JOIN, but we now alias the table as `e`,
-      // so rewrite to e.status for consistency.
-      let recentEntities = [];
-      if (briefingPolicy.foreign) {
-        const recentConditions = [
-          hasStatus ? "e.status = 'active'" : '',
-          colNames.has('namespace') ? "(e.namespace IS NULL OR e.namespace <> 'global')" : '',
-          `e.type <> '${SESSION_HANDOFF_TYPE}'`,
-        ].filter(Boolean);
-        const recentWhere = recentConditions.length > 0 ? `WHERE ${recentConditions.join(' AND ')}` : '';
-        const recentQuery = buildScoringQuery('', recentWhere);
-        recentEntities = db.prepare(recentQuery).all(CANDIDATE_CAP)
-          .filter(entity => isTrustedForAutoContext(entity.metadata))
-          .slice(0, 5);
-      }
-
+      // Every pool comes from core's own selection (briefing-pools.ts, whose
+      // generated copy in _generated/ means this hook needs no dist/): the same reads, ranking
+      // and candidate windows `briefing` uses, with the legacy-schema guards a
+      // read-only handle needs. A failed handoff, decision or lesson read is
+      // recorded and leaves the rest of the context intact.
+      const pools = selectBriefingPools(db, projectName, {
+        projectLimit: sessionLimit,
+        global: briefingPolicy.global,
+        foreign: briefingPolicy.foreign,
+        onError: (label, err) => {
+          try { process.stderr.write(`[memesh session-start] ${label}: ${err?.message || err}\n`); } catch {}
+          // A lesson read failure was stderr-only before; it stays that way.
+          if (label !== 'lessons') record({ outcome: 'error', reason: `${label}: ${hookErrorReason(err)}` });
+        },
+      });
+      const projectEntities = pools.project;
+      const noProjectEntities = pools.noProject;
+      const globalEntities = pools.global;
+      const recentEntities = pools.recent;
+      const lessonCount = pools.lessonCount;
+      const topLessons = pools.lessons;
       // Where the last session in THIS project left off — it leads the block
-      // at every level (same renderer as `briefing`). Exact name, active, and
-      // through the same trust gate as every memory. A failed read is its own
-      // recorded error, not a failed assembly: the rest of the context ships.
-      // `handoffHidden` names why an existing handoff is not shown (a bounded
-      // label, never its text), so session-start's own record can say so
-      // instead of reporting an empty project.
-      let handoffRow;
-      let handoffHidden = null;
-      try {
-        handoffRow = db.prepare(
-          `SELECT e.id, e.name, e.metadata, o.content AS text, o.created_at AS observedAt
-           FROM entities e JOIN observations o ON o.entity_id = e.id
-           WHERE e.name = ? AND e.type = ? ${statusFilter}
-           ORDER BY o.id DESC
-           LIMIT 1`,
-        ).get(sessionHandoffName(projectName), SESSION_HANDOFF_TYPE);
-        if (handoffRow && !isTrustedForAutoContext(handoffRow.metadata)) {
-          handoffRow = undefined;
-          handoffHidden = 'untrusted';
-        }
-      } catch (err) {
-        handoffRow = undefined;
-        try { process.stderr.write(`[memesh session-start] session handoff: ${err?.message || err}\n`); } catch {}
-        record({
-          outcome: 'error',
-          reason: `handoff: ${hookErrorReason(err)}`,
-        });
-      }
+      // at every level (same renderer as `briefing`). `handoffHidden` names why
+      // an existing handoff is not shown (a bounded label, never its text), so
+      // session-start's own record can say so instead of reporting an empty project.
+      const handoffRow = pools.handoff;
+      let handoffHidden = pools.handoffHidden ?? null;
       const handoffShown = handoffView(handoffRow);
       const handoffBlock = handoffShown.lines;
       if (handoffRow && handoffBlock.length === 0) handoffHidden = handoffShown.status;
-
-      // Lesson count (queried for summary, not listed individually).
-      // Status-column gate matches the project/recent queries above —
-      // legacy v2.11 schemas don't have e.status and would otherwise
-      // throw `no such column: status`, hiding lessons from session-start
-      // auto-context indefinitely.
-      let lessonCount = 0;
-      let lessonEntities = [];
-      try {
-        const lessonRows = db.prepare(`
-          SELECT DISTINCT e.id, e.name, e.type,${hasTitle ? ' e.title,' : ''} e.metadata
-          FROM entities e
-          JOIN tags t ON t.entity_id = e.id
-          WHERE e.type IN (${LESSON_TYPE_LIST.map(() => '?').join(', ')})
-            ${hasStatus ? "AND e.status = 'active'" : ''}
-            ${colNames.has('namespace') ? "AND (e.namespace IS NULL OR e.namespace <> 'global')" : ''}
-            AND t.tag = ?
-          ORDER BY e.id DESC
-          LIMIT 50
-        `).all(...LESSON_TYPE_LIST, projectTag).filter(entity => isTrustedForAutoContext(entity.metadata));
-        lessonCount = lessonRows.length;
-        lessonEntities = lessonRows;
-      } catch (err) {
-        // Real query bug (typo, missing column on a schema older than v2.11)
-        // — surface to stderr so a maintainer sees it on next session.
-        try { process.stderr.write(`[memesh session-start] lesson query: ${err?.message || err}\n`); } catch {}
-      }
 
       // Build single-line summary with mid-dot separators. Earlier this
       // was a multi-line tree (├─ / └─); switched to a one-liner so the
@@ -1498,6 +1243,7 @@ process.stdin.on('end', async () => {
       const recentCount = recentEntities.length;
       const memoryFragments = [];
       if (projectCount > 0) memoryFragments.push(`${projectCount} project`);
+      if (noProjectEntities.length > 0) memoryFragments.push(`${noProjectEntities.length} no-project`);
       if (globalCount > 0) memoryFragments.push(`${globalCount} global`);
       if (recentCount > 0) memoryFragments.push(`${recentCount} recent`);
 
@@ -1533,48 +1279,11 @@ process.stdin.on('end', async () => {
       // the assembleTopologyBlock call — "the same block" depends on the two
       // surfaces agreeing, so neither side restates the numbers.
 
-      // Only the entities we will actually render — the lesson query pulls
-      // up to 50 rows for the banner count, but at most 5 are injected, and
-      // this runs before the user's first turn. Bounded well under SQLite's
-      // 999-variable limit by construction (5 lessons + sessionLimit
-      // project + 5 recent). Declared out here because the injected-set
-      // record below must list the SAME lessons the block renders.
-      const topLessons = lessonEntities.slice(0, 5);
-
       const memoryLines = [];
       let memoryAssemblyFailed = false;
       try {
-        const rankedIds = [
-          ...topLessons.map(e => e.id),
-          ...projectEntities.map(e => e.id),
-          ...globalEntities.map(e => e.id),
-          ...recentEntities.map(e => e.id),
-        ];
-        const uniqueIds = [...new Set(rankedIds)];
-
-        // One query for every snippet — avoids N round-trips on the
-        // session-start hot path (this runs before the user's first turn).
-        const snippets = new Map();
-        if (uniqueIds.length > 0) {
-          const placeholders = uniqueIds.map(() => '?').join(',');
-          const obsRows = db.prepare(
-            `SELECT entity_id, content FROM observations
-             WHERE entity_id IN (${placeholders})
-             ORDER BY id ASC`
-          ).all(...uniqueIds);
-          for (const row of obsRows) {
-            // Keep the FIRST observation per entity: observations are
-            // append-only, so the first one is the defining statement and
-            // later ones are refinements.
-            if (snippets.has(row.entity_id)) continue;
-            const text = String(row.content ?? '').replace(/\s+/g, ' ').trim();
-            // A few line-widths, not the exact line cap: the final cut is
-            // clip()'s, on a word boundary — a hard slice at the line cap
-            // would hand it a string with nothing left to trim and ship
-            // mid-word fragments again.
-            if (text) snippets.set(row.entity_id, text.slice(0, SNIPPET_FETCH_CHARS));
-          }
-        }
+        // One query for every snippet, for the rows that will render.
+        const snippets = readSnippets(db, [...topLessons, ...projectEntities, ...noProjectEntities, ...globalEntities, ...recentEntities].map(e => e.id));
 
         // "Where we left off" leads the block. It is the one memory a new
         // session needs before any other: everything below is context for
@@ -1648,33 +1357,18 @@ process.stdin.on('end', async () => {
         ];
 
         // The pools overlap by construction (a lesson tagged to this project
-        // is in lessonEntities AND projectEntities); the shared assembler
+        // is in the lesson AND the project pool); the shared assembler
         // dedupes across them in claim order, so a project-scoped row is
-        // never marked foreign by the cross-project recent pool, and the
-        // topology grouping decides where each one belongs. This mapping —
-        // raw row → TopologyEntity — is the only part this hook owns; the
-        // assembly order, the spacer discipline, the budget and the
-        // task-state exclusion live in the leaf, shared with `briefing`.
-        const toEntity = (e) => {
-          const meta = parseEntityMetadata(e.metadata);
-          return {
-            name: e.name,
-            type: e.type || 'memory',
-            // The citation handle: topologyLine prints `[mem:<id>]` so the
-            // agent can credit the exact memory it used (the Stop hook's
-            // accounting reads those markers back).
-            id: e.id,
-            title: e.title ?? null,
-            snippet: snippets.get(e.id) ?? null,
-            signalScore: meta && typeof meta.signal_score === 'number' ? meta.signal_score : null,
-            recency: e.recency ?? null,
-          };
-        };
+        // never marked foreign by the cross-project recent pool. The mapping,
+        // the assembly order, the spacer discipline, the budget and the
+        // task-state exclusion are all shared with `briefing`.
+        const toEntity = (e) => toTopologyEntity(e, snippets);
         memoryLines.push(...assembleTopologyBlock(
           stateLines,
           [
             { entities: topLessons.map(toEntity), foreign: false },
             { entities: projectEntities.map(toEntity), foreign: false },
+            { entities: noProjectEntities.map(toEntity), foreign: false, noProject: true },
             { entities: globalEntities.map(toEntity), foreign: false, global: true },
             { entities: recentEntities.map(toEntity), foreign: true },
           ],
@@ -1723,45 +1417,16 @@ process.stdin.on('end', async () => {
       if (!briefingPolicy.index) {
         indexLines = [];
       } else try {
-        const excluded = INDEX_EXCLUDED_TYPES.map(() => '?').join(',');
-        const indexRows = db.prepare(
-          `SELECT e.id, e.name, e.type,${hasTitle ? ' e.title,' : ''} e.metadata,
-             (SELECT substr(o.content, 1, ${INDEX_SNIPPET_FETCH_CHARS}) FROM observations o
-               WHERE o.entity_id = e.id ORDER BY o.id ASC LIMIT 1) AS snippet,
-             max(e.created_at, COALESCE((SELECT MAX(o2.created_at) FROM observations o2
-               WHERE o2.entity_id = e.id), e.created_at)) AS last_activity
-           FROM entities e
-           WHERE e.id IN (SELECT entity_id FROM tags WHERE tag = ?)
-             ${statusFilter} ${notGlobal}
-             AND e.type NOT IN (${excluded})
-           ORDER BY last_activity DESC, e.id DESC
-           LIMIT ?`,
-        ).all(projectTag, ...INDEX_EXCLUDED_TYPES, INDEX_CANDIDATE_CAP);
-        const index = buildBriefingIndex(
-          indexRows.map((row) => ({
-            id: row.id,
-            type: row.type,
-            title: row.title ?? null,
-            snippet: row.snippet,
-            lastActivity: row.last_activity,
-            // The RAW column: the index's gate must tell an absent metadata
-            // column (allowed) from unparseable JSON (refused), exactly as
-            // `isTrustedForAutoContext` does on the ranked path. Parsing here
-            // would collapse both to null and fail OPEN.
-            metadata: row.metadata,
-          })),
-          projectName,
-          Date.now(),
-          {
-            truncated: indexRows.length >= INDEX_CANDIDATE_CAP,
-            // One shared cap: the index gets what the block above left of it.
-            maxChars: DEFAULT_TOPOLOGY_BUDGET.maxChars
-              - (memoryLines.length ? joinedLength(memoryLines) + 2 : 0),
-          },
-        );
+        const { candidates, truncated } = readIndexCandidates(db, projectName);
+        const index = buildBriefingIndex(candidates, projectName, Date.now(), {
+          truncated,
+          // One shared cap: the index gets what the block above left of it.
+          maxChars: DEFAULT_TOPOLOGY_BUDGET.maxChars
+            - (memoryLines.length ? joinedLength(memoryLines) + 2 : 0),
+        });
         indexLines = index.lines;
         const rendered = new Set(index.ids);
-        for (const row of indexRows) if (rendered.has(row.id)) indexEntities.push(row);
+        for (const row of candidates) if (rendered.has(row.id)) indexEntities.push(row);
       } catch (err) {
         const reason = String(err?.message || err);
         try { process.stderr.write(`[memesh session-start] briefing-index: ${reason}\n`); } catch {}
@@ -1880,7 +1545,7 @@ process.stdin.on('end', async () => {
           const at = renderedEntityIds.indexOf(id);
           if (at >= 0) renderedEntityIds.splice(at, 1);
         }
-        const poolEntities = [...topLessons, ...projectEntities, ...globalEntities, ...recentEntities, ...indexEntities,
+        const poolEntities = [...topLessons, ...projectEntities, ...noProjectEntities, ...globalEntities, ...recentEntities, ...indexEntities,
           ...(handoffBlock.length > 0 ? [handoffRow] : [])];
         const entitiesById = new Map(poolEntities.map((entity) => [entity.id, entity]));
         // A memory can appear in the ranked block AND the index; it was

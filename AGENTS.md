@@ -16,10 +16,14 @@ host is recallable from all of them. Not installed yet? Follow
    eligible handoff comes first, after optional repository facts: check its
    age and verify its claims against the files before acting on it. The rest
    depends on the `briefing` setting (`memesh config set briefing <level>`):
-   - `minimal` (**default**): this project only — its decisions, lessons,
+   - `minimal` (**default**): this project — its decisions, lessons,
      knowledge and recent activity, with the repository state in front
-     whenever anything else is shown. No task state, no index, nothing from
-     other projects. A project with nothing to show injects nothing at all.
+     whenever anything else is shown — plus up to five of your memories that
+     belong to no project (every level, under their own heading). No task
+     state, no index, nothing from other projects. A project with nothing to
+     show injects only the session's project line, and that line appears only
+     when the host reports a usable working directory; without one there is no
+     project line and nothing is guessed.
    - `standard`: adds the stated goal / next / blocked / done when fresh, and
      a capped index of durable memories with `[mem:id]` handles
      (`memesh briefing --index` prints just the index).
@@ -118,7 +122,7 @@ host is recallable from all of them. Not installed yet? Follow
 | `import` | Import a JSON export; `merge_strategy` (required): skip / append / overwrite |
 | `learn` | Record a structured lesson: error, root cause, fix, prevention |
 | `task_state` | Read or update where the work stands: goal / next / blocked / done |
-| `briefing` | The assembled work topology — an eligible exact-project handoff precedes ranked memories at every level, after optional repository facts; `minimal` then shows this project's decisions, lessons, knowledge and recent activity, `standard` adds fresh task state and a capped durable-memory index, and `full` adds other projects and global memory; exact `project` + `recipient` can surface only that recipient's unfetched deliveries |
+| `briefing` | The assembled work topology — an eligible exact-project handoff precedes ranked memories at every level, after optional repository facts; `minimal` then shows this project's decisions, lessons, knowledge and recent activity plus memories with no project, `standard` adds fresh task state and a capped durable-memory index, and `full` adds other projects and global memory; exact `project` + `recipient` can surface only that recipient's unfetched deliveries |
 | `user_patterns` | Analyze work schedule, tool preferences, and focus areas from memory |
 | `improvement` | Propose an evidence-linked product improvement or read its status; only a human may accept/reject it |
 | `message` | Discover live agents, then exchange exact-recipient untrusted messages: durable JSON payload max 64 KiB; complete native envelope max 16 KiB with distinct `native_message_too_large` and `recipient_unavailable` errors; delivery reads/acceptance never imply ACK or disposition |

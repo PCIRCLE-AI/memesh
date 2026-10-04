@@ -96,12 +96,17 @@ export function groupTopology(entities, projectName) {
     const knowledge = [];
     const evidence = [];
     const global = [];
+    const noProject = [];
     const foreign = [];
     for (const e of entities) {
         if (e.type === 'task-state' || e.type === 'session-handoff')
             continue;
         if (e.global) {
             global.push(e);
+            continue;
+        }
+        if (e.noProject) {
+            noProject.push(e);
             continue;
         }
         if (e.foreign) {
@@ -123,7 +128,7 @@ export function groupTopology(entities, projectName) {
             decisions.push(e);
     }
     decisions.sort(byRecency);
-    for (const list of [lessons, knowledge, evidence, global, foreign])
+    for (const list of [lessons, knowledge, evidence, noProject, global, foreign])
         list.sort(bySignal);
     const sections = [];
     if (decisions.length)
@@ -134,6 +139,8 @@ export function groupTopology(entities, projectName) {
         sections.push({ heading: `What is known about ${jsonStringLiteral(projectLabel(projectName))}:`, entities: knowledge });
     if (evidence.length)
         sections.push({ heading: `Recent activity in ${jsonStringLiteral(projectLabel(projectName))}:`, entities: evidence });
+    if (noProject.length)
+        sections.push({ heading: 'Your memories with no project (preferences, general lessons):', entities: noProject });
     if (global.length)
         sections.push({ heading: 'Global memory — applies across projects:', entities: global });
     if (foreign.length)
@@ -191,7 +198,7 @@ export function assembleTopologyBlock(stateLines, pools, projectName, budget = D
                 globalCandidates.push(e.global ? e : { ...e, global: true });
             }
             else {
-                candidates.push(pool.foreign && !e.foreign ? { ...e, foreign: true } : e);
+                candidates.push(pool.noProject ? { ...e, noProject: true } : pool.foreign && !e.foreign ? { ...e, foreign: true } : e);
             }
         }
     }
