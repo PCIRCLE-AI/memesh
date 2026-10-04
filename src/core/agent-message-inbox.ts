@@ -44,20 +44,51 @@ interface InboxListDb {
 }
 
 /**
- * Under Codex (only), a delivery the router already pushed into the thread
- * — an `agent_host_accepts` row — is in the model's context, so a reminder
- * to poll and fetch it again only makes the agent do it twice. Claude Code
+ * Under Codex (only), a delivery the router already pushed into THIS thread
+ * — an `agent_host_accepts` row whose receipt names this thread — is on its
+ * way into this conversation, so a reminder to poll and fetch it again only
+ * makes the agent do it twice. A copy pushed into a DIFFERENT thread of the
+ * same principal (#514: a configured principal spans threads, and an ended
+ * thread never runs it) is not, so it is still reminded here. Claude Code
  * keeps reminding: there host acceptance is not proof the model saw it
  * (#468, #492). No clause on a database without the table.
+ *
+ * When this session is unknown, or a host acceptance names no thread (an
+ * older adapter), the delivery is treated as this thread's, as before.
+ *
+ * A notice-only acceptance (`content: 'notice'`: the Codex queue now carries a
+ * short notice, never the body) puts nothing to read in the thread, so it
+ * silences no reminder; an acceptance without `content` keeps the meaning above.
  */
-function hostAcceptedFilter(db: InboxDb, excludeHostAccepted: boolean): string {
-  if (!excludeHostAccepted) return '';
+function hostAcceptedFilter(
+  db: InboxDb,
+  excludeHostAccepted: boolean,
+  session?: string,
+): { sql: string; params: unknown[] } {
+  if (!excludeHostAccepted) return { sql: '', params: [] };
   const hasTable = db.prepare(
     "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_host_accepts'",
   ).get() !== undefined;
-  return hasTable
-    ? 'AND NOT EXISTS (SELECT 1 FROM agent_host_accepts h WHERE h.delivery_id = d.delivery_id)'
-    : '';
+  if (!hasTable) return { sql: '', params: [] };
+  // A notice-only acceptance put no body in the thread, so it never silences the reminder.
+  const carriedBody = "COALESCE(json_extract(h.receipt_json, '$.content'), '') <> 'notice'";
+  if (session === undefined) {
+    return {
+      sql: `AND NOT EXISTS (SELECT 1 FROM agent_host_accepts h WHERE h.delivery_id = d.delivery_id AND ${carriedBody})`,
+      params: [],
+    };
+  }
+  const ids = [...sessionAliasChain(db, session)];
+  return {
+    sql: `AND NOT EXISTS (
+      SELECT 1 FROM agent_host_accepts h
+      WHERE h.delivery_id = d.delivery_id
+        AND ${carriedBody}
+        AND (json_extract(h.receipt_json, '$.thread_id') IS NULL
+          OR json_extract(h.receipt_json, '$.thread_id') IN (${ids.map(() => '?').join(', ')}))
+    )`,
+    params: ids,
+  };
 }
 
 /**
@@ -338,12 +369,13 @@ export function unreadMessageRefsFor(
   if (!recipient) return [];
   try {
     const intended = intendedSessionFilter(db, session);
+    const accepted = hostAcceptedFilter(db, excludeHostAccepted, session);
     const rows = db.prepare(
       `SELECT d.project AS project, d.message_id AS message_id
        FROM agent_message_deliveries d
        WHERE ${DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION}
          ${intended.sql}
-         ${hostAcceptedFilter(db, excludeHostAccepted)}
+         ${accepted.sql}
          AND NOT EXISTS (
            SELECT 1 FROM agent_message_receipts r
            WHERE r.project = d.project
@@ -353,7 +385,7 @@ export function unreadMessageRefsFor(
          )
        ORDER BY d.project, d.message_id
        LIMIT ?`,
-    ).all(recipient, recipient, Date.now(), ...intended.params, limit) as Array<{ project?: string; message_id?: string }>;
+    ).all(recipient, recipient, Date.now(), ...intended.params, ...accepted.params, limit) as Array<{ project?: string; message_id?: string }>;
     return rows.filter(
       (row): row is UnreadMessageRef => typeof row.project === 'string' && typeof row.message_id === 'string',
     );
@@ -427,12 +459,13 @@ export function unreadInboxLinesFor(
   if (!recipient) return [];
   try {
     const intended = intendedSessionFilter(db, session);
+    const accepted = hostAcceptedFilter(db, excludeHostAccepted, session);
     const rows = db.prepare(
       `SELECT d.project AS project, d.recipient AS recipient, d.target_kind AS target_kind, COUNT(*) AS n
        FROM agent_message_deliveries d
        WHERE ${DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION}
          ${intended.sql}
-         ${hostAcceptedFilter(db, excludeHostAccepted)}
+         ${accepted.sql}
          AND NOT EXISTS (
            SELECT 1 FROM agent_message_receipts r
            WHERE r.project = d.project
@@ -443,7 +476,7 @@ export function unreadInboxLinesFor(
        GROUP BY d.project, d.recipient, d.target_kind
        ORDER BY n DESC, d.project, d.recipient
        LIMIT 5`,
-    ).all(recipient, recipient, Date.now(), ...intended.params) as Array<{ project?: string; recipient?: string; target_kind?: string; n?: number }>;
+    ).all(recipient, recipient, Date.now(), ...intended.params, ...accepted.params) as Array<{ project?: string; recipient?: string; target_kind?: string; n?: number }>;
     return rows.flatMap((row) =>
       typeof row.project === 'string' && typeof row.recipient === 'string' && typeof row.n === 'number' && row.n > 0
         ? unreadInboxLines(row.n, row.project, row.recipient, undefined, row.target_kind === 'session' ? 'session' : 'principal')

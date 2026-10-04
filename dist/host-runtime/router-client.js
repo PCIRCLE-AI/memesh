@@ -215,11 +215,14 @@ class ActiveRouterHostConnection {
                             socket.destroy(new AgentRouterProtocolError('invalid_response', 'Router frame identity does not match the registered host.'));
                             return;
                         }
+                        const current = !this.closed && this.currentSocket === socket;
                         this.closed = true;
                         this.clearHeartbeat();
                         if (this.currentSocket === socket)
                             this.currentSocket = null;
                         socket.destroy();
+                        if (current)
+                            this.input.on_superseded?.();
                         continue;
                     }
                     if (frame.type !== 'deliver')

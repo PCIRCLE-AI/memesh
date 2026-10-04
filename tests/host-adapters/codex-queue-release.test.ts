@@ -6,6 +6,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { WebSocketServer } from 'ws';
 import { releaseCodexQueue, type SpawnCodexProxy } from '../../src/host-adapters/codex-queue-release.js';
+import { createCodexCliQueueAdapter } from '../../src/host-adapters/codex-cli-queue.js';
 
 // Stands in for `codex app-server proxy`: pipes stdio to a socket, exits 1, or
 // hangs silently ('stubborn' also ignores SIGTERM). It exits when its stdin
@@ -57,6 +58,27 @@ async function exitOf(child: ChildProcess): Promise<{ code: number | null; signa
 
 const MEMESH_ITEM = { id: 'sub-1', input: [{ type: 'text', text: '{"message_type":"memesh_message","delivery_id":"d-1"}' }] };
 const OTHER_MEMESH_ITEM = { ...MEMESH_ITEM, id: 'sub-2' };
+
+// The text the Codex queue adapter really queues now: a notice, not the full message.
+async function queuedNoticeText(): Promise<string> {
+  let text = '';
+  const adapter = createCodexCliQueueAdapter({
+    authenticate: () => true,
+    run: async (_command, args) => { text = args[4] ?? ''; return { status: 0, stdout: '', stderr: '' }; },
+  });
+  await adapter.dispatch!({
+    dispatch_id: 'd-1', attempt_id: 'a-1', project: 'project-1', principal_id: 'principal-1',
+    session_instance_id: 'thread-1', connection_id: 'c-1', generation: 1, hops: 1, untrusted_payload: true,
+    envelope: {
+      message_id: 'm-1', project: 'project-1', sender: 'sender-1', sender_host: null, recipient: 'thread-1',
+      target_kind: 'session', content_type: 'text/plain', correlation_id: null, reply_to: null,
+      privacy: 'private', created_at: '2026-10-04T00:00:00.000Z', payload: 'body', provenance: {},
+    },
+  });
+  return text;
+}
+const NOTICE_ITEM = { id: 'sub-1', input: [{ type: 'text', text: await queuedNoticeText() }] };
+const OTHER_NOTICE_ITEM = { ...NOTICE_ITEM, id: 'sub-2' };
 const USER_ITEM = { id: 'user-1', input: [{ type: 'text', text: 'Reply with exactly: USER-ITEM' }] };
 const STARTED = { result: { turn: { id: 'turn-1', status: 'inProgress' } } };
 const rpcError = (message: string) => ({ error: { code: -32600, message } });
@@ -64,6 +86,8 @@ const rpcError = (message: string) => ({ error: { code: -32600, message } });
 describe('releaseCodexQueue', () => {
   it.skipIf(process.platform === 'win32').each([
     ['started: only MeMesh input is queued', [MEMESH_ITEM, OTHER_MEMESH_ITEM], null, STARTED, { status: 'started' }],
+    ['started: queued MeMesh notices are MeMesh input', [NOTICE_ITEM, OTHER_NOTICE_ITEM], null, STARTED, { status: 'started' }],
+    ['other_input: user input waits beside a MeMesh notice', [USER_ITEM, NOTICE_ITEM], null, null, { status: 'other_input' }],
     ['empty: the submission is no longer listed', [USER_ITEM, OTHER_MEMESH_ITEM], null, null, { status: 'empty' }],
     ['empty: the submission was taken before the start', [MEMESH_ITEM], null,
       rpcError('queued submission not found: sub-1'), { status: 'empty' }],

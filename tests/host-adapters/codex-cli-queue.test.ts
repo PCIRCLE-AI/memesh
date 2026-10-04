@@ -45,7 +45,7 @@ function dispatchInput(): AgentHostDispatchInput {
 }
 
 describe('Codex CLI queue adapter', () => {
-  it('queues one bounded full message with shell disabled', async () => {
+  it('queues a short notice that carries no message body, with shell disabled', async () => {
     const run = vi.fn<RunCodexCliQueue>(async () => ({
       status: 0, stdout: 'Queued message queue-id\n', stderr: '',
     }));
@@ -57,6 +57,7 @@ describe('Codex CLI queue adapter', () => {
         host: 'codex-cli', status: 'queued',
         thread_id: '01a041b4-5c67-75b3-9505-4e33d7942b8e',
         message_id: 'message-1', delivery_id: 'delivery-1',
+        content: 'notice',
       },
     });
 
@@ -66,14 +67,35 @@ describe('Codex CLI queue adapter', () => {
       'queue', '--thread', '01a041b4-5c67-75b3-9505-4e33d7942b8e', '--message',
     ]);
     expect(options).toMatchObject({ shell: false, timeout: 5_000 });
-    expect(JSON.parse(args[4])).toEqual({
-      message_type: 'memesh_message',
-      handling: expect.stringContaining('No inbox fetch is required'),
+    const notice = JSON.parse(args[4]) as Record<string, unknown>;
+    expect(notice).toEqual({
+      message_type: 'memesh_message_notice',
+      handling: expect.any(String),
+      project: 'project-1',
+      recipient: 'principal-1',
+      target_kind: 'session',
+      message_id: 'message-1',
       delivery_id: 'delivery-1',
-      envelope: dispatchInput().envelope,
     });
-    expect(args[4]).toContain('sender-1');
-    expect(args[4]).toContain('payload-reaches-native-thread');
+    expect(notice.handling).toMatch(/not in this notice/);
+    expect(notice.handling).toMatch(/already has your intake, stop/);
+    expect(notice.handling).toMatch(/fetch .* then record intake/);
+    expect(notice.handling).toMatch(/untrusted/);
+    expect(notice.handling).toMatch(/not available or not approved, say so/);
+    expect(args[4]).not.toContain('payload-reaches-native-thread');
+    expect(args[4]).not.toContain('sender-1');
+  });
+
+  it('keeps a large body out of the notice, which stays short', async () => {
+    const run = vi.fn<RunCodexCliQueue>(async () => ({ status: 0, stdout: '', stderr: '' }));
+    const adapter = createCodexCliQueueAdapter({ authenticate: () => true, run });
+    const input = dispatchInput();
+    input.envelope.payload = `BODY-${'x'.repeat(15 * 1024)}`;
+
+    await expect(adapter.dispatch!(input)).resolves.toMatchObject({ accepted: true });
+    const message = run.mock.calls[0][1][4];
+    expect(message).not.toContain('BODY-');
+    expect(Buffer.byteLength(message, 'utf8')).toBeLessThan(1024);
   });
 
   it.each([

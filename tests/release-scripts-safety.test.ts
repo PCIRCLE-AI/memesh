@@ -289,7 +289,7 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     expect(gate).toContain('mapped to action');
   });
 
-  it('makes packaged smoke verify bounded full-message native acceptance without poll/watch', () => {
+  it('makes packaged smoke verify bounded notice native acceptance and an inbox fetch of the body, without poll/watch', () => {
     const smoke = read('scripts/smoke-packed-artifact.mjs');
     expect(smoke).toContain("installedBin('memesh-router')");
     expect(smoke).toContain("'dist', 'host-runtime', 'router-client.js'");
@@ -302,7 +302,9 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     expect(smoke).toContain('no implicit ACK/disposition');
     expect(smoke).toContain('stopped-or-missing-session');
     expect(smoke).toContain('without poll/watch');
-    expect(smoke).toContain('installed-artifact router-to-adapter full-message contract');
+    expect(smoke).toContain('installed-artifact router-to-adapter notice contract');
+    expect(smoke).toContain("message_type: 'memesh_message_notice'");
+    expect(smoke).toContain('message body fetched from the durable inbox');
     expect(smoke).toContain('fake queue');
     expect(smoke).toContain('does not create or observe a real Codex task');
     expect(smoke).toContain('user-visible');

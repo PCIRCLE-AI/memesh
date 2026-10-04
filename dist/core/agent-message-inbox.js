@@ -1,10 +1,27 @@
-function hostAcceptedFilter(db, excludeHostAccepted) {
+function hostAcceptedFilter(db, excludeHostAccepted, session) {
     if (!excludeHostAccepted)
-        return '';
+        return { sql: '', params: [] };
     const hasTable = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_host_accepts'").get() !== undefined;
-    return hasTable
-        ? 'AND NOT EXISTS (SELECT 1 FROM agent_host_accepts h WHERE h.delivery_id = d.delivery_id)'
-        : '';
+    if (!hasTable)
+        return { sql: '', params: [] };
+    const carriedBody = "COALESCE(json_extract(h.receipt_json, '$.content'), '') <> 'notice'";
+    if (session === undefined) {
+        return {
+            sql: `AND NOT EXISTS (SELECT 1 FROM agent_host_accepts h WHERE h.delivery_id = d.delivery_id AND ${carriedBody})`,
+            params: [],
+        };
+    }
+    const ids = [...sessionAliasChain(db, session)];
+    return {
+        sql: `AND NOT EXISTS (
+      SELECT 1 FROM agent_host_accepts h
+      WHERE h.delivery_id = d.delivery_id
+        AND ${carriedBody}
+        AND (json_extract(h.receipt_json, '$.thread_id') IS NULL
+          OR json_extract(h.receipt_json, '$.thread_id') IN (${ids.map(() => '?').join(', ')}))
+    )`,
+        params: ids,
+    };
 }
 function intendedSessionFilter(db, session) {
     const hasColumn = db.prepare("SELECT 1 AS present FROM pragma_table_info('agent_message_deliveries') WHERE name = 'intended_session'").get() !== undefined;
@@ -124,11 +141,12 @@ export function unreadMessageRefsFor(db, recipient, session, limit = UNREAD_MESS
         return [];
     try {
         const intended = intendedSessionFilter(db, session);
+        const accepted = hostAcceptedFilter(db, excludeHostAccepted, session);
         const rows = db.prepare(`SELECT d.project AS project, d.message_id AS message_id
        FROM agent_message_deliveries d
        WHERE ${DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION}
          ${intended.sql}
-         ${hostAcceptedFilter(db, excludeHostAccepted)}
+         ${accepted.sql}
          AND NOT EXISTS (
            SELECT 1 FROM agent_message_receipts r
            WHERE r.project = d.project
@@ -137,7 +155,7 @@ export function unreadMessageRefsFor(db, recipient, session, limit = UNREAD_MESS
              AND r.receipt_kind = 'intake'
          )
        ORDER BY d.project, d.message_id
-       LIMIT ?`).all(recipient, recipient, Date.now(), ...intended.params, limit);
+       LIMIT ?`).all(recipient, recipient, Date.now(), ...intended.params, ...accepted.params, limit);
         return rows.filter((row) => typeof row.project === 'string' && typeof row.message_id === 'string');
     }
     catch (err) {
@@ -168,11 +186,12 @@ export function unreadInboxLinesFor(db, recipient, session, excludeHostAccepted 
         return [];
     try {
         const intended = intendedSessionFilter(db, session);
+        const accepted = hostAcceptedFilter(db, excludeHostAccepted, session);
         const rows = db.prepare(`SELECT d.project AS project, d.recipient AS recipient, d.target_kind AS target_kind, COUNT(*) AS n
        FROM agent_message_deliveries d
        WHERE ${DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION}
          ${intended.sql}
-         ${hostAcceptedFilter(db, excludeHostAccepted)}
+         ${accepted.sql}
          AND NOT EXISTS (
            SELECT 1 FROM agent_message_receipts r
            WHERE r.project = d.project
@@ -182,7 +201,7 @@ export function unreadInboxLinesFor(db, recipient, session, excludeHostAccepted 
          )
        GROUP BY d.project, d.recipient, d.target_kind
        ORDER BY n DESC, d.project, d.recipient
-       LIMIT 5`).all(recipient, recipient, Date.now(), ...intended.params);
+       LIMIT 5`).all(recipient, recipient, Date.now(), ...intended.params, ...accepted.params);
         return rows.flatMap((row) => typeof row.project === 'string' && typeof row.recipient === 'string' && typeof row.n === 'number' && row.n > 0
             ? unreadInboxLines(row.n, row.project, row.recipient, undefined, row.target_kind === 'session' ? 'session' : 'principal')
             : []);

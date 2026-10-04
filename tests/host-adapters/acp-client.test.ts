@@ -187,4 +187,22 @@ describe('MeMesh ACP host adapter', () => {
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
     expect(exited.targetRouter.unregisterCount).toBe(1);
   });
+
+  it('#532: reports a started agent\'s exit once through onFailure, and never for close()', async () => {
+    const failures: Error[] = [];
+    const exited = await connect('exit-on-prompt', { onFailure: (error) => failures.push(error) });
+    await expect(exited.targetRouter.registration.deliver({ envelope: { id: 'exit' }, generation: 7 }))
+      .rejects.toBeInstanceOf(AcpProcessExitError);
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toBeInstanceOf(AcpProcessExitError);
+    expect(failures[0]?.message).toMatch(/^ACP process exited with (code|signal) /);
+    expect(exited.targetRouter.unregisterCount).toBe(1);
+
+    const closedFailures: Error[] = [];
+    const closed = await connect('normal', { onFailure: (error) => closedFailures.push(error) });
+    await closed.adapter.close();
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+    expect(closedFailures).toEqual([]);
+  });
 });

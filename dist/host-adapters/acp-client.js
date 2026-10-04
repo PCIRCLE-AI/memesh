@@ -52,6 +52,7 @@ export class AcpClientHostAdapter {
     child;
     router;
     onSessionUpdate;
+    onFailure;
     maxEnvelopeBytes;
     maxFrameBytes;
     maxQueueDepth;
@@ -80,6 +81,7 @@ export class AcpClientHostAdapter {
         this.child = child;
         this.router = options.router;
         this.onSessionUpdate = options.onSessionUpdate;
+        this.onFailure = options.onFailure;
         this.maxEnvelopeBytes = options.max_envelope_bytes;
         this.maxFrameBytes = options.max_frame_bytes;
         this.maxQueueDepth = options.max_queue_depth;
@@ -460,6 +462,8 @@ export class AcpClientHostAdapter {
         void this.unregisterFromRouter();
         if (stop && !this.exited)
             stopChild(this.child, this.shutdownGraceMs);
+        if (!this.closing)
+            this.onFailure?.(error);
     }
     rejectPending(error) {
         for (const pending of this.pending.values()) {
@@ -657,6 +661,7 @@ function normalizeOptions(options) {
         session: options.session ?? { kind: 'new' },
         router: options.router,
         onSessionUpdate: options.onSessionUpdate,
+        onFailure: options.onFailure,
         initialize_timeout_ms: boundedInteger('initialize_timeout_ms', options.initialize_timeout_ms ?? DEFAULT_INITIALIZE_TIMEOUT_MS, 1, MAX_CONFIGURED_TIMEOUT_MS),
         session_timeout_ms: boundedInteger('session_timeout_ms', options.session_timeout_ms ?? DEFAULT_SESSION_TIMEOUT_MS, 1, MAX_CONFIGURED_TIMEOUT_MS),
         prompt_timeout_ms: boundedInteger('prompt_timeout_ms', options.prompt_timeout_ms ?? DEFAULT_PROMPT_TIMEOUT_MS, 1, MAX_CONFIGURED_TIMEOUT_MS),

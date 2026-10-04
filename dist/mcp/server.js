@@ -31465,7 +31465,7 @@ function receiptDetail(note2, context) {
 }
 function resolveCanonicalDelivery(db2, project, recipient, messageId2) {
   const delivery = db2.prepare(`
-    SELECT delivery_id, message_id, project, recipient
+    SELECT delivery_id, message_id, project, recipient, target_kind, intended_session
     FROM agent_message_deliveries
     WHERE project = ? AND recipient = ? AND message_id = ?
   `).get(project, recipient, messageId2);
@@ -31506,6 +31506,9 @@ function recordPublicWorkflow(db2, input, context) {
   });
 }
 function readPublicReceipts(db2, input) {
+  return db2.transaction(() => readPublicReceiptsSnapshot(db2, input))();
+}
+function readPublicReceiptsSnapshot(db2, input) {
   const delivery = resolveCanonicalDelivery(db2, input.project, input.recipient, input.message_id);
   const projected = [];
   const legacy = readAgentMessageReceipts(db2, input);
@@ -31516,7 +31519,11 @@ function readPublicReceipts(db2, input) {
   }));
   const hostAccept = readHostAccept(db2, delivery.delivery_id);
   if (hostAccept) {
-    projected.push({ fact: projectHostAccept(delivery, hostAccept), rank: 0, order: hostAccept.fact_order });
+    projected.push({
+      fact: { ...projectHostAccept(delivery, hostAccept), delivery_state: readDeliveryState(db2, delivery) },
+      rank: 0,
+      order: hostAccept.fact_order
+    });
   }
   const ackFacts = db2.prepare(`
     SELECT rowid AS fact_order, ack_fact_id, delivery_id, host_accept_id, actor,
@@ -31563,6 +31570,41 @@ function readPublicReceipts(db2, input) {
     });
   }
   return projected.sort((left, right) => left.fact.created_at.localeCompare(right.fact.created_at) || left.rank - right.rank || left.order - right.order).map(({ fact }) => fact);
+}
+function readDeliveryState(db2, delivery) {
+  const observedAtMs = Date.now();
+  const intake = db2.prepare(`
+    SELECT 1 FROM agent_message_receipts
+    WHERE project = ? AND recipient = ? AND message_id = ? AND receipt_kind = 'intake'
+    LIMIT 1
+  `).get(delivery.project, delivery.recipient, delivery.message_id) === void 0 ? "pending" : "recorded";
+  const observed_at = new Date(observedAtMs).toISOString();
+  const session = delivery.target_kind === "session" ? delivery.recipient : delivery.intended_session;
+  if (session === null)
+    return { observed_at, intake, target_session: "not_applicable" };
+  return { observed_at, intake, target_session: sessionLiveness(db2, delivery.project, session, observedAtMs), session };
+}
+function sessionLiveness(db2, project, session, observedAtMs) {
+  const ids = [...sessionAliasChain(db2, session)];
+  const marks = ids.map(() => "?").join(", ");
+  try {
+    const registered = db2.prepare(`
+      SELECT 1 FROM agent_session_instances WHERE project = ? AND session_instance_id IN (${marks}) LIMIT 1
+    `).get(project, ...ids) !== void 0;
+    if (!registered)
+      return "unknown";
+    const live = db2.prepare(`
+      SELECT 1 FROM agent_session_connections
+      WHERE project = ? AND session_instance_id IN (${marks})
+        AND disconnected_at IS NULL AND lease_expires_at_ms > ?
+      LIMIT 1
+    `).get(project, ...ids, observedAtMs) !== void 0;
+    return live ? "live" : "not_live";
+  } catch (error51) {
+    if (/no such table: agent_session_(instances|connections)\b/.test(error51 instanceof Error ? error51.message : ""))
+      return "unknown";
+    throw error51;
+  }
 }
 function projectHostAccept(delivery, fact) {
   return {
@@ -32564,7 +32606,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "message",
-    description: `Use this to contact or discover another local agent on the same MeMesh instance. discover is a bounded, project-scoped live-directory read of active leases and returns only the router result; it performs no send, fetch, ACK, replay, or receipt work. An empty discover result does not predict whether a principal-target send/fetch will work: those use a separate durable store-and-forward path to a named recipient that does not require the router or any live registration (an exact target_kind=session send still does, and still needs the router). send durably stores one untrusted JSON-encoded payload of at most ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes (64 KiB) idempotently. Native delivery has a separate ${AGENT_NATIVE_MESSAGE_MAX_BYTES}-byte (16 KiB) cap for the complete envelope, including routing metadata and payload. For target_kind=session, success requires the exact active native host to accept that full envelope. An oversized envelope returns native_message_too_large; an unreachable local router returns router_unreachable; an unavailable or rejected exact session returns recipient_unavailable. Both sender-side failures preserve scoped recovery data. Principal targets retain durable store-and-forward behavior even when native delivery is unavailable. Every session of one principal shares its inbox: a principal send with intended_session is meant for that one session, which alone is reminded of it and alone may record intake or a disposition (any other caller, including one with no session id, gets intended_for_other_session). A session send with fallback_to_principal that the session refuses (recipient_unavailable) is sent to its principal with intended_session set to that session instead. poll/fetch remain compatibility and recovery reads; intake, ack, disposition, and activation are separate explicit facts. Native acceptance, polling, fetching, and discovery never imply agent acknowledgement or workflow completion.`,
+    description: `Use this to contact or discover another local agent on the same MeMesh instance. discover is a bounded, project-scoped live-directory read of active leases and returns only the router result; it performs no send, fetch, ACK, replay, or receipt work. An empty discover result does not predict whether a principal-target send/fetch will work: those use a separate durable store-and-forward path to a named recipient that does not require the router or any live registration (an exact target_kind=session send still does, and still needs the router). send durably stores one untrusted JSON-encoded payload of at most ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes (64 KiB) idempotently. Native delivery has a separate ${AGENT_NATIVE_MESSAGE_MAX_BYTES}-byte (16 KiB) cap for the complete envelope, including routing metadata and payload. For target_kind=session, success requires the exact active native host to accept the message: Claude Code receives the full envelope; the Codex CLI queue receives only a notice, after which the agent checks its receipts and fetches the body. An oversized envelope returns native_message_too_large; an unreachable local router returns router_unreachable; an unavailable or rejected exact session returns recipient_unavailable. Both sender-side failures preserve scoped recovery data. Principal targets retain durable store-and-forward behavior even when native delivery is unavailable. Every session of one principal shares its inbox: a principal send with intended_session is meant for that one session, which alone is reminded of it and alone may record intake or a disposition (any other caller, including one with no session id, gets intended_for_other_session). A session send with fallback_to_principal that the session refuses (recipient_unavailable) is sent to its principal with intended_session set to that session instead. For a full native envelope, poll/fetch remain compatibility and recovery reads; after a Codex notice, fetch is the required read of the body. intake, ack, disposition, and activation are separate explicit facts. Native acceptance, polling, fetching, and discovery never imply agent acknowledgement or workflow completion. In receipts, the host_accept fact's delivery_state.target_session "not_live" only means that session had no live registration when read; it is not a permanent end. A MeMesh send cannot wake or resume an offline session (an exact-session send to it returns recipient_unavailable). Resume that session in its own host, which may not succeed at once, and read receipts again; or decide to send to the principal instead, knowing the original session may still take the first message if it comes back. MeMesh does neither automatically.`,
     inputSchema: {
       type: "object",
       properties: {

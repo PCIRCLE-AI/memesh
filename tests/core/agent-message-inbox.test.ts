@@ -112,3 +112,128 @@ describe('Feature: #490 a session-targeted delivery is found under its principal
     expect(() => unreadInboxLinesFor(getDatabase(), 'claude-principal')).toThrow(/no such table: agent_session_instances/);
   });
 });
+
+/**
+ * #514 (configured principal across threads): under Codex a host-accepted
+ * delivery is quiet only in the thread it was queued into. The same
+ * principal's NEXT thread, which never got that copy, is still reminded.
+ */
+describe('Feature: #514 a Codex host acceptance silences only the thread it was queued into', () => {
+  useTestDatabase('memesh-inbox-codex-thread-');
+  const T1 = '01a10000-0000-7000-8000-000000000001';
+  const T2 = '01a10000-0000-7000-8000-000000000002';
+
+  function send(key: string, extra: { intended_session?: string } = {}) {
+    return sendAgentMessage(getDatabase(), {
+      project: 'proj-a', sender: 'lead', recipient: 'p2-principal', target_kind: 'principal',
+      idempotency_key: key, content_type: 'text/plain', payload: 'hello', ...extra,
+    });
+  }
+
+  let generation = 0;
+  function accept(deliveryId: string, receipt: Record<string, unknown>) {
+    const db = getDatabase();
+    generation += 1;
+    const suffix = `${deliveryId}-${Object.keys(receipt).length}`;
+    db.prepare(`INSERT OR IGNORE INTO agent_principals (project, principal_id, activation_event_sequence) VALUES ('proj-a', 'p2-principal', 0)`).run();
+    db.prepare(`INSERT OR IGNORE INTO agent_session_instances (project, session_instance_id, principal_id, adapter_kind) VALUES ('proj-a', ?, 'p2-principal', 'codex-cli-queue')`).run(T1);
+    db.prepare(`INSERT INTO agent_session_connections (connection_id, project, principal_id, session_instance_id, generation, adapter_kind, router_instance_id, lease_expires_at_ms)
+      VALUES (?, 'proj-a', 'p2-principal', ?, ?, 'codex-cli-queue', 'test-router', ?)`).run(`c-${suffix}`, T1, generation, Date.now() - 1);
+    db.prepare(`INSERT INTO agent_dispatch_attempts (attempt_id, delivery_id, project, principal_id, session_instance_id, connection_id, generation, router_instance_id, attempt_number, result, completed_at)
+      VALUES (?, ?, 'proj-a', 'p2-principal', ?, ?, ?, 'test-router', 1, 'adapter_returned', CURRENT_TIMESTAMP)`).run(`a-${suffix}`, deliveryId, T1, `c-${suffix}`, generation);
+    db.prepare(`INSERT INTO agent_host_accepts (host_accept_id, attempt_id, delivery_id, adapter_kind, receipt_json) VALUES (?, ?, ?, 'codex-cli-queue', ?)`)
+      .run(`h-${suffix}`, `a-${suffix}`, deliveryId, JSON.stringify(receipt));
+  }
+
+  const refs = (session: string | undefined, codex = true, recipient = 'p2-principal') =>
+    unreadMessageRefsFor(getDatabase(), recipient, session, undefined, codex).map((r) => r.message_id);
+
+  it('stays quiet in the thread the copy was queued into', () => {
+    const sent = send('same-thread');
+    accept(sent.delivery_id, { host: 'codex-cli', status: 'queued', thread_id: T1 });
+    expect(refs(T1)).toEqual([]);
+    expect(unreadInboxLinesFor(getDatabase(), 'p2-principal', T1, true)).toEqual([]);
+  });
+
+  it('reminds the same principal in a different thread, which never got that copy', () => {
+    const sent = send('other-thread');
+    accept(sent.delivery_id, { host: 'codex-cli', status: 'queued', thread_id: T1 });
+    expect(refs(T2)).toEqual([sent.message_id]);
+    expect(unreadInboxLinesFor(getDatabase(), 'p2-principal', T2, true)).toHaveLength(1);
+  });
+
+  it('never shows it to a foreign principal', () => {
+    const sent = send('foreign');
+    accept(sent.delivery_id, { host: 'codex-cli', status: 'queued', thread_id: T1 });
+    expect(refs(T2, true, 'someone-else')).toEqual([]);
+  });
+
+  it('keeps a message meant for T1 out of T2 (intended_session unchanged)', () => {
+    const sent = send('intended', { intended_session: T1 });
+    accept(sent.delivery_id, { host: 'codex-cli', status: 'queued', thread_id: T1 });
+    expect(refs(T2)).toEqual([]);
+  });
+
+  it('goes quiet everywhere once the recipient records intake', () => {
+    const sent = send('intaken');
+    accept(sent.delivery_id, { host: 'codex-cli', status: 'queued', thread_id: T1 });
+    recordAgentReceipt(getDatabase(), {
+      project: 'proj-a', recipient: 'p2-principal', message_id: sent.message_id,
+      receipt_kind: 'intake', intake_state: 'ingested', actor: 'p2-principal', idempotency_key: 'intake-1',
+    });
+    expect(refs(T2)).toEqual([]);
+    expect(refs(T1)).toEqual([]);
+  });
+
+  it('treats an acceptance that names no thread, or an unknown session, as this thread (quiet, as before)', () => {
+    const legacy = send('legacy');
+    accept(legacy.delivery_id, { channel: 'test' });
+    expect(refs(T2)).toEqual([]);
+    const known = send('no-session');
+    accept(known.delivery_id, { host: 'codex-cli', status: 'queued', thread_id: T1 });
+    expect(refs(undefined)).toEqual([]);
+  });
+
+  describe('a notice-only acceptance (the Codex queue carries no body) keeps reminding until intake', () => {
+    const notice = { host: 'codex-cli', status: 'queued', thread_id: T1, content: 'notice' };
+
+    it('reminds in the thread it was queued into, another thread, and an unknown session', () => {
+      const sent = send('notice-everywhere');
+      accept(sent.delivery_id, notice);
+      expect(refs(T1)).toEqual([sent.message_id]);
+      expect(refs(T2)).toEqual([sent.message_id]);
+      expect(refs(undefined)).toEqual([sent.message_id]);
+      expect(unreadInboxLinesFor(getDatabase(), 'p2-principal', T1, true)).toHaveLength(1);
+      expect(unreadInboxLinesFor(getDatabase(), 'p2-principal', undefined, true)).toHaveLength(1);
+    });
+
+    it('keeps intended_session and the principal boundary, and no line carries the body', () => {
+      const sent = send('notice-intended', { intended_session: T1 });
+      accept(sent.delivery_id, notice);
+      expect(refs(T1)).toEqual([sent.message_id]);
+      expect(refs(T2)).toEqual([]);
+      expect(refs(T1, true, 'someone-else')).toEqual([]);
+      const lines = unreadInboxLinesFor(getDatabase(), 'p2-principal', T1, true);
+      expect(lines).toHaveLength(1);
+      expect(lines.join('\n')).not.toContain('hello');
+    });
+
+    it('goes quiet everywhere once the recipient records intake', () => {
+      const sent = send('notice-intaken');
+      accept(sent.delivery_id, notice);
+      recordAgentReceipt(getDatabase(), {
+        project: 'proj-a', recipient: 'p2-principal', message_id: sent.message_id,
+        receipt_kind: 'intake', intake_state: 'ingested', actor: 'p2-principal', idempotency_key: 'intake-notice',
+      });
+      expect(refs(T1)).toEqual([]);
+      expect(refs(T2)).toEqual([]);
+      expect(refs(undefined)).toEqual([]);
+    });
+  });
+
+  it('leaves Claude Code reminding as before (no host-accept filter outside Codex)', () => {
+    const sent = send('claude');
+    accept(sent.delivery_id, { host: 'codex-cli', status: 'queued', thread_id: T1 });
+    expect(refs(T1, false)).toEqual([sent.message_id]);
+  });
+});

@@ -336,6 +336,11 @@ export class AgentRouter {
     handleHostOutcome(request, socket) {
         const pending = this.pendingExternal.get(request.attempt_id);
         if (!pending) {
+            if (request.type === 'host_accept') {
+                const late = this.recordLateHostAccept(request, socket);
+                if (late)
+                    return late;
+            }
             const duplicate = this.db.prepare(`SELECT 1 FROM agent_host_accepts
         WHERE delivery_id = ? AND attempt_id = ?`).get(request.delivery_id, request.attempt_id);
             return { duplicate: Boolean(duplicate) };
@@ -352,6 +357,42 @@ export class AgentRouter {
             ? { accepted: true, receipt: validateReceipt(request.receipt) }
             : { accepted: false, receipt: { failure_code: request.failure_code } });
         return { correlated: true };
+    }
+    recordLateHostAccept(request, socket) {
+        if (socket.destroyed || this.externalConnections.get(request.connection_id) !== socket)
+            return undefined;
+        const attempt = this.db.prepare(`
+      SELECT project, session_instance_id FROM agent_dispatch_attempts
+      WHERE attempt_id = ? AND delivery_id = ? AND connection_id = ? AND generation = ?
+        AND router_instance_id = ? AND result = 'adapter_rejected' AND failure_code = 'host_outcome_timeout'
+    `).get(request.attempt_id, request.delivery_id, request.connection_id, request.generation, this.router_instance_id);
+        if (!attempt)
+            return undefined;
+        let connection;
+        try {
+            connection = this.requireCurrentConnection({
+                project: attempt.project,
+                session_instance_id: attempt.session_instance_id,
+                connection_id: request.connection_id,
+                generation: request.generation,
+            });
+        }
+        catch {
+            return undefined;
+        }
+        const receipt = validateReceipt(request.receipt);
+        const recorded = this.db.transaction(() => this.insertHostAccept(request.attempt_id, request.delivery_id, connection.adapter_kind, receipt)).immediate();
+        return recorded ? { correlated: true } : { duplicate: true };
+    }
+    insertHostAccept(attemptId, deliveryId, adapterKind, receipt) {
+        if (this.db.prepare('SELECT 1 FROM agent_host_accepts WHERE delivery_id = ?').get(deliveryId))
+            return false;
+        this.db.prepare(`
+      INSERT INTO agent_host_accepts (
+        host_accept_id, attempt_id, delivery_id, adapter_kind, receipt_json
+      ) VALUES (?, ?, ?, ?, ?)
+    `).run(randomUUID(), attemptId, deliveryId, adapterKind, JSON.stringify(receipt));
+        return true;
     }
     registerConnection(registration) {
         return this.db.transaction(() => {
@@ -607,16 +648,8 @@ export class AgentRouter {
             return false;
         }
         return this.db.transaction(() => {
-            const existing = this.db.prepare(`
-        SELECT 1 FROM agent_host_accepts WHERE delivery_id = ?
-      `).get(delivery.delivery_id);
-            if (existing)
+            if (!this.insertHostAccept(attempt.attempt_id, delivery.delivery_id, connection.adapter_kind, receipt))
                 return false;
-            this.db.prepare(`
-        INSERT INTO agent_host_accepts (
-          host_accept_id, attempt_id, delivery_id, adapter_kind, receipt_json
-        ) VALUES (?, ?, ?, ?, ?)
-      `).run(randomUUID(), attempt.attempt_id, delivery.delivery_id, connection.adapter_kind, JSON.stringify(receipt));
             this.finishAttempt(attempt.attempt_id, 'adapter_returned', null);
             return true;
         }).immediate();

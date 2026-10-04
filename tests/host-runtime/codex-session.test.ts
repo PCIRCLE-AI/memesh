@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getProjectName } from '../../src/core/paths.js';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
   codexCompanionControlSocketPath,
@@ -13,6 +13,11 @@ import {
   startCodexSessionCompanion,
   supersedeCodexSessionCompanion,
 } from '../../src/host-runtime/codex-session.js';
+import { canonicalAgentScopeId } from '../../src/core/agent-scope-id.js';
+import { AgentRouter } from '../../src/core/agent-router.js';
+import { closeDatabase, openDatabase } from '../../src/db.js';
+import { connectRouterHost } from '../../src/host-runtime/router-client.js';
+import { memeshPackageVersion } from '../../src/host-runtime/package-version.js';
 
 const tempDirs: string[] = [];
 const threadId = '01a041b4-5c67-75b3-9505-4e33d7942b8e';
@@ -420,6 +425,51 @@ describe.skipIf(process.platform === 'win32')('Codex SessionEnd companion lifecy
     }
   });
 
+  it.skipIf(process.platform === 'win32')('#532: a resume from another directory replaces the same thread\'s companion and registers under the new project', async () => {
+    const { config, hook } = fixture();
+    const dataDir = automaticDataDir(config.workspace as string);
+    const previous = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-codex-previous-'));
+    tempDirs.push(previous);
+    const staged = await stageCompanionState({ dataDir, workspace: previous }); // same thread, old directory
+    try {
+      await expect(supersedeCodexSessionCompanion(
+        dataDir,
+        { ...hook, source: 'resume' },
+        plugin,
+      )).resolves.toBe(true);
+      expect(staged.seen('terminate')).toBe(true);
+      expect(fs.existsSync(staged.statePath)).toBe(false);
+    } finally {
+      await staged.close();
+    }
+    const connect = vi.fn(async () => ({ connection_id: 'resumed-here', generation: 1, close: async () => undefined }));
+    await startCodexSessionCompanion(
+      undefined, { ...hook, source: 'resume' }, { PLUGIN_ROOT: '/plugin' }, { connect: connect as never },
+    );
+    expect(connect).toHaveBeenCalledWith(expect.objectContaining({
+      identity: expect.objectContaining({ project: getProjectName(config.workspace as string), session_instance_id: threadId }),
+    }));
+    expect(getProjectName(config.workspace as string)).not.toBe(getProjectName(previous));
+  });
+
+  it('never replaces another thread\'s companion', async () => {
+    const { config, hook } = fixture();
+    const dataDir = automaticDataDir(config.workspace as string);
+    const other = '01a10000-0000-7000-8000-00000000ffff';
+    const staged = await stageCompanionState({ dataDir, workspace: config.workspace as string, id: other });
+    try {
+      await expect(supersedeCodexSessionCompanion(
+        dataDir,
+        { ...hook, source: 'resume' },
+        plugin,
+      )).resolves.toBe(true);
+      expect(staged.seen('terminate')).toBe(false);
+      expect(fs.existsSync(staged.statePath)).toBe(true);
+    } finally {
+      await staged.close();
+    }
+  });
+
   it('rejects malformed lifecycle state without sending a signal or replacing it', async () => {
     const { config, hook } = fixture();
     const dataDir = automaticDataDir(config.workspace as string);
@@ -494,6 +544,123 @@ describe.skipIf(process.platform === 'win32')('detached launch input CLI boundar
     expect(fs.existsSync(target)).toBe(retained);
     if (retained) expect(fs.readFileSync(target, 'utf8')).toBe(content);
     if (kind === 'symlink') expect(fs.lstatSync(input).isSymbolicLink()).toBe(true);
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('#532 a detached companion replaced by a newer connection', () => {
+  const entrypoint = fileURLToPath(new URL('../../dist/host-runtime/codex-session.js', import.meta.url));
+
+  function companionFixture() {
+    const { config, hook } = fixture();
+    const dir = config.workspace as string;
+    const dataDir = automaticDataDir(dir);
+    fs.mkdirSync(path.join(dataDir, 'hosts'), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(dataDir, 'hosts', 'codex-session.json'), JSON.stringify({
+      router_socket: config.router_socket,
+      token_file: config.token_file,
+      principal_id: 'principal-a',
+      workspace: dir,
+    }), { mode: 0o600 });
+    const statePath = codexCompanionStatePath(dataDir, threadId);
+    const controlSocket = codexCompanionControlSocketPath(dataDir, threadId);
+    const start = () => {
+      const launchFile = path.join(path.dirname(statePath), 'launch-supersede.json');
+      fs.writeFileSync(launchFile, JSON.stringify(hook), { mode: 0o600 });
+      const companion = spawn(process.execPath, [entrypoint, '--companion', launchFile], {
+        env: { ...process.env, MEMESH_DIR: dataDir, MEMESH_DB_PATH: path.join(dataDir, 'knowledge-graph.db'), PLUGIN_ROOT: dir },
+        stdio: ['ignore', 'ignore', 'pipe'],
+      });
+      let stderr = '';
+      companion.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
+      const exited = new Promise<number | null>(resolve => companion.once('exit', code => resolve(code)));
+      return {
+        companion,
+        stderr: () => stderr,
+        outcome: () => Promise.race([
+          exited,
+          new Promise<string>(resolve => setTimeout(() => resolve('still running'), 5_000)),
+        ]),
+      };
+    };
+    const log = () => fs.readFileSync(path.join(dataDir, 'codex-companion.log'), 'utf8');
+    return { config, dir, statePath, controlSocket, start, log };
+  }
+
+  it('exits 0, removes only its own state and socket, logs why, and leaves the replacement live', async () => {
+    const { config, dir, statePath, controlSocket, start, log } = companionFixture();
+    const db = openDatabase(path.join(dir, 'messages.db'));
+    const router = new AgentRouter({
+      db,
+      socket_path: config.router_socket,
+      memesh_version: memeshPackageVersion(),
+      adapters: [{ kind: 'codex-cli-queue', authenticate: value => value.auth_token === 'test-token' }],
+    });
+    await router.start();
+    const { companion, stderr, outcome } = start();
+    let replacement: Awaited<ReturnType<typeof connectRouterHost>> | undefined;
+    try {
+      await vi.waitFor(() => {
+        expect(JSON.parse(fs.readFileSync(statePath, 'utf8'))).toMatchObject({ pid: companion.pid, registered: true });
+      }, { interval: 25, timeout: 5_000 });
+
+      replacement = await connectRouterHost({
+        socket_path: config.router_socket,
+        auth_token: 'test-token',
+        identity: {
+          project: canonicalAgentScopeId(getProjectName(fs.realpathSync(dir))),
+          principal_id: 'principal-a',
+          session_instance_id: threadId,
+          adapter_kind: 'codex-cli-queue',
+        },
+        deliver: async () => ({ host: 'unused', status: 'rejected' }),
+      });
+      expect({ code: await outcome(), stderr: stderr() }).toEqual({ code: 0, stderr: '' });
+      expect(fs.existsSync(statePath)).toBe(false);
+      expect(fs.existsSync(controlSocket)).toBe(false);
+      expect(log()).toContain('replaced by a newer connection for this session; stopping');
+      expect(db.prepare(`
+        SELECT disconnected_at FROM agent_session_connections WHERE connection_id = ?
+      `).get(replacement.connection_id)).toEqual({ disconnected_at: null });
+    } finally {
+      companion.kill('SIGKILL');
+      await replacement?.close();
+      await router.stop();
+      closeDatabase();
+    }
+  });
+
+  // The router's registration reply and the supersession frame arrive in one
+  // write, so the replacement is reported before the connect call returns.
+  it('handles a replacement reported in the same read as its registration reply', async () => {
+    const { config, statePath, controlSocket, start, log } = companionFixture();
+    const router = net.createServer((socket) => {
+      socket.once('data', (chunk: Buffer) => {
+        const register = JSON.parse(chunk.toString('utf8').trim()) as { request_id: string; version: number };
+        socket.write(`${JSON.stringify({
+          version: register.version,
+          request_id: register.request_id,
+          ok: true,
+          result: { connection_id: 'connection-1', generation: 1, lease_ms: 60_000, memesh_version: memeshPackageVersion() },
+        })}\n${JSON.stringify({
+          version: register.version, type: 'session_superseded', connection_id: 'connection-1', generation: 1,
+        })}\n`);
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      router.once('error', reject);
+      router.listen(config.router_socket, () => resolve());
+    });
+    fs.chmodSync(config.router_socket, 0o600);
+    const { companion, stderr, outcome } = start();
+    try {
+      expect({ code: await outcome(), stderr: stderr() }).toEqual({ code: 0, stderr: '' });
+      expect(fs.existsSync(statePath)).toBe(false);
+      expect(fs.existsSync(controlSocket)).toBe(false);
+      expect(log()).toContain('replaced by a newer connection for this session; stopping');
+    } finally {
+      companion.kill('SIGKILL');
+      await new Promise<void>(resolve => router.close(() => resolve()));
+    }
   });
 });
 

@@ -870,24 +870,21 @@ describe('assertExactCodexQueueRouting', () => {
     { sessionId: 'thread-a', messageId: 'message-a', deliveryId: 'delivery-a', project: 'project', sender: 'sender-a', contentType: 'application/json', payload: { qa_sentinel: 'sentinel-a' } },
     { sessionId: 'thread-b', messageId: 'message-b', deliveryId: 'delivery-b', project: 'project', sender: 'sender-b', contentType: 'application/json', payload: { qa_sentinel: 'sentinel-b' } },
   ];
+  // The Codex queue carries only a notice naming the message; the body stays in the inbox.
   const invocation = (message: (typeof messages)[number]) => ({
     thread_id: message.sessionId,
     serialized_message: JSON.stringify({
-      message_type: 'memesh_message',
+      message_type: 'memesh_message_notice',
+      handling: 'fetch it from the inbox',
+      project: message.project,
+      recipient: message.sessionId,
+      target_kind: 'session',
+      message_id: message.messageId,
       delivery_id: message.deliveryId,
-      envelope: {
-        message_id: message.messageId,
-        project: message.project,
-        sender: message.sender,
-        recipient: message.sessionId,
-        target_kind: 'session',
-        content_type: message.contentType,
-        payload: message.payload,
-      },
     }),
   });
 
-  it('accepts exactly one matching native envelope for each exact-session send', () => {
+  it('accepts exactly one matching native notice for each exact-session send', () => {
     expect(assertExactCodexQueueRouting(messages.map(invocation), messages)).toHaveLength(2);
   });
 
@@ -904,14 +901,45 @@ describe('assertExactCodexQueueRouting', () => {
     ], messages)).toThrow(/crossed exact-session boundaries/);
   });
 
-  it('rejects a native envelope whose private payload differs despite matching ids', () => {
-    const wrongPayload = invocation(messages[0]);
-    const serialized = JSON.parse(wrongPayload.serialized_message);
-    serialized.envelope.payload = { qa_sentinel: 'wrong' };
-    wrongPayload.serialized_message = JSON.stringify(serialized);
+  it('rejects a notice that carries the message body or an envelope', () => {
+    const withBody = invocation(messages[0]);
+    const serialized = JSON.parse(withBody.serialized_message);
+    serialized.note = `sentinel ${messages[0].payload.qa_sentinel}`;
+    withBody.serialized_message = JSON.stringify(serialized);
     expect(() => assertExactCodexQueueRouting([
-      wrongPayload, invocation(messages[1]),
+      withBody, invocation(messages[1]),
     ], messages)).toThrow(/crossed exact-session boundaries/);
+    const withEnvelope = invocation(messages[0]);
+    const enveloped = JSON.parse(withEnvelope.serialized_message);
+    enveloped.envelope = { payload: messages[0].payload };
+    withEnvelope.serialized_message = JSON.stringify(enveloped);
+    expect(() => assertExactCodexQueueRouting([
+      withEnvelope, invocation(messages[1]),
+    ], messages)).toThrow(/crossed exact-session boundaries/);
+  });
+
+  it('rejects a notice naming another delivery, and an inbox fetch whose body differs', () => {
+    const wrongDelivery = invocation(messages[0]);
+    const serialized = JSON.parse(wrongDelivery.serialized_message);
+    serialized.delivery_id = 'delivery-b';
+    wrongDelivery.serialized_message = JSON.stringify(serialized);
+    expect(() => assertExactCodexQueueRouting([
+      wrongDelivery, invocation(messages[1]),
+    ], messages)).toThrow(/crossed exact-session boundaries/);
+    const fetchedWrong = messages.map((message, index) => ({
+      ...message,
+      fetched: {
+        message_id: message.messageId, sender: message.sender, content_type: message.contentType,
+        payload: index === 0 ? { qa_sentinel: 'wrong' } : message.payload,
+      },
+    }));
+    expect(() => assertExactCodexQueueRouting(messages.map(invocation), fetchedWrong))
+      .toThrow(/crossed exact-session boundaries/);
+    const fetchedRight = messages.map((message) => ({
+      ...message,
+      fetched: { message_id: message.messageId, sender: message.sender, content_type: message.contentType, payload: message.payload },
+    }));
+    expect(assertExactCodexQueueRouting(messages.map(invocation), fetchedRight)).toHaveLength(2);
   });
 });
 

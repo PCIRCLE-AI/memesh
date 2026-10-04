@@ -63,6 +63,7 @@ export interface AcpClientOptions extends AcpHostIdentity {
     session?: AcpSessionSelection;
     router: AcpRouterRegistrar;
     onSessionUpdate?: (update: AcpSessionUpdate) => void;
+    onFailure?: (error: Error) => void;
     initialize_timeout_ms?: number;
     session_timeout_ms?: number;
     prompt_timeout_ms?: number;
@@ -102,6 +103,7 @@ export declare class AcpClientHostAdapter {
     private readonly child;
     private readonly router;
     private readonly onSessionUpdate?;
+    private readonly onFailure?;
     private readonly maxEnvelopeBytes;
     private readonly maxFrameBytes;
     private readonly maxQueueDepth;

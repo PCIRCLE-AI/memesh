@@ -63,6 +63,8 @@ export interface ManagedCodexHost {
   readonly thread_id: string;
   readonly session_instance_id: string;
   readonly process: ChildProcess;
+  /** Settles when a newer registration of this session replaced it (#532). */
+  readonly superseded: Promise<void>;
   close(): Promise<void>;
 }
 
@@ -116,11 +118,17 @@ export async function startManagedCodexHost(
   });
 
   let routerConnection: RouterHostConnection | undefined;
+  let reportSuperseded!: () => void;
+  const superseded = new Promise<void>((resolve) => { reportSuperseded = resolve; });
   let closeTask: Promise<void> | undefined;
   const close = (): Promise<void> => {
     closeTask ??= (async () => {
-      await routerConnection?.close();
-      if (isChildRunning(child)) child.kill('SIGTERM');
+      try {
+        await routerConnection?.close();
+      } finally {
+        // The owned Codex stops even when the router close fails (#532).
+        if (isChildRunning(child)) child.kill('SIGTERM');
+      }
     })();
     return closeTask;
   };
@@ -172,11 +180,13 @@ export async function startManagedCodexHost(
           queued_submission_id: receipt.queued_submission_id,
         };
       },
+      on_superseded: reportSuperseded,
     });
     return {
       thread_id: thread.thread_id,
       session_instance_id: normalized.sessionInstanceId,
       process: child,
+      superseded,
       close,
     };
   } catch (error) {
@@ -288,18 +298,54 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, milliseconds));
 }
 
+export interface ManagedCodexHostSupervision {
+  onSignal(handler: () => void): void;
+  exit(code: number): void;
+  /** The owned Codex process ended on its own: the host exits 1 once it drains. */
+  fail(): void;
+  stderr: { write(text: string): unknown };
+}
+
+/**
+ * A SIGINT/SIGTERM, or a newer registration of this session replacing it
+ * (#532), closes the host and exits 0 (1 if that close fails). If the owned
+ * Codex process died first, that failure keeps the exit and neither stops it.
+ */
+export function superviseManagedCodexHost(host: ManagedCodexHost, io: ManagedCodexHostSupervision): void {
+  let stopping = false;
+  let failed = false;
+  const stop = (reason: string, notice?: string) => {
+    if (stopping || failed) return;
+    stopping = true;
+    if (notice) io.stderr.write(notice);
+    void host.close().then(() => io.exit(0), (error: unknown) => {
+      io.stderr.write(`memesh-host-codex: closing after the ${reason} failed: ${error instanceof Error ? error.message : String(error)}\n`);
+      io.exit(1);
+    });
+  };
+  // After a failure the signal still ends the process, keeping the failure's exit 1.
+  io.onSignal(() => (failed ? io.exit(1) : stop('signal')));
+  void host.superseded.then(() => stop(
+    'replacement',
+    'memesh-host-codex: replaced by a newer connection for this session; stopping.\n',
+  ));
+  host.process.once('exit', () => {
+    if (stopping) return;
+    failed = true;
+    io.fail();
+  });
+}
+
 async function runManagedCodexHost(): Promise<void> {
   const host = await startManagedCodexHost(readHostConfig<ManagedCodexHostConfig>());
-  let shuttingDown = false;
-  const shutdown = () => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    void host.close().finally(() => process.exit(0));
-  };
-  process.once('SIGINT', shutdown);
-  process.once('SIGTERM', shutdown);
-  host.process.once('exit', () => {
-    if (!shuttingDown) process.exitCode = 1;
+  superviseManagedCodexHost(host, {
+    onSignal(handler) {
+      process.once('SIGINT', handler);
+      process.once('SIGTERM', handler);
+    },
+    exit: (code) => process.exit(code),
+    fail: () => { process.exitCode = 1; },
+    stderr: process.stderr,
   });
 }
 

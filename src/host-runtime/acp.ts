@@ -55,6 +55,7 @@ export type ConnectRouterHost = (options: {
     work_summary?: string;
   };
   deliver: (delivery: RouterDelivery) => Promise<Record<string, unknown>>;
+  on_superseded?: () => void;
 }) => Promise<RouterHostConnection>;
 
 interface AcpHostAdapterHandle {
@@ -74,6 +75,10 @@ export interface ManagedAcpHostRuntime {
   readonly principal_id: string;
   readonly session_instance_id: string;
   readonly acp_session_id: string;
+  /** Settles with the error that ended the started agent (#532); never settles on `close()`. */
+  readonly failure: Promise<Error>;
+  /** Settles when a newer registration of this session replaced it (#532). */
+  readonly superseded: Promise<void>;
   close: () => Promise<void>;
 }
 
@@ -320,6 +325,10 @@ export async function startManagedAcpHost(
     ?? ((options: AcpClientOptions) => AcpClientHostAdapter.connect(options));
   let routerConnection: RouterHostConnection | undefined;
   let adapter: AcpHostAdapterHandle | undefined;
+  let reportFailure!: (error: Error) => void;
+  const failure = new Promise<Error>((resolve) => { reportFailure = resolve; });
+  let reportSuperseded!: () => void;
+  const superseded = new Promise<void>((resolve) => { reportSuperseded = resolve; });
 
   async function closeRouterConnection(): Promise<void> {
     const connection = routerConnection;
@@ -337,6 +346,7 @@ export async function startManagedAcpHost(
       workspace: launch.workspace,
       session: launch.session,
       ...(sessionUpdateSink ? { onSessionUpdate: sessionUpdateSink.write } : {}),
+      onFailure: reportFailure,
       router: {
         async register(registration: AcpRouterRegistration) {
           assertExactManagedIdentity(registration, launch);
@@ -363,6 +373,7 @@ export async function startManagedAcpHost(
                 stop_reason: receipt.stop_reason,
               };
             },
+            on_superseded: reportSuperseded,
           });
           return {
             generation: routerConnection.generation,
@@ -392,6 +403,8 @@ export async function startManagedAcpHost(
     principal_id: launch.principal_id,
     session_instance_id: launch.session_instance_id,
     acp_session_id: activeAdapter.acp_session_id,
+    failure,
+    superseded,
     close,
   });
 }
@@ -450,8 +463,63 @@ async function runAcpHost(): Promise<void> {
     connect_router_host: connectRouterHost,
   });
 
-  process.once('SIGINT', () => { void runtime.close().finally(() => process.exit(0)); });
-  process.once('SIGTERM', () => { void runtime.close().finally(() => process.exit(0)); });
+  await superviseManagedAcpHost(runtime, {
+    onSignal(handler) {
+      process.once('SIGINT', handler);
+      process.once('SIGTERM', handler);
+    },
+    exit: (code) => process.exit(code),
+    stderr: process.stderr,
+  });
+}
+
+export interface ManagedAcpHostSupervision {
+  onSignal(handler: () => void): void;
+  exit(code: number): void;
+  stderr: { write(text: string): unknown };
+}
+
+/**
+ * #532: once the agent has started, the host used to keep running, and exit 0
+ * with no output, after the agent process died. A SIGINT/SIGTERM, or a newer
+ * registration of this session replacing it, closes the host and exits 0
+ * (1 if that close fails), unless the agent has already failed: then the
+ * failure path owns the exit. It waits for that failure, closes the rest of the
+ * host and throws the failure itself, so `runHostEntry` prints its cause and
+ * exits 1. A cleanup error is reported on its own line and never replaces that
+ * cause.
+ */
+export async function superviseManagedAcpHost(
+  runtime: ManagedAcpHostRuntime,
+  io: ManagedAcpHostSupervision,
+): Promise<never> {
+  let failed = false;
+  let stopping = false;
+  void runtime.failure.then(() => { failed = true; });
+  const stop = (reason: string, notice?: string) => {
+    if (failed || stopping) return;
+    stopping = true;
+    if (notice) io.stderr.write(notice);
+    void runtime.close().then(() => {
+      if (!failed) io.exit(0);
+    }, (closeError: unknown) => {
+      if (failed) return;
+      io.stderr.write(`memesh-host-acp: closing after the ${reason} failed: ${closeError instanceof Error ? closeError.message : String(closeError)}\n`);
+      io.exit(1);
+    });
+  };
+  io.onSignal(() => stop('signal'));
+  void runtime.superseded.then(() => stop(
+    'replacement',
+    'memesh-host-acp: replaced by a newer connection for this session; stopping.\n',
+  ));
+  const error = await runtime.failure;
+  try {
+    await runtime.close();
+  } catch (closeError) {
+    io.stderr.write(`memesh-host-acp: closing after the agent failed also failed: ${closeError instanceof Error ? closeError.message : String(closeError)}\n`);
+  }
+  throw error;
 }
 
 const entryPath = process.argv[1];

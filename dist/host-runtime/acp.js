@@ -207,6 +207,10 @@ export async function startManagedAcpHost(config, dependencies) {
         ?? ((options) => AcpClientHostAdapter.connect(options));
     let routerConnection;
     let adapter;
+    let reportFailure;
+    const failure = new Promise((resolve) => { reportFailure = resolve; });
+    let reportSuperseded;
+    const superseded = new Promise((resolve) => { reportSuperseded = resolve; });
     async function closeRouterConnection() {
         const connection = routerConnection;
         routerConnection = undefined;
@@ -222,6 +226,7 @@ export async function startManagedAcpHost(config, dependencies) {
             workspace: launch.workspace,
             session: launch.session,
             ...(sessionUpdateSink ? { onSessionUpdate: sessionUpdateSink.write } : {}),
+            onFailure: reportFailure,
             router: {
                 async register(registration) {
                     assertExactManagedIdentity(registration, launch);
@@ -248,6 +253,7 @@ export async function startManagedAcpHost(config, dependencies) {
                                 stop_reason: receipt.stop_reason,
                             };
                         },
+                        on_superseded: reportSuperseded,
                     });
                     return {
                         generation: routerConnection.generation,
@@ -277,6 +283,8 @@ export async function startManagedAcpHost(config, dependencies) {
         principal_id: launch.principal_id,
         session_instance_id: launch.session_instance_id,
         acp_session_id: activeAdapter.acp_session_id,
+        failure,
+        superseded,
         close,
     });
 }
@@ -325,8 +333,45 @@ async function runAcpHost() {
     const runtime = await startManagedAcpHost(config, {
         connect_router_host: connectRouterHost,
     });
-    process.once('SIGINT', () => { void runtime.close().finally(() => process.exit(0)); });
-    process.once('SIGTERM', () => { void runtime.close().finally(() => process.exit(0)); });
+    await superviseManagedAcpHost(runtime, {
+        onSignal(handler) {
+            process.once('SIGINT', handler);
+            process.once('SIGTERM', handler);
+        },
+        exit: (code) => process.exit(code),
+        stderr: process.stderr,
+    });
+}
+export async function superviseManagedAcpHost(runtime, io) {
+    let failed = false;
+    let stopping = false;
+    void runtime.failure.then(() => { failed = true; });
+    const stop = (reason, notice) => {
+        if (failed || stopping)
+            return;
+        stopping = true;
+        if (notice)
+            io.stderr.write(notice);
+        void runtime.close().then(() => {
+            if (!failed)
+                io.exit(0);
+        }, (closeError) => {
+            if (failed)
+                return;
+            io.stderr.write(`memesh-host-acp: closing after the ${reason} failed: ${closeError instanceof Error ? closeError.message : String(closeError)}\n`);
+            io.exit(1);
+        });
+    };
+    io.onSignal(() => stop('signal'));
+    void runtime.superseded.then(() => stop('replacement', 'memesh-host-acp: replaced by a newer connection for this session; stopping.\n'));
+    const error = await runtime.failure;
+    try {
+        await runtime.close();
+    }
+    catch (closeError) {
+        io.stderr.write(`memesh-host-acp: closing after the agent failed also failed: ${closeError instanceof Error ? closeError.message : String(closeError)}\n`);
+    }
+    throw error;
 }
 const entryPath = process.argv[1];
 if (entryPath && isExecutedModule(entryPath, import.meta.url)) {

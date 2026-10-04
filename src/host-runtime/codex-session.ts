@@ -394,8 +394,14 @@ async function terminatePriorExactCompanion(dataDir: string, session: ValidCodex
     if (fs.existsSync(statePath)) throw new Error('Codex companion lifecycle state is malformed; refusing to replace it.');
     return;
   }
-  if (state.thread_id !== session.threadId || state.workspace !== session.workspace) {
-    throw new Error('Codex companion lifecycle state belongs to another exact session; refusing cross-thread termination.');
+  // The same thread resumed from another directory replaces its own companion
+  // (#532): the record is keyed by the thread and the termination is proven
+  // by that companion's own token over its own control socket, so the
+  // workspace is not part of the proof. The new start registers under the
+  // current workspace. SessionEnd still needs both to match, so an old
+  // directory's SessionEnd never retires the replacement.
+  if (state.thread_id !== session.threadId) {
+    throw new Error('Codex companion lifecycle state names another thread; refusing cross-thread termination.');
   }
   // Recorded but not yet registered, and still running: another start for this
   // session is under way. Refused as before the record was written this early;
@@ -498,6 +504,7 @@ function connectCodexSessionCompanion(
   session: ValidCodexSessionStart,
   realpath: typeof fs.realpathSync,
   connect: typeof connectRouterHost,
+  onSuperseded?: () => void,
 ): Promise<RouterHostConnection> {
   const selected = config === undefined
     ? automaticCodexSessionConfig(session)
@@ -516,6 +523,7 @@ function connectCodexSessionCompanion(
     async deliver() {
       throw new Error('Codex CLI queue delivery is owned by the router adapter.');
     },
+    on_superseded: onSuperseded,
   });
 }
 
@@ -757,8 +765,15 @@ async function runDetachedCompanion(
       session,
       fs.realpathSync,
       connectRouterHost,
+      // #532: a newer registration of this thread took over; this companion
+      // can no longer receive, so it stops through the one cleanup path.
+      () => {
+        recordCompanionLog(dataDir, `companion ${process.pid} replaced by a newer connection for this session; stopping.`);
+        exitAfterShutdown();
+      },
     );
-    writeCompanionState(statePath, { ...record, registered: true });
+    // Not when the replacement already arrived: cleanup has removed the state.
+    if (!cleanup) writeCompanionState(statePath, { ...record, registered: true });
   } catch (error) {
     process.exitCode = 1;
     try {
