@@ -38,7 +38,7 @@ import {
 } from './_generated/core-paths.js';
 import { autoCaptureDecision } from './_generated/capture-flag.js';
 import { SESSION_HANDOFF_TYPE } from './_generated/session-handoff.js';
-export { assembleTopologyBlock, buildReferenceContext, extractCitedMemoryIds, hasBriefingContent, projectLabel, DEFAULT_TOPOLOGY_BUDGET, GLOBAL_TOPOLOGY_LIMIT, SNIPPET_FETCH_CHARS, TOPOLOGY_CANDIDATE_CAP } from './_generated/work-topology.js';
+export { assembleTopologyBlock, buildReferenceContext, extractCitedMemoryIds, hasBriefingContent, jsonStringLiteral, projectLabel, DEFAULT_TOPOLOGY_BUDGET, GLOBAL_TOPOLOGY_LIMIT, SNIPPET_FETCH_CHARS, TOPOLOGY_CANDIDATE_CAP } from './_generated/work-topology.js';
 export { readRepoState, repoStateLines } from './_generated/repo-state.js';
 export { matchingGuards, guardFromMetadata } from './_generated/guards.js';
 export { writeCitationRule, citationRulePath, CITATION_RULE_BODY } from './_generated/citation-rule.js';
@@ -172,7 +172,7 @@ export function recordGuardFires(dbPath, lessonIds) {
     } catch { /* stderr gone */ }
   }
 }
-import { isAutoInjectable } from './_generated/work-topology.js';
+import { isAutoInjectable, jsonStringLiteral } from './_generated/work-topology.js';
 export { parseTaskState, taskStateLines, taskStateName, briefingTaskStateLines, STALE_TASK_STATE_HOURS } from './_generated/task-state.js';
 // #360 — the one briefing-level policy, shared with the `briefing` tool via
 // src/core/briefing-level.ts (this is the generated mirror; see that file).
@@ -196,7 +196,8 @@ export { automaticCodexSessionPrincipal };
 /** SessionStart's one line naming this session's exact project id — single
  *  owner, shared with the tests that compare the hook's memory block. */
 export function sessionProjectLine(projectName) {
-  return `MeMesh project for this session: "${projectName}". Pass project: "${projectName}" to remember, learn and recall `
+  const id = jsonStringLiteral(projectName);
+  return `MeMesh project for this session: ${id}. Pass project: ${id} to remember, learn and recall `
     + 'for this project\'s memories, or project: false for a memory that belongs to no project (a preference, a general lesson).';
 }
 

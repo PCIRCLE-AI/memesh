@@ -25724,13 +25724,13 @@ function groupTopology(entities, projectName) {
     list.sort(bySignal);
   const sections = [];
   if (decisions.length)
-    sections.push({ heading: `Decisions and direction for "${projectLabel(projectName)}":`, entities: decisions });
+    sections.push({ heading: `Decisions and direction for ${jsonStringLiteral(projectLabel(projectName))}:`, entities: decisions });
   if (lessons.length)
-    sections.push({ heading: `Lessons from "${projectLabel(projectName)}" \u2014 do not repeat these:`, entities: lessons });
+    sections.push({ heading: `Lessons from ${jsonStringLiteral(projectLabel(projectName))} \u2014 do not repeat these:`, entities: lessons });
   if (knowledge.length)
-    sections.push({ heading: `What is known about "${projectLabel(projectName)}":`, entities: knowledge });
+    sections.push({ heading: `What is known about ${jsonStringLiteral(projectLabel(projectName))}:`, entities: knowledge });
   if (evidence.length)
-    sections.push({ heading: `Recent activity in "${projectLabel(projectName)}":`, entities: evidence });
+    sections.push({ heading: `Recent activity in ${jsonStringLiteral(projectLabel(projectName))}:`, entities: evidence });
   if (global.length)
     sections.push({ heading: "Global memory \u2014 applies across projects:", entities: global });
   if (foreign.length)
@@ -25884,6 +25884,9 @@ var PROJECT_ID_HASH_SUFFIX = /~[0-9a-f]{32}$/;
 function projectLabel(projectId) {
   const label = projectId.replace(PROJECT_ID_HASH_SUFFIX, "");
   return label === "" ? projectId : label;
+}
+function jsonStringLiteral(value) {
+  return JSON.stringify(String(value)).replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
 }
 function stripControlChars(s) {
   return s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]+/g, " ");
@@ -29480,7 +29483,7 @@ function taskStateLines(state, project, now = /* @__PURE__ */ new Date()) {
     return [];
   const days = ageInDays(state.updated_at, now);
   const age = days === null ? "at some point" : days === 0 ? "today" : days === 1 ? "yesterday" : `${days} days ago`;
-  const lines = [`Stated about "${projectLabel(project)}" ${age}, and not revisited since:`];
+  const lines = [`Stated about ${jsonStringLiteral(projectLabel(project))} ${age}, and not revisited since:`];
   for (const field of TASK_STATE_FIELDS) {
     const value = state[field];
     if (value)
@@ -29542,10 +29545,10 @@ function resolveTaskStateAge(updatedAt, now) {
 function staleTaskStateLine(project, hours) {
   const days = Math.floor(hours / 24);
   const age = days >= 1 ? `${days} day${days === 1 ? "" : "s"} ago` : `${Math.floor(hours)} hour${Math.floor(hours) === 1 ? "" : "s"} ago`;
-  return `Task state for "${projectLabel(project)}" was last stated ${age} \u2014 older than ${STALE_TASK_STATE_HOURS}h, so it is not shown as current. Run \`memesh task\` to see or update it.`;
+  return `Task state for ${jsonStringLiteral(projectLabel(project))} was last stated ${age} \u2014 older than ${STALE_TASK_STATE_HOURS}h, so it is not shown as current. Run \`memesh task\` to see or update it.`;
 }
 function taskStateAgeUnknownLine(project) {
-  return `Task state for "${projectLabel(project)}" has a missing, unreadable, or future-dated timestamp, so its age could not be established \u2014 not shown as current. Run \`memesh task\` to see or update it.`;
+  return `Task state for ${jsonStringLiteral(projectLabel(project))} has a missing, unreadable, or future-dated timestamp, so its age could not be established \u2014 not shown as current. Run \`memesh task\` to see or update it.`;
 }
 function briefingTaskStateLines(state, project, now = /* @__PURE__ */ new Date(), { includeFresh = true } = {}) {
   if (isEmptyTaskState(state))
@@ -29575,7 +29578,7 @@ function readState(name) {
 var TaskStateUnreadableError = class extends Error {
   project;
   constructor(project) {
-    super(`task state for project "${projectLabel(project)}" is not readable: the stored record is not valid JSON. Re-state it with \`memesh task --goal \u2026\` (any write replaces the broken record).`);
+    super(`task state for project ${jsonStringLiteral(projectLabel(project))} is not readable: the stored record is not valid JSON. Re-state it with \`memesh task --goal \u2026\` (any write replaces the broken record).`);
     this.project = project;
     this.name = "TaskStateUnreadableError";
   }
@@ -29695,7 +29698,7 @@ function recipientEverSeen(db2, project, recipient) {
 function unreadInboxLines(count, project, recipient, everSeen, targetKind = "principal") {
   if (!recipient)
     return [];
-  const displayProject = JSON.stringify(project);
+  const displayProject = jsonStringLiteral(project);
   const displayRecipient = JSON.stringify(recipient);
   if (count > 0) {
     const noun = count === 1 ? "message" : "messages";
@@ -29844,10 +29847,10 @@ function injectedIndexReserve(projectName) {
   return Math.max(len(worst), len(empty));
 }
 function indexHeading(projectName) {
-  return `Index of durable memories for "${projectLabel(projectName)}" (newest first):`;
+  return `Index of durable memories for ${jsonStringLiteral(projectLabel(projectName))} (newest first):`;
 }
 function indexEmptyLine(projectName) {
-  return `- No durable memories (decisions, lessons, patterns, references) for "${projectLabel(projectName)}" yet.`;
+  return `- No durable memories (decisions, lessons, patterns, references) for ${jsonStringLiteral(projectLabel(projectName))} yet.`;
 }
 function moreLine(n, truncated) {
   return `- ${n}${truncated ? "+" : ""} more \u2014 memesh recall --tag "project:\u2026"`;
@@ -30102,7 +30105,7 @@ function assembleBriefing(project, recipient) {
   } catch (err) {
     if (!(err instanceof TaskStateUnreadableError))
       throw err;
-    taskLines = [`task state for ${projectLabel(projectName)}: ${err.message}`];
+    taskLines = [`task state for ${jsonStringLiteral(projectLabel(projectName))}: ${err.message}`];
   }
   const inboxRecipient = recipient === void 0 ? void 0 : canonicalAgentScopeId(recipient);
   const unreadCount = unreadDeliveryCount(db2, canonicalAgentScopeId(projectName), inboxRecipient, hostSessionFromEnv());
@@ -31803,7 +31806,7 @@ function sendPrincipalFallback(db2, message, refused) {
     SELECT principal_id FROM agent_session_instances WHERE project = ? AND session_instance_id = ?
   `).get(refused.project, refused.recipient);
   if (!session) {
-    throw new AgentRecipientUnavailableError(`There is no principal fallback: session ${JSON.stringify(refused.recipient)} has never registered in project ${JSON.stringify(refused.project)}, so its principal is unknown. Send to the principal yourself with intended_session ${JSON.stringify(refused.recipient)}.`);
+    throw new AgentRecipientUnavailableError(`There is no principal fallback: session ${JSON.stringify(refused.recipient)} has never registered in project ${jsonStringLiteral(refused.project)}, so its principal is unknown. Send to the principal yourself with intended_session ${JSON.stringify(refused.recipient)}.`);
   }
   let fallback;
   try {

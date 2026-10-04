@@ -75,6 +75,7 @@ import {
   writePrivateJson,
   openMemeshDb,
   sessionProjectLine,
+  jsonStringLiteral,
 } from './_shared.js';
 import { recordSessionLauncher } from './_clear-alias.js';
 import { recallListName, SESSION_ID_RE } from './_stop-notes.js';
@@ -994,9 +995,9 @@ process.stdin.on('end', async () => {
     // MEMESH_RECIPIENT (`resolveMessageRecipient`'s Codex fallback), so this
     // line is no longer Claude-only.
     addressLine = recipient
-      ? `MeMesh messaging address: project "${projectName}", recipient "${recipient}" — use `
-        + `"${recipient}" as sender in \`message\` so replies reach you; \`message discover --project `
-        + `"${projectName}"\` lists other agents here.`
+      ? `MeMesh messaging address: project ${jsonStringLiteral(projectName)}, recipient "${recipient}" — use `
+        + `"${recipient}" as sender in \`message\` so replies reach you; \`message discover\` with this project `
+        + 'lists other agents here.'
       : null;
     // The check above only catches an unusable VALUE for one known key
     // (`briefing`) inside an otherwise-parseable config object. A config.json
@@ -1775,7 +1776,7 @@ process.stdin.on('end', async () => {
           // one line above, so nothing is lost.
           reason: `briefing-index: ${hookErrorReason(err)}`,
         });
-        indexLines = [`Index of durable memories for "${projectLabel(projectName)}": could not be read this session — run \`memesh doctor\`.`];
+        indexLines = [`Index of durable memories for ${jsonStringLiteral(projectLabel(projectName))}: could not be read this session — run \`memesh doctor\`.`];
       }
 
       // Every `[mem:id]` handle a rendered line ends with. Anchored to the

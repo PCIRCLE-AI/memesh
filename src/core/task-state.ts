@@ -35,7 +35,7 @@
 // times has a few hundred lines here, which is the history a human wants
 // anyway.
 
-import { projectLabel } from './work-topology.js';
+import { jsonStringLiteral, projectLabel } from './work-topology.js';
 
 /** The entity type. Already listed in work-topology's WORK_LAYER_TYPES. */
 export const TASK_STATE_TYPE = 'task-state';
@@ -204,7 +204,7 @@ export function taskStateLines(
   if (isEmptyTaskState(state)) return [];
   const days = ageInDays(state.updated_at, now);
   const age = days === null ? 'at some point' : days === 0 ? 'today' : days === 1 ? 'yesterday' : `${days} days ago`;
-  const lines = [`Stated about "${projectLabel(project)}" ${age}, and not revisited since:`];
+  const lines = [`Stated about ${jsonStringLiteral(projectLabel(project))} ${age}, and not revisited since:`];
   for (const field of TASK_STATE_FIELDS) {
     const value = state[field];
     if (value) lines.push(`- ${FIELD_LABELS[field]}: ${value}`);
@@ -378,7 +378,7 @@ function resolveTaskStateAge(updatedAt: string | undefined, now: Date): { known:
 function staleTaskStateLine(project: string, hours: number): string {
   const days = Math.floor(hours / 24);
   const age = days >= 1 ? `${days} day${days === 1 ? '' : 's'} ago` : `${Math.floor(hours)} hour${Math.floor(hours) === 1 ? '' : 's'} ago`;
-  return `Task state for "${projectLabel(project)}" was last stated ${age} — older than ${STALE_TASK_STATE_HOURS}h, so it is not shown as current. Run \`memesh task\` to see or update it.`;
+  return `Task state for ${jsonStringLiteral(projectLabel(project))} was last stated ${age} — older than ${STALE_TASK_STATE_HOURS}h, so it is not shown as current. Run \`memesh task\` to see or update it.`;
 }
 
 /** The one-line "we cannot tell how old this is" flag — deliberately
@@ -388,7 +388,7 @@ function staleTaskStateLine(project: string, hours: number): string {
  *  agent reading hook-outcomes.jsonl or the block itself must be able to
  *  tell the two apart without opening the code. */
 function taskStateAgeUnknownLine(project: string): string {
-  return `Task state for "${projectLabel(project)}" has a missing, unreadable, or future-dated timestamp, so its age could not be established — not shown as current. Run \`memesh task\` to see or update it.`;
+  return `Task state for ${jsonStringLiteral(projectLabel(project))} has a missing, unreadable, or future-dated timestamp, so its age could not be established — not shown as current. Run \`memesh task\` to see or update it.`;
 }
 
 /**

@@ -12,7 +12,7 @@
 import { describe, it, expect } from 'vitest';
 import { getDatabase } from '../../src/db.js';
 import { sendAgentMessage, recordAgentReceipt } from '../../src/core/agent-messaging.js';
-import { unreadMessageRefsFor, unreadInboxLinesFor } from '../../src/core/agent-message-inbox.js';
+import { unreadMessageRefsFor, unreadInboxLines, unreadInboxLinesFor } from '../../src/core/agent-message-inbox.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
 import { registerAgentSession, sendSessionTargetedMessage } from '../helpers/agent-session-fixture.js';
 
@@ -235,5 +235,20 @@ describe('Feature: #514 a Codex host acceptance silences only the thread it was 
     const sent = send('claude');
     accept(sent.delivery_id, { host: 'codex-cli', status: 'queued', thread_id: T1 });
     expect(refs(T1, false)).toEqual([sent.message_id]);
+  });
+});
+
+// The project in the waiting line goes through the shared JSON-literal formatter: unlike a bare JSON.stringify, it
+// also escapes U+2028/U+2029, which many readers treat as line breaks.
+describe('the waiting line keeps a project with line separators on one line', () => {
+  it('prints the project as one escaped literal that decodes back to the exact project', () => {
+    const project = 'sep\u2028line\u2029para';
+    for (const kind of ['principal', 'session'] as const) {
+      const [line] = unreadInboxLines(1, project, 'claude-r', true, kind);
+      expect(line, kind).not.toMatch(/[\u2028\u2029]/);
+      const m = line.match(/in project ("(?:[^"\\]|\\.)*")/);
+      expect(m, line).not.toBeNull();
+      expect(JSON.parse(m![1])).toBe(project);
+    }
   });
 });

@@ -38,8 +38,8 @@
     },
     {
       "path": "scripts/hooks/_generated/agent-message-inbox.js",
-      "sha256": "252d96e35e30a118b8fa519dbdb8e10e01b248f0f2697eba85501e76301fc382",
-      "bytes": 10367
+      "sha256": "46cc6ae2c0fd1196d7ab3c370e3f377a7204c9535980c1229d085d639e7cd8f5",
+      "bytes": 10426
     },
     {
       "path": "scripts/hooks/_generated/agent-scope-id.js",
@@ -53,8 +53,8 @@
     },
     {
       "path": "scripts/hooks/_generated/briefing-index.js",
-      "sha256": "f435055f83ef220e5ffc52d631ea0044f3af873a1430cb99e02e64cd9810c6e4",
-      "bytes": 7011
+      "sha256": "328c1087f55e5898a0f54d56ca45be9197636055b178e7d682547b7cfe3b3131",
+      "bytes": 7064
     },
     {
       "path": "scripts/hooks/_generated/briefing-level.js",
@@ -128,8 +128,8 @@
     },
     {
       "path": "scripts/hooks/_generated/task-state.js",
-      "sha256": "6c3aebef4db2dace74ffea4dfa8ecb69cf6ec397bb634bf8ca0c9b0f68d0a3dd",
-      "bytes": 6786
+      "sha256": "6004ed10933db053bdcc8bdf4357a2d52df5ed8def3eed5527d5802f5dbb7f2b",
+      "bytes": 6856
     },
     {
       "path": "scripts/hooks/_generated/time-utils.js",
@@ -148,13 +148,13 @@
     },
     {
       "path": "scripts/hooks/_generated/work-topology.js",
-      "sha256": "5970dcdf43e65fccb320f249dff383aa207dbc86ac914a32abbcb9134c14b9f1",
-      "bytes": 11378
+      "sha256": "fd84155c9a4eed64750f85e6412e256b3b548ab26145e3c53f3aaaa56b397db2",
+      "bytes": 11593
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "c678ed27075acd7794f3ccdaed7436d13fff9d384dcd22e7b871f0945a024b24",
-      "bytes": 124603
+      "sha256": "1421e3ccc90f1c9cf6906cb8a65730922d98685327042df39d86cf840aa2688f",
+      "bytes": 124664
     },
     {
       "path": "scripts/hooks/_stop-handoff.js",
@@ -198,8 +198,8 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "6d43eb30a5da1eb0fb831ede063718e7fa75f84f3ef17c2f0ce5b42ed396f1f1",
-      "bytes": 113312
+      "sha256": "910a01fe604971683911fa6e6f548fce30ec0a761287884d3430c43816d9b0ba",
+      "bytes": 113358
     },
     {
       "path": "scripts/hooks/session-summary.js",

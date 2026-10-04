@@ -6,6 +6,7 @@
 // always-on capture path survives a missing or stale dist/ while staying
 // byte-locked to core — eliminating the hand-mirror drift behind the P0 FTS bug.
 // ============================================================================
+import { jsonStringLiteral } from './work-topology.js';
 function hostAcceptedFilter(db, excludeHostAccepted, session) {
     if (!excludeHostAccepted)
         return { sql: '', params: [] };
@@ -175,7 +176,7 @@ export function unreadMessageRefsFor(db, recipient, session, limit = UNREAD_MESS
 export function unreadInboxLines(count, project, recipient, everSeen, targetKind = 'principal') {
     if (!recipient)
         return [];
-    const displayProject = JSON.stringify(project);
+    const displayProject = jsonStringLiteral(project);
     const displayRecipient = JSON.stringify(recipient);
     if (count > 0) {
         const noun = count === 1 ? 'message' : 'messages';
