@@ -9,11 +9,10 @@
 // block. "Cross-vendor gets the assembled topology, not the parts" is A1c's
 // acceptance criterion, verbatim.
 //
-// This deliberately does NOT share selection SQL with the hook. That is the
-// A1a design decision, restated in work-topology.ts's header: each consumer
-// owns its own database access with its own compat rules; what must exist
-// exactly once — classification, phrasing, the assembly order, the budget,
-// the fence — is imported from the single owners below.
+// The selection is briefing-pools.ts, the same module the hook runs through
+// its generated copy; what must exist exactly once — classification,
+// phrasing, the assembly order, the budget, the fence — is imported from the
+// single owners below.
 //
 // The selection is a LEAN read on purpose. The first version went through
 // `kg.search`/`kg.listRecent`, which hydrate observations, tags and relations
@@ -29,41 +28,29 @@ import { getDatabase } from '../db.js';
 import { getProjectName } from './paths.js';
 import { readConfig } from './config.js';
 import { readRepoState, repoStateLines } from './repo-state.js';
-import { rankEntities } from './scoring.js';
 import { getTaskState, TaskStateUnreadableError } from './task-state-store.js';
 import { recipientEverSeen, unreadDeliveryCount, unreadInboxLines } from './agent-message-inbox.js';
 import { hostSessionFromEnv } from './host-session.js';
 import { canonicalAgentScopeId } from './agent-scope-id.js';
 import { briefingTaskStateLines } from './task-state.js';
-import { handoffLines, SESSION_HANDOFF_TYPE, sessionHandoffName } from './session-handoff.js';
+import { handoffLines } from './session-handoff.js';
 import {
-  INDEX_CANDIDATE_CAP,
-  INDEX_EXCLUDED_TYPES,
-  INDEX_SNIPPET_FETCH_CHARS,
   buildBriefingIndex,
   injectedIndexReserve,
   type BriefingIndex,
-  type IndexCandidate,
 } from './briefing-index.js';
 import type { MemeshDatabase } from '../storage/sqlite.js';
 import {
-  DECISION_LAYER_TYPES,
   DEFAULT_TOPOLOGY_BUDGET,
-  GLOBAL_TOPOLOGY_LIMIT,
-  LESSON_TYPE_LIST,
-  SNIPPET_FETCH_CHARS,
-  TOPOLOGY_CANDIDATE_CAP,
   assembleTopologyBlock,
   boundTaskStateLines,
   buildReferenceContext,
   hasBriefingContent,
-  isAutoInjectable,
   joinedLength,
-  prioritizeDecisions,
   jsonStringLiteral,
   projectLabel,
-  type TopologyEntity,
 } from './work-topology.js';
+import { readIndexCandidates, readSnippets, selectBriefingPools, toTopologyEntity, type PoolRow } from './briefing-pools.js';
 import {
   briefingLevelPolicy,
   resolveBriefingLevel,
@@ -71,8 +58,6 @@ import {
 } from './briefing-level.js';
 
 const PROJECT_LIMIT = 30;
-const RECENT_LIMIT = 5;
-const LESSON_LIMIT = 5;
 
 export interface BriefingResult {
   project: string;
@@ -109,125 +94,11 @@ export interface BriefingResult {
   empty: boolean;
 }
 
-interface CandidateRow {
-  id: number;
-  name: string;
-  type: string | null;
-  title: string | null;
-  metadata: string | null;
-  access_count: number | null;
-  last_accessed_at: string | null;
-  confidence: number | null;
-  recall_hits: number | null;
-  recall_misses: number | null;
-  /** Decision-layer rows only: latest valid activity (see RECENCY_SQL). */
-  recency?: string | null;
-}
-
-const CANDIDATE_COLUMNS =
-  'e.id, e.name, e.type, e.title, e.metadata, e.access_count, e.last_accessed_at, e.confidence, e.recall_hits, e.recall_misses';
-
-function parseMetadata(raw: string | null): Record<string, unknown> | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Rank a candidate window with core's own scoring, gate it, and cap it.
- * Wide fetch BEFORE the gate — the starvation bug this repo measured was a
- * top-N cut applied before a filter, letting one blocked class consume the
- * whole window.
- */
-interface PoolRow {
-  id: number;
-  name: string;
-  type: string | null;
-  title: string | null;
-  meta: Record<string, unknown> | null;
-  /** The auto-injection gate, decided on the RAW column: an unreadable
-   *  column is refused, not read as absent (the hook's isTrustedForAutoContext). */
-  autoInjectable: boolean;
-  access_count?: number;
-  last_accessed_at?: string;
-  confidence?: number;
-  recall_hits?: number;
-  recall_misses?: number;
-  recency?: string | null;
-}
-
-/**
- * A decision's latest VALID activity, as canonical SQLite UTC text: its newest
- * observation, else its creation. A timestamp counts only if it round-trips
- * through strftime unchanged (the same rule as time-utils' parseSqliteUtcMs:
- * 'YYYY-MM-DD HH:MM:SS' or with a 'T', no zone suffix, a real calendar date)
- * and is not more than 5 minutes in the future — so an impossible or future
- * date can never make a decision look newest. NULL = unknown, sorted last.
- * session-start.js carries the same expression (a hook cannot import this).
- */
-const RECENCY_SQL = `COALESCE(
-  (SELECT MAX(replace(o.created_at, 'T', ' ')) FROM observations o
-    WHERE o.entity_id = e.id
-      AND replace(o.created_at, 'T', ' ') = strftime('%Y-%m-%d %H:%M:%S', o.created_at)
-      AND replace(o.created_at, 'T', ' ') <= strftime('%Y-%m-%d %H:%M:%S', 'now', '+5 minutes')),
-  CASE WHEN replace(e.created_at, 'T', ' ') = strftime('%Y-%m-%d %H:%M:%S', e.created_at)
-        AND replace(e.created_at, 'T', ' ') <= strftime('%Y-%m-%d %H:%M:%S', 'now', '+5 minutes')
-       THEN replace(e.created_at, 'T', ' ') END)`;
-
-function toPoolRow(row: CandidateRow): PoolRow {
-  const meta = parseMetadata(row.metadata);
-  return {
-    id: row.id,
-    name: row.name,
-    type: row.type,
-    title: row.title,
-    meta,
-    autoInjectable: (row.metadata == null || meta !== null) && isAutoInjectable(meta),
-    // SQLite hands back null for absent scalars; rankEntities' generic wants
-    // them undefined. Same values, one shape.
-    access_count: row.access_count ?? undefined,
-    last_accessed_at: row.last_accessed_at ?? undefined,
-    confidence: row.confidence ?? undefined,
-    recall_hits: row.recall_hits ?? undefined,
-    recall_misses: row.recall_misses ?? undefined,
-    recency: row.recency ?? null,
-  };
-}
-
-function selectPool(rows: CandidateRow[], cap: number): PoolRow[] {
-  const withMeta: PoolRow[] = rows.map(toPoolRow);
-  return rankEntities(withMeta, new Map())
-    .filter((row) => row.autoInjectable)
-    .slice(0, cap);
-}
-
-function toTopologyEntity(row: PoolRow, snippet: string | null): TopologyEntity {
-  const signal = row.meta?.signal_score;
-  return {
-    name: row.name,
-    type: row.type || 'memory',
-    // The citation handle: briefing lines carry the same `[mem:<id>]` ref
-    // the session-start injection prints, so a memory reads the same way on
-    // every surface an agent meets it.
-    id: row.id,
-    title: row.title,
-    snippet,
-    signalScore: typeof signal === 'number' ? signal : null,
-    recency: row.recency ?? null,
-  };
-}
-
 /**
  * The durable-memory index for one project (#323): project-tagged, active,
  * non-global, durable-typed rows, newest activity first. Every decision
  * about what to show and how lives in briefing-index.ts; this is only the
- * read. The session-start hook issues the same query against its own handle
- * (A1a: each consumer owns its SQL) — the parity test in briefing.test.ts
- * holds the two together.
+ * read (briefing-pools.ts), shared with the session-start hook.
  *
  * Team-namespace rows are included exactly as the ranked project pool
  * includes them: only `global` is excluded, and only rows carrying this
@@ -240,44 +111,6 @@ export function readBriefingIndex(
 ): BriefingIndex {
   const { candidates, truncated } = readIndexCandidates(db, projectName);
   return buildBriefingIndex(candidates, projectName, now, { truncated });
-}
-
-function readIndexCandidates(
-  db: MemeshDatabase,
-  projectName: string,
-): { candidates: IndexCandidate[]; truncated: boolean } {
-  const hasNamespace = (db.prepare('PRAGMA table_info(entities)').all() as Array<{ name: string }>)
-    .some((column) => column.name === 'namespace');
-  const nonGlobal = hasNamespace ? " AND (e.namespace IS NULL OR e.namespace <> 'global')" : '';
-  const excluded = INDEX_EXCLUDED_TYPES.map(() => '?').join(',');
-  const rows = db.prepare(
-    `SELECT e.id, e.type, e.title, e.metadata,
-       (SELECT substr(o.content, 1, ${INDEX_SNIPPET_FETCH_CHARS}) FROM observations o
-         WHERE o.entity_id = e.id ORDER BY o.id ASC LIMIT 1) AS snippet,
-       max(e.created_at, COALESCE((SELECT MAX(o2.created_at) FROM observations o2
-         WHERE o2.entity_id = e.id), e.created_at)) AS last_activity
-     FROM entities e
-     WHERE e.id IN (SELECT entity_id FROM tags WHERE tag = ?)
-       AND e.status = 'active'${nonGlobal}
-       AND e.type NOT IN (${excluded})
-     ORDER BY last_activity DESC, e.id DESC
-     LIMIT ?`,
-  ).all(`project:${projectName}`, ...INDEX_EXCLUDED_TYPES, INDEX_CANDIDATE_CAP) as Array<{
-    id: number; type: string | null; title: string | null; metadata: string | null;
-    snippet: string | null; last_activity: string | null;
-  }>;
-  const candidates: IndexCandidate[] = rows.map((row) => ({
-    id: row.id,
-    type: row.type,
-    title: row.title,
-    snippet: row.snippet,
-    lastActivity: row.last_activity,
-    // The RAW column, not a parsed object: the index's gate has to tell an
-    // absent metadata column (allowed) from one holding unparseable JSON
-    // (refused), and parsing here would collapse both to null.
-    metadata: row.metadata,
-  }));
-  return { candidates, truncated: rows.length >= INDEX_CANDIDATE_CAP };
 }
 
 /**
@@ -373,19 +206,14 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
     : undefined;
   // The session handoff leads everything: it is what the last session in this
   // project said it was about to do. Exact project, active, and through the
-  // same trust gate as every other memory — except that metadata nobody can
-  // parse keeps it out (the ranked pool below lets such a row through).
-  const handoffRow = db.prepare(
-    `SELECT e.id, e.metadata, o.content AS text, o.created_at AS observedAt
-     FROM entities e JOIN observations o ON o.entity_id = e.id
-     WHERE e.name = ? AND e.type = ? AND e.status = 'active'
-     ORDER BY o.id DESC
-     LIMIT 1`,
-  ).get(sessionHandoffName(projectName), SESSION_HANDOFF_TYPE) as
-    { id: number; metadata: string | null; text: string; observedAt: string } | undefined;
-  const handoffMeta = handoffRow ? parseMetadata(handoffRow.metadata) : null;
-  const handoffTrusted = !!handoffRow && (handoffRow.metadata === null || handoffMeta !== null) && isAutoInjectable(handoffMeta);
-  const handoff = handoffTrusted ? handoffLines(handoffRow) : [];
+  // same trust gate as every other memory. Every pool below comes from the
+  // one selection the hook also runs.
+  const pools = selectBriefingPools(db, projectName, {
+    projectLimit: PROJECT_LIMIT,
+    global: policy.global,
+    foreign: policy.foreign,
+  });
+  const handoff = pools.handoff ? handoffLines(pools.handoff) : [];
 
   const stateLines = [
     ...handoff,
@@ -398,100 +226,8 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
     ),
   ];
 
-  // A database from before namespaces cannot hold global rows. Preserve the
-  // previous project/recent behaviour instead of making briefing fail to open.
-  const hasNamespace = (db.prepare('PRAGMA table_info(entities)').all() as Array<{ name: string }>)
-    .some((column) => column.name === 'namespace');
-  const nonGlobal = hasNamespace ? " AND (e.namespace IS NULL OR e.namespace <> 'global')" : '';
-
-  const projectRows = db.prepare(
-    `SELECT DISTINCT ${CANDIDATE_COLUMNS}
-     FROM entities e JOIN tags t ON t.entity_id = e.id
-     WHERE t.tag = ? AND e.status = 'active' AND e.type <> ?${nonGlobal}
-     ORDER BY e.id DESC
-     LIMIT ?`,
-  ).all(`project:${projectName}`, SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[];
-  // Decisions first (#434 step 3): the project's newest trusted decision-layer
-  // rows take slots before the score-ordered candidates fill the rest, so a
-  // burst of commits can neither push them out of the candidate window nor
-  // out of the project's slots. Same cap as before; no per-type limit.
-  const decisionRows = db.prepare(
-    `SELECT DISTINCT ${CANDIDATE_COLUMNS}, ${RECENCY_SQL} AS recency
-     FROM entities e JOIN tags t ON t.entity_id = e.id
-     WHERE t.tag = ? AND e.status = 'active' AND e.type IN (${DECISION_LAYER_TYPES.map(() => '?').join(',')})${nonGlobal}
-     ORDER BY recency IS NULL, recency DESC, e.id DESC
-     LIMIT ?`,
-  ).all(`project:${projectName}`, ...DECISION_LAYER_TYPES, TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[];
-  const decisionPool = decisionRows.map(toPoolRow).filter((row) => row.autoInjectable);
-  const projectPool = prioritizeDecisions(decisionPool, selectPool(projectRows, TOPOLOGY_CANDIDATE_CAP), PROJECT_LIMIT);
-  // The project's lessons: the same separate pool the SessionStart hook
-  // claims first (newest 50, trust gate, top 5), so a project whose slots are
-  // all taken by decisions still shows its lessons on both surfaces.
-  const lessonPool = (db.prepare(
-    `SELECT DISTINCT ${CANDIDATE_COLUMNS}
-     FROM entities e JOIN tags t ON t.entity_id = e.id
-     WHERE e.type IN (${LESSON_TYPE_LIST.map(() => '?').join(', ')}) AND e.status = 'active'${nonGlobal} AND t.tag = ?
-     ORDER BY e.id DESC
-     LIMIT 50`,
-  ).all(...LESSON_TYPE_LIST, `project:${projectName}`) as unknown as CandidateRow[])
-    .map(toPoolRow).filter((row) => row.autoInjectable).slice(0, LESSON_LIMIT);
-
-  // `global` is an explicit storage scope, not a project tag. It gets a
-  // bounded pool, and the shared assembler gives it what the project leaves of
-  // the one budget, capped at its old size. Keeping it out of the project and recent queries below
-  // makes this the only selection path, so a tagged global row cannot appear
-  // twice and overflow globals cannot sneak back through recency.
-  //
-  // #360: `minimal`/`standard` skip this query outright rather than fetch
-  // and then not render it — the whole reason for the level is to stop
-  // paying for what is not the current project.
-  const globalRows: CandidateRow[] = policy.global && hasNamespace
-    ? db.prepare(
-      `SELECT ${CANDIDATE_COLUMNS}
-       FROM entities e
-       WHERE e.namespace = 'global' AND e.status = 'active'
-       ORDER BY e.id DESC
-       LIMIT ?`,
-    ).all(TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[]
-    : [];
-  const globalPool = selectPool(globalRows, GLOBAL_TOPOLOGY_LIMIT);
-
-  // Recent pool: newest activity across ALL projects. Anything only here is
-  // from elsewhere and must say so — the assembler files rows from a foreign
-  // pool under a heading that does not claim this project. Skipped at
-  // `minimal`/`standard` for the same reason as the global pool above.
-  const recentRows: CandidateRow[] = policy.foreign
-    ? db.prepare(
-      `SELECT ${CANDIDATE_COLUMNS}
-       FROM entities e
-       WHERE e.status = 'active' AND e.type <> ?${nonGlobal}
-       ORDER BY e.id DESC
-       LIMIT ?`,
-    ).all(SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[]
-    : [];
-  const recentPool = selectPool(recentRows, RECENT_LIMIT);
-
-  // One snippet per survivor, one query — first observation per entity,
-  // fetched a few line-widths long so clip() can still cut on a word
-  // boundary. This is the survivors-only hydration the hook already uses.
-  const survivorIds = [...new Set([...lessonPool, ...projectPool, ...globalPool, ...recentPool].map((row) => row.id))];
-  const snippets = new Map<number, string>();
-  if (survivorIds.length > 0) {
-    const placeholders = survivorIds.map(() => '?').join(',');
-    const obsRows = db.prepare(
-      `SELECT entity_id, substr(content, 1, ${SNIPPET_FETCH_CHARS}) AS content
-       FROM observations WHERE entity_id IN (${placeholders})
-       ORDER BY id ASC`,
-    ).all(...survivorIds) as Array<{ entity_id: number; content: string | null }>;
-    for (const row of obsRows) {
-      if (snippets.has(row.entity_id)) continue;
-      const text = String(row.content ?? '').trim();
-      if (text) snippets.set(row.entity_id, text);
-    }
-  }
-
-  const toEntities = (pool: PoolRow[]) =>
-    pool.map((row) => toTopologyEntity(row, snippets.get(row.id) ?? null));
+  const snippets = readSnippets(db, [...pools.lessons, ...pools.project, ...pools.noProject, ...pools.global, ...pools.recent].map((row) => row.id));
+  const toEntities = (pool: PoolRow[]) => pool.map((row) => toTopologyEntity(row, snippets));
 
   // One memory budget for everything inside the fence; when this level shows
   // the index, room for its heading and "N more" line is kept back first.
@@ -499,10 +235,11 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
   const lines = assembleTopologyBlock(
     stateLines,
     [
-      { entities: toEntities(lessonPool), foreign: false },
-      { entities: toEntities(projectPool), foreign: false },
-      { entities: toEntities(globalPool), foreign: false, global: true },
-      { entities: toEntities(recentPool), foreign: true },
+      { entities: toEntities(pools.lessons), foreign: false },
+      { entities: toEntities(pools.project), foreign: false },
+      { entities: toEntities(pools.noProject), foreign: false, noProject: true },
+      { entities: toEntities(pools.global), foreign: false, global: true },
+      { entities: toEntities(pools.recent), foreign: true },
     ],
     projectName,
     DEFAULT_TOPOLOGY_BUDGET,

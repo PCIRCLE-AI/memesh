@@ -35,7 +35,7 @@ All examples below use CLI. MCP tools accept the same parameters as JSON objects
 | `import` | Import a JSON export with the required skip, append, or overwrite strategy |
 | `learn` | Record a structured lesson with error, fix, root cause, and prevention |
 | `task_state` | Read or update user-stated goal, next step, blocker, and finished work |
-| `briefing` | Assemble the current project's work topology — an eligible handoff precedes ranked memories at every level, after optional repository facts; `minimal` then shows decisions, lessons, knowledge and recent activity, `standard` adds fresh task state and a capped durable-memory index, and `full` adds other projects and global memory |
+| `briefing` | Assemble the current project's work topology — an eligible handoff precedes ranked memories at every level, after optional repository facts; `minimal` then shows decisions, lessons, knowledge and recent activity plus memories with no project, `standard` adds fresh task state and a capped durable-memory index, and `full` adds other projects and global memory |
 | `user_patterns` | Analyze work schedule, tool preferences, and focus areas |
 | `improvement` | Propose an evidence-linked product improvement or read its status; only a human may accept or reject it |
 | `message` | Discover live agents in one project, then contact one exact recipient with a bounded, untrusted payload. Native size and availability failures are distinct; acceptance, discovery, polling, and fetching do not acknowledge |

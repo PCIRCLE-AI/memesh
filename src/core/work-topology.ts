@@ -162,6 +162,9 @@ export interface TopologyEntity {
    *  the one that saves you — but it must not be filed under a heading that
    *  claims it is about the current project. */
   foreign?: boolean;
+  /** Belongs to no project (a preference, a general lesson): shown to every
+   *  project's sessions under its own heading, never as this project's. */
+  noProject?: boolean;
 }
 
 /**
@@ -277,6 +280,7 @@ export function groupTopology(entities: TopologyEntity[], projectName: string): 
   const knowledge: TopologyEntity[] = [];
   const evidence: TopologyEntity[] = [];
   const global: TopologyEntity[] = [];
+  const noProject: TopologyEntity[] = [];
   const foreign: TopologyEntity[] = [];
 
   for (const e of entities) {
@@ -294,6 +298,7 @@ export function groupTopology(entities: TopologyEntity[], projectName: string): 
     // nothing; a test pins the two together.
     if (e.type === 'task-state' || e.type === 'session-handoff') continue;
     if (e.global) { global.push(e); continue; }
+    if (e.noProject) { noProject.push(e); continue; }
     // Scope is checked before layer: a memory from another project must never
     // land under a heading that names this one, whatever its type.
     if (e.foreign) { foreign.push(e); continue; }
@@ -305,13 +310,14 @@ export function groupTopology(entities: TopologyEntity[], projectName: string): 
   }
 
   decisions.sort(byRecency);
-  for (const list of [lessons, knowledge, evidence, global, foreign]) list.sort(bySignal);
+  for (const list of [lessons, knowledge, evidence, noProject, global, foreign]) list.sort(bySignal);
 
   const sections: TopologySection[] = [];
   if (decisions.length) sections.push({ heading: `Decisions and direction for ${jsonStringLiteral(projectLabel(projectName))}:`, entities: decisions });
   if (lessons.length) sections.push({ heading: `Lessons from ${jsonStringLiteral(projectLabel(projectName))} — do not repeat these:`, entities: lessons });
   if (knowledge.length) sections.push({ heading: `What is known about ${jsonStringLiteral(projectLabel(projectName))}:`, entities: knowledge });
   if (evidence.length) sections.push({ heading: `Recent activity in ${jsonStringLiteral(projectLabel(projectName))}:`, entities: evidence });
+  if (noProject.length) sections.push({ heading: 'Your memories with no project (preferences, general lessons):', entities: noProject });
   if (global.length) sections.push({ heading: 'Global memory — applies across projects:', entities: global });
   if (foreign.length) sections.push({ heading: 'From your other projects (may or may not apply here):', entities: foreign });
   return sections;
@@ -396,6 +402,8 @@ export interface TopologyPool {
   foreign: boolean;
   /** True when this pool applies to every project. */
   global?: boolean;
+  /** True when this pool holds memories that belong to no project. */
+  noProject?: boolean;
 }
 
 /**
@@ -443,7 +451,7 @@ export function assembleTopologyBlock(
       if (pool.global) {
         globalCandidates.push(e.global ? e : { ...e, global: true });
       } else {
-        candidates.push(pool.foreign && !e.foreign ? { ...e, foreign: true } : e);
+        candidates.push(pool.noProject ? { ...e, noProject: true } : pool.foreign && !e.foreign ? { ...e, foreign: true } : e);
       }
     }
   }

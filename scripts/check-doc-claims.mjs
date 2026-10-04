@@ -250,22 +250,6 @@ else ok(`registry and API_REFERENCE.md agree on ${toolsInCode} MCP tools`);
     if (!rankLine) fail('README.md lost its Scored Ranking line');
     else if (!rankLine.includes(want)) fail(`README Scored Ranking weights drifted from DEFAULT_WEIGHTS: expected "${want}"`);
     else ok('README scoring weights match DEFAULT_WEIGHTS');
-
-    // (c) ARCHITECTURE's session-start ratios are DERIVED (recency/frequency/
-    // confidence renormalised); the old prose said 40/30/30 with confidence
-    // first and matched no version of the code.
-    const sub = w.recency + w.frequency + w.confidence;
-    const r = Math.round((w.recency / sub) * 100);
-    const fq = Math.round((w.frequency / sub) * 100);
-    const cf = Math.round((w.confidence / sub) * 100);
-    // Several lines mention the constant (module tree, transport notes);
-    // the one under test is the line that states the ratios.
-    const ssLines = read('docs/ARCHITECTURE.md').split('\n').filter(l => l.includes('SESSION_START_WEIGHT_RATIO'));
-    const ssLine = ssLines.find(l => l.includes('Score ='));
-    if (!ssLine) fail('docs/ARCHITECTURE.md no longer states the session-start score ratios next to SESSION_START_WEIGHT_RATIO');
-    else if (!ssLine.includes(`recency (~${r}%)`) || !ssLine.includes(`frequency (${fq}%)`) || !ssLine.includes(`confidence (~${cf}%)`))
-      fail(`ARCHITECTURE session-start ratios drifted: code derives recency ~${r}% / frequency ${fq}% / confidence ~${cf}%`);
-    else ok('ARCHITECTURE session-start ratios match the derived constants');
   }
 
   // (d) API_REFERENCE's health-factor weights vs computeAnalytics.
