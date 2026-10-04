@@ -4315,6 +4315,56 @@ CREATE VIRTUAL TABLE IF NOT EXISTS fts_vocab USING fts5vocab(entities_fts, 'row'
   }
 });
 
+// dist/storage/entity-write.js
+function runEntityWrite(db2, write) {
+  return db2.transaction(write)();
+}
+function insertOrGetEntity(db2, entity) {
+  const insertResult = entity.namespace === void 0 ? db2.prepare("INSERT OR IGNORE INTO entities (name, type, metadata, title) VALUES (?, ?, ?, ?)").run(entity.name, entity.type, entity.metadataJson, entity.title) : db2.prepare("INSERT OR IGNORE INTO entities (name, type, metadata, namespace, title) VALUES (?, ?, ?, ?, ?)").run(entity.name, entity.type, entity.metadataJson, entity.namespace, entity.title);
+  const isNew = insertResult.changes > 0;
+  const row = db2.prepare("SELECT id, type, title, status, namespace, metadata FROM entities WHERE name = ?").get(entity.name);
+  if (!row)
+    return null;
+  return { ...row, isNew };
+}
+function appendObservations(db2, entityId, observations, options) {
+  const seen = new Set(options.dedupe && options.readExisting ? db2.prepare("SELECT content FROM observations WHERE entity_id = ?").all(entityId).map((o) => o.content) : []);
+  const written = [];
+  for (const observation of observations) {
+    if (options.exclude?.(observation))
+      continue;
+    if (options.dedupe) {
+      if (seen.has(observation))
+        continue;
+      seen.add(observation);
+    }
+    written.push(observation);
+  }
+  const insertObs = db2.prepare("INSERT INTO observations (entity_id, content) VALUES (?, ?)");
+  for (const observation of written)
+    insertObs.run(entityId, observation);
+  return written;
+}
+function addTags(db2, entityId, tags) {
+  const insertTag = db2.prepare("INSERT OR IGNORE INTO tags (entity_id, tag) VALUES (?, ?)");
+  for (const tag of tags)
+    insertTag.run(entityId, tag);
+}
+function reindexEntityFts(db2, entityId, name, previous, current = {}) {
+  if (previous !== void 0) {
+    removeFromFts(db2, entityId, name, previous.observationsText, previous.title);
+  }
+  const observationsText = "observationsText" in current && current.observationsText !== void 0 ? current.observationsText : indexedObservationText(db2, entityId);
+  const title = "title" in current ? current.title ?? null : db2.prepare("SELECT title FROM entities WHERE id = ?").get(entityId)?.title ?? null;
+  insertFtsRow(db2, entityId, name, observationsText, title);
+}
+var init_entity_write = __esm({
+  "dist/storage/entity-write.js"() {
+    "use strict";
+    init_fts_index();
+  }
+});
+
 // dist/core/work-topology.js
 function canonicalEntityType(type) {
   return LESSON_TYPES.has(type) ? "lesson_learned" : type;
@@ -4694,6 +4744,7 @@ var init_knowledge_graph = __esm({
     init_signal_scorer();
     init_entity_index();
     init_schema();
+    init_entity_write();
     init_work_topology();
     MAX_QUERY_TERMS = 32;
     UBIQUITOUS_TERM_FRACTION = 0.5;
@@ -4715,7 +4766,7 @@ var init_knowledge_graph = __esm({
         this.db.prepare("UPDATE entities SET metadata = ? WHERE name = ?").run(nextMetadata ? JSON.stringify(nextMetadata) : null, name);
       }
       createEntity(name, type, opts) {
-        return this.db.transaction(() => this.createEntityInner(name, type, opts))();
+        return runEntityWrite(this.db, () => this.createEntityInner(name, type, opts));
       }
       createEntityInner(name, type, opts) {
         type = canonicalEntityType(type);
@@ -4728,9 +4779,14 @@ var init_knowledge_graph = __esm({
             tags: opts?.tags ?? []
           });
         }
-        const insertResult = this.db.prepare("INSERT OR IGNORE INTO entities (name, type, metadata, namespace, title) VALUES (?, ?, ?, ?, ?)").run(name, type, JSON.stringify(incomingMetadata), opts?.namespace ?? "personal", opts?.title ?? null);
-        const isNewEntity = insertResult.changes > 0;
-        const row = this.db.prepare("SELECT id, status, namespace, title, type FROM entities WHERE name = ?").get(name);
+        const row = insertOrGetEntity(this.db, {
+          name,
+          type,
+          metadataJson: JSON.stringify(incomingMetadata),
+          title: opts?.title ?? null,
+          namespace: opts?.namespace ?? "personal"
+        });
+        const isNewEntity = row.isNew;
         const entityId = row.id;
         const previousTitle = row.title;
         if (!isNewEntity && opts?.title !== void 0 && opts.title !== previousTitle) {
@@ -4789,30 +4845,13 @@ var init_knowledge_graph = __esm({
               return { ...meta3, forgotten_observation_hashes: meta3.forgotten_observation_hashes.filter((hash2) => !restored.has(hash2)) };
             });
           }
-          const insertObs = this.db.prepare("INSERT INTO observations (entity_id, content) VALUES (?, ?)");
           const effectiveType = isNewEntity ? type : row.type;
           const isLessonFamily = effectiveType === "lesson_learned" || effectiveType === "lesson" || effectiveType === "mistake";
-          if (isLessonFamily) {
-            for (const obs of observations) {
-              insertObs.run(entityId, obs);
-            }
-          } else {
-            const existingObsContent = new Set(isNewEntity ? [] : this.db.prepare("SELECT content FROM observations WHERE entity_id = ?").all(entityId).map((o) => o.content));
-            for (const obs of observations) {
-              if (existingObsContent.has(obs))
-                continue;
-              existingObsContent.add(obs);
-              insertObs.run(entityId, obs);
-            }
-          }
+          appendObservations(this.db, entityId, observations, { dedupe: !isLessonFamily, readExisting: !isNewEntity });
         }
         this.rebuildFts(entityId, name, prevObsText, previousTitle);
-        if (opts?.tags?.length) {
-          const insertTag = this.db.prepare("INSERT OR IGNORE INTO tags (entity_id, tag) VALUES (?, ?)");
-          for (const tag of opts.tags) {
-            insertTag.run(entityId, tag);
-          }
-        }
+        if (opts?.tags?.length)
+          addTags(this.db, entityId, opts.tags);
         return entityId;
       }
       createEntitiesBatch(entities) {
@@ -5219,12 +5258,7 @@ var init_knowledge_graph = __esm({
         }
       }
       rebuildFts(entityId, entityName, previousObsText, previousTitle) {
-        if (previousObsText !== void 0) {
-          removeFromFts(this.db, entityId, entityName, previousObsText, previousTitle);
-        }
-        const obsText = indexedObservationText(this.db, entityId);
-        const currentTitleRow = this.db.prepare("SELECT title FROM entities WHERE id = ?").get(entityId);
-        insertFtsRow(this.db, entityId, entityName, obsText, currentTitleRow?.title ?? null);
+        reindexEntityFts(this.db, entityId, entityName, previousObsText === void 0 ? void 0 : { observationsText: previousObsText, title: previousTitle });
       }
     };
   }

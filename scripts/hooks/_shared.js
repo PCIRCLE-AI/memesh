@@ -209,13 +209,12 @@ export function sessionProjectLine(projectName) {
 export const WORK_PACKAGE_NOTICE = 'Work packages: check work_package prepare for this project (digest or transcript). When available, offer a concise host-native interactive choice in the user’s conversation language: dispatch an agent task, later (defer not_now), or stop suggesting for this session. Never dispatch without the user choosing it. The Dashboard cannot dispatch agents, and no durable opt-out is implied.';
 import {
   indexedObservationText,
-  insertFtsRow,
   joinIndexedObservations,
-  removeFromFts,
   renderMatchExpression,
   renderPhraseExpression,
   tokenizeQuery,
 } from './_generated/fts-index.js';
+import { addTags, appendObservations, insertOrGetEntity, reindexEntityFts, runEntityWrite } from './_generated/entity-write.js';
 
 export { homeDir, memeshDir, getDbPath, getMemeshDirFromDbPath, getProjectName, redactSecrets, canonicalRemoteLocator, gitRepoRoot };
 
@@ -1798,9 +1797,11 @@ function refreshLocalHandoffTrust(db, id, type, replace, written, sourceHost) {
  * omitted the FTS reindex entirely, so every `session-insight` memory it wrote
  * was invisible to `recall` and pre-edit-recall (no FTS trigger, no self-heal
  * rebuild on open back it up). Centralising the dance here makes the FTS step
- * impossible to forget in a future hook. This mirrors, on the hook side, what
- * `src/storage/fts-index.ts` already does for core (the F5 boundary keeps them
- * as two implementations of the same contract).
+ * impossible to forget in a future hook. The mechanism itself — transaction,
+ * entity row, observations, tags, FTS delete + insert — is the shared write
+ * kernel (`src/storage/entity-write.ts`, loaded from its generated copy) that
+ * core's `KnowledgeGraph.createEntity` also runs on; what is here is the hook
+ * policy on top of it.
  *
  * The caller MUST open its DB with `openHookDb(env, { fts: true })` so the FTS
  * table is guaranteed present. Signal scoring is deliberately not done here:
@@ -1841,7 +1842,7 @@ export function captureEntity(db, { name, type, observations = [], tags = [], ti
   // could not be resolved. `observationsWritten` may be lower than
   // `observations.length`: an observation whose exact content is already on
   // the entity is not stored again (see the dedupe in captureEntityInner).
-  return db.transaction(() => captureEntityInner(db, { name, type, observations, tags, title, metadata, replace, localHandoff, sourceHost }))();
+  return runEntityWrite(db, () => captureEntityInner(db, { name, type, observations, tags, title, metadata, replace, localHandoff, sourceHost }));
 }
 
 function captureEntityInner(db, { name, type, observations, tags, title, metadata, replace, localHandoff, sourceHost }) {
@@ -1860,12 +1861,10 @@ function captureEntityInner(db, { name, type, observations, tags, title, metadat
   // host 'unknown'; a stamp would only guess.]
   const insertMetadata = { ...(metadata ?? {}), provenance: sourceHost ? { source_host: sourceHost } : {} };
   if (title != null) insertMetadata.title_source = 'heuristic';
-  const insertResult = db
-    .prepare('INSERT OR IGNORE INTO entities (name, type, metadata, title) VALUES (?, ?, ?, ?)')
-    .run(name, type, JSON.stringify(insertMetadata), title ?? null);
-  const isNew = insertResult.changes > 0;
-  const row = db.prepare('SELECT id, type, title, status, metadata FROM entities WHERE name = ?').get(name);
+  // No namespace: a hook-written entity takes the column default.
+  const row = insertOrGetEntity(db, { name, type, metadataJson: JSON.stringify(insertMetadata), title: title ?? null });
   if (!row) return null;
+  const isNew = row.isNew;
   const id = row.id;
 
   // `replace` never touches an archived entity. src/core/operations.ts's
@@ -2001,41 +2000,28 @@ function captureEntityInner(db, { name, type, observations, tags, title, metadat
   // case where re-storing an identical string means something. A flag two of
   // three callers pass would be one more proxy for the question.
   //
-  // Filtered ONCE, up front, because `allObsText` below composes the FTS text
-  // from this list rather than re-reading the rows. Filtering only at the
-  // insert loop would index text for rows that do not exist, and
-  // `entities_fts` is contentless: the next delete would not match, which is
-  // the "database disk image is malformed" failure this file warns about
-  // above. The `seen` set also collapses repeats WITHIN one call.
-  const seen = new Set(
-    // `|| replace`: the rows a plain SELECT would find here were just
-    // DELETEd above (same transaction), so this skips a query that would
-    // only ever come back empty — not a second dedup path.
-    isNew || replace
-      ? []
-      : db.prepare('SELECT content FROM observations WHERE entity_id = ?').all(id).map((r) => r.content),
-  );
-  const freshObservations = [];
+  // `appendObservations` returns exactly the rows it stored, and `allObsText`
+  // below composes the FTS text from that list rather than re-reading the
+  // rows. Composing from the INPUT instead would index text for rows that do
+  // not exist, and `entities_fts` is contentless: the next delete would not
+  // match, which is the "database disk image is malformed" failure this file
+  // warns about above. Repeats WITHIN one call are collapsed too.
+  //
+  // `readExisting: false` after a replace: the rows a plain SELECT would find
+  // were just DELETEd above (same transaction), so the read is skipped — not a
+  // second dedup path.
   const forgotten = parseEntityMetadata(row.metadata)?.forgotten_observation_hashes;
   const excluded = new Set(replace && Array.isArray(forgotten) ? forgotten : []);
-  for (const obs of observations) {
-    if (excluded.has(createHash('sha256').update(obs).digest('hex'))) continue;
-    if (seen.has(obs)) continue;
-    seen.add(obs);
-    freshObservations.push(obs);
-  }
-
-  const insertObs = db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)');
-  for (const obs of freshObservations) insertObs.run(id, obs);
-  const insertTag = db.prepare('INSERT OR IGNORE INTO tags (entity_id, tag) VALUES (?, ?)');
-  for (const tag of tags) insertTag.run(id, tag);
+  const freshObservations = appendObservations(db, id, observations, {
+    dedupe: true,
+    readExisting: !(isNew || replace),
+    exclude: (obs) => excluded.has(createHash('sha256').update(obs).digest('hex')),
+  });
+  addTags(db, id, tags);
 
   // Reindex FTS: delete the stale entry (if any) then insert the full,
-  // current observation set. Uses the generated copy of src/storage/fts-index.ts
-  // so the contentless-FTS5 delete+insert dance can no longer drift from core.
-  if (prevObsText !== undefined) {
-    removeFromFts(db, id, name, prevObsText, previousTitle);
-  }
+  // current observation set — the shared kernel's reindex, the same one core
+  // runs, so the contentless-FTS5 delete+insert dance cannot drift between them.
   // Compose the indexed text from data already in hand instead of
   // re-SELECTing the rows just inserted: prev text + the new observations,
   // joined by the owner's single rule. This runs on every
@@ -2051,7 +2037,13 @@ function captureEntityInner(db, { name, type, observations, tags, title, metadat
   const currentTitle = isNew
     ? (title ?? null)
     : ((title !== undefined && title !== previousTitle) ? title : previousTitle);
-  insertFtsRow(db, id, name, allObsText, currentTitle);
+  reindexEntityFts(
+    db,
+    id,
+    name,
+    prevObsText === undefined ? undefined : { observationsText: prevObsText, title: previousTitle },
+    { observationsText: allObsText, title: currentTitle },
+  );
 
   if (localHandoff) refreshLocalHandoffTrust(db, id, type, replace, freshObservations.length, sourceHost);
 

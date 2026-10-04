@@ -37,7 +37,7 @@ src/
 ├── core/            # framework-agnostic business logic (zero transport deps)
 ├── db.ts            # SQLite + FTS5 + migrations + auto-decay
 ├── knowledge-graph.ts  # Entity CRUD, relations, FTS5 search, access tracking
-├── storage/         # conflicts.ts (detection) + fts-index.ts (contentless-FTS5 primitives)
+├── storage/         # conflicts.ts (detection) + fts-index.ts (contentless-FTS5 primitives) + entity-write.ts (shared entity write kernel)
 ├── transports/      # cli/ · http/ · mcp/ (+ schemas.ts = shared Zod validation)
 ├── host-adapters/   # native Claude/Codex adapters + experimental ACP protocol adapter
 ├── host-runtime/    # managed host processes + private-router client/server

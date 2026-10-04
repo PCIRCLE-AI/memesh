@@ -1,0 +1,279 @@
+{
+  "results": [
+    1,
+    1,
+    1,
+    1,
+    5,
+    5,
+    7,
+    8,
+    8,
+    10,
+    10,
+    12,
+    {
+      "removed": true,
+      "remainingObservations": 1,
+      "entityFound": true
+    },
+    12,
+    12,
+    15,
+    15,
+    17
+  ],
+  "entities": [
+    {
+      "id": 1,
+      "name": "alpha-note",
+      "type": "note",
+      "title": "Sea otter facts",
+      "status": "active",
+      "namespace": "personal",
+      "confidence": 1,
+      "metadata": {
+        "signal_score": 0.55
+      }
+    },
+    {
+      "id": 5,
+      "name": "beta-lesson",
+      "type": "lesson_learned",
+      "title": null,
+      "status": "active",
+      "namespace": "personal",
+      "confidence": 1,
+      "metadata": {
+        "signal_score": 1
+      }
+    },
+    {
+      "id": 7,
+      "name": "gamma-mistake",
+      "type": "lesson_learned",
+      "title": null,
+      "status": "active",
+      "namespace": "personal",
+      "confidence": 1,
+      "metadata": {
+        "signal_score": 1
+      }
+    },
+    {
+      "id": 8,
+      "name": "delta-team",
+      "type": "note",
+      "title": null,
+      "status": "active",
+      "namespace": "team",
+      "confidence": 1,
+      "metadata": {
+        "signal_score": 0.55,
+        "previous_namespace": "personal"
+      }
+    },
+    {
+      "id": 10,
+      "name": "epsilon-archived",
+      "type": "note",
+      "title": null,
+      "status": "active",
+      "namespace": "personal",
+      "confidence": 1,
+      "metadata": {
+        "signal_score": 0.55
+      }
+    },
+    {
+      "id": 12,
+      "name": "session-s1-files",
+      "type": "session-insight",
+      "title": null,
+      "status": "active",
+      "namespace": "personal",
+      "confidence": 1,
+      "metadata": {
+        "signal_score": 0.5,
+        "forgotten_observation_hashes": []
+      }
+    },
+    {
+      "id": 15,
+      "name": "zeta-clear",
+      "type": "note",
+      "title": "Ibis",
+      "status": "active",
+      "namespace": "personal",
+      "confidence": 1,
+      "metadata": {
+        "signal_score": 0.1
+      }
+    },
+    {
+      "id": 17,
+      "name": "eta-empty",
+      "type": "note",
+      "title": null,
+      "status": "active",
+      "namespace": "personal",
+      "confidence": 1,
+      "metadata": {
+        "signal_score": 0.1
+      }
+    }
+  ],
+  "observations": [
+    {
+      "id": 1,
+      "entity_id": 1,
+      "content": "otter swims"
+    },
+    {
+      "id": 2,
+      "entity_id": 1,
+      "content": "otter sleeps"
+    },
+    {
+      "id": 3,
+      "entity_id": 1,
+      "content": "otter eats clams"
+    },
+    {
+      "id": 4,
+      "entity_id": 1,
+      "content": "otter floats"
+    },
+    {
+      "id": 5,
+      "entity_id": 5,
+      "content": "Error: heron stuck"
+    },
+    {
+      "id": 6,
+      "entity_id": 5,
+      "content": "Fix: heron A"
+    },
+    {
+      "id": 7,
+      "entity_id": 5,
+      "content": "Error: heron stuck"
+    },
+    {
+      "id": 8,
+      "entity_id": 5,
+      "content": "Fix: heron B"
+    },
+    {
+      "id": 9,
+      "entity_id": 7,
+      "content": "Error: walrus"
+    },
+    {
+      "id": 10,
+      "entity_id": 7,
+      "content": "Error: walrus"
+    },
+    {
+      "id": 11,
+      "entity_id": 8,
+      "content": "puffin flies"
+    },
+    {
+      "id": 12,
+      "entity_id": 8,
+      "content": "puffin dives"
+    },
+    {
+      "id": 13,
+      "entity_id": 10,
+      "content": "lynx hunts"
+    },
+    {
+      "id": 14,
+      "entity_id": 10,
+      "content": "lynx naps"
+    },
+    {
+      "id": 15,
+      "entity_id": 12,
+      "content": "badger a"
+    },
+    {
+      "id": 17,
+      "entity_id": 12,
+      "content": "badger c"
+    },
+    {
+      "id": 18,
+      "entity_id": 12,
+      "content": "badger b"
+    },
+    {
+      "id": 20,
+      "entity_id": 15,
+      "content": "ibis new"
+    }
+  ],
+  "tags": [
+    {
+      "entity_id": 1,
+      "tag": "project:p1"
+    },
+    {
+      "entity_id": 1,
+      "tag": "topic:clam"
+    },
+    {
+      "entity_id": 1,
+      "tag": "topic:otter"
+    },
+    {
+      "entity_id": 15,
+      "tag": "topic:ibis2"
+    }
+  ],
+  "fts": {
+    "otter": [
+      1
+    ],
+    "clams": [
+      1
+    ],
+    "floats": [
+      1
+    ],
+    "Sea": [
+      1
+    ],
+    "heron": [
+      5
+    ],
+    "walrus": [
+      7
+    ],
+    "puffin": [
+      8
+    ],
+    "lynx": [
+      10
+    ],
+    "naps": [
+      10
+    ],
+    "badger": [
+      12
+    ],
+    "ibis": [
+      15
+    ],
+    "old": [],
+    "new": [
+      15
+    ],
+    "eta": [
+      17
+    ]
+  },
+  "integrity": "ok"
+}

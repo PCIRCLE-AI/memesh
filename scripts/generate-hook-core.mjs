@@ -105,6 +105,9 @@ const SOURCES = [
   // give the sidecars the database's owner bits exactly as core does.
   { from: 'dist/core/file-mode.js', to: 'file-mode.js', src: 'src/core/file-mode.ts' },
   { from: 'dist/storage/fts-index.js', to: 'fts-index.js', src: 'src/storage/fts-index.ts' },
+  // The entity write kernel: the hooks' captureEntity and core's createEntity
+  // perform the same row / observations / tags / FTS write through it.
+  { from: 'dist/storage/entity-write.js', to: 'entity-write.js', src: 'src/storage/entity-write.ts' },
   { from: 'dist/storage/schema.js', to: 'schema.js', src: 'src/storage/schema.ts' },
   // The SQLite driver. A leaf by construction — it imports `node:module` and
   // nothing else — and the hooks need the identical `MemeshDatabase` the rest
