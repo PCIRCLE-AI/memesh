@@ -46,6 +46,7 @@ export interface CreateEntityInput {
 }
 export interface SearchOptions {
     tag?: string;
+    projectScope?: string | null;
     limit?: number;
     includeArchived?: boolean;
     namespace?: string;
@@ -67,6 +68,7 @@ export interface RememberInput {
     trustOverride?: 'trusted' | 'untrusted';
     provenanceOverride?: Record<string, unknown>;
     sourceHost?: string;
+    project?: string | null;
 }
 export interface RecallInput {
     query?: string;
@@ -75,6 +77,7 @@ export interface RecallInput {
     include_archived?: boolean;
     namespace?: string;
     cross_project?: boolean;
+    projectScope?: string | null;
 }
 export interface ForgetInput {
     name: string;
@@ -161,6 +164,7 @@ export interface LearnInput {
     prevention?: string;
     severity?: LessonSeverity;
     sourceHost?: string;
+    project?: string | null;
 }
 export interface LearnResult {
     learned: boolean;

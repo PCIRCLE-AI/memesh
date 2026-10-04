@@ -22,6 +22,11 @@ import { filler, seedOversizedEntity } from './helpers/recall-size-fixture.js';
 // a bare array — see the shape contract test in the recall describe block.
 const recallEntities = (result: { content: Array<{ text: string }> }) =>
   JSON.parse(result.content[0].text).entities;
+// A session bound to one project, as server.ts passes it once the launch root
+// or the client's workspace root resolves.
+const BOUND = { projectBinding: { project: 'tools-test' } };
+const tableCounts = () => Object.fromEntries(['entities', 'observations', 'tags', 'entities_fts'].map(t =>
+  [t, (getDatabase().prepare(`SELECT count(*) AS n FROM ${t}`).get() as { n: number }).n]));
 
 let tmpDir: string;
 let dbPath: string;
@@ -621,15 +626,15 @@ describe('source_host provenance', () => {
   it('stamps the MCP client name the transport hands over', async () => {
     // The third argument is the client's self-declared initialize name,
     // threaded by src/mcp/server.ts — NOT a tool parameter the model can set.
-    await handleTool('remember', { name: 'prov-mcp', type: 'decision', observations: ['from codex'] }, 'codex');
-    const recall = await handleTool('recall', { query: 'prov-mcp' });
+    await handleTool('remember', { name: 'prov-mcp', type: 'decision', observations: ['from codex'] }, 'codex', undefined, BOUND);
+    const recall = await handleTool('recall', { cross_project: true, query: 'prov-mcp' });
     const hit = recallEntities(recall).find((e: any) => e.name === 'prov-mcp');
     expect(hit.metadata.provenance.source_host).toBe('codex');
   });
 
   it('records no source_host when the transport does not know one', async () => {
-    await handleTool('remember', { name: 'prov-anon', type: 'decision', observations: ['origin unknown'] });
-    const recall = await handleTool('recall', { query: 'prov-anon' });
+    await handleTool('remember', { name: 'prov-anon', type: 'decision', observations: ['origin unknown'] }, undefined, undefined, BOUND);
+    const recall = await handleTool('recall', { cross_project: true, query: 'prov-anon' });
     const hit = recallEntities(recall).find((e: any) => e.name === 'prov-anon');
     expect(hit.metadata.provenance.source_host).toBeUndefined();
   });
@@ -646,7 +651,7 @@ describe('source_host provenance', () => {
     expect(JSON.stringify(result)).toMatch(/sourceHost|unrecognized/i);
 
     // And nothing was stored under the spoofed call.
-    const recall = await handleTool('recall', { query: 'prov-spoof' });
+    const recall = await handleTool('recall', { cross_project: true, query: 'prov-spoof' });
     expect(recallEntities(recall).find((e: any) => e.name === 'prov-spoof')).toBeUndefined();
   });
 
@@ -656,7 +661,7 @@ describe('source_host provenance', () => {
       sourceHost: 'gemini-cli',
     } as Record<string, unknown>);
     expect(JSON.stringify(result)).toMatch(/sourceHost|unrecognized/i);
-    const recall = await handleTool('recall', { query: 'prov-anon-spoof' });
+    const recall = await handleTool('recall', { cross_project: true, query: 'prov-anon-spoof' });
     expect(recallEntities(recall).find((e: any) => e.name === 'prov-anon-spoof')).toBeUndefined();
   });
 
@@ -665,9 +670,9 @@ describe('source_host provenance', () => {
     // INSERT OR IGNORE and the CHANGELOG promises. Before the fix this
     // returned 'codex': buildLocalMetadata spreads overrides over the stored
     // provenance, so every cross-host append rewrote the attribution.
-    await handleTool('remember', { name: 'prov-first', type: 'decision', observations: ['created here'] }, 'claude-code');
-    await handleTool('remember', { name: 'prov-first', type: 'decision', observations: ['appended elsewhere'] }, 'codex');
-    const recall = await handleTool('recall', { query: 'prov-first' });
+    await handleTool('remember', { name: 'prov-first', type: 'decision', observations: ['created here'] }, 'claude-code', undefined, BOUND);
+    await handleTool('remember', { name: 'prov-first', type: 'decision', observations: ['appended elsewhere'] }, 'codex', undefined, BOUND);
+    const recall = await handleTool('recall', { cross_project: true, query: 'prov-first' });
     const hit = recallEntities(recall).find((e: any) => e.name === 'prov-first');
     expect(hit.metadata.provenance.source_host).toBe('claude-code');
   });
@@ -677,8 +682,8 @@ describe('source_host provenance', () => {
     // exactly the kind of line a refactor silently drops. Without this test,
     // deleting `sourceHost:` in lesson-engine.ts or in operations.ts learn()
     // leaves the whole suite green.
-    await handleTool('learn', { error: 'prov-lesson-unique-boom', fix: 'restart the flux capacitor' }, 'codex');
-    const recall = await handleTool('recall', { query: 'prov-lesson-unique-boom' });
+    await handleTool('learn', { error: 'prov-lesson-unique-boom', fix: 'restart the flux capacitor' }, 'codex', undefined, BOUND);
+    const recall = await handleTool('recall', { cross_project: true, query: 'prov-lesson-unique-boom' });
     const hit = recallEntities(recall).find((e: any) => e.name.startsWith('lesson-'));
     expect(hit.metadata.provenance.source_host).toBe('codex');
   });
@@ -711,11 +716,39 @@ describe('normalizeClientHost', () => {
 });
 
 describe('remember', () => {
+  it('with no project tag, files the memory under the bound project', async () => {
+    const r = await handleTool('remember', { name: 'bound-mem', type: 'fact', observations: ['x'], tags: ['topic:y'] }, undefined, undefined, BOUND);
+    expect(r.isError, r.content[0].text).toBeUndefined();
+    const tags = (getDatabase().prepare('SELECT t.tag FROM tags t JOIN entities e ON e.id = t.entity_id WHERE e.name = ? ORDER BY t.tag').all('bound-mem') as Array<{ tag: string }>).map(t => t.tag);
+    expect(tags).toEqual(['project:tools-test', 'topic:y']);
+  });
+
+  it('with no project tag and no bound project, is refused and writes nothing', async () => {
+    const before = tableCounts();
+    const r = await handleTool('remember', { name: 'unbound-mem', type: 'fact', observations: ['x'] });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toMatch(/^workspace_unavailable: .*project:<id>/);
+    expect(tableCounts()).toEqual(before);
+  });
+
+  it('refuses two different project tags, and writes nothing', async () => {
+    const before = tableCounts();
+    const r = await handleTool('remember', { name: 'two-projects', type: 'fact', observations: ['x'], tags: ['project:a', 'project:b'] }, undefined, undefined, BOUND);
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toMatch(/more than one project tag/);
+    expect(tableCounts()).toEqual(before);
+  });
+
+  it('an explicit project tag needs no binding', async () => {
+    const r = await handleTool('remember', { name: 'explicit-mem', type: 'fact', observations: ['x'], tags: ['project:elsewhere'] });
+    expect(r.isError).toBeUndefined();
+  });
+
   it('stores an entity and returns confirmation', async () => {
     const result = await handleTool('remember', {
       name: 'auth-decision',
       type: 'decision',
-    });
+    }, undefined, undefined, BOUND);
 
     expect(result.isError).toBeUndefined();
     const data = JSON.parse(result.content[0].text);
@@ -726,7 +759,7 @@ describe('remember', () => {
 
   it('stores tags and relations', async () => {
     // Create target entity first so relation can be established
-    await handleTool('remember', { name: 'jwt-pattern', type: 'pattern' });
+    await handleTool('remember', { name: 'jwt-pattern', type: 'pattern' }, undefined, undefined, BOUND);
 
     const result = await handleTool('remember', {
       name: 'auth-decision',
@@ -772,11 +805,11 @@ describe('remember', () => {
   it('rejects a whitespace-only observation instead of storing an empty memory (M-05)', async () => {
     const result = await handleTool('remember', {
       name: 'blank-mcp-test', type: 'note', observations: ['   '],
-    });
+    }, undefined, undefined, BOUND);
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toMatch(/whitespace-only/i);
 
-    const recall = await handleTool('recall', { query: 'blank-mcp-test' });
+    const recall = await handleTool('recall', { cross_project: true, query: 'blank-mcp-test' });
     expect(recallEntities(recall)).toEqual([]);
   });
 
@@ -791,9 +824,9 @@ describe('remember', () => {
       name: 'jwt-lesson',
       type: 'lesson',
       observations: ['Use RS256 for JWT signing', 'Rotate keys quarterly'],
-    });
+    }, undefined, undefined, BOUND);
 
-    const result = await handleTool('recall', { query: 'RS256' });
+    const result = await handleTool('recall', { cross_project: true, query: 'RS256' });
     const data = recallEntities(result);
     expect(data.length).toBe(1);
     expect(data[0].name).toBe('jwt-lesson');
@@ -801,26 +834,26 @@ describe('remember', () => {
   });
 
   it('auto-archives entity when superseded by new remember', async () => {
-    await handleTool('remember', { name: 'auth-v2', type: 'decision', observations: ['Use JWT'] });
+    await handleTool('remember', { name: 'auth-v2', type: 'decision', observations: ['Use JWT'] }, undefined, undefined, BOUND);
     await handleTool('remember', {
       name: 'auth-v3', type: 'decision', observations: ['Use OAuth 2.0'],
       relations: [{ to: 'auth-v2', type: 'supersedes' }],
-    });
+    }, undefined, undefined, BOUND);
 
     // auth-v2 should be auto-archived and must not appear in default recall.
-    const recallOld = await handleTool('recall', { query: 'JWT' });
+    const recallOld = await handleTool('recall', { cross_project: true, query: 'JWT' });
     const oldNames = recallEntities(recallOld).map((e: any) => e.name);
     expect(oldNames).not.toContain('auth-v2');
 
     // auth-v3 should be active and surfaced by an OAuth query.
-    const recallNew = await handleTool('recall', { query: 'OAuth' });
+    const recallNew = await handleTool('recall', { cross_project: true, query: 'OAuth' });
     const data = recallEntities(recallNew);
     expect(data.length).toBeGreaterThanOrEqual(1);
     expect(data.map((e: any) => e.name)).toContain('auth-v3');
     expect(data.map((e: any) => e.name)).not.toContain('auth-v2');
 
     // Both visible with include_archived
-    const recallAll = await handleTool('recall', { include_archived: true });
+    const recallAll = await handleTool('recall', { cross_project: true, include_archived: true });
     const allData = recallEntities(recallAll);
     const names = allData.map((e: any) => e.name);
     expect(names).toContain('auth-v2');
@@ -832,7 +865,7 @@ describe('remember', () => {
       name: 'auth-decision',
       type: 'decision',
       relations: [{ to: 'nonexistent-entity', type: 'related-to' }],
-    });
+    }, undefined, undefined, BOUND);
 
     expect(result.isError).toBeUndefined();
     const data = JSON.parse(result.content[0].text);
@@ -860,8 +893,35 @@ describe('recall', () => {
     });
   });
 
-  it('finds entities by query', async () => {
+  it('with no tag and no cross_project, is scoped to the bound project plus global memories', async () => {
+    await handleTool('remember', { name: 'everywhere-auth', type: 'pattern', observations: ['auth rule for all projects'], namespace: 'global' }, undefined, undefined, BOUND);
+    const myapp = { projectBinding: { project: 'myapp' } };
+    const scoped = recallEntities(await handleTool('recall', { query: 'auth' }, undefined, undefined, myapp));
+    expect(scoped.map((e: any) => e.name).sort()).toEqual(['auth-pattern', 'everywhere-auth']);
+    expect(scoped.find((e: any) => e.name === 'everywhere-auth').namespace).toBe('global');
+    const other = recallEntities(await handleTool('recall', {}, undefined, undefined, { projectBinding: { project: 'other' } }));
+    expect(other.map((e: any) => e.name).sort()).toEqual(['db-decision', 'everywhere-auth']);
+    // An explicit tag and cross_project keep their own meaning under a binding.
+    expect(recallEntities(await handleTool('recall', { tag: 'project:other' }, undefined, undefined, myapp))
+      .map((e: any) => e.name)).toEqual(['db-decision']);
+    expect(recallEntities(await handleTool('recall', { cross_project: true }, undefined, undefined, myapp))
+      .map((e: any) => e.name).sort()).toEqual(['auth-pattern', 'db-decision', 'everywhere-auth']);
+  });
+
+  it('with no tag and no cross_project and no bound project, searches memories with no project and global ones, and says so', async () => {
+    await handleTool('remember', { name: 'loose-auth', type: 'fact', observations: ['auth note with no project'], project: false });
     const result = await handleTool('recall', { query: 'auth' });
+    expect(result.isError).toBeUndefined();
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.entities.map((e: any) => [e.name, e.projects])).toEqual([['loose-auth', []]]);
+    expect(parsed.scope.project).toBeNull();
+    expect(parsed.scope.searched).toMatch(/no project is bound/);
+    // An explicit selector needs no binding.
+    expect(recallEntities(await handleTool('recall', { tag: 'project:myapp' })).map((e: any) => e.name)).toEqual(['auth-pattern']);
+  });
+
+  it('finds entities by query', async () => {
+    const result = await handleTool('recall', { cross_project: true, query: 'auth' });
     const data = recallEntities(result);
     expect(data.length).toBeGreaterThanOrEqual(1);
     expect(data.some((e: any) => e.name === 'auth-pattern')).toBe(true);
@@ -874,7 +934,7 @@ describe('recall', () => {
     // recall issued from Gemini CLI failed with "structuredContent: expected
     // record, received array" (its session log pins this) while Claude Code
     // and Codex read the same payload fine.
-    const result = await handleTool('recall', { query: 'auth' });
+    const result = await handleTool('recall', { cross_project: true, query: 'auth' });
     const parsed = JSON.parse(result.content[0].text);
     expect(Array.isArray(parsed), 'bare-array payload breaks Gemini CLI').toBe(false);
     expect(Array.isArray(parsed.entities)).toBe(true);
@@ -891,15 +951,27 @@ describe('recall', () => {
     // instead of omitting the key. This exact shape failed against the live
     // server ("tag: Invalid input: expected string, received null") while the
     // same recall from Codex, which omits the keys, succeeded.
+    // A blank tag/cross_project is no selector: the call takes the default,
+    // bound-project path, not a refusal and not every project.
     const result = await handleTool('recall', {
       query: 'auth',
       tag: null,
+      cross_project: null,
       limit: null,
       namespace: null,
-    } as Record<string, unknown>);
+    } as Record<string, unknown>, undefined, undefined, { projectBinding: { project: 'myapp' } });
     expect(result.isError).toBeUndefined();
     const data = recallEntities(result);
-    expect(data.some((e: any) => e.name === 'auth-pattern')).toBe(true);
+    expect(data.map((e: any) => e.name)).toEqual(['auth-pattern']);
+  });
+
+  it('treats an empty tag as no tag: scoped when bound, no-project scope when unbound', async () => {
+    const bound = await handleTool('recall', { query: 'auth', tag: '' }, undefined, undefined, { projectBinding: { project: 'other' } });
+    expect(recallEntities(bound).map((e: any) => e.name)).not.toContain('auth-pattern');
+    const unbound = await handleTool('recall', { query: 'auth', tag: '' });
+    expect(unbound.isError).toBeUndefined();
+    expect(recallEntities(unbound)).toEqual([]);
+    expect(JSON.parse(unbound.content[0].text).scope.project).toBeNull();
   });
 
   it('still rejects a null ELEMENT inside an array — that is data, not a blank', async () => {
@@ -923,19 +995,19 @@ describe('recall', () => {
   });
 
   it('lists recent when no query provided', async () => {
-    const result = await handleTool('recall', {});
+    const result = await handleTool('recall', { cross_project: true });
     const data = recallEntities(result);
     expect(data.length).toBe(2);
   });
 
   it('returns empty entities when nothing matches', async () => {
-    const result = await handleTool('recall', { query: 'nonexistent-xyz-123' });
+    const result = await handleTool('recall', { cross_project: true, query: 'nonexistent-xyz-123' });
     const data = recallEntities(result);
     expect(data).toEqual([]);
   });
 
   it('respects limit parameter', async () => {
-    const result = await handleTool('recall', { limit: 1 });
+    const result = await handleTool('recall', { cross_project: true, limit: 1 });
     const data = recallEntities(result);
     expect(data.length).toBe(1);
   });
@@ -1088,12 +1160,12 @@ describe('import and archived memories (#363)', () => {
     entities: [{ name, type: 'note', namespace: 'personal', observations: ['bundle text'], tags: [], relations: [] }],
   });
   const seedArchived = async (name: string) => {
-    await handleTool('remember', { name, type: 'note', observations: ['original text'] });
+    await handleTool('remember', { name, type: 'note', observations: ['original text'] }, undefined, undefined, BOUND);
     const forgotten = JSON.parse((await handleTool('forget', { name })).content[0].text);
     expect(forgotten.archived, 'fixture: forget must archive the entity').toBe(true);
   };
   const archivedHit = async (name: string) => {
-    const all = await handleTool('recall', { query: name, include_archived: true });
+    const all = await handleTool('recall', { cross_project: true, query: name, include_archived: true });
     return recallEntities(all).find((e: any) => e.name === name);
   };
 
@@ -1165,13 +1237,13 @@ describe('forget', () => {
     // entity dropped out of recall and out of session-start injection.
     await handleTool('remember', {
       name: 'keeper', type: 'decision', observations: ['fact A', 'fact B'],
-    });
+    }, undefined, undefined, BOUND);
 
     const result = await handleTool('forget', { name: 'keeper', observations: 'fact A' });
     expect(JSON.stringify(result)).toMatch(/observations|unrecognized|invalid/i);
 
     // The entity is untouched — still active, still recallable, both facts.
-    const recall = await handleTool('recall', { query: 'fact' });
+    const recall = await handleTool('recall', { cross_project: true, query: 'fact' });
     const hit = recallEntities(recall).find((e: any) => e.name === 'keeper');
     expect(hit).toBeTruthy();
     expect(hit.observations).toHaveLength(2);
@@ -1180,7 +1252,7 @@ describe('forget', () => {
   it('archives an entity instead of deleting it', async () => {
     await handleTool('remember', {
       name: 'old-design', type: 'decision', observations: ['Use REST'],
-    });
+    }, undefined, undefined, BOUND);
 
     const result = await handleTool('forget', { name: 'old-design' });
     const data = JSON.parse(result.content[0].text);
@@ -1188,11 +1260,11 @@ describe('forget', () => {
     expect(data.name).toBe('old-design');
 
     // Hidden from normal recall
-    const recall = await handleTool('recall', { query: 'REST' });
+    const recall = await handleTool('recall', { cross_project: true, query: 'REST' });
     expect(recallEntities(recall)).toEqual([]);
 
     // Visible with include_archived
-    const recallAll = await handleTool('recall', { query: 'REST', include_archived: true });
+    const recallAll = await handleTool('recall', { cross_project: true, query: 'REST', include_archived: true });
     const allData = recallEntities(recallAll);
     expect(allData).toHaveLength(1);
     expect(allData[0].archived).toBe(true);
@@ -1201,7 +1273,7 @@ describe('forget', () => {
   it('removes a specific observation without archiving', async () => {
     await handleTool('remember', {
       name: 'design', type: 'decision', observations: ['Use JWT', 'Use RS256'],
-    });
+    }, undefined, undefined, BOUND);
 
     const result = await handleTool('forget', { name: 'design', observation: 'Use JWT' });
     const data = JSON.parse(result.content[0].text);
@@ -1209,7 +1281,7 @@ describe('forget', () => {
     expect(data.remaining_observations).toBe(1);
 
     // Entity still active and searchable
-    const recall = await handleTool('recall', { query: 'RS256' });
+    const recall = await handleTool('recall', { cross_project: true, query: 'RS256' });
     expect(recallEntities(recall)).toHaveLength(1);
   });
 
@@ -1226,14 +1298,14 @@ describe('forget', () => {
   it('MCP forget reports isError for a mistyped observation, same as a missing entity (M-17)', async () => {
     await handleTool('remember', {
       name: 'typo-target', type: 'decision', observations: ['the real text'],
-    });
+    }, undefined, undefined, BOUND);
     const result = await handleTool('forget', { name: 'typo-target', observation: 'text that is not there' });
     expect(result.isError, 'a mistyped observation reported success').toBe(true);
     expect(result.content[0].text).toContain('no observation matching that text');
 
     // Anti-vacuity: the entity's own untouched observation is still there —
     // this is a caller-mistake report, not a partial success.
-    const recall = await handleTool('recall', { query: 'the real text' });
+    const recall = await handleTool('recall', { cross_project: true, query: 'the real text' });
     expect(recallEntities(recall)).toHaveLength(1);
   });
 
@@ -1247,7 +1319,7 @@ describe('forget', () => {
 
 describe('learn', () => {
   it('creates a lesson_learned entity', async () => {
-    const result = await handleTool('learn', { error: 'Bug found', fix: 'Fixed it' });
+    const result = await handleTool('learn', { error: 'Bug found', fix: 'Fixed it' }, undefined, undefined, BOUND);
     expect(result.isError).toBeUndefined();
     const data = JSON.parse(result.content[0].text);
     expect(data.learned).toBe(true);
@@ -1255,7 +1327,7 @@ describe('learn', () => {
   });
 
   it('returns the lesson entity name containing "lesson-"', async () => {
-    const result = await handleTool('learn', { error: 'Import missing', fix: 'Added import' });
+    const result = await handleTool('learn', { error: 'Import missing', fix: 'Added import' }, undefined, undefined, BOUND);
     const data = JSON.parse(result.content[0].text);
     expect(data.name).toContain('lesson-');
   });
@@ -1267,7 +1339,7 @@ describe('learn', () => {
       root_cause: 'No pooling configured',
       prevention: 'Always configure pool size',
       severity: 'critical',
-    });
+    }, undefined, undefined, BOUND);
     expect(result.isError).toBeUndefined();
     const data = JSON.parse(result.content[0].text);
     expect(data.learned).toBe(true);
@@ -1288,6 +1360,23 @@ describe('learn', () => {
   it('returns validation error for invalid severity', async () => {
     const result = await handleTool('learn', { error: 'Oops', fix: 'Fixed', severity: 'extreme' });
     expect(result.isError).toBe(true);
+  });
+
+  it('files the lesson under the bound project', async () => {
+    const result = await handleTool('learn', { error: 'bound-lesson-boom', fix: 'bound fix' }, undefined, undefined, BOUND);
+    const name = JSON.parse(result.content[0].text).name;
+    const tags = (getDatabase().prepare('SELECT t.tag FROM tags t JOIN entities e ON e.id = t.entity_id WHERE e.name = ?').all(name) as Array<{ tag: string }>).map(t => t.tag);
+    expect(tags).toContain('project:tools-test');
+  });
+
+  it('is refused when the session has no bound project, and writes nothing', async () => {
+    const before = tableCounts();
+    const result = await handleTool('learn', { error: 'unbound-boom', fix: 'unbound fix' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/^workspace_unavailable: .*MEMESH_PROJECT_ROOT/);
+    // The refusal names the fields that exist: project, or project: false.
+    expect(result.content[0].text).toMatch(/Pass project .*project: false/);
+    expect(tableCounts()).toEqual(before);
   });
 });
 

@@ -139,7 +139,7 @@ describe('the MCP boundary rejects unknown keys whatever their value', () => {
     // stay working: a client that sends null for a blank OPTIONAL field
     // (Gemini CLI does) is not making an error. Only unknown keys are now
     // rejected before stripping.
-    const res = await handleTool('recall', { query: 'victim', namespace: null });
+    const res = await handleTool('recall', { cross_project: true, query: 'victim', namespace: null });
 
     expect(res.isError, 'a null on a known optional field was rejected').toBeFalsy();
   });

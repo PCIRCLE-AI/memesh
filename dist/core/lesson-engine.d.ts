@@ -1,6 +1,6 @@
 import type { LessonSeverity } from './types.js';
 import { lessonSlug } from './lesson-slug.js';
-export declare function createExplicitLesson(error: string, fix: string, projectName: string, opts?: {
+export declare function createExplicitLesson(error: string, fix: string, projectName: string | null, opts?: {
     rootCause?: string;
     prevention?: string;
     severity?: LessonSeverity;

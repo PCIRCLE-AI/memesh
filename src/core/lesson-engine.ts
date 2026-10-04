@@ -10,7 +10,8 @@ import { lessonSlug } from './lesson-slug.js';
 export function createExplicitLesson(
   error: string,
   fix: string,
-  projectName: string,
+  /** The lesson's project, or null for a lesson that intentionally has none. */
+  projectName: string | null,
   opts?: {
     rootCause?: string;
     prevention?: string;
@@ -35,9 +36,10 @@ export function createExplicitLesson(
   // A caller that passes an explicit `errorPattern` deliberately requests a
   // stable recurring-error key. Only the unkeyed explicit `learn` gets the
   // content-derived slug.
+  const scope = projectName ?? 'no-project';
   const name = opts?.errorPattern
-    ? `lesson-${projectName}-${errorPattern}`
-    : `lesson-${projectName}-${lessonSlug(error)}`;
+    ? `lesson-${scope}-${errorPattern}`
+    : `lesson-${scope}-${lessonSlug(error)}`;
 
   remember({
     name,
@@ -49,12 +51,14 @@ export function createExplicitLesson(
       `Prevention: ${opts?.prevention || 'Review similar code paths'}`,
     ],
     tags: [
-      `project:${projectName}`,
+      ...(projectName === null ? [] : [`project:${projectName}`]),
       `error-pattern:${errorPattern}`,
       `severity:${opts?.severity || 'minor'}`,
       'source:explicit',
     ],
     sourceHost: opts?.sourceHost,
+    // Same ownership check as every project-declared write.
+    project: projectName,
   });
 
   // Explicit user `learn` = highest-trust signal: user asserted "this

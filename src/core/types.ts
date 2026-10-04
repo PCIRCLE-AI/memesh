@@ -138,6 +138,13 @@ export interface CreateEntityInput {
 
 export interface SearchOptions {
   tag?: string;
+  /**
+   * A default recall's scope, under every other filter: a project tag means
+   * that project's memories, memories with no project and global ones; null
+   * (no bound project) means memories with no project and global ones.
+   * Internal, not a public parameter. Ignored when `tag` is given.
+   */
+  projectScope?: string | null;
   limit?: number;
   includeArchived?: boolean;
   namespace?: string;  // filter by namespace; omit to search all namespaces
@@ -195,6 +202,10 @@ export interface RememberInput {
   // metadata.provenance.source_host so it survives federation (phase 03
   // stamps ingested entities the same way).
   sourceHost?: string;
+  // Transport-set, never model-set: the project the session is bound to. The
+  // memory is tagged with it, and a name that belongs to another project (or
+  // to none) is refused rather than shared.
+  project?: string | null;
 }
 
 export interface RecallInput {
@@ -204,6 +215,9 @@ export interface RecallInput {
   include_archived?: boolean;
   namespace?: string;       // filter by namespace; omit to search all namespaces
   cross_project?: boolean;  // search across all project tags (default: false)
+  // Transport-set, never model-set: the scope a call that names no tag gets
+  // (see SearchOptions.projectScope). Ignored with `tag` or `cross_project`.
+  projectScope?: string | null;
 }
 
 export interface ForgetInput {
@@ -391,6 +405,9 @@ export interface LearnInput {
   severity?: LessonSeverity;
   // Transport-set, never model-set — see RememberInput.sourceHost.
   sourceHost?: string;
+  // Transport-set: the project the lesson belongs to. Omitted, the caller's
+  // working directory decides (the CLI's own cwd).
+  project?: string | null;
 }
 
 export interface LearnResult {

@@ -61,7 +61,7 @@ function packObservations(observations, budgetBytes) {
     }
     return { kept, total, cutMidway };
 }
-function capEntityForAgent(entity) {
+function capEntityForAgent(entity, labelProject) {
     const visibleTags = (entity.tags ?? []).filter((t) => !t.startsWith('file:'));
     const observations = entity.observations ?? [];
     const tagsResult = packTags(visibleTags, RECALL_ENTITY_CONTENT_MAX_BYTES);
@@ -76,12 +76,14 @@ function capEntityForAgent(entity) {
         truncated.tags = { shown: tagsResult.kept.length, total: tagsResult.total };
     }
     const capped = { ...entity, tags: tagsResult.kept, observations: obsResult.kept };
+    if (labelProject)
+        capped.projects = (entity.tags ?? []).filter((t) => t.startsWith('project:')).map((t) => t.slice('project:'.length)).sort();
     if (Object.keys(truncated).length > 0)
         capped.truncated = truncated;
     return capped;
 }
-export function capRecallForAgent(result) {
-    const cappedEntities = result.entities.map(capEntityForAgent);
+export function capRecallForAgent(result, scope) {
+    const cappedEntities = result.entities.map((e) => capEntityForAgent(e, scope !== undefined));
     const totalEntities = cappedEntities.length;
     const responseBudget = RECALL_RESPONSE_MAX_BYTES - RESPONSE_METADATA_RESERVE_BYTES;
     let shownCount = 0;
@@ -90,6 +92,7 @@ export function capRecallForAgent(result) {
             entities: cappedEntities.slice(0, count),
             conflicts: result.conflicts,
             retrieval: result.retrieval,
+            scope,
         }));
         if (candidateBytes <= responseBudget) {
             shownCount = count;
@@ -108,6 +111,8 @@ export function capRecallForAgent(result) {
         envelope.truncated = true;
     if (entitiesDropped)
         envelope.entities_omitted = { shown: shownCount, total: totalEntities };
+    if (scope)
+        envelope.scope = scope;
     return envelope;
 }
 export function agentRecallEnvelope(r) {
@@ -117,6 +122,7 @@ export function agentRecallEnvelope(r) {
         ...(r.conflicts.length > 0 ? { conflicts: r.conflicts } : {}),
         ...(r.truncated ? { truncated: r.truncated } : {}),
         ...(r.entities_omitted ? { entities_omitted: r.entities_omitted } : {}),
+        ...(r.scope ? { scope: r.scope } : {}),
     };
 }
 //# sourceMappingURL=recall-agent-view.js.map

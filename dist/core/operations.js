@@ -1,4 +1,5 @@
 import { getDatabase } from '../db.js';
+import { projectOwnershipRefusal } from '../storage/memory-mutation.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { rankEntities } from './scoring.js';
 import { getProjectName } from './paths.js';
@@ -77,6 +78,25 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
     const existing = db
         .prepare('SELECT id, namespace, type, title, status FROM entities WHERE name = ?')
         .get(args.name);
+    const tagProjects = [...new Set((args.tags ?? []).filter((t) => t.startsWith('project:')).map((t) => t.slice('project:'.length)))];
+    if (tagProjects.length > 1) {
+        throw new Error(`MeMesh did not store this memory: it has more than one project tag (${tagProjects.map((p) => `project:${p}`).join(', ')}); a memory belongs to one project.`);
+    }
+    if (args.project !== undefined && tagProjects.length === 1 && tagProjects[0] !== args.project) {
+        throw new Error(`MeMesh did not store this memory: its project tag project:${tagProjects[0]} contradicts ${args.project === null ? 'project: none' : `project ${args.project}`}.`);
+    }
+    const declaredProject = args.project !== undefined ? args.project : tagProjects[0];
+    if (declaredProject !== undefined) {
+        const touched = [
+            ...(existing ? [args.name] : []),
+            ...(args.relations ?? []).filter((rel) => rel.type === 'supersedes').map((rel) => rel.to),
+        ];
+        for (const name of touched) {
+            const refusal = projectOwnershipRefusal(db, name, declaredProject);
+            if (refusal !== undefined)
+                throw new Error(`MeMesh did not store this memory: ${refusal}.`);
+        }
+    }
     if (args.replace && existing && existing.status === 'archived') {
         throw new Error(`"${args.name}" was archived with forget; \`replace\` will not overwrite it. `
             + 'Remember it again without `replace` to bring it back, then replace it.');
@@ -114,6 +134,9 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
         const stored = new Set(db.prepare('SELECT content FROM observations WHERE entity_id = ?').all(existing.id)
             .map((o) => o.content));
         observations = observations?.filter((o) => !stored.has(o));
+    }
+    if (typeof args.project === 'string' && !(tags ?? []).includes(`project:${args.project}`)) {
+        tags = [...(tags ?? []), `project:${args.project}`];
     }
     const entityId = kg.createEntity(args.name, entityType, {
         observations,
@@ -192,6 +215,7 @@ function searchAndScore(args) {
     const kg = new KnowledgeGraph(getDatabase());
     const entities = summarizeReplacedHistory(kg.search(args.query, {
         tag: recallTagFilter(args),
+        projectScope: args.cross_project ? undefined : args.projectScope,
         limit: args.limit,
         includeArchived: args.include_archived,
         namespace: args.namespace,
@@ -221,12 +245,12 @@ export async function recallWithConflicts(args) {
     const conflicts = kg.findConflicts(entities.map((e) => e.name));
     return { entities, conflicts, retrieval };
 }
-export async function recallForAgent(args) {
-    return capRecallForAgent(await recallWithConflicts(args));
+export async function recallForAgent(args, scope) {
+    return capRecallForAgent(await recallWithConflicts(args), scope);
 }
 export { exportMemories, importMemories } from './serializer.js';
 export function learn(args) {
-    const projectName = getProjectName();
+    const projectName = args.project !== undefined ? args.project : getProjectName();
     const result = createExplicitLesson(args.error, args.fix, projectName, {
         rootCause: args.root_cause,
         prevention: args.prevention,

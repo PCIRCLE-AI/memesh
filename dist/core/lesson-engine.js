@@ -3,9 +3,10 @@ import { getDatabase } from '../db.js';
 import { lessonSlug } from './lesson-slug.js';
 export function createExplicitLesson(error, fix, projectName, opts) {
     const errorPattern = opts?.errorPattern || inferErrorPattern(error);
+    const scope = projectName ?? 'no-project';
     const name = opts?.errorPattern
-        ? `lesson-${projectName}-${errorPattern}`
-        : `lesson-${projectName}-${lessonSlug(error)}`;
+        ? `lesson-${scope}-${errorPattern}`
+        : `lesson-${scope}-${lessonSlug(error)}`;
     remember({
         name,
         type: 'lesson_learned',
@@ -16,12 +17,13 @@ export function createExplicitLesson(error, fix, projectName, opts) {
             `Prevention: ${opts?.prevention || 'Review similar code paths'}`,
         ],
         tags: [
-            `project:${projectName}`,
+            ...(projectName === null ? [] : [`project:${projectName}`]),
             `error-pattern:${errorPattern}`,
             `severity:${opts?.severity || 'minor'}`,
             'source:explicit',
         ],
         sourceHost: opts?.sourceHost,
+        project: projectName,
     });
     getDatabase()
         .prepare('UPDATE entities SET confidence = 1.0 WHERE name = ?')

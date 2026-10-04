@@ -12,6 +12,7 @@ import { fileURLToPath } from 'url';
 import { openDatabase, closeDatabase } from '../db.js';
 import { handleTool, TOOL_DEFINITIONS } from './tools.js';
 import { configureVersionSource, normalizeClientHost } from '../transports/mcp/handlers.js';
+import { resolveMcpProject } from '../transports/mcp/project-context.js';
 
 // This file sits at the same depth (2 levels below the package root) both as
 // TS source (src/mcp/server.ts) and inside the bundled dist/mcp/server.js
@@ -48,9 +49,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   const { name, arguments: args } = request.params;
   const record = args && typeof args === 'object' ? args as Record<string, unknown> : undefined;
   const ref = record?.ref && typeof record.ref === 'object' ? record.ref as Record<string, unknown> : undefined;
-  const needsWorkspaceRoots = name === 'work_package'
-    && (record?.kind === 'transcript' || ref?.kind === 'transcript');
-  let workspaceRootUris: string[] | undefined;
+  // The same blanks the handlers' schemas treat as absent: a client such as
+  // Gemini CLI sends null for an optional field it leaves empty, and an empty
+  // tag selects nothing.
+  const needsProjectBinding = ((name === 'task_state' || name === 'briefing') && record?.project == null)
+    // A write or recall that names its project (an id or false) needs no binding.
+    || (name === 'learn' && record?.project == null)
+    || (name === 'remember' && record?.project == null && !(Array.isArray(record?.tags) && record.tags.some(t => typeof t === 'string' && t.startsWith('project:'))))
+    || (name === 'recall' && record?.project == null && (record?.tag == null || record.tag === '') && record?.cross_project !== true);
+  const needsWorkspaceRoots = needsProjectBinding || (name === 'work_package'
+    && (record?.kind === 'transcript' || ref?.kind === 'transcript'));
+  let workspaceRootUris: string[] = [];
+  // Advertised roots that could not be read: work_package treats them as none,
+  // as before; the project binding refuses instead of trusting the launch root alone.
+  let rootsUnreadable = false;
   if (needsWorkspaceRoots) {
     if (!server.getClientCapabilities()?.roots) {
       workspaceRootUris = [];
@@ -64,15 +76,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         workspaceRootUris = listed.roots.map(root => root.uri);
       } catch {
         workspaceRootUris = [];
+        rootsUnreadable = true;
       }
     }
   }
+  // MEMESH_PROJECT_ROOT is set by whoever launched the host for one project;
+  // it binds the call alongside the client's roots, never instead of a conflict.
+  const projectBinding = needsProjectBinding
+    ? resolveMcpProject(process.env.MEMESH_PROJECT_ROOT, rootsUnreadable ? null : workspaceRootUris)
+    : undefined;
   return handleTool(
     name,
     args,
     normalizeClientHost(server.getClientVersion()?.name),
     extra.signal,
-    { workspaceRootUris },
+    { workspaceRootUris, projectBinding },
   );
 });
 

@@ -40,7 +40,13 @@ export interface RecallTruncationInfo {
   tags?: { shown: number; total: number };
 }
 
-export type AgentRecallEntity = Entity & { truncated?: RecallTruncationInfo };
+export type AgentRecallEntity = Entity & { truncated?: RecallTruncationInfo; projects?: string[] };
+
+/** What a project-scoped recall searched; `project` null: no project. */
+export interface RecallScope {
+  project: string | null;
+  searched: string;
+}
 
 export interface RecallForAgentResult {
   entities: AgentRecallEntity[];
@@ -56,6 +62,9 @@ export interface RecallForAgentResult {
   /** Present iff whole entities were dropped from the end to keep the
    *  response under RECALL_RESPONSE_MAX_BYTES. */
   entities_omitted?: { shown: number; total: number };
+  /** Present iff the caller asked for project labels (a project-scoped
+   *  recall): each entity then also carries `projects`. */
+  scope?: RecallScope;
 }
 
 function byteLength(text: string): number {
@@ -149,7 +158,7 @@ function packObservations(
 /** Cap one entity's observations + tags to RECALL_ENTITY_CONTENT_MAX_BYTES,
  *  and always drop `file:*` tags (a fixed default, not size-driven — they
  *  exist for pre-edit recall's own DB lookups, not for an agent to read). */
-function capEntityForAgent(entity: Entity): AgentRecallEntity {
+function capEntityForAgent(entity: Entity, labelProject: boolean): AgentRecallEntity {
   const visibleTags = (entity.tags ?? []).filter((t) => !t.startsWith('file:'));
   const observations = entity.observations ?? [];
 
@@ -167,6 +176,9 @@ function capEntityForAgent(entity: Entity): AgentRecallEntity {
   }
 
   const capped: AgentRecallEntity = { ...entity, tags: tagsResult.kept, observations: obsResult.kept };
+  // Every project the memory belongs to ([] for none), read from the uncapped
+  // tags: the tag cap may drop a project tag itself, and a memory can carry several.
+  if (labelProject) capped.projects = (entity.tags ?? []).filter((t) => t.startsWith('project:')).map((t) => t.slice('project:'.length)).sort();
   if (Object.keys(truncated).length > 0) capped.truncated = truncated;
   return capped;
 }
@@ -176,14 +188,16 @@ function capEntityForAgent(entity: Entity): AgentRecallEntity {
  * entity's observations+tags to RECALL_ENTITY_CONTENT_MAX_BYTES, the whole
  * response to RECALL_RESPONSE_MAX_BYTES (dropping whole entities from the
  * end once every remaining one is already individually capped), and
- * `file:*` tags omitted throughout. Pure and DB-free.
+ * `file:*` tags omitted throughout. With `scope`, each entity is labelled
+ * with its project and the scope travels in the response, both counted in
+ * the response budget. Pure and DB-free.
  */
 export function capRecallForAgent(result: {
   entities: Entity[];
   conflicts: string[];
   retrieval: RetrievalMeta;
-}): RecallForAgentResult {
-  const cappedEntities = result.entities.map(capEntityForAgent);
+}, scope?: RecallScope): RecallForAgentResult {
+  const cappedEntities = result.entities.map((e) => capEntityForAgent(e, scope !== undefined));
   const totalEntities = cappedEntities.length;
   const responseBudget = RECALL_RESPONSE_MAX_BYTES - RESPONSE_METADATA_RESERVE_BYTES;
 
@@ -196,6 +210,7 @@ export function capRecallForAgent(result: {
       entities: cappedEntities.slice(0, count),
       conflicts: result.conflicts,
       retrieval: result.retrieval,
+      scope,
     }));
     if (candidateBytes <= responseBudget) {
       shownCount = count;
@@ -214,6 +229,7 @@ export function capRecallForAgent(result: {
   };
   if (anyContentTruncated || entitiesDropped) envelope.truncated = true;
   if (entitiesDropped) envelope.entities_omitted = { shown: shownCount, total: totalEntities };
+  if (scope) envelope.scope = scope;
   return envelope;
 }
 
@@ -226,5 +242,6 @@ export function agentRecallEnvelope(r: RecallForAgentResult) {
     ...(r.conflicts.length > 0 ? { conflicts: r.conflicts } : {}),
     ...(r.truncated ? { truncated: r.truncated } : {}),
     ...(r.entities_omitted ? { entities_omitted: r.entities_omitted } : {}),
+    ...(r.scope ? { scope: r.scope } : {}),
   };
 }

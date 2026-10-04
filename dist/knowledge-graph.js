@@ -65,6 +65,15 @@ function dropUbiquitousTerms(db, terms) {
         return terms;
     }
 }
+const NO_PROJECT_TAG = "NOT EXISTS (SELECT 1 FROM tags sp WHERE sp.entity_id = e.id AND sp.tag LIKE 'project:%')";
+function projectScopeFilter(scope) {
+    return scope === null
+        ? { sql: `AND (${NO_PROJECT_TAG} OR e.namespace = 'global')`, params: [] }
+        : {
+            sql: `AND (EXISTS (SELECT 1 FROM tags st WHERE st.entity_id = e.id AND st.tag = ?) OR ${NO_PROJECT_TAG} OR e.namespace = 'global')`,
+            params: [scope],
+        };
+}
 export class KnowledgeGraph {
     db;
     constructor(db) {
@@ -379,6 +388,9 @@ export class KnowledgeGraph {
             if (opts?.tag) {
                 return this.listRecentByTag(opts.tag, limit, opts?.includeArchived, opts?.namespace, countAsAccess);
             }
+            if (opts?.projectScope !== undefined) {
+                return this.listRecentInScope(opts.projectScope, limit, opts?.includeArchived, opts?.namespace, countAsAccess);
+            }
             return this.listRecent(limit, opts?.includeArchived, opts?.namespace, countAsAccess);
         }
         const matchExpressions = buildRecallMatchExpressions(this.db, query);
@@ -387,12 +399,16 @@ export class KnowledgeGraph {
         }
         const statusFilter = opts?.includeArchived ? '' : "AND e.status = 'active'";
         const namespaceFilter = opts?.namespace ? 'AND e.namespace = ?' : '';
+        const scope = opts?.tag ? undefined : opts?.projectScope;
+        const scoped = scope === undefined ? undefined : projectScopeFilter(scope);
         const tagFilter = opts?.tag
             ? 'AND EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?)'
-            : '';
+            : scoped ? scoped.sql : '';
         const filterParams = [];
         if (opts?.tag)
             filterParams.push(opts.tag);
+        else if (scoped)
+            filterParams.push(...scoped.params);
         if (opts?.namespace)
             filterParams.push(opts.namespace);
         filterParams.push(limit);
@@ -439,7 +455,7 @@ export class KnowledgeGraph {
         const seenIds = new Set(ftsIds);
         if (opts?.includeArchived) {
             const tagJoin = opts?.tag ? 'JOIN tags t ON t.entity_id = e.id' : '';
-            const tagFilter = opts?.tag ? 'AND t.tag = ?' : '';
+            const tagFilter = opts?.tag ? 'AND t.tag = ?' : scoped ? scoped.sql : '';
             const archivedNamespaceFilter = opts?.namespace ? 'AND e.namespace = ?' : '';
             const likeTerms = archivedLikeTerms(this.db, query);
             registerNfcFunction(this.db);
@@ -451,6 +467,8 @@ export class KnowledgeGraph {
             const archivedParams = likeTerms.flatMap((t) => [t, t, t]);
             if (opts?.tag)
                 archivedParams.push(opts.tag);
+            else if (scoped)
+                archivedParams.push(...scoped.params);
             if (opts?.namespace)
                 archivedParams.push(opts.namespace);
             const archivedRows = this.db
@@ -509,6 +527,22 @@ export class KnowledgeGraph {
             .prepare(`SELECT id FROM entities WHERE type = ? ${statusFilter} ${namespaceFilter} ORDER BY id DESC LIMIT ?`)
             .all(...params);
         return this.getEntitiesByIds(rows.map((r) => r.id), { includeArchived, namespace });
+    }
+    listRecentInScope(scope, limit, includeArchived, namespace, countAsAccess = true) {
+        const statusFilter = includeArchived ? '' : "AND e.status = 'active'";
+        const namespaceFilter = namespace ? 'AND e.namespace = ?' : '';
+        const scoped = projectScopeFilter(scope);
+        const params = [...scoped.params];
+        if (namespace)
+            params.push(namespace);
+        params.push(limit);
+        const rows = this.db
+            .prepare(`SELECT e.id FROM entities e WHERE 1=1 ${scoped.sql} ${statusFilter} ${namespaceFilter} ORDER BY e.id DESC LIMIT ?`)
+            .all(...params);
+        const results = this.getEntitiesByIds(rows.map((r) => r.id), { includeArchived, namespace });
+        if (countAsAccess)
+            this.trackAccess(results.map((e) => e.id));
+        return results;
     }
     listRecentByTag(tag, limit, includeArchived, namespace, countAsAccess = true) {
         const statusFilter = includeArchived ? '' : "AND e.status = 'active'";

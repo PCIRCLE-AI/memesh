@@ -129,17 +129,23 @@ host is recallable from all of them. Not installed yet? Follow
   each following paragraph → one observation, name derived from the text
   (the same text twice is one memory). Optional `type` (default `note`),
   `tags`, `name`. The response echoes the derived shape under `derived`.
-- **Tag project work with the exact project id.** Use `project:<id>`, where
-  `<id>` is the `project` field of the `briefing` result (CLI:
-  `memesh briefing --json`). The injected block shows only the readable name;
-  a tag with the plain repository name is a different scope that this
-  project's sessions never see.
+- **Project work is filed under its project.** Over MCP, a `remember` or
+  `learn` with no `project` goes to the project the session is bound to, and
+  is refused when none is bound. Pass `project: "<id>"` to name it, or
+  `project: false` for a memory that belongs to no project (a preference, a
+  general lesson). `recall` searches the bound project (or `project`), memories
+  with no project and global ones, and says which in `scope`. When you tag by hand (the CLI, or another
+  project), use `project:<id>`, where `<id>` is the `project` field of the
+  `briefing` result (CLI: `memesh briefing --json`). The injected block shows
+  only the readable name; a tag with the plain repository name is a different
+  scope that this project's sessions never see.
 - **A mistake with a known cause and fix is a `learn` call** (it creates a
   `lesson_learned`, which later sessions show as a lesson). A choice between
   options is a `remember` with type `decision`.
 - **Reuse a stable `name` to append.** Calling `remember` with an existing
   name appends observations and dedupes tags. A fresh name for every update
-  creates duplicates that recall must wade through.
+  creates duplicates that recall must wade through. A name another project
+  already holds is refused over MCP rather than shared: pick a different one.
 - **Correct a memory in one call**: `remember` it again with its `name` and
   `replace: true`. `type` is not needed — the memory keeps the one it has.
   Pass a `type` only to reclassify: one that differs from what is stored

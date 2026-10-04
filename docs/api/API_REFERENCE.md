@@ -44,6 +44,8 @@ Store knowledge as an entity with observations, tags, and relations.
 
 If `remember` is called again with an existing `name`, MeMesh treats it as an append-style upsert: new observations are appended, tags are deduped, and the original entity type is retained. With `replace: true` it rewrites the entity instead (see below).
 
+**Project over MCP.** A memory belongs to one project, or to none. `project: "<id>"` or a `project:<id>` tag names the project. `project: false` stores a memory that belongs to no project — a preference, a general lesson — with no project tag and no binding needed. With neither (a `null` `project` counts as not given), the MCP tool files the memory under the session's bound project — `MEMESH_PROJECT_ROOT` from the launch, or the client's single workspace root — and adds its `project:` tag; with no bound project the call is refused with `workspace_unavailable` (or `workspace_ambiguous`), naming these options. A `project` that contradicts a project tag, and two different project tags, are refused. A name is one memory for every project, so a write that names a project — by argument, tag or binding — is refused on a name, or a `supersedes` target, that belongs to another project or to no project; a write with no project is refused on one that belongs to a project. Use a different name. A refused call writes nothing. The same ownership check, the two-tag refusal and the tag-contradiction refusal apply to the CLI and the HTTP API when they carry a project tag; otherwise they keep their own defaults.
+
 Two forms. **Structured**: `name` + `type`, with `title` / `observations`. **Note**: `note` alone (free text), with optional `type`, `tags`, `name` — the server derives the rest:
 
 - `title` = the first non-empty line (a leading `#` heading or list marker is dropped; a line over 200 characters is cut to its first sentence, then to 200). When the line had to be cut, the full original line is *also* kept as the first observation — nothing the caller wrote is dropped, so a long first line ends up in the response twice: shortened as the title, in full as an observation;
@@ -65,7 +67,8 @@ The note is cleaned before anything is derived from it: control characters (othe
 | `replace` | boolean | No | Rewrite the named memory instead of appending (see above). Default `false` |
 | `title` | string | No | Short human-readable label shown wherever the memory is listed (e.g. `"Why we dropped JWT"`), max 200 characters — longer is **rejected**, not truncated, so the caller can shorten it themselves. On an entity that already exists, supplying this replaces the title; omitting it leaves the title it already has. Whitespace-only counts as omitted. |
 | `observations` | string[] | No | Key facts or observations about this entity |
-| `tags` | string[] | No | Tags for filtering (e.g., `"project:<id>"`, where `<id>` is the `project` field of the `briefing` result (CLI: `memesh briefing --json`), `"topic:database"`). A plain repository name is a different project scope |
+| `tags` | string[] | No | Tags for filtering (e.g., `"project:<id>"`, where `<id>` is the `project` field of the `briefing` result (CLI: `memesh briefing --json`), `"topic:database"`). A plain repository name is a different project scope. Over MCP, omit the project tag to file the memory under the session's bound project; at most one project tag |
+| `project` | string \| `false` | No | MCP only. The project id, or `false` for a memory with no project. Omitted or `null`: a `project:` tag, else the bound project (see above) |
 | `relations` | object[] | No | Relations to other entities |
 | `namespace` | string | No | Namespace scope: `"personal"` (default), `"team"`, or `"global"`. On an entity that already exists, supplying this **moves** it; omitting it leaves the namespace it already has. |
 
@@ -158,7 +161,7 @@ Three more fields are conditional. `relationsCreated` lists the relations actual
 
 ### recall
 
-Search and retrieve stored knowledge. Uses local SQLite FTS5 full-text search, with optional tag filtering and multi-factor scoring. Results are ranked by a weighted combination of search relevance, recency, access frequency, confidence, and recall-effectiveness impact. Call with no query to list recent memories.
+Search and retrieve stored knowledge. Uses local SQLite FTS5 full-text search, with optional tag filtering and multi-factor scoring. With no `tag` and no `cross_project`, the MCP tool searches one project, memories with no project, and memories in the `global` namespace. The project is `project` when given, else the session's bound project — `MEMESH_PROJECT_ROOT` from the launch, or the client's single workspace root (`roots/list`). `project: false`, or a session with nothing bound, searches only memories with no project and global ones. A `MEMESH_PROJECT_ROOT` or a workspace root that is set but cannot be resolved (not an existing directory, or roots the client advertised but did not return) is refused with `workspace_unavailable` and its reason, and launch and workspace roots that disagree with `workspace_ambiguous`. Each memory then carries `projects` (every project it belongs to, sorted; `[]` for none — an older memory can belong to more than one) and the response carries `scope: { project, searched }`, saying what was searched; both are counted inside the response size cap. `project` cannot be combined with `tag` or `cross_project`: such a call is refused. An explicit `tag` or `cross_project` needs no binding. A `null` or empty `tag`, and a `null` `cross_project`, count as not given. Results are ranked by a weighted combination of search relevance, recency, access frequency, confidence, and recall-effectiveness impact. Call with no query to list recent memories.
 
 One- and two-term queries use OR matching. Queries with three or more searchable terms first try strict all-term matching, then fall back to OR only when strict matching has no hits, so natural-language wording stays useful without allowing one frequent token to dominate a precise query. Results are ordered by relevance (BM25) before scoring. Terms appearing in more than half the indexed rows are dropped as noise — they are the ones BM25 already scores near zero — except that a query made entirely of common words keeps its rarest term rather than matching nothing, and the guard does not apply below 25 indexed rows, where a frequent word is the subject rather than a stopword. Of what survives, the first 32 in query order are used — dropping the ubiquitous terms *before* the cap means a bigram-segmented CJK question no longer loses its whole tail to terms that would have been discarded anyway, but the cap itself is still positional, so a query with more than 32 surviving terms does lose its tail. Punctuation inside a word splits it (`kitchen's` searches for `kitchen` and `s`, not for the exact phrase). Results are deterministic: BM25 ties break by recency, so the same query over the same memories returns the same list.
 
@@ -173,7 +176,8 @@ A query that is not empty but contains nothing searchable — `???`, `@#$%` — 
 | `limit` | number | No | Max results (default: 20, max: 100) |
 | `include_archived` | boolean | No | Include archived (forgotten) entities in results (default: false) |
 | `namespace` | string | No | Filter to a specific namespace (`"personal"`, `"team"`, `"global"`) |
-| `cross_project` | boolean | No | When `true`, lifts project-tag filter and searches all namespaces (default: false) |
+| `cross_project` | boolean | No | When `true`, searches every project and namespace, ignoring `tag` (default: false: a supplied `tag` filters exactly; with no `tag`, the bound project plus memories with no project and global memories) |
+| `project` | string \| `false` | No | MCP only. Search this project (plus memories with no project and global ones), or with `false` only memories with no project and global ones. Not with `tag` or `cross_project` |
 
 **Response**:
 
@@ -612,6 +616,8 @@ and only `errors` makes the CLI exit non-zero.
 
 Record a structured lesson from a mistake or discovery. Creates a `lesson_learned` entity with structured observations for error, root cause, fix, and prevention. Use it when something went wrong and the cause and fix are known; a choice between options is a `remember` with type `decision`. The project's lessons are shown at the start of later sessions.
 
+The MCP tool files the lesson under `project` when given, else under the session's bound project (`MEMESH_PROJECT_ROOT`, or the client's single workspace root). `project: false` records a lesson that belongs to no project. With neither and no bound project the call is refused with `workspace_unavailable` (or `workspace_ambiguous`), and nothing is written.
+
 **Input Schema**:
 
 | Parameter | Type | Required | Description |
@@ -621,6 +627,7 @@ Record a structured lesson from a mistake or discovery. Creates a `lesson_learne
 | `root_cause` | string | No | Why it happened |
 | `prevention` | string | No | How to prevent it next time |
 | `severity` | string | No | Severity level: `"critical"`, `"major"`, or `"minor"` (default: `"minor"`) |
+| `project` | string \| `false` | No | MCP only. The project id, or `false` for a lesson with no project. Omitted or `null`: the bound project |
 
 **Response**:
 
@@ -667,7 +674,7 @@ Call it with **no arguments** to read. Any field present is a write.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `project` | string | No | Project name (default: the current working directory's project) |
+| `project` | string | No | Project name. When omitted, the session's bound project: `MEMESH_PROJECT_ROOT` from the launch, or the client's single workspace root (`roots/list`). They must agree. Unbound, an invalid `MEMESH_PROJECT_ROOT`, a workspace root that is not an existing local directory, or advertised roots that could not be read → `workspace_unavailable`; disagreement → `workspace_ambiguous`. The server's own working directory is never used. An explicit `project` is used as given. |
 | `goal` | string | No | What this work is FOR — the outcome being aimed at |
 | `next` | string | No | The next concrete step |
 | `blocked` | string | No | What is standing in the way |
@@ -737,7 +744,7 @@ Task state older than 72 hours, missing or unreadable timestamps, and timestamps
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `project` | string | No | Project name (default: the current working directory's project) |
+| `project` | string | No | Project name. When omitted, the session's bound project: `MEMESH_PROJECT_ROOT` from the launch, or the client's single workspace root (`roots/list`). They must agree. Unbound, an invalid `MEMESH_PROJECT_ROOT`, a workspace root that is not an existing local directory, or advertised roots that could not be read → `workspace_unavailable`; disagreement → `workspace_ambiguous`. The server's own working directory is never used. An explicit `project` is used as given. |
 | `recipient` | string | No | Exact logical recipient, in the same canonical form the `message` tool uses — NFC, never a filesystem path — because this counts the same inbox key. When supplied, reports only that recipient's unfetched deliveries for the project. At zero unread, the block also says so explicitly if this exact recipient id has never been addressed in this project either (durable delivery or live connection) — distinct from a real, quiet inbox, so a typo'd recipient is never indistinguishable from "nothing waiting". Omit for generic context; generic briefing never reports unread activity. |
 
 **Response** (shown at level `standard`, which has a task state and the index to show; at the default, `minimal`, `hasTaskState` is `false` for a fresh task state and `text` carries neither it nor the index):
@@ -2260,7 +2267,7 @@ MeMesh runs as a stdio MCP server. Claude Code and Codex manage the connection a
 }
 ```
 
-The Codex manifest uses the plugin cache as its working directory. Codex passes an MCP server only the environment variables its manifest names, so `env_vars` forwards a custom data directory or database:
+The Codex manifest uses the plugin cache as its working directory. Codex passes an MCP server only the environment variables its manifest names, so `env_vars` forwards a custom data directory or database, and `MEMESH_PROJECT_ROOT`. When a launcher sets `MEMESH_PROJECT_ROOT` to an absolute project directory, `task_state` and `briefing` calls that name no `project` use that project. A client that sends no workspace roots (`codex exec`, for one) has nothing else to bind them, and the server's cwd is the plugin cache, so without it those calls are refused rather than filed under the wrong project:
 
 ```json
 {
@@ -2269,7 +2276,7 @@ The Codex manifest uses the plugin cache as its working directory. Codex passes 
       "command": "node",
       "args": ["./dist/mcp/server.js"],
       "cwd": ".",
-      "env_vars": ["MEMESH_DIR", "MEMESH_DB_PATH"]
+      "env_vars": ["MEMESH_DIR", "MEMESH_DB_PATH", "MEMESH_PROJECT_ROOT"]
     }
   }
 }
