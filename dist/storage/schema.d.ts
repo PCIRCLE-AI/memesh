@@ -17,4 +17,5 @@ export declare const FTS_SEGMENTATION_VERSION = 3;
 export declare const FTS_REBUILD_PAGE_SIZE = 500;
 export declare function rebuildFtsIndex(db: MemeshDatabase): void;
 export declare function ensureFtsSegmentation(db: MemeshDatabase): void;
+export declare function ftsIndexIsCurrent(db: MemeshDatabase): boolean;
 //# sourceMappingURL=schema.d.ts.map

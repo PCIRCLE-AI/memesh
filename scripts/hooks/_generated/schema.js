@@ -548,3 +548,15 @@ export function ensureFtsSegmentation(db) {
         migrate: rebuildFtsIndex,
     });
 }
+export function ftsIndexIsCurrent(db) {
+    let row;
+    try {
+        row = db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get('fts_segmentation_version');
+    }
+    catch (err) {
+        if (err instanceof Error && /no such table: memesh_metadata/.test(err.message))
+            return false;
+        throw err;
+    }
+    return row !== undefined && /^\d+$/.test(row.value) && Number(row.value) >= FTS_SEGMENTATION_VERSION;
+}

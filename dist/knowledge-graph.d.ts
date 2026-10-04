@@ -1,6 +1,10 @@
 import type { MemeshDatabase } from './storage/sqlite.js';
 export type { Entity, Relation, CreateEntityInput, SearchOptions } from './core/types.js';
 import type { Entity, Relation, CreateEntityInput, SearchOptions } from './core/types.js';
+export interface SearchResult {
+    entities: Entity[];
+    fallback: 'index_out_of_date' | null;
+}
 export declare class KnowledgeGraph {
     private db;
     constructor(db: MemeshDatabase);
@@ -24,6 +28,8 @@ export declare class KnowledgeGraph {
     }): Entity[];
     getRelations(entityName: string): Relation[];
     search(query?: string, opts?: SearchOptions): Entity[];
+    searchWithFacts(query?: string, opts?: SearchOptions): SearchResult;
+    private scanActiveRows;
     trackAccess(entityIds: number[]): void;
     findConflicts(entityNames: string[]): string[];
     listRecent(limit?: number, includeArchived?: boolean, namespace?: string, countAsAccess?: boolean): Entity[];

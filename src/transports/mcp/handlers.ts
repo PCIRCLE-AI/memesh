@@ -731,9 +731,9 @@ async function handleToolInner(
       // the same payload fine. An object envelope also removes the old bimodal
       // shape (array normally, object when conflicts exist) that every
       // consumer otherwise has to special-case.
-      // `retrieval` rides every envelope so callers can see the FTS mode and
-      // whether the bounded window filled. `degraded: false` remains as a
-      // fixed compatibility field for older consumers. `truncated` /
+      // `retrieval` rides every envelope so callers can see how the query was
+      // answered (`fts`, or `scan` with `degraded: true` when the keyword index
+      // was out of date, #571) and whether the bounded window filled. `truncated` /
       // `entities_omitted` ride the envelope only when the size cap actually
       // cut something.
       // No tag and not cross-project: the bound project's memories, memories

@@ -441,35 +441,57 @@ export function recall(args: RecallInput): Entity[] {
  * `recall()` and `recallEnhanced()` share this FTS-backed implementation so
  * ranking behavior cannot drift between the two public entry points.
  */
-function searchAndScore(args: RecallInput): { entities: Entity[]; relevanceMap: Map<string, number> } {
+function searchAndScore(args: RecallInput): {
+  entities: Entity[];
+  relevanceMap: Map<string, number>;
+  fallback: 'index_out_of_date' | null;
+} {
   const kg = new KnowledgeGraph(getDatabase());
   // cross_project=true means don't filter by project tag — pass no tag to search all projects
-  const entities = summarizeReplacedHistory(kg.search(args.query, {
+  const searched = kg.searchWithFacts(args.query, {
     tag: recallTagFilter(args),
     projectScope: args.cross_project ? undefined : args.projectScope,
     limit: args.limit,
     includeArchived: args.include_archived,
     namespace: args.namespace,
-  }));
+  });
+  const entities = summarizeReplacedHistory(searched.entities);
   return {
     entities,
     relevanceMap: args.query ? buildRelevanceMap(entities) : new Map<string, number>(),
+    fallback: searched.fallback,
   };
 }
 
-/** Retrieval facts for the FTS-only recall path. */
-export interface RetrievalMeta {
-  mode: 'fts';
-  /** Deprecated compatibility field; FTS-only retrieval cannot degrade. */
-  degraded: false;
-  /** The bounded result window filled; more matching entities may exist. */
-  truncated: boolean;
-}
+/**
+ * Retrieval facts for a recall. `fts`: the keyword index answered. `scan`:
+ * the index was built by an older segmentation and could not be rebuilt
+ * (#571, #568), so the active memories were found by a substring match of the
+ * query's terms against their stored name, title and observations instead.
+ * That is not the index search: substrings match where index tokens would
+ * not, and the candidate window is chosen newest first instead of by BM25.
+ * The candidates are then ranked as usual — their position stands in for the
+ * index order (`buildRelevanceMap`). `degraded` and `reason` say so.
+ */
+export type RetrievalMeta =
+  | {
+    mode: 'fts';
+    degraded: false;
+    /** The bounded result window filled; more matching entities may exist. */
+    truncated: boolean;
+  }
+  | {
+    mode: 'scan';
+    degraded: true;
+    reason: 'index_out_of_date';
+    /** The bounded result window filled; more matching entities may exist. */
+    truncated: boolean;
+  };
 
 export async function recallEnhanced(
   args: RecallInput,
 ): Promise<{ entities: Entity[]; retrieval: RetrievalMeta }> {
-  const { entities, relevanceMap } = searchAndScore(args);
+  const { entities, relevanceMap, fallback } = searchAndScore(args);
   if (args.query) {
     for (const entity of entities) {
       entity.match = { source: 'keyword', relevance: relevanceMap.get(entity.name) ?? 0 };
@@ -479,7 +501,9 @@ export async function recallEnhanced(
   const ranked = rankEntities(entities, relevanceMap).slice(0, limit);
   return {
     entities: ranked,
-    retrieval: { mode: 'fts', degraded: false, truncated: ranked.length === limit },
+    retrieval: fallback
+      ? { mode: 'scan', degraded: true, reason: fallback, truncated: ranked.length === limit }
+      : { mode: 'fts', degraded: false, truncated: ranked.length === limit },
   };
 }
 

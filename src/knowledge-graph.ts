@@ -15,6 +15,7 @@ import {
 } from './storage/fts-index.js';
 import { computeSignalScore } from './core/signal-scorer.js';
 import { dropEntityFromIndexes } from './storage/entity-index.js';
+import { ftsIndexIsCurrent } from './storage/schema.js';
 import { canonicalEntityType } from './core/work-topology.js';
 
 /**
@@ -24,6 +25,16 @@ import { canonicalEntityType } from './core/work-topology.js';
  * this.
  */
 const MAX_QUERY_TERMS = 32;
+
+/**
+ * What one `searchWithFacts` call did. `fallback` names why active rows were
+ * found by scanning stored text instead of the keyword index (#571); null
+ * when the index answered, or when no keyword search ran.
+ */
+export interface SearchResult {
+  entities: Entity[];
+  fallback: 'index_out_of_date' | null;
+}
 
 /**
  * Turn a user query into an FTS5 MATCH expression, or null when there is
@@ -102,8 +113,12 @@ function buildRecallMatchExpressions(db: MemeshDatabase, query: string): { stric
  * Falls back to the whole (escaped) query when tokenising yields nothing, so a
  * punctuation-only query still behaves as before rather than matching everything.
  */
+/** One term as a `LIKE` pattern: `%term%`, its metacharacters escaped for `ESCAPE '\\'`. */
+function likeTerm(term: string): string {
+  return `%${term.replace(/[\\%_]/g, '\\$&')}%`;
+}
+
 function archivedLikeTerms(db: MemeshDatabase, query: string): string[] {
-  const escapeLike = (v: string) => v.replace(/[\\%_]/g, '\\$&');
   // Same ORDER as the FTS branch: drop the ubiquitous terms FIRST, then cap.
   // These two had silently diverged — the FTS side moved the cap after the
   // guard and this one did not — so a 37-character Chinese question gave the
@@ -117,8 +132,8 @@ function archivedLikeTerms(db: MemeshDatabase, query: string): string[] {
     0,
     MAX_QUERY_TERMS
   );
-  if (kept.length === 0) return [`%${escapeLike(query)}%`];
-  return kept.map((t) => `%${escapeLike(t)}%`);
+  if (kept.length === 0) return [likeTerm(query)];
+  return kept.map(likeTerm);
 }
 
 /**
@@ -876,18 +891,24 @@ export class KnowledgeGraph {
   }
 
   search(query?: string, opts?: SearchOptions): Entity[] {
+    return this.searchWithFacts(query, opts).entities;
+  }
+
+  /** `search`, plus what this call did (see `SearchResult`). */
+  searchWithFacts(query?: string, opts?: SearchOptions): SearchResult {
     const limit = opts?.limit ?? 20;
 
     const countAsAccess = opts?.countAsAccess ?? true;
 
     if (!query || query.trim() === '') {
+      // Listing recent memories reads the tables, not the keyword index.
       if (opts?.tag) {
-        return this.listRecentByTag(opts.tag, limit, opts?.includeArchived, opts?.namespace, countAsAccess);
+        return { entities: this.listRecentByTag(opts.tag, limit, opts?.includeArchived, opts?.namespace, countAsAccess), fallback: null };
       }
       if (opts?.projectScope !== undefined) {
-        return this.listRecentInScope(opts.projectScope, limit, opts?.includeArchived, opts?.namespace, countAsAccess);
+        return { entities: this.listRecentInScope(opts.projectScope, limit, opts?.includeArchived, opts?.namespace, countAsAccess), fallback: null };
       }
-      return this.listRecent(limit, opts?.includeArchived, opts?.namespace, countAsAccess);
+      return { entities: this.listRecent(limit, opts?.includeArchived, opts?.namespace, countAsAccess), fallback: null };
     }
 
     // Start with FTS5's implicit AND so a frequent token cannot make an
@@ -902,7 +923,7 @@ export class KnowledgeGraph {
       // cannot tell "here is what matched" from "I found no terms, have these
       // instead". The genuinely empty query is handled above and still lists
       // recent, which is its documented behaviour.
-      return [];
+      return { entities: [], fallback: null };
     }
 
     // Contentless FTS5: columns return null, so join via rowid → entities.id
@@ -935,6 +956,12 @@ export class KnowledgeGraph {
     filterParams.push(limit);
     let ftsRows: Array<{ id: number }>;
     let strictSelected = false;
+    // An index built by an older segmentation holds tokens today's query
+    // terms cannot match, so it would answer "nothing" for memories that are
+    // stored (#571: a read-only file, where the rebuild cannot run; #568: the
+    // rebuild's retry back-off). Then the active rows are found by scanning
+    // their stored text for the same terms, and the result says so.
+    const fallback = ftsIndexIsCurrent(this.db) ? null : 'index_out_of_date' as const;
     const findFtsRows = (ftsQuery: string): Array<{ id: number }> => {
       const queryParams = [ftsQuery, ...filterParams];
       return this.db
@@ -956,17 +983,23 @@ export class KnowledgeGraph {
         )
         .all(...queryParams) as Array<{ id: number }>;
     };
-    try {
-      ftsRows = findFtsRows(matchExpressions.strict);
-      if (ftsRows.length === 0 && matchExpressions.strict !== matchExpressions.broad) {
-        ftsRows = findFtsRows(matchExpressions.broad);
-      } else if (ftsRows.length > 0 && matchExpressions.strict !== matchExpressions.broad) {
-        strictSelected = true;
+    if (fallback) {
+      const scanned = this.scanActiveRows(query, tagFilter, namespaceFilter, filterParams);
+      ftsRows = scanned.rows;
+      strictSelected = scanned.strictSelected;
+    } else {
+      try {
+        ftsRows = findFtsRows(matchExpressions.strict);
+        if (ftsRows.length === 0 && matchExpressions.strict !== matchExpressions.broad) {
+          ftsRows = findFtsRows(matchExpressions.broad);
+        } else if (ftsRows.length > 0 && matchExpressions.strict !== matchExpressions.broad) {
+          strictSelected = true;
+        }
+      } catch (err) {
+        // FTS5 syntax error from user query — return empty results
+        if (err instanceof Error && err.message?.includes('fts5')) return { entities: [], fallback: null };
+        throw err;
       }
-    } catch (err) {
-      // FTS5 syntax error from user query — return empty results
-      if (err instanceof Error && err.message?.includes('fts5')) return [];
-      throw err;
     }
 
     // Fetch full entities from FTS results (batch hydration)
@@ -1048,7 +1081,53 @@ export class KnowledgeGraph {
     // place that can tell whether an injected memory was USED — see
     // storage/conflicts.ts::trackAccess.
     if (countAsAccess) this.trackAccess(results.map((e) => e.id));
-    return results;
+    return { entities: results, fallback };
+  }
+
+  /**
+   * Active rows whose stored name, title or observations hold the query's
+   * terms, for an index that cannot answer (see `searchWithFacts`). The terms
+   * come from the same tokeniser and cap, and the same `likeTerm` escaping as
+   * `archivedLikeTerms`, but not its ubiquitous-term guard: that guard counts
+   * terms in the keyword index, which here holds an older build's tokens. A
+   * query of three or more terms needs every term somewhere in the memory
+   * first — each term may sit in a different observation — and only when no
+   * memory has them all does it take any term, as the index search does.
+   * Same filters and the same result window, chosen newest first since there
+   * is no index rank (recall then ranks them as it ranks index hits).
+   * `filterParams` ends with the limit.
+   */
+  private scanActiveRows(
+    query: string,
+    tagFilter: string,
+    namespaceFilter: string,
+    filterParams: (string | number)[],
+  ): { rows: Array<{ id: number }>; strictSelected: boolean } {
+    const allTerms = tokenizeQuery(query);
+    const terms = allTerms.slice(0, MAX_QUERY_TERMS).map(likeTerm);
+    registerNfcFunction(this.db);
+    const termArm =
+      `(${SQL_NFC_FUNCTION}(e.name) LIKE ? ESCAPE '\\' ` +
+      `OR ${SQL_NFC_FUNCTION}(COALESCE(e.title, '')) LIKE ? ESCAPE '\\' ` +
+      `OR EXISTS (SELECT 1 FROM observations o WHERE o.entity_id = e.id AND ${SQL_NFC_FUNCTION}(o.content) LIKE ? ESCAPE '\\'))`;
+    const run = (joiner: ' AND ' | ' OR '): Array<{ id: number }> =>
+      this.db
+        .prepare(
+          `SELECT e.id FROM entities e
+           WHERE (${terms.map(() => termArm).join(joiner)})
+             ${tagFilter}
+             AND e.status = 'active'
+             ${namespaceFilter}
+           ORDER BY e.id DESC
+           LIMIT ?`
+        )
+        .all(...terms.flatMap((t) => [t, t, t]), ...filterParams) as Array<{ id: number }>;
+    // Same split as buildRecallMatchExpressions: under three terms the search is any-term.
+    if (allTerms.length >= 3) {
+      const strict = run(' AND ');
+      if (strict.length > 0) return { rows: strict, strictSelected: true };
+    }
+    return { rows: run(' OR '), strictSelected: false };
   }
 
   /**
