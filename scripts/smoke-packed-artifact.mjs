@@ -118,6 +118,7 @@ const requiredFiles = [
   'scripts/hooks/auto-update-runner.mjs',
   'scripts/hooks/_generated/core-paths.js',
   'scripts/hooks/_generated/fts-index.js',
+  'scripts/hooks/_generated/entity-write.js',
   // Skills (2)
   'skills/memesh/SKILL.md',
   'skills/memesh-review/SKILL.md',

@@ -1,0 +1,300 @@
+{
+  "results": [
+    {
+      "id": 1,
+      "isNew": true,
+      "observationsWritten": 1
+    },
+    {
+      "id": 1,
+      "isNew": false,
+      "observationsWritten": 1
+    },
+    {
+      "id": 3,
+      "isNew": true,
+      "observationsWritten": 1
+    },
+    {
+      "id": 3,
+      "isNew": false,
+      "observationsWritten": 1
+    },
+    {
+      "id": 5,
+      "isNew": true,
+      "observationsWritten": 2
+    },
+    {
+      "id": 5,
+      "isNew": false,
+      "observationsWritten": 1
+    },
+    {
+      "id": 5,
+      "isNew": false,
+      "observationsWritten": 0
+    },
+    {
+      "id": 8,
+      "isNew": true,
+      "observationsWritten": 2
+    },
+    {
+      "id": 8,
+      "isNew": false,
+      "observationsWritten": 2
+    },
+    {
+      "id": 10,
+      "isNew": true,
+      "observationsWritten": 1
+    },
+    {
+      "id": 10,
+      "isNew": false,
+      "archived": true
+    },
+    {
+      "id": 12,
+      "isNew": true,
+      "observationsWritten": 1
+    },
+    {
+      "id": 12,
+      "isNew": false,
+      "observationsWritten": 1
+    },
+    {
+      "threw": "\"session-handoff:p2\" is stored as type decision, not session-handoff; the Stop hook leaves it alone"
+    },
+    {
+      "id": 15,
+      "isNew": true,
+      "observationsWritten": 1
+    }
+  ],
+  "entities": [
+    {
+      "id": 1,
+      "name": "commit-aaa",
+      "type": "commit",
+      "title": "Raven commit v2",
+      "status": "active",
+      "namespace": "personal",
+      "confidence": 1,
+      "metadata": {
+        "session_id": "s1",
+        "provenance": {
+          "source_host": "claude-code"
+        },
+        "title_source": "heuristic"
+      }
+    },
+    {
+      "id": 3,
+      "name": "pre-compact-s1",
+      "type": "session-summary",
+      "title": null,
+      "status": "active",
+      "namespace": "personal",
+      "confidence": 1,
+      "metadata": {
+        "provenance": {}
+      }
+    },
+    {
+      "id": 5,
+      "name": "session-s2-files",
+      "type": "session-insight",
+      "title": "Files",
+      "status": "active",
+      "namespace": "personal",
+      "confidence": 1,
+      "metadata": {
+        "provenance": {
+          "source_host": "claude-code"
+        },
+        "title_source": "heuristic"
+      }
+    },
+    {
+      "id": 8,
+      "name": "session-s3-files",
+      "type": "session-insight",
+      "title": null,
+      "status": "active",
+      "namespace": "personal",
+      "confidence": 1,
+      "metadata": {
+        "provenance": {},
+        "forgotten_observation_hashes": [
+          "fc0ef49bee25245ba71ce3dec95c4543acaba25c51a51d92ac1dcc0c12c58571"
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "name": "session-s4-files",
+      "type": "session-insight",
+      "title": null,
+      "status": "archived",
+      "namespace": "personal",
+      "confidence": 1,
+      "metadata": {
+        "provenance": {}
+      }
+    },
+    {
+      "id": 12,
+      "name": "session-handoff:p1",
+      "type": "session-handoff",
+      "title": "Handoff",
+      "status": "active",
+      "namespace": "personal",
+      "confidence": 1,
+      "metadata": {
+        "provenance": {
+          "source_host": "claude-code"
+        },
+        "title_source": "heuristic"
+      }
+    },
+    {
+      "id": 14,
+      "name": "session-handoff:p2",
+      "type": "decision",
+      "title": null,
+      "status": "active",
+      "namespace": "personal",
+      "confidence": 1,
+      "metadata": null
+    },
+    {
+      "id": 15,
+      "name": "untitled-commit",
+      "type": "commit",
+      "title": null,
+      "status": "active",
+      "namespace": "personal",
+      "confidence": 1,
+      "metadata": {
+        "provenance": {}
+      }
+    }
+  ],
+  "observations": [
+    {
+      "id": 1,
+      "entity_id": 1,
+      "content": "raven commit one"
+    },
+    {
+      "id": 2,
+      "entity_id": 1,
+      "content": "raven commit two"
+    },
+    {
+      "id": 3,
+      "entity_id": 3,
+      "content": "crane compaction"
+    },
+    {
+      "id": 4,
+      "entity_id": 3,
+      "content": "crane tool calls 3"
+    },
+    {
+      "id": 10,
+      "entity_id": 8,
+      "content": "marten a"
+    },
+    {
+      "id": 11,
+      "entity_id": 8,
+      "content": "marten c"
+    },
+    {
+      "id": 12,
+      "entity_id": 10,
+      "content": "vole kept"
+    },
+    {
+      "id": 14,
+      "entity_id": 12,
+      "content": "handoff kestrel two"
+    },
+    {
+      "id": 15,
+      "entity_id": 15,
+      "content": "shrike"
+    }
+  ],
+  "tags": [
+    {
+      "entity_id": 1,
+      "tag": "auto-capture"
+    },
+    {
+      "entity_id": 1,
+      "tag": "project:p1"
+    },
+    {
+      "entity_id": 3,
+      "tag": "urgency:pre-compact"
+    },
+    {
+      "entity_id": 12,
+      "tag": "auto-capture"
+    },
+    {
+      "entity_id": 12,
+      "tag": "project:p1"
+    }
+  ],
+  "fts": {
+    "raven": [
+      1
+    ],
+    "two": [
+      1,
+      12
+    ],
+    "v2": [
+      1
+    ],
+    "crane": [
+      3
+    ],
+    "calls": [
+      3
+    ],
+    "stoat": [],
+    "a": [
+      8
+    ],
+    "c": [
+      8
+    ],
+    "marten": [
+      8
+    ],
+    "vole": [],
+    "overwrite": [],
+    "kestrel": [
+      12
+    ],
+    "one": [
+      1
+    ],
+    "land": [],
+    "shrike": [
+      15
+    ],
+    "Files": [
+      5,
+      8
+    ]
+  },
+  "integrity": "ok"
+}

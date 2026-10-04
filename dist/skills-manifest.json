@@ -92,6 +92,11 @@
       "bytes": 8518
     },
     {
+      "path": "scripts/hooks/_generated/entity-write.js",
+      "sha256": "a887bcede48e9f4f69111eba14bea515a2150169a023264b0dd056c17eba35ad",
+      "bytes": 3110
+    },
+    {
       "path": "scripts/hooks/_generated/file-mode.js",
       "sha256": "ded7e8ef7218dd3ac81d02d18e28ae3be15143ea1c6bc6cd3b8274c7ba31dc02",
       "bytes": 6639
@@ -163,8 +168,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "1421e3ccc90f1c9cf6906cb8a65730922d98685327042df39d86cf840aa2688f",
-      "bytes": 124664
+      "sha256": "6cd52ad523567004c7c9deb10bd4478e9591f2b625090f3d33345639acdcefc2",
+      "bytes": 124357
     },
     {
       "path": "scripts/hooks/_stop-handoff.js",

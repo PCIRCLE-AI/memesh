@@ -5,9 +5,7 @@ import type { Entity, Relation, CreateEntityInput, SearchOptions, EntityRow } fr
 import { findConflicts, trackAccess } from './storage/conflicts.js';
 import {
   indexedObservationText,
-  insertFtsRow,
   joinIndexedObservations,
-  removeFromFts,
   tokenizeQuery,
   renderMatchExpression,
   registerNfcFunction,
@@ -16,6 +14,7 @@ import {
 import { computeSignalScore } from './core/signal-scorer.js';
 import { dropEntityFromIndexes } from './storage/entity-index.js';
 import { ftsIndexIsCurrent } from './storage/schema.js';
+import { addTags, appendObservations, insertOrGetEntity, reindexEntityFts, runEntityWrite } from './storage/entity-write.js';
 import { canonicalEntityType } from './core/work-topology.js';
 
 /**
@@ -372,7 +371,7 @@ export class KnowledgeGraph {
     // Safe to nest: `MemeshDatabase` tracks depth and turns an inner
     // transaction into a SAVEPOINT, so `createEntitiesBatch`'s outer
     // transaction and the import/dreamer callers keep working unchanged.
-    return this.db.transaction(() => this.createEntityInner(name, type, opts))();
+    return runEntityWrite(this.db, () => this.createEntityInner(name, type, opts));
   }
 
   private createEntityInner(
@@ -404,17 +403,16 @@ export class KnowledgeGraph {
       });
     }
 
-    // INSERT OR IGNORE — if entity already exists, get its id
-    const insertResult = this.db
-      .prepare(
-        'INSERT OR IGNORE INTO entities (name, type, metadata, namespace, title) VALUES (?, ?, ?, ?, ?)'
-      )
-      .run(name, type, JSON.stringify(incomingMetadata), opts?.namespace ?? 'personal', opts?.title ?? null);
-    const isNewEntity = insertResult.changes > 0;
-
-    const row = this.db
-      .prepare('SELECT id, status, namespace, title, type FROM entities WHERE name = ?')
-      .get(name) as { id: number; status: string; namespace: string | null; title: string | null; type: string };
+    // INSERT OR IGNORE — if entity already exists, get its id. A new entity
+    // always gets an explicit namespace here (`personal` by default).
+    const row = insertOrGetEntity(this.db, {
+      name,
+      type,
+      metadataJson: JSON.stringify(incomingMetadata),
+      title: opts?.title ?? null,
+      namespace: opts?.namespace ?? 'personal',
+    })!;
+    const isNewEntity = row.isNew;
     const entityId = row.id;
 
     // Title update on an EXISTING entity — the INSERT OR IGNORE above never
@@ -627,44 +625,16 @@ export class KnowledgeGraph {
           return { ...meta, forgotten_observation_hashes: meta.forgotten_observation_hashes.filter(hash => !restored.has(hash)) };
         });
       }
-      const insertObs = this.db.prepare(
-        'INSERT INTO observations (entity_id, content) VALUES (?, ?)'
-      );
       const effectiveType = isNewEntity ? type : row.type;
       const isLessonFamily = effectiveType === 'lesson_learned' || effectiveType === 'lesson' || effectiveType === 'mistake';
-      if (isLessonFamily) {
-        for (const obs of observations) {
-          insertObs.run(entityId, obs);
-        }
-      } else {
-        const existingObsContent = new Set(
-          isNewEntity
-            ? []
-            : (this.db
-                .prepare('SELECT content FROM observations WHERE entity_id = ?')
-                .all(entityId) as { content: string }[]
-              ).map((o) => o.content)
-        );
-        for (const obs of observations) {
-          if (existingObsContent.has(obs)) continue;
-          existingObsContent.add(obs);
-          insertObs.run(entityId, obs);
-        }
-      }
+      appendObservations(this.db, entityId, observations, { dedupe: !isLessonFamily, readExisting: !isNewEntity });
     }
 
     // Always rebuild FTS so the entity name is indexed (even without observations)
     this.rebuildFts(entityId, name, prevObsText, previousTitle);
 
     // Add tags
-    if (opts?.tags?.length) {
-      const insertTag = this.db.prepare(
-        'INSERT OR IGNORE INTO tags (entity_id, tag) VALUES (?, ?)'
-      );
-      for (const tag of opts.tags) {
-        insertTag.run(entityId, tag);
-      }
-    }
+    if (opts?.tags?.length) addTags(this.db, entityId, opts.tags);
 
     return entityId;
   }
@@ -1422,13 +1392,11 @@ export class KnowledgeGraph {
     previousObsText?: string,
     previousTitle?: string | null
   ): void {
-    if (previousObsText !== undefined) {
-      removeFromFts(this.db, entityId, entityName, previousObsText, previousTitle);
-    }
-    const obsText = indexedObservationText(this.db, entityId);
-    const currentTitleRow = this.db
-      .prepare('SELECT title FROM entities WHERE id = ?')
-      .get(entityId) as { title: string | null } | undefined;
-    insertFtsRow(this.db, entityId, entityName, obsText, currentTitleRow?.title ?? null);
+    reindexEntityFts(
+      this.db,
+      entityId,
+      entityName,
+      previousObsText === undefined ? undefined : { observationsText: previousObsText, title: previousTitle },
+    );
   }
 }

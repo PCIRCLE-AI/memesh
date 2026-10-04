@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
 import { findConflicts, trackAccess } from './storage/conflicts.js';
-import { indexedObservationText, insertFtsRow, joinIndexedObservations, removeFromFts, tokenizeQuery, renderMatchExpression, registerNfcFunction, SQL_NFC_FUNCTION, } from './storage/fts-index.js';
+import { indexedObservationText, joinIndexedObservations, tokenizeQuery, renderMatchExpression, registerNfcFunction, SQL_NFC_FUNCTION, } from './storage/fts-index.js';
 import { computeSignalScore } from './core/signal-scorer.js';
 import { dropEntityFromIndexes } from './storage/entity-index.js';
 import { ftsIndexIsCurrent } from './storage/schema.js';
+import { addTags, appendObservations, insertOrGetEntity, reindexEntityFts, runEntityWrite } from './storage/entity-write.js';
 import { canonicalEntityType } from './core/work-topology.js';
 const MAX_QUERY_TERMS = 32;
 function buildMatchExpression(db, query) {
@@ -95,7 +96,7 @@ export class KnowledgeGraph {
             .run(nextMetadata ? JSON.stringify(nextMetadata) : null, name);
     }
     createEntity(name, type, opts) {
-        return this.db.transaction(() => this.createEntityInner(name, type, opts))();
+        return runEntityWrite(this.db, () => this.createEntityInner(name, type, opts));
     }
     createEntityInner(name, type, opts) {
         type = canonicalEntityType(type);
@@ -108,13 +109,14 @@ export class KnowledgeGraph {
                 tags: opts?.tags ?? [],
             });
         }
-        const insertResult = this.db
-            .prepare('INSERT OR IGNORE INTO entities (name, type, metadata, namespace, title) VALUES (?, ?, ?, ?, ?)')
-            .run(name, type, JSON.stringify(incomingMetadata), opts?.namespace ?? 'personal', opts?.title ?? null);
-        const isNewEntity = insertResult.changes > 0;
-        const row = this.db
-            .prepare('SELECT id, status, namespace, title, type FROM entities WHERE name = ?')
-            .get(name);
+        const row = insertOrGetEntity(this.db, {
+            name,
+            type,
+            metadataJson: JSON.stringify(incomingMetadata),
+            title: opts?.title ?? null,
+            namespace: opts?.namespace ?? 'personal',
+        });
+        const isNewEntity = row.isNew;
         const entityId = row.id;
         const previousTitle = row.title;
         if (!isNewEntity && opts?.title !== undefined && opts.title !== previousTitle) {
@@ -191,35 +193,13 @@ export class KnowledgeGraph {
                     return { ...meta, forgotten_observation_hashes: meta.forgotten_observation_hashes.filter(hash => !restored.has(hash)) };
                 });
             }
-            const insertObs = this.db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)');
             const effectiveType = isNewEntity ? type : row.type;
             const isLessonFamily = effectiveType === 'lesson_learned' || effectiveType === 'lesson' || effectiveType === 'mistake';
-            if (isLessonFamily) {
-                for (const obs of observations) {
-                    insertObs.run(entityId, obs);
-                }
-            }
-            else {
-                const existingObsContent = new Set(isNewEntity
-                    ? []
-                    : this.db
-                        .prepare('SELECT content FROM observations WHERE entity_id = ?')
-                        .all(entityId).map((o) => o.content));
-                for (const obs of observations) {
-                    if (existingObsContent.has(obs))
-                        continue;
-                    existingObsContent.add(obs);
-                    insertObs.run(entityId, obs);
-                }
-            }
+            appendObservations(this.db, entityId, observations, { dedupe: !isLessonFamily, readExisting: !isNewEntity });
         }
         this.rebuildFts(entityId, name, prevObsText, previousTitle);
-        if (opts?.tags?.length) {
-            const insertTag = this.db.prepare('INSERT OR IGNORE INTO tags (entity_id, tag) VALUES (?, ?)');
-            for (const tag of opts.tags) {
-                insertTag.run(entityId, tag);
-            }
-        }
+        if (opts?.tags?.length)
+            addTags(this.db, entityId, opts.tags);
         return entityId;
     }
     createEntitiesBatch(entities) {
@@ -692,14 +672,7 @@ export class KnowledgeGraph {
         }
     }
     rebuildFts(entityId, entityName, previousObsText, previousTitle) {
-        if (previousObsText !== undefined) {
-            removeFromFts(this.db, entityId, entityName, previousObsText, previousTitle);
-        }
-        const obsText = indexedObservationText(this.db, entityId);
-        const currentTitleRow = this.db
-            .prepare('SELECT title FROM entities WHERE id = ?')
-            .get(entityId);
-        insertFtsRow(this.db, entityId, entityName, obsText, currentTitleRow?.title ?? null);
+        reindexEntityFts(this.db, entityId, entityName, previousObsText === undefined ? undefined : { observationsText: previousObsText, title: previousTitle });
     }
 }
 //# sourceMappingURL=knowledge-graph.js.map
