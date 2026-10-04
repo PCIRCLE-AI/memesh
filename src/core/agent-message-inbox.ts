@@ -256,7 +256,7 @@ function isMissingMessageTableError(err: unknown): boolean {
 /**
  * The unread queries' own "never messaged" shape: no deliveries table at all
  * (SQLite names the outer FROM table first). A deliveries table WITHOUT the
- * session tables {@link DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION} joins is a
+ * session tables {@link deliveryMatches} joins is a
  * half-migrated database, not an empty inbox, so it is raised and the hook
  * records an error instead of "nothing waiting".
  */
@@ -323,15 +323,25 @@ export interface UnreadMessageRef {
  * A session-targeted delivery whose session has since disconnected or let
  * its lease expire is deliberately NOT matched — surfacing a message for a
  * session that is no longer there would be nagging about a dead session, not
- * a wakeup, and #490 asks for exactly the opposite. Callers of this fragment
- * pass `recipient` twice and the current time in ms once, in that order,
- * before any further `?` their own query adds (the #497 session filter's own
- * parameter comes next).
+ * a wakeup, and #490 asks for exactly the opposite.
+ *
+ * #566: a caller that names its own `session` only matches a session-targeted
+ * delivery addressed to that session (or an id in its /clear alias chain).
+ * Without that, every live session of the principal was reminded of — and
+ * its Stop hook blocked on — a message only one of them may take in. A
+ * caller that cannot name its session keeps the #490 match.
+ *
+ * Returns the `(...)` clause and its parameters, which go before any further
+ * `?` the caller's own query adds.
  */
-const DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION = `(
+function deliveryMatches(db: InboxDb, recipient: string, session?: string): { sql: string; params: unknown[] } {
+  const own = session === undefined ? null : [...sessionAliasChain(db, session)];
+  return {
+    sql: `(
   d.recipient = ?
   OR (
     d.target_kind = 'session'
+    ${own === null ? '' : `AND d.recipient IN (${own.map(() => '?').join(', ')})`}
     AND EXISTS (
       SELECT 1
       FROM agent_session_instances si
@@ -344,7 +354,10 @@ const DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION = `(
         AND c.lease_expires_at_ms > ?
     )
   )
-)`;
+)`,
+    params: own === null ? [recipient, recipient, Date.now()] : [recipient, ...own, recipient, Date.now()],
+  };
+}
 
 /**
  * The waiting message ids behind {@link unreadInboxLinesFor}'s counts (#468) — same
@@ -357,7 +370,7 @@ const DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION = `(
  * been accounted for, and a project outside that top-5 must still be able to
  * trigger that decision. Also matches a delivery targeted at a LIVE session
  * registered under `recipient` as its principal — see
- * {@link DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION} (#490) — and leaves out
+ * {@link deliveryMatches} (#490) — and leaves out
  * a delivery meant for a session other than `session` (#497, see
  * {@link intendedSessionFilter}).
  */
@@ -370,12 +383,13 @@ export function unreadMessageRefsFor(
 ): UnreadMessageRef[] {
   if (!recipient) return [];
   try {
+    const match = deliveryMatches(db, recipient, session);
     const intended = intendedSessionFilter(db, session);
     const accepted = hostAcceptedFilter(db, excludeHostAccepted, session);
     const rows = db.prepare(
       `SELECT d.project AS project, d.message_id AS message_id
        FROM agent_message_deliveries d
-       WHERE ${DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION}
+       WHERE ${match.sql}
          ${intended.sql}
          ${accepted.sql}
          AND NOT EXISTS (
@@ -387,7 +401,7 @@ export function unreadMessageRefsFor(
          )
        ORDER BY d.project, d.message_id
        LIMIT ?`,
-    ).all(recipient, recipient, Date.now(), ...intended.params, ...accepted.params, limit) as Array<{ project?: string; message_id?: string }>;
+    ).all(...match.params, ...intended.params, ...accepted.params, limit) as Array<{ project?: string; message_id?: string }>;
     return rows.filter(
       (row): row is UnreadMessageRef => typeof row.project === 'string' && typeof row.message_id === 'string',
     );
@@ -461,12 +475,13 @@ export function unreadInboxLinesFor(
 ): string[] {
   if (!recipient) return [];
   try {
+    const match = deliveryMatches(db, recipient, session);
     const intended = intendedSessionFilter(db, session);
     const accepted = hostAcceptedFilter(db, excludeHostAccepted, session);
     const rows = db.prepare(
       `SELECT d.project AS project, d.recipient AS recipient, d.target_kind AS target_kind, COUNT(*) AS n
        FROM agent_message_deliveries d
-       WHERE ${DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION}
+       WHERE ${match.sql}
          ${intended.sql}
          ${accepted.sql}
          AND NOT EXISTS (
@@ -479,7 +494,7 @@ export function unreadInboxLinesFor(
        GROUP BY d.project, d.recipient, d.target_kind
        ORDER BY n DESC, d.project, d.recipient
        LIMIT 5`,
-    ).all(recipient, recipient, Date.now(), ...intended.params, ...accepted.params) as Array<{ project?: string; recipient?: string; target_kind?: string; n?: number }>;
+    ).all(...match.params, ...intended.params, ...accepted.params) as Array<{ project?: string; recipient?: string; target_kind?: string; n?: number }>;
     return rows.flatMap((row) =>
       typeof row.project === 'string' && typeof row.recipient === 'string' && typeof row.n === 'number' && row.n > 0
         ? unreadInboxLines(row.n, row.project, row.recipient, undefined, row.target_kind === 'session' ? 'session' : 'principal')

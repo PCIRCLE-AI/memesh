@@ -38,8 +38,8 @@
     },
     {
       "path": "scripts/hooks/_generated/agent-message-inbox.js",
-      "sha256": "46cc6ae2c0fd1196d7ab3c370e3f377a7204c9535980c1229d085d639e7cd8f5",
-      "bytes": 10426
+      "sha256": "ca78e595bbf02255dc1ef1c78031273de9c7a5caa8bf3ca3dfb998ef5e8aca99",
+      "bytes": 10766
     },
     {
       "path": "scripts/hooks/_generated/agent-scope-id.js",
@@ -168,8 +168,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "6cd52ad523567004c7c9deb10bd4478e9591f2b625090f3d33345639acdcefc2",
-      "bytes": 124357
+      "sha256": "492271f885da178d8db8635415c98e62aa9959c1dca14f6a612da787ba029ea8",
+      "bytes": 124521
     },
     {
       "path": "scripts/hooks/_stop-handoff.js",

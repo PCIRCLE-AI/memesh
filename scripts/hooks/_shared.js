@@ -814,14 +814,14 @@ function inboxReadFailed(err, recordFailure) {
 
 /** The outcome reason a hook records when {@link hookMessageSessionId} reports a mismatch. */
 export const SESSION_ID_MISMATCH_REASON =
-  'session: session_id_mismatch (CODEX_THREAD_ID differs from the payload session_id; only messages meant for no particular session are counted)';
+  'session: session_id_mismatch (CODEX_THREAD_ID differs from the payload session_id; neither is trusted, so this hook is counted as one that named no session id)';
 
 /**
  * #497: the session id a hook narrows the waiting count by — the payload's
  * own `session_id`. Under Codex the hook's environment also has
  * `CODEX_THREAD_ID`, and the payload's `session_id` and `CODEX_THREAD_ID`
  * name the same thread. When both are set and differ, neither is trusted: the result
- * is no session (only messages meant for no particular session count), and
+ * is no session, counted exactly as a hook that named none, and
  * `mismatch` is true so the caller records it — never a silent downgrade.
  *
  * @returns {{ sessionId: string | undefined, mismatch: boolean }}
@@ -842,7 +842,9 @@ export function hookMessageSessionId(payloadSessionId, env = process.env) {
  *
  * `sessionId` comes from {@link hookMessageSessionId} (#497): a message meant
  * for another session of the same principal is left out, and with no
- * `sessionId` only messages meant for no session in particular are counted.
+ * `sessionId` only messages meant for no session in particular are counted —
+ * except a `target_kind: "session"` delivery, which then counts for any live
+ * session of the principal (#490; with a `sessionId`, only its own, #566).
  * `excludeHostAccepted` (pass it under Codex) leaves out a delivery the
  * router already pushed into the thread.
  */

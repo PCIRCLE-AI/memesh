@@ -53,7 +53,11 @@ message) ...`. `intake` or a `disposition` for such a delivery from a caller
 that is itself another registered session of the project
 (`CLAUDE_CODE_SESSION_ID` / `CODEX_THREAD_ID`) is refused with
 `intended_for_other_session` (#497). A caller with no session id, or with an
-id no session registered, still can — a Codex MCP process has none. Under
+id no session registered, still can — a Codex MCP process has none. The
+reminder and the Stop gate follow the same line (#566): a hook that knows its
+session id counts a session-targeted delivery only when it is addressed to
+that session (or to an id it had before `/clear`), so another live session of
+the same principal is neither reminded of it nor blocked on it. Under
 Codex, SessionStart and the prompt hook do not remind about a delivery the
 router already pushed into THIS thread (its host acceptance names this
 thread); a delivery pushed into a different thread of the same principal, for

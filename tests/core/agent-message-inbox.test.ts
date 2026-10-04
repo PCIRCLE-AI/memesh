@@ -252,3 +252,33 @@ describe('the waiting line keeps a project with line separators on one line', ()
     }
   });
 });
+
+describe('Feature: #566 an exact-session message reminds only the session it is for', () => {
+  useTestDatabase('memesh-inbox-exact-session-');
+
+  it('counts it for that session, and not for another live session of the same principal', () => {
+    const a = registerAgentSession('proj-a', 'claude-principal');
+    const b = registerAgentSession('proj-a', 'claude-principal');
+    const sent = sendSessionTargetedMessage('proj-a', a, 'k566-1');
+
+    expect(unreadMessageRefsFor(getDatabase(), 'claude-principal', a)).toEqual([{ project: 'proj-a', message_id: sent.message_id }]);
+    expect(unreadInboxLinesFor(getDatabase(), 'claude-principal', a)).toHaveLength(1);
+    expect(unreadMessageRefsFor(getDatabase(), 'claude-principal', b)).toEqual([]);
+    expect(unreadInboxLinesFor(getDatabase(), 'claude-principal', b)).toEqual([]);
+  });
+
+  it('still counts it for the session after /clear, through the alias chain', () => {
+    const a = registerAgentSession('proj-a', 'claude-principal');
+    const sent = sendSessionTargetedMessage('proj-a', a, 'k566-2');
+    const cleared = `cleared-${a}`;
+    getDatabase().prepare('INSERT INTO agent_session_aliases (session_id, previous_session_id, created_at_ms) VALUES (?, ?, ?)').run(cleared, a, Date.now());
+
+    expect(unreadMessageRefsFor(getDatabase(), 'claude-principal', cleared)).toEqual([{ project: 'proj-a', message_id: sent.message_id }]);
+  });
+
+  it('keeps the #490 behaviour when the caller cannot name its session', () => {
+    const a = registerAgentSession('proj-a', 'claude-principal');
+    const sent = sendSessionTargetedMessage('proj-a', a, 'k566-3');
+    expect(unreadMessageRefsFor(getDatabase(), 'claude-principal')).toEqual([{ project: 'proj-a', message_id: sent.message_id }]);
+  });
+});

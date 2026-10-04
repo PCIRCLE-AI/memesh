@@ -719,9 +719,9 @@ describe('Feature: a session that declares MEMESH_RECIPIENT is told when a messa
       const sent = sendSessionTargetedMessage('team-room', sessionId, 'codex-accepted');
       seedHostAccept('team-room', sent.delivery_id, 'claude-implementer');
 
-      const promptResult = run('user-prompt-intent.js', { prompt: 'hello there', session_id: 's-1', cwd: tmp }, codexEnv);
+      const promptResult = run('user-prompt-intent.js', { prompt: 'hello there', session_id: sessionId, cwd: tmp }, codexEnv);
       expect(promptResult.stdout).not.toContain('message waiting');
-      const start = run('session-start.js', { cwd: tmp, session_id: 's-1', source: 'startup' }, codexEnv);
+      const start = run('session-start.js', { cwd: tmp, session_id: sessionId, source: 'startup' }, codexEnv);
       expect(start.stdout).not.toContain('message waiting');
     });
 
@@ -747,7 +747,8 @@ describe('Feature: a session that declares MEMESH_RECIPIENT is told when a messa
       const sessionId = registerAgentSession('team-room', 'claude-implementer');
       sendSessionTargetedMessage('team-room', sessionId, 'codex-not-accepted');
 
-      const promptResult = run('user-prompt-intent.js', { prompt: 'hello there', session_id: 's-1', cwd: tmp }, codexEnv);
+      // The hook runs in the session the message is for (#566).
+      const promptResult = run('user-prompt-intent.js', { prompt: 'hello there', session_id: sessionId, cwd: tmp }, codexEnv);
       expect(context(promptResult.stdout)).toContain(`1 message waiting for the live session ${JSON.stringify(sessionId)}`);
     });
 
@@ -756,7 +757,7 @@ describe('Feature: a session that declares MEMESH_RECIPIENT is told when a messa
       const sent = sendSessionTargetedMessage('team-room', sessionId, 'claude-accepted');
       seedHostAccept('team-room', sent.delivery_id, 'claude-implementer');
 
-      const promptResult = run('user-prompt-intent.js', { prompt: 'hello there', session_id: 's-1', cwd: tmp }, {
+      const promptResult = run('user-prompt-intent.js', { prompt: 'hello there', session_id: sessionId, cwd: tmp }, {
         MEMESH_HOOK_HOST: 'claude-code', MEMESH_RECIPIENT: 'claude-implementer',
       });
       expect(context(promptResult.stdout)).toContain(`1 message waiting for the live session ${JSON.stringify(sessionId)}`);
@@ -766,7 +767,7 @@ describe('Feature: a session that declares MEMESH_RECIPIENT is told when a messa
       const sessionId = registerAgentSession('team-room', 'claude-implementer');
       sendSessionTargetedMessage('team-room', sessionId, 'session-k1');
 
-      const result = run('user-prompt-intent.js', { prompt: 'hello there', session_id: 's-1', cwd: tmp }, {
+      const result = run('user-prompt-intent.js', { prompt: 'hello there', session_id: sessionId, cwd: tmp }, {
         MEMESH_HOOK_HOST: 'claude-code',
         MEMESH_RECIPIENT: 'claude-implementer',
       });
@@ -775,25 +776,39 @@ describe('Feature: a session that declares MEMESH_RECIPIENT is told when a messa
       expect(text).toContain(`1 message waiting for the live session ${JSON.stringify(sessionId)}`);
       expect(text).toContain('target_kind "session"');
       expect(text).toContain(`recipient ${JSON.stringify(sessionId)}`);
+
+      // #566: another session of the same principal is not reminded of it.
+      const other = run('user-prompt-intent.js', { prompt: 'hello there', session_id: 's-other', cwd: tmp }, {
+        MEMESH_HOOK_HOST: 'claude-code',
+        MEMESH_RECIPIENT: 'claude-implementer',
+      });
+      expect(other.stdout).not.toContain('message waiting');
     });
 
     it('SessionStart reminds about the same session-targeted message', async () => {
       const sessionId = registerAgentSession('team-room', 'claude-implementer');
       sendSessionTargetedMessage('team-room', sessionId, 'session-k2');
 
-      const start = run('session-start.js', { cwd: tmp, session_id: 's-1', source: 'startup' }, {
+      const start = run('session-start.js', { cwd: tmp, session_id: sessionId, source: 'startup' }, {
         MEMESH_HOOK_HOST: 'claude-code',
         MEMESH_RECIPIENT: 'claude-implementer',
       });
 
       expect(context(start.stdout)).toContain(`1 message waiting for the live session ${JSON.stringify(sessionId)}`);
+
+      // #566: another session of the same principal starting up is not reminded of it.
+      const other = run('session-start.js', { cwd: tmp, session_id: 's-other', source: 'startup' }, {
+        MEMESH_HOOK_HOST: 'claude-code',
+        MEMESH_RECIPIENT: 'claude-implementer',
+      });
+      expect(other.stdout).not.toContain('message waiting');
     });
 
     it('does NOT remind once that session has disconnected — no nagging about a dead session', async () => {
       const sessionId = registerAgentSession('team-room', 'claude-implementer', { disconnected: true });
       sendSessionTargetedMessage('team-room', sessionId, 'session-k3');
 
-      const result = run('user-prompt-intent.js', { prompt: 'hello there', session_id: 's-1', cwd: tmp }, {
+      const result = run('user-prompt-intent.js', { prompt: 'hello there', session_id: sessionId, cwd: tmp }, {
         MEMESH_HOOK_HOST: 'claude-code',
         MEMESH_RECIPIENT: 'claude-implementer',
       });
@@ -805,7 +820,7 @@ describe('Feature: a session that declares MEMESH_RECIPIENT is told when a messa
       const sessionId = registerAgentSession('team-room', 'someone-elses-principal');
       sendSessionTargetedMessage('team-room', sessionId, 'session-k4');
 
-      const result = run('user-prompt-intent.js', { prompt: 'hello there', session_id: 's-1', cwd: tmp }, {
+      const result = run('user-prompt-intent.js', { prompt: 'hello there', session_id: sessionId, cwd: tmp }, {
         MEMESH_HOOK_HOST: 'claude-code',
         MEMESH_RECIPIENT: 'claude-implementer',
       });
