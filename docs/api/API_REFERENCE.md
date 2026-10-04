@@ -181,7 +181,7 @@ A query that is not empty but contains nothing searchable — `???`, `@#$%` — 
 
 **Response**:
 
-Returns an object whose `entities` array holds the matching entities ranked by multi-factor score — relevance 0.30, recency 0.25, frequency 0.18, confidence 0.17, recall-effectiveness impact 0.10. The envelope is an object, never a bare array: Gemini CLI JSON-parses a tool's text payload into the MCP result's `structuredContent`, which the protocol requires to be an object — a bare array failed every Gemini recall while other hosts read it fine:
+Returns an object whose `entities` array holds the matching entities ranked by multi-factor score — relevance 0.30, recency 0.25, frequency 0.18, confidence 0.17, recall-effectiveness impact 0.10. A memory whose name or title is exactly the query (ignoring letter case and surrounding spaces) comes first, ahead of that score (#525). The envelope is an object, never a bare array: Gemini CLI JSON-parses a tool's text payload into the MCP result's `structuredContent`, which the protocol requires to be an object — a bare array failed every Gemini recall while other hosts read it fine:
 
 A successful tool result may carry a second content item `{ "type": "text", "text": "[memesh update] …" }` — the update notice (available upgrade, just-upgraded receipt, or a failed check), shown once per server process on the first tool call that has an answer for it; or a stale-process notice ("this session started on v… but v… is now installed on disk") on whichever call first detects the running process has fallen behind the code on disk, which is not necessarily the first call. `content[0]` is always the tool's own payload; clients that read only the first item are unaffected.
 

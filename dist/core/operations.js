@@ -1,6 +1,7 @@
 import { getDatabase } from '../db.js';
 import { projectOwnershipRefusal } from '../storage/memory-mutation.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
+import { foldForExactMatch } from '../storage/fts-index.js';
 import { rankEntities } from './scoring.js';
 import { getProjectName } from './paths.js';
 import { createExplicitLesson } from './lesson-engine.js';
@@ -209,7 +210,14 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
 }
 export function recall(args) {
     const { entities, relevanceMap } = searchAndScore(args);
-    return rankEntities(entities, relevanceMap).slice(0, args.limit ?? 20);
+    return exactMatchesFirst(rankEntities(entities, relevanceMap), args.query).slice(0, args.limit ?? 20);
+}
+function exactMatchesFirst(ranked, query) {
+    const wanted = query === undefined ? '' : foldForExactMatch(query);
+    if (!wanted)
+        return ranked;
+    const isExact = (e) => foldForExactMatch(e.name) === wanted || (e.title != null && foldForExactMatch(e.title) === wanted);
+    return [...ranked.filter(isExact), ...ranked.filter((e) => !isExact(e))];
 }
 function searchAndScore(args) {
     const kg = new KnowledgeGraph(getDatabase());
@@ -235,7 +243,7 @@ export async function recallEnhanced(args) {
         }
     }
     const limit = args.limit ?? 20;
-    const ranked = rankEntities(entities, relevanceMap).slice(0, limit);
+    const ranked = exactMatchesFirst(rankEntities(entities, relevanceMap), args.query).slice(0, limit);
     return {
         entities: ranked,
         retrieval: fallback

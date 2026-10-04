@@ -24936,6 +24936,17 @@ function registerNfcFunction(db2) {
   db2.function(SQL_NFC_FUNCTION, { deterministic: true }, (value) => typeof value === "string" ? value.normalize("NFC") : value);
   nfcRegistered.add(db2);
 }
+function foldForExactMatch(value) {
+  return value.normalize("NFC").trim().toLowerCase();
+}
+var SQL_FOLD_FUNCTION = "memesh_fold";
+var foldRegistered = /* @__PURE__ */ new WeakSet();
+function registerFoldFunction(db2) {
+  if (foldRegistered.has(db2))
+    return;
+  db2.function(SQL_FOLD_FUNCTION, { deterministic: true }, (value) => typeof value === "string" ? foldForExactMatch(value) : value);
+  foldRegistered.add(db2);
+}
 function renderMatchExpression(terms) {
   if (terms.length === 0)
     return null;
@@ -25944,6 +25955,7 @@ function stripControlChars(s) {
 }
 
 // dist/knowledge-graph.js
+var EXACT_MATCH_FIRST = `(${SQL_FOLD_FUNCTION}(e.name) = ? OR ${SQL_FOLD_FUNCTION}(COALESCE(e.title, '')) = ?) DESC`;
 var MAX_QUERY_TERMS = 32;
 function buildMatchExpression(db2, query) {
   const terms = tokenizeQuery(query);
@@ -26275,19 +26287,20 @@ var KnowledgeGraph = class {
     const scope = opts?.tag ? void 0 : opts?.projectScope;
     const scoped = scope === void 0 ? void 0 : projectScopeFilter(scope);
     const tagFilter = opts?.tag ? "AND EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?)" : scoped ? scoped.sql : "";
-    const filterParams = [];
+    const scopeParams = [];
     if (opts?.tag)
-      filterParams.push(opts.tag);
+      scopeParams.push(opts.tag);
     else if (scoped)
-      filterParams.push(...scoped.params);
+      scopeParams.push(...scoped.params);
     if (opts?.namespace)
-      filterParams.push(opts.namespace);
-    filterParams.push(limit);
+      scopeParams.push(opts.namespace);
+    const exactQuery = foldForExactMatch(query);
+    registerFoldFunction(this.db);
     let ftsRows;
     let strictSelected = false;
     const fallback = ftsIndexIsCurrent(this.db) ? null : "index_out_of_date";
     const findFtsRows = (ftsQuery) => {
-      const queryParams = [ftsQuery, ...filterParams];
+      const queryParams = [ftsQuery, ...scopeParams, exactQuery, exactQuery, limit];
       return this.db.prepare(`SELECT e.id FROM entities_fts f
            JOIN entities e ON e.id = f.rowid
            WHERE entities_fts MATCH ?
@@ -26300,11 +26313,11 @@ var KnowledgeGraph = class {
            -- tiebreaker the same query over the same corpus can return
            -- different memories run to run. Newest-first among equals is the
            -- same preference the rest of the scorer expresses.
-           ORDER BY f.rank, e.id DESC
+           ORDER BY ${EXACT_MATCH_FIRST}, f.rank, e.id DESC
            LIMIT ?`).all(...queryParams);
     };
     if (fallback) {
-      const scanned = this.scanActiveRows(query, tagFilter, namespaceFilter, filterParams);
+      const scanned = this.scanActiveRows(query, tagFilter, namespaceFilter, [...scopeParams, exactQuery, exactQuery, limit]);
       ftsRows = scanned.rows;
       strictSelected = scanned.strictSelected;
     } else {
@@ -26349,8 +26362,8 @@ var KnowledgeGraph = class {
              AND (${termClause})
              ${tagFilter2}
              ${archivedNamespaceFilter}
-           ORDER BY e.id DESC
-           LIMIT ?`).all(...archivedParams, limit);
+           ORDER BY ${EXACT_MATCH_FIRST}, e.id DESC
+           LIMIT ?`).all(...archivedParams, exactQuery, exactQuery, limit);
       const archivedIds = archivedRows.map((r) => r.id).filter((id) => !seenIds.has(id));
       const archivedEntities = this.getEntitiesByIds(archivedIds, {
         includeArchived: true,
@@ -26372,7 +26385,7 @@ var KnowledgeGraph = class {
              ${tagFilter}
              AND e.status = 'active'
              ${namespaceFilter}
-           ORDER BY e.id DESC
+           ORDER BY ${EXACT_MATCH_FIRST}, e.id DESC
            LIMIT ?`).all(...terms.flatMap((t) => [t, t, t]), ...filterParams);
     if (allTerms.length >= 3) {
       const strict = run(" AND ");
@@ -28369,6 +28382,13 @@ function rememberInTransaction(args, derived, typeGiven, db2, kg) {
     ...derived ? { derived: { name: args.name, type: retypedTo ?? existing?.type ?? entityType, title: derived.title, observations: derived.observations } } : {}
   };
 }
+function exactMatchesFirst(ranked, query) {
+  const wanted = query === void 0 ? "" : foldForExactMatch(query);
+  if (!wanted)
+    return ranked;
+  const isExact = (e) => foldForExactMatch(e.name) === wanted || e.title != null && foldForExactMatch(e.title) === wanted;
+  return [...ranked.filter(isExact), ...ranked.filter((e) => !isExact(e))];
+}
 function searchAndScore(args) {
   const kg = new KnowledgeGraph(getDatabase());
   const searched = kg.searchWithFacts(args.query, {
@@ -28393,7 +28413,7 @@ async function recallEnhanced(args) {
     }
   }
   const limit = args.limit ?? 20;
-  const ranked = rankEntities(entities, relevanceMap).slice(0, limit);
+  const ranked = exactMatchesFirst(rankEntities(entities, relevanceMap), args.query).slice(0, limit);
   return {
     entities: ranked,
     retrieval: fallback ? { mode: "scan", degraded: true, reason: fallback, truncated: ranked.length === limit } : { mode: "fts", degraded: false, truncated: ranked.length === limit }

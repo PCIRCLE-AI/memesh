@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { findConflicts, trackAccess } from './storage/conflicts.js';
-import { indexedObservationText, joinIndexedObservations, tokenizeQuery, renderMatchExpression, registerNfcFunction, SQL_NFC_FUNCTION, } from './storage/fts-index.js';
+import { indexedObservationText, joinIndexedObservations, tokenizeQuery, renderMatchExpression, registerNfcFunction, SQL_NFC_FUNCTION, foldForExactMatch, registerFoldFunction, SQL_FOLD_FUNCTION, } from './storage/fts-index.js';
+const EXACT_MATCH_FIRST = `(${SQL_FOLD_FUNCTION}(e.name) = ? OR ${SQL_FOLD_FUNCTION}(COALESCE(e.title, '')) = ?) DESC`;
 import { computeSignalScore } from './core/signal-scorer.js';
 import { dropEntityFromIndexes } from './storage/entity-index.js';
 import { ftsIndexIsCurrent } from './storage/schema.js';
@@ -390,19 +391,20 @@ export class KnowledgeGraph {
         const tagFilter = opts?.tag
             ? 'AND EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?)'
             : scoped ? scoped.sql : '';
-        const filterParams = [];
+        const scopeParams = [];
         if (opts?.tag)
-            filterParams.push(opts.tag);
+            scopeParams.push(opts.tag);
         else if (scoped)
-            filterParams.push(...scoped.params);
+            scopeParams.push(...scoped.params);
         if (opts?.namespace)
-            filterParams.push(opts.namespace);
-        filterParams.push(limit);
+            scopeParams.push(opts.namespace);
+        const exactQuery = foldForExactMatch(query);
+        registerFoldFunction(this.db);
         let ftsRows;
         let strictSelected = false;
         const fallback = ftsIndexIsCurrent(this.db) ? null : 'index_out_of_date';
         const findFtsRows = (ftsQuery) => {
-            const queryParams = [ftsQuery, ...filterParams];
+            const queryParams = [ftsQuery, ...scopeParams, exactQuery, exactQuery, limit];
             return this.db
                 .prepare(`SELECT e.id FROM entities_fts f
            JOIN entities e ON e.id = f.rowid
@@ -416,12 +418,12 @@ export class KnowledgeGraph {
            -- tiebreaker the same query over the same corpus can return
            -- different memories run to run. Newest-first among equals is the
            -- same preference the rest of the scorer expresses.
-           ORDER BY f.rank, e.id DESC
+           ORDER BY ${EXACT_MATCH_FIRST}, f.rank, e.id DESC
            LIMIT ?`)
                 .all(...queryParams);
         };
         if (fallback) {
-            const scanned = this.scanActiveRows(query, tagFilter, namespaceFilter, filterParams);
+            const scanned = this.scanActiveRows(query, tagFilter, namespaceFilter, [...scopeParams, exactQuery, exactQuery, limit]);
             ftsRows = scanned.rows;
             strictSelected = scanned.strictSelected;
         }
@@ -474,9 +476,9 @@ export class KnowledgeGraph {
              AND (${termClause})
              ${tagFilter}
              ${archivedNamespaceFilter}
-           ORDER BY e.id DESC
+           ORDER BY ${EXACT_MATCH_FIRST}, e.id DESC
            LIMIT ?`)
-                .all(...archivedParams, limit);
+                .all(...archivedParams, exactQuery, exactQuery, limit);
             const archivedIds = archivedRows.map(r => r.id).filter(id => !seenIds.has(id));
             const archivedEntities = this.getEntitiesByIds(archivedIds, {
                 includeArchived: true,
@@ -501,7 +503,7 @@ export class KnowledgeGraph {
              ${tagFilter}
              AND e.status = 'active'
              ${namespaceFilter}
-           ORDER BY e.id DESC
+           ORDER BY ${EXACT_MATCH_FIRST}, e.id DESC
            LIMIT ?`)
             .all(...terms.flatMap((t) => [t, t, t]), ...filterParams);
         if (allTerms.length >= 3) {

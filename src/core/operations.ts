@@ -12,6 +12,7 @@
 import { getDatabase } from '../db.js';
 import { projectOwnershipRefusal } from '../storage/memory-mutation.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
+import { foldForExactMatch } from '../storage/fts-index.js';
 import { rankEntities } from './scoring.js';
 import { getProjectName } from './paths.js';
 import { createExplicitLesson } from './lesson-engine.js';
@@ -431,7 +432,20 @@ function rememberInTransaction(
  */
 export function recall(args: RecallInput): Entity[] {
   const { entities, relevanceMap } = searchAndScore(args);
-  return rankEntities(entities, relevanceMap).slice(0, args.limit ?? 20);
+  return exactMatchesFirst(rankEntities(entities, relevanceMap), args.query).slice(0, args.limit ?? 20);
+}
+
+/**
+ * #525: a memory whose name or title is exactly the query (`foldForExactMatch`:
+ * NFC, letter case and surrounding spaces ignored) comes first, ahead of the
+ * combined score — and so before the limit, or a size cap that drops from the
+ * end, can cut it. The rest keep their ranked order.
+ */
+function exactMatchesFirst(ranked: Entity[], query: string | undefined): Entity[] {
+  const wanted = query === undefined ? '' : foldForExactMatch(query);
+  if (!wanted) return ranked;
+  const isExact = (e: Entity) => foldForExactMatch(e.name) === wanted || (e.title != null && foldForExactMatch(e.title) === wanted);
+  return [...ranked.filter(isExact), ...ranked.filter((e) => !isExact(e))];
 }
 
 /**
@@ -498,7 +512,7 @@ export async function recallEnhanced(
     }
   }
   const limit = args.limit ?? 20;
-  const ranked = rankEntities(entities, relevanceMap).slice(0, limit);
+  const ranked = exactMatchesFirst(rankEntities(entities, relevanceMap), args.query).slice(0, limit);
   return {
     entities: ranked,
     retrieval: fallback

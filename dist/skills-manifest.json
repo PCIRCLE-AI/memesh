@@ -103,8 +103,8 @@
     },
     {
       "path": "scripts/hooks/_generated/fts-index.js",
-      "sha256": "16f7539aab5974da7bc88c585d4e8fc1f40a07843ea2cf63c56bcf15bf46cf02",
-      "bytes": 4268
+      "sha256": "37c02f29114de6c2e6f5815594c39621a4161cea283e95824f292e722dd9f382",
+      "bytes": 4710
     },
     {
       "path": "scripts/hooks/_generated/guards.js",
