@@ -38,7 +38,7 @@ export function exportOpenAITools(): object[] {
             observations: { type: 'array', items: { type: 'string' }, description: 'Key facts about this entity' },
             why: { type: 'string', description: 'For a decision: why it was made and what would make it stop holding; stored as "Why: …". Required to create or replace a decision, architecture_decision or design_decision unless an observation starts with "Why: ".' },
             note: { type: 'string', description: 'Free text instead of title + observations: first line → title, each following paragraph → one observation' },
-            replace: { type: 'boolean', description: 'Rewrite the named memory instead of appending; the previous version moves to metadata.replaced_history' },
+            replace: { type: 'boolean', description: 'Rewrite the named memory instead of appending; send the observations it should now hold (a replace with none is refused); the previous version moves to metadata.replaced_history' },
             tags: { type: 'array', items: { type: 'string' }, description: 'Tags for filtering' },
             relations: {
               type: 'array',
@@ -62,11 +62,13 @@ export function exportOpenAITools(): object[] {
           // required, so there is no top-level `required` that would be true;
           // `anyOf` is the shape that says what the rule actually is. `note`
           // first, the form a caller reaches for first; the third is the
-          // correction call, which inherits the stored type (#333 T4).
+          // correction call, which inherits the stored type (#333 T4) and
+          // carries the observations to keep: a replace with none would
+          // empty the memory, so the runtime refuses it.
           anyOf: [
             { required: ['note'] },
             { required: ['name', 'type'] },
-            { required: ['name', 'replace'], properties: { replace: { const: true } } },
+            { required: ['name', 'replace', 'observations'], properties: { replace: { const: true }, observations: { minItems: 1 } } },
           ],
         },
       },

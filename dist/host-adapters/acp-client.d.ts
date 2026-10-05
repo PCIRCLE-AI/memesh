@@ -75,6 +75,7 @@ export interface AcpClientOptions extends AcpHostIdentity {
 }
 export type AcpStopReason = 'cancelled' | 'end_turn' | 'max_tokens' | 'max_turn_requests' | 'refusal';
 export declare class AcpHostAdapterError extends Error {
+    constructor(message: string);
 }
 export declare class AcpProtocolError extends AcpHostAdapterError {
 }
@@ -117,7 +118,7 @@ export declare class AcpClientHostAdapter {
     private active;
     private terminalError;
     private unregister;
-    private routerGeneration;
+    private routerConnection;
     private unregisterStarted;
     private closing;
     private exited;

@@ -182,6 +182,23 @@ export async function startManagedCodexHost(
       },
       on_superseded: reportSuperseded,
     });
+    if (closeTask !== undefined || !isChildRunning(child)) {
+      // The owned Codex ended while the router was being reached. Its close already ran
+      // with no connection to close, and the supervision that reports a death is attached
+      // only after this returns, so without this the router would keep a live-looking
+      // session whose app-server is gone.
+      // The exit is the failure to report; a close that fails too is kept as its cause.
+      let closeError: unknown;
+      try {
+        await routerConnection.close();
+      } catch (error) {
+        closeError = error;
+      }
+      throw new Error(
+        'Managed Codex app-server exited while this host was registering with the router.',
+        closeError === undefined ? undefined : { cause: closeError },
+      );
+    }
     return {
       thread_id: thread.thread_id,
       session_instance_id: normalized.sessionInstanceId,

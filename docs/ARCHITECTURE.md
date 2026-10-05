@@ -676,7 +676,7 @@ Over MCP, a `recall` with no `tag` and no `cross_project` is scoped to one proje
 
 ```bash
 # Export from the personal namespace
-memesh export --namespace personal --output memesh-backup.json
+memesh export --namespace personal --out memesh-backup.json
 
 # Import on another machine or through another compatible agent
 memesh import memesh-backup.json --merge skip

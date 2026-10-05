@@ -350,7 +350,7 @@ export async function startManagedAcpHost(
       router: {
         async register(registration: AcpRouterRegistration) {
           assertExactManagedIdentity(registration, launch);
-          routerConnection = await dependencies.connect_router_host({
+          const connected = routerConnection = await dependencies.connect_router_host({
             socket_path: socketPath,
             auth_token: authToken,
             identity: {
@@ -376,7 +376,9 @@ export async function startManagedAcpHost(
             on_superseded: reportSuperseded,
           });
           return {
-            generation: routerConnection.generation,
+            // Live, not a copy: the router connection takes a new generation each time it
+            // re-registers, and the adapter compares each delivery against the current one.
+            get generation() { return connected.generation; },
             unregister: closeRouterConnection,
           };
         },

@@ -326,11 +326,6 @@ program
   .name('memesh')
   .description('MeMesh — Agentic memory for coding agents')
   .version(pkg.version)
-  // DX: silence Commander's default "too many arguments. Expected 0..."
-  // error so the root action below can inspect program.args and emit a
-  // clear "unknown command 'foo'" message instead. allowExcessArguments
-  // is the documented Commander 12+ escape hatch for this case.
-  .allowExcessArguments(true)
   .showSuggestionAfterError(true);
 
 // First-use update notice at the terminal (#308: any door). One stderr line,
@@ -1110,20 +1105,27 @@ function boundedCliDeclaration(value: string, option: string, maxCharacters: num
   return normalized;
 }
 
-async function readCliMessagePayloadFromStdin(contentType: string): Promise<unknown> {
-  let raw = '';
+/** `input` is stdin; a parameter only so a test can choose where the chunks end. */
+export async function readCliMessagePayloadFromStdin(
+  contentType: string,
+  input: AsyncIterable<string | Uint8Array> = process.stdin,
+): Promise<unknown> {
+  // Bytes are joined first and decoded once: a chunk boundary can fall inside a
+  // multi-byte character, and decoding each chunk alone would turn it into U+FFFD.
+  const chunks: Buffer[] = [];
   let bytes = 0;
-  for await (const chunk of process.stdin) {
-    const text = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
-    bytes += Buffer.byteLength(text, 'utf8');
+  for await (const chunk of input) {
+    const buffer = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : Buffer.from(chunk);
+    bytes += buffer.length;
     if (bytes > AGENT_MESSAGE_JSON_MAX_BYTES) {
       throw new Error(`stdin payload exceeds ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes.`);
     }
-    raw += text;
+    chunks.push(buffer);
   }
   if (bytes === 0) {
     throw new Error('stdin payload is empty.');
   }
+  const raw = Buffer.concat(chunks).toString('utf8');
   const payload = parseCliMessagePayload(raw, contentType);
   const encodedBytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
   if (encodedBytes > AGENT_MESSAGE_JSON_MAX_BYTES) {
@@ -3362,6 +3364,13 @@ program
 // a confusing internal arg into `--help`, and `.command('*')` is
 // deprecated in Commander 12+. Reading program.args is the documented
 // escape hatch when no subcommand matched.
+// DX: silence Commander's default "too many arguments. Expected 0..." error for the
+// root command only, so this action can inspect program.args and emit a clear
+// "unknown command 'foo'" message instead. Set here, after every subcommand is
+// registered: Commander copies this setting into each subcommand as it is created,
+// and a subcommand that inherited it would drop extra words silently
+// (`memesh remember Use OAuth with PKCE` stored only "Use" and exited 0).
+program.allowExcessArguments(true);
 program.action(async () => {
   const stray = program.args.filter((a) => !a.startsWith('-'));
   if (stray.length > 0) {

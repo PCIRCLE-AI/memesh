@@ -397,8 +397,9 @@ describe('remember({ name, replace: true }) inherits the stored type — #333 T4
     remember({ name: 'pkce_decision', type: 'decision', why: 'kept as written; revisit if it is rewritten', title: 'PKCE', observations: ['before'] });
 
     // The transport must let it through: this is the call the instructions
-    // and API_REFERENCE tell a caller to make.
-    expect(RememberSchema.safeParse({ name: 'pkce_decision', replace: true, title: 'Use PKCE' }).success).toBe(true);
+    // and API_REFERENCE tell a caller to make — the new title WITH the
+    // observations to keep.
+    expect(RememberSchema.safeParse({ name: 'pkce_decision', replace: true, title: 'Use PKCE', observations: ['after'] }).success).toBe(true);
 
     const r = remember({ name: 'pkce_decision', replace: true, why: 'kept as written; revisit if it is rewritten', title: 'Use PKCE', observations: ['after'] });
     expect(r.replaced).toBe(true);
@@ -408,6 +409,32 @@ describe('remember({ name, replace: true }) inherits the stored type — #333 T4
     expect(row.type, 'the stored type was rewritten by an omitted field').toBe('decision');
     expect(row.title).toBe('Use PKCE');
     expect(ftsHits('after')).toContain('pkce_decision');
+  });
+
+  it('a replace that carries no observations and no note is refused: it would empty the memory it names', () => {
+    // Title-only and tags-only replaces used to pass this schema, and the core
+    // then cleared the memory and stored nothing. The refusal must say how to
+    // fix a title without that.
+    for (const partial of [{ title: 'Use PKCE' }, { tags: ['topic:auth'] }, {}, { observations: [] }]) {
+      const parsed = RememberSchema.safeParse({ name: 'pkce_decision', replace: true, ...partial });
+      expect(parsed.success, JSON.stringify(partial)).toBe(false);
+      const issue = parsed.error?.issues.find((i) => i.path[0] === 'observations');
+      expect(issue?.message, JSON.stringify(partial)).toMatch(/send the observations the memory already has/);
+    }
+    // `replace: true` with a note, or with observations, still works. An empty
+    // list empties the memory too, so it is refused like none (archiving is
+    // `forget`'s job).
+    expect(RememberSchema.safeParse({ name: 'pkce_decision', replace: true, note: 'Use PKCE\n\nbody' }).success).toBe(true);
+    expect(RememberSchema.safeParse({ name: 'pkce_decision', replace: true, observations: ['Use PKCE'] }).success).toBe(true);
+    // Not a `replace`: the append path is untouched.
+    expect(RememberSchema.safeParse({ name: 'pkce_decision', type: 'decision', title: 'Use PKCE' }).success).toBe(true);
+  });
+
+  it('the refusal a note + title call gets does not recommend a replace without observations', () => {
+    const parsed = RememberSchema.safeParse({ name: 'n', note: 'Headline\n\nbody', title: 'Better' });
+    expect(parsed.success).toBe(false);
+    const message = parsed.error?.issues.map((i) => i.message).join(' ') ?? '';
+    expect(message).toMatch(/structured title and observations/);
   });
 
   it('passing `type` still reclassifies — inheriting an omitted type did not disable C5', () => {

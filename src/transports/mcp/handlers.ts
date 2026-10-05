@@ -60,11 +60,14 @@ const PROJECT_ACTION = `Pass project ("<id>", or a "project:<id>" tag), or proje
  * The project of an MCP write. `false` → null (intentionally none, no binding
  * needed); a string → that project; omitted → undefined when the call carries
  * its own project: tag (core reads it), else the bound project, else refused.
+ * A bare `project:` tag, with no id after it, names nothing: it does not stand
+ * in for the project, so the call still needs the binding (and core refuses the
+ * empty tag beside the bound project).
  */
 function writeProject(arg: string | false | undefined, tags: readonly string[] | undefined, context: McpRequestContext): { project: string | null | undefined } | { result: ToolResult } {
   if (arg === false) return { project: null };
   if (arg !== undefined) return { project: arg };
-  if ((tags ?? []).some((t) => t.startsWith('project:'))) return { project: undefined };
+  if ((tags ?? []).some((t) => t.startsWith('project:') && t.slice('project:'.length).trim() !== '')) return { project: undefined };
   return projectFor(undefined, context, PROJECT_ACTION);
 }
 
@@ -105,7 +108,7 @@ export const TOOL_DEFINITIONS = [
     description:
       'Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions (with `why`), patterns, lessons learned, and important context. An omitted namespace keeps an existing memory in its current namespace; a "supersedes" relation archives its target, while "contradicts" marks a conflict. ' +
       'Quickest form: pass only `note` (free text) and the server derives title, observations and name; the response echoes what it derived. ' +
-      'To correct a memory, call again with its `name` and `replace: true` — the memory keeps the `type` it has unless you pass a different one — and the old content moves to metadata.replaced_history instead of staying next to the fix.',
+      'To correct a memory, call again with its `name`, `replace: true` and the `observations` it should now hold (a replace without `observations` or `note` is refused, so re-send the ones to keep along with the fix) — the memory keeps the `type` it has unless you pass a different one — and the old content moves to metadata.replaced_history instead of staying next to the fix.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -127,7 +130,7 @@ export const TOOL_DEFINITIONS = [
         replace: {
           type: 'boolean',
           description:
-            'Rewrite the memory named by `name` instead of appending to it: its observations are replaced (and its tags when `tags` is given, its title when `title` or `note` is given). The previous version is kept in metadata.replaced_history with the time it was replaced. Default false (append).',
+            'Rewrite the memory named by `name` instead of appending to it: its observations are replaced by the `observations` (or `note`) you give — one of them is required, a replace with neither is refused — and its tags when `tags` is given, its title when `title` or `note` is given. The previous version is kept in metadata.replaced_history with the time it was replaced. Default false (append).',
         },
         title: {
           type: 'string',
@@ -192,8 +195,9 @@ export const TOOL_DEFINITIONS = [
       },
       additionalProperties: false,
       // The rule RememberSchema's superRefine enforces: `note` alone,
-      // `name` + `type`, or `name` + `replace: true` (which inherits the
-      // stored type — #333 T4). Dropping the old `required: ['name','type']`
+      // `name` + `type`, or `name` + `replace: true` + `observations` (which
+      // inherits the stored type — #333 T4; a replace with no content would
+      // empty the memory, so it is refused). Dropping the old `required: ['name','type']`
       // — which was wrong for the note form — left this schema declaring
       // nothing required at all, so a client reading it could believe `{}` is
       // a valid call and only learn otherwise from a runtime rejection. Same
@@ -202,7 +206,7 @@ export const TOOL_DEFINITIONS = [
       anyOf: [
         { required: ['note'] },
         { required: ['name', 'type'] },
-        { required: ['name', 'replace'], properties: { replace: { const: true } } },
+        { required: ['name', 'replace', 'observations'], properties: { replace: { const: true }, observations: { minItems: 1 } } },
       ],
     },
   },

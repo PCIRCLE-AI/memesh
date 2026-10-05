@@ -228,6 +228,21 @@ describe('HTTP Transport: POST /v1/remember', () => {
     expect(res.body.data.tags).toBe(1);
   });
 
+  it('a replace with no observations and no note is refused with 400 and the memory keeps its content', async () => {
+    await req('POST', '/v1/remember', { name: 'http-replace-keep', type: 'note', observations: ['first fact', 'second fact'] });
+    const res = await req('POST', '/v1/remember', { name: 'http-replace-keep', replace: true, title: 'Better title' });
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+    expect(res.body.errorCode).toBe('validation.bad-body');
+    expect(res.body.error).toMatch(/send the observations the memory already has/);
+    const stored = (getDatabase().prepare('SELECT o.content FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = ? ORDER BY o.id').all('http-replace-keep') as Array<{ content: string }>).map(o => o.content);
+    expect(stored).toEqual(['first fact', 'second fact']);
+    // With the observations, the same correction goes through.
+    const ok = await req('POST', '/v1/remember', { name: 'http-replace-keep', replace: true, title: 'Better title', observations: ['first fact', 'second fact'] });
+    expect(ok.status).toBe(200);
+    expect(ok.body.data.replaced).toBe(true);
+  });
+
   it('stamps source_host=http on the stored entity', async () => {
     // The route wrapper injects sourceHost: 'http' — deleting that injection
     // used to leave the whole suite green. Read the stamp back out.

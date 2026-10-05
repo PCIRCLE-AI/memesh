@@ -75,11 +75,13 @@ function refineRemember(data, ctx) {
             ctx.addIssue({ code: 'custom', path: ['name'], message: 'name is required (or pass `note` to have it derived)' });
         if (data.type === undefined && !(data.replace && data.name !== undefined))
             ctx.addIssue({ code: 'custom', path: ['type'], message: 'type is required (or pass `note`, which defaults it to "note", or `replace: true` with a `name` to keep the type that memory already has)' });
+        if (data.replace && (data.observations === undefined || data.observations.length === 0))
+            ctx.addIssue({ code: 'custom', path: ['observations'], message: 'replace rewrites the memory\'s observations, so it needs `observations` (or `note`) — a replace without them would empty the memory. To change only the title or tags, send the observations the memory already has together with the new title or tags' });
         return;
     }
     for (const key of ['title', 'observations']) {
         if (data[key] !== undefined) {
-            ctx.addIssue({ code: 'custom', path: [key], message: `${key} cannot be combined with note — note derives it; to correct the derived ${key}, call again with name, replace: true and a structured ${key} (pass \`type\` only to also change the memory's type)` });
+            ctx.addIssue({ code: 'custom', path: [key], message: `${key} cannot be combined with note — note derives it; to correct what was derived, call again with name, replace: true and a structured title and observations — the response's \`derived\` shows what was derived, so the observations to keep can be copied from it (pass \`type\` only to also change the memory's type)` });
         }
     }
     if (data.replace && data.name === undefined) {

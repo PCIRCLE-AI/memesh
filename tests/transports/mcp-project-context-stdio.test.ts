@@ -13,6 +13,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { ListRootsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { getProjectName } from '../../src/core/paths.js';
+import { projectLabel } from '../../src/core/work-topology.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
 
 const server = fileURLToPath(new URL('../../dist/mcp/server.js', import.meta.url));
@@ -189,6 +190,58 @@ it('remember with no tag files the memory under the bound project: found again i
       const refused = await unbound.tool('remember', { name: 'nowhere', type: 'fact', observations: ['x'] });
       expect(refused.isError).toBe(true);
       expect(refused.text).toMatch(/^workspace_unavailable: /);
+    } finally { await unbound.client.close(); }
+  } finally {
+    removeTempDir(runtime);
+  }
+}, 120000);
+
+// #511 over the real server: a `project:<plain name>` tag on a call that names no
+// `project` is stored as the bound project's id and reported in `retagged`. The
+// server used to skip the binding whenever any `project:` tag was present, so
+// the tag reached the core with no project to compare against and was stored as
+// written, under a project no briefing for this repository reads.
+it('remember with only a project:<plain name> tag stores the bound project id and reports retagged; another project\'s tag and an empty tag are not rewritten', async () => {
+  const runtime = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-mcp-ctx-')));
+  const a = fs.realpathSync(fs.mkdtempSync(path.join(runtime, 'project-a-')));
+  const id = getProjectName(a);
+  const plain = projectLabel(id);
+  // Without a `~hash` suffix there is nothing to rewrite and this test proves nothing.
+  expect(plain, 'the fixture project id has no hash suffix').not.toBe(id);
+  const tagsOf = async (s: Awaited<ReturnType<typeof session>>, name: string) => {
+    const r = await s.tool('recall', { query: name, cross_project: true, include_archived: true });
+    return (JSON.parse(r.text).entities as Array<{ name: string; tags: string[] }>).find(e => e.name === name)?.tags;
+  };
+  try {
+    const bound = await session(runtime, { MEMESH_PROJECT_ROOT: a }, null);
+    try {
+      const tagOnly = await bound.tool('remember', { name: 'tagonly', type: 'fact', observations: ['tagonly stripes'], tags: [`project:${plain}`] });
+      expect(tagOnly.isError, tagOnly.text).toBe(false);
+      expect(JSON.parse(tagOnly.text).retagged).toEqual({ from: `project:${plain}`, to: `project:${id}` });
+      expect(await tagsOf(bound, 'tagonly')).toEqual([`project:${id}`]);
+
+      // A tag that names a different project keeps its existing behaviour: stored as written.
+      const other = await bound.tool('remember', { name: 'othertag', type: 'fact', observations: ['othertag stripes'], tags: ['project:some-other-repo'] });
+      expect(other.isError, other.text).toBe(false);
+      expect(JSON.parse(other.text).retagged).toBeUndefined();
+      expect(await tagsOf(bound, 'othertag')).toEqual(['project:some-other-repo']);
+
+      // An empty `project:` tag names nothing: the write is refused, not stored under an empty project.
+      const empty = await bound.tool('remember', { name: 'emptytag', type: 'fact', observations: ['emptytag stripes'], tags: ['project:'] });
+      expect(empty.isError, empty.text).toBe(true);
+      expect(await tagsOf(bound, 'emptytag')).toBeUndefined();
+    } finally { await bound.client.close(); }
+
+    // Unbound, the empty tag cannot stand in for a project either.
+    const unbound = await session(runtime, {}, null);
+    try {
+      const refused = await unbound.tool('remember', { name: 'emptyunbound', type: 'fact', observations: ['x'], tags: ['project:'] });
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toMatch(/^workspace_unavailable: /);
+      // A real tag still needs no binding.
+      const tagged = await unbound.tool('remember', { name: 'taggedunbound', type: 'fact', observations: ['x'], tags: [`project:${plain}`] });
+      expect(tagged.isError, tagged.text).toBe(false);
+      expect(JSON.parse(tagged.text).retagged).toBeUndefined();
     } finally { await unbound.client.close(); }
   } finally {
     removeTempDir(runtime);

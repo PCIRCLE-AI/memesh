@@ -159,9 +159,12 @@ host is recallable from all of them. Not installed yet? Follow
   name appends observations and dedupes tags. A fresh name for every update
   creates duplicates that recall must wade through. A name another project
   already holds is refused over MCP rather than shared: pick a different one.
-- **Correct a memory in one call**: `remember` it again with its `name` and
-  `replace: true`. `type` is not needed — the memory keeps the one it has.
-  Replacing a decision needs its `why` again.
+- **Correct a memory in one call**: `remember` it again with its `name`,
+  `replace: true` and the `observations` it should now hold (a replace with
+  neither `observations` nor `note` is refused, because it would empty the
+  memory; to fix only a title, send the current observations with it).
+  `type` is not needed — the memory keeps the one it has. Replacing a
+  decision needs its `why` again.
   Pass a `type` only to reclassify: one that differs from what is stored
   rewrites it. (`type` is still required on a call with no `note` that is
   not a `replace`, and on a `replace` whose `name` does not exist yet.) Observations are rewritten (tags too

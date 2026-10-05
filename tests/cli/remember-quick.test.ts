@@ -335,6 +335,20 @@ describe('memesh remember CLI: quick-capture form', () => {
     expect(obs.map((o) => o.content)).toEqual(['right line', 'Why: corrected reason; revisit if it changes']);
   }, 60_000);
 
+  it('--replace without --obs is refused and the memory keeps its content', () => {
+    expect(runCli(['remember', '--name=r6', '--type=note', '--obs=first fact', 'second fact'], { HOME: tmpHome }).exitCode).toBe(0);
+    const r = runCli(['remember', '--name=r6', '--replace', '--title=Better title'], { HOME: tmpHome });
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain('send the observations the memory already has');
+    const db = new MemeshDatabase(path.join(tmpHome, '.memesh', 'knowledge-graph.db'));
+    const obs = db.prepare("SELECT o.content FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = 'r6' ORDER BY o.id").all() as { content: string }[];
+    db.close();
+    expect(obs.map((o) => o.content)).toEqual(['first fact', 'second fact']);
+    // With the observations the same correction goes through.
+    const fixed = runCli(['remember', '--name=r6', '--replace', '--title=Better title', '--obs=first fact', 'second fact'], { HOME: tmpHome });
+    expect(fixed.exitCode, `stderr: ${fixed.stderr}`).toBe(0);
+  }, 60_000);
+
   it('--name without --replace still needs --type', () => {
     const r = runCli(['remember', '--name=r3', '--obs=a new memory'], { HOME: tmpHome });
     expect(r.exitCode).not.toBe(0);

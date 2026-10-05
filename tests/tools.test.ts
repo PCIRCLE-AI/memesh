@@ -771,6 +771,37 @@ describe('remember', () => {
     expect(r.isError).toBeUndefined();
   });
 
+  it('a bare `project:` tag names no project: unbound it is refused, bound the core refuses it as naming no project, and nothing is written', async () => {
+    const before = tableCounts();
+    for (const tag of ['project:', 'project:   ']) {
+      const unbound = await handleTool('remember', { name: 'empty-tag', type: 'fact', observations: ['x'], tags: [tag] });
+      expect(unbound.isError, tag).toBe(true);
+      expect(unbound.content[0].text, tag).toMatch(/^workspace_unavailable: /);
+      const bound = await handleTool('remember', { name: 'empty-tag', type: 'fact', observations: ['x'], tags: [tag] }, undefined, undefined, BOUND);
+      expect(bound.isError, tag).toBe(true);
+      expect(bound.content[0].text, tag).toMatch(/names no project/);
+    }
+    expect(tableCounts()).toEqual(before);
+  });
+
+  it('a replace with no observations and no note is refused and the memory keeps its content', async () => {
+    await handleTool('remember', { name: 'keep-me', type: 'fact', title: 'Old title', observations: ['first fact', 'second fact'] }, undefined, undefined, BOUND);
+    const before = tableCounts();
+    for (const partial of [{ title: 'New title' }, { tags: ['topic:y'] }, {}]) {
+      const r = await handleTool('remember', { name: 'keep-me', replace: true, ...partial }, undefined, undefined, BOUND);
+      expect(r.isError, JSON.stringify(partial)).toBe(true);
+      expect(r.content[0].text, JSON.stringify(partial)).toMatch(/send the observations the memory already has/);
+    }
+    expect(tableCounts()).toEqual(before);
+    const kept = (getDatabase().prepare('SELECT o.content FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = ? ORDER BY o.id').all('keep-me') as Array<{ content: string }>).map(o => o.content);
+    expect(kept).toEqual(['first fact', 'second fact']);
+
+    // The recipe the refusal gives: the new title WITH the observations to keep.
+    const fixed = await handleTool('remember', { name: 'keep-me', replace: true, title: 'New title', observations: ['first fact', 'second fact'] }, undefined, undefined, BOUND);
+    expect(fixed.isError, fixed.content[0].text).toBeUndefined();
+    expect(JSON.parse(fixed.content[0].text)).toMatchObject({ title: 'New title', observations: 2, replaced: true });
+  });
+
   it('stores an entity and returns confirmation', async () => {
     const result = await handleTool('remember', {
       name: 'auth-decision',
