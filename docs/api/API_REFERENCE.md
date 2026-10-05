@@ -67,6 +67,7 @@ The note is cleaned before anything is derived from it: control characters (othe
 | `replace` | boolean | No | Rewrite the named memory instead of appending (see above). Default `false` |
 | `title` | string | No | Short human-readable label shown wherever the memory is listed (e.g. `"Why we dropped JWT"`), max 200 characters — longer is **rejected**, not truncated, so the caller can shorten it themselves. On an entity that already exists, supplying this replaces the title; omitting it leaves the title it already has. Whitespace-only counts as omitted. |
 | `observations` | string[] | No | Key facts or observations about this entity |
+| `why` | string | For a new decision | Why a decision was made AND what would make it stop holding. Stored as the observation `Why: <text>` (redacted like the others) and shown after the decision's title in `briefing` and at session start. Creating, or `replace`-ing, a memory of type `decision`, `architecture_decision` or `design_decision` without it — and without an observation that starts with `Why: ` — is refused with a message naming both halves; adding to an existing decision does not need it. A note file, an `import` or an accepted dream proposal is never refused for it: those decisions are stored and briefed as "(no reason recorded)" |
 | `tags` | string[] | No | Tags for filtering (e.g., `"project:<id>"`, where `<id>` is the `project` field of the `briefing` result (CLI: `memesh briefing --json`), `"topic:database"`). A plain repository name is a different project scope — except that a `project:<name>` tag naming the call's own project by its plain name is stored as the id, unless a memory the call updates or supersedes is already filed under the plain tag (see `retagged` below; #511). Over MCP, omit the project tag to file the memory under the session's bound project; at most one project tag |
 | `project` | string \| `false` | No | MCP only. The project id, or `false` for a memory with no project. Omitted or `null`: a `project:` tag, else the bound project (see above) |
 | `relations` | object[] | No | Relations to other entities |
@@ -142,6 +143,7 @@ Four more fields are conditional. `retagged` appears when a `project:<name>` tag
     "Chose JWT for authentication",
     "Using RS256 algorithm for token signing"
   ],
+  "why": "The API is stateless behind three regions; revisit if we add server-side sessions",
   "tags": ["project:myapp", "topic:auth"]
 }
 
@@ -748,6 +750,8 @@ The returned text is fenced as untrusted background data; stored memory content 
 | `full` | yes | yes | yes | yes | yes | yes | yes | yes |
 
 An eligible handoff leads the saved-memory portion at every level; repository facts, when present, prefix the block. `minimal` otherwise includes this project's decisions, lessons, knowledge, and recent activity, and up to five memories that belong to no project (every level, under their own heading; never global ones, which have their own pool at `full`). `standard` adds fresh task state and the capped durable-memory index. `full` also adds global memory and other projects' recent activity. The work-package notice at `full` belongs only to the Claude Code SessionStart hook, not to the MCP tool or CLI.
+
+A decision (`decision`, `architecture_decision`, `design_decision`) is shown with its latest `Why:` observation after the title — `- [decision] SQLite for local-first storage — Why: PostgreSQL is too heavy to deploy for one user; revisit if we add a hosted tier [mem:12]` — or with `(no reason recorded)` when it has none. When nobody has read it (`recall` stamps it) or added to it for 30 days, the line also says `(unconfirmed N days: re-check before relying)`; a `recall` that returns it clears that. The markers are never cut; the title and reason share the rest of the line's budget.
 
 The saved-memory lines inside the fence share one 4000 UTF-16 code-unit limit across the eligible handoff, displayed task state and unread-inbox notice (when addressed to an exact recipient), ranked memories, global memory at `full`, and injected index. Repository facts before the saved-memory lines, the fence/preface, and the hook-only work-package notice are outside that limit. The displayed task state is shortened to at most 1200 code units (320 per line); `memesh task` still reads the complete stored record. Recent trusted project decisions take the project's slots first, newest valid activity first (unknown dates last); remaining slots follow relevance ranking. A separate pool selects up to five trusted active lesson memories (`lesson_learned`, `lesson` or `mistake`) for the project, even if decisions occupy its other slots. A lesson that has a fix (an observation starting `Fix: `, the form `learn` stores; the latest one when there are several) is shown as `Fix: … — <title, else first observation>`, without repeating the fix when the title or first observation is the fix itself. Each line is cut to 160 characters, so a long fix can leave no room for the title or error after it, and a very long fix is itself cut; the shared limit above never shortens a line, it leaves whole lines out, so a lesson that has a fix is not guaranteed to be shown. Other memories, and lessons without a fix, show their title or first non-empty observation as before. Memory lines may be omitted when the shared limit fills.
 
@@ -1533,7 +1537,7 @@ memesh serve
 # Store knowledge
 curl -s -X POST http://localhost:3737/v1/remember \
   -H 'Content-Type: application/json' \
-  -d '{"name":"auth-decision","type":"decision","observations":["Use OAuth 2.0"]}'
+  -d '{"name":"auth-decision","type":"decision","observations":["Use OAuth 2.0"],"why":"Our IdP only speaks OAuth; revisit if we self-host auth"}'
 
 # Search knowledge
 curl -s -X POST http://localhost:3737/v1/recall \
@@ -1632,7 +1636,7 @@ where there is no stored type to keep.
 ```bash
 memesh remember "Use PKCE for the public client"            # derived name, type note
 memesh remember --name auth-choice --obs "PKCE, not implicit" --replace   # keeps type
-memesh remember --name auth-choice --type decision --obs "PKCE, not implicit" --replace  # reclassifies
+memesh remember --name auth-choice --type decision --obs "PKCE, not implicit" --why "public client, no secret to keep; holds while the app ships in the browser" --replace  # reclassifies
 ```
 
 ### memesh import — a JSON bundle
@@ -1749,8 +1753,8 @@ they are the two worth typing:
 | `--contradicts <name...>` | Both memories surface as a conflict every time either is recalled (see [recall → Conflict detection](#recall)). |
 
 ```bash
-memesh remember --name auth-v2 --type decision --obs "Sessions, not JWT" --supersedes auth-v1
-memesh remember --name no-jwt --type decision --obs "JWT is out" --contradicts use-jwt
+memesh remember --name auth-v2 --type decision --obs "Sessions, not JWT" --why "revocation is needed now; revisit if tokens get short-lived" --supersedes auth-v1
+memesh remember --name no-jwt --type decision --obs "JWT is out" --why "no revocation; revisit with short-lived tokens" --contradicts use-jwt
 memesh recall jwt        # → Warning: Conflicts detected: "no-jwt" contradicts "use-jwt"
 ```
 

@@ -63,8 +63,8 @@
     },
     {
       "path": "scripts/hooks/_generated/briefing-pools.js",
-      "sha256": "e14f605c43c5bb38a1dd289caaca63b2eff28a7638e17a52c788754f0a0e8fcf",
-      "bytes": 10001
+      "sha256": "cc58ecec4a23294dd09d2170d3528f7ceba7f9c3ade505e10f24795425134b58",
+      "bytes": 10874
     },
     {
       "path": "scripts/hooks/_generated/capture-flag.js",
@@ -163,8 +163,8 @@
     },
     {
       "path": "scripts/hooks/_generated/work-topology.js",
-      "sha256": "c55cf4827b11b6bd166e07a0ee7d215c29de4dec07f246ccaa83d33f15664913",
-      "bytes": 11913
+      "sha256": "cbca12ba19da079715ebe4a48314093ef58a62094ac94c2096a95363c6c0a473",
+      "bytes": 12459
     },
     {
       "path": "scripts/hooks/_shared.js",
@@ -238,8 +238,8 @@
     },
     {
       "path": "skills/memesh/SKILL.md",
-      "sha256": "652c4ace82b5cf9a1812b840c239c3c7c83e10ad3d30f170108f60605ea410f4",
-      "bytes": 26021
+      "sha256": "6f23e697f55ac2a7f083a0f389221297d0c8a24cb7a5439dbb7e0547cdc7ce92",
+      "bytes": 26470
     }
   ]
 }

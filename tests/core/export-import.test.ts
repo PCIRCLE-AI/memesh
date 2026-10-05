@@ -229,7 +229,7 @@ describe('#359 round 4: import metadata is an ALLOW-list, not a deny-list', () =
     "pin:false from a bundle cannot unpin an existing pinned entity (%s)",
     (merge_strategy) => {
       const name = 'pinned-real-memory';
-      remember({ name, type: 'decision', observations: ['mine'] });
+      remember({ name, type: 'decision', why: 'a manual entry; revisit if import rules change', observations: ['mine'] });
       setPinned(name, true);
       const data = {
         version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
@@ -249,7 +249,7 @@ describe('#359 round 4: import metadata is an ALLOW-list, not a deny-list', () =
     "pin:true from a bundle cannot pin an existing UNPINNED entity (%s)",
     (merge_strategy) => {
       const name = 'unpinned-real-memory';
-      remember({ name, type: 'decision', observations: ['mine'] });
+      remember({ name, type: 'decision', why: 'a manual entry; revisit if import rules change', observations: ['mine'] });
       expect(new KnowledgeGraph(getDatabase()).getEntity(name)!.metadata?.pin, 'fixture: entity must start unpinned').toBeUndefined();
       const data = {
         version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
@@ -1095,7 +1095,7 @@ describe('exportMemories', () => {
     // exists to provide: a bundle taken after titles shipped restored a
     // library of machine dedup keys. Both halves are pinned, because fixing
     // only the export side would still lose the title on the way back in.
-    remember({ name: 'titled', type: 'decision', title: 'Why we chose JWT', observations: ['ctx'] });
+    remember({ name: 'titled', type: 'decision', why: 'tokens keep the API stateless; revisit if revocation matters', title: 'Why we chose JWT', observations: ['ctx'] });
     const bundle = exportMemories({});
     expect(bundle.entities.find((e) => e.name === 'titled')?.title).toBe('Why we chose JWT');
 

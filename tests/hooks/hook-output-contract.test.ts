@@ -65,7 +65,7 @@ interface HookCase {
    * and a malformed `hookSpecificOutput` would ship unnoticed (the exact #53
    * class, on the input the gate is meant to cover). Seeding forces the branch.
    */
-  seed?: Array<{ name: string; type: string; tags: string[]; obs: string }>;
+  seed?: Array<{ name: string; type: string; tags: string[]; obs: string; why?: string }>;
   /** Post-seed metadata surgery for shapes the CLI cannot write — e.g. an
    *  accepted lesson-guard (`metadata.guard`), which only the dream accept
    *  path produces in production. */
@@ -100,6 +100,7 @@ const HOOK_CASES: HookCase[] = [
       type: 'decision',
       tags: ['file:auth.ts', CONTRACT_PROJECT_TAG],
       obs: 'Use OAuth PKCE for the auth flow',
+      why: 'a CLI cannot keep a client secret; revisit if we add a server-side client',
     }],
   },
   {
@@ -147,7 +148,7 @@ const HOOK_CASES: HookCase[] = [
     // the SessionStart hookSpecificOutput payload is actually validated.
     seed: [
       { name: 'oauth-lesson', type: 'lesson', tags: ['project:contract-project'], obs: 'Always validate the OAuth state parameter' },
-      { name: 'db-decision', type: 'decision', tags: ['project:contract-project'], obs: 'Use WAL mode for concurrent reads' },
+      { name: 'db-decision', type: 'decision', tags: ['project:contract-project'], obs: 'Use WAL mode for concurrent reads', why: 'readers must not block the writer; revisit if we move off SQLite' },
     ],
   },
   {
@@ -261,7 +262,7 @@ describe('Feature: Claude Code hook-output contract', () => {
     for (const m of seed) {
       execFileSync('node', [
         path.resolve('dist/transports/cli/cli.js'), 'remember',
-        '--name', m.name, '--type', m.type, '--obs', m.obs, '--tags', ...m.tags,
+        '--name', m.name, '--type', m.type, '--obs', m.obs, ...(m.why ? ['--why', m.why] : []), '--tags', ...m.tags,
       ], {
         env: { ...process.env, MEMESH_DB_PATH: dbPath, MEMESH_DIR: testDir, MEMESH_AUTO_UPDATE: '0' },
         encoding: 'utf8',

@@ -188,6 +188,10 @@ export interface RememberInput {
    *  one heuristically; a deliberate `remember` call may supply its own. */
   title?: string;
   observations?: string[];
+  /** A decision's reason AND what would make it stop holding; stored as the
+   *  observation `Why: <text>`. Required to create (or `replace`) a memory of
+   *  a decision type, unless an observation already starts with `Why: `. */
+  why?: string;
   tags?: string[];
   relations?: Array<{ to: string; type: string }>;
   namespace?: string;  // 'personal' | 'team' | 'global' (default: 'personal')

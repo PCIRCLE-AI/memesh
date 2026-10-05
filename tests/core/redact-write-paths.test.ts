@@ -51,6 +51,7 @@ describe('remember with structured observations (#523)', () => {
     remember({
       name: 'staging-db',
       type: 'decision',
+      why: 'the staging setup is fixed for now; revisit if it moves',
       title: `Set ${TOKEN_ASSIGNMENT} for staging`,
       observations: [`Staging database is ${DB_URL}`, 'Rotate quarterly.'],
       tags: ['project:redact-fixture'],
@@ -69,14 +70,14 @@ describe('remember with structured observations (#523)', () => {
   });
 
   it('redacts observations appended to an existing memory', () => {
-    remember({ name: 'append-target', type: 'decision', observations: ['first'] });
+    remember({ name: 'append-target', type: 'decision', why: 'the staging setup is fixed for now; revisit if it moves', observations: ['first'] });
     remember({ name: 'append-target', type: 'decision', observations: [`then ${DB_URL}`] });
     expect(storedText('append-target')).not.toContain(DB_PASSWORD);
   });
 
   it('redacts observations written through replace', () => {
-    remember({ name: 'replace-target', type: 'decision', observations: ['first'] });
-    remember({ name: 'replace-target', type: 'decision', observations: [`now ${DB_URL}`], replace: true });
+    remember({ name: 'replace-target', type: 'decision', why: 'the staging setup is fixed for now; revisit if it moves', observations: ['first'] });
+    remember({ name: 'replace-target', type: 'decision', why: 'the staging setup is fixed for now; revisit if it moves', observations: [`now ${DB_URL}`], replace: true });
     expect(storedText('replace-target')).not.toContain(DB_PASSWORD);
   });
 });
@@ -304,7 +305,7 @@ describe('import (#523)', () => {
   });
 
   it('append merges redacted observations onto an existing entity', () => {
-    remember({ name: 'imported-append', type: 'decision', observations: ['already here'] });
+    remember({ name: 'imported-append', type: 'decision', why: 'the staging setup is fixed for now; revisit if it moves', observations: ['already here'] });
     importMemories({ data: bundle([entity('imported-append')]), merge_strategy: 'append' });
     const stored = storedText('imported-append');
     expect(stored).not.toContain(DB_PASSWORD);
@@ -321,7 +322,7 @@ describe('import (#523)', () => {
   });
 
   it('overwrite replaces an existing entity with redacted title and observations', () => {
-    remember({ name: 'imported-overwrite', type: 'decision', observations: ['old text'] });
+    remember({ name: 'imported-overwrite', type: 'decision', why: 'the staging setup is fixed for now; revisit if it moves', observations: ['old text'] });
     importMemories({ data: bundle([entity('imported-overwrite')]), merge_strategy: 'overwrite' });
     const stored = storedText('imported-overwrite');
     expect(stored).not.toContain(DB_PASSWORD);

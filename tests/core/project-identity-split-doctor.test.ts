@@ -44,14 +44,14 @@ const row = async () => (await doctor()).checks.find((check) => check.id === 'pr
 
 describe('#408 doctor finds a project split between a plain name and its id', () => {
   it('warns with the count of memories only the plain name holds, and points at kg rename-project', async () => {
-    remember({ name: 'hashed-1', type: 'decision', observations: ['o'], tags: [`project:${ID}`] });
-    remember({ name: 'plain-1', type: 'decision', observations: ['o'], tags: [`project:${PLAIN}`] });
-    remember({ name: 'plain-2', type: 'decision', observations: ['o'], tags: [`project:${PLAIN}`] });
-    remember({ name: 'plain-gone', type: 'decision', observations: ['o'], tags: [`project:${PLAIN}`] });
+    remember({ name: 'hashed-1', type: 'decision', why: 'a fixture for the split; revisit if the ids change', observations: ['o'], tags: [`project:${ID}`] });
+    remember({ name: 'plain-1', type: 'decision', why: 'a fixture for the split; revisit if the ids change', observations: ['o'], tags: [`project:${PLAIN}`] });
+    remember({ name: 'plain-2', type: 'decision', why: 'a fixture for the split; revisit if the ids change', observations: ['o'], tags: [`project:${PLAIN}`] });
+    remember({ name: 'plain-gone', type: 'decision', why: 'a fixture for the split; revisit if the ids change', observations: ['o'], tags: [`project:${PLAIN}`] });
     forget({ name: 'plain-gone' });
     // Carries the id too, so that project already sees it: not counted. Written
     // directly — remember() refuses two project tags now; older builds did not.
-    remember({ name: 'both', type: 'decision', observations: ['o'], tags: [`project:${PLAIN}`] });
+    remember({ name: 'both', type: 'decision', why: 'a fixture for the split; revisit if the ids change', observations: ['o'], tags: [`project:${PLAIN}`] });
     getDatabase().prepare("INSERT INTO tags (entity_id, tag) SELECT id, ? FROM entities WHERE name = 'both'").run(`project:${ID}`);
 
     expect(findProjectIdentitySplits(getDatabase())).toEqual([{ plain: PLAIN, ids: [ID], activeMemories: 2 }]);
@@ -64,9 +64,9 @@ describe('#408 doctor finds a project split between a plain name and its id', ()
   });
 
   it('names no project in the summary or the fix — they reach public feedback issues', async () => {
-    remember({ name: 'hashed-a', type: 'decision', observations: ['o'], tags: [`project:${ID}`] });
-    remember({ name: 'hashed-b', type: 'decision', observations: ['o'], tags: [`project:${OTHER_ID}`] });
-    remember({ name: 'plain-x', type: 'decision', observations: ['o'], tags: [`project:${PLAIN}`] });
+    remember({ name: 'hashed-a', type: 'decision', why: 'a fixture for the split; revisit if the ids change', observations: ['o'], tags: [`project:${ID}`] });
+    remember({ name: 'hashed-b', type: 'decision', why: 'a fixture for the split; revisit if the ids change', observations: ['o'], tags: [`project:${OTHER_ID}`] });
+    remember({ name: 'plain-x', type: 'decision', why: 'a fixture for the split; revisit if the ids change', observations: ['o'], tags: [`project:${PLAIN}`] });
     const found = await row();
     expect(found?.status).toBe('warn');
     expect(`${found?.summary} ${found?.fix}`).not.toContain(PLAIN);
@@ -74,7 +74,7 @@ describe('#408 doctor finds a project split between a plain name and its id', ()
   });
 
   it('a tag it cannot read is a warning of its own, and the database row still passes', async () => {
-    remember({ name: 'blob-holder', type: 'decision', observations: ['o'] });
+    remember({ name: 'blob-holder', type: 'decision', why: 'a fixture for the split; revisit if the ids change', observations: ['o'] });
     getDatabase().prepare("INSERT INTO tags (entity_id, tag) SELECT id, CAST('project:x' AS BLOB) FROM entities WHERE name = 'blob-holder'").run();
     const result = await doctor();
     expect(result.checks.find((check) => check.id === 'database')?.status).toBe('pass');
@@ -84,8 +84,8 @@ describe('#408 doctor finds a project split between a plain name and its id', ()
   });
 
   it('is silent for a plain project with no id of the same name, and for a graph with no split', async () => {
-    remember({ name: 'plain-only', type: 'decision', observations: ['o'], tags: ['project:standalone'] });
-    remember({ name: 'hashed-only', type: 'decision', observations: ['o'], tags: [`project:${ID}`] });
+    remember({ name: 'plain-only', type: 'decision', why: 'a fixture for the split; revisit if the ids change', observations: ['o'], tags: ['project:standalone'] });
+    remember({ name: 'hashed-only', type: 'decision', why: 'a fixture for the split; revisit if the ids change', observations: ['o'], tags: [`project:${ID}`] });
     expect(findProjectIdentitySplits(getDatabase())).toHaveLength(0);
     expect(await row()).toBeUndefined();
   });

@@ -417,6 +417,10 @@ class MemeshProvider(MemoryProvider):
                             "items": {"type": "string"},
                             "description": "Key facts or observations",
                         },
+                        "why": {
+                            "type": "string",
+                            "description": "For a decision: why it was made and what would make it stop holding (required to create a decision)",
+                        },
                         "tags": {"type": "array", "items": {"type": "string"}},
                     },
                     "required": ["name", "type"],

@@ -34,6 +34,7 @@ describe('Integration: remember → recall', () => {
     remember({
       name: 'auth-decision',
       type: 'decision',
+      why: 'one token format for every client; revisit if we add sessions',
       observations: ['Use JWT for API auth', 'Rotate keys every 90 days'],
       tags: ['project:myapp'],
     });
@@ -169,7 +170,7 @@ describe('Integration: export → import round-trip', () => {
   it('exports entities and re-imports them with matching entity count', () => {
     remember({ name: 'entity-a', type: 'note', observations: ['data-a'], tags: ['t1'] });
     remember({ name: 'entity-b', type: 'pattern', observations: ['data-b1', 'data-b2'] });
-    remember({ name: 'entity-c', type: 'decision', observations: ['data-c'] });
+    remember({ name: 'entity-c', type: 'decision', why: 'a fixture for the round trip; revisit if the format changes', observations: ['data-c'] });
 
     const exported = exportMemories({});
     expect(exported.entity_count).toBe(3);

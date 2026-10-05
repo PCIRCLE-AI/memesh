@@ -31,7 +31,7 @@ afterAll(async () => {
 describe('GET /v1/briefing-index (#323: the Project tab shows what an agent is given)', () => {
   it('returns the rendered index and its counts for one project', async () => {
     remember({
-      name: 'route-decision', type: 'decision', title: 'Keep the index capped',
+      name: 'route-decision', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', title: 'Keep the index capped',
       observations: ['Forty lines, three kilobytes.'], tags: ['project:alpha'],
     });
     remember({

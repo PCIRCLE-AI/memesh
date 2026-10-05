@@ -7,7 +7,7 @@ import { rankEntities } from './scoring.js';
 import { getProjectName, redactSecrets, redactTextValues, redactTitleAndObservations, redactVersionText } from './paths.js';
 import { createExplicitLesson } from './lesson-engine.js';
 import { deriveNote, NOTE_DEFAULT_TYPE } from './note-derive.js';
-import { canonicalEntityType } from './work-topology.js';
+import { DECISION_TYPES, WHY_PREFIX, canonicalEntityType } from './work-topology.js';
 import { capRecallForAgent } from './recall-agent-view.js';
 import { boundReplacedHistory } from './replaced-history.js';
 export { REPLACED_HISTORY_MAX, REPLACED_HISTORY_MAX_BYTES } from './replaced-history.js';
@@ -63,6 +63,7 @@ export function shownEntity(entity) {
     };
 }
 function resolveRememberInput(input) {
+    const why = input.why !== undefined && input.why.trim() !== '' ? [`${WHY_PREFIX}${input.why.trim()}`] : [];
     if (input.note === undefined) {
         if (!input.name)
             throw new Error('remember needs `name` and `type`, or `note`');
@@ -73,7 +74,7 @@ function resolveRememberInput(input) {
         return {
             args: {
                 ...input,
-                ...redactTitleAndObservations(typeof input.title === 'string' ? input.title : undefined, input.observations),
+                ...redactTitleAndObservations(typeof input.title === 'string' ? input.title : undefined, why.length > 0 ? [...(input.observations ?? []), ...why] : input.observations),
             },
             typeGiven: input.type !== undefined,
         };
@@ -92,8 +93,9 @@ function resolveRememberInput(input) {
             ...input,
             name: input.name ?? derived.name,
             type: input.type ?? NOTE_DEFAULT_TYPE,
-            title: derived.title,
-            observations: derived.observations,
+            ...(why.length > 0
+                ? redactTitleAndObservations(derived.title, [...derived.observations, ...why])
+                : { title: derived.title, observations: derived.observations }),
         },
         derived,
         typeGiven: input.type !== undefined,
@@ -142,6 +144,12 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
     if (entityType === undefined) {
         throw new Error(`\`replace\` on "${args.name}": there is no memory named "${args.name}" to inherit a type from, `
             + 'so this call would create one with no type — pass `type` to create it.');
+    }
+    if (DECISION_TYPES.has(entityType) && (!existing || args.replace) && args.trustOverride !== 'untrusted'
+        && !(args.observations ?? []).some((o) => o.startsWith(WHY_PREFIX))) {
+        throw new Error(`MeMesh did not store this ${entityType}: a ${entityType} needs \`why\` — the reason for it and what would make it `
+            + 'stop holding (for example: "Postgres is too heavy to deploy for one user; revisit if we add a hosted tier"). '
+            + 'Pass `why`, or an observation that starts with "Why: ".');
     }
     let replacedVersion;
     let retypedTo;

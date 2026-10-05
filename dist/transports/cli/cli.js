@@ -4412,8 +4412,11 @@ function topologyLine(entity, maxChars) {
   const snippet = entity.snippet?.trim();
   const text = (title || snippet || `${entity.type} memory`).replace(/~[0-9a-f]{32}\b/g, "");
   const handle = Number.isInteger(entity.id) && entity.id > 0 ? ` [mem:${entity.id}]` : "";
-  const room = Math.max(8, maxChars - handle.length);
-  return stripControlChars(`- [${entity.type}] ${clip(text, room)}${handle}`);
+  const unconfirmed = entity.unconfirmedDays ? ` (unconfirmed ${entity.unconfirmedDays} days: re-check before relying)` : "";
+  const why = entity.why === void 0 ? "" : entity.why ? ` \u2014 Why: ${entity.why}` : "";
+  const noReason = entity.why === null ? " (no reason recorded)" : "";
+  const room = Math.max(8, maxChars - handle.length - unconfirmed.length - noReason.length);
+  return stripControlChars(`- [${entity.type}] ${clip(`${text}${why}`, room)}${noReason}${unconfirmed}${handle}`);
 }
 function clip(text, maxChars) {
   const flat2 = text.replace(/\s+/g, " ").trim();
@@ -4639,7 +4642,7 @@ function jsonStringLiteral(value) {
 function stripControlChars(s) {
   return s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]+/g, " ");
 }
-var LESSON_TYPES, LESSON_TYPE_LIST, WORK_LAYER_TYPES, DECISION_LAYER_TYPES, EVIDENCE_LAYER_TYPES, MAX_PER_SECTION, DEFAULT_TOPOLOGY_BUDGET, GLOBAL_TOPOLOGY_LIMIT, GLOBAL_TOPOLOGY_BUDGET, TOPOLOGY_CANDIDATE_CAP, SNIPPET_FETCH_CHARS, STATE_MAX_CHARS, TASK_STATE_DISPLAY_MAX_CHARS, TASK_STATE_LINE_MAX_CHARS, PROJECT_ID_HASH_SUFFIX;
+var LESSON_TYPES, LESSON_TYPE_LIST, WORK_LAYER_TYPES, DECISION_TYPES, WHY_PREFIX, UNCONFIRMED_DECISION_DAYS, DECISION_LAYER_TYPES, EVIDENCE_LAYER_TYPES, MAX_PER_SECTION, DEFAULT_TOPOLOGY_BUDGET, GLOBAL_TOPOLOGY_LIMIT, GLOBAL_TOPOLOGY_BUDGET, TOPOLOGY_CANDIDATE_CAP, SNIPPET_FETCH_CHARS, STATE_MAX_CHARS, TASK_STATE_DISPLAY_MAX_CHARS, TASK_STATE_LINE_MAX_CHARS, PROJECT_ID_HASH_SUFFIX;
 var init_work_topology = __esm({
   "dist/core/work-topology.js"() {
     "use strict";
@@ -4656,6 +4659,9 @@ var init_work_topology = __esm({
       "plan",
       "task-state"
     ]);
+    DECISION_TYPES = /* @__PURE__ */ new Set(["decision", "architecture_decision", "design_decision"]);
+    WHY_PREFIX = "Why: ";
+    UNCONFIRMED_DECISION_DAYS = 30;
     DECISION_LAYER_TYPES = [...WORK_LAYER_TYPES].filter((type) => !LESSON_TYPES.has(type) && type !== "task-state");
     EVIDENCE_LAYER_TYPES = /* @__PURE__ */ new Set([
       "commit",
@@ -7712,6 +7718,7 @@ function shownEntity(entity) {
   };
 }
 function resolveRememberInput(input) {
+  const why = input.why !== void 0 && input.why.trim() !== "" ? [`${WHY_PREFIX}${input.why.trim()}`] : [];
   if (input.note === void 0) {
     if (!input.name)
       throw new Error("remember needs `name` and `type`, or `note`");
@@ -7722,7 +7729,7 @@ function resolveRememberInput(input) {
     return {
       args: {
         ...input,
-        ...redactTitleAndObservations(typeof input.title === "string" ? input.title : void 0, input.observations)
+        ...redactTitleAndObservations(typeof input.title === "string" ? input.title : void 0, why.length > 0 ? [...input.observations ?? [], ...why] : input.observations)
       },
       typeGiven: input.type !== void 0
     };
@@ -7741,8 +7748,7 @@ function resolveRememberInput(input) {
       ...input,
       name: input.name ?? derived.name,
       type: input.type ?? NOTE_DEFAULT_TYPE,
-      title: derived.title,
-      observations: derived.observations
+      ...why.length > 0 ? redactTitleAndObservations(derived.title, [...derived.observations, ...why]) : { title: derived.title, observations: derived.observations }
     },
     derived,
     typeGiven: input.type !== void 0
@@ -7785,6 +7791,9 @@ function rememberInTransaction(args, derived, typeGiven, db2, kg) {
   const entityType = args.type !== void 0 ? canonicalEntityType(args.type) : existing?.type;
   if (entityType === void 0) {
     throw new Error(`\`replace\` on "${args.name}": there is no memory named "${args.name}" to inherit a type from, so this call would create one with no type \u2014 pass \`type\` to create it.`);
+  }
+  if (DECISION_TYPES.has(entityType) && (!existing || args.replace) && args.trustOverride !== "untrusted" && !(args.observations ?? []).some((o) => o.startsWith(WHY_PREFIX))) {
+    throw new Error(`MeMesh did not store this ${entityType}: a ${entityType} needs \`why\` \u2014 the reason for it and what would make it stop holding (for example: "Postgres is too heavy to deploy for one user; revisit if we add a hosted tier"). Pass \`why\`, or an observation that starts with "Why: ".`);
   }
   let replacedVersion;
   let retypedTo;
@@ -25366,6 +25375,7 @@ var init_schemas3 = __esm({
       type: external_exports.string().min(1).max(100).optional(),
       title: titleField,
       observations: external_exports.array(observationField).max(100).optional(),
+      why: observationField.optional(),
       note: external_exports.string().max(NOTE_MAX_CHARS).optional(),
       replace: external_exports.boolean().optional(),
       tags: external_exports.array(external_exports.string().max(255)).max(50).optional(),
@@ -26256,22 +26266,26 @@ function readSnippets(db2, ids) {
   const shown = (content) => redactMemoryText(content).slice(0, SNIPPET_FETCH_CHARS).replace(/\s+/g, " ").trim() || null;
   for (const row of rows) {
     const content = String(row.content ?? "");
-    const entry = snippets.get(row.entity_id) ?? { first: null, fix: null };
+    const entry = snippets.get(row.entity_id) ?? { first: null, fix: null, why: null };
     if (entry.first === null)
       entry.first = shown(content);
     if (content.startsWith("Fix: "))
       entry.fix = shown(content);
+    if (content.startsWith(WHY_PREFIX))
+      entry.why = shown(content.slice(WHY_PREFIX.length));
     snippets.set(row.entity_id, entry);
   }
   return snippets;
 }
-function toTopologyEntity(row, snippets) {
+function toTopologyEntity(row, snippets, now = Date.now()) {
   const signal = parseMetadata(row.metadata)?.signal_score;
   const snippet = snippets.get(row.id);
-  const [title, first, fix] = redactShownTogether([
+  const decision = row.type !== null && DECISION_TYPES.has(row.type);
+  const [title, first, fix, why] = redactShownTogether([
     row.title ?? null,
     snippet?.first ?? null,
-    row.type && LESSON_TYPE_LIST.includes(row.type) ? snippet?.fix ?? null : null
+    row.type && LESSON_TYPE_LIST.includes(row.type) ? snippet?.fix ?? null : null,
+    decision ? snippet?.why ?? null : null
   ]);
   const background = title || first;
   const after = background === fix ? null : background;
@@ -26282,8 +26296,21 @@ function toTopologyEntity(row, snippets) {
     title: fix ? after ? `${fix} \u2014 ${after}` : fix : title,
     snippet: first,
     signalScore: typeof signal === "number" ? signal : null,
-    recency: row.recency ?? null
+    recency: row.recency ?? null,
+    ...decision ? { why, unconfirmedDays: unconfirmedDays(row, now) } : {}
   };
+}
+function epochOf(at) {
+  if (!at)
+    return NaN;
+  return Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(at) ? at : `${at.replace(" ", "T")}Z`);
+}
+function unconfirmedDays(row, now) {
+  const seen = Math.max(...[epochOf(row.last_accessed_at), epochOf(row.recency)].filter((t) => !Number.isNaN(t)));
+  if (!Number.isFinite(seen))
+    return null;
+  const days = Math.floor((now - seen) / 864e5);
+  return days >= UNCONFIRMED_DECISION_DAYS ? days : null;
 }
 function readIndexCandidates(db2, projectName2) {
   const cols = entityColumns(db2);
@@ -27829,6 +27856,7 @@ function exportOpenAITools() {
             type: { type: "string", description: 'Entity type (decision, pattern, lesson_learned, etc.). Required unless `note` is given (then defaults to "note").' },
             title: { type: "string", description: "Short human-readable label, distinct from name (a stable machine key)" },
             observations: { type: "array", items: { type: "string" }, description: "Key facts about this entity" },
+            why: { type: "string", description: 'For a decision: why it was made and what would make it stop holding; stored as "Why: \u2026". Required to create or replace a decision, architecture_decision or design_decision unless an observation starts with "Why: ".' },
             note: { type: "string", description: "Free text instead of title + observations: first line \u2192 title, each following paragraph \u2192 one observation" },
             replace: { type: "boolean", description: "Rewrite the named memory instead of appending; the previous version moves to metadata.replaced_history" },
             tags: { type: "array", items: { type: "string" }, description: "Tags for filtering" },
@@ -28161,8 +28189,8 @@ var init_demo = __esm({
     init_knowledge_graph();
     DEMO_TAG = "project:memesh-demo";
     DEMO_DATA = [
-      { daysAgo: 30, name: "auth-decision", type: "decision", observations: ["Use OAuth 2.0 with PKCE for browser flows", "Refresh tokens rotated every 90 days"] },
-      { daysAgo: 30, name: "db-choice", type: "decision", observations: ["PostgreSQL for relational data", "Redis for session + cache layer"] },
+      { daysAgo: 30, name: "auth-decision", type: "decision", observations: ["Use OAuth 2.0 with PKCE for browser flows", "Refresh tokens rotated every 90 days", "Why: the browser client cannot keep a secret; revisit if we ship a server-side web app"] },
+      { daysAgo: 30, name: "db-choice", type: "decision", observations: ["PostgreSQL for relational data", "Redis for session + cache layer", "Why: orders and invoices are relational and need transactions; revisit if write volume outgrows one primary"] },
       { daysAgo: 29, name: "api-design", type: "pattern", observations: ["RESTful API with /v1/ versioning", "JSON envelope: { success, data | error }"] },
       { daysAgo: 29, name: "rate-limiting", type: "pattern", observations: ["Token bucket algorithm with Redis, 100 req/min per API key"] },
       { daysAgo: 28, name: "testing-strategy", type: "best_practice", observations: ["vitest with forks pool mode for native modules", "Real DB in tests; no SQL mocks"] },
@@ -28173,13 +28201,13 @@ var init_demo = __esm({
       { daysAgo: 19, name: "pattern-event-sourcing", type: "technical_pattern", observations: ["Append-only event log with periodic snapshots", "Replay rebuilds projections deterministically"] },
       { daysAgo: 14, name: "lesson-billing-config-error", type: "lesson_learned", observations: ["Error: billing webhook env var not propagated to staging", "Root cause: secrets manager only synced production tier", "Fix: extended sync to all tiers, added smoke check in CI", "Prevention: env-var presence assertion at startup, fail fast"], tags: ["error-pattern:config-error", "severity:major"] },
       { daysAgo: 13, name: "bugfix-race-on-double-submit", type: "bug_fix", observations: ["Symptom: double charges on slow networks", "Cause: idempotency key derived after request body parse", "Fix: derive key in middleware before any I/O"] },
-      { daysAgo: 13, name: "decision-graceful-degradation", type: "decision", observations: ["Core recall must not depend on a model provider", "Agent work packages stage optional suggestions for human review"] },
+      { daysAgo: 13, name: "decision-graceful-degradation", type: "decision", observations: ["Core recall must not depend on a model provider", "Agent work packages stage optional suggestions for human review", "Why: a provider outage must not take memory down with it; holds while recall runs on SQLite alone"] },
       { daysAgo: 12, name: "arch-recall-pipeline", type: "architecture", observations: ["FTS5 match order \u2192 access-count boost \u2192 impact score", "One authoritative retrieval path keeps provenance understandable"] },
       { daysAgo: 11, name: "lesson-test-failure-flake", type: "lesson_learned", observations: ["Error: integration tests passed locally, failed in CI 30% of the time", "Root cause: tests shared a global temp dir cleared at suite end", "Fix: per-test mkdtemp + per-test cleanup in afterEach", "Prevention: assume parallelism; never share mutable state across tests"], tags: ["error-pattern:test-failure", "severity:major"] },
       { daysAgo: 7, name: "pattern-noise-filter", type: "pattern", observations: ["Auto-tag commits + sessions with type-specific labels", "UI default-hides noise types; dashboard uses signal-first surfacing"] },
       { daysAgo: 7, name: "bugfix-stale-cache-banner", type: "bug_fix", observations: ["Symptom: deprecation banner stayed visible after upgrade", 'Cause: cache TTL only refreshed on explicit "check now"', "Fix: also refresh on session-start when cache is fresh"] },
       { daysAgo: 6, name: "feature-projects-view", type: "feature", observations: ["New /v1/projects endpoint extracts distinct project tags", "Dashboard groups Browse + Lessons by project chip"] },
-      { daysAgo: 5, name: "decision-precision-engineer-design", type: "decision", observations: ["Adopt Precision Engineer aesthetic: minimal stroke icons, no decoration", "Reject Neural Organic and Retro Terminal alternatives \u2014 too noisy for data tool"] },
+      { daysAgo: 5, name: "decision-precision-engineer-design", type: "decision", observations: ["Adopt Precision Engineer aesthetic: minimal stroke icons, no decoration", "Reject Neural Organic and Retro Terminal alternatives \u2014 too noisy for data tool", "Why: dense data reads best with no decoration; revisit if user tests show the icons are not recognised"] },
       { daysAgo: 5, name: "arch-roadmap-derivation", type: "architecture", observations: ["Phase clusters: \u22653 entities within \u22647 days", "Anchor entity by type priority: release > architecture > plan > decision"] },
       { daysAgo: 3, name: "lesson-bug_fix-canvas-blank", type: "lesson_learned", observations: ["Error: timeline chart blank after tab switch", "Root cause: canvas.style.width persisted across display:none -> block", "Fix: clear inline width before measuring, use ResizeObserver", "Prevention: never assume CSS width:100% wins over inline style on canvas"], tags: ["error-pattern:other", "severity:minor"] },
       { daysAgo: 2, name: "plan-v3-dashboard", type: "plan", observations: ["Plan: dashboard-v3", "Steps: Browse redesign, Lessons categorisation, Project Roadmap, Memory Loop KPI", "Status: complete; the execution lessons are the lesson_learned memories in Memories"] },
@@ -28189,7 +28217,7 @@ var init_demo = __esm({
       { daysAgo: 1, name: "lesson-build-error-tsx-include", type: "lesson_learned", observations: ["Error: vitest skipped tests/dashboard/*.test.tsx silently", "Root cause: vitest.config include pattern matched .ts not .tsx", "Fix: add tests/**/*.test.tsx to include array", "Prevention: when adding a new file extension, audit every glob in test config"], tags: ["error-pattern:test-failure", "severity:minor"] },
       { daysAgo: 0, name: "note-onboarding-tour", type: "note", observations: ["This entity tree is the demo seed shown when entity_count = 0", "Run `memesh demo --reset --yes` to remove"] },
       { daysAgo: 0, name: "best-practice-trust-gating", type: "best_practice", observations: ["Confidence-bump paths must check metadata.trust before lifting", "Untrusted sources: importer append/overwrite, auto-learned lessons"] },
-      { daysAgo: 0, name: "decision-memory-loop-kpi", type: "decision", observations: ['Replace Health Score gauge with "memories reused this week" hero', "Vanity metric \u2192 value-proof metric"] },
+      { daysAgo: 0, name: "decision-memory-loop-kpi", type: "decision", observations: ['Replace Health Score gauge with "memories reused this week" hero', "Vanity metric \u2192 value-proof metric", "Why: a health score said nothing about whether memory helped; revisit if reuse stops tracking real value"] },
       { daysAgo: 0, name: "feature-onboarding-banner", type: "feature", observations: ["Detect entity_count = 0 from /v1/health", "Show dismissable banner pointing at `memesh demo`"] }
     ];
     DEMO_RELATIONS = [
@@ -55462,6 +55490,7 @@ var init_analytics = __esm({
   "dist/core/analytics.js"() {
     "use strict";
     init_session_handoff();
+    init_work_topology();
     NOISE_TYPES = /* @__PURE__ */ new Set([
       "session_keypoint",
       "commit",
@@ -55474,7 +55503,7 @@ var init_analytics = __esm({
     ]);
     RADAR_AXES = [
       { axis: "lessons", types: ["lesson_learned", "lesson", "mistake"] },
-      { axis: "decisions", types: ["decision", "architecture_decision", "design_decision"] },
+      { axis: "decisions", types: [...DECISION_TYPES] },
       { axis: "patterns", types: ["pattern", "technical_pattern", "best_practice"] },
       { axis: "bugs", types: ["bug_fix", "verification_result", "test_result"] },
       { axis: "processes", types: ["process", "workflow_checkpoint", "refactoring", "maintenance"] },
@@ -63727,7 +63756,7 @@ program2.hook("preAction", (_thisCommand, actionCommand) => {
     process.stderr.write(`${line}
 `);
 });
-program2.command("remember").argument("[text]", "Quick-capture text \u2014 title, observations and name are derived from it (type defaults to note)").description("Store knowledge as an entity (use flags for explicit form, or positional text for quick capture)").option("--name <name>", "Entity name").option("--type <type>", "Entity type (omit it with --replace to keep the type the memory already has)").option("--title <title>", "Short human-readable label shown as the headline (name stays the stable machine key)").option("--obs <observations...>", "Observations (space-separated)").option("--tags <tags...>", "Tags (space-separated)").option("--replace", "Rewrite the memory named by --name instead of appending; its previous version is kept in metadata.replaced_history").option("--namespace <namespace>", "Namespace: personal, team, or global. On a NEW memory this places it (default personal); on one that already exists it MOVES it out of the scope it is in \u2014 omit the flag to leave it alone.").option("--supersedes <name...>", "This memory replaces the named one \u2014 ARCHIVES it immediately (recoverable; nothing is deleted)").option("--contradicts <name...>", "This memory cannot both be true with the named one \u2014 both surface as a conflict on every recall").option("--json", "Output as JSON").action(async (text, opts) => {
+program2.command("remember").argument("[text]", "Quick-capture text \u2014 title, observations and name are derived from it (type defaults to note)").description("Store knowledge as an entity (use flags for explicit form, or positional text for quick capture)").option("--name <name>", "Entity name").option("--type <type>", "Entity type (omit it with --replace to keep the type the memory already has)").option("--title <title>", "Short human-readable label shown as the headline (name stays the stable machine key)").option("--obs <observations...>", "Observations (space-separated)").option("--why <text>", 'For a decision: why it was made and what would make it stop holding (stored as "Why: \u2026"; required to create a decision)').option("--tags <tags...>", "Tags (space-separated)").option("--replace", "Rewrite the memory named by --name instead of appending; its previous version is kept in metadata.replaced_history").option("--namespace <namespace>", "Namespace: personal, team, or global. On a NEW memory this places it (default personal); on one that already exists it MOVES it out of the scope it is in \u2014 omit the flag to leave it alone.").option("--supersedes <name...>", "This memory replaces the named one \u2014 ARCHIVES it immediately (recoverable; nothing is deleted)").option("--contradicts <name...>", "This memory cannot both be true with the named one \u2014 both surface as a conflict on every recall").option("--json", "Output as JSON").action(async (text, opts) => {
   requireOneOf(opts.namespace, NAMESPACES, "--namespace");
   if (opts.replace && !opts.name) {
     console.error("Error: --replace needs --name \u2014 it rewrites the memory with that name.");
@@ -63737,7 +63766,7 @@ program2.command("remember").argument("[text]", "Quick-capture text \u2014 title
   if (text && !opts.name) {
     if (!opts.obs?.length && opts.title === void 0) {
       note2 = String(text);
-      const check2 = RememberSchema.safeParse({ note: note2, ...opts.type ? { type: opts.type } : {} });
+      const check2 = RememberSchema.safeParse({ note: note2, ...opts.type ? { type: opts.type } : {}, ...opts.why !== void 0 ? { why: opts.why } : {} });
       if (!check2.success) {
         console.error(`Error: ${check2.error.issues.map((i) => i.message).join("; ")}`);
         process.exit(1);
@@ -63761,7 +63790,7 @@ program2.command("remember").argument("[text]", "Quick-capture text \u2014 title
       opts.obs = [...opts.obs, String(text)];
   }
   if (note2 === void 0 && (!opts.name || !opts.type && opts.replace !== true)) {
-    console.error('Error: provide --name and --type, OR --name with --replace to correct a memory that exists, OR pass quick-capture text as a positional arg.\n  memesh remember --name "auth" --type "decision" --obs "Use OAuth 2.0"\n  memesh remember --name "auth" --replace --obs "Use OAuth 2.0 with PKCE"\n  memesh remember "Use OAuth 2.0 with PKCE"');
+    console.error('Error: provide --name and --type, OR --name with --replace to correct a memory that exists, OR pass quick-capture text as a positional arg.\n  memesh remember --name "auth" --type "decision" --obs "Use OAuth 2.0" --why "the IdP only speaks OAuth; revisit if we self-host auth"\n  memesh remember --name "auth" --replace --obs "Use OAuth 2.0 with PKCE"\n  memesh remember "Use OAuth 2.0 with PKCE"');
     process.exit(1);
   }
   if (opts.obs?.some((o) => o.trim() === "")) {
@@ -63784,6 +63813,7 @@ program2.command("remember").argument("[text]", "Quick-capture text \u2014 title
       type: opts.type,
       ...opts.title !== void 0 ? { title: opts.title } : {},
       ...opts.obs?.length ? { observations: opts.obs } : {},
+      ...opts.why !== void 0 ? { why: opts.why } : {},
       ...opts.tags?.length ? { tags: opts.tags } : {},
       ...opts.replace === true ? { replace: true } : {},
       ...relations.length > 0 ? { relations } : {},
@@ -63804,6 +63834,7 @@ program2.command("remember").argument("[text]", "Quick-capture text \u2014 title
         ...opts.tags?.some((tag) => tag.startsWith("project:")) ? { currentProject: getProjectName() } : {},
         namespace: opts.namespace,
         relations: relations.length > 0 ? relations : void 0,
+        why: opts.why,
         sourceHost: "cli",
         ...note2 !== void 0 ? { note: note2 } : { title: opts.title, observations: opts.obs, replace: opts.replace === true ? true : void 0 }
       });

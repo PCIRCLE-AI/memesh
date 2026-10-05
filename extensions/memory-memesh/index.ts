@@ -161,6 +161,7 @@ class MemeshClient {
     name?: string;
     type?: string;
     observations: string[];
+    why?: string;
     tags?: string[];
     namespace?: string;
     agentId?: string;
@@ -185,7 +186,16 @@ class MemeshClient {
     );
 
     if (!response.ok) {
-      throw new Error(`MeMesh remember failed: HTTP ${response.status}`);
+      // The server's sentence says what to change (a decision without `why`,
+      // two project tags); a bare status code does not.
+      let detail = "";
+      try {
+        const err = (await response.json()) as { error?: unknown };
+        if (typeof err?.error === "string") detail = `: ${err.error}`;
+      } catch {
+        // Not JSON: the status code is all there is.
+      }
+      throw new Error(`MeMesh remember failed: HTTP ${response.status}${detail}`);
     }
   }
 
@@ -373,6 +383,9 @@ export default {
           category: Type.Optional(
             Type.String({ description: "Category (e.g., 'decision', 'fact', 'preference')" })
           ),
+          why: Type.Optional(
+            Type.String({ description: "For a decision: why it was made and what would make it stop holding (required when category is 'decision')" })
+          ),
           importance: Type.Optional(
             Type.Integer({ description: "Importance (1-10)", minimum: 1, maximum: 10 })
           ),
@@ -402,6 +415,7 @@ export default {
               name, // Required by API
               type: category,
               observations: [text],
+              ...(typeof params.why === "string" && params.why.trim() ? { why: params.why } : {}),
               namespace: "personal",
               agentId, // Tenant isolation via tag
             });

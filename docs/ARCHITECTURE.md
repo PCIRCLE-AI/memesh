@@ -624,6 +624,7 @@ For release safety, `npm run test:packaged` creates a real npm tarball, extracts
 - Entities not accessed in 30+ days: confidence *= 0.9
 - Floor: confidence never below 0.01
 - Never deletes — only affects search ranking
+- Decisions decay like everything else, but are never hidden by it: the briefing orders them by recency, shows each with its latest `Why:` observation (or "no reason recorded"), and marks one that nobody has recalled or added to for 30+ days "unconfirmed N days: re-check before relying" (`toTopologyEntity` in `briefing-pools.ts`, rendered by `topologyLine`). A recall stamps `last_accessed_at` and clears the mark. `remember` refuses to create a decision without `why` (operations.ts); untrusted writers are exempt
 
 ### Agent-assisted digest and transcript review
 - `work_package` prepares one bounded calendar digest or visible-turn transcript package.

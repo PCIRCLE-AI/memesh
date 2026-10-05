@@ -106,13 +106,13 @@ describe('remember({ note }) — piece A', () => {
 
 describe('remember({ replace: true }) — piece B', () => {
   it('rewrites observations, drops the old text from FTS, and keeps a dated history', () => {
-    remember({ name: 'auth', type: 'decision', title: 'Auth v1', observations: ['use implicit flow'], tags: ['project:a'] });
-    const r = remember({ name: 'auth', type: 'decision', title: 'Auth v2', observations: ['use pkce flow'], replace: true });
+    remember({ name: 'auth', type: 'decision', why: 'the implicit flow is the quickest to ship; revisit if a client cannot keep a secret', title: 'Auth v1', observations: ['use implicit flow'], tags: ['project:a'] });
+    const r = remember({ name: 'auth', type: 'decision', why: 'PKCE works for a CLI that cannot hold a secret; revisit if we ship a server-side client', title: 'Auth v2', observations: ['use pkce flow'], replace: true });
     expect(r.replaced).toBe(true);
 
     const e = kg().getEntity('auth')!;
     expect(e.title).toBe('Auth v2');
-    expect(e.observations).toEqual(['use pkce flow']);
+    expect(e.observations).toEqual(['use pkce flow', 'Why: PKCE works for a CLI that cannot hold a secret; revisit if we ship a server-side client']);
     // Tags omitted → kept.
     expect(e.tags).toContain('project:a');
 
@@ -122,7 +122,7 @@ describe('remember({ replace: true }) — piece B', () => {
 
     const history = e.metadata?.replaced_history as Array<Record<string, unknown>>;
     expect(history).toHaveLength(1);
-    expect(history[0]).toMatchObject({ title: 'Auth v1', observations: ['use implicit flow'], tags: ['project:a'] });
+    expect(history[0]).toMatchObject({ title: 'Auth v1', observations: ['use implicit flow', 'Why: the implicit flow is the quickest to ship; revisit if a client cannot keep a secret'], tags: ['project:a'] });
     expect(Date.parse(history[0].replaced_at as string)).not.toBeNaN();
   });
 
@@ -249,7 +249,7 @@ describe('RememberSchema (transport validation)', () => {
 
 describe('remember({ replace: true }) on a forgotten memory — #324 C4', () => {
   it('refuses, and names a recovery path that actually works', () => {
-    remember({ name: 'forgotten_thing', type: 'decision', observations: ['the original text'] });
+    remember({ name: 'forgotten_thing', type: 'decision', why: 'kept as written; revisit if it is rewritten', observations: ['the original text'] });
     expect(forget({ name: 'forgotten_thing' }).archived).toBe(true);
 
     // `replace` rewrites the memory in place. On an archived row that is a
@@ -257,7 +257,7 @@ describe('remember({ replace: true }) on a forgotten memory — #324 C4', () => 
     // replaced_history and a live memory in its place — note-ingest.ts:395
     // refuses exactly this, and the direct call did not.
     expect(() => remember({
-      name: 'forgotten_thing', type: 'decision', observations: ['smuggled back in'], replace: true,
+      name: 'forgotten_thing', type: 'decision', why: 'kept as written; revisit if it is rewritten', observations: ['smuggled back in'], replace: true,
     })).toThrow(/archived with forget/);
 
     const row = getDatabase().prepare('SELECT status FROM entities WHERE name = ?')
@@ -266,11 +266,11 @@ describe('remember({ replace: true }) on a forgotten memory — #324 C4', () => 
     const obs = getDatabase().prepare(
       'SELECT content FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = ?',
     ).all('forgotten_thing') as { content: string }[];
-    expect(obs.map((o) => o.content)).toEqual(['the original text']);
+    expect(obs.map((o) => o.content)).toEqual(['the original text', 'Why: kept as written; revisit if it is rewritten']);
   });
 
   it('the recovery path in the message is real: plain remember brings it back, then replace works', () => {
-    remember({ name: 'recovered_thing', type: 'decision', observations: ['original'] });
+    remember({ name: 'recovered_thing', type: 'decision', why: 'kept as written; revisit if it is rewritten', observations: ['original'] });
     forget({ name: 'recovered_thing' });
 
     // No `replace`: createEntity reactivates an archived row (knowledge-graph.ts).
@@ -278,20 +278,20 @@ describe('remember({ replace: true }) on a forgotten memory — #324 C4', () => 
     expect((getDatabase().prepare('SELECT status FROM entities WHERE name = ?')
       .get('recovered_thing') as { status: string }).status).toBe('active');
 
-    const replaced = remember({ name: 'recovered_thing', type: 'decision', observations: ['rewritten'], replace: true });
+    const replaced = remember({ name: 'recovered_thing', type: 'decision', why: 'kept as written; revisit if it is rewritten', observations: ['rewritten'], replace: true });
     expect(replaced.replaced).toBe(true);
   });
 
   it('a memory that was never archived still replaces', () => {
-    remember({ name: 'live_thing', type: 'decision', observations: ['before'] });
-    expect(remember({ name: 'live_thing', type: 'decision', observations: ['after'], replace: true }).replaced).toBe(true);
+    remember({ name: 'live_thing', type: 'decision', why: 'kept as written; revisit if it is rewritten', observations: ['before'] });
+    expect(remember({ name: 'live_thing', type: 'decision', why: 'kept as written; revisit if it is rewritten', observations: ['after'], replace: true }).replaced).toBe(true);
   });
 });
 
 describe('remember({ replace: true }) rewrites the type too — #324 C5', () => {
   it('the stored type follows the replacement, and the receipt reports what was stored', () => {
     remember({ name: 'retyped_thing', type: 'feedback', observations: ['before'] });
-    const r = remember({ name: 'retyped_thing', type: 'decision', observations: ['after'], replace: true });
+    const r = remember({ name: 'retyped_thing', type: 'decision', why: 'kept as written; revisit if it is rewritten', observations: ['after'], replace: true });
     expect(r.replaced).toBe(true);
     expect(r.type, 'the receipt echoed the old type').toBe('decision');
     expect((getDatabase().prepare('SELECT type FROM entities WHERE name = ?')
@@ -394,13 +394,13 @@ describe('remember() reports the stored title — #324 T3', () => {
 // and the value the row holds, not what a surface prints.
 describe('remember({ name, replace: true }) inherits the stored type — #333 T4', () => {
   it('the documented correction call omits `type` and the memory keeps the one it has', () => {
-    remember({ name: 'pkce_decision', type: 'decision', title: 'PKCE', observations: ['before'] });
+    remember({ name: 'pkce_decision', type: 'decision', why: 'kept as written; revisit if it is rewritten', title: 'PKCE', observations: ['before'] });
 
     // The transport must let it through: this is the call the instructions
     // and API_REFERENCE tell a caller to make.
     expect(RememberSchema.safeParse({ name: 'pkce_decision', replace: true, title: 'Use PKCE' }).success).toBe(true);
 
-    const r = remember({ name: 'pkce_decision', replace: true, title: 'Use PKCE', observations: ['after'] });
+    const r = remember({ name: 'pkce_decision', replace: true, why: 'kept as written; revisit if it is rewritten', title: 'Use PKCE', observations: ['after'] });
     expect(r.replaced).toBe(true);
     expect(r.type, 'the receipt reported a type the caller never passed').toBe('decision');
     const row = getDatabase().prepare('SELECT type, title FROM entities WHERE name = ?')
@@ -412,7 +412,7 @@ describe('remember({ name, replace: true }) inherits the stored type — #333 T4
 
   it('passing `type` still reclassifies — inheriting an omitted type did not disable C5', () => {
     remember({ name: 'still_retypes', type: 'feedback', observations: ['before'] });
-    const r = remember({ name: 'still_retypes', type: 'decision', observations: ['after'], replace: true });
+    const r = remember({ name: 'still_retypes', type: 'decision', why: 'kept as written; revisit if it is rewritten', observations: ['after'], replace: true });
     expect(r.type).toBe('decision');
     expect((getDatabase().prepare('SELECT type FROM entities WHERE name = ?')
       .get('still_retypes') as { type: string }).type).toBe('decision');
@@ -430,7 +430,7 @@ describe('remember({ name, replace: true }) inherits the stored type — #333 T4
     // `type = ''` onto an existing row through the retype branch; the
     // transports' `z.string().min(1)` never lets one through, so core is the
     // only place this can be pinned.
-    remember({ name: 'blank_type_target', type: 'decision', observations: ['before'] });
+    remember({ name: 'blank_type_target', type: 'decision', why: 'kept as written; revisit if it is rewritten', observations: ['before'] });
     expect(() => remember({ name: 'blank_type_target', type: '', replace: true, observations: ['after'] }))
       .toThrow(/remember needs `name` and `type`/);
     expect((getDatabase().prepare('SELECT type FROM entities WHERE name = ?')

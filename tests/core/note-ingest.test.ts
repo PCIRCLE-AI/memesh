@@ -251,12 +251,12 @@ describe('ingestNoteDirectory', () => {
   });
 
   it('never overwrites a memory that did not come from a note file', () => {
-    remember({ name: 'shared_name', type: 'decision', observations: ['hand-written'] });
+    remember({ name: 'shared_name', type: 'decision', why: 'written by hand, not from a file; revisit if it moves into notes', observations: ['hand-written'] });
     const dir = makeDir({ 'a.md': note('shared_name', 'From file', 'decision', 'file text') });
     const r = ingestNoteDirectory({ dir });
     expect(r.created).toEqual([]);
     expect(r.skipped[0].reason).toMatch(/did not come from a note file/);
-    expect(kg().getEntity('shared_name')!.observations).toEqual(['hand-written']);
+    expect(kg().getEntity('shared_name')!.observations).toEqual(['hand-written', 'Why: written by hand, not from a file; revisit if it moves into notes']);
   });
 
   it('does not undo a forget', () => {

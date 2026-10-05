@@ -77,7 +77,7 @@ describe('seedDemo', () => {
     const { remember } = await import('../../src/core/operations.js');
     // Seed demo first, then add a real entity, then reset.
     seedDemo(db);
-    remember({ name: 'real-memory', type: 'decision', observations: ['I added this manually'] });
+    remember({ name: 'real-memory', type: 'decision', why: 'a manual entry; revisit if the demo is reseeded', observations: ['I added this manually'] });
 
     const result = seedDemo(db, { reset: true });
     expect(result.removed).toBe(30);
@@ -173,7 +173,7 @@ describe('seedDemo', () => {
         const { remember, importMemories } = await import('../../src/core/operations.js');
         const { seedDemo } = await import('../../src/core/demo.js');
         const name = 'real-memory-targeted-by-demo-bundle';
-        remember({ name, type: 'decision', observations: ['mine'] });
+        remember({ name, type: 'decision', why: 'a manual entry; revisit if the demo is reseeded', observations: ['mine'] });
         const data = {
           version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
           entities: [{
@@ -219,7 +219,7 @@ describe('seedDemo', () => {
       const { remember, importMemories } = await import('../../src/core/operations.js');
       const { KnowledgeGraph } = await import('../../src/knowledge-graph.js');
       const name = 'genuinely-demo-entity';
-      remember({ name, type: 'decision', observations: ['seed text'] });
+      remember({ name, type: 'decision', why: 'a manual entry; revisit if the demo is reseeded', observations: ['seed text'] });
       new KnowledgeGraph(db).updateEntityMetadata(name, (meta) => ({ ...meta, demo: 1 }));
 
       const data = {

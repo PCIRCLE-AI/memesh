@@ -653,14 +653,14 @@ describe('source_host provenance', () => {
   it('stamps the MCP client name the transport hands over', async () => {
     // The third argument is the client's self-declared initialize name,
     // threaded by src/mcp/server.ts — NOT a tool parameter the model can set.
-    await handleTool('remember', { name: 'prov-mcp', type: 'decision', observations: ['from codex'] }, 'codex', undefined, BOUND);
+    await handleTool('remember', { name: 'prov-mcp', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['from codex'] }, 'codex', undefined, BOUND);
     const recall = await handleTool('recall', { cross_project: true, query: 'prov-mcp' });
     const hit = recallEntities(recall).find((e: any) => e.name === 'prov-mcp');
     expect(hit.metadata.provenance.source_host).toBe('codex');
   });
 
   it('records no source_host when the transport does not know one', async () => {
-    await handleTool('remember', { name: 'prov-anon', type: 'decision', observations: ['origin unknown'] }, undefined, undefined, BOUND);
+    await handleTool('remember', { name: 'prov-anon', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['origin unknown'] }, undefined, undefined, BOUND);
     const recall = await handleTool('recall', { cross_project: true, query: 'prov-anon' });
     const hit = recallEntities(recall).find((e: any) => e.name === 'prov-anon');
     expect(hit.metadata.provenance.source_host).toBeUndefined();
@@ -672,7 +672,7 @@ describe('source_host provenance', () => {
     // If this ever starts being accepted (a .passthrough() refactor),
     // provenance is no longer provenance.
     const result = await handleTool('remember', {
-      name: 'prov-spoof', type: 'decision', observations: ['spoof attempt'],
+      name: 'prov-spoof', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['spoof attempt'],
       sourceHost: 'gemini-cli',
     } as Record<string, unknown>, 'codex');
     expect(JSON.stringify(result)).toMatch(/sourceHost|unrecognized/i);
@@ -684,7 +684,7 @@ describe('source_host provenance', () => {
 
   it('a smuggled sourceHost with NO transport name is rejected the same way', async () => {
     const result = await handleTool('remember', {
-      name: 'prov-anon-spoof', type: 'decision', observations: ['anon spoof'],
+      name: 'prov-anon-spoof', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['anon spoof'],
       sourceHost: 'gemini-cli',
     } as Record<string, unknown>);
     expect(JSON.stringify(result)).toMatch(/sourceHost|unrecognized/i);
@@ -697,7 +697,7 @@ describe('source_host provenance', () => {
     // INSERT OR IGNORE and the CHANGELOG promises. Before the fix this
     // returned 'codex': buildLocalMetadata spreads overrides over the stored
     // provenance, so every cross-host append rewrote the attribution.
-    await handleTool('remember', { name: 'prov-first', type: 'decision', observations: ['created here'] }, 'claude-code', undefined, BOUND);
+    await handleTool('remember', { name: 'prov-first', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['created here'] }, 'claude-code', undefined, BOUND);
     await handleTool('remember', { name: 'prov-first', type: 'decision', observations: ['appended elsewhere'] }, 'codex', undefined, BOUND);
     const recall = await handleTool('recall', { cross_project: true, query: 'prov-first' });
     const hit = recallEntities(recall).find((e: any) => e.name === 'prov-first');
@@ -775,6 +775,7 @@ describe('remember', () => {
     const result = await handleTool('remember', {
       name: 'auth-decision',
       type: 'decision',
+      why: 'a fixed choice for this case; revisit if it changes',
     }, undefined, undefined, BOUND);
 
     expect(result.isError).toBeUndefined();
@@ -791,6 +792,7 @@ describe('remember', () => {
     const result = await handleTool('remember', {
       name: 'auth-decision',
       type: 'decision',
+      why: 'a fixed choice for this case; revisit if it changes',
       tags: ['project:myapp', 'type:decision'],
       relations: [{ to: 'jwt-pattern', type: 'implements' }],
     });
@@ -861,9 +863,9 @@ describe('remember', () => {
   });
 
   it('auto-archives entity when superseded by new remember', async () => {
-    await handleTool('remember', { name: 'auth-v2', type: 'decision', observations: ['Use JWT'] }, undefined, undefined, BOUND);
+    await handleTool('remember', { name: 'auth-v2', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['Use JWT'] }, undefined, undefined, BOUND);
     await handleTool('remember', {
-      name: 'auth-v3', type: 'decision', observations: ['Use OAuth 2.0'],
+      name: 'auth-v3', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['Use OAuth 2.0'],
       relations: [{ to: 'auth-v2', type: 'supersedes' }],
     }, undefined, undefined, BOUND);
 
@@ -891,6 +893,7 @@ describe('remember', () => {
     const result = await handleTool('remember', {
       name: 'auth-decision',
       type: 'decision',
+      why: 'a fixed choice for this case; revisit if it changes',
       relations: [{ to: 'nonexistent-entity', type: 'related-to' }],
     }, undefined, undefined, BOUND);
 
@@ -915,6 +918,7 @@ describe('recall', () => {
     await handleTool('remember', {
       name: 'db-decision',
       type: 'decision',
+      why: 'a fixed choice for this case; revisit if it changes',
       observations: ['Use PostgreSQL for persistence'],
       tags: ['project:other'],
     });
@@ -1263,7 +1267,7 @@ describe('forget', () => {
     // fix: status became `archived`, both observations still there, and the
     // entity dropped out of recall and out of session-start injection.
     await handleTool('remember', {
-      name: 'keeper', type: 'decision', observations: ['fact A', 'fact B'],
+      name: 'keeper', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['fact A', 'fact B'],
     }, undefined, undefined, BOUND);
 
     const result = await handleTool('forget', { name: 'keeper', observations: 'fact A' });
@@ -1273,12 +1277,13 @@ describe('forget', () => {
     const recall = await handleTool('recall', { cross_project: true, query: 'fact' });
     const hit = recallEntities(recall).find((e: any) => e.name === 'keeper');
     expect(hit).toBeTruthy();
-    expect(hit.observations).toHaveLength(2);
+    // fact A, fact B and the stored `Why: …`.
+    expect(hit.observations).toHaveLength(3);
   });
 
   it('archives an entity instead of deleting it', async () => {
     await handleTool('remember', {
-      name: 'old-design', type: 'decision', observations: ['Use REST'],
+      name: 'old-design', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['Use REST'],
     }, undefined, undefined, BOUND);
 
     const result = await handleTool('forget', { name: 'old-design' });
@@ -1299,13 +1304,14 @@ describe('forget', () => {
 
   it('removes a specific observation without archiving', async () => {
     await handleTool('remember', {
-      name: 'design', type: 'decision', observations: ['Use JWT', 'Use RS256'],
+      name: 'design', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['Use JWT', 'Use RS256'],
     }, undefined, undefined, BOUND);
 
     const result = await handleTool('forget', { name: 'design', observation: 'Use JWT' });
     const data = JSON.parse(result.content[0].text);
     expect(data.observation_removed).toBe(true);
-    expect(data.remaining_observations).toBe(1);
+    // 'Use RS256' and the stored `Why: …`.
+    expect(data.remaining_observations).toBe(2);
 
     // Entity still active and searchable
     const recall = await handleTool('recall', { cross_project: true, query: 'RS256' });
@@ -1324,7 +1330,7 @@ describe('forget', () => {
 
   it('MCP forget reports isError for a mistyped observation, same as a missing entity (M-17)', async () => {
     await handleTool('remember', {
-      name: 'typo-target', type: 'decision', observations: ['the real text'],
+      name: 'typo-target', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['the real text'],
     }, undefined, undefined, BOUND);
     const result = await handleTool('forget', { name: 'typo-target', observation: 'text that is not there' });
     expect(result.isError, 'a mistyped observation reported success').toBe(true);

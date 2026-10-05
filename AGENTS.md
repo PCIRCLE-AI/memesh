@@ -115,7 +115,7 @@ host is recallable from all of them. Not installed yet? Follow
 | Tool | Purpose |
 |---|---|
 | `work_package` | Prepare one bounded untrusted digest (calendar-selected) or transcript package from the newest Claude Code session under the client's single matching MCP workspace root; submit one strictly validated result for pending human review or defer without durable change. Submission retains bounded redacted source turns for comparison; agents cannot apply or reject, and hashes identify freshness and workspace scope rather than authentication. |
-| `remember` | Store knowledge as an entity with observations, tags, and relations; or pass only `note` (free text) and the title, observations and name are derived; `replace: true` rewrites a named memory, keeping the old version as history |
+| `remember` | Store knowledge as an entity with observations, tags, and relations; or pass only `note` (free text) and the title, observations and name are derived; `replace: true` rewrites a named memory, keeping the old version as history; a new decision needs `why` (its reason and what would make it stop holding) |
 | `recall` | Search stored knowledge: one or two words match any of them; three or more must all match, falling back to any-word matching only when nothing matches all; ranked by relevance. Empty query lists recent |
 | `forget` | Archive an entity (soft-delete), or remove one observation via the `observation` parameter |
 | `export` | Export memories as portable JSON for sharing or backup |
@@ -147,7 +147,12 @@ host is recallable from all of them. Not installed yet? Follow
   scope that this project's sessions never see.
 - **A mistake with a known cause and fix is a `learn` call** (it creates a
   `lesson_learned`, which later sessions show as a lesson). A choice between
-  options is a `remember` with type `decision`.
+  options is a `remember` with type `decision` and a `why`: the reason for it
+  AND what would make it stop holding ("too heavy to deploy for one user;
+  revisit if we add a hosted tier"). A new decision without one is refused.
+  Briefings show each decision with its reason (or "no reason recorded"), and
+  one nobody has read or added to for 30 days as "unconfirmed N days: re-check
+  before relying" — recall it to check it still holds before you follow it.
 - **Reuse a stable `name` to append.** Calling `remember` with an existing
   name appends observations and dedupes tags. A fresh name for every update
   creates duplicates that recall must wade through. A name another project

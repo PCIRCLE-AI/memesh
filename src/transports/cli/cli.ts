@@ -357,7 +357,7 @@ program.hook('preAction', (_thisCommand, actionCommand) => {
 
 // --- remember ---
 // Two forms:
-//   1. Explicit:  memesh remember --name "auth-decision" --type "decision" --obs "OAuth 2.0"
+//   1. Explicit:  memesh remember --name "auth-decision" --type "decision" --obs "OAuth 2.0" --why "…"
 //   2. Quick:     memesh remember "OAuth 2.0 with PKCE"
 // The quick form is `remember({ note })` (#324): the server derives the title
 // (first line), observations (the remaining paragraphs) and a name from the
@@ -374,6 +374,7 @@ program
   .option('--type <type>', 'Entity type (omit it with --replace to keep the type the memory already has)')
   .option('--title <title>', 'Short human-readable label shown as the headline (name stays the stable machine key)')
   .option('--obs <observations...>', 'Observations (space-separated)')
+  .option('--why <text>', 'For a decision: why it was made and what would make it stop holding (stored as "Why: …"; required to create a decision)')
   .option('--tags <tags...>', 'Tags (space-separated)')
   .option('--replace', 'Rewrite the memory named by --name instead of appending; its previous version is kept in metadata.replaced_history')
   .option('--namespace <namespace>', 'Namespace: personal, team, or global. On a NEW memory this places it (default personal); on one that already exists it MOVES it out of the scope it is in — omit the flag to leave it alone.')
@@ -399,7 +400,7 @@ program
         // The same limits MCP and HTTP callers get from RememberSchema
         // (length, observation count, blank text) — the CLI calls remember()
         // directly, so it checks here rather than disagreeing with them.
-        const check = RememberSchema.safeParse({ note, ...(opts.type ? { type: opts.type } : {}) });
+        const check = RememberSchema.safeParse({ note, ...(opts.type ? { type: opts.type } : {}), ...(opts.why !== undefined ? { why: opts.why } : {}) });
         if (!check.success) {
           console.error(`Error: ${check.error.issues.map((i) => i.message).join('; ')}`);
           process.exit(1);
@@ -442,7 +443,7 @@ program
     if (note === undefined && (!opts.name || (!opts.type && opts.replace !== true))) {
       console.error(
         'Error: provide --name and --type, OR --name with --replace to correct a memory that exists, OR pass quick-capture text as a positional arg.\n' +
-        '  memesh remember --name "auth" --type "decision" --obs "Use OAuth 2.0"\n' +
+        '  memesh remember --name "auth" --type "decision" --obs "Use OAuth 2.0" --why "the IdP only speaks OAuth; revisit if we self-host auth"\n' +
         '  memesh remember --name "auth" --replace --obs "Use OAuth 2.0 with PKCE"\n' +
         '  memesh remember "Use OAuth 2.0 with PKCE"'
       );
@@ -484,6 +485,7 @@ program
         type: opts.type,
         ...(opts.title !== undefined ? { title: opts.title } : {}),
         ...(opts.obs?.length ? { observations: opts.obs } : {}),
+        ...(opts.why !== undefined ? { why: opts.why } : {}),
         ...(opts.tags?.length ? { tags: opts.tags } : {}),
         ...(opts.replace === true ? { replace: true } : {}),
         ...(relations.length > 0 ? { relations } : {}),
@@ -506,6 +508,7 @@ program
           ...(opts.tags?.some((tag: string) => tag.startsWith('project:')) ? { currentProject: getProjectName() } : {}),
           namespace: opts.namespace,
           relations: relations.length > 0 ? relations : undefined,
+          why: opts.why,
           sourceHost: 'cli',
           // `note` derives title and observations; passing either alongside it
           // — even an empty array — is what remember() refuses.

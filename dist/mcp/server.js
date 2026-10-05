@@ -25682,6 +25682,9 @@ var WORK_LAYER_TYPES = /* @__PURE__ */ new Set([
   "plan",
   "task-state"
 ]);
+var DECISION_TYPES = /* @__PURE__ */ new Set(["decision", "architecture_decision", "design_decision"]);
+var WHY_PREFIX = "Why: ";
+var UNCONFIRMED_DECISION_DAYS = 30;
 var DECISION_LAYER_TYPES = [...WORK_LAYER_TYPES].filter((type) => !LESSON_TYPES.has(type) && type !== "task-state");
 var EVIDENCE_LAYER_TYPES = /* @__PURE__ */ new Set([
   "commit",
@@ -25718,8 +25721,11 @@ function topologyLine(entity, maxChars) {
   const snippet = entity.snippet?.trim();
   const text = (title || snippet || `${entity.type} memory`).replace(/~[0-9a-f]{32}\b/g, "");
   const handle = Number.isInteger(entity.id) && entity.id > 0 ? ` [mem:${entity.id}]` : "";
-  const room = Math.max(8, maxChars - handle.length);
-  return stripControlChars(`- [${entity.type}] ${clip(text, room)}${handle}`);
+  const unconfirmed = entity.unconfirmedDays ? ` (unconfirmed ${entity.unconfirmedDays} days: re-check before relying)` : "";
+  const why = entity.why === void 0 ? "" : entity.why ? ` \u2014 Why: ${entity.why}` : "";
+  const noReason = entity.why === null ? " (no reason recorded)" : "";
+  const room = Math.max(8, maxChars - handle.length - unconfirmed.length - noReason.length);
+  return stripControlChars(`- [${entity.type}] ${clip(`${text}${why}`, room)}${noReason}${unconfirmed}${handle}`);
 }
 function clip(text, maxChars) {
   const flat2 = text.replace(/\s+/g, " ").trim();
@@ -28787,6 +28793,7 @@ function shownEntity(entity) {
   };
 }
 function resolveRememberInput(input) {
+  const why = input.why !== void 0 && input.why.trim() !== "" ? [`${WHY_PREFIX}${input.why.trim()}`] : [];
   if (input.note === void 0) {
     if (!input.name)
       throw new Error("remember needs `name` and `type`, or `note`");
@@ -28797,7 +28804,7 @@ function resolveRememberInput(input) {
     return {
       args: {
         ...input,
-        ...redactTitleAndObservations(typeof input.title === "string" ? input.title : void 0, input.observations)
+        ...redactTitleAndObservations(typeof input.title === "string" ? input.title : void 0, why.length > 0 ? [...input.observations ?? [], ...why] : input.observations)
       },
       typeGiven: input.type !== void 0
     };
@@ -28816,8 +28823,7 @@ function resolveRememberInput(input) {
       ...input,
       name: input.name ?? derived.name,
       type: input.type ?? NOTE_DEFAULT_TYPE,
-      title: derived.title,
-      observations: derived.observations
+      ...why.length > 0 ? redactTitleAndObservations(derived.title, [...derived.observations, ...why]) : { title: derived.title, observations: derived.observations }
     },
     derived,
     typeGiven: input.type !== void 0
@@ -28860,6 +28866,9 @@ function rememberInTransaction(args, derived, typeGiven, db2, kg) {
   const entityType = args.type !== void 0 ? canonicalEntityType(args.type) : existing?.type;
   if (entityType === void 0) {
     throw new Error(`\`replace\` on "${args.name}": there is no memory named "${args.name}" to inherit a type from, so this call would create one with no type \u2014 pass \`type\` to create it.`);
+  }
+  if (DECISION_TYPES.has(entityType) && (!existing || args.replace) && args.trustOverride !== "untrusted" && !(args.observations ?? []).some((o) => o.startsWith(WHY_PREFIX))) {
+    throw new Error(`MeMesh did not store this ${entityType}: a ${entityType} needs \`why\` \u2014 the reason for it and what would make it stop holding (for example: "Postgres is too heavy to deploy for one user; revisit if we add a hosted tier"). Pass \`why\`, or an observation that starts with "Why: ".`);
   }
   let replacedVersion;
   let retypedTo;
@@ -30754,22 +30763,26 @@ function readSnippets(db2, ids) {
   const shown = (content) => redactMemoryText(content).slice(0, SNIPPET_FETCH_CHARS).replace(/\s+/g, " ").trim() || null;
   for (const row of rows) {
     const content = String(row.content ?? "");
-    const entry = snippets.get(row.entity_id) ?? { first: null, fix: null };
+    const entry = snippets.get(row.entity_id) ?? { first: null, fix: null, why: null };
     if (entry.first === null)
       entry.first = shown(content);
     if (content.startsWith("Fix: "))
       entry.fix = shown(content);
+    if (content.startsWith(WHY_PREFIX))
+      entry.why = shown(content.slice(WHY_PREFIX.length));
     snippets.set(row.entity_id, entry);
   }
   return snippets;
 }
-function toTopologyEntity(row, snippets) {
+function toTopologyEntity(row, snippets, now = Date.now()) {
   const signal = parseMetadata(row.metadata)?.signal_score;
   const snippet = snippets.get(row.id);
-  const [title, first, fix] = redactShownTogether([
+  const decision = row.type !== null && DECISION_TYPES.has(row.type);
+  const [title, first, fix, why] = redactShownTogether([
     row.title ?? null,
     snippet?.first ?? null,
-    row.type && LESSON_TYPE_LIST.includes(row.type) ? snippet?.fix ?? null : null
+    row.type && LESSON_TYPE_LIST.includes(row.type) ? snippet?.fix ?? null : null,
+    decision ? snippet?.why ?? null : null
   ]);
   const background = title || first;
   const after = background === fix ? null : background;
@@ -30780,8 +30793,21 @@ function toTopologyEntity(row, snippets) {
     title: fix ? after ? `${fix} \u2014 ${after}` : fix : title,
     snippet: first,
     signalScore: typeof signal === "number" ? signal : null,
-    recency: row.recency ?? null
+    recency: row.recency ?? null,
+    ...decision ? { why, unconfirmedDays: unconfirmedDays(row, now) } : {}
   };
+}
+function epochOf(at) {
+  if (!at)
+    return NaN;
+  return Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(at) ? at : `${at.replace(" ", "T")}Z`);
+}
+function unconfirmedDays(row, now) {
+  const seen = Math.max(...[epochOf(row.last_accessed_at), epochOf(row.recency)].filter((t) => !Number.isNaN(t)));
+  if (!Number.isFinite(seen))
+    return null;
+  const days = Math.floor((now - seen) / 864e5);
+  return days >= UNCONFIRMED_DECISION_DAYS ? days : null;
 }
 function readIndexCandidates(db2, projectName2) {
   const cols = entityColumns(db2);
@@ -31801,6 +31827,7 @@ var rememberShape = {
   type: external_exports.string().min(1).max(100).optional(),
   title: titleField,
   observations: external_exports.array(observationField).max(100).optional(),
+  why: observationField.optional(),
   note: external_exports.string().max(NOTE_MAX_CHARS).optional(),
   replace: external_exports.boolean().optional(),
   tags: external_exports.array(external_exports.string().max(255)).max(50).optional(),
@@ -33262,7 +33289,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "remember",
-    description: 'Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions, patterns, lessons learned, and important context. An omitted namespace keeps an existing memory in its current namespace; a "supersedes" relation archives its target, while "contradicts" marks a conflict. Quickest form: pass only `note` (free text) and the server derives title, observations and name; the response echoes what it derived. To correct a memory, call again with its `name` and `replace: true` \u2014 the memory keeps the `type` it has unless you pass a different one \u2014 and the old content moves to metadata.replaced_history instead of staying next to the fix.',
+    description: 'Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions (with `why`), patterns, lessons learned, and important context. An omitted namespace keeps an existing memory in its current namespace; a "supersedes" relation archives its target, while "contradicts" marks a conflict. Quickest form: pass only `note` (free text) and the server derives title, observations and name; the response echoes what it derived. To correct a memory, call again with its `name` and `replace: true` \u2014 the memory keeps the `type` it has unless you pass a different one \u2014 and the old content moves to metadata.replaced_history instead of staying next to the fix.',
     inputSchema: {
       type: "object",
       properties: {
@@ -33290,6 +33317,10 @@ var TOOL_DEFINITIONS = [
           type: "array",
           items: { type: "string" },
           description: "Key facts or observations about this entity"
+        },
+        why: {
+          type: "string",
+          description: 'For a decision: why it was made AND what would make it stop holding (e.g. "Postgres is too heavy to deploy for one user; revisit if we add a hosted tier"). Stored as the observation "Why: \u2026" and shown next to the decision wherever it is recalled or briefed. Required to create or `replace` a memory of type decision, architecture_decision or design_decision, unless an observation already starts with "Why: ".'
         },
         tags: {
           type: "array",

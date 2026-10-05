@@ -73,6 +73,21 @@ export const WORK_LAYER_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * The types that record a choice. A choice is only safe to follow while the
+ * reason for it still holds, so a new one is stored with `Why: ` (the reason
+ * and what would make it stop holding) and every reader shows that reason
+ * next to it — a decision kept without its condition was once read as a
+ * standing ban long after the reason for it had gone.
+ */
+export const DECISION_TYPES: ReadonlySet<string> = new Set(['decision', 'architecture_decision', 'design_decision']);
+
+/** The observation prefix that carries a decision's reason. */
+export const WHY_PREFIX = 'Why: ';
+
+/** Days without a read or a new observation after which a decision's line asks for a re-check: the decay threshold. */
+export const UNCONFIRMED_DECISION_DAYS = 30;
+
+/**
  * The "Decisions and direction" family: the work layer minus lessons and the
  * task state. These are what a new session most needs and what mechanical
  * capture (commits) must never crowd out, so both readers select them first,
@@ -166,6 +181,13 @@ export interface TopologyEntity {
   /** Belongs to no project (a preference, a general lesson): shown to every
    *  project's sessions under its own heading, never as this project's. */
   noProject?: boolean;
+  /** A decision's latest `Why: ` observation, without the prefix. `null`:
+   *  the decision has none and its line says so. `undefined`: not read (the
+   *  dashboard's rows), and the line is unchanged. */
+  why?: string | null;
+  /** Whole days since a decision was last read or added to, when that is
+   *  UNCONFIRMED_DECISION_DAYS or more; its line asks for a re-check. */
+  unconfirmedDays?: number | null;
 }
 
 /**
@@ -205,8 +227,15 @@ export function topologyLine(entity: TopologyEntity, maxChars: number): string {
   // handle is budgeted like any other character: the text yields the
   // space; the handle is never cut in half.
   const handle = Number.isInteger(entity.id) && (entity.id as number) > 0 ? ` [mem:${entity.id}]` : '';
-  const room = Math.max(8, maxChars - handle.length);
-  return stripControlChars(`- [${entity.type}] ${clip(text, room)}${handle}`);
+  // A decision is shown with its reason, or with the fact that it has none,
+  // and with how long nobody has confirmed it: the conclusion alone reads as
+  // a rule that holds forever. The markers are budgeted like the handle and
+  // never cut; the reason yields space like the title.
+  const unconfirmed = entity.unconfirmedDays ? ` (unconfirmed ${entity.unconfirmedDays} days: re-check before relying)` : '';
+  const why = entity.why === undefined ? '' : entity.why ? ` — Why: ${entity.why}` : '';
+  const noReason = entity.why === null ? ' (no reason recorded)' : '';
+  const room = Math.max(8, maxChars - handle.length - unconfirmed.length - noReason.length);
+  return stripControlChars(`- [${entity.type}] ${clip(`${text}${why}`, room)}${noReason}${unconfirmed}${handle}`);
 }
 
 /**

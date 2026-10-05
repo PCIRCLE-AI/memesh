@@ -4,6 +4,11 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- A decision now keeps the reason it was made. `remember` takes `why` (CLI `--why`): the reason for the decision and what would make it stop holding. It is stored as the observation `Why: …`. Creating a memory of type `decision`, `architecture_decision` or `design_decision` without it — or rewriting one with `replace` — is refused, with a message that names both halves; adding to an existing decision does not need it, and a note file, an `import` or an accepted dream proposal is still stored. Before, a decision could be stored as a bare conclusion, and the briefing showed only its title, so a later session could not tell whether the reason behind it still applied.
+- The briefing and the session-start block show each decision with its latest `Why:` after the title, or `(no reason recorded)` when it has none, and a decision that nobody has recalled or added to for 30 days with `(unconfirmed N days: re-check before relying)`. Recalling it clears that note. The Hermes and OpenClaw extensions pass `why` through, and OpenClaw's `memory_store` now reports the server's reason when a write is refused instead of only the HTTP status.
+
 ### Fixed
 
 - Redacting text that holds long runs of `eyJ` without a complete JWT (an error message or log pasted into a memory, for example) no longer takes tens of seconds: 300 KB took about 45 seconds and now takes a few milliseconds, so a hook that redacts such text, or the session start that shows it, stays within its time limit. What is masked is unchanged (#567).

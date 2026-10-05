@@ -2,7 +2,7 @@ import { redactMemoryText, redactShownTogether } from './paths.js';
 import { rankEntities } from './scoring.js';
 import { SESSION_HANDOFF_TYPE, sessionHandoffName } from './session-handoff.js';
 import { INDEX_CANDIDATE_CAP, INDEX_EXCLUDED_TYPES, INDEX_SNIPPET_FETCH_CHARS } from './briefing-index.js';
-import { DECISION_LAYER_TYPES, GLOBAL_TOPOLOGY_LIMIT, LESSON_TYPE_LIST, SNIPPET_FETCH_CHARS, TOPOLOGY_CANDIDATE_CAP, isAutoInjectable, prioritizeDecisions, } from './work-topology.js';
+import { DECISION_LAYER_TYPES, DECISION_TYPES, GLOBAL_TOPOLOGY_LIMIT, LESSON_TYPE_LIST, SNIPPET_FETCH_CHARS, TOPOLOGY_CANDIDATE_CAP, UNCONFIRMED_DECISION_DAYS, WHY_PREFIX, isAutoInjectable, prioritizeDecisions, } from './work-topology.js';
 const LESSON_POOL_LIMIT = 50;
 const LESSON_LIMIT = 5;
 const RECENT_LIMIT = 5;
@@ -146,22 +146,26 @@ export function readSnippets(db, ids) {
     const shown = (content) => redactMemoryText(content).slice(0, SNIPPET_FETCH_CHARS).replace(/\s+/g, ' ').trim() || null;
     for (const row of rows) {
         const content = String(row.content ?? '');
-        const entry = snippets.get(row.entity_id) ?? { first: null, fix: null };
+        const entry = snippets.get(row.entity_id) ?? { first: null, fix: null, why: null };
         if (entry.first === null)
             entry.first = shown(content);
         if (content.startsWith('Fix: '))
             entry.fix = shown(content);
+        if (content.startsWith(WHY_PREFIX))
+            entry.why = shown(content.slice(WHY_PREFIX.length));
         snippets.set(row.entity_id, entry);
     }
     return snippets;
 }
-export function toTopologyEntity(row, snippets) {
+export function toTopologyEntity(row, snippets, now = Date.now()) {
     const signal = parseMetadata(row.metadata)?.signal_score;
     const snippet = snippets.get(row.id);
-    const [title, first, fix] = redactShownTogether([
+    const decision = row.type !== null && DECISION_TYPES.has(row.type);
+    const [title, first, fix, why] = redactShownTogether([
         row.title ?? null,
         snippet?.first ?? null,
         row.type && LESSON_TYPE_LIST.includes(row.type) ? snippet?.fix ?? null : null,
+        decision ? snippet?.why ?? null : null,
     ]);
     const background = title || first;
     const after = background === fix ? null : background;
@@ -173,7 +177,20 @@ export function toTopologyEntity(row, snippets) {
         snippet: first,
         signalScore: typeof signal === 'number' ? signal : null,
         recency: row.recency ?? null,
+        ...(decision ? { why, unconfirmedDays: unconfirmedDays(row, now) } : {}),
     };
+}
+function epochOf(at) {
+    if (!at)
+        return NaN;
+    return Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(at) ? at : `${at.replace(' ', 'T')}Z`);
+}
+function unconfirmedDays(row, now) {
+    const seen = Math.max(...[epochOf(row.last_accessed_at), epochOf(row.recency)].filter((t) => !Number.isNaN(t)));
+    if (!Number.isFinite(seen))
+        return null;
+    const days = Math.floor((now - seen) / 86_400_000);
+    return days >= UNCONFIRMED_DECISION_DAYS ? days : null;
 }
 export function readIndexCandidates(db, projectName) {
     const cols = entityColumns(db);

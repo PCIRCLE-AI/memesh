@@ -160,15 +160,15 @@ describe('recall selectors', () => {
 
 describe('ownership: a write never reaches a memory it does not own', () => {
   it('refuses another project\'s name or supersedes target, by argument or tag, and changes nothing', async () => {
-    await handleTool('remember', { name: 'a-decision', type: 'decision', observations: ['aardvark of A'] }, undefined, undefined, bound('A'));
+    await handleTool('remember', { name: 'a-decision', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['aardvark of A'] }, undefined, undefined, bound('A'));
     const before = rowOf('a-decision');
     const attempts: Array<Record<string, unknown>> = [
-      { name: 'a-decision', type: 'decision', observations: ['bandicoot'], project: 'B' },
-      { name: 'a-decision', type: 'decision', observations: ['bandicoot'], tags: ['project:B'] },
-      { name: 'a-decision', type: 'decision', observations: ['bandicoot'], project: false },
-      { name: 'b-decision', type: 'decision', observations: ['bandicoot'], relations: [{ to: 'a-decision', type: 'supersedes' }], project: 'B' },
-      { name: 'b-decision', type: 'decision', observations: ['bandicoot'], relations: [{ to: 'a-decision', type: 'supersedes' }], tags: ['project:B'] },
-      { name: 'n-decision', type: 'decision', observations: ['bandicoot'], relations: [{ to: 'a-decision', type: 'supersedes' }], project: false },
+      { name: 'a-decision', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['bandicoot'], project: 'B' },
+      { name: 'a-decision', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['bandicoot'], tags: ['project:B'] },
+      { name: 'a-decision', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['bandicoot'], project: false },
+      { name: 'b-decision', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['bandicoot'], relations: [{ to: 'a-decision', type: 'supersedes' }], project: 'B' },
+      { name: 'b-decision', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['bandicoot'], relations: [{ to: 'a-decision', type: 'supersedes' }], tags: ['project:B'] },
+      { name: 'n-decision', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['bandicoot'], relations: [{ to: 'a-decision', type: 'supersedes' }], project: false },
     ];
     for (const args of attempts) {
       const r = await handleTool('remember', args, undefined, undefined, bound('B'));

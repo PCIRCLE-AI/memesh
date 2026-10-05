@@ -38,8 +38,8 @@ interface DemoEntity {
 
 const DEMO_DATA: DemoEntity[] = [
   // Phase 1 — Foundation (~30 days ago)
-  { daysAgo: 30, name: 'auth-decision', type: 'decision', observations: ['Use OAuth 2.0 with PKCE for browser flows', 'Refresh tokens rotated every 90 days'] },
-  { daysAgo: 30, name: 'db-choice', type: 'decision', observations: ['PostgreSQL for relational data', 'Redis for session + cache layer'] },
+  { daysAgo: 30, name: 'auth-decision', type: 'decision', observations: ['Use OAuth 2.0 with PKCE for browser flows', 'Refresh tokens rotated every 90 days', 'Why: the browser client cannot keep a secret; revisit if we ship a server-side web app'] },
+  { daysAgo: 30, name: 'db-choice', type: 'decision', observations: ['PostgreSQL for relational data', 'Redis for session + cache layer', 'Why: orders and invoices are relational and need transactions; revisit if write volume outgrows one primary'] },
   { daysAgo: 29, name: 'api-design', type: 'pattern', observations: ['RESTful API with /v1/ versioning', 'JSON envelope: { success, data | error }'] },
   { daysAgo: 29, name: 'rate-limiting', type: 'pattern', observations: ['Token bucket algorithm with Redis, 100 req/min per API key'] },
   { daysAgo: 28, name: 'testing-strategy', type: 'best_practice', observations: ['vitest with forks pool mode for native modules', 'Real DB in tests; no SQL mocks'] },
@@ -54,7 +54,7 @@ const DEMO_DATA: DemoEntity[] = [
   // Phase 3 — Hardening (~14 days ago)
   { daysAgo: 14, name: 'lesson-billing-config-error', type: 'lesson_learned', observations: ['Error: billing webhook env var not propagated to staging', 'Root cause: secrets manager only synced production tier', 'Fix: extended sync to all tiers, added smoke check in CI', 'Prevention: env-var presence assertion at startup, fail fast'], tags: ['error-pattern:config-error', 'severity:major'] },
   { daysAgo: 13, name: 'bugfix-race-on-double-submit', type: 'bug_fix', observations: ['Symptom: double charges on slow networks', 'Cause: idempotency key derived after request body parse', 'Fix: derive key in middleware before any I/O'] },
-  { daysAgo: 13, name: 'decision-graceful-degradation', type: 'decision', observations: ['Core recall must not depend on a model provider', 'Agent work packages stage optional suggestions for human review'] },
+  { daysAgo: 13, name: 'decision-graceful-degradation', type: 'decision', observations: ['Core recall must not depend on a model provider', 'Agent work packages stage optional suggestions for human review', 'Why: a provider outage must not take memory down with it; holds while recall runs on SQLite alone'] },
   { daysAgo: 12, name: 'arch-recall-pipeline', type: 'architecture', observations: ['FTS5 match order → access-count boost → impact score', 'One authoritative retrieval path keeps provenance understandable'] },
   { daysAgo: 11, name: 'lesson-test-failure-flake', type: 'lesson_learned', observations: ['Error: integration tests passed locally, failed in CI 30% of the time', 'Root cause: tests shared a global temp dir cleared at suite end', 'Fix: per-test mkdtemp + per-test cleanup in afterEach', 'Prevention: assume parallelism; never share mutable state across tests'], tags: ['error-pattern:test-failure', 'severity:major'] },
 
@@ -62,7 +62,7 @@ const DEMO_DATA: DemoEntity[] = [
   { daysAgo: 7, name: 'pattern-noise-filter', type: 'pattern', observations: ['Auto-tag commits + sessions with type-specific labels', 'UI default-hides noise types; dashboard uses signal-first surfacing'] },
   { daysAgo: 7, name: 'bugfix-stale-cache-banner', type: 'bug_fix', observations: ['Symptom: deprecation banner stayed visible after upgrade', 'Cause: cache TTL only refreshed on explicit "check now"', 'Fix: also refresh on session-start when cache is fresh'] },
   { daysAgo: 6, name: 'feature-projects-view', type: 'feature', observations: ['New /v1/projects endpoint extracts distinct project tags', 'Dashboard groups Browse + Lessons by project chip'] },
-  { daysAgo: 5, name: 'decision-precision-engineer-design', type: 'decision', observations: ['Adopt Precision Engineer aesthetic: minimal stroke icons, no decoration', 'Reject Neural Organic and Retro Terminal alternatives — too noisy for data tool'] },
+  { daysAgo: 5, name: 'decision-precision-engineer-design', type: 'decision', observations: ['Adopt Precision Engineer aesthetic: minimal stroke icons, no decoration', 'Reject Neural Organic and Retro Terminal alternatives — too noisy for data tool', 'Why: dense data reads best with no decoration; revisit if user tests show the icons are not recognised'] },
   { daysAgo: 5, name: 'arch-roadmap-derivation', type: 'architecture', observations: ['Phase clusters: ≥3 entities within ≤7 days', 'Anchor entity by type priority: release > architecture > plan > decision'] },
 
   // Phase 5 — Recent (~2 days ago)
@@ -79,7 +79,7 @@ const DEMO_DATA: DemoEntity[] = [
   { daysAgo: 1, name: 'lesson-build-error-tsx-include', type: 'lesson_learned', observations: ['Error: vitest skipped tests/dashboard/*.test.tsx silently', 'Root cause: vitest.config include pattern matched .ts not .tsx', 'Fix: add tests/**/*.test.tsx to include array', 'Prevention: when adding a new file extension, audit every glob in test config'], tags: ['error-pattern:test-failure', 'severity:minor'] },
   { daysAgo: 0, name: 'note-onboarding-tour', type: 'note', observations: ['This entity tree is the demo seed shown when entity_count = 0', 'Run `memesh demo --reset --yes` to remove'] },
   { daysAgo: 0, name: 'best-practice-trust-gating', type: 'best_practice', observations: ['Confidence-bump paths must check metadata.trust before lifting', 'Untrusted sources: importer append/overwrite, auto-learned lessons'] },
-  { daysAgo: 0, name: 'decision-memory-loop-kpi', type: 'decision', observations: ['Replace Health Score gauge with "memories reused this week" hero', 'Vanity metric → value-proof metric'] },
+  { daysAgo: 0, name: 'decision-memory-loop-kpi', type: 'decision', observations: ['Replace Health Score gauge with "memories reused this week" hero', 'Vanity metric → value-proof metric', 'Why: a health score said nothing about whether memory helped; revisit if reuse stops tracking real value'] },
   { daysAgo: 0, name: 'feature-onboarding-banner', type: 'feature', observations: ['Detect entity_count = 0 from /v1/health', 'Show dismissable banner pointing at `memesh demo`'] },
 ];
 

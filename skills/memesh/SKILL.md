@@ -28,7 +28,7 @@ All examples below use CLI. MCP tools accept the same parameters as JSON objects
 | Tool | Purpose |
 |---|---|
 | `work_package` | Prepare one bounded untrusted `digest` (calendar cluster) or `transcript` package from the newest Claude Code session under the client's single matching MCP workspace root; submit exactly one strict result or defer. Submit only stages pending human review and retains bounded redacted source turns for comparison; agents cannot apply or reject. No hidden reasoning, raw transcript, transcript path, API key, LLM, embedding, or vector data is exposed or used; hashes identify freshness and workspace scope rather than authentication. |
-| `remember` | Store knowledge as an entity with observations, tags, and relations; `note` (free text) derives title/observations/name; `replace: true` rewrites a named memory, keeping history |
+| `remember` | Store knowledge as an entity with observations, tags, and relations; `note` (free text) derives title/observations/name; `replace: true` rewrites a named memory, keeping history; a new decision needs `why` |
 | `recall` | Search stored knowledge; empty query lists recent memories |
 | `forget` | Archive an entity or remove one exact observation |
 | `export` | Export memories as portable JSON |
@@ -233,9 +233,15 @@ Creates a `lesson_learned` entity. Lessons are surfaced as **proactive warnings*
 memesh remember \
   --name "db-choice" --type decision \
   --title "SQLite for local-first storage" \
-  --obs "Use SQLite for local-first" "Rejected PostgreSQL due to deployment complexity" \
+  --obs "Use SQLite for local-first" \
+  --why "PostgreSQL is too heavy to deploy for one user; revisit if we add a hosted tier" \
   --tags "project:myapp" "topic:database"
 ```
+`--why` (MCP: `why`) is required for a new decision: the reason AND what would
+make it stop holding. It is stored as `Why: …` and shown next to the decision in
+every briefing, so a later session can tell whether it still applies. A decision
+shown as "unconfirmed N days" has not been read or added to for a month: recall
+it and check the reason still holds before following it.
 Use a **stable name** (`db-choice`, not `db-choice-2026-08-16`): reusing the
 name appends to the same entity instead of scattering duplicates. `--title` is
 the human-readable headline; the name stays the machine key. If this replaces

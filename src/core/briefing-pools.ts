@@ -22,10 +22,13 @@ import { SESSION_HANDOFF_TYPE, sessionHandoffName } from './session-handoff.js';
 import { INDEX_CANDIDATE_CAP, INDEX_EXCLUDED_TYPES, INDEX_SNIPPET_FETCH_CHARS, type IndexCandidate } from './briefing-index.js';
 import {
   DECISION_LAYER_TYPES,
+  DECISION_TYPES,
   GLOBAL_TOPOLOGY_LIMIT,
   LESSON_TYPE_LIST,
   SNIPPET_FETCH_CHARS,
   TOPOLOGY_CANDIDATE_CAP,
+  UNCONFIRMED_DECISION_DAYS,
+  WHY_PREFIX,
   isAutoInjectable,
   prioritizeDecisions,
   type TopologyEntity,
@@ -281,6 +284,8 @@ export function selectBriefingPools(db: MemeshDatabase, projectName: string, opt
 export interface Snippet {
   first: string | null;
   fix: string | null;
+  /** The latest `Why: ` observation, prefix removed. */
+  why?: string | null;
 }
 
 /**
@@ -312,12 +317,14 @@ export function readSnippets(db: MemeshDatabase, ids: readonly number[]): Map<nu
   const shown = (content: string) => redactMemoryText(content).slice(0, SNIPPET_FETCH_CHARS).replace(/\s+/g, ' ').trim() || null;
   for (const row of rows) {
     const content = String(row.content ?? '');
-    const entry = snippets.get(row.entity_id) ?? { first: null, fix: null };
+    const entry = snippets.get(row.entity_id) ?? { first: null, fix: null, why: null };
     // The first NON-EMPTY observation: observations are append-only, so it is
     // the defining statement and later ones are refinements.
     if (entry.first === null) entry.first = shown(content);
     // The LATEST fix: learning the same error again appends a corrected one.
     if (content.startsWith('Fix: ')) entry.fix = shown(content);
+    // The LATEST reason: a decision confirmed again may append a new one.
+    if (content.startsWith(WHY_PREFIX)) entry.why = shown(content.slice(WHY_PREFIX.length));
     snippets.set(row.entity_id, entry);
   }
   return snippets;
@@ -329,17 +336,19 @@ export function readSnippets(db: MemeshDatabase, ids: readonly number[]): Map<nu
  * its budget still says what to do; without it a lesson told an agent only
  * what went wrong.
  */
-export function toTopologyEntity(row: PoolRow, snippets: ReadonlyMap<number, Snippet>): TopologyEntity {
+export function toTopologyEntity(row: PoolRow, snippets: ReadonlyMap<number, Snippet>, now: number = Date.now()): TopologyEntity {
   const signal = parseMetadata(row.metadata)?.signal_score;
   const snippet = snippets.get(row.id);
+  const decision = row.type !== null && DECISION_TYPES.has(row.type);
   // #464: redacted like the index, so a memory that is in both cannot be
   // printed verbatim here and redacted a few lines below. What one line shows
   // is one set: a key split between the title and an observation is masked
   // as a whole.
-  const [title, first, fix] = redactShownTogether([
+  const [title, first, fix, why] = redactShownTogether([
     row.title ?? null,
     snippet?.first ?? null,
     row.type && LESSON_TYPE_LIST.includes(row.type) ? snippet?.fix ?? null : null,
+    decision ? snippet?.why ?? null : null,
   ]);
   // Shown after the fix, unless it IS the fix (a lesson whose only content, or
   // whose title, is its fix), so a line never reads "Fix: X — Fix: X".
@@ -354,7 +363,27 @@ export function toTopologyEntity(row: PoolRow, snippets: ReadonlyMap<number, Sni
     snippet: first,
     signalScore: typeof signal === 'number' ? signal : null,
     recency: row.recency ?? null,
+    ...(decision ? { why, unconfirmedDays: unconfirmedDays(row, now) } : {}),
   };
+}
+
+/** SQLite UTC text ('YYYY-MM-DD HH:MM:SS') or ISO text as epoch ms; NaN when unreadable. */
+function epochOf(at: string | null | undefined): number {
+  if (!at) return NaN;
+  return Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(at) ? at : `${at.replace(' ', 'T')}Z`);
+}
+
+/**
+ * Whole days since a decision was last read (a recall stamps
+ * last_accessed_at) or added to (its newest observation), when that is
+ * UNCONFIRMED_DECISION_DAYS or more; else null. Nothing readable is null too:
+ * no marker is better than a made-up age.
+ */
+function unconfirmedDays(row: PoolRow, now: number): number | null {
+  const seen = Math.max(...[epochOf(row.last_accessed_at), epochOf(row.recency)].filter((t) => !Number.isNaN(t)));
+  if (!Number.isFinite(seen)) return null;
+  const days = Math.floor((now - seen) / 86_400_000);
+  return days >= UNCONFIRMED_DECISION_DAYS ? days : null;
 }
 
 /**
