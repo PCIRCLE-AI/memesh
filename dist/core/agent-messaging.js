@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { agentMessagePayloadStorageBytes, enforceAgentMessageStorageQuota, } from './agent-message-storage.js';
 import { sessionAliasChain } from './agent-message-inbox.js';
+import { sqliteUtcToIso } from './time-utils.js';
 import { AGENT_SCOPE_ID_MAX_LENGTH, agentScopeIdRejection, canonicalAgentScopeId, } from './agent-scope-id.js';
 const MAX_SCOPE_FIELD = AGENT_SCOPE_ID_MAX_LENGTH;
 const MAX_IDEMPOTENCY_KEY = 200;
@@ -236,7 +237,7 @@ export function fetchAgentMessage(db, input) {
         correlation_id: row.correlation_id,
         reply_to: row.reply_to_message_id,
         privacy: parsePrivacy(row.privacy),
-        created_at: row.created_at,
+        created_at: sqliteUtcToIso(row.created_at),
         payload: parseJsonObjectOrValue(row.payload_json),
         provenance: parseJsonObject(row.provenance_json, 'provenance_json'),
     };
@@ -705,7 +706,7 @@ function rowToAckFact(row) {
         actor: row.actor,
         idempotency_key: row.idempotency_key,
         detail: parseJsonObject(row.detail_json, 'detail_json'),
-        created_at: row.created_at,
+        created_at: sqliteUtcToIso(row.created_at),
     };
 }
 function rowToWorkflowFact(row) {
@@ -716,7 +717,7 @@ function rowToWorkflowFact(row) {
         workflow_state: row.workflow_state,
         idempotency_key: row.idempotency_key,
         detail: parseJsonObject(row.detail_json, 'detail_json'),
-        created_at: row.created_at,
+        created_at: sqliteUtcToIso(row.created_at),
     };
 }
 function rowToRetentionFact(row) {
@@ -727,7 +728,7 @@ function rowToRetentionFact(row) {
         retention_state: row.retention_state,
         idempotency_key: row.idempotency_key,
         detail: parseJsonObject(row.detail_json, 'detail_json'),
-        created_at: row.created_at,
+        created_at: sqliteUtcToIso(row.created_at),
     };
 }
 function finishSentMessage(row, options) {
@@ -764,7 +765,7 @@ function rowToSentAgentMessage(row) {
         correlation_id: row.correlation_id,
         reply_to: row.reply_to_message_id,
         privacy: parsePrivacy(row.privacy),
-        created_at: row.created_at,
+        created_at: sqliteUtcToIso(row.created_at),
         provenance: parseJsonObject(row.provenance_json, 'provenance_json'),
     };
 }
@@ -780,7 +781,7 @@ function rowToEventHeader(row) {
         correlation_id: row.correlation_id,
         reply_to: row.reply_to_message_id,
         privacy: parsePrivacy(row.privacy),
-        created_at: row.created_at,
+        created_at: sqliteUtcToIso(row.created_at),
     };
 }
 function rowToReceipt(row) {
@@ -792,7 +793,7 @@ function rowToReceipt(row) {
         recipient: row.recipient,
         actor: row.actor,
         idempotency_key: row.idempotency_key,
-        created_at: row.created_at,
+        created_at: sqliteUtcToIso(row.created_at),
     };
     switch (row.receipt_kind) {
         case 'intake': {

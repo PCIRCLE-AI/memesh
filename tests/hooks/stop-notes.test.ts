@@ -39,7 +39,7 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
 
   afterEach(() => removeTempDir(home));
 
-  function run(env: Record<string, string> = {}, payload: Record<string, unknown> = {}) {
+  function run(env: Record<string, string> = {}, payload: Record<string, unknown> = {}, timeout = 20_000) {
     const childEnv: Record<string, string | undefined> = { ...process.env, HOME: home, USERPROFILE: home, ...env };
     delete childEnv.MEMESH_DB_PATH;
     delete childEnv.MEMESH_DIR;
@@ -47,9 +47,9 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
       input: JSON.stringify({ session_id: sessionId, transcript_path: transcript, cwd: home, hook_event_name: 'Stop', ...payload }),
       env: childEnv,
       encoding: 'utf8',
-      timeout: 20_000,
+      timeout,
     });
-    return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', status: r.status };
+    return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', status: r.status, signal: r.signal };
   }
 
   const at = (msAgo: number) => new Date(Date.now() - msAgo).toISOString();
@@ -168,6 +168,36 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     append(reads(1));
     expect(run().status).toBe(0);
     expect(outcomes('note-ingest').at(-1)).toMatchObject({ outcome: 'skipped', reason: 'no note file changed since the last ingestion' });
+  }, 60_000);
+
+  // #506: the note ingest opened the database with its 30 s lock wait, so a
+  // Stop that ingested a changed note while another process held the write
+  // lock took about 19 s against a 10 s hook limit. It must give up within the
+  // hook's own wait, record an error, and ingest the note on the next Stop.
+  it('#506 a held write lock does not hold the Stop past its 10 s limit, and the note is ingested next time', () => {
+    fs.mkdirSync(memoryDir);
+    fs.writeFileSync(path.join(memoryDir, 'a.md'), '---\nname: hook_note_a\ndescription: Hook alpha\nmetadata:\n  type: decision\n---\n\nalpha body\n');
+    write(reads(1));
+    expect(run().status).toBe(0);
+    fs.writeFileSync(path.join(memoryDir, 'b.md'), '---\nname: hook_note_b\ndescription: Hook beta\nmetadata:\n  type: decision\n---\n\nbeta body\n');
+    append(reads(1));
+
+    const db = new MemeshDatabase(path.join(home, '.memesh', 'knowledge-graph.db'));
+    db.exec('BEGIN IMMEDIATE');
+    let locked;
+    try {
+      locked = run({}, {}, 10_000);
+    } finally {
+      db.exec('ROLLBACK');
+      db.close();
+    }
+    expect(locked.signal, `killed at the hook limit; stderr: ${locked.stderr.slice(0, 300)}`).toBeNull();
+    expect(locked.status).toBe(0);
+    expect(outcomes('note-ingest').at(-1)).toMatchObject({ outcome: 'error' });
+
+    append(reads(1));
+    expect(run().status).toBe(0);
+    expect(outcomes('note-ingest').at(-1)).toMatchObject({ outcome: 'wrote', entity: 'hook_note_b' });
   }, 60_000);
 
   it('a first ingestion of a large memory directory stays bounded to INGEST_MAX_FILES per Stop', () => {

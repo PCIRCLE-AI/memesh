@@ -1256,7 +1256,9 @@ describe('#451 — lesson, mistake and lesson_learned become one type', () => {
     closeDatabase();
   });
 
-  it('a lesson row inserted after the migration stays lesson — the migration runs once, the known case of an older plugin still writing', () => {
+  // #551: an older plugin still running in another session can write the old
+  // type after the one-time pass stamped its marker. The next open renames it.
+  it('a lesson row inserted after the migration is renamed on the next open (#551)', () => {
     seed((db) => {
       insertEntity(db, 'lesson-before-migration', 'lesson');
     });
@@ -1269,10 +1271,32 @@ describe('#451 — lesson, mistake and lesson_learned become one type', () => {
     closeDatabase();
 
     const second = openDatabase(dbPath);
-    expect(typeOf(second, 'lesson-after-migration'), 'the migration is one-shot; it does not rerun on later writes').toBe('lesson');
+    expect(typeOf(second, 'lesson-after-migration')).toBe('lesson_learned');
     expect(typeOf(second, 'lesson-before-migration')).toBe('lesson_learned');
+    expect(second.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(LESSON_TYPE_CANONICAL_KEY)).toEqual({ value: '2' });
     closeDatabase();
+
+    // Nothing left to rename: a further open does not run the pass again.
+    const third = openDatabase(dbPath);
+    expect(third.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(LESSON_TYPE_CANONICAL_KEY)).toEqual({ value: '2' });
+    closeDatabase();
+    expect(runInvariants().stdout).toContain('ok   lesson-family-uses-one-type');
   });
+
+  // Each on its own: a straggler that is only a `mistake`, or only archived,
+  // must start the pass too — not just ride along with an active `lesson`.
+  for (const [name, type, status] of [['mistake-only-straggler', 'mistake', 'active'], ['archived-only-straggler', 'lesson', 'archived']] as const) {
+    it(`a lone ${type} straggler (${status}) written after the migration is renamed on the next open (#551)`, () => {
+      seed(() => { /* empty graph; the open below stamps the marker */ });
+      const first = repaired();
+      insertEntity(first, name, type, [], status);
+      closeDatabase();
+      const second = openDatabase(dbPath);
+      expect(typeOf(second, name)).toBe('lesson_learned');
+      expect(statusOf(second, name)).toBe(status);
+      closeDatabase();
+    });
+  }
 });
 
 /**

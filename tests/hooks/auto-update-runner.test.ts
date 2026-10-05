@@ -12,6 +12,7 @@ import {
   tryAcquireAutoUpdateLock,
 } from '../../scripts/hooks/auto-update-runner.mjs';
 import { spawnAutoUpdate } from '../../scripts/hooks/_shared.js';
+import { writeNodeShim } from '../../scripts/lib/node-shim.mjs';
 
 const runnerPath = path.resolve('scripts/hooks/auto-update-runner.mjs');
 
@@ -53,8 +54,7 @@ function makeFakeNpm(): { env: NodeJS.ProcessEnv; callsPath: string; statePath: 
   fs.mkdirSync(binDir);
   fs.writeFileSync(statePath, '4.7.9');
 
-  const npmPath = path.join(binDir, 'npm');
-  fs.writeFileSync(npmPath, `#!/usr/bin/env node
+  writeNodeShim(binDir, 'npm', `#!/usr/bin/env node
 import fs from 'fs';
 
 const args = process.argv.slice(2);
@@ -85,8 +85,7 @@ if (args[0] === 'ls') {
 
 process.stderr.write('unexpected npm invocation: ' + args.join(' ') + '\\n');
 process.exit(64);
-`);
-  fs.chmodSync(npmPath, 0o755);
+`, 'module');
 
   return {
     callsPath,

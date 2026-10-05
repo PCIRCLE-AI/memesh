@@ -31,6 +31,7 @@ import {
 import { getAgentRouterSocketPath } from '../core/paths.js';
 import { sessionAliasChain } from '../core/agent-message-inbox.js';
 import { jsonStringLiteral } from '../core/work-topology.js';
+import { sqliteUtcToIso } from '../core/time-utils.js';
 
 export type AgentMessageActionInput = z.infer<typeof MessageSchema>;
 
@@ -172,7 +173,7 @@ function nativeAcceptance(row: HostAcceptRow): AgentJsonObject {
     delivery_id: row.delivery_id,
     adapter_kind: row.adapter_kind,
     receipt: parseStoredObject(row.receipt_json, 'agent_host_accepts.receipt_json'),
-    accepted_at: row.created_at,
+    accepted_at: sqliteUtcToIso(row.created_at),
   };
 }
 
@@ -358,7 +359,7 @@ function readPublicReceiptsSnapshot(
         actor: row.actor,
         idempotency_key: row.idempotency_key,
         detail: parseStoredObject(row.detail_json, 'agent_ack_facts.detail_json'),
-        created_at: row.created_at,
+        created_at: sqliteUtcToIso(row.created_at),
       }),
       rank: 2,
       order: row.fact_order,
@@ -381,7 +382,7 @@ function readPublicReceiptsSnapshot(
         workflow_state: row.workflow_state,
         idempotency_key: row.idempotency_key,
         detail: parseStoredObject(row.detail_json, 'agent_workflow_facts.detail_json'),
-        created_at: row.created_at,
+        created_at: sqliteUtcToIso(row.created_at),
       }),
       rank: 3,
       order: row.fact_order,
@@ -448,7 +449,7 @@ function projectHostAccept(delivery: CanonicalDeliveryScope, fact: HostAcceptRow
     attempt_id: fact.attempt_id,
     adapter_kind: fact.adapter_kind,
     receipt: parseStoredObject(fact.receipt_json, 'agent_host_accepts.receipt_json'),
-    created_at: fact.created_at,
+    created_at: sqliteUtcToIso(fact.created_at),
   };
 }
 

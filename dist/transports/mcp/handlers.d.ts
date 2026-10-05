@@ -164,7 +164,7 @@ export declare const TOOL_DEFINITIONS: readonly [{
                 readonly items: {
                     readonly type: "string";
                 };
-                readonly description: "Tags for filtering by subject (e.g. \"topic:database\"). A \"project:<id>\" tag is the same as passing `project` (<id> is the `project` field of the `briefing` result; CLI: `memesh briefing --json`); a plain repository name is a different project. At most one project.";
+                readonly description: "Tags for filtering by subject (e.g. \"topic:database\"). A \"project:<id>\" tag is the same as passing `project` (<id> is the `project` field of the `briefing` result; CLI: `memesh briefing --json`); a plain repository name is a different project, except your own project's plain name, which is stored as the id and reported in `retagged` — unless a memory the call updates or supersedes is already filed under the plain tag, which then stays as written. At most one project.";
             };
             readonly relations: {
                 readonly type: "array";

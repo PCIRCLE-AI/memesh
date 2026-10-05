@@ -74,14 +74,22 @@ process.stdin.on('end', () => {
     // (hooks.json) is 5s, so left alone a contended lock outlives the hook.
     db.pragma(`busy_timeout = ${HOOK_BUSY_TIMEOUT_MS}`);
     let matches;
+    let guardReadError = null;
     try {
       // A guard whose stored pattern no longer compiles is recorded, not
       // skipped in silence (#523): the outcome names the lesson so the
       // owner can see which guard stopped firing and why.
-      matches = matchingGuards(loadActiveGuards(db, 'Bash'), 'Bash', command, (guard, err) =>
+      matches = matchingGuards(loadActiveGuards(db, 'Bash', (err) => { guardReadError = err; }), 'Bash', command, (guard, err) =>
         record('error', `guard pattern does not compile: ${hookErrorReason(err)}`, `lesson:${guard.lessonId}`));
     } finally {
       db.close();
+    }
+    // #560: an unreadable guard store is not "no guard matched" — every guard
+    // has stopped, and the record must say so.
+    if (guardReadError) {
+      try { process.stderr.write(`[memesh guard-check] guards could not be read: ${guardReadError?.message || guardReadError}\n`); } catch {}
+      record('error', `guards unreadable: ${hookErrorReason(guardReadError)}`);
+      return pass();
     }
     if (!matches || matches.length === 0) {
       record('skipped', SKIP_REASONS.noGuardMatched);

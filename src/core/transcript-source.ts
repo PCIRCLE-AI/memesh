@@ -101,19 +101,36 @@ export function projectTranscriptSlug(cwd: string): string {
   return cwd.replace(/[^a-zA-Z0-9]/g, '-');
 }
 
-export function recordedCwd(text: string): string | null {
-  let seen = 0;
-  for (const line of text.split('\n')) {
-    if (!line.trim()) continue;
-    if (++seen > 40) break; // bounded: metadata preamble is only a few lines
-    try {
-      const entry = JSON.parse(line) as { cwd?: unknown };
-      if (typeof entry.cwd === 'string' && entry.cwd.length > 0) return entry.cwd;
-    } catch {
-      // A malformed line in the preamble must not abort the scan.
-    }
+/** The top-level `cwd` of one transcript line, or null. A malformed line is not a cwd. */
+function lineCwd(line: string): string | null {
+  try {
+    const entry = JSON.parse(line) as { cwd?: unknown } | null;
+    return entry !== null && typeof entry === 'object' && typeof entry.cwd === 'string' && entry.cwd.length > 0 ? entry.cwd : null;
+  } catch {
+    return null;
   }
-  return null;
+}
+
+/**
+ * The session's recorded working directory: the first line with a top-level
+ * `cwd`, wherever it is (#552). Claude Code transcripts can open with long
+ * metadata lines — a 13 KB file-history-snapshot; on one real transcript the
+ * first cwd was at byte 102,486 — so a scan of the first 64 KB or 40 lines
+ * dropped the project's own sessions. Only lines that mention `"cwd"` are
+ * parsed, and a `cwd` nested inside message text is not taken for it.
+ */
+export function recordedCwd(text: string): string | null {
+  let from = 0;
+  for (;;) {
+    const at = text.indexOf('"cwd"', from);
+    if (at < 0) return null;
+    const start = text.lastIndexOf('\n', at) + 1;
+    const newline = text.indexOf('\n', at);
+    const end = newline < 0 ? text.length : newline;
+    const cwd = lineCwd(text.slice(start, end));
+    if (cwd !== null) return cwd;
+    from = end + 1;
+  }
 }
 
 function sameProjectPath(a: string, b: string): boolean {
@@ -125,7 +142,7 @@ function sameProjectPath(a: string, b: string): boolean {
 }
 
 export function transcriptMatchesProject(bytes: Buffer, cwd: string): boolean {
-  const sessionCwd = recordedCwd(bytes.subarray(0, 65536).toString('utf8'));
+  const sessionCwd = recordedCwd(bytes.toString('utf8'));
   return sessionCwd !== null && sameProjectPath(sessionCwd, cwd);
 }
 
@@ -148,9 +165,15 @@ export interface TranscriptSession {
   changedAtNanoseconds: string;
 }
 
+/** Why a transcript inside the time window was not offered (#552). */
+export type TranscriptSkipReason =
+  | 'too_many_candidates' | 'scan_too_large' | 'too_large' | 'unreadable' | 'no_recorded_cwd' | 'other_project';
+
 export interface ScanOptions {
   /** Project cwd whose transcripts to find. */
   cwd: string;
+  /** Called for each transcript left out, with the reason and how many it covers. */
+  onSkip?: (reason: TranscriptSkipReason, count: number) => void;
   /** Only sessions modified within this many days. Default 3 (72h). */
   windowDays?: number;
   /** Test seam. */
@@ -174,23 +197,38 @@ export function scanTranscripts(opts: ScanOptions): TranscriptSession[] {
   }
   // Refuse an attacker-controlled directory fan-out instead of selecting an
   // arbitrary subset whose newest member could depend on enumeration order.
-  if (names.length > MAX_TRANSCRIPT_CANDIDATES) return [];
+  if (names.length > MAX_TRANSCRIPT_CANDIDATES) {
+    opts.onSkip?.('too_many_candidates', names.length);
+    return [];
+  }
 
   // Bound aggregate transcript bytes before content reads. This metadata pass
   // is itself bounded by MAX_TRANSCRIPT_CANDIDATES; descriptor reads below
   // still revalidate the file against races and per-file limits.
   let plannedBytes = 0;
   const eligibleNames: string[] = [];
-  try {
-    for (const name of names) {
-      const stat = fs.lstatSync(path.join(dir, name));
-      if (stat.isSymbolicLink() || !stat.isFile() || stat.size > MAX_TRANSCRIPT_SOURCE_BYTES
-        || stat.mtimeMs < cutoffMs) continue;
-      plannedBytes += stat.size;
-      if (plannedBytes > MAX_TRANSCRIPT_SCAN_BYTES) return [];
-      eligibleNames.push(name);
+  for (const name of names) {
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(path.join(dir, name));
+    } catch {
+      // Gone or unreadable since the listing (#552): that one session is
+      // reported and left out, not the whole scan in silence.
+      opts.onSkip?.('unreadable', 1);
+      continue;
     }
-  } catch {
+    if (stat.isSymbolicLink() || !stat.isFile() || stat.mtimeMs < cutoffMs) continue;
+    if (stat.size > MAX_TRANSCRIPT_SOURCE_BYTES) {
+      opts.onSkip?.('too_large', 1);
+      continue;
+    }
+    plannedBytes += stat.size;
+    eligibleNames.push(name);
+  }
+  // Over the budget, every eligible session is left out, so every one of them
+  // is counted, not only those seen before the budget ran out.
+  if (plannedBytes > MAX_TRANSCRIPT_SCAN_BYTES) {
+    opts.onSkip?.('scan_too_large', eligibleNames.length);
     return [];
   }
 
@@ -200,9 +238,15 @@ export function scanTranscripts(opts: ScanOptions): TranscriptSession[] {
     const full = path.join(dir, name);
 
     const read = readTranscriptSnapshotWithin(full, undefined, MAX_TRANSCRIPT_SCAN_BYTES - bytesRead);
-    if (read.aggregateLimitExceeded) return [];
+    if (read.aggregateLimitExceeded) {
+      opts.onSkip?.('scan_too_large', eligibleNames.length);
+      return [];
+    }
     const snapshot = read.snapshot;
-    if (!snapshot) continue;
+    if (!snapshot) {
+      opts.onSkip?.('unreadable', 1);
+      continue;
+    }
     bytesRead += snapshot.sizeBytes;
     try {
       if (Date.parse(snapshot.modifiedAt) < cutoffMs) continue;
@@ -214,14 +258,17 @@ export function scanTranscripts(opts: ScanOptions): TranscriptSession[] {
       // Slug-collision guard (see projectTranscriptSlug): if this session
       // recorded a cwd and it is NOT the project we are scanning, it belongs
       // to a sibling project that collapsed to the same slug dir — skip it so
-      // the "current project only" promise holds. Decode only a bounded prefix
-      // of the buffer we already read (no new I/O, no new path resolution).
+      // the "current project only" promise holds. The recorded cwd is read from
+      // the buffer we already have (no new I/O, no new path resolution).
       //
       // Compare via sameProjectPath (normalised, then symlink-resolved) so a
       // cosmetic OR a symlink difference (macOS /tmp vs /private/tmp) does not
       // cause a false skip. Still FAIL-CLOSED: a present-but-genuinely-different
       // recorded cwd is dropped so the "current project only" promise holds.
-      if (!transcriptMatchesProject(buf, cwd)) continue;
+      if (!transcriptMatchesProject(buf, cwd)) {
+        opts.onSkip?.(recordedCwd(buf.toString('utf8')) === null ? 'no_recorded_cwd' : 'other_project', 1);
+        continue;
+      }
 
       sessions.push({
         contentHash: snapshot.contentHash,

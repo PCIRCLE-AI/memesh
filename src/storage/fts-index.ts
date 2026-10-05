@@ -244,6 +244,30 @@ export function registerNfcFunction(db: MemeshDatabase): void {
 }
 
 /**
+ * #525: what "a memory's name or title is exactly the query" means — one
+ * definition for the SQL candidate window and for recall's final order: NFC,
+ * surrounding whitespace trimmed, Unicode lower case. SQLite's own `lower()`
+ * folds ASCII only, so `Äpfel` would not equal `äpfel` there.
+ */
+export function foldForExactMatch(value: string): string {
+  return value.normalize('NFC').trim().toLowerCase();
+}
+
+/** SQL name of {@link foldForExactMatch}, registered by {@link registerFoldFunction}. */
+export const SQL_FOLD_FUNCTION = 'memesh_fold';
+
+const foldRegistered = new WeakSet<object>();
+
+/** Register `memesh_fold(text)` on a connection, once; deterministic like `memesh_nfc`. */
+export function registerFoldFunction(db: MemeshDatabase): void {
+  if (foldRegistered.has(db)) return;
+  db.function(SQL_FOLD_FUNCTION, { deterministic: true }, (value: SqlOutputValue) =>
+    typeof value === 'string' ? foldForExactMatch(value) : value
+  );
+  foldRegistered.add(db);
+}
+
+/**
  * Does this query contain anything that can be searched for at all?
  *
  * `"???"`, `"@#$%"`, a lone emoji: non-empty, but nothing survives tokenising.

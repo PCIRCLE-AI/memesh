@@ -135,6 +135,19 @@ describe('hook outcome records', () => {
     expect(fs.readFileSync(path.join(memeshDir, HOOK_OUTCOMES_FILENAME), 'utf8')).not.toContain('sess-1');
   });
 
+  // #555: each hook process stamps its records with one run id, so doctor can
+  // count a run that records two outcomes once.
+  it('#555 every record carries its hook run id, and two runs have two ids', () => {
+    for (const msg of ['feat(x): first', 'feat(x): second']) {
+      const c = realCommit(msg);
+      runHook('post-commit', { tool_name: 'Bash', cwd: repoDir, session_id: 'sess-1', tool_input: { command: `git commit -m "${msg}"` }, tool_output: c.output });
+    }
+    const rows = records('post-commit');
+    expect(rows).toHaveLength(2);
+    for (const r of rows) expect(r.run).toMatch(/^[0-9a-f]{16}$/);
+    expect(rows[0].run).not.toBe(rows[1].run);
+  });
+
   it('post-commit records a SKIPPED reason when a commit-like command has no resolvable HEAD', () => {
     // The command claims to be a commit, but this empty repository has no
     // HEAD. That is now distinct from a successful quiet commit, which the
@@ -525,6 +538,19 @@ describe('hook outcome records', () => {
     const trimmed = parseHookOutcomes(trimHookOutcomeLines(raw + '\n')).hooks['post-commit'];
     expect(trimmed.filter((r) => r.reason === SKIP_REASONS.commitLineMissing)).toHaveLength(10);
     expect(trimmed.filter((r) => r.reason === SKIP_REASONS.notGitCommit)).toHaveLength(HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK);
+  });
+
+  it('#555 the SessionStart notice names a hook that recorded errors', () => {
+    const raw = [
+      { hook: 'guard-check', at: '2026-09-09T01:00:00.000Z', host: 'claude-code', outcome: 'skipped', reason: SKIP_REASONS.noGuardMatched },
+      { hook: 'guard-check', at: '2026-09-09T02:00:00.000Z', host: 'claude-code', outcome: 'error', reason: 'uncaught ERR_SQLITE_ERROR' },
+    ].map((r) => JSON.stringify(r)).join('\n');
+    const v = captureLivenessVerdict({
+      hooks: summarizeHookOutcomes(parseHookOutcomes(raw)), types: [], neverRanHooks: [], measuringHours: 500,
+    });
+    expect(v.status).toBe('PASS_WITH_CONCERNS');
+    expect(v.erroringHook?.lastErrorReason).toBe('uncaught ERR_SQLITE_ERROR');
+    expect(captureLivenessNotice(v)).toBe('memesh: the guard-check hook recorded errors in its recent runs — `memesh doctor` for the reason');
   });
 
   it('one over-long line does not wipe the history on rotation', () => {

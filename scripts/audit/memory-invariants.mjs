@@ -359,11 +359,11 @@ const INVARIANTS = [
   {
     id: 'lesson-family-uses-one-type',
     refs: '#451',
-    says: 'lesson and mistake are stored as lesson_learned (this invariant only reports; the write path and a one-shot migration canonicalize)',
+    says: 'lesson and mistake are stored as lesson_learned (this invariant only reports; the write path canonicalizes, and a migration renames any it finds on the next open)',
     // Reported, not failed: an active `lesson`/`mistake` row is legitimate
-    // right up until the one-shot migration (src/storage/graph-repairs.ts
-    // canonicalizeLessonTypes) reaches it, and an older plugin sharing this
-    // database can still write one after that — the same reason
+    // right up until the migration (src/storage/graph-repairs.ts
+    // canonicalizeLessonTypes) reaches it on the next open, and an older
+    // plugin sharing this database can write one at any time — the same reason
     // `global-namespace-reachable-by-injection` above is report-only. Active
     // only: an archived row the migration has not yet reached says nothing
     // about whether the write path or the migration are doing their job.

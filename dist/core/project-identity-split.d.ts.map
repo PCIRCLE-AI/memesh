@@ -1,0 +1,1 @@
+{"version":3,"file":"project-identity-split.d.ts","sourceRoot":"","sources":["../../src/core/project-identity-split.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,cAAc,EAAE,MAAM,sBAAsB,CAAC;AAS3D,MAAM,WAAW,oBAAoB;IAEnC,KAAK,EAAE,MAAM,CAAC;IAEd,GAAG,EAAE,MAAM,EAAE,CAAC;IAKd,cAAc,EAAE,MAAM,CAAC;CACxB;AAGD,wBAAgB,yBAAyB,CAAC,EAAE,EAAE,cAAc,GAAG,oBAAoB,EAAE,CA8BpF"}

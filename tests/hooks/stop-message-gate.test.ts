@@ -290,6 +290,24 @@ describe('Feature: the Claude Code Stop message gate blocks once per waiting mes
     });
   });
 
+  // #566: the exact-session form of #497. A message sent to live session A
+  // with target_kind "session" blocks A's Stop, and not the Stop of another
+  // live session B of the same principal.
+  it('#566 an exact-session message blocks only the session it is for', () => {
+    const SESSION_A = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const SESSION_B = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    registerAgentSession('gate-room', 'gate-principal', { sessionId: SESSION_A });
+    registerAgentSession('gate-room', 'gate-principal', { sessionId: SESSION_B });
+    sendSessionTargetedMessage('gate-room', SESSION_A, `k-${randomUUID()}`);
+
+    const asB = runGate({ session_id: SESSION_B });
+    expect(asB.stdout).toBe('');
+    expect(ledger().at(-1)).toMatchObject({ outcome: 'skipped' });
+
+    const asA = runGate({ session_id: SESSION_A });
+    expect((expectValidHookOutput(asA.stdout, 'stop-message-gate').parsed as { decision: string }).decision).toBe('block');
+  });
+
   it('does nothing without a usable session_id', async () => {
     const message = await send('gate-principal');
     seedHostAccept(message);
@@ -378,13 +396,14 @@ describe('Feature: the Claude Code Stop message gate blocks once per waiting mes
   // session_instance_id, not the resolved principal (`MEMESH_RECIPIENT` here).
   // The Stop gate must find it too, through the same widened lookup as the
   // reminder hooks (tests/hooks/message-recipient-reminder.test.ts), and only
-  // while that session is live.
+  // while that session is live. The gate runs in the addressed session: since
+  // #566 another session of the same principal is not reminded of it.
   describe('Feature: #490 the Stop gate also blocks for a session-targeted message, only while live', () => {
     it('blocks for a session-targeted message addressed to a LIVE session under the resolved principal', async () => {
       const sessionId = registerAgentSession('gate-room', 'gate-principal');
       sendSessionTargetedMessage('gate-room', sessionId, 'session-gate-k1');
 
-      const result = runGate({ session_id: 's-gate-session-1' });
+      const result = runGate({ session_id: sessionId });
 
       const parsed = expectValidHookOutput(result.stdout, 'stop-message-gate').parsed as
         { decision: string; reason: string } | undefined;
@@ -397,7 +416,7 @@ describe('Feature: the Claude Code Stop message gate blocks once per waiting mes
       const sessionId = registerAgentSession('gate-room', 'gate-principal', { disconnected: true });
       sendSessionTargetedMessage('gate-room', sessionId, 'session-gate-k2');
 
-      const result = runGate({ session_id: 's-gate-session-2' });
+      const result = runGate({ session_id: sessionId });
 
       expect(result.stdout).toBe('');
     });

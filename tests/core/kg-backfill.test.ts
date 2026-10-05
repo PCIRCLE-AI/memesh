@@ -981,6 +981,88 @@ describe('kg-backfill integration', () => {
     const rel = db.prepare("SELECT COUNT(*) AS c FROM relations WHERE relation_type='evidences'").get() as { c: number };
     expect(rel.c).toBe(0);
   });
+
+  // ---------------------------------------------------------------------------
+  // #529: with --project X every edge stays inside X
+  // ---------------------------------------------------------------------------
+
+  it('#529 Rule 1: a scoped run never picks a partner from another project', () => {
+    const orphan = insertEntity('alpha-orphan', 'knowledge');
+    for (const t of ['topic:auth', 'tech:oauth', 'project:alpha']) insertTag(orphan, t);
+    const sameProject = insertEntity('alpha-peer', 'knowledge');
+    for (const t of ['topic:auth', 'tech:oauth', 'project:alpha']) insertTag(sameProject, t);
+    const otherProject = insertEntity('bravo-peer', 'knowledge');
+    for (const t of ['topic:auth', 'tech:oauth', 'project:bravo']) insertTag(otherProject, t);
+    const untagged = insertEntity('no-project-peer', 'knowledge');
+    for (const t of ['topic:auth', 'tech:oauth']) insertTag(untagged, t);
+
+    const { candidates } = proposeBackfillCandidates({ project: 'alpha', minSharedTags: 2, includeEvidenceLinks: false });
+    const fromOrphan = candidates.filter((c) => c.fromEntityId === orphan && c.relationType === 'related-to');
+    expect(fromOrphan.map((c) => c.toEntityId)).toEqual([sameProject]);
+    // Unscoped, the same graph still links across projects as before.
+    const unscoped = proposeBackfillCandidates({ minSharedTags: 2, includeEvidenceLinks: false }).candidates
+      .filter((c) => c.fromEntityId === orphan).map((c) => c.toEntityId);
+    expect(new Set(unscoped)).toEqual(new Set([sameProject, otherProject, untagged]));
+  });
+
+  it('#529 Rule 3: a scoped run never links a session peer from another project', () => {
+    const orphan = insertEntity('alpha session lesson', 'lesson_learned');
+    for (const t of ['session:s529', 'project:alpha']) insertTag(orphan, t);
+    const sameProject = insertEntity('alpha session decision', 'decision');
+    for (const t of ['session:s529', 'project:alpha']) insertTag(sameProject, t);
+    const otherProject = insertEntity('bravo session decision', 'decision');
+    for (const t of ['session:s529', 'project:bravo']) insertTag(otherProject, t);
+
+    const { candidates } = proposeBackfillCandidates({ project: 'alpha', includeSessionCooccurrence: true, includeEvidenceLinks: false });
+    const coCreated = candidates.filter((c) => c.fromEntityId === orphan && c.relationType === 'co-created');
+    expect(coCreated.map((c) => c.toEntityId)).toEqual([sameProject]);
+  });
+
+  it('#529 Rule 4: a scoped run never links a name-token peer from another project', () => {
+    const orphan = insertEntity('router socket token rotation', 'decision');
+    insertTag(orphan, 'project:alpha');
+    const sameProject = insertEntity('router socket token cleanup', 'decision');
+    insertTag(sameProject, 'project:alpha');
+    const otherProject = insertEntity('router socket token renewal', 'decision');
+    insertTag(otherProject, 'project:bravo');
+
+    const { candidates } = proposeBackfillCandidates({ project: 'alpha', includeNameTokenSimilarity: true, includeEvidenceLinks: false });
+    const named = candidates.filter((c) => c.relationType === 'shares-name-tokens');
+    expect(named.map((c) => [c.fromEntityId, c.toEntityId])).toEqual([[orphan, sameProject]]);
+  });
+
+  it('#529 Rule 2: a memory in two projects is anchored by the project asked for, not the tag read last', () => {
+    const anchorA = insertEntity('alpha release', 'release');
+    insertTag(anchorA, 'project:alpha');
+    const anchorB = insertEntity('bravo release', 'release');
+    insertTag(anchorB, 'project:bravo');
+    const orphan = insertEntity('shared lesson', 'lesson_learned');
+    insertTag(orphan, 'project:alpha');
+    insertTag(orphan, 'project:bravo');
+
+    const anchoredTo = (opts: Parameters<typeof proposeBackfillCandidates>[0]) => proposeBackfillCandidates({ ...opts, includeEvidenceLinks: false })
+      .candidates.filter((c) => c.fromEntityId === orphan && c.relationType === 'belongs-to-project').map((c) => c.toEntityId);
+    expect(anchoredTo({ project: 'alpha' })).toEqual([anchorA]);
+    expect(anchoredTo({ project: 'bravo' })).toEqual([anchorB]);
+    // Unscoped, it belongs to both projects, so it is anchored in each.
+    expect(anchoredTo({}).sort((a, b) => a - b)).toEqual([anchorA, anchorB].sort((a, b) => a - b));
+    // Projects in name order, so a cap keeps the same one every run.
+    expect(anchoredTo({ maxEdgesPerSource: 1 })).toEqual([anchorA]);
+    expect(anchoredTo({ maxEdgesPerSource: 0 })).toHaveLength(0);
+  });
+
+  it('#529 Rule 2: an anchor that is newest in two of the memory\'s projects is proposed once', () => {
+    const shared = insertEntity('shared release', 'release');
+    insertTag(shared, 'project:alpha');
+    insertTag(shared, 'project:bravo');
+    const orphan = insertEntity('two-project lesson', 'lesson_learned');
+    insertTag(orphan, 'project:alpha');
+    insertTag(orphan, 'project:bravo');
+
+    const anchors = proposeBackfillCandidates({ includeEvidenceLinks: false }).candidates
+      .filter((c) => c.fromEntityId === orphan && c.relationType === 'belongs-to-project').map((c) => c.toEntityId);
+    expect(anchors).toEqual([shared]);
+  });
 });
 
 // ---------------------------------------------------------------------------

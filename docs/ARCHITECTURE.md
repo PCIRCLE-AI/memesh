@@ -64,6 +64,7 @@ MeMesh separates concerns into two layers:
 - `scoring.ts` — multi-factor scoring engine: weights search relevance, recency, frequency, confidence, recall-impact; exports `rankEntities()` used by all recall paths
 - `dreamer.ts` — work-package preparation plus the shared proposal list/detail/accept/reject lifecycle. Digest candidates use deterministic calendar buckets; transcript packages expose only bounded visible turns from the newest Claude Code session under the host-provided MCP workspace root. Submission retains those redacted turns for review, stages one proposal, and never applies it.
 - `kg-backfill.ts` — deterministic relation backfill: 5 rules (tag co-occurrence, project clustering, session co-occurrence, name-token similarity, and evidence-to-work linking)
+- `project-identity-split.ts` — finds plain `project:<name>` tags that share their name with a project id in the same graph (#408); read by `memesh doctor`
 - `project-tags.ts` — list / merge / rename `project:<name>` tags AND the `project` scope column of the durable-message tables, in one transaction (heals tags mis-homed before git-based project identity, and the split inboxes that go with them); backs `memesh kg rename-project`
 - `agent-scope-id.ts` — the canonical form (Unicode NFC + trim) and fail-closed validation for durable-message scope identifiers (`project`, `recipient`, `actor`), plus the one list of columns that hold them; imported by the transport boundary and core write path, and mirrored by the read-only `scripts/audit/memory-invariants.mjs` detector. Also build-generated as `scripts/hooks/_generated/agent-scope-id.js` (`scripts/generate-hook-core.mjs`), so the Claude Code hooks refuse a path-shaped `MEMESH_RECIPIENT` by this exact same rule. Historical ambiguous identities are preserved until an owner supplies a mapping.
 - `version-check.ts` — npm registry version check for update notifications
@@ -166,7 +167,7 @@ vector supplement, or model-powered query expansion to configure or diagnose.
 
 Manages the SQLite connection lifecycle and schema initialization.
 
-- `openDatabase(path?)` -- Opens (or reuses) a SQLite connection
+- `openDatabase(path?, { busyTimeoutMs? })` -- Opens (or reuses) a SQLite connection. `busyTimeoutMs` shortens the default 30 s lock wait and makes the open fail after that one wait when another process holds the write lock; the hooks pass their 2 s limit. It has no effect on a connection that is already open.
 - `closeDatabase()` -- Closes the connection
 - `getDatabase()` -- Returns the active connection (throws if not opened)
 - Schema: Creates tables (`entities`, `observations`, `relations`, `tags`) and FTS5 virtual table (`entities_fts`)
@@ -191,7 +192,7 @@ Both entity writers — `createEntity` here and the hooks' `captureEntity` in `s
 - `getRelations(entityName)` -- All outgoing relations for an entity
 
 **Search**:
-- `search(query?, opts?)` -- FTS5 MATCH query with optional tag filtering; tracks access on returned entities. `searchWithFacts` returns the same entities plus `fallback`: when the `fts_segmentation_version` marker says the index predates today's segmentation (a read-only file, or a rebuild in its retry back-off), active rows are found by a `LIKE` scan of name, title and observations for the same terms instead, and recall reports `retrieval: { mode: 'scan', degraded: true, reason: 'index_out_of_date' }` (#571). With `includeArchived`, archived rows are matched by `LIKE` because `archiveEntity()` removes them from FTS5. One- and two-term queries use OR matching; queries with three or more terms try strict all-term matching first and fall back to OR only when strict matching has no hits. Rows are ordered by BM25 rank before multi-factor scoring. Terms are bounded and ubiquitous terms are removed on larger corpora. Both indexed text and queries use the same NFC normalisation and unspaced-script segmentation, so CJK, kana, hangul, Thai, Lao and Khmer remain searchable without a second retrieval path.
+- `search(query?, opts?)` -- FTS5 MATCH query with optional tag filtering; tracks access on returned entities. `searchWithFacts` returns the same entities plus `fallback`: when the `fts_segmentation_version` marker says the index predates today's segmentation (a read-only file, or a rebuild in its retry back-off), active rows are found by a `LIKE` scan of name, title and observations for the same terms instead, and recall reports `retrieval: { mode: 'scan', degraded: true, reason: 'index_out_of_date' }` (#571). With `includeArchived`, archived rows are matched by `LIKE` because `archiveEntity()` removes them from FTS5. One- and two-term queries use OR matching; queries with three or more terms try strict all-term matching first and fall back to OR only when strict matching has no hits. Rows are ordered by BM25 rank before multi-factor scoring (the scan and the archived match, which have no rank, newest first), except that a row whose name or title is exactly the query — NFC, letter case and surrounding spaces ignored (`foldForExactMatch`, `memesh_fold` in SQL) — comes first in all three, so the result limit cannot cut it (#525). Terms are bounded and ubiquitous terms are removed on larger corpora. Both indexed text and queries use the same NFC normalisation and unspaced-script segmentation, so CJK, kana, hangul, Thai, Lao and Khmer remain searchable without a second retrieval path.
 - `listRecent(limit?)` -- Most recent entities by ID
 - `findConflicts(entityNames[])` -- Returns conflict descriptions for any `contradicts` relations among the given entity names; surfaced as warnings by all three transports
 
@@ -269,6 +270,9 @@ Tool call: remember({name, type, observations, tags, relations})
      -> snapshot the previous title/observations/tags FIRST
      -> KnowledgeGraph.clearEntityData(name)   # the snapshot must precede this
      -> stored type is kept unless a different `type` was passed
+  -> #511: a `project:<name>` tag naming the caller's own project (MCP: argument or binding; CLI: cwd) by its
+     plain name becomes `project:<id>` (reported as `retagged`), unless a memory this write updates or supersedes
+     already carries the plain tag
   -> declared project (MCP `project` argument, else one `project:` tag, else the bound project; `false` = none):
      refuse two project tags, or an argument that contradicts the tag;
      refuse a name or `supersedes` target another project, or no project, holds (no project: one a project holds);
@@ -321,6 +325,7 @@ Tool call: recall({query, tag, limit})
           -> recallEnhanced()
              -> KnowledgeGraph.search() — FTS5 keyword match
              -> rankEntities() applies multi-factor scoring (relevance, recency, frequency, confidence, impact)
+             -> an exact name or title match is moved first (#525; search() keeps it inside its result window)
           -> KnowledgeGraph.findConflicts() checks for contradicts relations among results
        -> capRecallForAgent() in core/recall-agent-view.ts (#494): omits file:* tags; caps each
           entity's observations+tags at 8 KB and the whole response at 32 KB, marking what was cut
@@ -484,7 +489,7 @@ Hook commands are defined in `hooks/hooks.json`: nine run at Claude Code lifecyc
 
 - **Trigger**: `PreCompact` event (before context compaction)
 - **Matcher**: `*` (all sessions)
-- **Behavior**: Saves a snapshot of session knowledge before context is compacted, ensuring memories are not lost during long sessions; opt-out via `MEMESH_AUTO_CAPTURE=false`. A payload whose `session_id` or `cwd` is missing, blank or not text is skipped and the reason recorded, rather than filed under a shared session or the hook's own directory
+- **Behavior**: Saves a snapshot of session knowledge before context is compacted, ensuring memories are not lost during long sessions; opt-out via `MEMESH_AUTO_CAPTURE=false`. A payload whose `session_id` or `cwd` is missing, blank or not text is skipped and the reason recorded, rather than filed under a shared session or the hook's own directory. The compaction reason is redacted before it is cut into the title
 
 ### User Prompt Intent (`scripts/hooks/user-prompt-intent.js`)
 
@@ -531,7 +536,9 @@ adds the database side (auto-capture entities per type, week over week, and the
 `hook_runs` heartbeats); the banner reads only the JSONL. Only post-commit,
 session-summary and pre-compact can be "silent", because only their triggers
 imply a write is due; only session-summary can FAIL, because only its trigger
-(a session ending) is guaranteed. The `--json` shape is in
+(a session ending) is guaranteed. A hook with an `error` record among its 5
+most recent triggered runs makes the verdict PASS_WITH_CONCERNS; the one with
+the most is named in doctor and the banner, ahead of silence (#555). The `--json` shape is in
 [API_REFERENCE.md](api/API_REFERENCE.md#memesh-doctor--capture-liveness).
 
 Two gates keep this honest. `npm run audit:hook-outcomes`

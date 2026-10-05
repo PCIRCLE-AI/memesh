@@ -143,7 +143,7 @@ export const TOOL_DEFINITIONS = [
           type: 'array',
           items: { type: 'string' },
           description:
-            'Tags for filtering by subject (e.g. "topic:database"). A "project:<id>" tag is the same as passing `project` (<id> is the `project` field of the `briefing` result; CLI: `memesh briefing --json`); a plain repository name is a different project. At most one project.',
+            'Tags for filtering by subject (e.g. "topic:database"). A "project:<id>" tag is the same as passing `project` (<id> is the `project` field of the `briefing` result; CLI: `memesh briefing --json`); a plain repository name is a different project, except your own project\'s plain name, which is stored as the id and reported in `retagged` — unless a memory the call updates or supersedes is already filed under the plain tag, which then stays as written. At most one project.',
         },
         relations: {
           type: 'array',
@@ -715,7 +715,12 @@ async function handleToolInner(
       const { project: projectArg, ...input } = r.data;
       const resolved = writeProject(projectArg, input.tags, requestContext);
       if ('result' in resolved) return resolved.result;
-      return ok(remember({ ...input, sourceHost, project: resolved.project }));
+      // #511: this call's own project — the explicit one, else the bound one.
+      const binding = requestContext.projectBinding;
+      const currentProject = typeof projectArg === 'string'
+        ? projectArg
+        : projectArg === undefined && binding !== undefined && 'project' in binding ? binding.project : undefined;
+      return ok(remember({ ...input, sourceHost, project: resolved.project, currentProject }));
     }
     if (name === 'recall') {
       const r = parseOrFail(McpRecallSchema, args);

@@ -20,6 +20,7 @@ import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
 import { buildCredentialFreeBaseEnv, buildIsolatedRuntimeEnv, buildIsolatedSuiteEnv } from '../scripts/lib/isolated-env.mjs';
 import { findOrphanedTypeScriptOutputs } from '../scripts/check-generated-mirror.mjs';
+import { writeNodeShim } from '../scripts/lib/node-shim.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -954,8 +955,7 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
         try {
           const binDir = path.join(tmp, 'bin');
           fs.mkdirSync(binDir);
-          fs.writeFileSync(path.join(binDir, 'npm'), NPM_STUB);
-          fs.chmodSync(path.join(binDir, 'npm'), 0o755);
+          writeNodeShim(binDir, 'npm', NPM_STUB, 'commonjs');
           // A no-op sleep: the "poll never propagates" case below runs its
           // full 20 attempts in milliseconds instead of 10 real minutes,
           // without editing the script's own POLL_INTERVAL_SECONDS.
@@ -1245,6 +1245,23 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     });
     expect(clean).toEqual({ PATH: '/bin', LANG: 'en_US.UTF-8', TMPDIR: '/tmp' });
     expect(read('scripts/smoke-packed-upgrade.mjs')).toContain("const registry = 'https://registry.npmjs.org/'");
+  });
+
+  // #477: each smoke script writes its fake binary through the shared helper,
+  // with the module type its `require` body needs, so an ancestor
+  // package.json declaring "type": "module" cannot turn the shim into ESM.
+  it('smoke scripts write their fake binaries through writeNodeShim as commonjs', () => {
+    for (const [rel, call] of [
+      ['scripts/smoke-packed-artifact.mjs', "writeNodeShim(fakeBin, 'codex',"],
+      ['scripts/smoke-packed-upgrade.mjs', "writeNodeShim(shimDir, 'npm',"],
+    ]) {
+      const source = read(rel);
+      expect(source).toContain("import { writeNodeShim } from './lib/node-shim.mjs';");
+      const start = source.indexOf(call);
+      expect(start, rel).toBeGreaterThan(-1);
+      const end = source.indexOf(');', source.indexOf('`, ', start));
+      expect(source.slice(start, end), rel).toMatch(/`, 'commonjs'$/);
+    }
   });
 
   // The other half. `buildIsolatedRuntimeEnv` pins a database path; the suite

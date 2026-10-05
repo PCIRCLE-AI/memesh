@@ -15,15 +15,16 @@ import { ownerWriteCommand, runOrSay, shellQuote } from './file-mode.js';
 import { diagnoseDatabaseFailure } from './database-diagnosis.js';
 import { citationRulePath, citationRuleState } from './citation-rule.js';
 import { getAgentRouterSocketPath, getDbPath, getMemeshDirFromDbPath, homeDir, memeshDir } from './paths.js';
+import { findProjectIdentitySplits } from './project-identity-split.js';
 import { AGENT_ROUTER_SOCKET_PATH_MAX_BYTES } from './agent-router.js';
 import { detectPluginRuntime, readInstallMarker } from './install-hooks.js';
 import { UNSPACED_SCRIPT_GLOB_RUN3 } from '../storage/fts-index.js';
 import { MemeshDatabase } from '../storage/sqlite.js';
 import { AUTO_CAPTURE_TAG } from './types.js';
 import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
-import { parseSqliteUtcMs } from './time-utils.js';
+import { parseSqliteUtcMs, sqliteUtcToIso } from './time-utils.js';
 import { autoCaptureDecision } from './capture-flag.js';
-import { captureLivenessVerdict, parseHookOutcomes, summarizeHookOutcomes, summarizeTypeTrends, FAIL_ELIGIBLE_HOOKS, SKIP_REASONS, HOOK_OUTCOMES_FILENAME, NEVER_RAN_GRACE_HOURS, SILENT_HOOK_MIN_RUNS, } from './capture-liveness.js';
+import { captureLivenessVerdict, parseHookOutcomes, summarizeHookOutcomes, summarizeTypeTrends, FAIL_ELIGIBLE_HOOKS, SKIP_REASONS, HOOK_OUTCOMES_FILENAME, NEVER_RAN_GRACE_HOURS, SILENT_HOOK_MIN_RUNS, RECENT_ERROR_RUNS, } from './capture-liveness.js';
 import { guardFromMetadata } from './guards.js';
 import { getAgentMessageStorageReport } from './agent-message-storage.js';
 import { readHostConfigFile } from '../host-runtime/config.js';
@@ -181,13 +182,29 @@ function inspectCodexQueueDaemon(db) {
             return createInfo('codex-queue-daemon', 'Codex stuck-message release', `${latestPerThread.size} Codex thread(s) ran the stuck-message release in the last 7 days; the latest run in each found the app-server daemon. Nothing is waiting on it.`);
         }
         const named = stuck
-            .map((row) => `${row.recipient} in ${row.project} (${row.created_at.replace(' ', 'T')}Z)`)
+            .map((row) => `${row.recipient} in ${row.project} (${sqliteUtcToIso(row.created_at)})`)
             .join(', ');
         return createCheck('codex-queue-daemon', 'Codex stuck-message release', 'warn', `${stuck.length} Codex thread(s) last ran the stuck-message release without the app-server daemon: ${named}. A MeMesh message queued there after an interrupted turn stays in that thread's queue until you send the thread a prompt.`, 'Send a prompt in each thread named above to drain its queue. To restore the automatic release, run Codex with its app-server daemon (avoid `--no-daemon`).');
     }
     catch (err) {
         return createCheck('codex-queue-daemon', 'Codex stuck-message release', 'warn', `Could not read the Codex host_activation receipts: ${err instanceof Error ? err.message : String(err)}`, 'Run `memesh doctor` again; if this persists, check the database rows above for the underlying error.');
     }
+}
+function inspectProjectIdentitySplit(db) {
+    let splits;
+    try {
+        splits = findProjectIdentitySplits(db);
+    }
+    catch (err) {
+        return createCheck('project-identity-split', 'Project tags', 'warn', `The project tag check could not run (${err instanceof Error ? err.message : String(err)}), so a project split is not ruled out.`, 'Run `memesh kg rename-project` to list every project tag.');
+    }
+    if (splits.length === 0)
+        return undefined;
+    const total = splits.reduce((sum, split) => sum + split.activeMemories, 0);
+    return createCheck('project-identity-split', 'Project tags', 'warn', `${total} active ${total === 1 ? 'memory' : 'memories'} in ${splits.length} ${splits.length === 1 ? 'project is' : 'projects are'} `
+        + "filed under a plain project name (project:<name>) that the project's sessions never read; they use the full id (project:<name>~<hash>).", 'Run `memesh kg rename-project` to list every project tag with its count. For a plain name listed next to an id of the same name, '
+        + 'kg rename-project --from <name> --to <id> previews moving its memories to that id, and the same command with --apply moves them '
+        + '(it backs the database up first). A shared name does not prove one project: if a different repository used that name, leave it.');
 }
 function inspectCodexSessionSetup(codexPluginCacheDetected, existsSyncImpl) {
     if (!codexPluginCacheDetected)
@@ -682,6 +699,15 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
         }
         return {
             check: createCheck('capture-liveness', TITLE, 'fail', `The ${hook} hook has left no record and no heartbeat in the ${Math.round(measuringHours ?? 0)} hours since tracking began — it has never run, so nothing it would capture is being saved.`, 'Run `memesh install-hooks` and restart your agent, then end one work session and re-run `memesh doctor`.', { code: 'capture-liveness.never-ran', params: { hook, hours: Math.round(measuringHours ?? 0) } }),
+            report,
+        };
+    }
+    if (verdict.erroringHook) {
+        const h = verdict.erroringHook;
+        const day = h.lastErrorAt !== null && /^\d{4}-\d{2}-\d{2}/.test(h.lastErrorAt) ? ` on ${h.lastErrorAt.slice(0, 10)}` : '';
+        const newest = Math.min(RECENT_ERROR_RUNS, h.triggeredRuns);
+        return {
+            check: createCheck('capture-liveness', TITLE, 'warn', `${h.hook}: ${h.recentErrors} of its ${newest} most recent runs ended in an error (${h.errors} in its recorded window); the latest was '${h.lastErrorReason}'${day}.`, 'The reason says what failed; `memesh doctor --json` has the per-hook figures. This row clears once the hook\'s most recent runs (those its trigger applied to) end without an error. If it keeps failing, run `memesh install-hooks` and restart your agent.', { params: { hook: h.hook } }),
             report,
         };
     }
@@ -1471,6 +1497,9 @@ export async function runDoctor(options) {
         const codexQueueDaemon = inspectCodexQueueDaemon(db);
         if (codexQueueDaemon)
             dbChecks.push(codexQueueDaemon);
+        const projectSplit = inspectProjectIdentitySplit(db);
+        if (projectSplit)
+            dbChecks.push(projectSplit);
         const hasVocab = db
             .prepare(`SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'fts_vocab'`)
             .get();

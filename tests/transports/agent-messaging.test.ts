@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { executeAgentMessageAction } from '../../src/transports/agent-messaging.js';
 import { getDatabase } from '../../src/db.js';
 import { MessageSchema } from '../../src/transports/schemas.js';
-import { AGENT_MESSAGE_JSON_MAX_BYTES } from '../../src/core/agent-messaging.js';
+import { AGENT_MESSAGE_JSON_MAX_BYTES, recordAgentAckFact, recordAgentWorkflowFact } from '../../src/core/agent-messaging.js';
 import { AGENT_ROUTER_PROTOCOL_VERSION, AgentRouterProtocolError } from '../../src/core/agent-router.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
 
@@ -333,7 +333,7 @@ describe('agent message transport', () => {
         return { delivered: true };
       },
     }) as PublicSentMessage & {
-      native_delivery: { status: string; adapter_kind: string; receipt: Record<string, unknown> };
+      native_delivery: { status: string; adapter_kind: string; receipt: Record<string, unknown>; accepted_at: string };
     };
 
     expect(result.native_delivery).toMatchObject({
@@ -341,6 +341,7 @@ describe('agent message transport', () => {
       adapter_kind: 'test-adapter',
       receipt: { channel: 'test' },
     });
+    expect(result.native_delivery.accepted_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
 
     const replay = await executeAgentMessageAction(getDatabase(), {
       action: 'send',
@@ -482,6 +483,9 @@ describe('agent message transport', () => {
       message_id: sent.message_id,
     }, context) as Array<Record<string, unknown>>;
     expect(readback.map((fact) => fact.receipt_kind)).toEqual(['host_accept', 'ack', 'disposition']);
+    // #403: these facts carry ISO 8601 UTC. The list is sorted by this
+    // string, so one table left in SQLite's form would also sort out of order.
+    for (const fact of readback) expect(fact.created_at, String(fact.receipt_kind)).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
     expect(readback).toEqual(expect.arrayContaining([
       expect.objectContaining({
         receipt_kind: 'host_accept',
@@ -527,6 +531,29 @@ describe('agent message transport', () => {
       .get(sent.delivery_id)).toEqual({ count: 0 });
     expect(getDatabase().prepare('SELECT COUNT(*) AS count FROM agent_message_receipts WHERE message_id = ?')
       .get(sent.message_id)).toEqual({ count: 1 });
+  });
+
+  // #403: host-native ACK and workflow facts come from their own tables and
+  // are converted on their own path.
+  it('#403 host-native ACK and workflow facts in a receipts readback are ISO 8601 UTC', async () => {
+    const context = { transport: 'mcp' as const, sourceHost: 'test-host' };
+    const sent = await executeAgentMessageAction(getDatabase(), {
+      action: 'send', project: 'iso-facts', sender: 'sender', recipient: 'receiver',
+      idempotency_key: 'iso-facts-1', payload: { text: 'x' }, content_type: 'application/json',
+    }, context) as PublicSentMessage;
+    const hostAcceptId = seedHostAccept(sent);
+    recordAgentAckFact(getDatabase(), {
+      delivery_id: sent.delivery_id, host_accept_id: hostAcceptId, actor: sent.recipient, idempotency_key: 'iso-ack-fact',
+    });
+    recordAgentWorkflowFact(getDatabase(), {
+      delivery_id: sent.delivery_id, actor: sent.recipient, workflow_state: 'completed', idempotency_key: 'iso-workflow-fact',
+    });
+    const readback = await executeAgentMessageAction(getDatabase(), {
+      action: 'receipts', project: sent.project, recipient: sent.recipient, message_id: sent.message_id,
+    }, context) as Array<Record<string, unknown>>;
+    const sources = readback.map((fact) => fact.fact_source);
+    expect(sources).toEqual(expect.arrayContaining(['agent_host_accept', 'agent_ack_fact', 'agent_workflow_fact']));
+    for (const fact of readback) expect(fact.created_at, String(fact.fact_source)).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
   });
 
   it('allows an explicit inbox ACK without host acceptance and keeps it separate from host-native facts', async () => {

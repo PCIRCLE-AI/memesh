@@ -38,6 +38,17 @@ export function registerNfcFunction(db) {
     db.function(SQL_NFC_FUNCTION, { deterministic: true }, (value) => typeof value === 'string' ? value.normalize('NFC') : value);
     nfcRegistered.add(db);
 }
+export function foldForExactMatch(value) {
+    return value.normalize('NFC').trim().toLowerCase();
+}
+export const SQL_FOLD_FUNCTION = 'memesh_fold';
+const foldRegistered = new WeakSet();
+export function registerFoldFunction(db) {
+    if (foldRegistered.has(db))
+        return;
+    db.function(SQL_FOLD_FUNCTION, { deterministic: true }, (value) => typeof value === 'string' ? foldForExactMatch(value) : value);
+    foldRegistered.add(db);
+}
 export function hasSearchableTerms(text) {
     return tokenizeQuery(text).length > 0;
 }

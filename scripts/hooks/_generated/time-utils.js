@@ -19,3 +19,7 @@ export function parseSqliteUtcMs(sqliteTimestamp) {
         return null;
     return then;
 }
+export function sqliteUtcToIso(sqliteTimestamp) {
+    const ms = parseSqliteUtcMs(sqliteTimestamp);
+    return ms === null ? sqliteTimestamp : new Date(ms).toISOString().replace('.000Z', 'Z');
+}
