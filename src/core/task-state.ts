@@ -36,6 +36,7 @@
 // anyway.
 
 import { jsonStringLiteral, projectLabel } from './work-topology.js';
+import { redactMemoryText } from './paths.js';
 
 /** The entity type. Already listed in work-topology's WORK_LAYER_TYPES. */
 export const TASK_STATE_TYPE = 'task-state';
@@ -207,7 +208,12 @@ export function taskStateLines(
   const lines = [`Stated about ${jsonStringLiteral(projectLabel(project))} ${age}, and not revisited since:`];
   for (const field of TASK_STATE_FIELDS) {
     const value = state[field];
-    if (value) lines.push(`- ${FIELD_LABELS[field]}: ${value}`);
+    // #523: redacted on DISPLAY as well as on write. `setTaskState` stores
+    // the fields redacted now, but a task state written before that keeps
+    // the text it was stored with, and this is the one builder every surface
+    // (briefing, SessionStart, `memesh task`) renders it through — before
+    // `boundTaskStateLines` clips the line, so a cut cannot expose a fragment.
+    if (value) lines.push(`- ${FIELD_LABELS[field]}: ${redactMemoryText(value)}`);
   }
   return lines;
 }

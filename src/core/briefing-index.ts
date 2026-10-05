@@ -16,7 +16,7 @@
 // must exist exactly once lives here: which types count, the order, the
 // staleness line, the redaction, the caps and the phrasing.
 
-import { redactSecrets, redactUserPaths } from './paths.js';
+import { redactMemoryText } from './paths.js';
 import { EVIDENCE_LAYER_TYPES, isAutoInjectable, jsonStringLiteral, projectLabel, topologyLine } from './work-topology.js';
 import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
 
@@ -159,10 +159,10 @@ function candidateIsAutoInjectable(metadata: unknown): boolean {
   return isAutoInjectable(metadata);
 }
 
-/** Secrets first, then paths — paths.ts documents why the order matters. */
+/** The shared display redaction (paths.ts), then whitespace flattened for one line. */
 function redact(text: string | null | undefined): string {
   if (!text) return '';
-  return redactUserPaths(redactSecrets(String(text))).replace(/\s+/g, ' ').trim();
+  return redactMemoryText(String(text)).replace(/\s+/g, ' ').trim();
 }
 
 function indexLine(candidate: IndexCandidate): string {

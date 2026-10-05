@@ -54,6 +54,23 @@ describe('memesh task on a corrupted record', () => {
     expect(JSON.parse(j.stdout)).toMatchObject({ project: 'alpha', error: expect.stringContaining('not valid JSON') });
   });
 
+  it('a --json write on a task state stored before #523 answers with the redacted state (#523)', () => {
+    // Assembled at runtime so no line in the repository looks like a credential.
+    const password = 'hunter2hunter2';
+    const url = ['postgres://appuser', `${password}@db:5432/app`].join(':');
+    expect(run(['task', '--project', 'alpha', '--goal', 'ship it']).status).toBe(0);
+    const dir = path.join(home, '.memesh');
+    const db = new DatabaseSync(path.join(dir, fs.readdirSync(dir).find((f) => f.endsWith('.db'))!));
+    db.prepare("UPDATE entities SET metadata = ? WHERE name LIKE 'task-state:%'").run(
+      JSON.stringify({ task_state: { goal: `migrate ${url}`, updated_at: new Date().toISOString() } }),
+    );
+    db.close();
+    const r = run(['task', '--project', 'alpha', '--done', 'x', '--json']);
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).not.toContain(password);
+    expect(JSON.parse(r.stdout).state.goal).toContain('***REDACTED***');
+  });
+
   it('a write replaces the broken record — the recovery the message promises', () => {
     expect(run(['task', '--project', 'alpha', '--goal', 'ship it']).status).toBe(0);
     corrupt();

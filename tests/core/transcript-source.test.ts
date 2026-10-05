@@ -187,6 +187,12 @@ describe('work-package source boundary', () => {
     for (let i = 0; i < 5; i++) kg.createEntity(`commit-${i}-${secret}`, 'commit', {
       observations: [`Visible change ${i}: ${secret}`], tags: [`project:${project}`],
     });
+    // #523: `createEntity` now stores observations redacted, so a raw secret
+    // can only sit in the graph as PRE-#523 data. Put it back with SQL — the
+    // subject here is the package's own redaction and its hash of the
+    // stored text, and that stored text must be the raw one for the test to
+    // prove anything.
+    db.prepare('UPDATE observations SET content = replace(content, ?, ?)').run('***REDACTED***', secret);
     const input = { action: 'prepare' as const, kind: 'digest' as const, project };
     const response = executeWorkPackage(db, input);
     expect(response.status).toBe('available');

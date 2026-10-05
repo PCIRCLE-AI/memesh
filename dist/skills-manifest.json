@@ -53,8 +53,8 @@
     },
     {
       "path": "scripts/hooks/_generated/briefing-index.js",
-      "sha256": "328c1087f55e5898a0f54d56ca45be9197636055b178e7d682547b7cfe3b3131",
-      "bytes": 7064
+      "sha256": "9a435aed7ecbddd4523c2ed108b0a0306ff98e71a7d87588184ad1b2fdb54b5b",
+      "bytes": 7036
     },
     {
       "path": "scripts/hooks/_generated/briefing-level.js",
@@ -63,8 +63,8 @@
     },
     {
       "path": "scripts/hooks/_generated/briefing-pools.js",
-      "sha256": "e6919cc7725702190fe622108b2836c3b90934a6bb71d068adec86a20f8740af",
-      "bytes": 9880
+      "sha256": "28fd0cec6f2001b0c25dc365e426aa440aa798577d784a69cad1b6bbeed7b51d",
+      "bytes": 9983
     },
     {
       "path": "scripts/hooks/_generated/capture-flag.js",
@@ -88,8 +88,8 @@
     },
     {
       "path": "scripts/hooks/_generated/core-paths.js",
-      "sha256": "5650b621485e0b2b0900fc2dd62eb9035f38aaab13fd16e66a0bdae278c76a97",
-      "bytes": 8518
+      "sha256": "3e781bbb1f7fd76a04a5607897c03d9b75c6ff67c627daaabbd1b415a05dbee7",
+      "bytes": 23622
     },
     {
       "path": "scripts/hooks/_generated/entity-write.js",
@@ -108,8 +108,8 @@
     },
     {
       "path": "scripts/hooks/_generated/guards.js",
-      "sha256": "a05325ec1a5e93c924219485bbe62bba7e7478a276fb31af4b4e5ffab83e675f",
-      "bytes": 3987
+      "sha256": "c785d8c17b8d6306f85575b7a0e711289be7c17db08c5c16bf2fad048c77e2df",
+      "bytes": 4047
     },
     {
       "path": "scripts/hooks/_generated/repo-state.js",
@@ -128,8 +128,8 @@
     },
     {
       "path": "scripts/hooks/_generated/session-handoff.js",
-      "sha256": "ff082f6dffe9d14831068f5d4ac77fb0da0bd2817ab7f1962f5c3cf96c6bf760",
-      "bytes": 4578
+      "sha256": "57e4bddfdfb05e5812c109d65cc2bbd8c6cc946ee8d7edbef608963b21066f29",
+      "bytes": 4648
     },
     {
       "path": "scripts/hooks/_generated/session-limit.js",
@@ -143,8 +143,8 @@
     },
     {
       "path": "scripts/hooks/_generated/task-state.js",
-      "sha256": "6004ed10933db053bdcc8bdf4357a2d52df5ed8def3eed5527d5802f5dbb7f2b",
-      "bytes": 6856
+      "sha256": "a4ef7493a9453f92b0627334fff39825e930c4f39776ec8d51f43b58c92aa85e",
+      "bytes": 6926
     },
     {
       "path": "scripts/hooks/_generated/time-utils.js",
@@ -168,8 +168,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "6cd52ad523567004c7c9deb10bd4478e9591f2b625090f3d33345639acdcefc2",
-      "bytes": 124357
+      "sha256": "16af92f940fb8922e51198b7747a3d5924edd537bd934b2f735bba9ee474fd40",
+      "bytes": 125596
     },
     {
       "path": "scripts/hooks/_stop-handoff.js",
@@ -193,23 +193,23 @@
     },
     {
       "path": "scripts/hooks/guard-check.js",
-      "sha256": "ec2f51991b4984f14a1c1a2984fcbee94a24441160c786e3cd09f599ccda5a44",
-      "bytes": 3970
+      "sha256": "8a2eb956c6887c3149b279506cfaf902aaf6068f6d6ab0dd807bf754a7d8bed3",
+      "bytes": 4303
     },
     {
       "path": "scripts/hooks/post-commit.js",
-      "sha256": "f149fd314889964b146c205d1259138c6ed3eba6229eebeb0b1f802a10d829c2",
-      "bytes": 18678
+      "sha256": "aebc58aebf8b1cd9562025772300170d7120ce2eaf4ecc6a3be39745bf351753",
+      "bytes": 18860
     },
     {
       "path": "scripts/hooks/pre-compact.js",
-      "sha256": "8f1932ae750da85ce4bba80c41728de0a800bc79257a642ab22e3baad88b0407",
-      "bytes": 9972
+      "sha256": "b367cc437856a27fda84a1f1c5c41a4dae0b9e1d0e10440818811a034c04199a",
+      "bytes": 10233
     },
     {
       "path": "scripts/hooks/pre-edit-recall.js",
-      "sha256": "3fb0d08f59f5568c9ff5c52c12cdf69b9468ffc5b070b30e5427163c19c48995",
-      "bytes": 36555
+      "sha256": "2055ae21a2a76daf4e05abd2e79659b75e2dc18c873615bf76b1e964a20a07b9",
+      "bytes": 37319
     },
     {
       "path": "scripts/hooks/session-start.js",

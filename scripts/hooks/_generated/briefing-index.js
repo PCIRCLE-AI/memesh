@@ -6,7 +6,7 @@
 // always-on capture path survives a missing or stale dist/ while staying
 // byte-locked to core — eliminating the hand-mirror drift behind the P0 FTS bug.
 // ============================================================================
-import { redactSecrets, redactUserPaths } from './core-paths.js';
+import { redactMemoryText } from './core-paths.js';
 import { EVIDENCE_LAYER_TYPES, isAutoInjectable, jsonStringLiteral, projectLabel, topologyLine } from './work-topology.js';
 import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
 export const INDEX_MAX_LINES = 40;
@@ -59,7 +59,7 @@ function candidateIsAutoInjectable(metadata) {
 function redact(text) {
     if (!text)
         return '';
-    return redactUserPaths(redactSecrets(String(text))).replace(/\s+/g, ' ').trim();
+    return redactMemoryText(String(text)).replace(/\s+/g, ' ').trim();
 }
 function indexLine(candidate) {
     const title = redact(candidate.title);
