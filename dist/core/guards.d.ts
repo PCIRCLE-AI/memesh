@@ -15,6 +15,6 @@ export interface ActiveGuard {
 export declare const GUARD_TOOLS: Set<string>;
 export declare const GUARD_BENIGN_PROBES: string[];
 export declare function validateGuardSpec(spec: unknown): string[];
-export declare function matchingGuards(guards: ActiveGuard[], tool: string, haystack: string): ActiveGuard[];
+export declare function matchingGuards(guards: ActiveGuard[], tool: string, haystack: string, onInvalid?: (guard: ActiveGuard, error: unknown) => void): ActiveGuard[];
 export declare function guardFromMetadata(lessonId: number, metadata: string | null): ActiveGuard | null;
 //# sourceMappingURL=guards.d.ts.map

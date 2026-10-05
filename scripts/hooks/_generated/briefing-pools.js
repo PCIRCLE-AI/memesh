@@ -6,6 +6,7 @@
 // always-on capture path survives a missing or stale dist/ while staying
 // byte-locked to core — eliminating the hand-mirror drift behind the P0 FTS bug.
 // ============================================================================
+import { redactMemoryText, redactShownTogether } from './core-paths.js';
 import { rankEntities } from './scoring.js';
 import { SESSION_HANDOFF_TYPE, sessionHandoffName } from './session-handoff.js';
 import { INDEX_CANDIDATE_CAP, INDEX_EXCLUDED_TYPES, INDEX_SNIPPET_FETCH_CHARS } from './briefing-index.js';
@@ -147,10 +148,10 @@ export function readSnippets(db, ids) {
     const snippets = new Map();
     if (unique.length === 0)
         return snippets;
-    const rows = db.prepare(`SELECT entity_id, substr(content, 1, ${SNIPPET_FETCH_CHARS}) AS content FROM observations
+    const rows = db.prepare(`SELECT entity_id, content FROM observations
      WHERE entity_id IN (${unique.map(() => '?').join(',')})
      ORDER BY id ASC`).all(...unique);
-    const shown = (content) => content.replace(/\s+/g, ' ').trim().slice(0, SNIPPET_FETCH_CHARS) || null;
+    const shown = (content) => redactMemoryText(content).slice(0, SNIPPET_FETCH_CHARS).replace(/\s+/g, ' ').trim() || null;
     for (const row of rows) {
         const content = String(row.content ?? '');
         const entry = snippets.get(row.entity_id) ?? { first: null, fix: null };
@@ -165,9 +166,11 @@ export function readSnippets(db, ids) {
 export function toTopologyEntity(row, snippets) {
     const signal = parseMetadata(row.metadata)?.signal_score;
     const snippet = snippets.get(row.id);
-    const title = row.title ?? null;
-    const first = snippet?.first ?? null;
-    const fix = row.type && LESSON_TYPE_LIST.includes(row.type) ? snippet?.fix ?? null : null;
+    const [title, first, fix] = redactShownTogether([
+        row.title ?? null,
+        snippet?.first ?? null,
+        row.type && LESSON_TYPE_LIST.includes(row.type) ? snippet?.fix ?? null : null,
+    ]);
     const background = title || first;
     const after = background === fix ? null : background;
     return {
@@ -184,7 +187,7 @@ export function readIndexCandidates(db, projectName) {
     const cols = entityColumns(db);
     const excluded = INDEX_EXCLUDED_TYPES.map(() => '?').join(',');
     const rows = db.prepare(`SELECT e.id, e.name, e.type, ${titleCol(cols)}, e.metadata,
-       (SELECT substr(o.content, 1, ${INDEX_SNIPPET_FETCH_CHARS}) FROM observations o
+       (SELECT o.content FROM observations o
          WHERE o.entity_id = e.id ORDER BY o.id ASC LIMIT 1) AS snippet,
        max(e.created_at, COALESCE((SELECT MAX(o2.created_at) FROM observations o2
          WHERE o2.entity_id = e.id), e.created_at)) AS last_activity
@@ -198,7 +201,7 @@ export function readIndexCandidates(db, projectName) {
         name: row.name,
         type: row.type,
         title: row.title,
-        snippet: row.snippet,
+        snippet: row.snippet == null ? null : redactMemoryText(row.snippet).slice(0, INDEX_SNIPPET_FETCH_CHARS),
         lastActivity: row.last_activity,
         metadata: row.metadata,
     }));

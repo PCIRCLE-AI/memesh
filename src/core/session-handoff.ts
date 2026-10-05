@@ -8,6 +8,7 @@
 // the reads, the write and the record.
 
 import { parseSqliteUtcMs } from './time-utils.js';
+import { redactMemoryText } from './paths.js';
 
 export const SESSION_HANDOFF_TYPE = 'session-handoff';
 
@@ -173,7 +174,13 @@ export function handoffView(
   record: HandoffRecord | null | undefined,
   now: Date = new Date(),
 ): { lines: string[]; status: HandoffStatus } {
-  const text = record ? cleanHandoffText(record.text ?? '') : '';
+  // #523: redacted on DISPLAY as well as at capture. The Stop hook stores a
+  // new handoff redacted, but one stored before that keeps its text for up
+  // to 14 days, and this is the one view both the briefing and the
+  // SessionStart hook render through. Redaction runs on the WHOLE stored
+  // text before `cleanHandoffText` keeps only the last 800 characters, so
+  // the cut cannot expose a fragment of a credential.
+  const text = record ? cleanHandoffText(redactMemoryText(record.text ?? '')) : '';
   if (!record || !text) return { lines: [], status: 'empty' };
   const then = typeof record.observedAt === 'string' ? parseSqliteUtcMs(record.observedAt) : null;
   if (then === null) return { lines: [], status: 'undatable' };

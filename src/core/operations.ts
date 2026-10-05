@@ -13,7 +13,7 @@ import { getDatabase } from '../db.js';
 import { projectOwnershipRefusal } from '../storage/memory-mutation.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { rankEntities } from './scoring.js';
-import { getProjectName } from './paths.js';
+import { getProjectName, redactSecrets, redactTextValues, redactTitleAndObservations, redactVersionText } from './paths.js';
 import { createExplicitLesson } from './lesson-engine.js';
 import { deriveNote, NOTE_DEFAULT_TYPE, type DerivedNote } from './note-derive.js';
 import { canonicalEntityType } from './work-topology.js';
@@ -93,7 +93,7 @@ export function remember(input: RememberInput): RememberResult {
  * Recall answers carry `replaced_history_count` instead of the history
  * itself: every hit's metadata is serialized to the caller, and the history
  * is the one field that can be large. The full history stays readable from
- * `export` and `GET /v1/entities/:name`.
+ * `GET /v1/entities/:name` (masked like recall) and `export` (as stored).
  */
 function summarizeReplacedHistory(entities: Entity[]): Entity[] {
   for (const e of entities) {
@@ -103,6 +103,32 @@ function summarizeReplacedHistory(entities: Entity[]): Entity[] {
     e.metadata = { ...rest, replaced_history_count: history.length };
   }
   return entities;
+}
+
+/**
+ * A memory as recall and the dashboard show it (#523): the title and
+ * observations redacted as one set, each replaced version as one set, and the
+ * other text in its metadata string by string, so a row stored before #523
+ * does not hand a stored credential to whoever reads it. Only this copy
+ * changes: the stored row, the keyword index, the name, tags, ids and scores
+ * stay as they are, and a guard's pattern is kept as given. `export` does not
+ * use it: a backup keeps the stored text.
+ */
+export function shownEntity(entity: Entity): Entity {
+  const shown = redactTitleAndObservations(typeof entity.title === 'string' ? entity.title : undefined, entity.observations);
+  const metadata = entity.metadata === undefined ? undefined : redactTextValues(entity.metadata) as Record<string, unknown>;
+  const guard = entity.metadata?.guard as { pattern?: unknown } | null | undefined;
+  if (metadata && guard && typeof guard.pattern === 'string') {
+    metadata.guard = { ...(metadata.guard as Record<string, unknown>), pattern: guard.pattern };
+  }
+  const history = entity.metadata?.replaced_history;
+  if (metadata && Array.isArray(history)) metadata.replaced_history = history.map(redactVersionText);
+  return {
+    ...entity,
+    ...(typeof entity.title === 'string' ? { title: shown.title } : {}),
+    observations: shown.observations as string[],
+    ...(metadata === undefined ? {} : { metadata }),
+  };
 }
 
 // `type` stays optional: `replace` on an existing name inherits the stored
@@ -129,7 +155,17 @@ function resolveRememberInput(
     // stops that before it arrives; this is the direct-caller copy.
     if (input.type === '') throw new Error('remember needs `name` and `type`, or `note`');
     if (input.type === undefined && !input.replace) throw new Error('remember needs `name` and `type`, or `note`');
-    return { args: input as ResolvedRememberInput, typeGiven: input.type !== undefined };
+    // #523: the structured form gets the same credential redaction the note
+    // form has always had (note-derive.ts), so which argument carried a
+    // connection string no longer decides whether it is stored. `name` and
+    // `tags` are dedup keys and are left alone.
+    return {
+      args: {
+        ...input,
+        ...redactTitleAndObservations(typeof input.title === 'string' ? input.title : undefined, input.observations),
+      } as ResolvedRememberInput,
+      typeGiven: input.type !== undefined,
+    };
   }
   if (input.title !== undefined || input.observations !== undefined) {
     throw new Error('`note` derives title and observations; do not also pass `title` or `observations`');
@@ -334,7 +370,12 @@ function rememberInTransaction(
     }
   ));
   if (replacedVersion) {
-    const version = replacedVersion;
+    // The new version is a new history entry and is redacted like any other
+    // caller text; the entries the row already held are kept as stored
+    // (#523). Redacted BEFORE the bounds are applied: `***REDACTED***`
+    // can be longer than what it replaces, and a version bounded on its raw
+    // bytes was stored at 100 KB against the 64 KB cap.
+    const version = redactVersionText(replacedVersion) as ReplacedVersion;
     kg.updateEntityMetadata(args.name, (current) => {
       const history = Array.isArray(current.replaced_history) ? current.replaced_history as ReplacedVersion[] : [];
       return { ...current, replaced_history: boundReplacedHistory([...history, version]) };
@@ -426,8 +467,9 @@ function rememberInTransaction(
  * Empty query returns recent entities.
  *
  * Deliberately NOT run through `stripControlChars` (#374): an
- * explicit recall returns stored content as-is by design, so the caller who
- * asked for a memory sees exactly what is stored in it.
+ * explicit recall returns the stored text with its control characters, so
+ * the caller who asked for a memory sees what is stored in it; only
+ * credential-shaped text is masked (`shownEntity`, #523).
  */
 export function recall(args: RecallInput): Entity[] {
   const { entities, relevanceMap } = searchAndScore(args);
@@ -455,7 +497,7 @@ function searchAndScore(args: RecallInput): {
     includeArchived: args.include_archived,
     namespace: args.namespace,
   });
-  const entities = summarizeReplacedHistory(searched.entities);
+  const entities = summarizeReplacedHistory(searched.entities).map(shownEntity);
   return {
     entities,
     relevanceMap: args.query ? buildRelevanceMap(entities) : new Map<string, number>(),
@@ -586,12 +628,30 @@ export function forget(args: ForgetInput): ForgetResult {
   // even mention the observation the caller targeted. The schema now rejects
   // an empty string outright (`.min(1)`), so this branch and that one are the
   // only two states left: a selector was given, or it was not.
+  //
+  // #523: the selector must match the stored observation EXACTLY. A row
+  // stored before #523 may still hold a credential as written, and its raw
+  // text finds it. The selector's redacted spelling is never used to remove:
+  // many different texts redact to one `***REDACTED***`, so it removed an
+  // unrelated redacted line and reported success (#523).
+  // When only that spelling is stored, the call is refused as ambiguous and
+  // nothing changes; a line stored redacted is removed by its stored text.
+  // recall shows a line stored before #523 masked, so that shown form selects
+  // only a line whose stored text is the marker itself, never the raw line;
+  // the raw line's selector is its stored text, which `export` returns. The
+  // response echoes the redacted spelling only.
   if (args.observation !== undefined) {
     const result = kg.removeObservation(args.name, args.observation);
+    const shown = redactSecrets(args.observation);
+    if (!result.removed && shown !== args.observation && db.prepare(
+      'SELECT 1 FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = ? AND o.content = ? LIMIT 1',
+    ).get(args.name, shown)) {
+      throw new Error('No exact stored-text match for that observation. recall shows credential-shaped text masked; a line is selected by its stored text, which export returns, or rewrite the memory with replace.');
+    }
     return {
       observation_removed: result.removed,
       name: args.name,
-      observation: args.observation,
+      observation: shown,
       remaining_observations: result.remainingObservations,
       entity_found: result.entityFound,
     };

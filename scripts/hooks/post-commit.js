@@ -5,7 +5,7 @@ import { createHash, randomBytes } from 'crypto';
 import { chmodSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'fs';
 import { MemeshDatabase } from './_generated/sqlite.js';
 import { isAbsolute, join, resolve } from 'path';
-import { AUTO_CAPTURE_TAG, SKIP_REASONS, captureEntity, ensurePrivateDir, getMemeshDirFromDbPath, getProjectName, isAutoCaptureEnabled, isGitCommitCommand, openHookDb, hookErrorReason, hookSourceHost, recordHookOutcome, recordHookRun, truncateTitle } from './_shared.js';
+import { AUTO_CAPTURE_TAG, SKIP_REASONS, captureEntity, ensurePrivateDir, getMemeshDirFromDbPath, getProjectName, isAutoCaptureEnabled, isGitCommitCommand, openHookDb, hookErrorReason, hookSourceHost, recordHookOutcome, recordHookRun, redactSecrets, truncateTitle } from './_shared.js';
 
 const HEAD_MARKER_DIR = 'post-commit-heads';
 const FULL_SHA = /^[a-f0-9]{40,64}$/;
@@ -174,7 +174,9 @@ function captureCommit(db, data, projectName, commit) {
     type: 'commit',
     observations,
     tags: [AUTO_CAPTURE_TAG, `project:${projectName}`, ...(commit.batch ? ['origin:batch'] : [])],
-    title: truncateTitle(commit.message),
+    // #523: redact BEFORE the 200-character cut. `captureEntity` redacts
+    // again, but a secret already cut in half no longer matches its pattern.
+    title: truncateTitle(redactSecrets(commit.message)),
     metadata: whyMetadata,
     sourceHost: hookSourceHost(data, process.env),
   });

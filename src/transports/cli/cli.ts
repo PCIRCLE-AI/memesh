@@ -77,6 +77,14 @@ async function withDatabase<T>(fn: () => T | Promise<T>): Promise<T> {
   }
 }
 
+/** A refused write is one line (or `{"error"}` with --json) and exit 1, never a stack trace. */
+function printRefusal(err: unknown, json: boolean | undefined): void {
+  const error = err instanceof Error ? err.message : String(err);
+  if (json) console.log(JSON.stringify({ error }));
+  else console.error(`Error: ${error}`);
+  process.exitCode = 1;
+}
+
 /**
  * A commander coercion for numeric flags that refuses a value it cannot use.
  *
@@ -668,10 +676,18 @@ program
   .option('--confirm', '[deprecated, no-op] forget is a soft archive — no confirmation needed')
   .action(async (opts) => {
     await withDatabase(() => {
-      const result = forget({
-        name: opts.name,
-        observation: opts.observation,
-      });
+      let result: ReturnType<typeof forget>;
+      try {
+        result = forget({
+          name: opts.name,
+          observation: opts.observation,
+        });
+      } catch (err) {
+        // A refusal (the selector only matches a redacted line, #523) is one
+        // line and exit 1, never a stack trace.
+        printRefusal(err, opts.json);
+        return;
+      }
       // D7: this used to set `process.exitCode = 1` inside the human-readable
       // branches only, so `--json` printed the identical "not found" result
       // and exited 0 — the one output shape a script actually parses was the
@@ -712,7 +728,15 @@ function registerPinCommand(name: string, description: string, pinned: boolean, 
     .option('--json', 'Output as JSON')
     .action(async (opts) => {
       await withDatabase(() => {
-        const result = setPinned(opts.name, pinned);
+        let result: ReturnType<typeof setPinned>;
+        try {
+          result = setPinned(opts.name, pinned);
+        } catch (err) {
+          // A refusal (#523: the memory holds part of a private key) is one
+          // line and exit 1, never a stack trace.
+          printRefusal(err, opts.json);
+          return;
+        }
         if (opts.json) console.log(JSON.stringify(result));
         else console.log(result.found ? onFound(opts.name) : `Entity "${opts.name}" not found`);
         // A pin that pinned nothing exiting 0 is invisible to scripts — the
@@ -1012,15 +1036,24 @@ program
     requireOneOf(opts.severity, ['critical', 'major', 'minor'], '--severity');
     const projectFlag = requireProjectFlag(opts.project);
     await withDatabase(() => {
-      const result = learn({
-        project: projectFlag,
-        error: opts.error,
-        fix: opts.fix,
-        root_cause: opts.rootCause,
-        prevention: opts.prevention,
-        severity: opts.severity as LessonSeverity | undefined,
-        sourceHost: 'cli',
-      });
+      let result: ReturnType<typeof learn>;
+      try {
+        result = learn({
+          project: projectFlag,
+          error: opts.error,
+          fix: opts.fix,
+          root_cause: opts.rootCause,
+          prevention: opts.prevention,
+          severity: opts.severity as LessonSeverity | undefined,
+          sourceHost: 'cli',
+        });
+      } catch (err) {
+        // A refusal (#523: the lesson's memory holds part of a private key, or
+        // the error text is nothing but credentials) is one line and exit 1,
+        // never a stack trace.
+        printRefusal(err, opts.json);
+        return;
+      }
       if (opts.json) {
         console.log(JSON.stringify(result));
       } else {
@@ -1747,7 +1780,15 @@ program
         return;
       }
 
-      const result = setTaskState({ project: projectFlag, patch, sourceHost: 'cli' });
+      let result: ReturnType<typeof setTaskState>;
+      try {
+        result = setTaskState({ project: projectFlag, patch, sourceHost: 'cli' });
+      } catch (err) {
+        // A refusal (#523: the record holds part of a private key) is one
+        // line and exit 1, never a stack trace.
+        printRefusal(err, opts.json);
+        return;
+      }
       if (opts.json) {
         console.log(JSON.stringify(result));
         return;

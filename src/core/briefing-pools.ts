@@ -16,6 +16,7 @@
 // (or reads as NULL) instead of failing it.
 
 import type { MemeshDatabase } from '../storage/sqlite.js';
+import { redactMemoryText, redactShownTogether } from './paths.js';
 import { rankEntities } from './scoring.js';
 import { SESSION_HANDOFF_TYPE, sessionHandoffName } from './session-handoff.js';
 import { INDEX_CANDIDATE_CAP, INDEX_EXCLUDED_TYPES, INDEX_SNIPPET_FETCH_CHARS, type IndexCandidate } from './briefing-index.js';
@@ -284,20 +285,31 @@ export interface Snippet {
 
 /**
  * Each row's first non-empty observation and its latest `Fix: …` observation,
- * bounded in SQL to SNIPPET_FETCH_CHARS, then whitespace flattened and cut to
- * a few line-widths (the final cut is the renderer's, on a word boundary). One
- * query for all of them — this runs before the first turn.
+ * redacted, cut to SNIPPET_FETCH_CHARS, then whitespace flattened (the final
+ * cut is the renderer's, on a word boundary). One query for all of them — this
+ * runs before the first turn.
+ *
+ * The WHOLE observation is read and redacted BEFORE it is cut (#523), not cut
+ * by `substr()` in SQL: a credential longer than the fetch window lost its
+ * terminating `@` to the cut, stopped matching its pattern, and its prefix
+ * was printed (`postgres://user:pppp…`). These are the selected rows only, a
+ * few dozen, so reading whole observations is cheap.
  */
 export function readSnippets(db: MemeshDatabase, ids: readonly number[]): Map<number, Snippet> {
   const unique = [...new Set(ids)];
   const snippets = new Map<number, Snippet>();
   if (unique.length === 0) return snippets;
   const rows = db.prepare(
-    `SELECT entity_id, substr(content, 1, ${SNIPPET_FETCH_CHARS}) AS content FROM observations
+    `SELECT entity_id, content FROM observations
      WHERE entity_id IN (${unique.map(() => '?').join(',')})
      ORDER BY id ASC`,
   ).all(...unique) as Array<{ entity_id: number; content: string | null }>;
-  const shown = (content: string) => content.replace(/\s+/g, ' ').trim().slice(0, SNIPPET_FETCH_CHARS) || null;
+  // Redacted whole, cut to SNIPPET_FETCH_CHARS characters of the redacted
+  // text, THEN flattened: text that starts only after that many characters
+  // (whitespace included) is not shown, on either reader. A credential that
+  // redaction shortens can bring later text inside the bound; that text is
+  // redacted too.
+  const shown = (content: string) => redactMemoryText(content).slice(0, SNIPPET_FETCH_CHARS).replace(/\s+/g, ' ').trim() || null;
   for (const row of rows) {
     const content = String(row.content ?? '');
     const entry = snippets.get(row.entity_id) ?? { first: null, fix: null };
@@ -320,9 +332,15 @@ export function readSnippets(db: MemeshDatabase, ids: readonly number[]): Map<nu
 export function toTopologyEntity(row: PoolRow, snippets: ReadonlyMap<number, Snippet>): TopologyEntity {
   const signal = parseMetadata(row.metadata)?.signal_score;
   const snippet = snippets.get(row.id);
-  const title = row.title ?? null;
-  const first = snippet?.first ?? null;
-  const fix = row.type && LESSON_TYPE_LIST.includes(row.type) ? snippet?.fix ?? null : null;
+  // #464: redacted like the index, so a memory that is in both cannot be
+  // printed verbatim here and redacted a few lines below. What one line shows
+  // is one set: a key split between the title and an observation is masked
+  // as a whole.
+  const [title, first, fix] = redactShownTogether([
+    row.title ?? null,
+    snippet?.first ?? null,
+    row.type && LESSON_TYPE_LIST.includes(row.type) ? snippet?.fix ?? null : null,
+  ]);
   // Shown after the fix, unless it IS the fix (a lesson whose only content, or
   // whose title, is its fix), so a line never reads "Fix: X — Fix: X".
   const background = title || first;
@@ -351,7 +369,7 @@ export function readIndexCandidates(
   const excluded = INDEX_EXCLUDED_TYPES.map(() => '?').join(',');
   const rows = db.prepare(
     `SELECT e.id, e.name, e.type, ${titleCol(cols)}, e.metadata,
-       (SELECT substr(o.content, 1, ${INDEX_SNIPPET_FETCH_CHARS}) FROM observations o
+       (SELECT o.content FROM observations o
          WHERE o.entity_id = e.id ORDER BY o.id ASC LIMIT 1) AS snippet,
        max(e.created_at, COALESCE((SELECT MAX(o2.created_at) FROM observations o2
          WHERE o2.entity_id = e.id), e.created_at)) AS last_activity
@@ -369,7 +387,8 @@ export function readIndexCandidates(
     name: row.name,
     type: row.type,
     title: row.title,
-    snippet: row.snippet,
+    // Whole observation fetched, redacted, THEN bounded (#523; see readSnippets).
+    snippet: row.snippet == null ? null : redactMemoryText(row.snippet).slice(0, INDEX_SNIPPET_FETCH_CHARS),
     lastActivity: row.last_activity,
     // The RAW column: the index's gate tells an absent column (allowed) from
     // unparseable JSON (refused); parsing here would collapse both.

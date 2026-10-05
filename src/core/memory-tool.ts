@@ -24,6 +24,7 @@
 import { getDatabase } from '../db.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { removeFromFts, insertFtsRow, indexedObservationText } from '../storage/fts-index.js';
+import { redactSecretList, redactSecrets, redactTitleAndObservations } from './paths.js';
 import type { Entity, Namespace } from './types.js';
 
 /** The one prefix every path must sit under. Anything else is refused. */
@@ -211,6 +212,16 @@ function renderBody(entity: Entity): string {
 }
 
 /**
+ * The file as `view` shows it (#523): the observations redacted as one set
+ * with the title, so a memory stored before #523 does not show a stored
+ * credential. What is stored is unchanged.
+ */
+function renderShownBody(entity: Entity): string {
+  const shown = redactTitleAndObservations(typeof entity.title === 'string' ? entity.title : undefined, entity.observations);
+  return (shown.observations as string[]).join('\n');
+}
+
+/**
  * Which observation owns each rendered line.
  *
  * Computed from the same text the model was shown rather than assumed to be
@@ -340,7 +351,13 @@ function rewriteObservations(
   getDatabase().transaction(() => {
     kg.clearEntityData(entity.name);
     kg.createEntity(entity.name, entity.type, {
-      observations,
+      // #523: the model's text is redacted like every other write path. The
+      // file's lines are one set (redactSecretList), which covers `insert`
+      // (one new line) and is a second pass for `create`/`str_replace`, which
+      // redact the whole text before splitting it. It also re-redacts lines
+      // the edit did not touch: a memory written before #523 that still holds
+      // a credential loses it on its next edit (documented in the CHANGELOG).
+      observations: redactSecretList(observations),
       tags: entity.tags,
       namespace: entity.namespace,
     });
@@ -394,7 +411,7 @@ function viewEntity(
     return err(`The path ${path} does not exist. Please provide a valid path.`);
   }
 
-  const body = renderBody(entity);
+  const body = renderShownBody(entity);
   const lines = body === '' ? [] : body.split('\n');
 
   if (range === undefined) {
@@ -452,9 +469,13 @@ function createEntityFile(
   // already-exists error as the reference behaviour. Overwriting is chosen
   // here: the model is told it may overwrite, and refusing would leave it
   // unable to rewrite a memory it has just decided is wrong.
-  const oversize = tooLarge(fileText, path);
+  // #523: redact the WHOLE text before it is split into lines. A PEM block
+  // and a `Bearer` + newline + token only match as one piece; per-line
+  // redaction after the split stored the key body verbatim.
+  const text = redactSecrets(fileText);
+  const oversize = tooLarge(text, path);
   if (oversize) return oversize;
-  const observations = fileText === '' ? [] : fileText.split('\n');
+  const observations = text === '' ? [] : text.split('\n');
 
   if (existing) {
     rewriteObservations(kg, existing, observations);
@@ -475,7 +496,8 @@ function createEntityFile(
     );
   }
 
-  kg.createEntity(name, 'note', { observations, namespace });
+  // #523: same redaction as the rewrite path above.
+  kg.createEntity(name, 'note', { observations: redactSecretList(observations), namespace });
   return ok(`File created successfully at: ${path}`);
 }
 
@@ -499,10 +521,21 @@ function strReplace(
   }
 
   const body = renderBody(entity);
+  // #523: `old_str` must appear exactly as the file holds it. `view` shows a
+  // credential stored BEFORE #523 masked, so the masked marker never selects
+  // that raw line; its raw text, which `export` returns, finds it. The redacted spelling of `old_str` is never
+  // used to edit: many different texts redact to one `***REDACTED***`, so it
+  // edited an unrelated redacted line and reported success (#523). When
+  // only that spelling is in the file, the call is refused as ambiguous.
+  // Messages echo the redacted spelling, never the raw one.
+  const shown = redactSecrets(oldStr);
   const first = body.indexOf(oldStr);
+  if (first === -1 && shown !== oldStr && body.includes(shown)) {
+    return err(`No replacement was performed: no exact stored-text match for old_str in ${path}. view shows credential-shaped text masked; old_str must match the stored text, which export returns.`);
+  }
   if (first === -1) {
     return err(
-      `No replacement was performed, old_str \`${oldStr}\` did not appear verbatim in ${path}.`
+      `No replacement was performed, old_str \`${shown}\` did not appear verbatim in ${path}.`
     );
   }
   if (body.indexOf(oldStr, first + 1) !== -1) {
@@ -516,18 +549,26 @@ function strReplace(
       at = body.indexOf(oldStr, at + 1);
     }
     return err(
-      `No replacement was performed. Multiple occurrences of old_str \`${oldStr}\` ` +
+      `No replacement was performed. Multiple occurrences of old_str \`${shown}\` ` +
         `in lines: ${lines.join(', ')}. Please ensure it is unique`
     );
   }
 
-  const replaced = body.slice(0, first) + (newStr ?? '') + body.slice(first + oldStr.length);
+  // #523: the whole edited text is redacted BEFORE it is split into lines
+  // (a multi-line credential only matches as one piece), and the snippet
+  // echoed back is cut from the same redacted text, so the response shows
+  // what was stored rather than what was sent. Note this re-redacts lines
+  // the edit did not touch: a memory written before #523 that still holds a
+  // credential loses it on its next str_replace/insert.
+  const replaced = redactSecrets(body.slice(0, first) + (newStr ?? '') + body.slice(first + oldStr.length));
   const oversize = tooLarge(replaced, path);
   if (oversize) return oversize;
   const observations = replaced === '' ? [] : replaced.split('\n');
   rewriteObservations(kg, entity, observations);
 
-  const at = replaced.slice(0, first).split('\n').length;
+  // The edit's line number, located in the redacted prefix: redaction can
+  // collapse a multi-line block that sat BEFORE the edit into one token.
+  const at = redactSecrets(body.slice(0, first)).split('\n').length;
   const from = Math.max(1, at - 2);
   const snippet = replaced.split('\n').slice(from - 1, at + 2).join('\n');
   return ok(
@@ -553,7 +594,12 @@ function insertLine(
   const entity = findEntity(kg, namespace, name);
   if (!entity) return err(`Error: The path ${path} does not exist`);
 
-  const owners = lineOwners(entity.observations);
+  // Lines are numbered as `view` shows them: a credential stored before #523
+  // that spans lines is shown as one masked line (#523). The shown list keeps
+  // one entry per stored observation, so an owner index points into the
+  // stored list, and the text is inserted there.
+  const shownObservations = redactTitleAndObservations(typeof entity.title === 'string' ? entity.title : undefined, entity.observations).observations as string[];
+  const owners = lineOwners(shownObservations);
   const line = atLine as number;
   if (line < 0 || line > owners.length) {
     return err(
@@ -568,10 +614,24 @@ function insertLine(
   // fragments that separately mean nothing.
   const insertAfter = line === 0 ? -1 : owners[line - 1];
   const observations = [...entity.observations];
+  // #523: redacted BEFORE the size check. `***REDACTED***` is longer than
+  // many of the tokens it replaces (measured: 9,999 characters of short
+  // keys became 16,665), so a size cap checked on the raw text could be
+  // exceeded by what is actually stored. The cap is the persisted limit
+  // for a memory file, so it is checked on the text that will persist.
   observations.splice(insertAfter + 1, 0, text.replace(/\n$/, ''));
-  const oversize = tooLarge(observations.join('\n'), path);
+  // The WHOLE resulting file is redacted, as `create` and `str_replace` do:
+  // a token inserted on the line after an existing `Authorization: Bearer`
+  // line only matches across that line break. When redaction changed
+  // something the lines are re-split, so the file the model sees next is
+  // the file that was stored; when it changed nothing, the observation
+  // boundaries (an inserted observation may itself hold newlines) are kept.
+  const joined = observations.join('\n');
+  const redacted = redactSecrets(joined);
+  const stored = redacted === joined ? observations : redacted.split('\n');
+  const oversize = tooLarge(redacted, path);
   if (oversize) return oversize;
-  rewriteObservations(kg, entity, observations);
+  rewriteObservations(kg, entity, stored);
 
   return ok(`The file ${path} has been edited.`);
 }

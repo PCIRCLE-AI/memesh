@@ -194,4 +194,103 @@ describe('CLI error envelopes: caller mistakes are one line, not a crash', () =>
     const parsed = JSON.parse(check.stdout) as { entities: unknown[] };
     expect(parsed.entities, 'the real observation was stored despite the refusal').toHaveLength(0);
   });
+  // #523: a write beside a lone private-key line a memory already holds is
+  // refused. pin and task reached the user as a stack trace.
+  it('pin and task refused beside a lone key line: one line naming the way out, exit 1, no stack', async () => {
+    const { generateKeyPairSync } = await import('node:crypto');
+    const { DatabaseSync } = await import('node:sqlite');
+    const key = generateKeyPairSync('ec', { namedCurve: 'P-256', privateKeyEncoding: { type: 'pkcs8', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } });
+    const header = String(key.privateKey).split('\n')[0];
+    expect(runCli(['remember', '--name', 'legacy-pin', '--type', 'note', '--obs', 'x']).exitCode).toBe(0);
+    expect(runCli(['task', '--project', 'legacy-task', '--goal', 'start']).exitCode).toBe(0);
+    const db = new DatabaseSync(path.join(home, '.memesh', 'knowledge-graph.db'));
+    db.prepare("UPDATE entities SET metadata = json_set(metadata, '$.note', ?) WHERE name = 'legacy-pin'").run(header);
+    db.prepare("UPDATE entities SET metadata = json_set(metadata, '$.task_state.goal', ?) WHERE type = 'task-state'").run(header);
+    db.close();
+    // Every row and observation, read back after each refusal: nothing may change.
+    const snapshot = () => {
+      const read = new DatabaseSync(path.join(home, '.memesh', 'knowledge-graph.db'));
+      const rows = JSON.stringify([
+        read.prepare('SELECT name, metadata FROM entities ORDER BY id').all(),
+        read.prepare('SELECT entity_id, content FROM observations ORDER BY id').all(),
+      ]);
+      read.close();
+      return rows;
+    };
+    const before = snapshot();
+    const pin = runCli(['pin', '--name', 'legacy-pin']);
+    expect(pin.exitCode).toBe(1);
+    expect(pin.stderr).toContain('memesh unpin');
+    expectNoStackTrace(pin.stderr, 'pin');
+    const task = runCli(['task', '--project', 'legacy-task', '--next', 'ship it']);
+    expect(task.exitCode).toBe(1);
+    expect(task.stderr).toContain('memesh unpin');
+    expectNoStackTrace(task.stderr, 'task');
+    for (const args of [['pin', '--name', 'legacy-pin', '--json'], ['task', '--project', 'legacy-task', '--next', 'ship it', '--json']]) {
+      const json = runCli(args);
+      expect(json.exitCode, args[0]).toBe(1);
+      expect(JSON.parse(json.stdout).error, args[0]).toContain('memesh unpin');
+      expectNoStackTrace(json.stderr, `${args[0]} --json`);
+    }
+    expect(snapshot()).toBe(before);
+  });
+  it('learn refused beside a lone key line: one line, exit 1, parseable --json, nothing changed (#523)', async () => {
+    const { generateKeyPairSync } = await import('node:crypto');
+    const { DatabaseSync } = await import('node:sqlite');
+    const key = generateKeyPairSync('ec', { namedCurve: 'P-256', privateKeyEncoding: { type: 'pkcs8', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } });
+    const header = String(key.privateKey).split('\n')[0];
+    expect(runCli(['learn', '--error', 'deploy failed on staging', '--fix', 'first fix']).exitCode).toBe(0);
+    const dbFile = path.join(home, '.memesh', 'knowledge-graph.db');
+    const db = new DatabaseSync(dbFile);
+    const changed = db.prepare("UPDATE entities SET metadata = json_set(metadata, '$.note', ?) WHERE type = 'lesson_learned'").run(header);
+    db.close();
+    expect(Number(changed.changes)).toBe(1);
+    const snapshot = () => {
+      const read = new DatabaseSync(dbFile);
+      const rows = JSON.stringify([
+        read.prepare('SELECT name, metadata FROM entities ORDER BY id').all(),
+        read.prepare('SELECT entity_id, content FROM observations ORDER BY id').all(),
+      ]);
+      read.close();
+      return rows;
+    };
+    const before = snapshot();
+    const plain = runCli(['learn', '--error', 'deploy failed on staging', '--fix', 'second fix']);
+    expect(plain.exitCode).toBe(1);
+    expect(plain.stderr).toContain('memesh unpin');
+    expect(plain.stderr.trim().split('\n')).toHaveLength(1);
+    expectNoStackTrace(plain.stderr, 'learn');
+    const json = runCli(['learn', '--error', 'deploy failed on staging', '--fix', 'second fix', '--json']);
+    expect(json.exitCode).toBe(1);
+    expect(JSON.parse(json.stdout).error).toContain('memesh unpin');
+    expectNoStackTrace(json.stderr, 'learn --json');
+    expect(snapshot()).toBe(before);
+  });
+
+  it('recall shows a credential stored before #523 masked; the stored row is unchanged (#523)', async () => {
+    const { DatabaseSync } = await import('node:sqlite');
+    const password = 'hunter2hunter2';
+    const url = ['postgres://appuser', `${password}@db.internal:5432/app`].join(':');
+    expect(runCli(['remember', '--name', 'legacy-recall', '--type', 'note', '--obs', 'zebra crossing note']).exitCode).toBe(0);
+    const dbFile = path.join(home, '.memesh', 'knowledge-graph.db');
+    const db = new DatabaseSync(dbFile);
+    // Written before #523: the stored line still holds the password (the keyword index keeps its old words).
+    db.prepare("UPDATE observations SET content = ? WHERE content = 'zebra crossing note'").run(`zebra crossing ${url}`);
+    db.close();
+    const stored = () => {
+      const read = new DatabaseSync(dbFile);
+      const rows = JSON.stringify(read.prepare('SELECT entity_id, content FROM observations ORDER BY id').all());
+      read.close();
+      return rows;
+    };
+    const before = stored();
+    expect(before).toContain(password);
+    const r = runCli(['recall', 'zebra', '--json']);
+    expect(r.exitCode, r.stderr).toBe(0);
+    expect(r.stdout).toContain('legacy-recall');
+    expect(r.stdout).not.toContain(password);
+    expect(r.stdout).toContain('***REDACTED***');
+    // Only the output is masked: the stored line is byte for byte what it was.
+    expect(stored()).toBe(before);
+  });
 });
