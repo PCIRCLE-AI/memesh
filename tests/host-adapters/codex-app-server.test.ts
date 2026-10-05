@@ -36,7 +36,14 @@ interface QueueRequest {
 class FakeWebSocket extends EventEmitter {
   readyState = 0;
   readonly close = vi.fn(() => { this.readyState = 3; });
-  readonly terminate = vi.fn(() => { this.readyState = 3; });
+  // Like ws: terminating a socket that is still connecting reports 'error' on the next tick.
+  readonly terminate = vi.fn(() => {
+    const wasConnecting = this.readyState === 0;
+    this.readyState = 3;
+    if (wasConnecting) {
+      process.nextTick(() => this.emit('error', new Error('WebSocket was closed before the connection was established')));
+    }
+  });
   readonly writes: string[] = [];
   failOnWrite: number | undefined;
 
@@ -269,6 +276,27 @@ describe('Codex app-server host adapter', () => {
 
     await expect(result).rejects.toBeInstanceOf(CodexAppServerTimeoutError);
     expect(socket.terminate).toHaveBeenCalled();
+  });
+
+  it('an open timeout leaves a listener on the socket, so its late error cannot crash the host', async () => {
+    const socket = new FakeWebSocket();
+    const { websocketFactory } = socketSequence(socket);
+    const result = queueCodexAppServerMessage(input(), { websocket_factory: websocketFactory as never, timeout_ms: 20 });
+
+    await expect(result).rejects.toBeInstanceOf(CodexAppServerTimeoutError);
+    // An EventEmitter with no 'error' listener throws on emit, which is an uncaught exception.
+    expect(() => socket.emit('error', new Error('late socket error'))).not.toThrow();
+  });
+
+  it('rejects a JSON null response frame as a protocol error instead of throwing a TypeError', async () => {
+    const socket = new FakeWebSocket();
+    const { websocketFactory } = socketSequence(socket);
+    const result = queueCodexAppServerMessage(input(), { websocket_factory: websocketFactory as never });
+
+    socket.open();
+    await waitForWrites(socket, 1);
+    expect(() => socket.emit('message', Buffer.from('null'), false)).not.toThrow();
+    await expect(result).rejects.toBeInstanceOf(CodexAppServerProtocolError);
   });
 
   it('times out after a queue request has been written and does not report host acceptance', async () => {

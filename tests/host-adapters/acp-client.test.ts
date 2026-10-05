@@ -6,6 +6,7 @@ import {
   AcpClientHostAdapter,
   AcpProcessExitError,
   AcpProtocolError,
+  AcpRemoteError,
   AcpStaleGenerationError,
   AcpTimeoutError,
   AcpUnsupportedCapabilityError,
@@ -75,6 +76,17 @@ function texts(updates: AcpSessionUpdate[]): string[] {
 }
 
 describe('MeMesh ACP host adapter', () => {
+  it('names every adapter error after its class, which the router host client turns into the failure code', () => {
+    for (const error of [
+      new AcpProtocolError('x'), new AcpUnsupportedCapabilityError('x'), new AcpStaleGenerationError('x'),
+      new AcpBusyError('x'), new AcpCancelledError('x'), new AcpTimeoutError('x'),
+      new AcpProcessExitError('x'), new AcpRemoteError('session/prompt', -32_000),
+    ]) {
+      expect(error.name).toBe(error.constructor.name);
+      expect(error.name).not.toBe('Error');
+    }
+  });
+
   it('negotiates ACP, creates a session, registers stable router identity, and sends the complete envelope only in prompt text', async () => {
     const { targetRouter, updates } = await connect();
     expect(targetRouter.registration).toMatchObject({

@@ -44,6 +44,24 @@ function sessionSend(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/** What the router leaves behind when the session's host takes a delivery. */
+function acceptNatively(deliveryId: string): void {
+  const db = getDatabase();
+  const connection = db.prepare(`
+    SELECT connection_id FROM agent_session_connections WHERE project = ? AND session_instance_id = ?
+  `).get(PROJECT, SESSION_A) as { connection_id: string };
+  db.prepare(`
+    INSERT INTO agent_dispatch_attempts (
+      attempt_id, delivery_id, project, principal_id, session_instance_id,
+      connection_id, generation, router_instance_id, attempt_number, result, completed_at
+    ) VALUES ('attempt-native', ?, ?, ?, ?, ?, 1, 'test-router', 1, 'adapter_returned', CURRENT_TIMESTAMP)
+  `).run(deliveryId, PROJECT, PRINCIPAL, SESSION_A, connection.connection_id);
+  db.prepare(`
+    INSERT INTO agent_host_accepts (host_accept_id, attempt_id, delivery_id, adapter_kind, receipt_json)
+    VALUES ('accept-native', 'attempt-native', ?, 'claude-channel', '{"channel":"test"}')
+  `).run(deliveryId);
+}
+
 type FallbackResult = {
   message_id: string;
   delivery_id: string;
@@ -79,6 +97,39 @@ describe('Feature: #497 send can fall back to the principal and keep the intende
     }, refused) as FallbackResult;
     expect(retried.message_id).toBe(result.message_id);
     expect(retried.fallback.from.message_id).toBe(result.fallback.from.message_id);
+  });
+
+  it.each([
+    ['with fallback_to_principal', true],
+    ['without fallback_to_principal', false],
+  ])('a retry %s after the session came back returns the principal message, not a second delivery', async (_label, withFlag) => {
+    registerAgentSession(PROJECT, PRINCIPAL, { sessionId: SESSION_A, disconnected: true, adapterKind: 'claude-channel' });
+    const first = await executeAgentMessageAction(getDatabase(), sessionSend(), {
+      transport: 'mcp', sourceHost: 'codex',
+    }, refused) as FallbackResult;
+    expect(first.target_kind).toBe('principal');
+
+    // A is back: this time the router would hand the session delivery to it and report it accepted.
+    const routerRequests: Array<{ type: string; delivery_id?: string }> = [];
+    const back = {
+      sendRouterRequest: async (_socketPath: string, request: { type: string; delivery_id?: string }) => {
+        routerRequests.push(request);
+        acceptNatively(request.delivery_id as string);
+        return { delivered: true };
+      },
+    };
+    const retry = sessionSend();
+    if (!withFlag) delete (retry as { fallback_to_principal?: boolean }).fallback_to_principal;
+    const retried = await executeAgentMessageAction(getDatabase(), retry, {
+      transport: 'mcp', sourceHost: 'codex',
+    }, back) as FallbackResult & { native_delivery?: unknown };
+
+    expect(retried.message_id).toBe(first.message_id);
+    expect(retried.target_kind).toBe('principal');
+    expect(retried.fallback.reason).toBe('recipient_unavailable');
+    expect(retried.native_delivery).toBeUndefined();
+    expect(routerRequests).toEqual([]);
+    expect(getDatabase().prepare('SELECT COUNT(*) AS n FROM agent_host_accepts').get()).toEqual({ n: 0 });
   });
 
   it('#518: the sender is told when the intended session is not connected, so no session can take the message now', async () => {

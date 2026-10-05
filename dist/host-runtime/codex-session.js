@@ -102,7 +102,11 @@ function recordCompanionLog(dataDir, line) {
     }
 }
 function companionFailureDetail(error) {
-    return routerOutdatedDetail(error) || (error instanceof CompanionRefusal ? ` ${error.message}` : '');
+    const outdated = routerOutdatedDetail(error);
+    if (outdated)
+        return outdated;
+    const message = errorText(error).trim().slice(0, 1000);
+    return message ? ` ${message}` : '';
 }
 function companionFailurePath(launchFile) {
     return `${launchFile}.failed`;
@@ -146,6 +150,8 @@ function takeCompanionFailure(file) {
         return new AgentRouterProtocolError('router_outdated', parsed.message.slice(0, 1000));
     if (parsed.code === 'companion_busy')
         return new CompanionRefusal(parsed.message.slice(0, 1000));
+    if (parsed.code === 'failed')
+        return new Error(parsed.message.slice(0, 1000));
     return null;
 }
 async function launchDetachedCompanion(dataDir, session, input) {
@@ -617,13 +623,12 @@ async function runDetachedCompanion(dataDir, input, failurePath) {
     catch (error) {
         process.exitCode = 1;
         try {
-            const detail = companionFailureDetail(error);
-            if (detail) {
-                publishCompanionFailure(failurePath, {
-                    code: error instanceof CompanionRefusal ? 'companion_busy' : 'router_outdated',
-                    message: error.message,
-                });
-            }
+            recordCompanionLog(dataDir, `companion ${process.pid} could not start: ${errorText(error)}`);
+            publishCompanionFailure(failurePath, {
+                code: error instanceof CompanionRefusal ? 'companion_busy'
+                    : routerOutdatedDetail(error) ? 'router_outdated' : 'failed',
+                message: errorText(error),
+            });
         }
         finally {
             await shutdown();

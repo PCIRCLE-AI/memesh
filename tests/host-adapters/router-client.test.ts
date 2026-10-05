@@ -6,8 +6,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { closeDatabase, openDatabase } from '../../src/db.js';
-import { sendAgentMessage } from '../../src/core/agent-messaging.js';
+import { AgentNativeMessageTooLargeError, sendAgentMessage } from '../../src/core/agent-messaging.js';
 import { AGENT_ROUTER_PROTOCOL_VERSION, AgentRouter, createAgentRouterNotifier } from '../../src/core/agent-router.js';
+import { AcpStaleGenerationError } from '../../src/host-adapters/acp-client.js';
 import {
   connectRouterHost,
   type RouterDelivery,
@@ -612,6 +613,175 @@ describe.skipIf(process.platform === 'win32')('production router host client', (
       WHERE session_instance_id = ? AND generation = ? AND presence_kind = 'heartbeat'
     `).get('session-a', connection!.generation)).toEqual({ count: 0 });
     expect(startRouter).toHaveBeenCalled();
+  });
+
+  it('re-registers after the router answers a heartbeat with stale_generation, and delivery works again', async () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-rc-stale-lease-'));
+    fs.chmodSync(tempDir, 0o700);
+    const socketPath = path.join(tempDir, 'router.sock');
+    // A router that expired the first lease (the host stalled past it) but, like the real one,
+    // answers the late heartbeat with an error frame and keeps the socket open.
+    let registrationCount = 0;
+    let staleReplies = 0;
+    const accepted: Array<Record<string, unknown>> = [];
+    const sockets = new Set<net.Socket>();
+    const server = net.createServer(socket => {
+      sockets.add(socket);
+      socket.once('close', () => sockets.delete(socket));
+      let pending = '';
+      socket.on('data', chunk => {
+        pending += chunk.toString('utf8');
+        for (let newline = pending.indexOf('\n'); newline >= 0; newline = pending.indexOf('\n')) {
+          const request = JSON.parse(pending.slice(0, newline)) as Record<string, unknown>;
+          pending = pending.slice(newline + 1);
+          if (request.type === 'register') {
+            registrationCount += 1;
+            const connectionId = `connection-${registrationCount}`;
+            socket.write(`${JSON.stringify({
+              version: AGENT_ROUTER_PROTOCOL_VERSION,
+              request_id: request.request_id,
+              ok: true,
+              result: { connection_id: connectionId, generation: registrationCount, lease_ms: 200, memesh_version: memeshPackageVersion() },
+            })}\n`);
+            if (registrationCount === 2) {
+              setImmediate(() => socket.write(`${JSON.stringify(validDeliveryFrame(connectionId, registrationCount))}\n`));
+            }
+          } else if (request.type === 'heartbeat' && request.generation === 1) {
+            staleReplies += 1;
+            socket.write(`${JSON.stringify({
+              version: AGENT_ROUTER_PROTOCOL_VERSION,
+              request_id: request.request_id,
+              ok: false,
+              error: { code: 'stale_generation', message: 'The connection generation is no longer current.' },
+            })}\n`);
+          } else if (request.type === 'host_accept') {
+            accepted.push(request);
+          }
+        }
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(socketPath, resolve);
+    });
+    fs.chmodSync(socketPath, 0o600);
+    const delivered = vi.fn(async () => ({ host: 'fixture', status: 'queued' }));
+    try {
+      connection = await connectRouterHost({
+        socket_path: socketPath,
+        auth_token: 'token',
+        identity: {
+          project: 'project-a', principal_id: 'principal-a',
+          session_instance_id: 'session-a', adapter_kind: 'codex-app-server',
+        },
+        deliver: delivered,
+        resilience: { initial_retry_ms: 10, max_retry_ms: 20, retry_jitter: 0 },
+      });
+      expect(connection.generation).toBe(1);
+      await vi.waitFor(() => expect(accepted).toHaveLength(1), { timeout: 5_000 });
+      expect(staleReplies).toBeGreaterThanOrEqual(1);
+      expect(registrationCount).toBe(2);
+      expect(connection.generation).toBe(2);
+      expect(delivered).toHaveBeenCalledTimes(1);
+      expect(accepted[0]).toMatchObject({ type: 'host_accept', delivery_id: 'delivery-a', generation: 2 });
+    } finally {
+      await connection?.close();
+      connection = undefined;
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  });
+
+  it('waits longer between registrations while the router keeps answering stale_generation (at most 7 registrations in 1.5 s)', async () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-rc-stale-forever-'));
+    fs.chmodSync(tempDir, 0o700);
+    const socketPath = path.join(tempDir, 'router.sock');
+    // A router that registers every host but answers every heartbeat with stale_generation.
+    let registrationCount = 0;
+    const sockets = new Set<net.Socket>();
+    const server = net.createServer(socket => {
+      sockets.add(socket);
+      socket.once('close', () => sockets.delete(socket));
+      let pending = '';
+      socket.on('data', chunk => {
+        pending += chunk.toString('utf8');
+        for (let newline = pending.indexOf('\n'); newline >= 0; newline = pending.indexOf('\n')) {
+          const request = JSON.parse(pending.slice(0, newline)) as Record<string, unknown>;
+          pending = pending.slice(newline + 1);
+          const reply = request.type === 'register'
+            ? { ok: true, result: { connection_id: `connection-${++registrationCount}`, generation: registrationCount, lease_ms: 200, memesh_version: memeshPackageVersion() } }
+            : { ok: false, error: { code: 'stale_generation', message: 'The connection generation is no longer current.' } };
+          socket.write(`${JSON.stringify({ version: AGENT_ROUTER_PROTOCOL_VERSION, request_id: request.request_id, ...reply })}\n`);
+        }
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(socketPath, resolve);
+    });
+    fs.chmodSync(socketPath, 0o600);
+    try {
+      connection = await connectRouterHost({
+        socket_path: socketPath,
+        auth_token: 'token',
+        identity: {
+          project: 'project-a', principal_id: 'principal-a',
+          session_instance_id: 'session-a', adapter_kind: 'codex-app-server',
+        },
+        deliver: async () => ({ host: 'fixture', status: 'queued' }),
+        resilience: { initial_retry_ms: 50, max_retry_ms: 2_000, retry_jitter: 0 },
+      });
+      await new Promise(resolve => setTimeout(resolve, 1_500));
+      // Each round is one heartbeat interval (100 ms) plus the retry delay. Without a growing
+      // delay that is a registration every ~150 ms (10 in this window, measured); with it, 5.
+      expect(registrationCount).toBeGreaterThanOrEqual(2);
+      expect(registrationCount).toBeLessThanOrEqual(7);
+    } finally {
+      await connection?.close();
+      connection = undefined;
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  });
+
+  it.each([
+    ['the error class name when the error has no code', () => new AcpStaleGenerationError('ACP delivery generation is stale.'), 'acp_stale_generation_error'],
+    ['the error\'s own code, which the sender acts on', () => new AgentNativeMessageTooLargeError(), 'native_message_too_large'],
+  ])('records a delivery the host rejects under %s', async (_label, makeError, expected) => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-rc-reject-code-'));
+    fs.chmodSync(tempDir, 0o700);
+    const socketPath = path.join(tempDir, 'router.sock');
+    const db = openDatabase(path.join(tempDir, 'messages.db'));
+    router = new AgentRouter({
+      db,
+      socket_path: socketPath,
+      memesh_version: memeshPackageVersion(),
+      adapters: [{ kind: 'codex-app-server', authenticate: value => value.auth_token === 'token' }],
+    });
+    await router.start();
+    connection = await connectRouterHost({
+      socket_path: socketPath,
+      auth_token: 'token',
+      identity: {
+        project: 'project-a', principal_id: 'principal-a',
+        session_instance_id: 'session-a', adapter_kind: 'codex-app-server',
+      },
+      deliver: async () => { throw makeError(); },
+    });
+    const sent = sendAgentMessage(db, {
+      project: 'project-a', sender: 'sender-a', recipient: 'principal-a',
+      idempotency_key: 'rejected', payload: { text: 'untrusted' }, content_type: 'application/json',
+    });
+    await createAgentRouterNotifier(socketPath).notify({
+      project: sent.project,
+      delivery_id: sent.delivery_id,
+      event_id: sent.event_id,
+      target_kind: sent.target_kind,
+      target_id: sent.recipient,
+    });
+    await vi.waitFor(() => expect(db.prepare(
+      'SELECT result, failure_code FROM agent_dispatch_attempts WHERE delivery_id = ? ORDER BY attempt_number LIMIT 1',
+    ).get(sent.delivery_id)).toEqual({ result: 'adapter_rejected', failure_code: expected }));
   });
 
   it('terminates a superseded companion instead of reconnecting against the replacement generation', async () => {
