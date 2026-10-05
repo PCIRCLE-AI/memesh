@@ -61,6 +61,12 @@ interface InboxListDb {
  * A notice-only acceptance (`content: 'notice'`: the Codex queue now carries a
  * short notice, never the body) puts nothing to read in the thread, so it
  * silences no reminder; an acceptance without `content` keeps the meaning above.
+ *
+ * A body-carrying acceptance silences the reminder only while the MeMesh host
+ * connection that accepted it is live (#514): an acceptance recorded before
+ * the queue carried only notices, whose `codex exec` run exited before running
+ * it, left a thread that was never reminded again; the app-server host records
+ * body-carrying acceptances today.
  */
 function hostAcceptedFilter(
   db: InboxDb,
@@ -74,10 +80,15 @@ function hostAcceptedFilter(
   if (!hasTable) return { sql: '', params: [] };
   // A notice-only acceptance put no body in the thread, so it never silences the reminder.
   const carriedBody = "COALESCE(json_extract(h.receipt_json, '$.content'), '') <> 'notice'";
+  const accepterLive = `EXISTS (
+        SELECT 1 FROM agent_dispatch_attempts a
+        JOIN agent_session_connections c ON c.connection_id = a.connection_id
+        WHERE a.attempt_id = h.attempt_id AND c.disconnected_at IS NULL AND c.lease_expires_at_ms > ?)`;
+  const now = Date.now();
   if (session === undefined) {
     return {
-      sql: `AND NOT EXISTS (SELECT 1 FROM agent_host_accepts h WHERE h.delivery_id = d.delivery_id AND ${carriedBody})`,
-      params: [],
+      sql: `AND NOT EXISTS (SELECT 1 FROM agent_host_accepts h WHERE h.delivery_id = d.delivery_id AND ${carriedBody} AND ${accepterLive})`,
+      params: [now],
     };
   }
   const ids = [...sessionAliasChain(db, session)];
@@ -88,8 +99,9 @@ function hostAcceptedFilter(
         AND ${carriedBody}
         AND (json_extract(h.receipt_json, '$.thread_id') IS NULL
           OR json_extract(h.receipt_json, '$.thread_id') IN (${ids.map(() => '?').join(', ')}))
+        AND ${accepterLive}
     )`,
-    params: ids,
+    params: [...ids, now],
   };
 }
 

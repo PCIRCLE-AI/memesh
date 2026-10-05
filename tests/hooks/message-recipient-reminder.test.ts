@@ -687,7 +687,7 @@ describe('Feature: a session that declares MEMESH_RECIPIENT is told when a messa
   describe('Feature: #490 a session-targeted delivery is reminded under its principal, only while live', () => {
     // The router already pushed this delivery into the host (a host_accept
     // row, through the same FK chain the router writes).
-    function seedHostAccept(project: string, deliveryId: string, principal: string, receiptJson = '{}') {
+    function seedHostAccept(project: string, deliveryId: string, principal: string, receiptJson = '{}', accepter: 'live' | 'disconnected' | 'lease-expired' = 'live') {
       const suffix = randomUUID();
       const db = getDatabase();
       db.prepare(`
@@ -699,7 +699,10 @@ describe('Feature: a session that declares MEMESH_RECIPIENT is told when a messa
           connection_id, project, principal_id, session_instance_id, generation,
           adapter_kind, router_instance_id, lease_expires_at_ms
         ) VALUES (?, ?, ?, ?, 1, 'test-adapter', 'test-router', ?)
-      `).run(`connection-${suffix}`, project, principal, `session-${suffix}`, Date.now() + 60_000);
+      `).run(`connection-${suffix}`, project, principal, `session-${suffix}`, Date.now() + (accepter === 'lease-expired' ? -60_000 : 60_000));
+      if (accepter === 'disconnected') {
+        db.prepare("UPDATE agent_session_connections SET disconnected_at = CURRENT_TIMESTAMP, disconnect_reason = 'process_exit' WHERE connection_id = ?").run(`connection-${suffix}`);
+      }
       db.prepare(`
         INSERT INTO agent_dispatch_attempts (
           attempt_id, delivery_id, project, principal_id, session_instance_id,
@@ -741,6 +744,24 @@ describe('Feature: a session that declares MEMESH_RECIPIENT is told when a messa
       expect(context(startT2.stdout)).toContain('1 message waiting for "claude-implementer"');
       const inT1 = run('user-prompt-intent.js', { prompt: 'hello there', session_id: t1, cwd: tmp }, codexEnv);
       expect(inT1.stdout).not.toContain('message waiting');
+    });
+
+    // #514: `codex exec` accepts a message into thread T1 and exits before
+    // running it. The queued copy died with that process, so when T1 is
+    // resumed in a new process the reminder is the only thing left.
+    it.each(['disconnected', 'lease-expired'] as const)('#514: under Codex, a message accepted by a process that has since ended (%s) is reminded in the same thread', async (accepter) => {
+      const t1 = '01a10000-0000-7000-8000-0000000000b1';
+      registerAgentSession('team-room', 'claude-implementer');
+      const sent = await executeAgentMessageAction(getDatabase(), {
+        action: 'send', project: 'team-room', sender: 'codex-lead', recipient: 'claude-implementer',
+        idempotency_key: `k-ended-${accepter}`, payload: { text: 'never ran' }, content_type: 'application/json',
+      }, { transport: 'mcp', sourceHost: 'test-host' }) as { delivery_id: string };
+      seedHostAccept('team-room', sent.delivery_id, 'claude-implementer', JSON.stringify({ host: 'codex-cli', status: 'queued', thread_id: t1 }), accepter);
+
+      const inT1 = run('user-prompt-intent.js', { prompt: 'hello there', session_id: t1, cwd: tmp }, codexEnv);
+      expect(context(inT1.stdout)).toContain('1 message waiting for "claude-implementer"');
+      const startT1 = run('session-start.js', { cwd: tmp, session_id: t1, source: 'resume' }, codexEnv);
+      expect(context(startT1.stdout)).toContain('1 message waiting for "claude-implementer"');
     });
 
     it('under Codex, still reminds about a delivery with no host acceptance', async () => {

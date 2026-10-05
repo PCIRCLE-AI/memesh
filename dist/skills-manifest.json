@@ -38,8 +38,8 @@
     },
     {
       "path": "scripts/hooks/_generated/agent-message-inbox.js",
-      "sha256": "46cc6ae2c0fd1196d7ab3c370e3f377a7204c9535980c1229d085d639e7cd8f5",
-      "bytes": 10426
+      "sha256": "5100d4e6dbb6acdb427fd673440fc5e42966a71f97ebb0b6aa168e7409ddae63",
+      "bytes": 10781
     },
     {
       "path": "scripts/hooks/_generated/agent-scope-id.js",

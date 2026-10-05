@@ -6,10 +6,15 @@ function hostAcceptedFilter(db, excludeHostAccepted, session) {
     if (!hasTable)
         return { sql: '', params: [] };
     const carriedBody = "COALESCE(json_extract(h.receipt_json, '$.content'), '') <> 'notice'";
+    const accepterLive = `EXISTS (
+        SELECT 1 FROM agent_dispatch_attempts a
+        JOIN agent_session_connections c ON c.connection_id = a.connection_id
+        WHERE a.attempt_id = h.attempt_id AND c.disconnected_at IS NULL AND c.lease_expires_at_ms > ?)`;
+    const now = Date.now();
     if (session === undefined) {
         return {
-            sql: `AND NOT EXISTS (SELECT 1 FROM agent_host_accepts h WHERE h.delivery_id = d.delivery_id AND ${carriedBody})`,
-            params: [],
+            sql: `AND NOT EXISTS (SELECT 1 FROM agent_host_accepts h WHERE h.delivery_id = d.delivery_id AND ${carriedBody} AND ${accepterLive})`,
+            params: [now],
         };
     }
     const ids = [...sessionAliasChain(db, session)];
@@ -20,8 +25,9 @@ function hostAcceptedFilter(db, excludeHostAccepted, session) {
         AND ${carriedBody}
         AND (json_extract(h.receipt_json, '$.thread_id') IS NULL
           OR json_extract(h.receipt_json, '$.thread_id') IN (${ids.map(() => '?').join(', ')}))
+        AND ${accepterLive}
     )`,
-        params: ids,
+        params: [...ids, now],
     };
 }
 function intendedSessionFilter(db, session) {
