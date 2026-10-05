@@ -2006,10 +2006,10 @@ is a promise this project was not keeping.
 
 ### memesh kg backfill-relations
 
-Heuristic non-LLM relation backfill for orphan entities. Five rules:
+Heuristic non-LLM relation backfill for orphan entities. It previews by default and writes nothing; `--apply` writes the proposed relations after backing up the database to `backups/kg-before-backfill-relations-<time>.db` beside it, and prints the restore command. With `--project <name>`, both ends of every proposed relation carry that project. Five rules:
 
 1. **Tag co-occurrence**: two active entities sharing ≥ 2 topical tags get a `related-to` edge. Topical filter excludes auto-capture noise (`session_end`, `auto_saved`, `commit`, `completed`, `lesson`, etc.) to prevent cartesian explosion.
-2. **Project clustering**: orphan lessons / decisions / bug-fixes / patterns in a project get a `belongs-to-project` edge to the most recent release / feature / architecture / plan in the same project.
+2. **Project clustering**: orphan lessons / decisions / bug-fixes / patterns in a project get a `belongs-to-project` edge to the most recent release / feature / architecture / plan in the same project. A memory in several projects gets one edge per project, in name order and up to `--max-per-source`; with `--project`, only the edge in that project.
 3. **Session co-occurrence** (`--session-cooccurrence`): high-signal orphans (signal_score ≥ 0.6) sharing a `session:*` tag get a `co-created` edge. Eligible types: lesson_learned, decision, architecture, feature, bug_fix, etc.
 4. **Name-token similarity** (`--name-tokens`): orphans whose tokenized names share ≥ 3 content tokens or Jaccard similarity ≥ 0.50 get a `shares-name-tokens` edge. Stopword list excludes generic qualifiers and month abbreviations to prevent cartesian explosion.
 5. **Evidence links** (on by default; `--no-evidence-links` disables): evidence-layer captures — commits, session insights, session summaries — get an `evidences` edge to the work item they support. Matched by exact session id (a `session:*` tag, or `metadata.session_id` for commits, which carry no session tag by design); with no session match, to the most recent same-project work item created BEFORE the capture. It is the recorded link from a capture to the work it supports; until this has run, a work item has no evidence edges at all. Unlike the other rules, its sources are evidence entities rather than orphans — a commit that already relates to something else is still evidence.
@@ -2017,7 +2017,7 @@ Heuristic non-LLM relation backfill for orphan entities. Five rules:
 **Usage**:
 
 ```bash
-memesh kg backfill-relations [--project <name>] [--dry-run] [--max-per-source <n>] \
+memesh kg backfill-relations [--project <name>] [--apply | --dry-run] [--max-per-source <n>] \
   [--min-shared-tags <n>] [--session-cooccurrence] [--name-tokens] \
   [--min-jaccard <n>] [--all-rules] [--no-evidence-links] [--include-archived] \
   [--reset-idempotency] [--json]
@@ -2027,8 +2027,9 @@ memesh kg backfill-relations [--project <name>] [--dry-run] [--max-per-source <n
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--project <name>` | (all) | Restrict to one project |
-| `--dry-run` | off | Preview proposals without writing |
+| `--project <name>` | (all) | Restrict to one project: both ends of every proposed relation carry it |
+| `--apply` | off | Write the proposed relations, after backing up the database |
+| `--dry-run` | on | Preview only, the default; refused together with `--apply` |
 | `--max-per-source <n>` | 3 | Max edges per orphan |
 | `--min-shared-tags <n>` | 2 | Minimum overlapping topical tags for Rule 1 |
 | `--session-cooccurrence` | off | Enable Rule 3: session co-occurrence |
@@ -2037,7 +2038,7 @@ memesh kg backfill-relations [--project <name>] [--dry-run] [--max-per-source <n
 | `--all-rules` | off | Enable all five rules in one pass |
 | `--no-evidence-links` | (Rule 5 is on) | Disable Rule 5: evidence → work-item links |
 | `--include-archived` | off | Also process archived entities |
-| `--reset-idempotency` | off | Clear the persistent "already-attempted" orphan cache (`memesh_metadata.kg_backfill_processed_v1`) before running, so every orphan is reconsidered |
+| `--reset-idempotency` | off | Reconsider every orphan, including those already attempted; with `--apply` it also clears the persistent "already-attempted" orphan cache (`memesh_metadata.kg_backfill_processed_v1`) |
 | `--json` | off | Output as JSON |
 
 **Idempotency**: re-running this command is cheap by default — orphan IDs considered in a prior run are remembered in `memesh_metadata` and skipped on subsequent runs. Use `--reset-idempotency` after a schema change or when you want every orphan reconsidered from scratch. The output summary reports `idempotency: skipped N orphans` so you can see how many were filtered.

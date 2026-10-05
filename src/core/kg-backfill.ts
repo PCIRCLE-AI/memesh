@@ -389,7 +389,13 @@ export function proposeBackfillCandidates(opts: BackfillOptions = {}, db?: Memes
 
   const tagsByEntity = new Map<number, Set<string>>();
   const entitiesByTag = new Map<string, number[]>();
+  const projectTagsById = new Map<number, Set<string>>();
   for (const row of allTagRows) {
+    if (row.tag.startsWith('project:')) {
+      let projects = projectTagsById.get(row.entity_id);
+      if (!projects) { projects = new Set(); projectTagsById.set(row.entity_id, projects); }
+      projects.add(row.tag.slice('project:'.length));
+    }
     if (!isTopicalTag(row.tag)) continue;
     let set = tagsByEntity.get(row.entity_id);
     if (!set) {
@@ -405,6 +411,12 @@ export function proposeBackfillCandidates(opts: BackfillOptions = {}, db?: Memes
     }
     list.push(row.entity_id);
   }
+
+  // `--project X` scopes both ends of every edge (#529). It used to scope
+  // only the orphans, so Rules 1, 3 and 4 picked partners from every project:
+  // on a real graph 22 of 60 proposed links pointed into another project.
+  const inScope = (id: number): boolean =>
+    !opts.project || (projectTagsById.get(id)?.has(opts.project) ?? false);
 
   // Step 3: per orphan, find peers with ≥ minShared overlapping topical tags
   const candidates: RelationCandidate[] = [];
@@ -431,7 +443,7 @@ export function proposeBackfillCandidates(opts: BackfillOptions = {}, db?: Memes
     for (const tag of orphanTags) {
       const peerIds = entitiesByTag.get(tag) ?? [];
       for (const peerId of peerIds) {
-        if (peerId === orphan.id) continue;
+        if (peerId === orphan.id || !inScope(peerId)) continue;
         overlapByPeer.set(peerId, (overlapByPeer.get(peerId) ?? 0) + 1);
       }
     }
@@ -497,37 +509,31 @@ export function proposeBackfillCandidates(opts: BackfillOptions = {}, db?: Memes
     list.sort((a, b) => (parseSqliteUtcMs(b.created_at) ?? -Infinity) - (parseSqliteUtcMs(a.created_at) ?? -Infinity));
   }
 
-  // Map orphan id -> project tag (if any)
-  const orphanProjectRows = conn.prepare(`
-    SELECT t.entity_id, t.tag
-    FROM tags t
-    JOIN entities e ON e.id = t.entity_id
-    WHERE 1=1 ${statusFilter}
-      AND t.tag LIKE 'project:%'
-      AND NOT EXISTS (SELECT 1 FROM relations r WHERE r.from_entity_id = e.id OR r.to_entity_id = e.id)
-  `).all() as TagRow[];
-  const orphanProject = new Map<number, string>();
-  for (const r of orphanProjectRows) orphanProject.set(r.entity_id, r.tag.slice('project:'.length));
-
+  // An orphan carrying several project tags used to be anchored in whichever
+  // tag was read last (#529). A scoped run anchors it in the project asked
+  // for; an unscoped one in each project it belongs to, in name order, up to
+  // the per-source cap like every other rule.
   for (const orphan of orphans) {
     if (!consumerTypes.has(orphan.type)) continue;
-    const project = orphanProject.get(orphan.id);
-    if (!project) continue;
-    const anchors = anchorsByProject.get(project);
-    if (!anchors || anchors.length === 0) continue;
-    // Link to the SINGLE most-recent anchor in the project — keep
-    // this rule low-volume to maintain signal-to-noise.
-    const anchor = anchors[0];
-    if (anchor.id === orphan.id) continue;
-    candidates.push({
-      fromEntityId: orphan.id,
-      fromName: orphan.name,
-      toEntityId: anchor.id,
-      toName: anchor.name,
-      relationType: 'belongs-to-project',
-      reason: `same-project anchor (${anchor.type})`,
-      strength: 1,
-    });
+    const projects = opts.project ? [opts.project] : [...(projectTagsById.get(orphan.id) ?? [])].sort();
+    let added = 0;
+    for (const project of projects) {
+      if (added >= maxPerSource) break;
+      // Link to the SINGLE most-recent anchor in the project — keep
+      // this rule low-volume to maintain signal-to-noise.
+      const anchor = anchorsByProject.get(project)?.[0];
+      if (!anchor || anchor.id === orphan.id) continue;
+      added++;
+      candidates.push({
+        fromEntityId: orphan.id,
+        fromName: orphan.name,
+        toEntityId: anchor.id,
+        toName: anchor.name,
+        relationType: 'belongs-to-project',
+        reason: `same-project anchor (${anchor.type})`,
+        strength: 1,
+      });
+    }
   }
 
   // ---- Rule 3: Session co-occurrence ----
@@ -589,7 +595,7 @@ export function proposeBackfillCandidates(opts: BackfillOptions = {}, db?: Memes
       const proposedPeers = new Set<number>();
 
       for (const stag of sessionTags) {
-        const peers = (entitiesBySession.get(stag) ?? []).filter((id) => id !== orphan.id);
+        const peers = (entitiesBySession.get(stag) ?? []).filter((id) => id !== orphan.id && inScope(id));
         for (const peerId of peers) {
           if (added >= maxPerSource) break;
           if (proposedPeers.has(peerId)) continue;
@@ -637,7 +643,7 @@ export function proposeBackfillCandidates(opts: BackfillOptions = {}, db?: Memes
 
       const scored: Array<{ id: number; shared: number; jaccard: number }> = [];
       for (const [candidateId, candidateTokens] of tokensByEntity) {
-        if (candidateId === orphan.id) continue;
+        if (candidateId === orphan.id || !inScope(candidateId)) continue;
         const pairKey = `${Math.min(orphan.id, candidateId)}-${Math.max(orphan.id, candidateId)}`;
         if (proposedNamePairs.has(pairKey)) continue;
         let shared = 0;
@@ -727,17 +733,11 @@ export function proposeBackfillCandidates(opts: BackfillOptions = {}, db?: Memes
         } catch { return null; }
       };
       const sessionTagsById = new Map<number, Set<string>>();
-      const projectTagsById = new Map<number, Set<string>>();
       for (const row of allTagRows) {
-        if (row.tag.startsWith('session:')) {
-          let s = sessionTagsById.get(row.entity_id);
-          if (!s) { s = new Set(); sessionTagsById.set(row.entity_id, s); }
-          s.add(row.tag.slice('session:'.length));
-        } else if (row.tag.startsWith('project:')) {
-          let s = projectTagsById.get(row.entity_id);
-          if (!s) { s = new Set(); projectTagsById.set(row.entity_id, s); }
-          s.add(row.tag.slice('project:'.length));
-        }
+        if (!row.tag.startsWith('session:')) continue;
+        let s = sessionTagsById.get(row.entity_id);
+        if (!s) { s = new Set(); sessionTagsById.set(row.entity_id, s); }
+        s.add(row.tag.slice('session:'.length));
       }
       const sessionKeysOf = (id: number, meta: string | null): Set<string> => {
         const keys = new Set(sessionTagsById.get(id) ?? []);

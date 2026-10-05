@@ -60607,7 +60607,16 @@ function proposeBackfillCandidates(opts = {}, db2) {
   `).all();
   const tagsByEntity = /* @__PURE__ */ new Map();
   const entitiesByTag = /* @__PURE__ */ new Map();
+  const projectTagsById = /* @__PURE__ */ new Map();
   for (const row of allTagRows) {
+    if (row.tag.startsWith("project:")) {
+      let projects = projectTagsById.get(row.entity_id);
+      if (!projects) {
+        projects = /* @__PURE__ */ new Set();
+        projectTagsById.set(row.entity_id, projects);
+      }
+      projects.add(row.tag.slice("project:".length));
+    }
     if (!isTopicalTag(row.tag))
       continue;
     let set2 = tagsByEntity.get(row.entity_id);
@@ -60623,6 +60632,7 @@ function proposeBackfillCandidates(opts = {}, db2) {
     }
     list.push(row.entity_id);
   }
+  const inScope = (id) => !opts.project || (projectTagsById.get(id)?.has(opts.project) ?? false);
   const candidates = [];
   const orphanById = /* @__PURE__ */ new Map();
   for (const o of orphans)
@@ -60639,7 +60649,7 @@ function proposeBackfillCandidates(opts = {}, db2) {
     for (const tag of orphanTags) {
       const peerIds = entitiesByTag.get(tag) ?? [];
       for (const peerId of peerIds) {
-        if (peerId === orphan.id)
+        if (peerId === orphan.id || !inScope(peerId))
           continue;
         overlapByPeer.set(peerId, (overlapByPeer.get(peerId) ?? 0) + 1);
       }
@@ -60682,38 +60692,28 @@ function proposeBackfillCandidates(opts = {}, db2) {
   for (const list of anchorsByProject.values()) {
     list.sort((a, b) => (parseSqliteUtcMs(b.created_at) ?? -Infinity) - (parseSqliteUtcMs(a.created_at) ?? -Infinity));
   }
-  const orphanProjectRows = conn.prepare(`
-    SELECT t.entity_id, t.tag
-    FROM tags t
-    JOIN entities e ON e.id = t.entity_id
-    WHERE 1=1 ${statusFilter}
-      AND t.tag LIKE 'project:%'
-      AND NOT EXISTS (SELECT 1 FROM relations r WHERE r.from_entity_id = e.id OR r.to_entity_id = e.id)
-  `).all();
-  const orphanProject = /* @__PURE__ */ new Map();
-  for (const r of orphanProjectRows)
-    orphanProject.set(r.entity_id, r.tag.slice("project:".length));
   for (const orphan of orphans) {
     if (!consumerTypes.has(orphan.type))
       continue;
-    const project = orphanProject.get(orphan.id);
-    if (!project)
-      continue;
-    const anchors = anchorsByProject.get(project);
-    if (!anchors || anchors.length === 0)
-      continue;
-    const anchor = anchors[0];
-    if (anchor.id === orphan.id)
-      continue;
-    candidates.push({
-      fromEntityId: orphan.id,
-      fromName: orphan.name,
-      toEntityId: anchor.id,
-      toName: anchor.name,
-      relationType: "belongs-to-project",
-      reason: `same-project anchor (${anchor.type})`,
-      strength: 1
-    });
+    const projects = opts.project ? [opts.project] : [...projectTagsById.get(orphan.id) ?? []].sort();
+    let added = 0;
+    for (const project of projects) {
+      if (added >= maxPerSource)
+        break;
+      const anchor = anchorsByProject.get(project)?.[0];
+      if (!anchor || anchor.id === orphan.id)
+        continue;
+      added++;
+      candidates.push({
+        fromEntityId: orphan.id,
+        fromName: orphan.name,
+        toEntityId: anchor.id,
+        toName: anchor.name,
+        relationType: "belongs-to-project",
+        reason: `same-project anchor (${anchor.type})`,
+        strength: 1
+      });
+    }
   }
   if (opts.includeSessionCooccurrence) {
     const minScore = opts.minSessionSignalScore ?? 0.6;
@@ -60780,7 +60780,7 @@ function proposeBackfillCandidates(opts = {}, db2) {
       let added = 0;
       const proposedPeers = /* @__PURE__ */ new Set();
       for (const stag of sessionTags) {
-        const peers = (entitiesBySession.get(stag) ?? []).filter((id) => id !== orphan.id);
+        const peers = (entitiesBySession.get(stag) ?? []).filter((id) => id !== orphan.id && inScope(id));
         for (const peerId of peers) {
           if (added >= maxPerSource)
             break;
@@ -60822,7 +60822,7 @@ function proposeBackfillCandidates(opts = {}, db2) {
         continue;
       const scored = [];
       for (const [candidateId, candidateTokens] of tokensByEntity) {
-        if (candidateId === orphan.id)
+        if (candidateId === orphan.id || !inScope(candidateId))
           continue;
         const pairKey = `${Math.min(orphan.id, candidateId)}-${Math.max(orphan.id, candidateId)}`;
         if (proposedNamePairs.has(pairKey))
@@ -60889,23 +60889,15 @@ function proposeBackfillCandidates(opts = {}, db2) {
         }
       };
       const sessionTagsById = /* @__PURE__ */ new Map();
-      const projectTagsById = /* @__PURE__ */ new Map();
       for (const row of allTagRows) {
-        if (row.tag.startsWith("session:")) {
-          let s = sessionTagsById.get(row.entity_id);
-          if (!s) {
-            s = /* @__PURE__ */ new Set();
-            sessionTagsById.set(row.entity_id, s);
-          }
-          s.add(row.tag.slice("session:".length));
-        } else if (row.tag.startsWith("project:")) {
-          let s = projectTagsById.get(row.entity_id);
-          if (!s) {
-            s = /* @__PURE__ */ new Set();
-            projectTagsById.set(row.entity_id, s);
-          }
-          s.add(row.tag.slice("project:".length));
+        if (!row.tag.startsWith("session:"))
+          continue;
+        let s = sessionTagsById.get(row.entity_id);
+        if (!s) {
+          s = /* @__PURE__ */ new Set();
+          sessionTagsById.set(row.entity_id, s);
         }
+        s.add(row.tag.slice("session:".length));
       }
       const sessionKeysOf = (id, meta3) => {
         const keys = new Set(sessionTagsById.get(id) ?? []);
@@ -64065,29 +64057,60 @@ program2.command("upgrade-plugin").description("Upgrade the Claude Code plugin i
   process.exit(run.status ?? 1);
 });
 var kgCmd = program2.command("kg").description("Knowledge graph maintenance");
-kgCmd.command("backfill-relations").description("Propose / apply deterministic relations to connect orphan entities").option("--project <name>", "Restrict to one project").option("--dry-run", "Show proposals without writing (default off \u2014 use to preview)").option("--max-per-source <n>", "Max edges per orphan (default 3)", wholeNumber("--max-per-source"), 3).option("--min-shared-tags <n>", "Min shared topical tags to gate co-occurrence rule (default 2)", wholeNumber("--min-shared-tags"), 2).option("--include-archived", "Also process archived entities").option("--session-cooccurrence", "Rule 3: link high-signal orphans co-created in the same session").option("--name-tokens", "Rule 4: link orphans sharing \u22653 name content tokens (or Jaccard \u2265 0.50)").option("--min-jaccard <n>", "Jaccard threshold for name similarity (default 0.50)", unitFraction("--min-jaccard")).option("--all-rules", "Enable all heuristic rules (Rules 1\u20135)").option("--no-evidence-links", "Disable Rule 5: evidence \u2192 work-item links via shared session id (on by default \u2014 these edges feed the graph's evidence badges)").option("--reset-idempotency", 'Clear the persistent "already-attempted" orphan cache before running (use after schema changes or to reconsider every orphan)').option("--json", "Output as JSON").action(async (opts) => {
-  await withDatabase(async () => {
-    const { backfillRelations: backfillRelations2, proposeBackfillCandidates: proposeBackfillCandidates2 } = await Promise.resolve().then(() => (init_kg_backfill(), kg_backfill_exports));
-    const allRules = !!opts.allRules;
-    const baseOpts = {
-      project: opts.project,
-      maxEdgesPerSource: opts.maxPerSource,
-      minSharedTags: opts.minSharedTags,
-      includeArchived: !!opts.includeArchived,
-      dryRun: !!opts.dryRun,
-      includeSessionCooccurrence: allRules || !!opts.sessionCooccurrence,
-      includeNameTokenSimilarity: allRules || !!opts.nameTokens,
-      includeEvidenceLinks: opts.evidenceLinks !== false,
-      minNameJaccard: opts.minJaccard,
-      resetIdempotency: !!opts.resetIdempotency
-    };
-    if (opts.dryRun) {
-      const { candidates, skippedOrphanIds } = proposeBackfillCandidates2(baseOpts);
+function backUpDatabase(label) {
+  const dbPath = getDbPath();
+  const backupDir = path21.join(path21.dirname(dbPath), "backups");
+  const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
+  const backupPath = path21.join(backupDir, `kg-before-${label}-${stamp}.db`);
+  fs24.mkdirSync(backupDir, { recursive: true, mode: 448 });
+  getDatabase().prepare("VACUUM INTO ?").run(backupPath);
+  return { dbPath, backupPath };
+}
+function restoreCommand(dbPath, backupPath) {
+  const dotQuoted = `"${backupPath.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  return `sqlite3 ${shellQuoteIfNeeded(dbPath)} ${shellQuoteIfNeeded(`.restore ${dotQuoted}`)}`;
+}
+kgCmd.command("backfill-relations").description("Propose relations that connect orphan entities; writes them only with --apply, after a backup").option("--project <name>", "Restrict to one project: both ends of every proposed relation carry it").option("--apply", "Write the proposed relations. Backs up the database first. Without it, only a preview is shown.").option("--dry-run", "Preview only (the default)").option("--max-per-source <n>", "Max edges per orphan (default 3)", wholeNumber("--max-per-source"), 3).option("--min-shared-tags <n>", "Min shared topical tags to gate co-occurrence rule (default 2)", wholeNumber("--min-shared-tags"), 2).option("--include-archived", "Also process archived entities").option("--session-cooccurrence", "Rule 3: link high-signal orphans co-created in the same session").option("--name-tokens", "Rule 4: link orphans sharing \u22653 name content tokens (or Jaccard \u2265 0.50)").option("--min-jaccard <n>", "Jaccard threshold for name similarity (default 0.50)", unitFraction("--min-jaccard")).option("--all-rules", "Enable all heuristic rules (Rules 1\u20135)").option("--no-evidence-links", "Disable Rule 5: evidence \u2192 work-item links via shared session id (on by default \u2014 these edges feed the graph's evidence badges)").option("--reset-idempotency", 'Reconsider every orphan, including those already attempted. With --apply it also clears the "already-attempted" cache.').option("--json", "Output as JSON").action(async (opts) => {
+  if (opts.apply && opts.dryRun) {
+    console.error("Error: --apply writes and --dry-run previews; pass one of them.");
+    process.exitCode = 1;
+    return;
+  }
+  const { backfillRelations: backfillRelations2, proposeBackfillCandidates: proposeBackfillCandidates2 } = await Promise.resolve().then(() => (init_kg_backfill(), kg_backfill_exports));
+  const allRules = !!opts.allRules;
+  const baseOpts = {
+    project: opts.project,
+    maxEdgesPerSource: opts.maxPerSource,
+    minSharedTags: opts.minSharedTags,
+    includeArchived: !!opts.includeArchived,
+    includeSessionCooccurrence: allRules || !!opts.sessionCooccurrence,
+    includeNameTokenSimilarity: allRules || !!opts.nameTokens,
+    includeEvidenceLinks: opts.evidenceLinks !== false,
+    minNameJaccard: opts.minJaccard
+  };
+  if (!opts.apply) {
+    if (!fs24.existsSync(getDbPath())) {
+      if (opts.json)
+        console.log(JSON.stringify({ candidates: [], skippedOrphanIds: [] }, null, 2));
+      else
+        console.log(`No MeMesh database yet (${getDbPath()}); nothing to connect.`);
+      return;
+    }
+    let readOnlyDb;
+    try {
+      readOnlyDb = (await Promise.resolve().then(() => (init_project_tags(), project_tags_exports))).openReadOnlyForPreview(getDbPath());
+    } catch (err) {
+      console.error(`Error: memesh cannot open its database read-only (${err instanceof Error ? err.message : String(err)}). Run \`memesh doctor\`.`);
+      process.exitCode = 1;
+      return;
+    }
+    try {
+      const { candidates, skippedOrphanIds } = proposeBackfillCandidates2({ ...baseOpts, dryRun: true, ignoreIdempotency: !!opts.resetIdempotency }, readOnlyDb);
       if (opts.json) {
         console.log(JSON.stringify({ candidates, skippedOrphanIds }, null, 2));
         return;
       }
-      console.log(`Proposed ${candidates.length} relation${candidates.length === 1 ? "" : "s"} (dry-run, nothing written).`);
+      console.log(`Proposed ${candidates.length} relation${candidates.length === 1 ? "" : "s"}.`);
       const sample = candidates.slice(0, 20);
       for (const c of sample) {
         console.log(`  ${c.fromName}  --[${c.relationType}]-->  ${c.toName}   (${c.reason})`);
@@ -64105,11 +64128,28 @@ kgCmd.command("backfill-relations").description("Propose / apply deterministic r
         console.log("");
         console.log(`  idempotency: ${skippedOrphanIds.length} orphan${skippedOrphanIds.length === 1 ? "" : "s"} skipped (already attempted in a prior run; use --reset-idempotency to reconsider).`);
       }
+      console.log(`
+Nothing written. Re-run with --apply to write ${candidates.length === 1 ? "it" : "them"} (the database is backed up first).`);
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
+    } finally {
+      readOnlyDb.close();
+    }
+    return;
+  }
+  await withDatabase(async () => {
+    let backup;
+    try {
+      backup = backUpDatabase("backfill-relations");
+    } catch (err) {
+      console.error(`Error: could not back up the database before writing (${err instanceof Error ? err.message : String(err)}); nothing was changed.`);
+      process.exitCode = 1;
       return;
     }
-    const result = backfillRelations2(baseOpts);
+    const result = backfillRelations2({ ...baseOpts, dryRun: false, resetIdempotency: !!opts.resetIdempotency });
     if (opts.json) {
-      console.log(JSON.stringify(result, null, 2));
+      console.log(JSON.stringify({ ...result, backupPath: backup.backupPath }, null, 2));
       return;
     }
     console.log(`Proposed ${result.candidatesProposed} relations, wrote ${result.edgesWritten} new edges.`);
@@ -64127,6 +64167,8 @@ kgCmd.command("backfill-relations").description("Propose / apply deterministic r
     if (result.orphansMarkedProcessed > 0) {
       console.log(`  idempotency: marked ${result.orphansMarkedProcessed} new orphan${result.orphansMarkedProcessed === 1 ? "" : "s"} as attempted.`);
     }
+    console.log(`  Backup: ${backup.backupPath}`);
+    console.log(`  Restore if needed (stop every memesh process first): ${restoreCommand(backup.dbPath, backup.backupPath)}`);
   });
 });
 function requireAgentScopeArg(value, field, flag) {
@@ -64188,13 +64230,10 @@ Nothing written. Re-run with --apply to commit (the DB is backed up first).`);
       console.log(`Nothing carries project ${opts.from} \u2014 no entity tags and no agent-message rows. Nothing to do.`);
       return;
     }
-    const dbPath = getDbPath();
-    const backupDir = path21.join(path21.dirname(dbPath), "backups");
-    const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-    const backupPath = path21.join(backupDir, `kg-before-rename-project-${stamp}.db`);
+    let dbPath;
+    let backupPath;
     try {
-      fs24.mkdirSync(backupDir, { recursive: true, mode: 448 });
-      getDatabase().prepare("VACUUM INTO ?").run(backupPath);
+      ({ dbPath, backupPath } = backUpDatabase("rename-project"));
     } catch (err) {
       console.error(`\u274C Could not back up the DB before applying (${err instanceof Error ? err.message : err}); aborting without changes.`);
       process.exitCode = 1;
@@ -64216,8 +64255,7 @@ Nothing written. Re-run with --apply to commit (the DB is backed up first).`);
     console.log(`  ${result.renamed} renamed, ${result.merged} merged (${result.affectedEntities} entities total)`);
     console.log(`  ${result.messageRows - result.messageRowsBlocked} agent-message row(s) moved${result.messageRowsBlocked > 0 ? `, ${result.messageRowsBlocked} left in place (${to2} already holds an equivalent row)` : ""}`);
     console.log(`  Backup: ${backupPath}`);
-    const dotQuoted = `"${backupPath.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-    console.log(`  Restore if needed (stop every memesh process first): sqlite3 ${shellQuoteIfNeeded(dbPath)} ${shellQuoteIfNeeded(`.restore ${dotQuoted}`)}`);
+    console.log(`  Restore if needed (stop every memesh process first): ${restoreCommand(dbPath, backupPath)}`);
   };
   if (!opts.from !== !opts.to) {
     console.error("Error: provide BOTH --from and --to (or neither, to list).");

@@ -162,7 +162,16 @@ export function proposeBackfillCandidates(opts = {}, db) {
   `).all();
     const tagsByEntity = new Map();
     const entitiesByTag = new Map();
+    const projectTagsById = new Map();
     for (const row of allTagRows) {
+        if (row.tag.startsWith('project:')) {
+            let projects = projectTagsById.get(row.entity_id);
+            if (!projects) {
+                projects = new Set();
+                projectTagsById.set(row.entity_id, projects);
+            }
+            projects.add(row.tag.slice('project:'.length));
+        }
         if (!isTopicalTag(row.tag))
             continue;
         let set = tagsByEntity.get(row.entity_id);
@@ -178,6 +187,7 @@ export function proposeBackfillCandidates(opts = {}, db) {
         }
         list.push(row.entity_id);
     }
+    const inScope = (id) => !opts.project || (projectTagsById.get(id)?.has(opts.project) ?? false);
     const candidates = [];
     const orphanById = new Map();
     for (const o of orphans)
@@ -194,7 +204,7 @@ export function proposeBackfillCandidates(opts = {}, db) {
         for (const tag of orphanTags) {
             const peerIds = entitiesByTag.get(tag) ?? [];
             for (const peerId of peerIds) {
-                if (peerId === orphan.id)
+                if (peerId === orphan.id || !inScope(peerId))
                     continue;
                 overlapByPeer.set(peerId, (overlapByPeer.get(peerId) ?? 0) + 1);
             }
@@ -240,38 +250,28 @@ export function proposeBackfillCandidates(opts = {}, db) {
     for (const list of anchorsByProject.values()) {
         list.sort((a, b) => (parseSqliteUtcMs(b.created_at) ?? -Infinity) - (parseSqliteUtcMs(a.created_at) ?? -Infinity));
     }
-    const orphanProjectRows = conn.prepare(`
-    SELECT t.entity_id, t.tag
-    FROM tags t
-    JOIN entities e ON e.id = t.entity_id
-    WHERE 1=1 ${statusFilter}
-      AND t.tag LIKE 'project:%'
-      AND NOT EXISTS (SELECT 1 FROM relations r WHERE r.from_entity_id = e.id OR r.to_entity_id = e.id)
-  `).all();
-    const orphanProject = new Map();
-    for (const r of orphanProjectRows)
-        orphanProject.set(r.entity_id, r.tag.slice('project:'.length));
     for (const orphan of orphans) {
         if (!consumerTypes.has(orphan.type))
             continue;
-        const project = orphanProject.get(orphan.id);
-        if (!project)
-            continue;
-        const anchors = anchorsByProject.get(project);
-        if (!anchors || anchors.length === 0)
-            continue;
-        const anchor = anchors[0];
-        if (anchor.id === orphan.id)
-            continue;
-        candidates.push({
-            fromEntityId: orphan.id,
-            fromName: orphan.name,
-            toEntityId: anchor.id,
-            toName: anchor.name,
-            relationType: 'belongs-to-project',
-            reason: `same-project anchor (${anchor.type})`,
-            strength: 1,
-        });
+        const projects = opts.project ? [opts.project] : [...(projectTagsById.get(orphan.id) ?? [])].sort();
+        let added = 0;
+        for (const project of projects) {
+            if (added >= maxPerSource)
+                break;
+            const anchor = anchorsByProject.get(project)?.[0];
+            if (!anchor || anchor.id === orphan.id)
+                continue;
+            added++;
+            candidates.push({
+                fromEntityId: orphan.id,
+                fromName: orphan.name,
+                toEntityId: anchor.id,
+                toName: anchor.name,
+                relationType: 'belongs-to-project',
+                reason: `same-project anchor (${anchor.type})`,
+                strength: 1,
+            });
+        }
     }
     if (opts.includeSessionCooccurrence) {
         const minScore = opts.minSessionSignalScore ?? 0.6;
@@ -330,7 +330,7 @@ export function proposeBackfillCandidates(opts = {}, db) {
             let added = 0;
             const proposedPeers = new Set();
             for (const stag of sessionTags) {
-                const peers = (entitiesBySession.get(stag) ?? []).filter((id) => id !== orphan.id);
+                const peers = (entitiesBySession.get(stag) ?? []).filter((id) => id !== orphan.id && inScope(id));
                 for (const peerId of peers) {
                     if (added >= maxPerSource)
                         break;
@@ -372,7 +372,7 @@ export function proposeBackfillCandidates(opts = {}, db) {
                 continue;
             const scored = [];
             for (const [candidateId, candidateTokens] of tokensByEntity) {
-                if (candidateId === orphan.id)
+                if (candidateId === orphan.id || !inScope(candidateId))
                     continue;
                 const pairKey = `${Math.min(orphan.id, candidateId)}-${Math.max(orphan.id, candidateId)}`;
                 if (proposedNamePairs.has(pairKey))
@@ -440,24 +440,15 @@ export function proposeBackfillCandidates(opts = {}, db) {
                 }
             };
             const sessionTagsById = new Map();
-            const projectTagsById = new Map();
             for (const row of allTagRows) {
-                if (row.tag.startsWith('session:')) {
-                    let s = sessionTagsById.get(row.entity_id);
-                    if (!s) {
-                        s = new Set();
-                        sessionTagsById.set(row.entity_id, s);
-                    }
-                    s.add(row.tag.slice('session:'.length));
+                if (!row.tag.startsWith('session:'))
+                    continue;
+                let s = sessionTagsById.get(row.entity_id);
+                if (!s) {
+                    s = new Set();
+                    sessionTagsById.set(row.entity_id, s);
                 }
-                else if (row.tag.startsWith('project:')) {
-                    let s = projectTagsById.get(row.entity_id);
-                    if (!s) {
-                        s = new Set();
-                        projectTagsById.set(row.entity_id, s);
-                    }
-                    s.add(row.tag.slice('project:'.length));
-                }
+                s.add(row.tag.slice('session:'.length));
             }
             const sessionKeysOf = (id, meta) => {
                 const keys = new Set(sessionTagsById.get(id) ?? []);

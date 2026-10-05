@@ -31,19 +31,24 @@
       "reason": "Demo tags are optional; an entity with no tags correctly contributes an empty added-tag list.",
       "triaged": "2026-09-06 provider-vector retirement audit"
     },
-    "C5 src/core/kg-backfill.ts:432": {
+    "C5 src/core/kg-backfill.ts:444": {
       "class": "SAFE-MAP-ABSENCE",
       "reason": "A missing tag bucket correctly means there are no peer candidates for that tag.",
       "triaged": "2026-09-06 provider-vector retirement audit"
     },
-    "C5 src/core/kg-backfill.ts:585": {
+    "C5 src/core/kg-backfill.ts:518": {
+      "class": "SAFE-OPTIONAL-COLLECTION",
+      "reason": "An unscoped orphan without project tags belongs to no project, so Rule 2 correctly anchors it nowhere (#529).",
+      "triaged": "2026-10-05 #529"
+    },
+    "C5 src/core/kg-backfill.ts:591": {
       "class": "SAFE-OPTIONAL-COLLECTION",
       "reason": "An orphan without session tags correctly has no session-derived candidates.",
       "triaged": "2026-09-06 provider-vector retirement audit"
     },
-    "C5 src/core/kg-backfill.ts:592": {
+    "C5 src/core/kg-backfill.ts:598": {
       "class": "SAFE-MAP-ABSENCE",
-      "reason": "A session tag with no eligible peer correctly contributes no candidates.",
+      "reason": "A session tag with no eligible peer (or none in the requested project) correctly contributes no candidates.",
       "triaged": "2026-09-06 provider-vector retirement audit"
     },
     "C5 src/core/kg-backfill.ts:743": {

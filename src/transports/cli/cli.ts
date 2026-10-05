@@ -2178,11 +2178,36 @@ const kgCmd = program
   .command('kg')
   .description('Knowledge graph maintenance');
 
+/**
+ * Back up the whole database beside it before a command rewrites it: not in
+ * the current directory (#519), and with VACUUM INTO rather than a file copy,
+ * because the database runs in WAL mode and a copy of the main file alone
+ * misses whatever the -wal file still holds. Throws when no backup was made.
+ */
+function backUpDatabase(label: string): { dbPath: string; backupPath: string } {
+  const dbPath = getDbPath();
+  const backupDir = path.join(path.dirname(dbPath), 'backups');
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backupPath = path.join(backupDir, `kg-before-${label}-${stamp}.db`);
+  fs.mkdirSync(backupDir, { recursive: true, mode: 0o700 });
+  // Owner-private like the database: opening it set the umask to 077.
+  getDatabase().prepare('VACUUM INTO ?').run(backupPath);
+  return { dbPath, backupPath };
+}
+
+function restoreCommand(dbPath: string, backupPath: string): string {
+  // sqlite3 reads the dot-command argument as a double-quoted string, then
+  // the shell reads the whole command: quote for both.
+  const dotQuoted = `"${backupPath.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  return `sqlite3 ${shellQuoteIfNeeded(dbPath)} ${shellQuoteIfNeeded(`.restore ${dotQuoted}`)}`;
+}
+
 kgCmd
   .command('backfill-relations')
-  .description('Propose / apply deterministic relations to connect orphan entities')
-  .option('--project <name>', 'Restrict to one project')
-  .option('--dry-run', 'Show proposals without writing (default off — use to preview)')
+  .description('Propose relations that connect orphan entities; writes them only with --apply, after a backup')
+  .option('--project <name>', 'Restrict to one project: both ends of every proposed relation carry it')
+  .option('--apply', 'Write the proposed relations. Backs up the database first. Without it, only a preview is shown.')
+  .option('--dry-run', 'Preview only (the default)')
   .option('--max-per-source <n>', 'Max edges per orphan (default 3)', wholeNumber('--max-per-source'), 3)
   .option('--min-shared-tags <n>', 'Min shared topical tags to gate co-occurrence rule (default 2)', wholeNumber('--min-shared-tags'), 2)
   .option('--include-archived', 'Also process archived entities')
@@ -2191,33 +2216,55 @@ kgCmd
   .option('--min-jaccard <n>', 'Jaccard threshold for name similarity (default 0.50)', unitFraction('--min-jaccard'))
   .option('--all-rules', 'Enable all heuristic rules (Rules 1–5)')
   .option('--no-evidence-links', 'Disable Rule 5: evidence → work-item links via shared session id (on by default — these edges feed the graph\'s evidence badges)')
-  .option('--reset-idempotency', 'Clear the persistent "already-attempted" orphan cache before running (use after schema changes or to reconsider every orphan)')
+  .option('--reset-idempotency', 'Reconsider every orphan, including those already attempted. With --apply it also clears the "already-attempted" cache.')
   .option('--json', 'Output as JSON')
   .action(async (opts) => {
-    await withDatabase(async () => {
-      const { backfillRelations, proposeBackfillCandidates } = await import('../../core/kg-backfill.js');
-      const allRules = !!opts.allRules;
-      const baseOpts = {
-        project: opts.project,
-        maxEdgesPerSource: opts.maxPerSource,
-        minSharedTags: opts.minSharedTags,
-        includeArchived: !!opts.includeArchived,
-        dryRun: !!opts.dryRun,
-        includeSessionCooccurrence: allRules || !!opts.sessionCooccurrence,
-        includeNameTokenSimilarity: allRules || !!opts.nameTokens,
-        // Commander's --no-evidence-links negation: opts.evidenceLinks is
-        // true unless the user passed the flag. Rule 5 is default-ON.
-        includeEvidenceLinks: opts.evidenceLinks !== false,
-        minNameJaccard: opts.minJaccard,
-        resetIdempotency: !!opts.resetIdempotency,
-      };
-      if (opts.dryRun) {
-        const { candidates, skippedOrphanIds } = proposeBackfillCandidates(baseOpts);
+    if (opts.apply && opts.dryRun) {
+      console.error('Error: --apply writes and --dry-run previews; pass one of them.');
+      process.exitCode = 1;
+      return;
+    }
+    const { backfillRelations, proposeBackfillCandidates } = await import('../../core/kg-backfill.js');
+    const allRules = !!opts.allRules;
+    const baseOpts = {
+      project: opts.project,
+      maxEdgesPerSource: opts.maxPerSource,
+      minSharedTags: opts.minSharedTags,
+      includeArchived: !!opts.includeArchived,
+      includeSessionCooccurrence: allRules || !!opts.sessionCooccurrence,
+      includeNameTokenSimilarity: allRules || !!opts.nameTokens,
+      // Commander's --no-evidence-links negation: opts.evidenceLinks is
+      // true unless the user passed the flag. Rule 5 is default-ON.
+      includeEvidenceLinks: opts.evidenceLinks !== false,
+      minNameJaccard: opts.minJaccard,
+    };
+
+    if (!opts.apply) {
+      // The preview writes nothing (#529). A normal open does write
+      // (auto-decay and the other one-time passes run on it), so it reads
+      // through the same read-only handle as the rename-project preview, and
+      // --reset-idempotency only ignores the cache instead of clearing it.
+      if (!fs.existsSync(getDbPath())) {
+        if (opts.json) console.log(JSON.stringify({ candidates: [], skippedOrphanIds: [] }, null, 2));
+        else console.log(`No MeMesh database yet (${getDbPath()}); nothing to connect.`);
+        return;
+      }
+      let readOnlyDb: MemeshDatabase;
+      try {
+        readOnlyDb = (await import('../../core/project-tags.js')).openReadOnlyForPreview(getDbPath());
+      } catch (err) {
+        console.error(`Error: memesh cannot open its database read-only (${err instanceof Error ? err.message : String(err)}). Run \`memesh doctor\`.`);
+        process.exitCode = 1;
+        return;
+      }
+      try {
+        const { candidates, skippedOrphanIds } = proposeBackfillCandidates(
+          { ...baseOpts, dryRun: true, ignoreIdempotency: !!opts.resetIdempotency }, readOnlyDb);
         if (opts.json) {
           console.log(JSON.stringify({ candidates, skippedOrphanIds }, null, 2));
           return;
         }
-        console.log(`Proposed ${candidates.length} relation${candidates.length === 1 ? '' : 's'} (dry-run, nothing written).`);
+        console.log(`Proposed ${candidates.length} relation${candidates.length === 1 ? '' : 's'}.`);
         const sample = candidates.slice(0, 20);
         for (const c of sample) {
           console.log(`  ${c.fromName}  --[${c.relationType}]-->  ${c.toName}   (${c.reason})`);
@@ -2234,11 +2281,30 @@ kgCmd
           console.log('');
           console.log(`  idempotency: ${skippedOrphanIds.length} orphan${skippedOrphanIds.length === 1 ? '' : 's'} skipped (already attempted in a prior run; use --reset-idempotency to reconsider).`);
         }
+        console.log(`\nNothing written. Re-run with --apply to write ${candidates.length === 1 ? 'it' : 'them'} (the database is backed up first).`);
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      } finally {
+        readOnlyDb.close();
+      }
+      return;
+    }
+
+    await withDatabase(async () => {
+      // The backup comes before the proposal: with --reset-idempotency the
+      // proposal itself clears the cache.
+      let backup: { dbPath: string; backupPath: string };
+      try {
+        backup = backUpDatabase('backfill-relations');
+      } catch (err) {
+        console.error(`Error: could not back up the database before writing (${err instanceof Error ? err.message : String(err)}); nothing was changed.`);
+        process.exitCode = 1;
         return;
       }
-      const result = backfillRelations(baseOpts);
+      const result = backfillRelations({ ...baseOpts, dryRun: false, resetIdempotency: !!opts.resetIdempotency });
       if (opts.json) {
-        console.log(JSON.stringify(result, null, 2));
+        console.log(JSON.stringify({ ...result, backupPath: backup.backupPath }, null, 2));
         return;
       }
       console.log(`Proposed ${result.candidatesProposed} relations, wrote ${result.edgesWritten} new edges.`);
@@ -2256,6 +2322,8 @@ kgCmd
       if (result.orphansMarkedProcessed > 0) {
         console.log(`  idempotency: marked ${result.orphansMarkedProcessed} new orphan${result.orphansMarkedProcessed === 1 ? '' : 's'} as attempted.`);
       }
+      console.log(`  Backup: ${backup.backupPath}`);
+      console.log(`  Restore if needed (stop every memesh process first): ${restoreCommand(backup.dbPath, backup.backupPath)}`);
     });
   });
 
@@ -2328,17 +2396,10 @@ kgCmd
       }
 
       // --apply: back up the whole database before any mutation (recoverable).
-      // Beside the database, not in the current directory (#519), and with
-      // VACUUM INTO rather than a file copy: the database runs in WAL mode, so
-      // a copy of the main file alone misses whatever the -wal file still holds.
-      const dbPath = getDbPath();
-      const backupDir = path.join(path.dirname(dbPath), 'backups');
-      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const backupPath = path.join(backupDir, `kg-before-rename-project-${stamp}.db`);
+      let dbPath: string;
+      let backupPath: string;
       try {
-        fs.mkdirSync(backupDir, { recursive: true, mode: 0o700 });
-        // Owner-private like the database: opening it set the umask to 077.
-        getDatabase().prepare('VACUUM INTO ?').run(backupPath);
+        ({ dbPath, backupPath } = backUpDatabase('rename-project'));
       } catch (err) {
         console.error(`❌ Could not back up the DB before applying (${err instanceof Error ? err.message : err}); aborting without changes.`);
         process.exitCode = 1;
@@ -2358,10 +2419,7 @@ kgCmd
       console.log(`  ${result.renamed} renamed, ${result.merged} merged (${result.affectedEntities} entities total)`);
       console.log(`  ${result.messageRows - result.messageRowsBlocked} agent-message row(s) moved${result.messageRowsBlocked > 0 ? `, ${result.messageRowsBlocked} left in place (${to} already holds an equivalent row)` : ''}`);
       console.log(`  Backup: ${backupPath}`);
-      // sqlite3 reads the dot-command argument as a double-quoted string, then
-      // the shell reads the whole command: quote for both.
-      const dotQuoted = `"${backupPath.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
-      console.log(`  Restore if needed (stop every memesh process first): sqlite3 ${shellQuoteIfNeeded(dbPath)} ${shellQuoteIfNeeded(`.restore ${dotQuoted}`)}`);
+      console.log(`  Restore if needed (stop every memesh process first): ${restoreCommand(dbPath, backupPath)}`);
     };
 
     // --to is a NEW routing identity — the same shape `agent setup` and the
