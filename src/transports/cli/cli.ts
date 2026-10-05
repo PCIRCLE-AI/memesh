@@ -39,6 +39,7 @@ import { executeAgentMessageAction } from '../agent-messaging.js';
 import { hostSessionFromEnv } from '../../core/host-session.js';
 import {
   getAgentMessageStorageReport,
+  normalizeAgentMessageCutoff,
   pruneTerminalAgentMessagePayloads,
 } from '../../core/agent-message-storage.js';
 import {
@@ -1299,7 +1300,7 @@ messageStorageCmd
       });
       console.log(JSON.stringify({
         policy: {
-          cutoff: new Date(opts.cutoff).toISOString(),
+          cutoff: normalizeAgentMessageCutoff(opts.cutoff),
           quota_bytes: process.env.MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES ?? null,
           automatic_pruning: false,
         },

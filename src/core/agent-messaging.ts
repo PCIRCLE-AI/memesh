@@ -5,6 +5,7 @@ import {
   enforceAgentMessageStorageQuota,
 } from './agent-message-storage.js';
 import { sessionAliasChain } from './agent-message-inbox.js';
+import { sqliteUtcToIso } from './time-utils.js';
 import {
   AGENT_SCOPE_ID_MAX_LENGTH,
   agentScopeIdRejection,
@@ -623,7 +624,7 @@ export function fetchAgentMessage(db: MemeshDatabase, input: FetchAgentMessageIn
     correlation_id: row.correlation_id,
     reply_to: row.reply_to_message_id,
     privacy: parsePrivacy(row.privacy),
-    created_at: row.created_at,
+    created_at: sqliteUtcToIso(row.created_at),
     payload: parseJsonObjectOrValue(row.payload_json),
     provenance: parseJsonObject(row.provenance_json, 'provenance_json'),
   };
@@ -1223,7 +1224,7 @@ function rowToAckFact(row: AckFactRow): AgentAckFact {
     actor: row.actor,
     idempotency_key: row.idempotency_key,
     detail: parseJsonObject(row.detail_json, 'detail_json'),
-    created_at: row.created_at,
+    created_at: sqliteUtcToIso(row.created_at),
   };
 }
 
@@ -1235,7 +1236,7 @@ function rowToWorkflowFact(row: WorkflowFactRow): AgentWorkflowFact {
     workflow_state: row.workflow_state,
     idempotency_key: row.idempotency_key,
     detail: parseJsonObject(row.detail_json, 'detail_json'),
-    created_at: row.created_at,
+    created_at: sqliteUtcToIso(row.created_at),
   };
 }
 
@@ -1247,7 +1248,7 @@ function rowToRetentionFact(row: RetentionFactRow): AgentRetentionFact {
     retention_state: row.retention_state,
     idempotency_key: row.idempotency_key,
     detail: parseJsonObject(row.detail_json, 'detail_json'),
-    created_at: row.created_at,
+    created_at: sqliteUtcToIso(row.created_at),
   };
 }
 
@@ -1285,7 +1286,7 @@ function rowToSentAgentMessage(row: MessageJoinRow): SentAgentMessage {
     correlation_id: row.correlation_id,
     reply_to: row.reply_to_message_id,
     privacy: parsePrivacy(row.privacy),
-    created_at: row.created_at,
+    created_at: sqliteUtcToIso(row.created_at),
     provenance: parseJsonObject(row.provenance_json, 'provenance_json'),
   };
 }
@@ -1302,7 +1303,7 @@ function rowToEventHeader(row: EventRow): AgentMessageEventHeader {
     correlation_id: row.correlation_id,
     reply_to: row.reply_to_message_id,
     privacy: parsePrivacy(row.privacy),
-    created_at: row.created_at,
+    created_at: sqliteUtcToIso(row.created_at),
   };
 }
 
@@ -1315,7 +1316,7 @@ function rowToReceipt(row: ReceiptRow): AgentMessageReceipt {
     recipient: row.recipient,
     actor: row.actor,
     idempotency_key: row.idempotency_key,
-    created_at: row.created_at,
+    created_at: sqliteUtcToIso(row.created_at),
   };
 
   switch (row.receipt_kind) {

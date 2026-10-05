@@ -934,6 +934,8 @@ The `action` field is one of:
 
 The receipt base is `project`, `recipient`, `message_id`, and a stable `idempotency_key`. `disposition` and `activation` also accept an optional bounded `detail` string.
 
+In a `message` response, `created_at` (on a sent message, an event, a fetched payload, a receipt and a fact) and `accepted_at` (on a native acceptance) are ISO 8601 UTC, `YYYY-MM-DDTHH:MM:SSZ`, for example `2026-09-21T20:35:59Z`. `delivery_state.observed_at` is ISO 8601 UTC with milliseconds.
+
 Additional `send` fields:
 
 | Parameter | Type | Required | Description |
@@ -954,6 +956,7 @@ Exact-recipient routing is not per-agent authentication or an ACL. A caller that
 
 The CLI also exposes owner-operated storage accounting and bounded retention:
 
+- `--cutoff` takes an ISO timestamp, or SQLite's form `2026-09-21 20:35:59`, which is read as UTC. The report's `policy.cutoff` is the cutoff it applied, in ISO 8601 UTC.
 - `memesh message storage report --cutoff <ISO timestamp>` reports logical payload, protected/unresolved rows, prunable terminal rows, cursor/session/presence/dispatch/acceptance audit counts, reusable SQLite pages, and main/WAL file sizes.
 - `memesh message storage prune --cutoff <ISO timestamp> [--batch-size 1..1000]` is a dry-run; `--apply` replaces only payloads whose every delivery has an explicit ACK and an old terminal disposition. It preserves lifecycle audit facts.
 - `MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES=<non-negative integer>` enables an owner-selected hard logical-payload quota. Over-quota sends fail atomically with `storage_quota_exceeded`. It is not a whole-file disk quota: metadata, indexes, audit rows, reusable pages, and WAL bytes remain visible through the storage report and require an owner disk/headroom policy. No quota or automatic retention policy is enabled by default.

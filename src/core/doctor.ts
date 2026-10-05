@@ -27,7 +27,7 @@ import { UNSPACED_SCRIPT_GLOB_RUN3 } from '../storage/fts-index.js';
 import { MemeshDatabase } from '../storage/sqlite.js';
 import { AUTO_CAPTURE_TAG } from './types.js';
 import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
-import { parseSqliteUtcMs } from './time-utils.js';
+import { parseSqliteUtcMs, sqliteUtcToIso } from './time-utils.js';
 import { autoCaptureDecision } from './capture-flag.js';
 import {
   captureLivenessVerdict, parseHookOutcomes, summarizeHookOutcomes, summarizeTypeTrends,
@@ -529,7 +529,7 @@ function inspectCodexQueueDaemon(db: MemeshDatabase): DoctorCheck | undefined {
 
     // Every stuck thread is named: the fix below asks for a prompt in each.
     const named = stuck
-      .map((row) => `${row.recipient} in ${row.project} (${row.created_at.replace(' ', 'T')}Z)`)
+      .map((row) => `${row.recipient} in ${row.project} (${sqliteUtcToIso(row.created_at)})`)
       .join(', ');
     return createCheck(
       'codex-queue-daemon',

@@ -25068,6 +25068,10 @@ function parseSqliteUtcMs(sqliteTimestamp) {
     return null;
   return then;
 }
+function sqliteUtcToIso(sqliteTimestamp) {
+  const ms = parseSqliteUtcMs(sqliteTimestamp);
+  return ms === null ? sqliteTimestamp : new Date(ms).toISOString().replace(".000Z", "Z");
+}
 
 // dist/storage/schema.js
 var SCHEMA_SQL = `
@@ -30559,7 +30563,7 @@ function fetchAgentMessage(db2, input) {
     correlation_id: row.correlation_id,
     reply_to: row.reply_to_message_id,
     privacy: parsePrivacy(row.privacy),
-    created_at: row.created_at,
+    created_at: sqliteUtcToIso(row.created_at),
     payload: parseJsonObjectOrValue(row.payload_json),
     provenance: parseJsonObject(row.provenance_json, "provenance_json")
   };
@@ -30893,7 +30897,7 @@ function rowToSentAgentMessage(row) {
     correlation_id: row.correlation_id,
     reply_to: row.reply_to_message_id,
     privacy: parsePrivacy(row.privacy),
-    created_at: row.created_at,
+    created_at: sqliteUtcToIso(row.created_at),
     provenance: parseJsonObject(row.provenance_json, "provenance_json")
   };
 }
@@ -30909,7 +30913,7 @@ function rowToEventHeader(row) {
     correlation_id: row.correlation_id,
     reply_to: row.reply_to_message_id,
     privacy: parsePrivacy(row.privacy),
-    created_at: row.created_at
+    created_at: sqliteUtcToIso(row.created_at)
   };
 }
 function rowToReceipt(row) {
@@ -30921,7 +30925,7 @@ function rowToReceipt(row) {
     recipient: row.recipient,
     actor: row.actor,
     idempotency_key: row.idempotency_key,
-    created_at: row.created_at
+    created_at: sqliteUtcToIso(row.created_at)
   };
   switch (row.receipt_kind) {
     case "intake": {
@@ -31630,7 +31634,7 @@ function nativeAcceptance(row) {
     delivery_id: row.delivery_id,
     adapter_kind: row.adapter_kind,
     receipt: parseStoredObject(row.receipt_json, "agent_host_accepts.receipt_json"),
-    accepted_at: row.created_at
+    accepted_at: sqliteUtcToIso(row.created_at)
   };
 }
 async function requireExactSessionNativeAcceptance(db2, sent, dependencies) {
@@ -31765,7 +31769,7 @@ function readPublicReceiptsSnapshot(db2, input) {
         actor: row.actor,
         idempotency_key: row.idempotency_key,
         detail: parseStoredObject(row.detail_json, "agent_ack_facts.detail_json"),
-        created_at: row.created_at
+        created_at: sqliteUtcToIso(row.created_at)
       }),
       rank: 2,
       order: row.fact_order
@@ -31787,7 +31791,7 @@ function readPublicReceiptsSnapshot(db2, input) {
         workflow_state: row.workflow_state,
         idempotency_key: row.idempotency_key,
         detail: parseStoredObject(row.detail_json, "agent_workflow_facts.detail_json"),
-        created_at: row.created_at
+        created_at: sqliteUtcToIso(row.created_at)
       }),
       rank: 3,
       order: row.fact_order
@@ -31843,7 +31847,7 @@ function projectHostAccept(delivery, fact) {
     attempt_id: fact.attempt_id,
     adapter_kind: fact.adapter_kind,
     receipt: parseStoredObject(fact.receipt_json, "agent_host_accepts.receipt_json"),
-    created_at: fact.created_at
+    created_at: sqliteUtcToIso(fact.created_at)
   };
 }
 function projectAckFact(delivery, fact) {

@@ -1,6 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import type { MemeshDatabase } from '../storage/sqlite.js';
+import { parseSqliteUtcMs } from './time-utils.js';
+
+const SQLITE_FORM = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 
 /** Workflow facts accepted as final delivery outcomes. Unknown states protect data. */
 const TERMINAL_WORKFLOW_STATES = new Set(['completed', 'cancelled', 'rejected']);
@@ -118,7 +121,7 @@ export function getAgentMessageStorageReport(
   db: MemeshDatabase,
   options: AgentMessageStorageReportOptions,
 ): AgentMessageStorageReport {
-  const cutoff = normalizeCutoff(options.cutoff);
+  const cutoff = normalizeAgentMessageCutoff(options.cutoff);
   const states = readMessageStates(db, cutoff);
   const lifecycle = db.prepare(`
     SELECT
@@ -181,7 +184,7 @@ export function pruneTerminalAgentMessagePayloads(
   db: MemeshDatabase,
   options: AgentMessageRetentionOptions,
 ): AgentMessageRetentionResult {
-  const cutoff = normalizeCutoff(options.cutoff);
+  const cutoff = normalizeAgentMessageCutoff(options.cutoff);
   const batchSize = normalizeBatchSize(options.batchSize);
   const dryRun = options.dryRun === undefined ? true : options.dryRun;
   const actor = normalizeActor(options.actor);
@@ -472,8 +475,16 @@ function stableTombstone(payloadHash: string, originalPayloadBytes: number): str
   });
 }
 
-function normalizeCutoff(value: Date | string): string {
-  const date = value instanceof Date ? value : new Date(value);
+/**
+ * The cutoff a report or prune applies, as ISO 8601 UTC. A cutoff in SQLite's
+ * own form (`2026-09-21 20:35:59`, with a space) is UTC, like every timestamp
+ * it is compared with; `new Date()` would read it as local time (#403). Every
+ * other string, including ISO without a zone, is parsed by `new Date()` exactly
+ * as before.
+ */
+export function normalizeAgentMessageCutoff(value: Date | string): string {
+  const sqliteMs = typeof value === 'string' && SQLITE_FORM.test(value) ? parseSqliteUtcMs(value) : null;
+  const date = value instanceof Date ? value : new Date(sqliteMs ?? value);
   if (Number.isNaN(date.getTime())) {
     throw new AgentMessageStorageError('invalid_retention_cutoff', 'Agent message retention cutoff must be a valid date.');
   }

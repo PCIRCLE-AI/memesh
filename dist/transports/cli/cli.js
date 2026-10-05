@@ -3768,6 +3768,10 @@ function parseSqliteUtcMs(sqliteTimestamp) {
     return null;
   return then;
 }
+function sqliteUtcToIso(sqliteTimestamp) {
+  const ms = parseSqliteUtcMs(sqliteTimestamp);
+  return ms === null ? sqliteTimestamp : new Date(ms).toISOString().replace(".000Z", "Z");
+}
 var init_time_utils = __esm({
   "dist/core/time-utils.js"() {
     "use strict";
@@ -23439,7 +23443,7 @@ var init_zod = __esm({
 import { createHash as createHash5, randomUUID } from "node:crypto";
 import fs10 from "node:fs";
 function getAgentMessageStorageReport(db2, options) {
-  const cutoff = normalizeCutoff(options.cutoff);
+  const cutoff = normalizeAgentMessageCutoff(options.cutoff);
   const states = readMessageStates(db2, cutoff);
   const lifecycle = db2.prepare(`
     SELECT
@@ -23493,7 +23497,7 @@ function getAgentMessageStorageReport(db2, options) {
   };
 }
 function pruneTerminalAgentMessagePayloads(db2, options) {
-  const cutoff = normalizeCutoff(options.cutoff);
+  const cutoff = normalizeAgentMessageCutoff(options.cutoff);
   const batchSize = normalizeBatchSize(options.batchSize);
   const dryRun = options.dryRun === void 0 ? true : options.dryRun;
   const actor = normalizeActor(options.actor);
@@ -23723,8 +23727,9 @@ function stableTombstone(payloadHash, originalPayloadBytes) {
     }
   });
 }
-function normalizeCutoff(value) {
-  const date5 = value instanceof Date ? value : new Date(value);
+function normalizeAgentMessageCutoff(value) {
+  const sqliteMs = typeof value === "string" && SQLITE_FORM.test(value) ? parseSqliteUtcMs(value) : null;
+  const date5 = value instanceof Date ? value : new Date(sqliteMs ?? value);
   if (Number.isNaN(date5.getTime())) {
     throw new AgentMessageStorageError("invalid_retention_cutoff", "Agent message retention cutoff must be a valid date.");
   }
@@ -23769,10 +23774,12 @@ function safeFileSize(filePath) {
     return null;
   }
 }
-var TERMINAL_WORKFLOW_STATES, DEFAULT_BATCH_SIZE, MAX_BATCH_SIZE, AgentMessageStorageError, AgentMessageStorageQuotaExceededError, AGENT_MESSAGE_TERMINAL_WORKFLOW_STATES;
+var SQLITE_FORM, TERMINAL_WORKFLOW_STATES, DEFAULT_BATCH_SIZE, MAX_BATCH_SIZE, AgentMessageStorageError, AgentMessageStorageQuotaExceededError, AGENT_MESSAGE_TERMINAL_WORKFLOW_STATES;
 var init_agent_message_storage = __esm({
   "dist/core/agent-message-storage.js"() {
     "use strict";
+    init_time_utils();
+    SQLITE_FORM = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
     TERMINAL_WORKFLOW_STATES = /* @__PURE__ */ new Set(["completed", "cancelled", "rejected"]);
     DEFAULT_BATCH_SIZE = 100;
     MAX_BATCH_SIZE = 1e3;
@@ -24085,7 +24092,7 @@ function fetchAgentMessage(db2, input) {
     correlation_id: row.correlation_id,
     reply_to: row.reply_to_message_id,
     privacy: parsePrivacy(row.privacy),
-    created_at: row.created_at,
+    created_at: sqliteUtcToIso(row.created_at),
     payload: parseJsonObjectOrValue(row.payload_json),
     provenance: parseJsonObject(row.provenance_json, "provenance_json")
   };
@@ -24419,7 +24426,7 @@ function rowToSentAgentMessage(row) {
     correlation_id: row.correlation_id,
     reply_to: row.reply_to_message_id,
     privacy: parsePrivacy(row.privacy),
-    created_at: row.created_at,
+    created_at: sqliteUtcToIso(row.created_at),
     provenance: parseJsonObject(row.provenance_json, "provenance_json")
   };
 }
@@ -24435,7 +24442,7 @@ function rowToEventHeader(row) {
     correlation_id: row.correlation_id,
     reply_to: row.reply_to_message_id,
     privacy: parsePrivacy(row.privacy),
-    created_at: row.created_at
+    created_at: sqliteUtcToIso(row.created_at)
   };
 }
 function rowToReceipt(row) {
@@ -24447,7 +24454,7 @@ function rowToReceipt(row) {
     recipient: row.recipient,
     actor: row.actor,
     idempotency_key: row.idempotency_key,
-    created_at: row.created_at
+    created_at: sqliteUtcToIso(row.created_at)
   };
   switch (row.receipt_kind) {
     case "intake": {
@@ -24618,6 +24625,7 @@ var init_agent_messaging = __esm({
     "use strict";
     init_agent_message_storage();
     init_agent_message_inbox();
+    init_time_utils();
     init_agent_scope_id();
     MAX_SCOPE_FIELD = AGENT_SCOPE_ID_MAX_LENGTH;
     MAX_IDEMPOTENCY_KEY = 200;
@@ -26439,7 +26447,7 @@ function nativeAcceptance(row) {
     delivery_id: row.delivery_id,
     adapter_kind: row.adapter_kind,
     receipt: parseStoredObject(row.receipt_json, "agent_host_accepts.receipt_json"),
-    accepted_at: row.created_at
+    accepted_at: sqliteUtcToIso(row.created_at)
   };
 }
 async function requireExactSessionNativeAcceptance(db2, sent, dependencies) {
@@ -26574,7 +26582,7 @@ function readPublicReceiptsSnapshot(db2, input) {
         actor: row.actor,
         idempotency_key: row.idempotency_key,
         detail: parseStoredObject(row.detail_json, "agent_ack_facts.detail_json"),
-        created_at: row.created_at
+        created_at: sqliteUtcToIso(row.created_at)
       }),
       rank: 2,
       order: row.fact_order
@@ -26596,7 +26604,7 @@ function readPublicReceiptsSnapshot(db2, input) {
         workflow_state: row.workflow_state,
         idempotency_key: row.idempotency_key,
         detail: parseStoredObject(row.detail_json, "agent_workflow_facts.detail_json"),
-        created_at: row.created_at
+        created_at: sqliteUtcToIso(row.created_at)
       }),
       rank: 3,
       order: row.fact_order
@@ -26652,7 +26660,7 @@ function projectHostAccept(delivery, fact) {
     attempt_id: fact.attempt_id,
     adapter_kind: fact.adapter_kind,
     receipt: parseStoredObject(fact.receipt_json, "agent_host_accepts.receipt_json"),
-    created_at: fact.created_at
+    created_at: sqliteUtcToIso(fact.created_at)
   };
 }
 function projectAckFact(delivery, fact) {
@@ -26859,6 +26867,7 @@ var init_agent_messaging2 = __esm({
     init_paths();
     init_agent_message_inbox();
     init_work_topology();
+    init_time_utils();
     AgentRecipientUnavailableError = class extends AgentMessagingError {
       code = "recipient_unavailable";
       constructor(detail) {
@@ -57264,7 +57273,7 @@ function inspectCodexQueueDaemon(db2) {
     if (stuck.length === 0) {
       return createInfo("codex-queue-daemon", "Codex stuck-message release", `${latestPerThread.size} Codex thread(s) ran the stuck-message release in the last 7 days; the latest run in each found the app-server daemon. Nothing is waiting on it.`);
     }
-    const named = stuck.map((row) => `${row.recipient} in ${row.project} (${row.created_at.replace(" ", "T")}Z)`).join(", ");
+    const named = stuck.map((row) => `${row.recipient} in ${row.project} (${sqliteUtcToIso(row.created_at)})`).join(", ");
     return createCheck("codex-queue-daemon", "Codex stuck-message release", "warn", `${stuck.length} Codex thread(s) last ran the stuck-message release without the app-server daemon: ${named}. A MeMesh message queued there after an interrupted turn stays in that thread's queue until you send the thread a prompt.`, "Send a prompt in each thread named above to drain its queue. To restore the automatic release, run Codex with its app-server daemon (avoid `--no-daemon`).");
   } catch (err) {
     return createCheck("codex-queue-daemon", "Codex stuck-message release", "warn", `Could not read the Codex host_activation receipts: ${err instanceof Error ? err.message : String(err)}`, "Run `memesh doctor` again; if this persists, check the database rows above for the underlying error.");
@@ -63521,7 +63530,7 @@ messageStorageCmd.command("report").description("Report logical payload, unresol
     });
     console.log(JSON.stringify({
       policy: {
-        cutoff: new Date(opts.cutoff).toISOString(),
+        cutoff: normalizeAgentMessageCutoff(opts.cutoff),
         quota_bytes: process.env.MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES ?? null,
         automatic_pruning: false
       },

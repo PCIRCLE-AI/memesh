@@ -285,6 +285,25 @@ describe('CLI durable-message ingress', () => {
     }
   });
 
+  // #403: the policy the report prints is the cutoff it applied. A cutoff in
+  // SQLite's form is UTC; printing it through `new Date()` showed it eight
+  // hours off at UTC+8.
+  it('#403 report prints the cutoff it applied, for a cutoff in SQLite form under a non-UTC TZ', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-message-'));
+    try {
+      const report = spawnSync(process.execPath, cliArgs(
+        'message', 'storage', 'report', '--cutoff', '2026-08-27 00:00:00',
+      ), {
+        encoding: 'utf8',
+        env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false', TZ: 'Asia/Taipei' },
+      });
+      expect(report.status, report.stderr).toBe(0);
+      expect(JSON.parse(report.stdout).policy.cutoff).toBe('2026-08-27T00:00:00.000Z');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('reports storage and keeps prune dry-run non-mutating by default', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-message-'));
     const cutoff = '2026-08-27T00:00:00.000Z';
