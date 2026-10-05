@@ -4,7 +4,7 @@ import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
 import { randomBytes, timingSafeEqual } from 'crypto';
 import { openDatabase, closeDatabase, getDatabase, } from '../../db.js';
-import { remember, recallWithConflicts, forget, exportMemories, importMemories, learn, } from '../../core/operations.js';
+import { remember, recallWithConflicts, forget, exportMemories, importMemories, learn, shownEntity, } from '../../core/operations.js';
 import { KnowledgeGraph } from '../../knowledge-graph.js';
 import { readConfig, updateConfig, } from '../../core/config.js';
 import { SESSION_LIMIT_MIN, SESSION_LIMIT_MAX } from '../../core/session-limit.js';
@@ -21,7 +21,7 @@ import { RememberSchema as RememberBody, RecallSchema as RecallBody, ForgetSchem
 import { executeAgentMessageAction } from '../agent-messaging.js';
 import { checkForUpdate, getLastUpdateCheck, getUpdateCheck } from '../../core/version-check.js';
 import { getCurrentInstallChannel, getInstallChannelSupport } from '../../core/install-channel.js';
-import { getDbPath, getMemeshDirFromDbPath, redactSecrets, redactUserPaths } from '../../core/paths.js';
+import { getDbPath, getMemeshDirFromDbPath, redactTextValues, redactUserPaths } from '../../core/paths.js';
 import { removeGroupAndOtherAccess } from '../../core/file-mode.js';
 import { diagnoseDatabaseFailure } from '../../core/database-diagnosis.js';
 import { RETIRED_ROUTES } from './retired-routes.js';
@@ -278,7 +278,7 @@ app.get('/v1/doctor', (_req, res) => handleGet(res, async () => {
         packageRoot,
         packageVersion,
     });
-    return JSON.parse(redactUserPaths(redactSecrets(JSON.stringify(result))));
+    return JSON.parse(redactUserPaths(JSON.stringify(redactTextValues(result))));
 }));
 const DoctorFixBody = z.object({ id: z.string().min(1).max(100) }).strict();
 app.post('/v1/doctor/fix', (req, res) => handlePost(DoctorFixBody, req, res, async ({ id }) => {
@@ -310,7 +310,7 @@ app.post('/v1/doctor/fix', (req, res) => handlePost(DoctorFixBody, req, res, asy
         throw error;
     }
     const after = await runDoctor({ packageRoot, packageVersion });
-    const safe = (value) => JSON.parse(redactUserPaths(redactSecrets(JSON.stringify(value))));
+    const safe = (value) => JSON.parse(redactUserPaths(JSON.stringify(redactTextValues(value))));
     return {
         action: safe(action),
         before: safe({ status: before.status, checks: [check] }),
@@ -627,9 +627,9 @@ app.get('/v1/entities', (req, res) => {
         const { type: typeFilter, limit, status } = query;
         const includeArchived = status === 'all';
         const kg = new KnowledgeGraph(getDatabase());
-        return typeFilter
+        return (typeFilter
             ? kg.listByType(typeFilter, limit, includeArchived)
-            : kg.listRecent(limit, includeArchived, undefined, false);
+            : kg.listRecent(limit, includeArchived, undefined, false)).map(shownEntity);
     });
 });
 app.get('/v1/entities/:name', (req, res) => handleGet(res, () => {
@@ -638,7 +638,7 @@ app.get('/v1/entities/:name', (req, res) => handleGet(res, () => {
     if (!entity) {
         throw new HttpError(404, 'resource.not-found', `Entity "${String(req.params.name)}" not found`);
     }
-    return entity;
+    return shownEntity(entity);
 }));
 const HOST = process.env.MEMESH_HTTP_HOST || '127.0.0.1';
 const PORT = parseInt(process.env.MEMESH_HTTP_PORT || '3737');

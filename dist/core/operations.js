@@ -2,7 +2,7 @@ import { getDatabase } from '../db.js';
 import { projectOwnershipRefusal } from '../storage/memory-mutation.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { rankEntities } from './scoring.js';
-import { getProjectName } from './paths.js';
+import { getProjectName, redactSecrets, redactTextValues, redactTitleAndObservations, redactVersionText } from './paths.js';
 import { createExplicitLesson } from './lesson-engine.js';
 import { deriveNote, NOTE_DEFAULT_TYPE } from './note-derive.js';
 import { canonicalEntityType } from './work-topology.js';
@@ -43,6 +43,23 @@ function summarizeReplacedHistory(entities) {
     }
     return entities;
 }
+export function shownEntity(entity) {
+    const shown = redactTitleAndObservations(typeof entity.title === 'string' ? entity.title : undefined, entity.observations);
+    const metadata = entity.metadata === undefined ? undefined : redactTextValues(entity.metadata);
+    const guard = entity.metadata?.guard;
+    if (metadata && guard && typeof guard.pattern === 'string') {
+        metadata.guard = { ...metadata.guard, pattern: guard.pattern };
+    }
+    const history = entity.metadata?.replaced_history;
+    if (metadata && Array.isArray(history))
+        metadata.replaced_history = history.map(redactVersionText);
+    return {
+        ...entity,
+        ...(typeof entity.title === 'string' ? { title: shown.title } : {}),
+        observations: shown.observations,
+        ...(metadata === undefined ? {} : { metadata }),
+    };
+}
 function resolveRememberInput(input) {
     if (input.note === undefined) {
         if (!input.name)
@@ -51,7 +68,13 @@ function resolveRememberInput(input) {
             throw new Error('remember needs `name` and `type`, or `note`');
         if (input.type === undefined && !input.replace)
             throw new Error('remember needs `name` and `type`, or `note`');
-        return { args: input, typeGiven: input.type !== undefined };
+        return {
+            args: {
+                ...input,
+                ...redactTitleAndObservations(typeof input.title === 'string' ? input.title : undefined, input.observations),
+            },
+            typeGiven: input.type !== undefined,
+        };
     }
     if (input.title !== undefined || input.observations !== undefined) {
         throw new Error('`note` derives title and observations; do not also pass `title` or `observations`');
@@ -153,7 +176,7 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
         },
     }));
     if (replacedVersion) {
-        const version = replacedVersion;
+        const version = redactVersionText(replacedVersion);
         kg.updateEntityMetadata(args.name, (current) => {
             const history = Array.isArray(current.replaced_history) ? current.replaced_history : [];
             return { ...current, replaced_history: boundReplacedHistory([...history, version]) };
@@ -220,7 +243,7 @@ function searchAndScore(args) {
         includeArchived: args.include_archived,
         namespace: args.namespace,
     });
-    const entities = summarizeReplacedHistory(searched.entities);
+    const entities = summarizeReplacedHistory(searched.entities).map(shownEntity);
     return {
         entities,
         relevanceMap: args.query ? buildRelevanceMap(entities) : new Map(),
@@ -272,10 +295,14 @@ export function forget(args) {
     const kg = new KnowledgeGraph(db);
     if (args.observation !== undefined) {
         const result = kg.removeObservation(args.name, args.observation);
+        const shown = redactSecrets(args.observation);
+        if (!result.removed && shown !== args.observation && db.prepare('SELECT 1 FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = ? AND o.content = ? LIMIT 1').get(args.name, shown)) {
+            throw new Error('No exact stored-text match for that observation. recall shows credential-shaped text masked; a line is selected by its stored text, which export returns, or rewrite the memory with replace.');
+        }
         return {
             observation_removed: result.removed,
             name: args.name,
-            observation: args.observation,
+            observation: shown,
             remaining_observations: result.remainingObservations,
             entity_found: result.entityFound,
         };

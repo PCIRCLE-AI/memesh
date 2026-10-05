@@ -24,6 +24,7 @@ type Row = {
   id: number;
   name: string;
   type: string;
+  title: string | null;
   content: string;
   tag: string;
 };
@@ -532,5 +533,33 @@ describe('Feature: PreCompact Hook', () => {
     const second = JSON.parse(runHook(input).trim());
     expect(second.systemMessage).not.toMatch(/^Saved /);
     expect(second.systemMessage).toContain('already captured');
+  });
+
+  it('a legacy `reason` carrying a long credential is redacted before the title is cut (#523)', () => {
+    // The title is `<date> <project>: <reason> compaction (…)`, cut at 200
+    // characters. A password longer than the cut lost its `@` and stopped
+    // matching, so `postgres://reviewer:pppp…` was stored as the title.
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-precompact-redact-'));
+    try {
+      const credential = ['postgres://reviewer', `${'p'.repeat(400)}@db.example/memory`].join(':');
+      runHook({
+        session_id: 'redact-reason',
+        transcript_path: '',
+        cwd: projectDir,
+        hook_event_name: 'PreCompact',
+        reason: credential,
+      });
+      const db = openDb();
+      const entity = db.prepare('SELECT id, title FROM entities WHERE name = ?').get('pre-compact-redact-reason') as Row;
+      const observations = (db.prepare('SELECT content FROM observations WHERE entity_id = ? ORDER BY id').all(entity.id) as Row[]).map((r) => r.content);
+      db.close();
+      expect(entity.title).not.toContain('postgres://reviewer:');
+      expect(entity.title).not.toContain('pppp');
+      expect(entity.title).toContain('***REDACTED***');
+      expect(observations.join('\n')).not.toContain('pppp');
+      expect(observations.join('\n')).toContain('***REDACTED***');
+    } finally {
+      fs.rmSync(projectDir, { recursive: true, force: true });
+    }
   });
 });

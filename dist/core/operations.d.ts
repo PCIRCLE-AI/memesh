@@ -2,6 +2,7 @@ import { type RecallForAgentResult, type RecallScope } from './recall-agent-view
 import type { RememberInput, RememberResult, RecallInput, ForgetInput, ForgetResult, LearnInput, LearnResult, Entity } from './types.js';
 export { REPLACED_HISTORY_MAX, REPLACED_HISTORY_MAX_BYTES, type ReplacedVersion } from './replaced-history.js';
 export declare function remember(input: RememberInput): RememberResult;
+export declare function shownEntity(entity: Entity): Entity;
 export declare function recall(args: RecallInput): Entity[];
 export type RetrievalMeta = {
     mode: 'fts';

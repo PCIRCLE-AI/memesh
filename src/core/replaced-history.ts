@@ -1,3 +1,5 @@
+import { sliceWholeChars } from './work-topology.js';
+
 /**
  * `metadata.replaced_history`: the previous versions a memory keeps when it
  * is replaced, by `remember` replace or by an `import` overwrite (#530).
@@ -20,8 +22,8 @@ export const REPLACED_HISTORY_MAX = 20;
  * Most bytes (serialized JSON) the history may take. The count alone did not
  * bound it: a 256 KB note replaced twenty times is megabytes of metadata on
  * one row. Oldest versions go first; a single version larger than the cap
- * keeps as many of its observations, then its tags, as fit and is marked
- * `truncated`.
+ * keeps as many of its observations, then its tags, as fit, has its title cut
+ * when even that does not fit, and is marked `truncated`.
  */
 export const REPLACED_HISTORY_MAX_BYTES = 64 * 1024;
 
@@ -33,10 +35,13 @@ export function boundReplacedHistory(history: ReplacedVersion[]): ReplacedVersio
   while (out.length > 1 && jsonBytes(out) > REPLACED_HISTORY_MAX_BYTES) out = out.slice(1);
   if (out.length === 1 && jsonBytes(out) > REPLACED_HISTORY_MAX_BYTES) {
     const only = out[0];
-    // Observations first, then tags, each in order, as many as fit. The title
-    // is bounded by TITLE_MAX_LENGTH, so what is left always fits.
-    let kept: ReplacedVersion = { ...only, observations: [], tags: [], truncated: true };
+    // Observations first, then tags, each in order, as many as fit. A title is
+    // input-capped, but redaction can lengthen it (`***REDACTED***` is longer
+    // than what it replaces, #523), so it is cut, never through half of an
+    // emoji, until the rest fits. A version therefore always fits.
     const fits = (v: ReplacedVersion) => jsonBytes([v]) <= REPLACED_HISTORY_MAX_BYTES;
+    let kept: ReplacedVersion = { ...only, observations: [], tags: [], truncated: true };
+    while (kept.title && !fits(kept)) kept = { ...kept, title: sliceWholeChars(kept.title, Math.floor(kept.title.length * 0.9)) };
     for (const obs of only.observations) {
       const next = { ...kept, observations: [...kept.observations, obs] };
       if (!fits(next)) break;

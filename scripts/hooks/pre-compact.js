@@ -2,7 +2,7 @@
 
 import { basename } from 'path';
 import { existsSync, readFileSync } from 'fs';
-import { AUTO_CAPTURE_TAG, captureEntity, getProjectName, isAutoCaptureEnabled, openHookDb, hookErrorReason, hookSourceHost, SKIP_REASONS, recordHookOutcome, recordHookRun, truncateTitle } from './_shared.js';
+import { AUTO_CAPTURE_TAG, captureEntity, getProjectName, isAutoCaptureEnabled, openHookDb, hookErrorReason, hookSourceHost, SKIP_REASONS, recordHookOutcome, recordHookRun, redactSecrets, truncateTitle } from './_shared.js';
 
 // There is no in-process timeout guard, and its absence is deliberate.
 //
@@ -121,7 +121,10 @@ process.stdin.on('end', () => {
     // terse observation ("Compaction reason: manual") standing in as the
     // display label.
     const titleDate = new Date().toISOString().slice(0, 10);
-    const title = truncateTitle(`${titleDate} ${projectName}: ${reason} compaction (${toolCallCount} tool calls)`);
+    // #523: `reason` is payload text (the legacy field is free-form), so it
+    // is redacted BEFORE the 200-character cut — `captureEntity` redacts
+    // again, but a secret already cut in half no longer matches its pattern.
+    const title = truncateTitle(redactSecrets(`${titleDate} ${projectName}: ${reason} compaction (${toolCallCount} tool calls)`));
     if (editedFiles.size > 0) {
       obsLines.push(`Files edited: ${Array.from(editedFiles).join(', ')}`);
     }
