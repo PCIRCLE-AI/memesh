@@ -56841,6 +56841,16 @@ function summarizeHookOutcomes(file2) {
   });
   return names.map((hook) => summarizeOne(hook, file2.hooks[hook] ?? []));
 }
+function renderableErrorReason(reason) {
+  if (typeof reason !== "string")
+    return "an unlabelled error";
+  if (FIXED_ERROR_REASONS.has(reason))
+    return reason;
+  if (/^(?:[a-z][a-z -]{0,30}: )?uncaught [A-Za-z][\w-]{0,39}$/.test(reason))
+    return reason;
+  const step = /^([a-z][a-z-]{0,30}): /.exec(reason);
+  return step ? `${step[1]}: \u2026` : "an unlabelled error";
+}
 function summarizeOne(hook, records) {
   let writes = 0;
   let skips = 0;
@@ -56853,6 +56863,8 @@ function summarizeOne(hook, records) {
   let notifies = 0;
   let lastNotifiedAt = null;
   let lastSkipReason = null;
+  let lastErrorAt = null;
+  let lastErrorReason = null;
   const skipCounts = /* @__PURE__ */ new Map();
   const hosts = /* @__PURE__ */ new Set();
   for (const r of records) {
@@ -56884,6 +56896,10 @@ function summarizeOne(hook, records) {
       }
     } else {
       errors++;
+      if (lastErrorAt === null || r.at >= lastErrorAt) {
+        lastErrorAt = r.at;
+        lastErrorReason = renderableErrorReason(r.reason);
+      }
     }
   }
   let dominantSkipReason = null;
@@ -56895,6 +56911,7 @@ function summarizeOne(hook, records) {
     }
   }
   const runs = records.length;
+  const recentErrors = records.filter(isTriggeredRecord).sort((a, b) => a.at < b.at ? 1 : a.at > b.at ? -1 : 0).slice(0, RECENT_ERROR_RUNS).filter((r) => r.outcome === "error").length;
   return {
     hook,
     runs,
@@ -56911,6 +56928,9 @@ function summarizeOne(hook, records) {
     lastSkipReason,
     dominantSkipReason,
     dominantSkipCount,
+    lastErrorAt,
+    lastErrorReason,
+    recentErrors,
     hosts: [...hosts].sort(),
     silent: SILENT_ELIGIBLE_HOOKS.includes(hook) && triggeredRuns >= SILENT_HOOK_MIN_RUNS && writes === 0
   };
@@ -56924,14 +56944,15 @@ function captureLivenessVerdict(input) {
   const deadHooks = graceOver ? (input.neverRanHooks ?? []).filter((h) => FAIL_ELIGIBLE_HOOKS.includes(h) && !withRecords.has(h)).sort() : [];
   const silent = input.hooks.filter((h) => h.silent).sort((a, b) => b.triggeredRuns - a.triggeredRuns);
   const stoppedTypes = input.types.filter((t) => t.stopped);
+  const erroring = input.hooks.filter((h) => h.recentErrors > 0).sort((a, b) => b.recentErrors - a.recentErrors || b.errors - a.errors);
   let status = "PASS";
   if (deadHooks.length > 0)
     status = "FAIL";
-  else if (silent.length > 0 || stoppedTypes.length > 0)
+  else if (silent.length > 0 || stoppedTypes.length > 0 || erroring.length > 0)
     status = "PASS_WITH_CONCERNS";
-  return { status, silentHook: silent[0] ?? null, stoppedTypes, deadHooks };
+  return { status, silentHook: silent[0] ?? null, erroringHook: erroring[0] ?? null, stoppedTypes, deadHooks };
 }
-var HOOK_OUTCOMES_FILENAME, HOOK_OUTCOMES_PER_HOOK, HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK, HOOK_OUTCOMES_ROTATE_BYTES, SILENT_HOOK_MIN_RUNS, CAPTURE_HOOKS, FAIL_ELIGIBLE_HOOKS, SILENT_ELIGIBLE_HOOKS, SKIP_REASONS, KNOWN_SKIP_REASONS, UNRECOGNISED_REASON, NOT_TRIGGERED_SKIP_REASONS, NEVER_RAN_GRACE_HOURS, RECORD_TEXT_MAX;
+var HOOK_OUTCOMES_FILENAME, HOOK_OUTCOMES_PER_HOOK, HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK, HOOK_OUTCOMES_ROTATE_BYTES, SILENT_HOOK_MIN_RUNS, CAPTURE_HOOKS, FAIL_ELIGIBLE_HOOKS, SILENT_ELIGIBLE_HOOKS, SKIP_REASONS, KNOWN_SKIP_REASONS, UNRECOGNISED_REASON, NOT_TRIGGERED_SKIP_REASONS, NEVER_RAN_GRACE_HOURS, RECORD_TEXT_MAX, FIXED_ERROR_REASONS, RECENT_ERROR_RUNS;
 var init_capture_liveness = __esm({
   "dist/core/capture-liveness.js"() {
     "use strict";
@@ -57030,6 +57051,15 @@ var init_capture_liveness = __esm({
     };
     NEVER_RAN_GRACE_HOURS = 72;
     RECORD_TEXT_MAX = 200;
+    FIXED_ERROR_REASONS = /* @__PURE__ */ new Set([
+      "malformed stdin JSON",
+      "captureEntity did not land the write",
+      "the transcript could not be read",
+      "the host closed stdout before the nudge could be written",
+      "the database stayed locked past the hook busy timeout",
+      "stdout: host closed the pipe before the block reason was delivered"
+    ]);
+    RECENT_ERROR_RUNS = 5;
   }
 });
 
@@ -57735,6 +57765,15 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
     }
     return {
       check: createCheck("capture-liveness", TITLE, "fail", `The ${hook} hook has left no record and no heartbeat in the ${Math.round(measuringHours ?? 0)} hours since tracking began \u2014 it has never run, so nothing it would capture is being saved.`, "Run `memesh install-hooks` and restart your agent, then end one work session and re-run `memesh doctor`.", { code: "capture-liveness.never-ran", params: { hook, hours: Math.round(measuringHours ?? 0) } }),
+      report
+    };
+  }
+  if (verdict.erroringHook) {
+    const h = verdict.erroringHook;
+    const day = h.lastErrorAt !== null && /^\d{4}-\d{2}-\d{2}/.test(h.lastErrorAt) ? ` on ${h.lastErrorAt.slice(0, 10)}` : "";
+    const newest = Math.min(RECENT_ERROR_RUNS, h.triggeredRuns);
+    return {
+      check: createCheck("capture-liveness", TITLE, "warn", `${h.hook}: ${h.recentErrors} of its ${newest} most recent runs ended in an error (${h.errors} in its recorded window); the latest was '${h.lastErrorReason}'${day}.`, "The reason says what failed; `memesh doctor --json` has the per-hook figures. This row clears once the hook's most recent runs (those its trigger applied to) end without an error. If it keeps failing, run `memesh install-hooks` and restart your agent.", { params: { hook: h.hook } }),
       report
     };
   }

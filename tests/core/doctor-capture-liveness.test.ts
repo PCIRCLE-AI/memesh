@@ -221,6 +221,85 @@ describe('doctor: capture-liveness', () => {
     expect(JSON.stringify(result)).toContain('"capture"');
   });
 
+  // #555: a hook that records errors used to show as healthy — errors were
+  // counted and never read. The issue's own reproduction: error records next
+  // to normal ones, then doctor.
+  it('#555 PASS_WITH_CONCERNS — a hook that recorded errors is named with the count and the latest reason', async () => {
+    memeshDirWith([
+      { hook: 'post-commit', at: '2026-09-09T00:00:00.000Z', host: 'claude-code', outcome: 'wrote', entity: 'commit-abc1234' },
+      { hook: 'session-start', at: '2026-09-09T01:00:00.000Z', host: 'claude-code', outcome: 'notified' },
+      { hook: 'session-start', at: '2026-09-09T02:00:00.000Z', host: 'claude-code', outcome: 'error', reason: 'pre-edit reset: uncaught EACCES' },
+      { hook: 'session-start', at: '2026-09-09T03:00:00.000Z', host: 'claude-code', outcome: 'error', reason: 'pre-edit reset: uncaught EPERM' },
+    ]);
+    const result = await run({ typeTrends: [{ type: 'commit', last7: 12, prev7: 9 }] });
+    const check = result.checks.find((c) => c.id === 'capture-liveness')!;
+    expect(check.status).toBe('warn');
+    expect(check.summary).toContain('session-start: 2 of its 3 most recent runs ended in an error (2 in its recorded window)');
+    expect(check.summary).toContain("the latest was 'pre-edit reset: uncaught EPERM' on 2026-09-09.");
+    expect(check.params?.hook).toBe('session-start');
+    expect(result.capture?.status).toBe('PASS_WITH_CONCERNS');
+  });
+
+  it('#555 a capture hook that fails on every run is reported by its error, not as silence', async () => {
+    memeshDirWith(Array.from({ length: 8 }, (_, i) => ({
+      hook: 'post-commit', at: `2026-09-0${i + 1}T00:00:00.000Z`, host: 'claude-code' as const,
+      outcome: 'error' as const, reason: 'captureEntity did not land the write',
+    })));
+    const check = (await run()).checks.find((c) => c.id === 'capture-liveness')!;
+    expect(check.status).toBe('warn');
+    expect(check.summary).toContain("post-commit: 5 of its 5 most recent runs ended in an error");
+    expect(check.summary).toContain("'captureEntity did not land the write'");
+  });
+
+  it('#555 a post-commit error is not pushed out by the skips of unrelated Bash calls', async () => {
+    memeshDirWith([
+      ...Array.from({ length: 6 }, (_, i) => ({
+        hook: 'post-commit', at: `2026-09-0${i + 1}T00:00:00.000Z`, host: 'claude-code' as const,
+        outcome: 'error' as const, reason: 'captureEntity did not land the write',
+      })),
+      ...Array.from({ length: 5 }, (_, i) => ({
+        hook: 'post-commit', at: `2026-09-0${i + 7 > 9 ? 9 : i + 7}T0${i}:00:00.000Z`, host: 'claude-code' as const,
+        outcome: 'skipped' as const, reason: SKIP_REASONS.notGitCommit,
+      })),
+    ]);
+    const result = await run();
+    const check = result.checks.find((c) => c.id === 'capture-liveness')!;
+    expect(check.summary).toContain('post-commit: 5 of its 5 most recent runs ended in an error');
+    expect(result.capture?.hooks.find((h) => h.hook === 'post-commit')?.recentErrors).toBe(5);
+  });
+
+  it('#555 one old error followed by clean runs is history, not a warning', async () => {
+    memeshDirWith([
+      { hook: 'session-start', at: '2026-09-01T00:00:00.000Z', host: 'claude-code', outcome: 'error', reason: 'pre-edit reset: uncaught EPERM' },
+      ...Array.from({ length: 6 }, (_, i) => ({
+        hook: 'session-start', at: `2026-09-0${i + 2}T00:00:00.000Z`, host: 'claude-code' as const, outcome: 'notified' as const,
+      })),
+      { hook: 'post-commit', at: '2026-09-09T00:00:00.000Z', host: 'claude-code', outcome: 'wrote', entity: 'commit-abc1234' },
+    ]);
+    const check = (await run({ typeTrends: [{ type: 'commit', last7: 12, prev7: 9 }] })).checks.find((c) => c.id === 'capture-liveness')!;
+    expect(check.status).toBe('pass');
+  });
+
+  it('#555 does not quote an error reason that is not a label (a path, a message)', async () => {
+    memeshDirWith([
+      { hook: 'session-start', at: '2026-09-09T02:00:00.000Z', host: 'claude-code', outcome: 'error', reason: "ENOENT: no such file, open '/Users/someone/secret/x'" },
+    ]);
+    const check = (await run()).checks.find((c) => c.id === 'capture-liveness')!;
+    expect(check.status).toBe('warn');
+    expect(check.summary).toContain("'an unlabelled error'");
+    expect(check.summary).not.toContain('/Users/someone');
+  });
+
+  it('#555 shows only the step of a reason that carries a value, and only the date of a well-formed time', async () => {
+    memeshDirWith([
+      { hook: 'session-start', at: '2026-09-09T02:00:00.000Z\u001b[31m injected', host: 'claude-code', outcome: 'error', reason: 'briefing-level: invalid config value secret-ish, using minimal' },
+    ]);
+    const check = (await run()).checks.find((c) => c.id === 'capture-liveness')!;
+    expect(check.summary).toContain("the latest was 'briefing-level: …' on 2026-09-09.");
+    expect(check.summary).not.toContain('secret-ish');
+    expect(check.summary).not.toContain('injected');
+  });
+
   it('PASS — hooks that skip by design on every Bash call or prompt are not silence', async () => {
     // A default install on an ordinary day: guard-check skips every Bash call
     // no guard matches, post-commit ignores every Bash call that is not a

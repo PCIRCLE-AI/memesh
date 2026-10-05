@@ -299,6 +299,25 @@ export function summarizeHookOutcomes(file) {
     });
     return names.map((hook) => summarizeOne(hook, file.hooks[hook] ?? []));
 }
+const FIXED_ERROR_REASONS = new Set([
+    'malformed stdin JSON',
+    'captureEntity did not land the write',
+    'the transcript could not be read',
+    'the host closed stdout before the nudge could be written',
+    'the database stayed locked past the hook busy timeout',
+    'stdout: host closed the pipe before the block reason was delivered',
+]);
+export function renderableErrorReason(reason) {
+    if (typeof reason !== 'string')
+        return 'an unlabelled error';
+    if (FIXED_ERROR_REASONS.has(reason))
+        return reason;
+    if (/^(?:[a-z][a-z -]{0,30}: )?uncaught [A-Za-z][\w-]{0,39}$/.test(reason))
+        return reason;
+    const step = /^([a-z][a-z-]{0,30}): /.exec(reason);
+    return step ? `${step[1]}: …` : 'an unlabelled error';
+}
+export const RECENT_ERROR_RUNS = 5;
 function summarizeOne(hook, records) {
     let writes = 0;
     let skips = 0;
@@ -311,6 +330,8 @@ function summarizeOne(hook, records) {
     let notifies = 0;
     let lastNotifiedAt = null;
     let lastSkipReason = null;
+    let lastErrorAt = null;
+    let lastErrorReason = null;
     const skipCounts = new Map();
     const hosts = new Set();
     for (const r of records) {
@@ -345,6 +366,10 @@ function summarizeOne(hook, records) {
         }
         else {
             errors++;
+            if (lastErrorAt === null || r.at >= lastErrorAt) {
+                lastErrorAt = r.at;
+                lastErrorReason = renderableErrorReason(r.reason);
+            }
         }
     }
     let dominantSkipReason = null;
@@ -356,6 +381,10 @@ function summarizeOne(hook, records) {
         }
     }
     const runs = records.length;
+    const recentErrors = records.filter(isTriggeredRecord)
+        .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))
+        .slice(0, RECENT_ERROR_RUNS)
+        .filter((r) => r.outcome === 'error').length;
     return {
         hook,
         runs,
@@ -372,6 +401,9 @@ function summarizeOne(hook, records) {
         lastSkipReason,
         dominantSkipReason,
         dominantSkipCount,
+        lastErrorAt,
+        lastErrorReason,
+        recentErrors,
         hosts: [...hosts].sort(),
         silent: SILENT_ELIGIBLE_HOOKS.includes(hook)
             && triggeredRuns >= SILENT_HOOK_MIN_RUNS
@@ -393,12 +425,14 @@ export function captureLivenessVerdict(input) {
         : [];
     const silent = input.hooks.filter((h) => h.silent).sort((a, b) => b.triggeredRuns - a.triggeredRuns);
     const stoppedTypes = input.types.filter((t) => t.stopped);
+    const erroring = input.hooks.filter((h) => h.recentErrors > 0)
+        .sort((a, b) => b.recentErrors - a.recentErrors || b.errors - a.errors);
     let status = 'PASS';
     if (deadHooks.length > 0)
         status = 'FAIL';
-    else if (silent.length > 0 || stoppedTypes.length > 0)
+    else if (silent.length > 0 || stoppedTypes.length > 0 || erroring.length > 0)
         status = 'PASS_WITH_CONCERNS';
-    return { status, silentHook: silent[0] ?? null, stoppedTypes, deadHooks };
+    return { status, silentHook: silent[0] ?? null, erroringHook: erroring[0] ?? null, stoppedTypes, deadHooks };
 }
 export function captureLivenessNotice(verdict) {
     if (verdict.status === 'PASS')
@@ -406,6 +440,10 @@ export function captureLivenessNotice(verdict) {
     if (verdict.deadHooks.length > 0) {
         const hook = verdict.deadHooks[0];
         return `memesh: the ${hook} hook has never run — \`memesh doctor\` for the reason`;
+    }
+    const erroring = verdict.erroringHook;
+    if (erroring) {
+        return `memesh: the ${erroring.hook} hook recorded errors in its recent runs — \`memesh doctor\` for the reason`;
     }
     const hook = verdict.silentHook;
     if (hook) {

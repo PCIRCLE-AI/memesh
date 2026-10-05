@@ -527,6 +527,19 @@ describe('hook outcome records', () => {
     expect(trimmed.filter((r) => r.reason === SKIP_REASONS.notGitCommit)).toHaveLength(HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK);
   });
 
+  it('#555 the SessionStart notice names a hook that recorded errors', () => {
+    const raw = [
+      { hook: 'guard-check', at: '2026-09-09T01:00:00.000Z', host: 'claude-code', outcome: 'skipped', reason: SKIP_REASONS.noGuardMatched },
+      { hook: 'guard-check', at: '2026-09-09T02:00:00.000Z', host: 'claude-code', outcome: 'error', reason: 'uncaught ERR_SQLITE_ERROR' },
+    ].map((r) => JSON.stringify(r)).join('\n');
+    const v = captureLivenessVerdict({
+      hooks: summarizeHookOutcomes(parseHookOutcomes(raw)), types: [], neverRanHooks: [], measuringHours: 500,
+    });
+    expect(v.status).toBe('PASS_WITH_CONCERNS');
+    expect(v.erroringHook?.lastErrorReason).toBe('uncaught ERR_SQLITE_ERROR');
+    expect(captureLivenessNotice(v)).toBe('memesh: the guard-check hook recorded errors in its recent runs — `memesh doctor` for the reason');
+  });
+
   it('one over-long line does not wipe the history on rotation', () => {
     const small = (i: number) => JSON.stringify({ hook: 'post-commit', at: `2026-09-01T00:00:0${i}.000Z`, host: 'claude-code', outcome: 'wrote', entity: `commit-${i}` });
     const huge = JSON.stringify({ hook: 'post-commit', at: '2026-09-02T00:00:00.000Z', host: 'claude-code', outcome: 'skipped', reason: 'q'.repeat(4000) });

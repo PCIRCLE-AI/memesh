@@ -739,6 +739,11 @@ export interface HookLivenessSummary {
   lastSkipReason: string | null;
   dominantSkipReason: string | null;
   dominantSkipCount: number;
+  /** #555: the newest `error` record in the window, and its reason as doctor may quote it. */
+  lastErrorAt: string | null;
+  lastErrorReason: string | null;
+  /** #555: `error` records among the hook's RECENT_ERROR_RUNS newest triggered runs — what "still failing" means. */
+  recentErrors: number;
   hosts: HookHost[];
   /**
    * A SILENT_ELIGIBLE_HOOKS hook whose trigger applied at least
@@ -759,6 +764,34 @@ export function summarizeHookOutcomes(file: HookOutcomeFile): HookLivenessSummar
   return names.map((hook) => summarizeOne(hook, file.hooks[hook] ?? []));
 }
 
+/** #555: the fixed error phrases the hooks record, quoted as they are. */
+const FIXED_ERROR_REASONS: ReadonlySet<string> = new Set([
+  'malformed stdin JSON',
+  'captureEntity did not land the write',
+  'the transcript could not be read',
+  'the host closed stdout before the nudge could be written',
+  'the database stayed locked past the hook busy timeout',
+  'stdout: host closed the pipe before the block reason was delivered',
+]);
+
+/**
+ * #555: an error reason doctor may quote. Doctor output is copied into
+ * feedback reports and the ledger is a file, so this is a closed list: a fixed
+ * phrase above, or `uncaught <CODE>` from `hookErrorReason` (optionally after a
+ * `<step>:` label), is quoted as it is; any other `<step>: …` reason shows only
+ * its step, since some carry a configured value; anything else is not quoted.
+ */
+export function renderableErrorReason(reason: string | undefined): string {
+  if (typeof reason !== 'string') return 'an unlabelled error';
+  if (FIXED_ERROR_REASONS.has(reason)) return reason;
+  if (/^(?:[a-z][a-z -]{0,30}: )?uncaught [A-Za-z][\w-]{0,39}$/.test(reason)) return reason;
+  const step = /^([a-z][a-z-]{0,30}): /.exec(reason);
+  return step ? `${step[1]}: …` : 'an unlabelled error';
+}
+
+/** #555: how many of a hook's newest records decide whether it is still failing. */
+export const RECENT_ERROR_RUNS = 5;
+
 function summarizeOne(hook: string, records: HookOutcomeRecord[]): HookLivenessSummary {
   let writes = 0;
   let skips = 0;
@@ -771,6 +804,8 @@ function summarizeOne(hook: string, records: HookOutcomeRecord[]): HookLivenessS
   let notifies = 0;
   let lastNotifiedAt: string | null = null;
   let lastSkipReason: string | null = null;
+  let lastErrorAt: string | null = null;
+  let lastErrorReason: string | null = null;
   const skipCounts = new Map<string, number>();
   const hosts = new Set<HookHost>();
   for (const r of records) {
@@ -808,6 +843,10 @@ function summarizeOne(hook: string, records: HookOutcomeRecord[]): HookLivenessS
       }
     } else {
       errors++;
+      if (lastErrorAt === null || r.at >= lastErrorAt) {
+        lastErrorAt = r.at;
+        lastErrorReason = renderableErrorReason(r.reason);
+      }
     }
   }
   let dominantSkipReason: string | null = null;
@@ -819,6 +858,13 @@ function summarizeOne(hook: string, records: HookOutcomeRecord[]): HookLivenessS
     }
   }
   const runs = records.length;
+  // Triggered runs only, the denominator every "ran N times" sentence uses: a
+  // post-commit error must not be pushed out by the skips of five unrelated
+  // Bash calls.
+  const recentErrors = records.filter(isTriggeredRecord)
+    .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))
+    .slice(0, RECENT_ERROR_RUNS)
+    .filter((r) => r.outcome === 'error').length;
   return {
     hook,
     runs,
@@ -835,6 +881,9 @@ function summarizeOne(hook: string, records: HookOutcomeRecord[]): HookLivenessS
     lastSkipReason,
     dominantSkipReason,
     dominantSkipCount,
+    lastErrorAt,
+    lastErrorReason,
+    recentErrors,
     hosts: [...hosts].sort(),
     // `writes === 0` is unchanged, and `notified` deliberately does not
     // rescue a hook from it — a hook that only printed lines HAS written
@@ -878,6 +927,8 @@ export interface CaptureLivenessVerdict {
   status: CaptureLivenessStatus;
   /** The hook whose silence drives a non-PASS verdict, when one does. */
   silentHook: HookLivenessSummary | null;
+  /** #555: the hook still failing (errors among its newest runs), when any is. */
+  erroringHook: HookLivenessSummary | null;
   /** Types that stopped, when that drives the verdict. */
   stoppedTypes: TypeTrend[];
   /** Heartbeat hooks with neither a record nor a heartbeat, past the grace. */
@@ -906,12 +957,17 @@ export function captureLivenessVerdict(input: CaptureLivenessInput): CaptureLive
   // alphabetically.
   const silent = input.hooks.filter((h) => h.silent).sort((a, b) => b.triggeredRuns - a.triggeredRuns);
   const stoppedTypes = input.types.filter((t) => t.stopped);
+  // #555: a recorded error is a failure the user may need to act on; it used
+  // to be counted and never read, so a failing hook showed as healthy.
+  // Only a hook still failing: one old error followed by clean runs is history.
+  const erroring = input.hooks.filter((h) => h.recentErrors > 0)
+    .sort((a, b) => b.recentErrors - a.recentErrors || b.errors - a.errors);
 
   let status: CaptureLivenessStatus = 'PASS';
   if (deadHooks.length > 0) status = 'FAIL';
-  else if (silent.length > 0 || stoppedTypes.length > 0) status = 'PASS_WITH_CONCERNS';
+  else if (silent.length > 0 || stoppedTypes.length > 0 || erroring.length > 0) status = 'PASS_WITH_CONCERNS';
 
-  return { status, silentHook: silent[0] ?? null, stoppedTypes, deadHooks };
+  return { status, silentHook: silent[0] ?? null, erroringHook: erroring[0] ?? null, stoppedTypes, deadHooks };
 }
 
 /**
@@ -926,6 +982,12 @@ export function captureLivenessNotice(verdict: CaptureLivenessVerdict): string |
   if (verdict.deadHooks.length > 0) {
     const hook = verdict.deadHooks[0];
     return `memesh: the ${hook} hook has never run — \`memesh doctor\` for the reason`;
+  }
+  // An erroring hook first: a capture hook that fails on every run also
+  // writes nothing, and its silence is the symptom, the error the cause.
+  const erroring = verdict.erroringHook;
+  if (erroring) {
+    return `memesh: the ${erroring.hook} hook recorded errors in its recent runs — \`memesh doctor\` for the reason`;
   }
   const hook = verdict.silentHook;
   if (hook) {

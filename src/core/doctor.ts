@@ -31,7 +31,7 @@ import { parseSqliteUtcMs } from './time-utils.js';
 import { autoCaptureDecision } from './capture-flag.js';
 import {
   captureLivenessVerdict, parseHookOutcomes, summarizeHookOutcomes, summarizeTypeTrends,
-  FAIL_ELIGIBLE_HOOKS, SKIP_REASONS, HOOK_OUTCOMES_FILENAME, NEVER_RAN_GRACE_HOURS, SILENT_HOOK_MIN_RUNS,
+  FAIL_ELIGIBLE_HOOKS, SKIP_REASONS, HOOK_OUTCOMES_FILENAME, NEVER_RAN_GRACE_HOURS, SILENT_HOOK_MIN_RUNS, RECENT_ERROR_RUNS,
   type CaptureLivenessStatus, type HookLivenessSummary, type TypeTrend,
 } from './capture-liveness.js';
 import { guardFromMetadata } from './guards.js';
@@ -1726,6 +1726,26 @@ function inspectCaptureLiveness(
         `The ${hook} hook has left no record and no heartbeat in the ${Math.round(measuringHours ?? 0)} hours since tracking began — it has never run, so nothing it would capture is being saved.`,
         'Run `memesh install-hooks` and restart your agent, then end one work session and re-run `memesh doctor`.',
         { code: 'capture-liveness.never-ran', params: { hook, hours: Math.round(measuringHours ?? 0) } }),
+      report,
+    };
+  }
+
+  // #555: recorded errors reach the verdict, ahead of silence — a capture hook
+  // that fails on every run also writes nothing, and the error is the cause.
+  // Uncoded: a translated catalogue entry for a server-diagnostic sentence
+  // would be needed in every dashboard locale, and an uncoded row falls back to
+  // this English text there; `params.hook` keeps one hook's dismissal from
+  // hiding another's. Only the date of `at` is shown, and only when it is one:
+  // the ledger is a file, and this sentence is copied into feedback reports.
+  if (verdict.erroringHook) {
+    const h = verdict.erroringHook;
+    const day = h.lastErrorAt !== null && /^\d{4}-\d{2}-\d{2}/.test(h.lastErrorAt) ? ` on ${h.lastErrorAt.slice(0, 10)}` : '';
+    const newest = Math.min(RECENT_ERROR_RUNS, h.triggeredRuns);
+    return {
+      check: createCheck('capture-liveness', TITLE, 'warn',
+        `${h.hook}: ${h.recentErrors} of its ${newest} most recent runs ended in an error (${h.errors} in its recorded window); the latest was '${h.lastErrorReason}'${day}.`,
+        'The reason says what failed; `memesh doctor --json` has the per-hook figures. This row clears once the hook\'s most recent runs (those its trigger applied to) end without an error. If it keeps failing, run `memesh install-hooks` and restart your agent.',
+        { params: { hook: h.hook } }),
       report,
     };
   }

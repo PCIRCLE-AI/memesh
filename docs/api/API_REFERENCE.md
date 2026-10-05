@@ -1766,6 +1766,7 @@ memory layer saved anything lately, and if not, why not". `memesh doctor --json`
       "lastRunAt": "2026-09-08T00:00:00.000Z", "firstTriggeredAt": "2026-09-04T00:00:00.000Z",
       "lastWriteAt": null, "lastNotifiedAt": null, "lastEntity": null, "lastSkipReason": "a git commit ran but printed no commit line",
       "dominantSkipReason": "a git commit ran but printed no commit line", "dominantSkipCount": 5,
+      "lastErrorAt": null, "lastErrorReason": null, "recentErrors": 0,
       "hosts": ["claude-code"], "silent": true
     }
   ],
@@ -1798,9 +1799,17 @@ exact archived name with `memesh recall session-handoff --include-archived`
 before restoring it. Doctor inspects a bounded recent outcome window, so a
 missing warning does not prove every project's handoff is current.
 
-`status` is `FAIL` for `neverRan`, `PASS_WITH_CONCERNS` for a silent hook, a
-stopped type, or heartbeats with no outcome record at all past the grace
-(`capture-liveness.no-records`), and `PASS` otherwise.
+`status` is `FAIL` for `neverRan`, `PASS_WITH_CONCERNS` for a hook still
+failing (an `error` record among its 5 most recent runs that its trigger
+applied to; reported ahead of silence, since a hook that fails every run also
+writes nothing; the one with the most such errors is named; #555), a silent
+hook, a stopped type, or heartbeats with no outcome record at all past the grace
+(`capture-liveness.no-records`), and `PASS` otherwise. The failing-hook row
+quotes the latest reason only when it is one the hooks are known to record
+(a fixed phrase, or `uncaught <CODE>` after an optional `<step>:`); another
+`<step>: …` reason shows only its step, and anything else reads "an unlabelled
+error". Each hook in `--json` carries `lastErrorAt`, `lastErrorReason` (in that
+same form) and `recentErrors`.
 
 The figures come from `hook-outcomes.jsonl` beside the database (the directory
 of `MEMESH_DB_PATH`, `~/.memesh` by default): every capture hook appends one
@@ -1820,7 +1829,7 @@ When capture has gone quiet, SessionStart adds one line to its banner
 \`memesh doctor\` for the reason`), at most once a day
 (`last-capture-liveness-notice.lock`), and not during the first 3 sessions or
 24 hours after an install or upgrade, whichever ends later
-(`capture-liveness-grace.json`). The line disappears once the hook writes again.
+(`capture-liveness-grace.json`). The line disappears once the hook writes again. For a failing hook it reads `memesh: the <hook> hook recorded errors in its recent runs …` and changes once its most recent triggered runs end without an error.
 
 ### memesh config
 

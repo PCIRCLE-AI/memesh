@@ -530,7 +530,9 @@ adds the database side (auto-capture entities per type, week over week, and the
 `hook_runs` heartbeats); the banner reads only the JSONL. Only post-commit,
 session-summary and pre-compact can be "silent", because only their triggers
 imply a write is due; only session-summary can FAIL, because only its trigger
-(a session ending) is guaranteed. The `--json` shape is in
+(a session ending) is guaranteed. A hook with an `error` record among its 5
+most recent triggered runs makes the verdict PASS_WITH_CONCERNS; the one with
+the most is named in doctor and the banner, ahead of silence (#555). The `--json` shape is in
 [API_REFERENCE.md](api/API_REFERENCE.md#memesh-doctor--capture-liveness).
 
 Two gates keep this honest. `npm run audit:hook-outcomes`

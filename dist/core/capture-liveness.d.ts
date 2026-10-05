@@ -111,10 +111,15 @@ export interface HookLivenessSummary {
     lastSkipReason: string | null;
     dominantSkipReason: string | null;
     dominantSkipCount: number;
+    lastErrorAt: string | null;
+    lastErrorReason: string | null;
+    recentErrors: number;
     hosts: HookHost[];
     silent: boolean;
 }
 export declare function summarizeHookOutcomes(file: HookOutcomeFile): HookLivenessSummary[];
+export declare function renderableErrorReason(reason: string | undefined): string;
+export declare const RECENT_ERROR_RUNS = 5;
 export interface TypeTrend {
     type: string;
     last7: number;
@@ -136,6 +141,7 @@ export interface CaptureLivenessInput {
 export interface CaptureLivenessVerdict {
     status: CaptureLivenessStatus;
     silentHook: HookLivenessSummary | null;
+    erroringHook: HookLivenessSummary | null;
     stoppedTypes: TypeTrend[];
     deadHooks: string[];
 }
