@@ -254,14 +254,14 @@ export function proposeBackfillCandidates(opts = {}, db) {
         if (!consumerTypes.has(orphan.type))
             continue;
         const projects = opts.project ? [opts.project] : [...(projectTagsById.get(orphan.id) ?? [])].sort();
-        let added = 0;
+        const anchored = new Set();
         for (const project of projects) {
-            if (added >= maxPerSource)
+            if (anchored.size >= maxPerSource)
                 break;
             const anchor = anchorsByProject.get(project)?.[0];
-            if (!anchor || anchor.id === orphan.id)
+            if (!anchor || anchor.id === orphan.id || anchored.has(anchor.id))
                 continue;
-            added++;
+            anchored.add(anchor.id);
             candidates.push({
                 fromEntityId: orphan.id,
                 fromName: orphan.name,

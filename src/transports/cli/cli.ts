@@ -2259,7 +2259,7 @@ kgCmd
       }
       try {
         const { candidates, skippedOrphanIds } = proposeBackfillCandidates(
-          { ...baseOpts, dryRun: true, ignoreIdempotency: !!opts.resetIdempotency }, readOnlyDb);
+          { ...baseOpts, ignoreIdempotency: !!opts.resetIdempotency }, readOnlyDb);
         if (opts.json) {
           console.log(JSON.stringify({ candidates, skippedOrphanIds }, null, 2));
           return;

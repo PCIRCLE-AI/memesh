@@ -73,6 +73,9 @@ describe('memesh kg backfill-relations', () => {
     // A stale memory and no decay marker: a normal open would decay it.
     const writer = new DatabaseSync(dbFile);
     writer.exec("UPDATE entities SET confidence = 0.8, last_accessed_at = '2020-01-01' WHERE name = 'auth-a'; DELETE FROM memesh_metadata WHERE key = 'last_decay_at'");
+    // An attempted-orphan cache from an earlier run: a preview, even with
+    // --reset-idempotency, must leave it as it is.
+    writer.exec("INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES ('kg_backfill_processed_v1', '[999999]')");
     writer.close();
   });
 

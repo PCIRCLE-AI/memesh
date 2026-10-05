@@ -31,47 +31,47 @@
       "reason": "Demo tags are optional; an entity with no tags correctly contributes an empty added-tag list.",
       "triaged": "2026-09-06 provider-vector retirement audit"
     },
-    "C5 src/core/kg-backfill.ts:444": {
+    "C5 src/core/kg-backfill.ts:446": {
       "class": "SAFE-MAP-ABSENCE",
       "reason": "A missing tag bucket correctly means there are no peer candidates for that tag.",
       "triaged": "2026-09-06 provider-vector retirement audit"
     },
-    "C5 src/core/kg-backfill.ts:518": {
+    "C5 src/core/kg-backfill.ts:520": {
       "class": "SAFE-OPTIONAL-COLLECTION",
       "reason": "An unscoped orphan without project tags belongs to no project, so Rule 2 correctly anchors it nowhere (#529).",
       "triaged": "2026-10-05 #529"
     },
-    "C5 src/core/kg-backfill.ts:591": {
+    "C5 src/core/kg-backfill.ts:595": {
       "class": "SAFE-OPTIONAL-COLLECTION",
       "reason": "An orphan without session tags correctly has no session-derived candidates.",
       "triaged": "2026-09-06 provider-vector retirement audit"
     },
-    "C5 src/core/kg-backfill.ts:598": {
+    "C5 src/core/kg-backfill.ts:602": {
       "class": "SAFE-MAP-ABSENCE",
       "reason": "A session tag with no eligible peer (or none in the requested project) correctly contributes no candidates.",
       "triaged": "2026-09-06 provider-vector retirement audit"
     },
-    "C5 src/core/kg-backfill.ts:743": {
+    "C5 src/core/kg-backfill.ts:747": {
       "class": "SAFE-OPTIONAL-COLLECTION",
       "reason": "An entity without session tags intentionally starts with an empty set before optional enrichment.",
       "triaged": "2026-09-06 provider-vector retirement audit"
     },
-    "C5 src/core/kg-backfill.ts:757": {
+    "C5 src/core/kg-backfill.ts:761": {
       "class": "SAFE-OPTIONAL-COLLECTION",
       "reason": "Work without project tags correctly contributes to no project bucket.",
       "triaged": "2026-09-06 provider-vector retirement audit"
     },
-    "C5 src/core/kg-backfill.ts:807": {
+    "C5 src/core/kg-backfill.ts:811": {
       "class": "SAFE-MAP-ABSENCE",
       "reason": "A session with no work items correctly has no evidence candidates.",
       "triaged": "2026-09-06 provider-vector retirement audit"
     },
-    "C5 src/core/kg-backfill.ts:837": {
+    "C5 src/core/kg-backfill.ts:841": {
       "class": "SAFE-OPTIONAL-COLLECTION",
       "reason": "Evidence without project tags correctly has no temporal project fallback.",
       "triaged": "2026-09-06 provider-vector retirement audit"
     },
-    "C5 src/core/kg-backfill.ts:838": {
+    "C5 src/core/kg-backfill.ts:842": {
       "class": "SAFE-MAP-ABSENCE",
       "reason": "A project with no work items correctly has no anchor candidate.",
       "triaged": "2026-09-06 provider-vector retirement audit"

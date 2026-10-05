@@ -60696,14 +60696,14 @@ function proposeBackfillCandidates(opts = {}, db2) {
     if (!consumerTypes.has(orphan.type))
       continue;
     const projects = opts.project ? [opts.project] : [...projectTagsById.get(orphan.id) ?? []].sort();
-    let added = 0;
+    const anchored = /* @__PURE__ */ new Set();
     for (const project of projects) {
-      if (added >= maxPerSource)
+      if (anchored.size >= maxPerSource)
         break;
       const anchor = anchorsByProject.get(project)?.[0];
-      if (!anchor || anchor.id === orphan.id)
+      if (!anchor || anchor.id === orphan.id || anchored.has(anchor.id))
         continue;
-      added++;
+      anchored.add(anchor.id);
       candidates.push({
         fromEntityId: orphan.id,
         fromName: orphan.name,
@@ -64105,7 +64105,7 @@ kgCmd.command("backfill-relations").description("Propose relations that connect 
       return;
     }
     try {
-      const { candidates, skippedOrphanIds } = proposeBackfillCandidates2({ ...baseOpts, dryRun: true, ignoreIdempotency: !!opts.resetIdempotency }, readOnlyDb);
+      const { candidates, skippedOrphanIds } = proposeBackfillCandidates2({ ...baseOpts, ignoreIdempotency: !!opts.resetIdempotency }, readOnlyDb);
       if (opts.json) {
         console.log(JSON.stringify({ candidates, skippedOrphanIds }, null, 2));
         return;

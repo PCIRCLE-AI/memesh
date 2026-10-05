@@ -2006,7 +2006,7 @@ is a promise this project was not keeping.
 
 ### memesh kg backfill-relations
 
-Heuristic non-LLM relation backfill for orphan entities. It previews by default and writes nothing; `--apply` writes the proposed relations after backing up the database to `backups/kg-before-backfill-relations-<time>.db` beside it, and prints the restore command. With `--project <name>`, both ends of every proposed relation carry that project. Five rules:
+Heuristic non-LLM relation backfill for orphan entities. It previews by default and writes nothing; `--apply` writes the proposed relations after backing up the database to `backups/kg-before-backfill-relations-<time>.db` beside it, and prints the restore command (with `--json`, the result carries `backupPath` instead). With `--project <name>`, both ends of every proposed relation carry that project. Five rules:
 
 1. **Tag co-occurrence**: two active entities sharing ≥ 2 topical tags get a `related-to` edge. Topical filter excludes auto-capture noise (`session_end`, `auto_saved`, `commit`, `completed`, `lesson`, etc.) to prevent cartesian explosion.
 2. **Project clustering**: orphan lessons / decisions / bug-fixes / patterns in a project get a `belongs-to-project` edge to the most recent release / feature / architecture / plan in the same project. A memory in several projects gets one edge per project, in name order and up to `--max-per-source`; with `--project`, only the edge in that project.

@@ -180,9 +180,11 @@ export interface BackfillOptions {
    */
   resetIdempotency?: boolean;
   /**
-   * Test seam — bypass the persistent cache entirely (don't read, don't
-   * write). Production callers should not set this; the natural mode of
-   * operation is "skip already-attempted orphans, then mark new ones".
+   * Bypass the persistent cache entirely (don't read, don't write). The
+   * natural mode of operation is "skip already-attempted orphans, then mark
+   * new ones"; the CLI preview sets this for --reset-idempotency, because a
+   * preview must reconsider every orphan without clearing anything. Also a
+   * test seam.
    */
   ignoreIdempotency?: boolean;
 }
@@ -516,14 +518,16 @@ export function proposeBackfillCandidates(opts: BackfillOptions = {}, db?: Memes
   for (const orphan of orphans) {
     if (!consumerTypes.has(orphan.type)) continue;
     const projects = opts.project ? [opts.project] : [...(projectTagsById.get(orphan.id) ?? [])].sort();
-    let added = 0;
+    // One anchor can be the newest in two of the orphan's projects; it is
+    // proposed once.
+    const anchored = new Set<number>();
     for (const project of projects) {
-      if (added >= maxPerSource) break;
+      if (anchored.size >= maxPerSource) break;
       // Link to the SINGLE most-recent anchor in the project — keep
       // this rule low-volume to maintain signal-to-noise.
       const anchor = anchorsByProject.get(project)?.[0];
-      if (!anchor || anchor.id === orphan.id) continue;
-      added++;
+      if (!anchor || anchor.id === orphan.id || anchored.has(anchor.id)) continue;
+      anchored.add(anchor.id);
       candidates.push({
         fromEntityId: orphan.id,
         fromName: orphan.name,

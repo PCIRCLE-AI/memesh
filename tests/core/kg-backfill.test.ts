@@ -1046,7 +1046,22 @@ describe('kg-backfill integration', () => {
     expect(anchoredTo({ project: 'bravo' })).toEqual([anchorB]);
     // Unscoped, it belongs to both projects, so it is anchored in each.
     expect(anchoredTo({}).sort((a, b) => a - b)).toEqual([anchorA, anchorB].sort((a, b) => a - b));
+    // Projects in name order, so a cap keeps the same one every run.
+    expect(anchoredTo({ maxEdgesPerSource: 1 })).toEqual([anchorA]);
     expect(anchoredTo({ maxEdgesPerSource: 0 })).toHaveLength(0);
+  });
+
+  it('#529 Rule 2: an anchor that is newest in two of the memory\'s projects is proposed once', () => {
+    const shared = insertEntity('shared release', 'release');
+    insertTag(shared, 'project:alpha');
+    insertTag(shared, 'project:bravo');
+    const orphan = insertEntity('two-project lesson', 'lesson_learned');
+    insertTag(orphan, 'project:alpha');
+    insertTag(orphan, 'project:bravo');
+
+    const anchors = proposeBackfillCandidates({ includeEvidenceLinks: false }).candidates
+      .filter((c) => c.fromEntityId === orphan && c.relationType === 'belongs-to-project').map((c) => c.toEntityId);
+    expect(anchors).toEqual([shared]);
   });
 });
 
