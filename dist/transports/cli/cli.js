@@ -63176,10 +63176,16 @@ program2.command("import").description("Import memories from a JSON export file,
         console.error(code === "ENOENT" ? `Error: directory not found: ${opts.notes}` : `Error: cannot read ${opts.notes}: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
+      const accepted = result.created.length + result.replaced.length + result.unchanged + result.repathed.length + result.restored.length;
+      const allRefused = result.skipped.length > 0 && accepted === 0;
+      if (allRefused)
+        process.exitCode = 1;
       if (opts.json) {
         console.log(JSON.stringify(result));
         return;
       }
+      if (allRefused)
+        console.error(`Error: every note file found was refused; nothing was imported.`);
       console.log(`Notes: ${summarizeNoteIngest(result)} (${result.discovered} note files found)`);
       for (const s of result.skipped)
         console.error(`  skipped ${s.path}: ${s.reason}`);

@@ -813,10 +813,19 @@ program
             : `Error: cannot read ${opts.notes}: ${err instanceof Error ? err.message : String(err)}`);
           process.exit(1);
         }
+        // #550: every note found was refused and none was taken in (new,
+        // replaced, unchanged, moved or restored): that is a failure for a
+        // script checking the exit code, not a quiet success. A partial import
+        // still succeeds and lists what it refused.
+        const accepted = result.created.length + result.replaced.length + result.unchanged
+          + result.repathed.length + result.restored.length;
+        const allRefused = result.skipped.length > 0 && accepted === 0;
+        if (allRefused) process.exitCode = 1;
         if (opts.json) {
           console.log(JSON.stringify(result));
           return;
         }
+        if (allRefused) console.error(`Error: every note file found was refused; nothing was imported.`);
         console.log(`Notes: ${summarizeNoteIngest(result)} (${result.discovered} note files found)`);
         for (const s of result.skipped) console.error(`  skipped ${s.path}: ${s.reason}`);
         if (result.markedMissing.length) console.log(`  file gone, memory kept and tagged source:note-file:missing: ${result.markedMissing.join(', ')}`);

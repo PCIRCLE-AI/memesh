@@ -1676,6 +1676,11 @@ never an absolute path.
 - A file without frontmatter or without `name` is reported and skipped, not
   guessed at. (The `.remember/` handoff files have no frontmatter, so they are
   reported, not ingested.)
+- Exit code: 1 when the directory has note files and every one was refused
+  (nothing created, replaced, unchanged, moved or restored); the refusals are
+  still printed, and `--json` still writes the full result. A partial import,
+  or a run where every note is already unchanged, exits 0 and lists what it
+  refused.
 - A file that disappears does **not** delete its memory: the memory is tagged
   `source:note-file:missing`. Deleting stays an explicit `forget`; a memory
   archived with `forget` is not revived by a later edit of its file.
