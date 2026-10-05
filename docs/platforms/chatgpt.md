@@ -45,6 +45,7 @@ curl -X POST http://localhost:3737/v1/remember \
     "name": "database-decision",
     "type": "decision",
     "observations": ["Use PostgreSQL for ACID transactions"],
+    "why": "Orders and invoices need transactions; revisit if write volume outgrows one primary",
     "tags": ["project:myapp", "topic:database"]
   }'
 ```

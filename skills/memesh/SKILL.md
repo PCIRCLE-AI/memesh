@@ -28,7 +28,7 @@ All examples below use CLI. MCP tools accept the same parameters as JSON objects
 | Tool | Purpose |
 |---|---|
 | `work_package` | Prepare one bounded untrusted `digest` (calendar cluster) or `transcript` package from the newest Claude Code session under the client's single matching MCP workspace root; submit exactly one strict result or defer. Submit only stages pending human review and retains bounded redacted source turns for comparison; agents cannot apply or reject. No hidden reasoning, raw transcript, transcript path, API key, LLM, embedding, or vector data is exposed or used; hashes identify freshness and workspace scope rather than authentication. |
-| `remember` | Store knowledge as an entity with observations, tags, and relations; `note` (free text) derives title/observations/name; `replace: true` rewrites a named memory, keeping history; a new decision needs `why` |
+| `remember` | Store knowledge as an entity with observations, tags, and relations; `note` (free text) derives title/observations/name; `replace: true` rewrites a named memory, keeping history; a new decision, or a `replace` of one, needs `why` |
 | `recall` | Search stored knowledge; empty query lists recent memories |
 | `forget` | Archive an entity or remove one exact observation |
 | `export` | Export memories as portable JSON |
@@ -201,8 +201,8 @@ and retiring outdated info.
 | Situation | Action |
 |-----------|--------|
 | User states what they're working on / what's next / what's blocking | `memesh task --goal "…"` / `--next "…"` / `--blocked "…"` |
-| Design decision made | `memesh remember "Use OAuth 2.0 with PKCE for the API" --type decision --tags "project:myapp"` (or `remember({ note })` over MCP) |
-| A stored memory is wrong | `memesh remember --name "auth-choice" --obs "the corrected fact" --replace` — the memory keeps its type and the old version moves to `metadata.replaced_history` (add `--type` only to reclassify it) |
+| Design decision made | `memesh remember "Use OAuth 2.0 with PKCE for the API" --type decision --why "public client, no secret to keep; revisit if we add a server-side client" --tags "project:myapp"` (or `remember({ note, type: "decision", why })` over MCP) |
+| A stored memory is wrong | `memesh remember --name "auth-choice" --obs "the corrected fact" --replace` — the memory keeps its type and the old version moves to `metadata.replaced_history` (add `--type` only to reclassify it; replacing a decision needs `--why` too) |
 | Bug fixed | `memesh learn --error "what broke" --fix "what fixed it" --root-cause "why" --severity major` |
 | Starting work on a feature | `memesh recall "feature-name" --json` |
 | User asks "what did we decide?" | `memesh recall "topic" --tag "project:myapp"` |
@@ -237,16 +237,16 @@ memesh remember \
   --why "PostgreSQL is too heavy to deploy for one user; revisit if we add a hosted tier" \
   --tags "project:myapp" "topic:database"
 ```
-`--why` (MCP: `why`) is required for a new decision: the reason AND what would
-make it stop holding. It is stored as `Why: …` and shown next to the decision in
-every briefing, so a later session can tell whether it still applies. A decision
+`--why` (MCP: `why`) is required to create a decision, or to `--replace` one: the
+reason AND what would make it stop holding. It is stored as `Why: …` and shown next to the decision in
+every briefing and in the memory index, so a later session can tell whether it still applies. A decision
 shown as "unconfirmed N days" has not been read or added to for a month: recall
 it and check the reason still holds before following it.
 Use a **stable name** (`db-choice`, not `db-choice-2026-08-16`): reusing the
 name appends to the same entity instead of scattering duplicates. `--title` is
 the human-readable headline; the name stays the machine key. If this replaces
 an older decision, add `--supersedes "old-db-choice"`. To correct it instead
-of adding to it, repeat the call with `--replace`.
+of adding to it, repeat the call with `--replace` and a fresh `--why`.
 
 Quicker when the text is all you have: `memesh remember "SQLite for local-first
 storage"` (MCP: `remember({ note: "…" })`). The first line becomes the title,

@@ -23,7 +23,7 @@ import { RememberSchema } from '../schemas.js';
 import { ingestNoteDirectory, summarizeNoteIngest } from '../../core/note-ingest.js';
 import { assembleBriefing, readBriefingIndex } from '../../core/briefing.js';
 import { BRIEFING_LEVELS, resolveBriefingLevel } from '../../core/briefing-level.js';
-import { buildReferenceContext, projectLabel } from '../../core/work-topology.js';
+import { DECISION_TYPES, buildReferenceContext, projectLabel } from '../../core/work-topology.js';
 import { captureChatSession } from '../../core/session-insight.js';
 import { captureChatTurn } from '../../core/turn-signal.js';
 import {
@@ -537,7 +537,12 @@ program
           // here because the result carried only the REQUESTED title; that
           // half of the fix has moved to core, where every caller gets it.
           if (result.title) console.log(`   title: ${result.title}`);
-          console.log(`   fix it with: memesh remember --name=${shellWord(result.name)} --type=${shellWord(result.derived.type)} --title "…" --obs "…" --replace`);
+          // Replacing a decision needs its reason too (a copied command that
+          // lacks it is refused): the one just given when there is one, else
+          // a placeholder that has to be filled in.
+          const whyFlag = !DECISION_TYPES.has(result.derived.type) ? ''
+            : opts.why !== undefined ? ` --why=${shellWord(opts.why)}` : ' --why "…"';
+          console.log(`   fix it with: memesh remember --name=${shellWord(result.name)} --type=${shellWord(result.derived.type)} --title "…" --obs "…"${whyFlag} --replace`);
         }
         if (result.replaced) console.log('   replaced: the previous version is kept in metadata.replaced_history');
         // A move drops the memory out of every scoped view it used to appear

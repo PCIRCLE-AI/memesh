@@ -147,8 +147,10 @@ type ResolvedRememberInput = RememberInput & { name: string };
 function resolveRememberInput(
   input: RememberInput,
 ): { args: ResolvedRememberInput; derived?: DerivedNote; typeGiven: boolean } {
-  // A decision's reason is one more observation, redacted with the rest.
-  const why = input.why !== undefined && input.why.trim() !== '' ? [`${WHY_PREFIX}${input.why.trim()}`] : [];
+  // A decision's reason is one more observation, redacted with the rest. A
+  // reason typed with its own "Why: " label is not labelled twice.
+  const reason = input.why?.trim().replace(/^why:\s*/i, '') ?? '';
+  const why = reason !== '' ? [`${WHY_PREFIX}${reason}`] : [];
   if (input.note === undefined) {
     if (!input.name) throw new Error('remember needs `name` and `type`, or `note`');
     // ABSENT and BLANK are different inputs, and only the first one is a
@@ -312,7 +314,7 @@ function rememberInTransaction(
   if (DECISION_TYPES.has(entityType) && (!existing || args.replace) && args.trustOverride !== 'untrusted'
     && !(args.observations ?? []).some((o) => o.startsWith(WHY_PREFIX))) {
     throw new Error(
-      `MeMesh did not store this ${entityType}: a ${entityType} needs \`why\` — the reason for it and what would make it `
+      `MeMesh did not store this ${entityType}: ${/^[aeiou]/i.test(entityType) ? 'an' : 'a'} ${entityType} needs \`why\` — the reason for it and what would make it `
       + 'stop holding (for example: "Postgres is too heavy to deploy for one user; revisit if we add a hosted tier"). '
       + 'Pass `why`, or an observation that starts with "Why: ".',
     );

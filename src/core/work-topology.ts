@@ -87,6 +87,38 @@ export const WHY_PREFIX = 'Why: ';
 /** Days without a read or a new observation after which a decision's line asks for a re-check: the decay threshold. */
 export const UNCONFIRMED_DECISION_DAYS = 30;
 
+/** SQLite UTC text ('YYYY-MM-DD HH:MM:SS') or ISO text as epoch ms; NaN when absent or unreadable. */
+export function utcEpoch(at: string | null | undefined): number {
+  if (!at) return NaN;
+  return Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(at) ? at : `${at.replace(' ', 'T')}Z`);
+}
+
+/**
+ * Whole days since a decision was last confirmed (read, or added to), when
+ * that is UNCONFIRMED_DECISION_DAYS or more; else null. `seenAt` holds every
+ * moment that counts (a recall's `last_accessed_at`, its newest observation);
+ * the latest readable one wins. Nothing readable is null too: no marker is
+ * better than a made-up age. Both readers (the ranked block and the index)
+ * call this, so they cannot disagree about when the marker appears.
+ */
+export function unconfirmedDaysSince(seenAt: ReadonlyArray<string | null | undefined>, now: number): number | null {
+  const seen = Math.max(...seenAt.map(utcEpoch).filter((t) => !Number.isNaN(t)));
+  if (!Number.isFinite(seen)) return null;
+  const days = Math.floor((now - seen) / 86_400_000);
+  return days >= UNCONFIRMED_DECISION_DAYS ? days : null;
+}
+
+/**
+ * Is `text` just the `Why: ` observation again? A decision whose only
+ * observation is its reason has that observation as its snippet (and a title
+ * derived from it), and the line already prints the reason on its own: the
+ * text must not repeat it. Tolerates the clip's trailing ellipsis.
+ */
+export function restatesWhy(text: string, why: string): boolean {
+  const core = text.replace(/…$/, '').trim();
+  return core.startsWith(WHY_PREFIX) && `${WHY_PREFIX}${why}`.startsWith(core);
+}
+
 /**
  * The "Decisions and direction" family: the work layer minus lessons and the
  * task state. These are what a new session most needs and what mechanical
@@ -219,7 +251,7 @@ export function topologyLine(entity: TopologyEntity, maxChars: number): string {
   // row → TopologyEntity mapping with `redactMemoryText` instead; the
   // briefing/session-start parity test and tests/core/briefing-redact.test.ts
   // are what hold those callers to the same treatment.
-  const text = (title || snippet || `${entity.type} memory`).replace(/~[0-9a-f]{32}\b/g, '');
+  const given = (title || snippet || '').replace(/~[0-9a-f]{32}\b/g, '');
   // The citation handle. A line that carries the entity's id lets an agent
   // cite the memory it actually used — `[mem:42]` — so the Stop hook's
   // accounting can credit a hit without guessing from prose (literal
@@ -230,12 +262,35 @@ export function topologyLine(entity: TopologyEntity, maxChars: number): string {
   // A decision is shown with its reason, or with the fact that it has none,
   // and with how long nobody has confirmed it: the conclusion alone reads as
   // a rule that holds forever. The markers are budgeted like the handle and
-  // never cut; the reason yields space like the title.
+  // never cut; the reason outranks the title when the line is cut.
   const unconfirmed = entity.unconfirmedDays ? ` (unconfirmed ${entity.unconfirmedDays} days: re-check before relying)` : '';
-  const why = entity.why === undefined ? '' : entity.why ? ` — Why: ${entity.why}` : '';
+  const reason = entity.why ? `${WHY_PREFIX}${entity.why}` : '';
   const noReason = entity.why === null ? ' (no reason recorded)' : '';
+  // A decision whose only observation is its reason has nothing else to say:
+  // the line shows that reason once, not "Why: x — Why: x".
+  const text = reason && restatesWhy(given, entity.why as string) ? '' : given || (reason ? '' : `${entity.type} memory`);
   const room = Math.max(8, maxChars - handle.length - unconfirmed.length - noReason.length);
-  return stripControlChars(`- [${entity.type}] ${clip(`${text}${why}`, room)}${noReason}${unconfirmed}${handle}`);
+  return stripControlChars(`- [${entity.type}] ${lineBody(text, reason, room)}${noReason}${unconfirmed}${handle}`);
+}
+
+/** When a decision line must be cut, its title is clipped to this many characters before its reason is. */
+const TITLE_FLOOR_CHARS = 40;
+const REASON_SEPARATOR = ' — ';
+
+/**
+ * The text of one line within `room` characters. The reason holds what would
+ * make the decision stop holding, which is what a reader needs most, so it
+ * outranks the title: the title is clipped first (down to TITLE_FLOOR_CHARS),
+ * and only then the reason.
+ */
+function lineBody(text: string, reason: string, room: number): string {
+  if (!reason) return clip(text, room);
+  if (!text) return clip(reason, room);
+  const title = text.replace(/\s+/g, ' ').trim();
+  const why = reason.replace(/\s+/g, ' ').trim();
+  if (title.length + REASON_SEPARATOR.length + why.length <= room) return `${title}${REASON_SEPARATOR}${why}`;
+  const head = clip(title, Math.max(Math.min(title.length, TITLE_FLOOR_CHARS), room - REASON_SEPARATOR.length - why.length));
+  return `${head}${REASON_SEPARATOR}${clip(why, Math.max(WHY_PREFIX.length + 1, room - head.length - REASON_SEPARATOR.length))}`;
 }
 
 /**

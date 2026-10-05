@@ -45,6 +45,7 @@ curl -X POST http://localhost:3737/v1/remember \
     "name": "fastapi-backend-decision",
     "type": "decision",
     "observations": ["Use FastAPI for automatic OpenAPI docs"],
+    "why": "The team ships a public API and wants docs generated from the code; revisit if we move off Python",
     "tags": ["project:api", "tech:fastapi", "topic:backend"]
   }'
 ```

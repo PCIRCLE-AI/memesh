@@ -42,6 +42,7 @@ export interface Snippet {
     first: string | null;
     fix: string | null;
     why?: string | null;
+    lastAddedAt?: string | null;
 }
 export declare function readSnippets(db: MemeshDatabase, ids: readonly number[]): Map<number, Snippet>;
 export declare function toTopologyEntity(row: PoolRow, snippets: ReadonlyMap<number, Snippet>, now?: number): TopologyEntity;

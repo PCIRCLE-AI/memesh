@@ -4388,6 +4388,22 @@ var init_entity_write = __esm({
 function canonicalEntityType(type) {
   return LESSON_TYPES.has(type) ? "lesson_learned" : type;
 }
+function utcEpoch(at) {
+  if (!at)
+    return NaN;
+  return Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(at) ? at : `${at.replace(" ", "T")}Z`);
+}
+function unconfirmedDaysSince(seenAt, now) {
+  const seen = Math.max(...seenAt.map(utcEpoch).filter((t) => !Number.isNaN(t)));
+  if (!Number.isFinite(seen))
+    return null;
+  const days = Math.floor((now - seen) / 864e5);
+  return days >= UNCONFIRMED_DECISION_DAYS ? days : null;
+}
+function restatesWhy(text, why) {
+  const core = text.replace(/…$/, "").trim();
+  return core.startsWith(WHY_PREFIX) && `${WHY_PREFIX}${why}`.startsWith(core);
+}
 function isAutoInjectable(metadata) {
   if (metadata == null)
     return true;
@@ -4410,13 +4426,26 @@ function layerOf(type) {
 function topologyLine(entity, maxChars) {
   const title = entity.title?.trim();
   const snippet = entity.snippet?.trim();
-  const text = (title || snippet || `${entity.type} memory`).replace(/~[0-9a-f]{32}\b/g, "");
+  const given = (title || snippet || "").replace(/~[0-9a-f]{32}\b/g, "");
   const handle = Number.isInteger(entity.id) && entity.id > 0 ? ` [mem:${entity.id}]` : "";
   const unconfirmed = entity.unconfirmedDays ? ` (unconfirmed ${entity.unconfirmedDays} days: re-check before relying)` : "";
-  const why = entity.why === void 0 ? "" : entity.why ? ` \u2014 Why: ${entity.why}` : "";
+  const reason = entity.why ? `${WHY_PREFIX}${entity.why}` : "";
   const noReason = entity.why === null ? " (no reason recorded)" : "";
+  const text = reason && restatesWhy(given, entity.why) ? "" : given || (reason ? "" : `${entity.type} memory`);
   const room = Math.max(8, maxChars - handle.length - unconfirmed.length - noReason.length);
-  return stripControlChars(`- [${entity.type}] ${clip(`${text}${why}`, room)}${noReason}${unconfirmed}${handle}`);
+  return stripControlChars(`- [${entity.type}] ${lineBody(text, reason, room)}${noReason}${unconfirmed}${handle}`);
+}
+function lineBody(text, reason, room) {
+  if (!reason)
+    return clip(text, room);
+  if (!text)
+    return clip(reason, room);
+  const title = text.replace(/\s+/g, " ").trim();
+  const why = reason.replace(/\s+/g, " ").trim();
+  if (title.length + REASON_SEPARATOR.length + why.length <= room)
+    return `${title}${REASON_SEPARATOR}${why}`;
+  const head = clip(title, Math.max(Math.min(title.length, TITLE_FLOOR_CHARS), room - REASON_SEPARATOR.length - why.length));
+  return `${head}${REASON_SEPARATOR}${clip(why, Math.max(WHY_PREFIX.length + 1, room - head.length - REASON_SEPARATOR.length))}`;
 }
 function clip(text, maxChars) {
   const flat2 = text.replace(/\s+/g, " ").trim();
@@ -4642,7 +4671,7 @@ function jsonStringLiteral(value) {
 function stripControlChars(s) {
   return s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]+/g, " ");
 }
-var LESSON_TYPES, LESSON_TYPE_LIST, WORK_LAYER_TYPES, DECISION_TYPES, WHY_PREFIX, UNCONFIRMED_DECISION_DAYS, DECISION_LAYER_TYPES, EVIDENCE_LAYER_TYPES, MAX_PER_SECTION, DEFAULT_TOPOLOGY_BUDGET, GLOBAL_TOPOLOGY_LIMIT, GLOBAL_TOPOLOGY_BUDGET, TOPOLOGY_CANDIDATE_CAP, SNIPPET_FETCH_CHARS, STATE_MAX_CHARS, TASK_STATE_DISPLAY_MAX_CHARS, TASK_STATE_LINE_MAX_CHARS, PROJECT_ID_HASH_SUFFIX;
+var LESSON_TYPES, LESSON_TYPE_LIST, WORK_LAYER_TYPES, DECISION_TYPES, WHY_PREFIX, UNCONFIRMED_DECISION_DAYS, DECISION_LAYER_TYPES, EVIDENCE_LAYER_TYPES, TITLE_FLOOR_CHARS, REASON_SEPARATOR, MAX_PER_SECTION, DEFAULT_TOPOLOGY_BUDGET, GLOBAL_TOPOLOGY_LIMIT, GLOBAL_TOPOLOGY_BUDGET, TOPOLOGY_CANDIDATE_CAP, SNIPPET_FETCH_CHARS, STATE_MAX_CHARS, TASK_STATE_DISPLAY_MAX_CHARS, TASK_STATE_LINE_MAX_CHARS, PROJECT_ID_HASH_SUFFIX;
 var init_work_topology = __esm({
   "dist/core/work-topology.js"() {
     "use strict";
@@ -4674,6 +4703,8 @@ var init_work_topology = __esm({
       "weekly_summary",
       "workflow_checkpoint"
     ]);
+    TITLE_FLOOR_CHARS = 40;
+    REASON_SEPARATOR = " \u2014 ";
     MAX_PER_SECTION = 8;
     DEFAULT_TOPOLOGY_BUDGET = {
       maxChars: 4e3,
@@ -7718,7 +7749,8 @@ function shownEntity(entity) {
   };
 }
 function resolveRememberInput(input) {
-  const why = input.why !== void 0 && input.why.trim() !== "" ? [`${WHY_PREFIX}${input.why.trim()}`] : [];
+  const reason = input.why?.trim().replace(/^why:\s*/i, "") ?? "";
+  const why = reason !== "" ? [`${WHY_PREFIX}${reason}`] : [];
   if (input.note === void 0) {
     if (!input.name)
       throw new Error("remember needs `name` and `type`, or `note`");
@@ -7793,7 +7825,7 @@ function rememberInTransaction(args, derived, typeGiven, db2, kg) {
     throw new Error(`\`replace\` on "${args.name}": there is no memory named "${args.name}" to inherit a type from, so this call would create one with no type \u2014 pass \`type\` to create it.`);
   }
   if (DECISION_TYPES.has(entityType) && (!existing || args.replace) && args.trustOverride !== "untrusted" && !(args.observations ?? []).some((o) => o.startsWith(WHY_PREFIX))) {
-    throw new Error(`MeMesh did not store this ${entityType}: a ${entityType} needs \`why\` \u2014 the reason for it and what would make it stop holding (for example: "Postgres is too heavy to deploy for one user; revisit if we add a hosted tier"). Pass \`why\`, or an observation that starts with "Why: ".`);
+    throw new Error(`MeMesh did not store this ${entityType}: ${/^[aeiou]/i.test(entityType) ? "an" : "a"} ${entityType} needs \`why\` \u2014 the reason for it and what would make it stop holding (for example: "Postgres is too heavy to deploy for one user; revisit if we add a hosted tier"). Pass \`why\`, or an observation that starts with "Why: ".`);
   }
   let replacedVersion;
   let retypedTo;
@@ -26018,15 +26050,9 @@ function byteLength2(text) {
 function sectionBytes(lines) {
   return lines.reduce((sum, line) => sum + byteLength2(line) + 1, 0);
 }
-function parseActivity(value) {
-  if (!value)
-    return Number.NaN;
-  const iso = /[zZ]|[+-]\d\d:?\d\d$/.test(value) ? value : `${value.replace(" ", "T")}Z`;
-  return Date.parse(iso);
-}
 function compareIndexCandidates(a, b) {
-  const at = parseActivity(a.lastActivity);
-  const bt = parseActivity(b.lastActivity);
+  const at = utcEpoch(a.lastActivity);
+  const bt = utcEpoch(b.lastActivity);
   const av = Number.isNaN(at) ? -Infinity : at;
   const bv = Number.isNaN(bt) ? -Infinity : bt;
   if (av !== bv)
@@ -26047,13 +26073,25 @@ function candidateIsAutoInjectable(metadata) {
   }
   return isAutoInjectable(metadata);
 }
-function indexLine(candidate) {
-  const [shownTitle, shownSnippet] = redactShownTogether([candidate.title ?? null, candidate.snippet ?? null]);
+function indexLine(candidate, now) {
+  const decision = DECISION_TYPES.has(candidate.type ?? "") && candidate.why !== void 0;
+  const [shownTitle, shownSnippet, shownWhy] = redactShownTogether([
+    candidate.title ?? null,
+    candidate.snippet ?? null,
+    decision ? candidate.why ?? null : null
+  ]);
   const title = flat(shownTitle);
-  const snippet = flat(shownSnippet);
+  const why = decision ? flat(shownWhy) || null : void 0;
+  const snippet = why && restatesWhy(flat(shownSnippet), why) ? "" : flat(shownSnippet);
   const repeats = title && snippet && snippet.toLowerCase().startsWith(title.replace(/…$/, "").toLowerCase());
   const text = title && snippet && !repeats ? `${title} \u2014 ${snippet}` : title || snippet;
-  return topologyLine({ name: String(candidate.id), id: candidate.id, type: candidate.type || "memory", title: text || null }, INDEX_LINE_MAX_CHARS);
+  return topologyLine({
+    name: String(candidate.id),
+    id: candidate.id,
+    type: candidate.type || "memory",
+    title: text || null,
+    ...decision ? { why, unconfirmedDays: unconfirmedDaysSince([candidate.lastAccessedAt, candidate.recency ?? candidate.lastActivity], now) } : {}
+  }, INDEX_LINE_MAX_CHARS);
 }
 function injectedIndexReserve(projectName2) {
   const worst = [
@@ -26102,7 +26140,7 @@ function buildBriefingIndex(candidates, projectName2, now, options = {}) {
   const current = [];
   let older = 0;
   for (const c of eligible) {
-    const at = parseActivity(c.lastActivity);
+    const at = utcEpoch(c.lastActivity);
     if (!Number.isNaN(at) && at < cutoff)
       older++;
     else
@@ -26127,7 +26165,7 @@ function buildBriefingIndex(candidates, projectName2, now, options = {}) {
   for (const c of current) {
     if (rendered.length >= INDEX_MAX_LINES)
       break;
-    const line = indexLine(c);
+    const line = indexLine(c, now);
     const cost = byteLength2(line) + 1;
     if (used + cost > budget)
       break;
@@ -26260,19 +26298,24 @@ function readSnippets(db2, ids) {
   const snippets = /* @__PURE__ */ new Map();
   if (unique.length === 0)
     return snippets;
-  const rows = db2.prepare(`SELECT entity_id, content FROM observations
+  const timed = db2.prepare("PRAGMA table_info(observations)").all().some((c) => c.name === "created_at");
+  const rows = db2.prepare(`SELECT entity_id, content,
+       ${timed ? `CASE WHEN ${validUtc("created_at")} THEN replace(created_at, 'T', ' ') END` : "NULL"} AS added_at
+     FROM observations
      WHERE entity_id IN (${unique.map(() => "?").join(",")})
      ORDER BY id ASC`).all(...unique);
   const shown = (content) => redactMemoryText(content).slice(0, SNIPPET_FETCH_CHARS).replace(/\s+/g, " ").trim() || null;
   for (const row of rows) {
     const content = String(row.content ?? "");
-    const entry = snippets.get(row.entity_id) ?? { first: null, fix: null, why: null };
+    const entry = snippets.get(row.entity_id) ?? { first: null, fix: null, why: null, lastAddedAt: null };
     if (entry.first === null)
       entry.first = shown(content);
     if (content.startsWith("Fix: "))
       entry.fix = shown(content);
     if (content.startsWith(WHY_PREFIX))
       entry.why = shown(content.slice(WHY_PREFIX.length));
+    if (row.added_at && (entry.lastAddedAt == null || row.added_at > entry.lastAddedAt))
+      entry.lastAddedAt = row.added_at;
     snippets.set(row.entity_id, entry);
   }
   return snippets;
@@ -26297,34 +26340,30 @@ function toTopologyEntity(row, snippets, now = Date.now()) {
     snippet: first,
     signalScore: typeof signal === "number" ? signal : null,
     recency: row.recency ?? null,
-    ...decision ? { why, unconfirmedDays: unconfirmedDays(row, now) } : {}
+    ...decision ? { why, unconfirmedDays: unconfirmedDaysSince([row.last_accessed_at, snippet?.lastAddedAt, row.recency], now) } : {}
   };
-}
-function epochOf(at) {
-  if (!at)
-    return NaN;
-  return Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(at) ? at : `${at.replace(" ", "T")}Z`);
-}
-function unconfirmedDays(row, now) {
-  const seen = Math.max(...[epochOf(row.last_accessed_at), epochOf(row.recency)].filter((t) => !Number.isNaN(t)));
-  if (!Number.isFinite(seen))
-    return null;
-  const days = Math.floor((now - seen) / 864e5);
-  return days >= UNCONFIRMED_DECISION_DAYS ? days : null;
 }
 function readIndexCandidates(db2, projectName2) {
   const cols = entityColumns(db2);
   const excluded = INDEX_EXCLUDED_TYPES.map(() => "?").join(",");
+  const decisionTypes = [...DECISION_TYPES];
+  const decisionOnly = `e.type IN (${decisionTypes.map(() => "?").join(",")})`;
   const rows = db2.prepare(`SELECT e.id, e.name, e.type, ${titleCol(cols)}, e.metadata,
+       ${cols.scoring.has("last_accessed_at") ? "e.last_accessed_at" : "NULL AS last_accessed_at"},
        (SELECT o.content FROM observations o
          WHERE o.entity_id = e.id ORDER BY o.id ASC LIMIT 1) AS snippet,
        max(e.created_at, COALESCE((SELECT MAX(o2.created_at) FROM observations o2
-         WHERE o2.entity_id = e.id), e.created_at)) AS last_activity
+         WHERE o2.entity_id = e.id), e.created_at)) AS last_activity,
+       CASE WHEN ${decisionOnly} THEN
+         (SELECT o3.content FROM observations o3
+           WHERE o3.entity_id = e.id AND substr(o3.content, 1, ${WHY_PREFIX.length}) = '${WHY_PREFIX}'
+           ORDER BY o3.id DESC LIMIT 1) END AS why_content,
+       CASE WHEN ${decisionOnly} THEN ${RECENCY_SQL} END AS recency
      FROM entities e
      WHERE e.id IN (SELECT entity_id FROM tags WHERE tag = ?)${active(cols)}${nonGlobal(cols)}
        AND e.type NOT IN (${excluded})
      ORDER BY last_activity DESC, e.id DESC
-     LIMIT ?`).all(`project:${projectName2}`, ...INDEX_EXCLUDED_TYPES, INDEX_CANDIDATE_CAP);
+     LIMIT ?`).all(...decisionTypes, ...decisionTypes, `project:${projectName2}`, ...INDEX_EXCLUDED_TYPES, INDEX_CANDIDATE_CAP);
   const candidates = rows.map((row) => ({
     id: row.id,
     name: row.name,
@@ -26332,11 +26371,16 @@ function readIndexCandidates(db2, projectName2) {
     title: row.title,
     snippet: row.snippet == null ? null : redactMemoryText(row.snippet).slice(0, INDEX_SNIPPET_FETCH_CHARS),
     lastActivity: row.last_activity,
+    ...row.type !== null && DECISION_TYPES.has(row.type) ? {
+      why: row.why_content == null ? null : redactMemoryText(row.why_content.slice(WHY_PREFIX.length)).slice(0, INDEX_SNIPPET_FETCH_CHARS),
+      recency: row.recency,
+      lastAccessedAt: row.last_accessed_at
+    } : {},
     metadata: row.metadata
   }));
   return { candidates, truncated: rows.length >= INDEX_CANDIDATE_CAP };
 }
-var LESSON_POOL_LIMIT, LESSON_LIMIT, RECENT_LIMIT, NO_PROJECT_LIMIT, SCORING_COLUMNS, active, nonGlobal, NO_PROJECT_TAG2, titleCol, candidateColumns, toPoolRow, RECENCY_SQL;
+var LESSON_POOL_LIMIT, LESSON_LIMIT, RECENT_LIMIT, NO_PROJECT_LIMIT, SCORING_COLUMNS, active, nonGlobal, NO_PROJECT_TAG2, titleCol, candidateColumns, toPoolRow, validUtc, RECENCY_SQL;
 var init_briefing_pools = __esm({
   "dist/core/briefing-pools.js"() {
     "use strict";
@@ -26375,13 +26419,13 @@ var init_briefing_pools = __esm({
       recall_misses: row.recall_misses ?? void 0,
       recency: row.recency ?? null
     });
+    validUtc = (column) => `replace(${column}, 'T', ' ') = strftime('%Y-%m-%d %H:%M:%S', ${column})
+      AND replace(${column}, 'T', ' ') <= strftime('%Y-%m-%d %H:%M:%S', 'now', '+5 minutes')`;
     RECENCY_SQL = `COALESCE(
   (SELECT MAX(replace(o.created_at, 'T', ' ')) FROM observations o
     WHERE o.entity_id = e.id
-      AND replace(o.created_at, 'T', ' ') = strftime('%Y-%m-%d %H:%M:%S', o.created_at)
-      AND replace(o.created_at, 'T', ' ') <= strftime('%Y-%m-%d %H:%M:%S', 'now', '+5 minutes')),
-  CASE WHEN replace(e.created_at, 'T', ' ') = strftime('%Y-%m-%d %H:%M:%S', e.created_at)
-        AND replace(e.created_at, 'T', ' ') <= strftime('%Y-%m-%d %H:%M:%S', 'now', '+5 minutes')
+      AND ${validUtc("o.created_at")}),
+  CASE WHEN ${validUtc("e.created_at")}
        THEN replace(e.created_at, 'T', ' ') END)`;
   }
 });
@@ -63851,7 +63895,8 @@ program2.command("remember").argument("[text]", "Quick-capture text \u2014 title
       if (result.derived) {
         if (result.title)
           console.log(`   title: ${result.title}`);
-        console.log(`   fix it with: memesh remember --name=${shellWord(result.name)} --type=${shellWord(result.derived.type)} --title "\u2026" --obs "\u2026" --replace`);
+        const whyFlag = !DECISION_TYPES.has(result.derived.type) ? "" : opts.why !== void 0 ? ` --why=${shellWord(opts.why)}` : ' --why "\u2026"';
+        console.log(`   fix it with: memesh remember --name=${shellWord(result.name)} --type=${shellWord(result.derived.type)} --title "\u2026" --obs "\u2026"${whyFlag} --replace`);
       }
       if (result.replaced)
         console.log("   replaced: the previous version is kept in metadata.replaced_history");

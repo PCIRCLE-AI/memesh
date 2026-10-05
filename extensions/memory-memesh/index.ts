@@ -384,7 +384,7 @@ export default {
             Type.String({ description: "Category (e.g., 'decision', 'fact', 'preference')" })
           ),
           why: Type.Optional(
-            Type.String({ description: "For a decision: why it was made and what would make it stop holding (required when category is 'decision')" })
+            Type.String({ description: "For a decision: why it was made and what would make it stop holding (required for decision, architecture_decision and design_decision)" })
           ),
           importance: Type.Optional(
             Type.Integer({ description: "Importance (1-10)", minimum: 1, maximum: 10 })

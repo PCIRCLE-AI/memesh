@@ -47,6 +47,17 @@ _TURN_TIMEOUT_SECS = 30.0
 _DRAIN_TIMEOUT_SECS = 5.0
 
 
+def _server_error(resp) -> str:
+    """The `error` sentence of a failed response, else its status line."""
+    try:
+        error = resp.json().get("error")
+        if isinstance(error, str) and error:
+            return error
+    except Exception:
+        pass
+    return f"HTTP {resp.status_code}"
+
+
 def _load_config(hermes_home: str) -> dict:
     config_path = Path(hermes_home) / "memesh.json"
     if config_path.exists():
@@ -419,7 +430,7 @@ class MemeshProvider(MemoryProvider):
                         },
                         "why": {
                             "type": "string",
-                            "description": "For a decision: why it was made and what would make it stop holding (required to create a decision)",
+                            "description": "For a decision: why it was made and what would make it stop holding (required to create a decision, architecture_decision or design_decision)",
                         },
                         "tags": {"type": "array", "items": {"type": "string"}},
                     },
@@ -460,6 +471,10 @@ class MemeshProvider(MemoryProvider):
                 raise NotImplementedError(
                     f"memesh provider does not handle tool {tool_name}"
                 )
+            if resp.status_code >= 400:
+                # The server's own sentence says what to change (a decision
+                # without `why`); a bare status line does not.
+                return json.dumps({"success": False, "error": _server_error(resp)})
             resp.raise_for_status()
             return json.dumps(resp.json())
         except Exception as exc:

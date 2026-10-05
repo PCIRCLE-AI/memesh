@@ -46,6 +46,9 @@ require a bearer token when bound to `localhost`.
   automated jobs don't pollute long-term memory.
 - Tools: `memesh_remember`, `memesh_recall`, `memesh_forget` — exposed for
   explicit LLM-directed memory management on top of the automatic hooks.
+  `memesh_remember` takes `why` (the reason, and what would make it stop
+  holding), which a `decision`, `architecture_decision` or `design_decision`
+  needs; a refused write comes back as the server's own sentence.
 - `on_pre_compress()` / `on_session_end()`: pass the message list to
   `memesh hermes capture-session`, the same extractor the Claude Code Stop
   hook uses. It stores up to three `session-insight` entities —

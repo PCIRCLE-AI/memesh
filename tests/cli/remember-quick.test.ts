@@ -206,6 +206,34 @@ describe('memesh remember CLI: quick-capture form', () => {
     expect(exitCode).toBe(0);
   }, 60_000);
 
+  it('refuses a decision with no --why (exit 1, the sentence on stderr, nothing stored) and stores it with --why', () => {
+    const refused = runCli(['remember', '--name=cli-no-why', '--type=decision', '--obs=Use TLS everywhere'], { HOME: tmpHome });
+    expect(refused.exitCode).toBe(1);
+    expect(refused.stderr).toMatch(/needs `why`.*reason for it and what would make it stop holding/);
+    expect(refused.stdout).not.toContain('Stored');
+
+    const stored = runCli(['remember', '--name=cli-no-why', '--type=decision', '--obs=Use TLS everywhere', '--why=the proxy terminates nothing; revisit if it does'], { HOME: tmpHome });
+    expect(stored.exitCode, `stderr: ${stored.stderr}`).toBe(0);
+    const db = new MemeshDatabase(path.join(tmpHome, '.memesh', 'knowledge-graph.db'));
+    const obs = db.prepare("SELECT o.content FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = 'cli-no-why' ORDER BY o.id").all() as { content: string }[];
+    db.close();
+    expect(obs.map((o) => o.content)).toEqual(['Use TLS everywhere', 'Why: the proxy terminates nothing; revisit if it does']);
+  }, 60_000);
+
+  // The quick form prints a command that fixes a wrong derivation. For a
+  // decision, replacing needs the reason too: a copy of the command without it
+  // would be refused.
+  it('the quick form\'s "fix it with" command for a decision carries --why; for any other type it does not', () => {
+    const decision = runCli(['remember', 'Use PKCE for the API', '--type=decision', '--why=public client; revisit if we add a server-side client'], { HOME: tmpHome });
+    expect(decision.exitCode, `stderr: ${decision.stderr}`).toBe(0);
+    expect(decision.stdout).toMatch(/fix it with: .* --type=decision --title "…" --obs "…" --why='public client; revisit if we add a server-side client' --replace/);
+
+    const note = runCli(['remember', 'Use PKCE for the docs'], { HOME: tmpHome });
+    expect(note.exitCode).toBe(0);
+    expect(note.stdout).toMatch(/fix it with: .* --type=note --title "…" --obs "…" --replace/);
+    expect(note.stdout).not.toContain('--why');
+  }, 60_000);
+
   it('stamps source_host=cli on the stored entity', () => {
     // The `sourceHost: 'cli'` literal in cli.ts is the only carrier of CLI
     // write provenance; deleting it used to leave the whole suite green.

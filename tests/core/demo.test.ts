@@ -37,6 +37,21 @@ describe('seedDemo', () => {
     expect(flagged).toBe(30);
   });
 
+  // The demo is what a new user reads to learn what a decision looks like, and
+  // the briefing prints "(no reason recorded)" for one without a reason.
+  it('every demo decision, of every decision type, carries a "Why: " reason', async () => {
+    const { seedDemo } = await import('../../src/core/demo.js');
+    const { DECISION_TYPES } = await import('../../src/core/work-topology.js');
+    seedDemo(db);
+    const types = [...DECISION_TYPES];
+    const rows = db.prepare(
+      `SELECT e.name, EXISTS (SELECT 1 FROM observations o WHERE o.entity_id = e.id AND substr(o.content, 1, 5) = 'Why: ') AS has_why
+       FROM entities e WHERE e.type IN (${types.map(() => '?').join(',')})`,
+    ).all(...types) as Array<{ name: string; has_why: number }>;
+    expect(rows.length, 'the demo seeds no decisions, so this proves nothing').toBeGreaterThan(0);
+    expect(rows.filter((r) => !r.has_why).map((r) => r.name)).toEqual([]);
+  });
+
   it('spreads created_at across the last ~30 days', async () => {
     const { seedDemo } = await import('../../src/core/demo.js');
     seedDemo(db);

@@ -10,7 +10,7 @@ import { redactMemoryText, redactShownTogether } from './core-paths.js';
 import { rankEntities } from './scoring.js';
 import { SESSION_HANDOFF_TYPE, sessionHandoffName } from './session-handoff.js';
 import { INDEX_CANDIDATE_CAP, INDEX_EXCLUDED_TYPES, INDEX_SNIPPET_FETCH_CHARS } from './briefing-index.js';
-import { DECISION_LAYER_TYPES, DECISION_TYPES, GLOBAL_TOPOLOGY_LIMIT, LESSON_TYPE_LIST, SNIPPET_FETCH_CHARS, TOPOLOGY_CANDIDATE_CAP, UNCONFIRMED_DECISION_DAYS, WHY_PREFIX, isAutoInjectable, prioritizeDecisions, } from './work-topology.js';
+import { DECISION_LAYER_TYPES, DECISION_TYPES, GLOBAL_TOPOLOGY_LIMIT, LESSON_TYPE_LIST, SNIPPET_FETCH_CHARS, TOPOLOGY_CANDIDATE_CAP, WHY_PREFIX, isAutoInjectable, prioritizeDecisions, unconfirmedDaysSince, } from './work-topology.js';
 const LESSON_POOL_LIMIT = 50;
 const LESSON_LIMIT = 5;
 const RECENT_LIMIT = 5;
@@ -68,13 +68,13 @@ function selectPool(rows, cap) {
         .filter((row) => trustedForAutoContext(row.metadata))
         .slice(0, cap);
 }
+const validUtc = (column) => `replace(${column}, 'T', ' ') = strftime('%Y-%m-%d %H:%M:%S', ${column})
+      AND replace(${column}, 'T', ' ') <= strftime('%Y-%m-%d %H:%M:%S', 'now', '+5 minutes')`;
 const RECENCY_SQL = `COALESCE(
   (SELECT MAX(replace(o.created_at, 'T', ' ')) FROM observations o
     WHERE o.entity_id = e.id
-      AND replace(o.created_at, 'T', ' ') = strftime('%Y-%m-%d %H:%M:%S', o.created_at)
-      AND replace(o.created_at, 'T', ' ') <= strftime('%Y-%m-%d %H:%M:%S', 'now', '+5 minutes')),
-  CASE WHEN replace(e.created_at, 'T', ' ') = strftime('%Y-%m-%d %H:%M:%S', e.created_at)
-        AND replace(e.created_at, 'T', ' ') <= strftime('%Y-%m-%d %H:%M:%S', 'now', '+5 minutes')
+      AND ${validUtc('o.created_at')}),
+  CASE WHEN ${validUtc('e.created_at')}
        THEN replace(e.created_at, 'T', ' ') END)`;
 function guarded(label, fallback, read, onError) {
     if (!onError)
@@ -148,19 +148,24 @@ export function readSnippets(db, ids) {
     const snippets = new Map();
     if (unique.length === 0)
         return snippets;
-    const rows = db.prepare(`SELECT entity_id, content FROM observations
+    const timed = db.prepare('PRAGMA table_info(observations)').all().some((c) => c.name === 'created_at');
+    const rows = db.prepare(`SELECT entity_id, content,
+       ${timed ? `CASE WHEN ${validUtc('created_at')} THEN replace(created_at, 'T', ' ') END` : 'NULL'} AS added_at
+     FROM observations
      WHERE entity_id IN (${unique.map(() => '?').join(',')})
      ORDER BY id ASC`).all(...unique);
     const shown = (content) => redactMemoryText(content).slice(0, SNIPPET_FETCH_CHARS).replace(/\s+/g, ' ').trim() || null;
     for (const row of rows) {
         const content = String(row.content ?? '');
-        const entry = snippets.get(row.entity_id) ?? { first: null, fix: null, why: null };
+        const entry = snippets.get(row.entity_id) ?? { first: null, fix: null, why: null, lastAddedAt: null };
         if (entry.first === null)
             entry.first = shown(content);
         if (content.startsWith('Fix: '))
             entry.fix = shown(content);
         if (content.startsWith(WHY_PREFIX))
             entry.why = shown(content.slice(WHY_PREFIX.length));
+        if (row.added_at && (entry.lastAddedAt == null || row.added_at > entry.lastAddedAt))
+            entry.lastAddedAt = row.added_at;
         snippets.set(row.entity_id, entry);
     }
     return snippets;
@@ -185,34 +190,30 @@ export function toTopologyEntity(row, snippets, now = Date.now()) {
         snippet: first,
         signalScore: typeof signal === 'number' ? signal : null,
         recency: row.recency ?? null,
-        ...(decision ? { why, unconfirmedDays: unconfirmedDays(row, now) } : {}),
+        ...(decision ? { why, unconfirmedDays: unconfirmedDaysSince([row.last_accessed_at, snippet?.lastAddedAt, row.recency], now) } : {}),
     };
-}
-function epochOf(at) {
-    if (!at)
-        return NaN;
-    return Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(at) ? at : `${at.replace(' ', 'T')}Z`);
-}
-function unconfirmedDays(row, now) {
-    const seen = Math.max(...[epochOf(row.last_accessed_at), epochOf(row.recency)].filter((t) => !Number.isNaN(t)));
-    if (!Number.isFinite(seen))
-        return null;
-    const days = Math.floor((now - seen) / 86_400_000);
-    return days >= UNCONFIRMED_DECISION_DAYS ? days : null;
 }
 export function readIndexCandidates(db, projectName) {
     const cols = entityColumns(db);
     const excluded = INDEX_EXCLUDED_TYPES.map(() => '?').join(',');
+    const decisionTypes = [...DECISION_TYPES];
+    const decisionOnly = `e.type IN (${decisionTypes.map(() => '?').join(',')})`;
     const rows = db.prepare(`SELECT e.id, e.name, e.type, ${titleCol(cols)}, e.metadata,
+       ${cols.scoring.has('last_accessed_at') ? 'e.last_accessed_at' : 'NULL AS last_accessed_at'},
        (SELECT o.content FROM observations o
          WHERE o.entity_id = e.id ORDER BY o.id ASC LIMIT 1) AS snippet,
        max(e.created_at, COALESCE((SELECT MAX(o2.created_at) FROM observations o2
-         WHERE o2.entity_id = e.id), e.created_at)) AS last_activity
+         WHERE o2.entity_id = e.id), e.created_at)) AS last_activity,
+       CASE WHEN ${decisionOnly} THEN
+         (SELECT o3.content FROM observations o3
+           WHERE o3.entity_id = e.id AND substr(o3.content, 1, ${WHY_PREFIX.length}) = '${WHY_PREFIX}'
+           ORDER BY o3.id DESC LIMIT 1) END AS why_content,
+       CASE WHEN ${decisionOnly} THEN ${RECENCY_SQL} END AS recency
      FROM entities e
      WHERE e.id IN (SELECT entity_id FROM tags WHERE tag = ?)${active(cols)}${nonGlobal(cols)}
        AND e.type NOT IN (${excluded})
      ORDER BY last_activity DESC, e.id DESC
-     LIMIT ?`).all(`project:${projectName}`, ...INDEX_EXCLUDED_TYPES, INDEX_CANDIDATE_CAP);
+     LIMIT ?`).all(...decisionTypes, ...decisionTypes, `project:${projectName}`, ...INDEX_EXCLUDED_TYPES, INDEX_CANDIDATE_CAP);
     const candidates = rows.map((row) => ({
         id: row.id,
         name: row.name,
@@ -220,6 +221,11 @@ export function readIndexCandidates(db, projectName) {
         title: row.title,
         snippet: row.snippet == null ? null : redactMemoryText(row.snippet).slice(0, INDEX_SNIPPET_FETCH_CHARS),
         lastActivity: row.last_activity,
+        ...(row.type !== null && DECISION_TYPES.has(row.type) ? {
+            why: row.why_content == null ? null : redactMemoryText(row.why_content.slice(WHY_PREFIX.length)).slice(0, INDEX_SNIPPET_FETCH_CHARS),
+            recency: row.recency,
+            lastAccessedAt: row.last_accessed_at,
+        } : {}),
         metadata: row.metadata,
     }));
     return { candidates, truncated: rows.length >= INDEX_CANDIDATE_CAP };
