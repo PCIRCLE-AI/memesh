@@ -93,8 +93,8 @@
     },
     {
       "path": "scripts/hooks/_generated/entity-write.js",
-      "sha256": "a887bcede48e9f4f69111eba14bea515a2150169a023264b0dd056c17eba35ad",
-      "bytes": 3110
+      "sha256": "3de19f5f2d5d4cf5499f0eb9ad1563b714941779d4ddf84d4d5c40d989f68c9c",
+      "bytes": 3292
     },
     {
       "path": "scripts/hooks/_generated/file-mode.js",

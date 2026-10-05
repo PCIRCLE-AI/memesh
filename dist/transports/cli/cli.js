@@ -4327,12 +4327,16 @@ function insertOrGetEntity(db2, entity) {
     return null;
   return { ...row, isNew };
 }
+function storedText(text) {
+  return text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "\uFFFD");
+}
 function appendObservations(db2, entityId, observations, options) {
   const seen = new Set(options.dedupe && options.readExisting ? db2.prepare("SELECT content FROM observations WHERE entity_id = ?").all(entityId).map((o) => o.content) : []);
   const written = [];
-  for (const observation of observations) {
-    if (options.exclude?.(observation))
+  for (const given of observations) {
+    if (options.exclude?.(given))
       continue;
+    const observation = storedText(given);
     if (options.dedupe) {
       if (seen.has(observation))
         continue;
@@ -6967,7 +6971,7 @@ function importMemories(args, options) {
             return { kind: "keptArchived" };
           if (args.merge_strategy === "append") {
             const existingText = new Set(existing.observations);
-            const newObservations = (entity.observations ?? []).filter((o) => !existingText.has(o));
+            const newObservations = (entity.observations ?? []).map(storedText).filter((o) => !existingText.has(o));
             kg.createEntity(entity.name, entity.type, {
               title,
               observations: newObservations,
@@ -7059,6 +7063,7 @@ var init_serializer = __esm({
     "use strict";
     init_db();
     init_knowledge_graph();
+    init_entity_write();
     init_title();
     init_time_utils();
     init_replaced_history();

@@ -5,6 +5,7 @@
 
 import { getDatabase } from '../db.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
+import { storedText } from '../storage/entity-write.js';
 import { truncateTitle } from './title.js';
 import { parseSqliteUtcMs } from './time-utils.js';
 import { boundReplacedHistory, type ReplacedVersion } from './replaced-history.js';
@@ -880,8 +881,10 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean })
             // this, re-running `import --merge append` on the same file
             // grows every shared entity's observation list without bound —
             // dogfooded: the same sentence duplicated on every re-run.
+            // Compared in the form the database stores (#561): a lone
+            // surrogate comes back as U+FFFD and would otherwise never match.
             const existingText = new Set(existing.observations);
-            const newObservations = (entity.observations ?? []).filter((o) => !existingText.has(o));
+            const newObservations = (entity.observations ?? []).map(storedText).filter((o) => !existingText.has(o));
             // Pass trustOverride directly so the createEntity confidence-
             // bump gate denies the lift on untrusted imports. Codex
             // caught a P1 where the trust value was being set via

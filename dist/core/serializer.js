@@ -1,5 +1,6 @@
 import { getDatabase } from '../db.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
+import { storedText } from '../storage/entity-write.js';
 import { truncateTitle } from './title.js';
 import { parseSqliteUtcMs } from './time-utils.js';
 import { boundReplacedHistory } from './replaced-history.js';
@@ -268,7 +269,7 @@ export function importMemories(args, options) {
                         return { kind: 'keptArchived' };
                     if (args.merge_strategy === 'append') {
                         const existingText = new Set(existing.observations);
-                        const newObservations = (entity.observations ?? []).filter((o) => !existingText.has(o));
+                        const newObservations = (entity.observations ?? []).map(storedText).filter((o) => !existingText.has(o));
                         kg.createEntity(entity.name, entity.type, {
                             title,
                             observations: newObservations,
