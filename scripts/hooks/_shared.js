@@ -81,12 +81,14 @@ import { guardFromMetadata as guardFromMetadataLocal } from './_generated/guards
 /**
  * Every accepted, enabled guard for one tool. Guards live as
  * `metadata.guard` on lesson-family entities (G1); the LIKE is a cheap
- * prefilter and `guardFromMetadata` is the tolerant parser. Any failure —
- * missing column on an old schema, corrupt metadata — returns an empty
- * list: a broken guard store must degrade to "no warnings", never to a
- * broken hook.
+ * prefilter and `guardFromMetadata` is the tolerant parser, so one row with
+ * corrupt metadata is skipped and the rest still load. A failure of the read
+ * itself — a missing column on an old schema, a damaged file — returns an
+ * empty list: a broken guard store must degrade to "no warnings", never to
+ * a broken hook. It is handed to `onError` (#560): an unreadable store is not
+ * the same as no guard matching, and the caller must be able to say so.
  */
-export function loadActiveGuards(db, tool) {
+export function loadActiveGuards(db, tool, onError) {
   try {
     const rows = db.prepare(
       `SELECT id, metadata FROM entities
@@ -100,7 +102,8 @@ export function loadActiveGuards(db, tool) {
       if (g && g.tool === tool) out.push(g);
     }
     return out;
-  } catch {
+  } catch (err) {
+    onError?.(err);
     return [];
   }
 }

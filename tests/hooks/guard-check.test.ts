@@ -101,6 +101,25 @@ describe('Feature: lesson guards at the PreToolUse hooks', () => {
     expect(runHook('guard-check.js', { tool_name: 'Bash', tool_input: { command: 'echo checkout' } }).stdout).toBe('');
   });
 
+  // #560: an unreadable guard store used to be recorded as "no active guard
+  // matched", so every guard stopped and the record looked like a command no
+  // guard applies to. It is now an error, said on stderr.
+  it('#560 a guard store it cannot read is an error with a stderr line, not "no guard matched"', async () => {
+    seedGuardedLesson(bashGuard);
+    const { closeDatabase } = await import('../../src/db.js');
+    closeDatabase();
+    for (const suffix of ['', '-wal', '-shm']) fs.rmSync(dbPath + suffix, { force: true });
+    fs.writeFileSync(dbPath, 'this is not a sqlite database, '.repeat(200));
+
+    const { stdout, stderr } = runHook('guard-check.js', { tool_name: 'Bash', tool_input: { command: 'git checkout -- src/a.ts' } });
+    expect(stdout).toBe('');
+    expect(stderr).toContain('[memesh guard-check] guards could not be read');
+    const lines = fs.readFileSync(path.join(tmpHome, 'hook-outcomes.jsonl'), 'utf8').trim().split('\n');
+    const last = JSON.parse(lines[lines.length - 1]);
+    expect(last).toMatchObject({ hook: 'guard-check', outcome: 'error' });
+    expect(last.reason).toMatch(/^guards unreadable: /);
+  });
+
   it('no database, no command, garbage input — all silent passes', async () => {
     expect(runHook('guard-check.js', { tool_name: 'Bash', tool_input: {} }).stdout).toBe('');
     // Close our own handle before deleting: Windows locks open files, so

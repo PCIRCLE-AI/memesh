@@ -168,8 +168,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "6cd52ad523567004c7c9deb10bd4478e9591f2b625090f3d33345639acdcefc2",
-      "bytes": 124357
+      "sha256": "b4b0a216abb49157700ad180a6c2ee12f6dd859d71d5dd739eb6a0bfaf6d015a",
+      "bytes": 124615
     },
     {
       "path": "scripts/hooks/_stop-handoff.js",
@@ -193,8 +193,8 @@
     },
     {
       "path": "scripts/hooks/guard-check.js",
-      "sha256": "ec2f51991b4984f14a1c1a2984fcbee94a24441160c786e3cd09f599ccda5a44",
-      "bytes": 3970
+      "sha256": "91e23f8b717dd8440cc10f3b0891c67585d7400c2259d084b6c629315d8e402a",
+      "bytes": 4441
     },
     {
       "path": "scripts/hooks/post-commit.js",
