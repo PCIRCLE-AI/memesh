@@ -60068,6 +60068,7 @@ var init_server = __esm({
     init_knowledge_graph();
     init_config();
     init_session_limit();
+    init_agent_scope_id();
     init_briefing_level();
     init_doctor_fixes();
     init_patterns();
@@ -60312,7 +60313,7 @@ var init_server = __esm({
       };
     }));
     TaskStateQuerySchema = external_exports.object({
-      project: external_exports.string().max(200).refine((value) => value.trim().length > 0, "project must not be empty")
+      project: external_exports.string().max(AGENT_SCOPE_ID_MAX_LENGTH).refine((value) => value.trim().length > 0, "project must not be empty")
     });
     app.get("/v1/task-state", (req, res) => {
       const parsed = TaskStateQuerySchema.safeParse(req.query);

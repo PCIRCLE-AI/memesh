@@ -125,6 +125,7 @@ describe('exportOpenAITools', () => {
   it('memesh_learn requires error, fix and project, as POST /v1/learn does', () => {
     const tool = tools.find((t: any) => t.function.name === 'memesh_learn') as any;
     expect(tool.function.parameters.required).toEqual(['error', 'fix', 'project']);
+    expect(HttpLearnSchema.safeParse({ error: 'e', fix: 'f' }).success).toBe(false);
     expect(tool.function.parameters.properties.project.description).toContain('400');
   });
 

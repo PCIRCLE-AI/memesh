@@ -667,7 +667,7 @@ The MCP tool files the lesson under `project` when given, else under the session
   "severity": "major"
 }
 
-// Minimal lesson (only required fields)
+// Minimal MCP lesson (only required fields; POST /v1/learn also requires "project")
 {
   "error": "Tests fail with SIGSEGV in native module",
   "fix": "Changed vitest pool from threads to forks"
