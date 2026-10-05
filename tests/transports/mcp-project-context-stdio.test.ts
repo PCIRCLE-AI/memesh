@@ -154,7 +154,7 @@ it('remember with no tag files the memory under the bound project: found again i
   try {
     const writeA = await session(runtime, { MEMESH_PROJECT_ROOT: a }, null);
     try {
-      const r = await writeA.tool('remember', { name: 'okapi-decision', type: 'decision', observations: ['okapi stripes are for A'] });
+      const r = await writeA.tool('remember', { name: 'okapi-decision', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['okapi stripes are for A'] });
       expect(r.isError, r.text).toBe(false);
     } finally { await writeA.client.close(); }
 
@@ -178,7 +178,7 @@ it('remember with no tag files the memory under the bound project: found again i
       const all = async () => entities((await inB.tool('recall', { cross_project: true, include_archived: true, limit: 100 })).text)
         .map(({ name, type, title, observations, tags, metadata, confidence, namespace }) => ({ name, type, title, observations, tags, metadata, confidence, namespace }));
       const before = JSON.stringify(await all());
-      const refused = await inB.tool('remember', { name: 'okapi-decision', type: 'decision', observations: ['B writes over A'] });
+      const refused = await inB.tool('remember', { name: 'okapi-decision', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['B writes over A'] });
       expect(refused.isError).toBe(true);
       expect(refused.text).toMatch(/"okapi-decision".*project:/s);
       expect(refused.text).not.toContain('okapi stripes');

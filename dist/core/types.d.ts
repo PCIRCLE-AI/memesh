@@ -59,6 +59,7 @@ export interface RememberInput {
     replace?: boolean;
     title?: string;
     observations?: string[];
+    why?: string;
     tags?: string[];
     relations?: Array<{
         to: string;

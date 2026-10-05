@@ -67,7 +67,7 @@ export const TOOL_DEFINITIONS = [
     },
     {
         name: 'remember',
-        description: 'Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions, patterns, lessons learned, and important context. An omitted namespace keeps an existing memory in its current namespace; a "supersedes" relation archives its target, while "contradicts" marks a conflict. ' +
+        description: 'Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions (with `why`), patterns, lessons learned, and important context. An omitted namespace keeps an existing memory in its current namespace; a "supersedes" relation archives its target, while "contradicts" marks a conflict. ' +
             'Quickest form: pass only `note` (free text) and the server derives title, observations and name; the response echoes what it derived. ' +
             'To correct a memory, call again with its `name`, `replace: true` and the `observations` it should now hold (a replace without `observations` or `note` is refused, so re-send the ones to keep along with the fix) — the memory keeps the `type` it has unless you pass a different one — and the old content moves to metadata.replaced_history instead of staying next to the fix.',
         inputSchema: {
@@ -97,6 +97,10 @@ export const TOOL_DEFINITIONS = [
                     type: 'array',
                     items: { type: 'string' },
                     description: 'Key facts or observations about this entity',
+                },
+                why: {
+                    type: 'string',
+                    description: 'For a decision: why it was made AND what would make it stop holding (e.g. "Postgres is too heavy to deploy for one user; revisit if we add a hosted tier"). Stored as the observation "Why: …" and shown next to the decision wherever it is recalled or briefed. Required to create or `replace` a memory of type decision, architecture_decision or design_decision, unless an observation already starts with "Why: ".',
                 },
                 tags: {
                     type: 'array',

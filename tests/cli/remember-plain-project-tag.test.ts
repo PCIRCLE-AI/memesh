@@ -48,7 +48,7 @@ describe('#511 memesh remember with a plain-name project tag', () => {
   it('stores the full project id and says which tag it rewrote', () => {
     const id = getProjectName(repo);
     const plain = `project:${id.slice(0, id.lastIndexOf('~'))}`;
-    const r = run(['remember', '--name', 'cli-511', '--type', 'decision', '--obs', 'o', '--tags', plain, 'topic:x']);
+    const r = run(['remember', '--name', 'cli-511', '--type', 'decision', '--obs', 'o', '--why', 'a plain name is easier to type; revisit if two projects collide', '--tags', plain, 'topic:x']);
     expect(r.status, r.stderr).toBe(0);
     expect(r.stdout).toContain(`tag ${plain} names this project; stored as project:${id}`);
     expect(tagsOf('cli-511')).toEqual([`project:${id}`, 'topic:x']);
@@ -57,7 +57,7 @@ describe('#511 memesh remember with a plain-name project tag', () => {
   it('--json carries the rewrite', () => {
     const id = getProjectName(repo);
     const plain = `project:${id.slice(0, id.lastIndexOf('~'))}`;
-    const r = run(['remember', '--name', 'cli-511-json', '--type', 'decision', '--obs', 'o', '--tags', plain, '--json']);
+    const r = run(['remember', '--name', 'cli-511-json', '--type', 'decision', '--obs', 'o', '--why', 'a plain name is easier to type; revisit if two projects collide', '--tags', plain, '--json']);
     expect(r.status, r.stderr).toBe(0);
     expect(JSON.parse(r.stdout).retagged).toEqual({ from: plain, to: `project:${id}` });
   });

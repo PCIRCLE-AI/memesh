@@ -55,7 +55,7 @@ describe('remember stores a lesson as lesson_learned (#451)', () => {
   });
 
   it('other types are stored exactly as given', () => {
-    remember({ name: 'a-decision', type: 'decision', observations: ['use sqlite'] });
+    remember({ name: 'a-decision', type: 'decision', why: 'one file is easy to back up; revisit if we need many writers', observations: ['use sqlite'] });
     remember({ name: 'a-lessons', type: 'lessons', observations: ['plural is a different type'] });
     expect(storedType('a-decision')).toBe('decision');
     expect(storedType('a-lessons')).toBe('lessons');

@@ -60,7 +60,7 @@ describe('#561 the shared observation writer dedupes in the stored form', () => 
 
 describe('#561 a re-import that adds nothing appends nothing', () => {
   it('reports the unchanged memory as skipped and leaves its trust alone', () => {
-    remember({ name: 'kept-561', type: 'decision', observations: ['plain fact', 'lone\ud800end'], tags: ['topic:x'] });
+    remember({ name: 'kept-561', type: 'decision', why: 'a seed for the re-import test; revisit if append changes', observations: ['plain fact', 'lone\ud800end'], tags: ['topic:x'] });
     const trust = () => (JSON.parse((getDatabase().prepare("SELECT metadata FROM entities WHERE name = 'kept-561'").get() as { metadata: string }).metadata) as { trust?: string }).trust;
     expect(trust()).toBe('trusted');
     const again: ExportResult = {
@@ -79,7 +79,7 @@ describe('#561 a re-import that adds nothing appends nothing', () => {
   const row = () => getDatabase().prepare("SELECT status, title, namespace FROM entities WHERE name = 'same-561'").get() as { status: string; title: string | null; namespace: string };
 
   it('restore_archived brings back a forgotten memory even when its text is unchanged', () => {
-    remember({ name: 'same-561', type: 'decision', observations: ['fact'] });
+    remember({ name: 'same-561', type: 'decision', why: 'a seed for the re-import test; revisit if append changes', observations: ['fact'] });
     forget({ name: 'same-561' });
     const result = importMemories({ data: entryOf({}), merge_strategy: 'append', restore_archived: true });
     expect(result.skipped).toBe(0);
@@ -87,7 +87,7 @@ describe('#561 a re-import that adds nothing appends nothing', () => {
   });
 
   it('a new tag, a new title or a namespace move is still a change', () => {
-    remember({ name: 'same-561', type: 'decision', observations: ['fact'] });
+    remember({ name: 'same-561', type: 'decision', why: 'a seed for the re-import test; revisit if append changes', observations: ['fact'] });
     expect(importMemories({ data: entryOf({ tags: ['topic:new'] }), merge_strategy: 'append' }).appended).toBe(1);
     expect(importMemories({ data: entryOf({ title: 'A title' }), merge_strategy: 'append' }).appended).toBe(1);
     expect(row().title).toBe('A title');
@@ -123,7 +123,7 @@ describe('#561 a re-import that adds nothing appends nothing', () => {
   });
 
   it('still appends, and marks untrusted, when the file brings new text', () => {
-    remember({ name: 'grown-561', type: 'decision', observations: ['plain fact'] });
+    remember({ name: 'grown-561', type: 'decision', why: 'a seed for the re-import test; revisit if append changes', observations: ['plain fact'] });
     const result = importMemories({
       data: { version: '3.1.0', exported_at: '2026-10-05T00:00:00.000Z', entity_count: 1,
         entities: [{ name: 'grown-561', type: 'decision', namespace: 'personal', observations: ['plain fact', 'new fact'], tags: [], relations: [] }] },

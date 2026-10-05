@@ -256,10 +256,10 @@
       "reason": "display fallbacks; empty renders an explicit notice",
       "triaged": "2026-08-16 (tab consolidation: statement moved verbatim from the retired LessonsTab/BrowseTab; original triage 2026-08-04)"
     },
-    "C5 src/core/work-topology.ts:650": {
+    "C5 src/core/work-topology.ts:734": {
       "class": "SAFE-BY-CONSTRUCTION",
       "reason": "`line.match(/`+/g) ?? []` in buildReferenceContext, moved verbatim from scripts/hooks/_shared.js (which the C5 scan does not cover) so the MCP briefing surface shares the hook's fence. match() returns null when a line contains no backtick run; the empty list truthfully means 'no backticks', and the fence floor Math.max(3, longestRun + 1) still applies. Pinned by tests/hooks/reference-context-fence.test.ts, which feeds lines WITH backtick runs and asserts the fence outruns them.",
-      "triaged": "2026-08-16 (A1c briefing); re-keyed 2026-09-20 386→468 (#360: assembleTopologyBlock/budget consts, citation-handle additions, issue-242 global-section additions, and hasBriefingContent all added above buildReferenceContext across several commits; statement byte-identical, classification unchanged); re-keyed 2026-09-24 468→473 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-24 473→598 (#434 step 3: decision/budget helpers added above; statement byte-identical); re-keyed 2026-09-25 598→604 (LESSON_TYPE_LIST export, #443); re-keyed 2026-09-26 604→626 (#451: canonicalEntityType added above LESSON_TYPE_LIST; statement byte-identical); re-keyed 2026-09-27 626→631 (#374: the control-character strip (stripControlChars) and its call sites added above longestRun; statement byte-identical); re-keyed 2026-09-27 631→633 (#409: the routing-hash strip added above in topologyLine; statement byte-identical); re-keyed 2026-10-04 633→641 (M2-a: the noProject entity flag, pool flag and section added above; statement byte-identical)"
+      "triaged": "2026-08-16 (A1c briefing); re-keyed 2026-09-20 386→468 (#360: assembleTopologyBlock/budget consts, citation-handle additions, issue-242 global-section additions, and hasBriefingContent all added above buildReferenceContext across several commits; statement byte-identical, classification unchanged); re-keyed 2026-09-24 468→473 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-24 473→598 (#434 step 3: decision/budget helpers added above; statement byte-identical); re-keyed 2026-09-25 598→604 (LESSON_TYPE_LIST export, #443); re-keyed 2026-09-26 604→626 (#451: canonicalEntityType added above LESSON_TYPE_LIST; statement byte-identical); re-keyed 2026-09-27 626→631 (#374: the control-character strip (stripControlChars) and its call sites added above longestRun; statement byte-identical); re-keyed 2026-09-27 631→633 (#409: the routing-hash strip added above in topologyLine; statement byte-identical); re-keyed 2026-10-04 633→641 (M2-a: the noProject entity flag, pool flag and section added above; statement byte-identical) Re-keyed 2026-10-06: decision `why` lines added above; statement byte-identical. Re-keyed 2026-10-06 679→734 (decision reason: utcEpoch, unconfirmedDaysSince, restatesWhy and the reason-first line budget added above; statement byte-identical)."
     },
     "C1 tests/dashboard/ProjectTab.select.test.ts": {
       "class": "SAFE",
@@ -319,7 +319,7 @@
     "C5 src/host-adapters/acp-client.ts:789": {
       "class": "SAFE-BY-CONSTRUCTION",
       "reason": "ACP child argv is optional by API contract; absence truthfully means launch the configured executable with zero arguments. Every supplied argument and the aggregate argv are independently bounded before spawn.",
-      "triaged": "2026-08-27 host-native push release audit; re-keyed 2026-10-05 781→789 after the adapter error constructor and the live router generation were added above; statement byte-identical, classification unchanged"
+      "triaged": "2026-08-27 host-native push release audit; re-keyed 2026-10-06 after merging main (statement unchanged)"
     },
     "C5 dashboard/src/components/MemoriesTab.tsx:250": {
       "class": "SAFE-DISPLAY",
@@ -511,10 +511,10 @@
       "reason": "entity.observations is typed string[] (non-optional) on every Entity recallWithConflicts() returns; same defensive-only ?? [] as the tags line immediately above.",
       "triaged": "2026-09-28 #494 recall-response-size: recall-agent-view.ts introduced; re-keyed 2026-09-28 (bytesWith()/cutToFit added and packObservations' early return removed, all above, across several passes); currently :154, statement byte-identical to the pre-simplification-pass :155; re-keyed 2026-10-03 154→163 (M1 project binding added lines above; statement byte-identical)"
     },
-    "C5 src/core/operations.ts:241": {
+    "C5 src/core/operations.ts:249": {
       "class": "SAFE-OPTIONAL-COLLECTION",
       "reason": "No relations means no supersedes target to check; the bound-project check then covers only the memory itself. Fails closed: each listed target is checked before any write.",
-      "triaged": "2026-10-03 (M1 binding separated; classification carried from C5 src/core/operations.ts:241 at tree 16cc446c, statement byte-identical)"
+      "triaged": "2026-10-03 (M1 binding separated; classification carried from C5 src/core/operations.ts:241 at tree 16cc446c, statement byte-identical) Re-keyed 2026-10-06: decision `why` lines added above; statement byte-identical. Re-keyed 2026-10-06 247→249 (decision reason round 2: the leading-label strip in resolveRememberInput added two lines above; statement byte-identical)."
     },
     "C5 src/core/recall-agent-view.ts:181": {
       "class": "SAFE-OPTIONAL-COLLECTION",
@@ -524,7 +524,7 @@
     "C5 src/transports/mcp/handlers.ts:70": {
       "class": "SAFE-OPTIONAL-COLLECTION",
       "reason": "No tags means no project tag, which fails closed: the call then needs a bound project and is refused without one.",
-      "triaged": "2026-10-03 (M1 binding separated; classification carried from C5 src/transports/mcp/handlers.ts:67 at tree 16cc446c, statement byte-identical); re-keyed 2026-10-05 67→70 (a bare `project:` tag no longer counts as naming a project: three comment lines added above and the tag predicate extended; the `(tags ?? [])` fallback and its fail-closed classification are unchanged)"
+      "triaged": "2026-10-03 (M1 binding separated; classification carried from C5 src/transports/mcp/handlers.ts:67 at tree 16cc446c, statement byte-identical); re-keyed 2026-10-06 after merging main (statement unchanged)"
     },
     "C5 src/core/operations.ts:47": {
       "class": "SAFE-OPTIONAL-OBJECT",
@@ -541,25 +541,25 @@
       "reason": "Absent provenance overrides correctly add no fields to the generated provenance.",
       "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-26 46→47 (#451: canonicalEntityType import added above; statement byte-identical); re-keyed 2026-09-28 47→48 (#494: one import line added above; statement byte-identical); re-keyed 2026-09-30 48→50 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged); re-keyed 2026-10-03 50→51 (M1 project binding added lines above; statement byte-identical)"
     },
-    "C5 src/core/operations.ts:255": {
+    "C5 src/core/operations.ts:263": {
       "class": "SAFE-OPTIONAL-COLLECTION",
       "reason": "Omitted tags are no tags, so no project tag: the write then declares a project only through its argument, or none. Two project tags, or one contradicting the argument, are refused right below.",
-      "triaged": "2026-10-03 (M1 binding separated; classification carried from C5 src/core/operations.ts:227 at tree 16cc446c, statement byte-identical)"
+      "triaged": "2026-10-03 (M1 binding separated; classification carried from C5 src/core/operations.ts:227 at tree 16cc446c, statement byte-identical) Re-keyed 2026-10-06: decision `why` lines added above; statement byte-identical. Re-keyed 2026-10-06 261→263 (decision reason round 2: the leading-label strip in resolveRememberInput added two lines above; statement byte-identical)."
     },
-    "C5 src/core/operations.ts:355": {
+    "C5 src/core/operations.ts:379": {
       "class": "SAFE-OPTIONAL-COLLECTION",
       "reason": "Omitted tags are no tags; this only decides whether the named project tag is already present before adding it. Nothing reads as success from it.",
-      "triaged": "2026-10-03 (M1 binding separated; classification carried from C5 src/core/operations.ts:329 at tree 16cc446c, statement byte-identical); re-keyed 2026-10-05 352->355 (blank project tag check added above; statement unchanged)"
+      "triaged": "2026-10-03 (M1 binding separated; classification carried from C5 src/core/operations.ts:329 at tree 16cc446c, statement byte-identical) Re-keyed 2026-10-06: decision `why` lines added above; statement byte-identical. Re-keyed 2026-10-06 374→376 (decision reason round 2: the leading-label strip in resolveRememberInput added two lines above; statement byte-identical).; re-keyed 2026-10-06 after merging main (statement unchanged)"
     },
-    "C5 src/core/operations.ts:356": {
+    "C5 src/core/operations.ts:380": {
       "class": "SAFE-OPTIONAL-COLLECTION",
       "reason": "Omitted tags are no tags; the bound project tag is appended to them.",
-      "triaged": "2026-10-03 (M1 binding separated; classification carried from C5 src/core/operations.ts:330 at tree 16cc446c, statement byte-identical); re-keyed 2026-10-05 353->356 (blank project tag check added above; statement unchanged)"
+      "triaged": "2026-10-03 (M1 binding separated; classification carried from C5 src/core/operations.ts:330 at tree 16cc446c, statement byte-identical) Re-keyed 2026-10-06: decision `why` lines added above; statement byte-identical. Re-keyed 2026-10-06 375→377 (decision reason round 2: the leading-label strip in resolveRememberInput added two lines above; statement byte-identical).; re-keyed 2026-10-06 after merging main (statement unchanged)"
     },
-    "C5 src/core/operations.ts:394": {
+    "C5 src/core/operations.ts:418": {
       "class": "SAFE-OPTIONAL-OBJECT",
       "reason": "Absent caller provenance overrides correctly preserve generated provenance unchanged.",
-      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-07 after transaction-boundary refactor shifted the unchanged statement; re-keyed 2026-09-12 (#324 src/core fix round shifted the unchanged statement); re-keyed again 2026-09-12 (#324 T4 root-cause fix shifted the same statement from :299 to :327); re-keyed 2026-09-26 327→334 (#451: canonicalEntityType import plus the entityType canonicalization comment block added above; statement byte-identical); re-keyed 2026-09-28 334→335 (#494: one import line added above; statement byte-identical); re-keyed 2026-09-30 335→300 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged); re-keyed 2026-09-30 300→299 (#530 review follow-up: a stray blank line removed above; statement byte-identical); re-keyed 2026-10-01 299→309 (#523 merge with main 37fbb687: lines moved; statement byte-identical, classification unchanged); re-keyed 2026-10-01 309→331 (#523 r21: lines added above; statement byte-identical, classification unchanged); re-keyed 331→335 (#523 review fixes added comment lines above; statement byte-identical); re-keyed 2026-10-05 391->394 (blank project tag check added above; statement unchanged)"
+      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-07 after transaction-boundary refactor shifted the unchanged statement; re-keyed 2026-09-12 (#324 src/core fix round shifted the unchanged statement); re-keyed again 2026-09-12 (#324 T4 root-cause fix shifted the same statement from :299 to :327); re-keyed 2026-09-26 327→334 (#451: canonicalEntityType import plus the entityType canonicalization comment block added above; statement byte-identical); re-keyed 2026-09-28 334→335 (#494: one import line added above; statement byte-identical); re-keyed 2026-09-30 335→300 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged); re-keyed 2026-09-30 300→299 (#530 review follow-up: a stray blank line removed above; statement byte-identical); re-keyed 2026-10-01 299→309 (#523 merge with main 37fbb687: lines moved; statement byte-identical, classification unchanged); re-keyed 2026-10-01 309→331 (#523 r21: lines added above; statement byte-identical, classification unchanged); re-keyed 331→335 (#523 review fixes added comment lines above; statement byte-identical) Re-keyed 2026-10-06: decision `why` lines added above; statement byte-identical. Re-keyed 2026-10-06 413→415 (decision reason round 2: the leading-label strip in resolveRememberInput added two lines above; statement byte-identical).; re-keyed 2026-10-06 after merging main (statement unchanged)"
     },
     "C5 src/core/serializer.ts:463": {
       "class": "SAFE-BY-CONSTRUCTION",
@@ -635,6 +635,16 @@
       "class": "SAFE",
       "reason": "the emptiness assertion is the no-split case; the same file pins the split exactly (toEqual with the one expected split and its count) and asserts the warn row, its count and its command",
       "triaged": "2026-10-05 (#408)"
+    },
+    "C5 src/core/operations.ts:173": {
+      "class": "SAFE-OPTIONAL-COLLECTION",
+      "reason": "Omitted observations are none: a decision's `Why:` line is appended to them and redacted with them. Nothing reads as success from it.",
+      "triaged": "2026-10-06 (decision why) Re-keyed 2026-10-06 171→173 (decision reason round 2: the leading-label strip in resolveRememberInput added two lines above; statement byte-identical)."
+    },
+    "C5 src/core/operations.ts:318": {
+      "class": "SAFE-OPTIONAL-COLLECTION",
+      "reason": "Omitted observations hold no `Why:` line, so a new decision without `why` is refused. The default fails closed.",
+      "triaged": "2026-10-06 (decision why) Re-keyed 2026-10-06 313→315 (decision reason round 2: the leading-label strip in resolveRememberInput added two lines above; statement byte-identical).; re-keyed 2026-10-06 after merging main (statement unchanged)"
     }
   }
 }

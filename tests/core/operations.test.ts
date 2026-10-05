@@ -14,21 +14,21 @@ describe('Core Operations: setPinned', () => {
   }
 
   it('writes metadata.pin = true so the dreamer read (metadata.pin === true) now fires', () => {
-    remember({ name: 'keep-me', type: 'decision', observations: ['critical call'] });
+    remember({ name: 'keep-me', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['critical call'] });
     const result = setPinned('keep-me', true);
     expect(result).toEqual({ name: 'keep-me', pinned: true, found: true });
     expect(metadataOf('keep-me').pin).toBe(true);
   });
 
   it('unpin removes the flag (not just sets false) so the === true check is clean', () => {
-    remember({ name: 'keep-me', type: 'decision' });
+    remember({ name: 'keep-me', type: 'decision', why: 'a fixed choice for this case; revisit if it changes' });
     setPinned('keep-me', true);
     setPinned('keep-me', false);
     expect(metadataOf('keep-me')).not.toHaveProperty('pin');
   });
 
   it('preserves other metadata (trust/provenance) when pinning', () => {
-    remember({ name: 'keep-me', type: 'decision' });
+    remember({ name: 'keep-me', type: 'decision', why: 'a fixed choice for this case; revisit if it changes' });
     const before = metadataOf('keep-me');
     expect(before.trust).toBeDefined();
     setPinned('keep-me', true);
@@ -38,7 +38,7 @@ describe('Core Operations: setPinned', () => {
   });
 
   it('pin then unpin on a real entity round-trips with found=true and the achieved boolean', () => {
-    remember({ name: 'keep-me', type: 'decision' });
+    remember({ name: 'keep-me', type: 'decision', why: 'a fixed choice for this case; revisit if it changes' });
     expect(setPinned('keep-me', true)).toEqual({ name: 'keep-me', pinned: true, found: true });
     expect(setPinned('keep-me', false)).toEqual({ name: 'keep-me', pinned: false, found: true });
   });
@@ -67,7 +67,7 @@ describe('Core Operations: setPinned', () => {
     expect(missing).not.toContain('"pinned":false');
     expect(missing).toContain('"pinned":null');
 
-    remember({ name: 'keep-me', type: 'decision' });
+    remember({ name: 'keep-me', type: 'decision', why: 'a fixed choice for this case; revisit if it changes' });
     const found = JSON.stringify(setPinned('keep-me', true));
     expect(found).toContain('"pinned":true');
     expect(found).toContain('"found":true');
@@ -111,7 +111,7 @@ describe('Core Operations: remember', () => {
   });
 
   it('reports the persisted type when remembering an existing entity with another type', () => {
-    remember({ name: 'typed-memory', type: 'decision', observations: ['original'] });
+    remember({ name: 'typed-memory', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['original'] });
 
     const result = remember({ name: 'typed-memory', type: 'note', observations: ['appended'] });
 
@@ -125,6 +125,7 @@ describe('Core Operations: remember', () => {
     const result = remember({
       name: 'source',
       type: 'decision',
+      why: 'a fixed choice for this case; revisit if it changes',
       tags: ['project:x'],
       relations: [{ to: 'target', type: 'implements' }],
     });
@@ -136,6 +137,7 @@ describe('Core Operations: remember', () => {
     const result = remember({
       name: 'source',
       type: 'decision',
+      why: 'a fixed choice for this case; revisit if it changes',
       relations: [{ to: 'nonexistent', type: 'related-to' }],
     });
     expect(result.stored).toBe(true);
@@ -144,10 +146,11 @@ describe('Core Operations: remember', () => {
   });
 
   it('auto-archives on supersedes relation', () => {
-    remember({ name: 'old', type: 'decision', observations: ['old way'] });
+    remember({ name: 'old', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['old way'] });
     const result = remember({
       name: 'new',
       type: 'decision',
+      why: 'a fixed choice for this case; revisit if it changes',
       observations: ['new way'],
       relations: [{ to: 'old', type: 'supersedes' }],
     });
@@ -161,10 +164,11 @@ describe('Core Operations: remember', () => {
   });
 
   it('superseded entity is visible with include_archived', () => {
-    remember({ name: 'v1', type: 'decision', observations: ['v1 data'] });
+    remember({ name: 'v1', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['v1 data'] });
     remember({
       name: 'v2',
       type: 'decision',
+      why: 'a fixed choice for this case; revisit if it changes',
       observations: ['v2 data'],
       relations: [{ to: 'v1', type: 'supersedes' }],
     });
@@ -180,6 +184,7 @@ describe('Core Operations: remember', () => {
     remember({
       name: 'atomic-old',
       type: 'decision',
+      why: 'a fixed choice for this case; revisit if it changes',
       observations: ['quokka legacy choice'],
     });
 
@@ -213,6 +218,7 @@ describe('Core Operations: remember', () => {
       expect(() => remember({
         name: 'atomic-new',
         type: 'decision',
+        why: 'a fixed choice for this case; revisit if it changes',
         observations: ['replacement choice'],
         relations: [{ to: 'atomic-old', type: 'supersedes' }],
       })).toThrow('injected supersede FTS delete failure');
@@ -272,8 +278,8 @@ describe('Core Operations: remember', () => {
 
 describe('Core Operations: recall', () => {
   beforeEach(() => {
-    remember({ name: 'auth', type: 'decision', observations: ['Use OAuth'] });
-    remember({ name: 'db', type: 'decision', observations: ['Use PostgreSQL'] });
+    remember({ name: 'auth', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['Use OAuth'] });
+    remember({ name: 'db', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['Use PostgreSQL'] });
   });
 
   it('searches by query text', () => {
@@ -336,9 +342,9 @@ describe('Core Operations: recall', () => {
     }
 
     beforeEach(() => {
-      remember({ name: 'release-decision', type: 'decision', observations: ['ship on Fridays only after the smoke run'] });
+      remember({ name: 'release-decision', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['ship on Fridays only after the smoke run'] });
       const rivals = ['release-notes-style', 'release-checklist', 'decision-log-format', 'release-decision-history'];
-      for (const name of rivals) remember({ name, type: 'decision', observations: [`about the release decision: ${name}`] });
+      for (const name of rivals) remember({ name, type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: [`about the release decision: ${name}`] });
       makeRivalsStronger(rivals);
     });
 
@@ -352,9 +358,9 @@ describe('Core Operations: recall', () => {
     });
 
     it('a memory whose title is exactly the query comes first too', () => {
-      remember({ name: 'rd-2026', type: 'decision', title: 'Friday release rule', observations: ['the Friday release rule, written down'] });
+      remember({ name: 'rd-2026', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', title: 'Friday release rule', observations: ['the Friday release rule, written down'] });
       getDatabase().prepare("UPDATE entities SET access_count = 0, last_accessed_at = datetime('now', '-400 days'), confidence = 0.3 WHERE name = 'rd-2026'").run();
-      remember({ name: 'friday-release-rule-notes', type: 'decision', observations: ['notes on the Friday release rule'] });
+      remember({ name: 'friday-release-rule-notes', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['notes on the Friday release rule'] });
       getDatabase().prepare("UPDATE entities SET access_count = 50, last_accessed_at = datetime('now'), confidence = 1 WHERE name = 'friday-release-rule-notes'").run();
       expect(recall({ query: 'Friday release rule' })[0].name).toBe('rd-2026');
     });
@@ -370,24 +376,24 @@ describe('Core Operations: recall', () => {
     });
 
     it('a title match survives a limit that cuts the rest', () => {
-      remember({ name: 'rd-2026', type: 'decision', title: 'Friday release rule', observations: ['the Friday release rule, written down'] });
-      remember({ name: 'friday-release-rule-notes', type: 'decision', observations: ['notes on the Friday release rule, the Friday release rule again'] });
+      remember({ name: 'rd-2026', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', title: 'Friday release rule', observations: ['the Friday release rule, written down'] });
+      remember({ name: 'friday-release-rule-notes', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['notes on the Friday release rule, the Friday release rule again'] });
       expect(recall({ query: 'friday release rule', limit: 1 }).map((e) => e.name)).toEqual(['rd-2026']);
     });
 
     it('a name with non-ASCII capitals matches in another letter case', () => {
-      remember({ name: 'Äpfel-Rezept', type: 'decision', observations: ['Kuchen'] });
+      remember({ name: 'Äpfel-Rezept', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['Kuchen'] });
       for (const name of ['äpfel-rezept-sammlung', 'äpfel-rezept-notizen']) {
-        remember({ name, type: 'decision', observations: ['äpfel rezept, äpfel rezept, äpfel rezept'] });
+        remember({ name, type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['äpfel rezept, äpfel rezept, äpfel rezept'] });
       }
       expect(recall({ query: 'äpfel-rezept', limit: 1 }).map((e) => e.name)).toEqual(['Äpfel-Rezept']);
     });
 
     it('an archived exact match survives newer archived matches', () => {
-      remember({ name: 'old-plan', type: 'decision', observations: ['the first plan'] });
+      remember({ name: 'old-plan', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['the first plan'] });
       forget({ name: 'old-plan' });
       for (let i = 0; i < 5; i++) {
-        remember({ name: `old-plan-v${i}`, type: 'decision', observations: [`old plan revision ${i}`] });
+        remember({ name: `old-plan-v${i}`, type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: [`old plan revision ${i}`] });
         forget({ name: `old-plan-v${i}` });
       }
       expect(recall({ query: 'old-plan', include_archived: true, limit: 1 }).map((e) => e.name)).toEqual(['old-plan']);

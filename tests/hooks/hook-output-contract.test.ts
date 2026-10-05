@@ -65,7 +65,7 @@ interface HookCase {
    * and a malformed `hookSpecificOutput` would ship unnoticed (the exact #53
    * class, on the input the gate is meant to cover). Seeding forces the branch.
    */
-  seed?: Array<{ name: string; type: string; tags: string[]; obs: string }>;
+  seed?: Array<{ name: string; type: string; tags: string[]; obs: string; why?: string }>;
   /** Post-seed metadata surgery for shapes the CLI cannot write — e.g. an
    *  accepted lesson-guard (`metadata.guard`), which only the dream accept
    *  path produces in production. */
@@ -100,6 +100,7 @@ const HOOK_CASES: HookCase[] = [
       type: 'decision',
       tags: ['file:auth.ts', CONTRACT_PROJECT_TAG],
       obs: 'Use OAuth PKCE for the auth flow',
+      why: 'a CLI cannot keep a client secret; revisit if we add a server-side client',
     }],
   },
   {
@@ -145,9 +146,12 @@ const HOOK_CASES: HookCase[] = [
     // session-start only emits additionalContext when top-N recall returns
     // something. Seed entities in this project so memoryContext is truthy and
     // the SessionStart hookSpecificOutput payload is actually validated.
+    // The hook's project tag carries a hash (CONTRACT_PROJECT_TAG): a literal
+    // `project:contract-project` seed was never read, so this case passed
+    // without the hook injecting anything.
     seed: [
-      { name: 'oauth-lesson', type: 'lesson', tags: ['project:contract-project'], obs: 'Always validate the OAuth state parameter' },
-      { name: 'db-decision', type: 'decision', tags: ['project:contract-project'], obs: 'Use WAL mode for concurrent reads' },
+      { name: 'oauth-lesson', type: 'lesson', tags: [CONTRACT_PROJECT_TAG], obs: 'Always validate the OAuth state parameter' },
+      { name: 'db-decision', type: 'decision', tags: [CONTRACT_PROJECT_TAG], obs: 'Use WAL mode for concurrent reads', why: 'readers must not block the writer; revisit if we move off SQLite' },
     ],
   },
   {
@@ -261,7 +265,7 @@ describe('Feature: Claude Code hook-output contract', () => {
     for (const m of seed) {
       execFileSync('node', [
         path.resolve('dist/transports/cli/cli.js'), 'remember',
-        '--name', m.name, '--type', m.type, '--obs', m.obs, '--tags', ...m.tags,
+        '--name', m.name, '--type', m.type, '--obs', m.obs, ...(m.why ? ['--why', m.why] : []), '--tags', ...m.tags,
       ], {
         env: { ...process.env, MEMESH_DB_PATH: dbPath, MEMESH_DIR: testDir, MEMESH_AUTO_UPDATE: '0' },
         encoding: 'utf8',
@@ -360,6 +364,19 @@ describe('Feature: Claude Code hook-output contract', () => {
     expect(additionalContext, 'pre-edit-recall.js emitted no additionalContext — the seed likely does not match its real project tag').toBeTruthy();
     expect(additionalContext).toContain('auth-decision');
     expect(additionalContext).toContain('Use OAuth PKCE for the auth flow');
+  });
+
+  it('Scenario: session-start.js actually injects the seeded decision with its Why, not a vacuous empty pass', () => {
+    const hookCase = HOOK_CASES.find((c) => c.file === 'session-start.js');
+    if (!hookCase) throw new Error('session-start.js hookCase not found');
+    const { stdout, status, stderr } = runHook(hookCase);
+    expect(status, `session-start.js exited ${status}\n${stderr}`).toBe(0);
+    const result = validateHookOutput(stdout);
+    expect(result.valid, `stdout was not contract-valid: ${JSON.stringify(result.errors)}`).toBe(true);
+    const additionalContext = (result.parsed as any)?.hookSpecificOutput?.additionalContext as string | undefined;
+    expect(additionalContext, 'session-start.js emitted no additionalContext — the seed likely does not match its real project tag').toBeTruthy();
+    expect(additionalContext).toContain('Always validate the OAuth state parameter');
+    expect(additionalContext).toMatch(/- \[decision\] Use WAL mode for concurrent reads — Why: readers must not block the writer; revisit if we move off SQLite \[mem:\d+\]/);
   });
 
   it('Scenario: PreCompact has no hookSpecificOutput variant (regression guard for #53)', () => {

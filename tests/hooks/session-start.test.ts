@@ -632,7 +632,7 @@ describe('Feature: Session Start Hook', () => {
     // The heading names the project by its label; the hashed id stays in the tag.
     const section = injected.split('Index of durable memories for "indexproj" (newest first):')[1];
     expect(section, 'index section present').toBeDefined();
-    expect(section).toContain(`- [decision] Keep the index capped at forty lines [mem:${d}]`);
+    expect(section).toContain(`- [decision] Keep the index capped at forty lines (no reason recorded) [mem:${d}]`);
     expect(section).not.toContain('bump the lockfile');
     expect(section).toMatch(/\(index cost: 1 line, \d+ bytes ≈ \d+ tokens; cap 40 lines \/ 3072 bytes\)/);
     const session = readLatestSessionFile();
@@ -694,7 +694,7 @@ describe('Feature: Session Start Hook', () => {
     const output = runHook({ cwd: '/tmp/scopeproj' }, STANDARD);
     const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
     const section = injected.split('Index of durable memories for')[1] ?? '';
-    expect(section).toContain(`Kept project decision [mem:${kept}]`);
+    expect(section).toContain(`Kept project decision (no reason recorded) [mem:${kept}]`);
     expect(section).not.toContain('Archived project decision');
     expect(section).not.toContain('Global tagged decision');
     expect(section).not.toContain('Other project decision');

@@ -12,6 +12,7 @@ export interface PoolRow {
     confidence?: number;
     recall_hits?: number;
     recall_misses?: number;
+    created_at?: string;
     recency?: string | null;
 }
 export interface HandoffRow {
@@ -41,9 +42,11 @@ export declare function selectBriefingPools(db: MemeshDatabase, projectName: str
 export interface Snippet {
     first: string | null;
     fix: string | null;
+    why?: string | null;
+    lastAddedAt?: string | null;
 }
 export declare function readSnippets(db: MemeshDatabase, ids: readonly number[]): Map<number, Snippet>;
-export declare function toTopologyEntity(row: PoolRow, snippets: ReadonlyMap<number, Snippet>): TopologyEntity;
+export declare function toTopologyEntity(row: PoolRow, snippets: ReadonlyMap<number, Snippet>, now?: number): TopologyEntity;
 export declare function readIndexCandidates(db: MemeshDatabase, projectName: string): {
     candidates: Array<IndexCandidate & {
         name: string;

@@ -6,6 +6,10 @@ import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 
 useTestDatabase('memesh-import-overwrite-history-');
 
+// A decision is stored with its reason (`why`), which is one more observation.
+const WHY = 'a seed for the history test; revisit if the bound changes';
+const WHY_OBS = `Why: ${WHY}`;
+
 function bundle(name: string, observations: string[], tags: string[] = []) {
   return {
     version: '3.1.0', exported_at: '2026-09-14T00:00:00.000Z', entity_count: 1,
@@ -36,25 +40,25 @@ describe('#530 import overwrite keeps the previous content in replaced_history',
   });
 
   it('keeps the title of the replaced version', () => {
-    remember({ name: 'titled', type: 'decision', title: 'Old headline', observations: ['before'] });
+    remember({ name: 'titled', type: 'decision', why: WHY, title: 'Old headline', observations: ['before'] });
     importMemories({ data: bundle('titled', ['after']), merge_strategy: 'overwrite' });
     const history = entityOf('titled').metadata?.replaced_history as Array<{ title: string | null; observations: string[] }>;
     expect(history).toHaveLength(1);
     expect(history[0].title).toBe('Old headline');
-    expect(history[0].observations).toEqual(['before']);
+    expect(history[0].observations).toEqual(['before', WHY_OBS]);
   });
 
   it('keeps the older history and appends to it', () => {
-    remember({ name: 'y', type: 'decision', observations: ['v1'] });
-    remember({ name: 'y', type: 'decision', observations: ['v2'], replace: true });
+    remember({ name: 'y', type: 'decision', why: WHY, observations: ['v1'] });
+    remember({ name: 'y', type: 'decision', why: WHY, observations: ['v2'], replace: true });
     importMemories({ data: bundle('y', ['v3']), merge_strategy: 'overwrite' });
     const history = entityOf('y').metadata?.replaced_history as Array<{ observations: string[] }>;
-    expect(history.map((h) => h.observations)).toEqual([['v1'], ['v2']]);
+    expect(history.map((h) => h.observations)).toEqual([['v1', WHY_OBS], ['v2', WHY_OBS]]);
     expect(entityOf('y').observations).toEqual(['v3']);
   });
 
   it('never lets the bundle write the history of an existing memory', () => {
-    remember({ name: 'z', type: 'decision', observations: ['real'] });
+    remember({ name: 'z', type: 'decision', why: WHY, observations: ['real'] });
     const data = bundle('z', ['new']);
     (data.entities[0] as Record<string, unknown>).metadata = {
       replaced_history: [{ replaced_at: 'forged', title: null, observations: ['forged'], tags: [] }],
@@ -62,7 +66,7 @@ describe('#530 import overwrite keeps the previous content in replaced_history',
     importMemories({ data, merge_strategy: 'overwrite' });
     const history = entityOf('z').metadata?.replaced_history as Array<{ observations: string[] }>;
     expect(history).toHaveLength(1);
-    expect(history[0].observations).toEqual(['real']);
+    expect(history[0].observations).toEqual(['real', WHY_OBS]);
   });
 
   it('applies the same count bound as remember replace', () => {
@@ -90,22 +94,23 @@ describe('#530 import overwrite keeps the previous content in replaced_history',
   });
 
   it('restoring the same bundle again records nothing, so older versions are not pushed out', () => {
-    remember({ name: 'r', type: 'decision', observations: ['genuine v1'] });
-    remember({ name: 'r', type: 'decision', observations: ['v2'], replace: true });
+    remember({ name: 'r', type: 'decision', why: WHY, observations: ['genuine v1'] });
+    remember({ name: 'r', type: 'decision', why: WHY, observations: ['v2'], replace: true });
     for (let i = 0; i < 22; i++) importMemories({ data: bundle('r', ['restored']), merge_strategy: 'overwrite' });
     const history = entityOf('r').metadata?.replaced_history as Array<{ observations: string[] }>;
-    expect(history.map((h) => h.observations)).toEqual([['genuine v1'], ['v2']]);
+    expect(history.map((h) => h.observations)).toEqual([['genuine v1', WHY_OBS], ['v2', WHY_OBS]]);
   });
 
   it.each([
     ['a title-only change', { title: 'New title' }, true],
     ['a tag-only change', { tags: ['t2'] }, true],
-    ['an observation-order change', { observations: ['b', 'a'] }, true],
+    ['an observation-order change', { observations: ['b', 'a', WHY_OBS] }, true],
     ['a tag-order-only change', { tags: ['t2', 't1'] }, false],
   ] as const)('overwrite with %s records a version only when stored content changed', (_label, change, recorded) => {
     const name = `diff-${_label.replace(/\W+/g, '-')}`;
-    remember({ name, type: 'decision', title: 'Old title', observations: ['a', 'b'], tags: ['t1', 't2'] });
-    const next = { title: 'Old title', observations: ['a', 'b'], tags: ['t1', 't2'], ...change };
+    remember({ name, type: 'decision', why: WHY, title: 'Old title', observations: ['a', 'b'], tags: ['t1', 't2'] });
+    // The stored memory is ['a', 'b', 'Why: …']; the bundle restates it, so only `change` differs.
+    const next = { title: 'Old title', observations: ['a', 'b', WHY_OBS], tags: ['t1', 't2'], ...change };
     const data = bundle(name, [...next.observations], [...next.tags]);
     (data.entities[0] as Record<string, unknown>).title = next.title;
     importMemories({ data, merge_strategy: 'overwrite' });
@@ -115,8 +120,8 @@ describe('#530 import overwrite keeps the previous content in replaced_history',
 
   it('remember replace also trims the tags of one oversized version to the 64 KiB bound', () => {
     const tags = Array.from({ length: 300 }, (_, i) => String(i).padStart(3, '0') + 'x'.repeat(252));
-    remember({ name: 'rt', type: 'decision', observations: ['old'], tags });
-    remember({ name: 'rt', type: 'decision', observations: ['new'], tags: ['t'], replace: true });
+    remember({ name: 'rt', type: 'decision', why: WHY, observations: ['old'], tags });
+    remember({ name: 'rt', type: 'decision', why: WHY, observations: ['new'], tags: ['t'], replace: true });
     const history = entityOf('rt').metadata?.replaced_history as Array<{ tags: string[]; truncated?: boolean }>;
     expect(Buffer.byteLength(JSON.stringify(history))).toBeLessThanOrEqual(REPLACED_HISTORY_MAX_BYTES);
     expect(history[0].truncated).toBe(true);
@@ -132,9 +137,9 @@ describe('#530 import overwrite keeps the previous content in replaced_history',
   });
 
   it('refuses a bundle that names one memory twice, before writing anything', () => {
-    remember({ name: 'dup', type: 'decision', observations: ['genuine v1'] });
-    remember({ name: 'dup', type: 'decision', observations: ['genuine v2'], replace: true });
-    remember({ name: 'dup', type: 'decision', observations: ['current'], replace: true });
+    remember({ name: 'dup', type: 'decision', why: WHY, observations: ['genuine v1'] });
+    remember({ name: 'dup', type: 'decision', why: WHY, observations: ['genuine v2'], replace: true });
+    remember({ name: 'dup', type: 'decision', why: WHY, observations: ['current'], replace: true });
     const big = Array.from({ length: 8 }, (_, i) => `${i}`.padEnd(9000, 'y'));
     const data = bundle('unrelated-first', ['zebraprefixtoken']);
     data.entities.push({ ...bundle('dup', big).entities[0] });
@@ -152,9 +157,9 @@ describe('#530 import overwrite keeps the previous content in replaced_history',
     expect(indexed('current')).toBe(1);
 
     const e = entityOf('dup');
-    expect(e.observations).toEqual(['current']);
+    expect(e.observations).toEqual(['current', WHY_OBS]);
     const history = e.metadata?.replaced_history as Array<{ observations: string[] }>;
-    expect(history.map((h) => h.observations)).toEqual([['genuine v1'], ['genuine v2']]);
+    expect(history.map((h) => h.observations)).toEqual([['genuine v1', WHY_OBS], ['genuine v2', WHY_OBS]]);
   });
 
   it('reports blank names one entry at a time instead of refusing the file as a duplicate', () => {
@@ -169,9 +174,9 @@ describe('#530 import overwrite keeps the previous content in replaced_history',
   });
 
   it('refuses two names that differ only in a lone surrogate, which the database stores as one', () => {
-    remember({ name: 'x\uFFFD', type: 'decision', observations: ['genuine v1'] });
-    remember({ name: 'x\uFFFD', type: 'decision', observations: ['genuine v2'], replace: true });
-    remember({ name: 'x\uFFFD', type: 'decision', observations: ['current'], replace: true });
+    remember({ name: 'x\uFFFD', type: 'decision', why: WHY, observations: ['genuine v1'] });
+    remember({ name: 'x\uFFFD', type: 'decision', why: WHY, observations: ['genuine v2'], replace: true });
+    remember({ name: 'x\uFFFD', type: 'decision', why: WHY, observations: ['current'], replace: true });
     const data = bundle('x\uD800', ['first']);
     data.entities.push({ ...bundle('x\uD801', ['second']).entities[0] });
     data.entity_count = 2;
@@ -179,8 +184,8 @@ describe('#530 import overwrite keeps the previous content in replaced_history',
     expect(() => importMemories({ data, merge_strategy: 'overwrite' })).toThrow(/more than once\. Nothing was imported/);
 
     const history = entityOf('x\uFFFD').metadata?.replaced_history as Array<{ observations: string[] }>;
-    expect(history.map((h) => h.observations)).toEqual([['genuine v1'], ['genuine v2']]);
-    expect(entityOf('x\uFFFD').observations).toEqual(['current']);
+    expect(history.map((h) => h.observations)).toEqual([['genuine v1', WHY_OBS], ['genuine v2', WHY_OBS]]);
+    expect(entityOf('x\uFFFD').observations).toEqual(['current', WHY_OBS]);
     // Two lone low halves, and two runs of lone high halves, are each one name too.
     for (const [a, b] of [['y\uDC00', 'y\uDC01'], ['z\uD800\uD800', 'z\uD801\uD802']]) {
       const pair = bundle(a, ['p']);

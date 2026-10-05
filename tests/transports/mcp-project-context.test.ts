@@ -188,7 +188,7 @@ describe('#511 remember: a plain-name project tag for the bound project gets the
     const repo = dir('repo511');
     const id = getProjectName(repo);
     const plain = `project:${id.slice(0, id.lastIndexOf('~'))}`;
-    const r = await call('remember', { name: 'plain-tag-511', type: 'decision', observations: ['o'], tags: [plain, 'topic:x'] }, repo);
+    const r = await call('remember', { name: 'plain-tag-511', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['o'], tags: [plain, 'topic:x'] }, repo);
     expect(r.isError).toBeFalsy();
     expect(JSON.parse(text(r)).retagged).toEqual({ from: plain, to: `project:${id}` });
     expect(tagsOf('plain-tag-511')).toEqual([`project:${id}`, 'topic:x']);
@@ -198,7 +198,7 @@ describe('#511 remember: a plain-name project tag for the bound project gets the
     const repo = dir('repo511b');
     const id = getProjectName(repo);
     const plain = `project:${id.slice(0, id.lastIndexOf('~'))}`;
-    const r = await call('remember', { name: 'plain-tag-511b', type: 'decision', observations: ['o'], tags: [plain], project: id }, undefined);
+    const r = await call('remember', { name: 'plain-tag-511b', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['o'], tags: [plain], project: id }, undefined);
     expect(r.isError, text(r)).toBeFalsy();
     expect(tagsOf('plain-tag-511b')).toEqual([`project:${id}`]);
   });
@@ -207,7 +207,7 @@ describe('#511 remember: a plain-name project tag for the bound project gets the
     const bound = dir('repo511g');
     const other = getProjectName(dir('repo511h'));
     const plain = `project:${other.slice(0, other.lastIndexOf('~'))}`;
-    const r = await call('remember', { name: 'explicit-511', type: 'decision', observations: ['o'], tags: [plain], project: other }, bound);
+    const r = await call('remember', { name: 'explicit-511', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['o'], tags: [plain], project: other }, bound);
     expect(r.isError, text(r)).toBeFalsy();
     expect(JSON.parse(text(r)).retagged).toEqual({ from: plain, to: `project:${other}` });
     expect(tagsOf('explicit-511')).toEqual([`project:${other}`]);
@@ -218,8 +218,8 @@ describe('#511 remember: a plain-name project tag for the bound project gets the
     const id = getProjectName(repo);
     const plain = `project:${id.slice(0, id.lastIndexOf('~'))}`;
     // Stored before #511, from a session with no bound project.
-    expect((await call('remember', { name: 'legacy-511', type: 'decision', observations: ['one'], tags: [plain] }, undefined)).isError).toBeFalsy();
-    const again = await call('remember', { name: 'legacy-511', type: 'decision', observations: ['two'], tags: [plain] }, repo);
+    expect((await call('remember', { name: 'legacy-511', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['one'], tags: [plain] }, undefined)).isError).toBeFalsy();
+    const again = await call('remember', { name: 'legacy-511', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['two'], tags: [plain] }, repo);
     expect(again.isError, text(again)).toBeFalsy();
     expect(JSON.parse(text(again)).retagged).toBeUndefined();
     expect(tagsOf('legacy-511')).toEqual([plain]);
@@ -229,9 +229,9 @@ describe('#511 remember: a plain-name project tag for the bound project gets the
     const repo = dir('repo511f');
     const id = getProjectName(repo);
     const plain = `project:${id.slice(0, id.lastIndexOf('~'))}`;
-    expect((await call('remember', { name: 'old-511', type: 'decision', observations: ['old'], tags: [plain] }, undefined)).isError).toBeFalsy();
+    expect((await call('remember', { name: 'old-511', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['old'], tags: [plain] }, undefined)).isError).toBeFalsy();
     const r = await call('remember', {
-      name: 'new-511', type: 'decision', observations: ['new'], tags: [plain],
+      name: 'new-511', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['new'], tags: [plain],
       relations: [{ to: 'old-511', type: 'supersedes' }],
     }, repo);
     expect(r.isError, text(r)).toBeFalsy();
@@ -244,14 +244,14 @@ describe('#511 remember: a plain-name project tag for the bound project gets the
     const repo = dir('repo511e');
     const id = getProjectName(repo);
     const plain = `project:${id.slice(0, id.lastIndexOf('~'))}`;
-    const r = await call('remember', { name: 'both-511', type: 'decision', observations: ['o'], tags: [plain, `project:${id}`] }, repo);
+    const r = await call('remember', { name: 'both-511', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['o'], tags: [plain, `project:${id}`] }, repo);
     expect(r.isError, text(r)).toBeFalsy();
     expect(tagsOf('both-511')).toEqual([`project:${id}`]);
   });
 
   it('a plain tag naming a different project is left as written', async () => {
     const repo = dir('repo511c');
-    const r = await call('remember', { name: 'other-tag-511', type: 'decision', observations: ['o'], tags: ['project:somewhere-else'] }, repo);
+    const r = await call('remember', { name: 'other-tag-511', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['o'], tags: ['project:somewhere-else'] }, repo);
     expect(r.isError).toBeFalsy();
     expect(JSON.parse(text(r)).retagged).toBeUndefined();
     expect(tagsOf('other-tag-511')).toEqual(['project:somewhere-else']);

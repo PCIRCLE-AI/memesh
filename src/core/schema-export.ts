@@ -36,6 +36,7 @@ export function exportOpenAITools(): object[] {
             type: { type: 'string', description: 'Entity type (decision, pattern, lesson_learned, etc.). Required unless `note` is given (then defaults to "note").' },
             title: { type: 'string', description: 'Short human-readable label, distinct from name (a stable machine key)' },
             observations: { type: 'array', items: { type: 'string' }, description: 'Key facts about this entity' },
+            why: { type: 'string', description: 'For a decision: why it was made and what would make it stop holding; stored as "Why: …". Required to create or replace a decision, architecture_decision or design_decision unless an observation starts with "Why: ".' },
             note: { type: 'string', description: 'Free text instead of title + observations: first line → title, each following paragraph → one observation' },
             replace: { type: 'boolean', description: 'Rewrite the named memory instead of appending; send the observations it should now hold (a replace with none is refused); the previous version moves to metadata.replaced_history' },
             tags: { type: 'array', items: { type: 'string' }, description: 'Tags for filtering' },
