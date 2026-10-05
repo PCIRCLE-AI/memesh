@@ -355,12 +355,14 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     expect(withoutProbeIdentity).not.toMatch(/\d+\.\d+\.\d+/);
   });
 
-  it('gives the complete release verification job the proven degraded-runner budget', () => {
+  it('gives the release verification job the proven degraded-runner budget', () => {
     const ci = read('.github/workflows/ci.yml');
     const releaseJob = ci.match(/\n {2}release-verify:\n[\s\S]*?(?=\n {2}[A-Za-z0-9_-]+:\n|$)/)?.[0] ?? '';
     expect(releaseJob).not.toBe('');
     expect(releaseJob).toMatch(/timeout-minutes:\s*40/);
-    expect(releaseJob).toContain('bash scripts/release-verify.sh');
+    // --skip-suite drops only what every Build & Test leg already runs (typecheck
+    // inside verify:release, the full suite); the smoke and install probes stay.
+    expect(releaseJob).toContain('bash scripts/release-verify.sh --skip-suite');
     expect(releaseJob).not.toContain('--skip-llm-probe');
     expect(releaseJob).not.toContain('--quick');
   });
@@ -422,11 +424,16 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     expect(sdlcJob).not.toMatch(/\n {4}if:/);
     expect(sdlcJob).not.toMatch(/\n {4}continue-on-error/);
     unconditionalStep(sdlcJob, 'npx playwright install --with-deps chromium');
-    // The full run, not `--journeys`: the full run is the one with the suite.
-    unconditionalStep(sdlcJob, 'node scripts/verify.mjs');
+    // Journeys only: every Build & Test leg already runs the build, verify:release
+    // and the full suite, so the full run here repeated them on the same OS and Node.
+    unconditionalStep(sdlcJob, 'node scripts/verify.mjs --journeys');
     const config = JSON.parse(read('scripts/verify.config.json')) as {
-      verify: { steps: Array<{ command: string; args?: string[] }> };
+      verify: { steps: Array<{ id: string; command: string; args?: string[]; journeys?: boolean }> };
     };
+    // --journeys runs only the steps marked as journeys, so these two must stay marked.
+    for (const id of ['build', 'packaged', 'dashboard-e2e']) {
+      expect(config.verify.steps.find((step) => step.id === id)?.journeys, id).toBe(true);
+    }
     const commands = config.verify.steps.map((step) => [step.command, ...(step.args ?? [])].join(' '));
     expect(commands).toEqual(
       expect.arrayContaining([

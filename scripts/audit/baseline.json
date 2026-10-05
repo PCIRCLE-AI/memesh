@@ -16,15 +16,15 @@
       "reason": "The doctor exit code is captured and rejected first; this grep independently checks the skills and hooks content.",
       "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-12 (the workflow_dispatch trigger added 23 lines above the unchanged statement); re-keyed 2026-10-01 (the coverage job and the lint step above the unchanged statement were folded away); re-keyed 2026-10-01 251→228 (the matrix comments and steps above reworked to shorten pull request feedback; statement byte-identical)"
     },
-    "C4 scripts/release-verify.sh:106": {
+    "C4 scripts/release-verify.sh:111": {
       "class": "SAFE-DIAGNOSTIC",
       "reason": "This tail-to-sed pipeline only formats diagnostics after the test command has already produced the failing return code.",
-      "triaged": "2026-09-06 provider-vector retirement audit"
+      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-10-05 106->111 (--skip-suite flag lines added above; statement byte-identical)"
     },
-    "C4 scripts/release-verify.sh:160": {
+    "C4 scripts/release-verify.sh:165": {
       "class": "SAFE-PIPEFAIL",
       "reason": "The script enables pipefail, so grep cannot hide a failed feedback draft command.",
-      "triaged": "2026-09-06 provider-vector retirement audit"
+      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-10-05 160->165 (--skip-suite flag lines added above; statement byte-identical)"
     },
     "C5 src/core/demo.ts:228": {
       "class": "SAFE-OPTIONAL-COLLECTION",
