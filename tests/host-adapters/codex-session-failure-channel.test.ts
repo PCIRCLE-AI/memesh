@@ -190,13 +190,38 @@ describe.skipIf(process.platform === 'win32')('#518 companion failure channel', 
     expect(fs.readdirSync(f.life)).toEqual([]);
     expect(fs.readdirSync(f.d).filter(x => x.startsWith('c-'))).toEqual([]);
   });
-  it('non-outdated authentication failure retains the prior generic launcher output', async () => {
+  it('a non-outdated registration failure shows its real reason and records it', async () => {
     const f = await setup('authentication_failed'); const p = launch(f);
     await wait(() => !!f.response()); f.response()!();
     await wait(() => p.c.exitCode !== null);
     expect(p.c.exitCode).toBe(1);
-    expect(p.stderr()).toBe('memesh-host-codex-session: session registration failed.\n');
+    expect(p.stderr()).toBe('memesh-host-codex-session: session registration failed. Router registration was rejected.\n');
+    expect(companionLog(f)).toContain('could not start: Router registration was rejected.');
     expect(fs.readdirSync(f.life)).toEqual([]);
+  });
+  it('a host config that is not owner-private fails with that reason, not a generic line', async () => {
+    const f = await setup();
+    fs.mkdirSync(path.join(f.d, 'hosts'), { mode: 0o700 });
+    const config = path.join(f.d, 'hosts', 'codex-session.json');
+    fs.writeFileSync(config, '{}');
+    fs.chmodSync(config, 0o644);
+    const p = launch(f);
+    await wait(() => p.c.exitCode !== null);
+    expect(p.c.exitCode).toBe(1);
+    expect(p.stderr()).toBe('memesh-host-codex-session: session registration failed. The host config must be owner-private.\n');
+    expect(companionLog(f)).toContain('could not start: The host config must be owner-private.');
+    expect(fs.readdirSync(f.life)).toEqual([]);
+  });
+  it('a data folder the launcher cannot write to says so, with the command that fixes it', async () => {
+    const f = await setup(); fs.chmodSync(f.d, 0o500);
+    try {
+      const p = launch(f);
+      await wait(() => p.c.exitCode !== null);
+      expect(p.c.exitCode).toBe(1);
+      expect(p.stderr()).toContain('session registration failed. ');
+      expect(p.stderr()).toContain(`${f.d} is read-only`);
+      expect(p.stderr()).toContain('chmod u+w');
+    } finally { fs.chmodSync(f.d, 0o700); }
   });
   it('interrupted launcher: orphan is never read by a later launch, and is swept once old', async () => {
     const f = await setup(); const p = launch(f);

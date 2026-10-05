@@ -95,6 +95,9 @@ class ActiveRouterHostConnection implements RouterHostConnection {
   private retryTimer: NodeJS.Timeout | null = null;
   private cancelRetryWait: (() => void) | null = null;
   private reconnectTask: Promise<void> | null = null;
+  // Kept across reconnect rounds, so a router that keeps dropping or refusing this host
+  // is retried ever more slowly; reset only once the router answers a request.
+  private reconnectAttempt = 0;
   private closed = false;
   private deliveryTail = Promise.resolve();
   private readonly acceptedDeliveries = new Map<string, AgentJsonObject>();
@@ -281,6 +284,18 @@ class ActiveRouterHostConnection implements RouterHostConnection {
             }
             continue;
           }
+          // The router answered a request on this generation (a heartbeat, a host outcome):
+          // the connection is healthy, so a later loss starts again from the shortest delay.
+          if (registrationSettled && frame.ok === true) this.reconnectAttempt = 0;
+          if (registrationSettled && frame.ok === false
+            && isRecord(frame.error) && frame.error.code === 'stale_generation') {
+            // The router no longer honours this lease (the host stalled past it, e.g. a
+            // laptop sleep) but leaves the socket open, so nothing would ever re-register.
+            // Drop the socket and let the ordinary close -> reconnect path register again.
+            // Unlike `session_superseded`, this does not set `closed`.
+            socket.destroy();
+            return;
+          }
           if (frame.type === 'session_superseded') {
             if (frame.version !== AGENT_ROUTER_PROTOCOL_VERSION
               || frame.connection_id !== connectionId
@@ -414,10 +429,9 @@ class ActiveRouterHostConnection implements RouterHostConnection {
   }
 
   private async reconnectLoop(): Promise<void> {
-    let attempt = 0;
     while (!this.closed) {
-      if (!await this.waitForRetry(this.retryDelay(attempt))) return;
-      attempt += 1;
+      if (!await this.waitForRetry(this.retryDelay(this.reconnectAttempt))) return;
+      this.reconnectAttempt += 1;
       try {
         await this.connectOnce();
         if (this.currentSocket) return;
@@ -666,9 +680,22 @@ function requiredFrameInteger(value: unknown): number {
   return value as number;
 }
 
+/**
+ * The router keeps a failure code only when it is lower snake_case of at most 64
+ * characters, and records anything else as `adapter_rejected`. An error that already
+ * carries such a `code` (`native_message_too_large`, which the sender acts on) sends
+ * it as is; otherwise the class name goes out in that form
+ * (`AcpStaleGenerationError` -> `acp_stale_generation_error`).
+ */
 function failureCode(error: unknown): string {
+  const code = isRecord(error) ? error.code : undefined;
+  if (typeof code === 'string' && /^[a-z0-9_]{1,64}$/.test(code)) return code;
   const name = error instanceof Error ? error.name : 'host_rejected';
-  return name.replace(/[^A-Za-z0-9_]/g, '_').slice(0, 120) || 'host_rejected';
+  return name
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/g, '_')
+    .slice(0, 64) || 'host_rejected';
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

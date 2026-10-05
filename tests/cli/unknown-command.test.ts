@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { execFileSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
+import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 // DX regression: `memesh nonexistent-cmd` used to emit a confusing
@@ -66,5 +68,34 @@ describe('CLI: unknown subcommand', () => {
     const result = runCli(['--version']);
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
+  });
+});
+
+// `.allowExcessArguments(true)` belongs to the root command only. Commander copies it
+// into every subcommand created after it is set, and a subcommand that inherited it
+// dropped the extra words and exited 0: `memesh remember Use OAuth with PKCE` stored
+// only "Use". The home is a throwaway one, because with the bug these calls write.
+describe('CLI: a subcommand refuses words it has no place for', () => {
+  function runInThrowawayHome(args: string[]): { stderr: string; exitCode: number } {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-excess-args-'));
+    try {
+      const result = spawnSync('node', [CLI_PATH, ...args], {
+        encoding: 'utf8',
+        env: { ...process.env, HOME: home, USERPROFILE: home },
+      });
+      return { stderr: result.stderr, exitCode: result.status ?? 1 };
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  }
+
+  it.each([
+    ['remember Use OAuth with PKCE', ['remember', 'Use', 'OAuth', 'with', 'PKCE']],
+    ['recall with two words', ['recall', 'first', 'second']],
+    ['a nested subcommand', ['dream', 'list', 'extra']],
+  ])('%s exits 1 with "too many arguments"', (_name, args) => {
+    const result = runInThrowawayHome(args);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('too many arguments');
   });
 });

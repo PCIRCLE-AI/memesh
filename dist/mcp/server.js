@@ -32571,6 +32571,14 @@ function parseStoredObject(raw, label) {
   }
   throw new AgentMessagingError(`Invalid stored JSON object in ${label}.`);
 }
+function principalFallbackKey(idempotencyKey) {
+  return `principal-fallback:${createHash10("sha256").update(idempotencyKey).digest("hex")}`;
+}
+function hasPrincipalFallback(db2, sent, idempotencyKey) {
+  return db2.prepare(`
+    SELECT 1 FROM agent_message_idempotency WHERE project = ? AND sender = ? AND idempotency_key = ?
+  `).get(sent.project, sent.sender, principalFallbackKey(idempotencyKey)) !== void 0;
+}
 function sendPrincipalFallback(db2, message, refused) {
   const session = db2.prepare(`
     SELECT principal_id FROM agent_session_instances WHERE project = ? AND session_instance_id = ?
@@ -32585,7 +32593,7 @@ function sendPrincipalFallback(db2, message, refused) {
       recipient: session.principal_id,
       target_kind: "principal",
       intended_session: refused.recipient,
-      idempotency_key: `principal-fallback:${createHash10("sha256").update(message.idempotency_key).digest("hex")}`
+      idempotency_key: principalFallbackKey(message.idempotency_key)
     }, {
       notifier: optionalRouterNotifier(),
       storage_quota_bytes: configuredAgentMessageStorageQuotaBytes()
@@ -32648,6 +32656,9 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
       });
       if (sent.target_kind !== "session")
         return sent;
+      if (hasPrincipalFallback(db2, sent, input.idempotency_key)) {
+        return sendPrincipalFallback(db2, message, sent);
+      }
       try {
         return {
           ...sent,
