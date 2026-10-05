@@ -162,3 +162,88 @@ describe('task_state and briefing without a project use the bound project, never
     expect(JSON.parse(text(r)).project).toBe(getProjectName(a));
   });
 });
+
+// #511: a `project:<name>` tag that names the bound repository by its plain
+// name filed the memory under a separate project that no briefing for the
+// repository reads (its id is `<name>~<hash>`). It is now filed under the id,
+// and the result says which tag was rewritten.
+describe('#511 remember: a plain-name project tag for the bound project gets the full id', () => {
+  let db: typeof import('../../src/db.js');
+  let tools: typeof import('../../src/mcp/tools.js');
+  const text = (r: { content: Array<{ text: string }> }) => r.content[0].text;
+  const call = (name: string, args: Record<string, unknown>, launch: string | undefined) =>
+    tools.handleTool(name, args, 'codex', undefined, { workspaceRootUris: [], projectBinding: resolveMcpProject(launch, []) });
+  const tagsOf = (name: string) => (db.getDatabase()
+    .prepare('SELECT t.tag FROM tags t JOIN entities e ON e.id = t.entity_id WHERE e.name = ? ORDER BY t.tag')
+    .all(name) as Array<{ tag: string }>).map((r) => r.tag);
+
+  beforeEach(async () => {
+    db = await import('../../src/db.js');
+    tools = await import('../../src/mcp/tools.js');
+    db.openDatabase(path.join(dir('db511'), 'kg.db'));
+  });
+  afterEach(() => { db.closeDatabase(); });
+
+  it('files the memory under the bound project id and reports the rewrite', async () => {
+    const repo = dir('repo511');
+    const id = getProjectName(repo);
+    const plain = `project:${id.slice(0, id.lastIndexOf('~'))}`;
+    const r = await call('remember', { name: 'plain-tag-511', type: 'decision', observations: ['o'], tags: [plain, 'topic:x'] }, repo);
+    expect(r.isError).toBeFalsy();
+    expect(JSON.parse(text(r)).retagged).toEqual({ from: plain, to: `project:${id}` });
+    expect(tagsOf('plain-tag-511')).toEqual([`project:${id}`, 'topic:x']);
+  });
+
+  it('an explicit project with the plain tag is healed, not refused as a contradiction', async () => {
+    const repo = dir('repo511b');
+    const id = getProjectName(repo);
+    const plain = `project:${id.slice(0, id.lastIndexOf('~'))}`;
+    const r = await call('remember', { name: 'plain-tag-511b', type: 'decision', observations: ['o'], tags: [plain], project: id }, undefined);
+    expect(r.isError, text(r)).toBeFalsy();
+    expect(tagsOf('plain-tag-511b')).toEqual([`project:${id}`]);
+  });
+
+  it('a memory already filed under the plain tag keeps it, and re-remembering it still works', async () => {
+    const repo = dir('repo511d');
+    const id = getProjectName(repo);
+    const plain = `project:${id.slice(0, id.lastIndexOf('~'))}`;
+    // Stored before #511, from a session with no bound project.
+    expect((await call('remember', { name: 'legacy-511', type: 'decision', observations: ['one'], tags: [plain] }, undefined)).isError).toBeFalsy();
+    const again = await call('remember', { name: 'legacy-511', type: 'decision', observations: ['two'], tags: [plain] }, repo);
+    expect(again.isError, text(again)).toBeFalsy();
+    expect(JSON.parse(text(again)).retagged).toBeUndefined();
+    expect(tagsOf('legacy-511')).toEqual([plain]);
+  });
+
+  it('superseding a memory filed under the plain tag keeps the plain tag, and archives it', async () => {
+    const repo = dir('repo511f');
+    const id = getProjectName(repo);
+    const plain = `project:${id.slice(0, id.lastIndexOf('~'))}`;
+    expect((await call('remember', { name: 'old-511', type: 'decision', observations: ['old'], tags: [plain] }, undefined)).isError).toBeFalsy();
+    const r = await call('remember', {
+      name: 'new-511', type: 'decision', observations: ['new'], tags: [plain],
+      relations: [{ to: 'old-511', type: 'supersedes' }],
+    }, repo);
+    expect(r.isError, text(r)).toBeFalsy();
+    expect(JSON.parse(text(r)).retagged).toBeUndefined();
+    expect(tagsOf('new-511')).toEqual([plain]);
+    expect(db.getDatabase().prepare("SELECT status FROM entities WHERE name = 'old-511'").get()).toEqual({ status: 'archived' });
+  });
+
+  it('the plain and the full form together become the one full tag', async () => {
+    const repo = dir('repo511e');
+    const id = getProjectName(repo);
+    const plain = `project:${id.slice(0, id.lastIndexOf('~'))}`;
+    const r = await call('remember', { name: 'both-511', type: 'decision', observations: ['o'], tags: [plain, `project:${id}`] }, repo);
+    expect(r.isError, text(r)).toBeFalsy();
+    expect(tagsOf('both-511')).toEqual([`project:${id}`]);
+  });
+
+  it('a plain tag naming a different project is left as written', async () => {
+    const repo = dir('repo511c');
+    const r = await call('remember', { name: 'other-tag-511', type: 'decision', observations: ['o'], tags: ['project:somewhere-else'] }, repo);
+    expect(r.isError).toBeFalsy();
+    expect(JSON.parse(text(r)).retagged).toBeUndefined();
+    expect(tagsOf('other-tag-511')).toEqual(['project:somewhere-else']);
+  });
+});

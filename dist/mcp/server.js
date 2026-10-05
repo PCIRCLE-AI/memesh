@@ -27560,6 +27560,22 @@ function projectOwnershipRefusal(db2, name, project) {
   return `a memory named ${JSON.stringify(name)} already exists and ${owner}, not project ${project}. Use a different name`;
 }
 
+// dist/core/plain-project-tag.js
+function withFullProjectTag(tags, projectId) {
+  if (tags === void 0)
+    return { tags: void 0 };
+  if (projectId === void 0)
+    return { tags: [...tags] };
+  const label = projectLabel(projectId);
+  if (label === projectId)
+    return { tags: [...tags] };
+  const plain = `project:${label}`;
+  if (!tags.includes(plain))
+    return { tags: [...tags] };
+  const full = `project:${projectId}`;
+  return { tags: [...new Set(tags.map((tag) => tag === plain ? full : tag))], retagged: { from: plain, to: full } };
+}
+
 // dist/core/scoring.js
 var DEFAULT_WEIGHTS = {
   searchRelevance: 0.3,
@@ -28253,6 +28269,20 @@ function resolveRememberInput(input) {
 }
 function rememberInTransaction(args, derived, typeGiven, db2, kg) {
   const existing = db2.prepare("SELECT id, namespace, type, title, status FROM entities WHERE name = ?").get(args.name);
+  const touched = [
+    ...existing ? [args.name] : [],
+    ...(args.relations ?? []).filter((rel) => rel.type === "supersedes").map((rel) => rel.to)
+  ];
+  let retagged;
+  const healed = withFullProjectTag(args.tags, args.currentProject);
+  if (healed.retagged) {
+    const plainTag = healed.retagged.from;
+    const keepsPlain = touched.some((name) => db2.prepare("SELECT 1 FROM tags t JOIN entities e ON e.id = t.entity_id WHERE e.name = ? AND t.tag = ?").get(name, plainTag) !== void 0);
+    if (!keepsPlain) {
+      args = { ...args, tags: healed.tags };
+      retagged = healed.retagged;
+    }
+  }
   const tagProjects = [...new Set((args.tags ?? []).filter((t) => t.startsWith("project:")).map((t) => t.slice("project:".length)))];
   if (tagProjects.length > 1) {
     throw new Error(`MeMesh did not store this memory: it has more than one project tag (${tagProjects.map((p) => `project:${p}`).join(", ")}); a memory belongs to one project.`);
@@ -28262,10 +28292,6 @@ function rememberInTransaction(args, derived, typeGiven, db2, kg) {
   }
   const declaredProject = args.project !== void 0 ? args.project : tagProjects[0];
   if (declaredProject !== void 0) {
-    const touched = [
-      ...existing ? [args.name] : [],
-      ...(args.relations ?? []).filter((rel) => rel.type === "supersedes").map((rel) => rel.to)
-    ];
     for (const name of touched) {
       const refusal = projectOwnershipRefusal(db2, name, declaredProject);
       if (refusal !== void 0)
@@ -28365,6 +28391,7 @@ function rememberInTransaction(args, derived, typeGiven, db2, kg) {
     ...existing && args.namespace !== void 0 && (existing.namespace ?? "personal") !== args.namespace ? { movedFromNamespace: existing.namespace ?? "personal" } : {},
     ...superseded.length > 0 ? { superseded } : {},
     ...relationErrors.length > 0 ? { relationErrors } : {},
+    ...retagged ? { retagged } : {},
     ...args.replace ? { replaced: replacedVersion !== void 0 } : {},
     ...derived ? { derived: { name: args.name, type: retypedTo ?? existing?.type ?? entityType, title: derived.title, observations: derived.observations } } : {}
   };
@@ -33010,7 +33037,9 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
       const resolved = writeProject(projectArg, input.tags, requestContext);
       if ("result" in resolved)
         return resolved.result;
-      return ok(remember({ ...input, sourceHost, project: resolved.project }));
+      const binding = requestContext.projectBinding;
+      const currentProject = typeof projectArg === "string" ? projectArg : projectArg === void 0 && binding !== void 0 && "project" in binding ? binding.project : void 0;
+      return ok(remember({ ...input, sourceHost, project: resolved.project, currentProject }));
     }
     if (name === "recall") {
       const r = parseOrFail(McpRecallSchema, args);

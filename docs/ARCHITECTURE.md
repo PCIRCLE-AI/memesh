@@ -269,6 +269,9 @@ Tool call: remember({name, type, observations, tags, relations})
      -> snapshot the previous title/observations/tags FIRST
      -> KnowledgeGraph.clearEntityData(name)   # the snapshot must precede this
      -> stored type is kept unless a different `type` was passed
+  -> #511: a `project:<name>` tag naming the caller's own project (MCP: argument or binding; CLI: cwd) by its
+     plain name becomes `project:<id>` (reported as `retagged`), unless a memory this write updates or supersedes
+     already carries the plain tag
   -> declared project (MCP `project` argument, else one `project:` tag, else the bound project; `false` = none):
      refuse two project tags, or an argument that contradicts the tag;
      refuse a name or `supersedes` target another project, or no project, holds (no project: one a project holds);

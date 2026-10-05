@@ -504,7 +504,11 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
             const resolved = writeProject(projectArg, input.tags, requestContext);
             if ('result' in resolved)
                 return resolved.result;
-            return ok(remember({ ...input, sourceHost, project: resolved.project }));
+            const binding = requestContext.projectBinding;
+            const currentProject = typeof projectArg === 'string'
+                ? projectArg
+                : projectArg === undefined && binding !== undefined && 'project' in binding ? binding.project : undefined;
+            return ok(remember({ ...input, sourceHost, project: resolved.project, currentProject }));
         }
         if (name === 'recall') {
             const r = parseOrFail(McpRecallSchema, args);

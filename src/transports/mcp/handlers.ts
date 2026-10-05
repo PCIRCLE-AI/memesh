@@ -715,7 +715,12 @@ async function handleToolInner(
       const { project: projectArg, ...input } = r.data;
       const resolved = writeProject(projectArg, input.tags, requestContext);
       if ('result' in resolved) return resolved.result;
-      return ok(remember({ ...input, sourceHost, project: resolved.project }));
+      // #511: this call's own project — the explicit one, else the bound one.
+      const binding = requestContext.projectBinding;
+      const currentProject = typeof projectArg === 'string'
+        ? projectArg
+        : projectArg === undefined && binding !== undefined && 'project' in binding ? binding.project : undefined;
+      return ok(remember({ ...input, sourceHost, project: resolved.project, currentProject }));
     }
     if (name === 'recall') {
       const r = parseOrFail(McpRecallSchema, args);

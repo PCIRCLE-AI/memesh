@@ -456,6 +456,11 @@
       "reason": "`e.relations ?? []` in selectProjectEntities — an entity without relations simply readmits nothing; the readmission rule is pinned by tests/dashboard/ProjectTab.select.test.ts including the no-relations path. (re-keyed 43→44 on 2026-08-29; line shift only, classification unchanged)",
       "triaged": "2026-08-16 (UX-3 readmission rule); re-keyed 2026-09-10 (#237: Fragment import added above; same statement — verified)"
     },
+    "C1 tests/cli/remember-plain-project-tag.test.ts": {
+      "class": "SAFE",
+      "reason": "the only match is the exit-code assertion status toBe(0); every case also asserts the stored tags and the printed or JSON rewrite",
+      "triaged": "2026-10-05 (#511)"
+    },
     "C1 tests/cli/task-corrupted-record.test.ts": {
       "class": "SAFE",
       "reason": "the not.toMatch/not.toContain assertions (no stack frames, no install path, no internal entity name) are the contract under test and each is paired with positive assertions on the same output (status 1, recovery text present, JSON error object)",
@@ -536,42 +541,42 @@
       "reason": "entity.observations is typed string[] (non-optional) on every Entity recallWithConflicts() returns; same defensive-only ?? [] as the tags line immediately above.",
       "triaged": "2026-09-28 #494 recall-response-size: recall-agent-view.ts introduced; re-keyed 2026-09-28 (bytesWith()/cutToFit added and packObservations' early return removed, all above, across several passes); currently :154, statement byte-identical to the pre-simplification-pass :155; re-keyed 2026-10-03 154→163 (M1 project binding added lines above; statement byte-identical)"
     },
-    "C5 src/core/operations.ts:45": {
+    "C5 src/core/operations.ts:46": {
       "class": "SAFE-OPTIONAL-OBJECT",
       "reason": "A new entity legitimately starts with empty metadata before local fields are applied.",
       "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-26 40→41 (#451: canonicalEntityType import added above; statement byte-identical); re-keyed 2026-09-28 41→42 (#494: one import line added above; statement byte-identical); re-keyed 2026-09-30 42→44 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged); re-keyed 2026-10-03 44→45 (M1 project binding added lines above; statement byte-identical)"
     },
-    "C5 src/core/operations.ts:48": {
+    "C5 src/core/operations.ts:49": {
       "class": "SAFE-OPTIONAL-OBJECT",
       "reason": "Missing provenance legitimately starts an empty provenance object before local fields are applied.",
       "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-26 43→44 (#451: canonicalEntityType import added above; statement byte-identical); re-keyed 2026-09-28 44→45 (#494: one import line added above; statement byte-identical); re-keyed 2026-09-30 45→47 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged); re-keyed 2026-10-03 47→48 (M1 project binding added lines above; statement byte-identical)"
     },
-    "C5 src/core/operations.ts:51": {
+    "C5 src/core/operations.ts:52": {
       "class": "SAFE-OPTIONAL-OBJECT",
       "reason": "Absent provenance overrides correctly add no fields to the generated provenance.",
       "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-26 46→47 (#451: canonicalEntityType import added above; statement byte-identical); re-keyed 2026-09-28 47→48 (#494: one import line added above; statement byte-identical); re-keyed 2026-09-30 48→50 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged); re-keyed 2026-10-03 50→51 (M1 project binding added lines above; statement byte-identical)"
     },
-    "C5 src/core/operations.ts:332": {
+    "C5 src/core/operations.ts:354": {
       "class": "SAFE-OPTIONAL-OBJECT",
       "reason": "Absent caller provenance overrides correctly preserve generated provenance unchanged.",
       "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-07 after transaction-boundary refactor shifted the unchanged statement; re-keyed 2026-09-12 (#324 src/core fix round shifted the unchanged statement); re-keyed again 2026-09-12 (#324 T4 root-cause fix shifted the same statement from :299 to :327); re-keyed 2026-09-26 327→334 (#451: canonicalEntityType import plus the entityType canonicalization comment block added above; statement byte-identical); re-keyed 2026-09-28 334→335 (#494: one import line added above; statement byte-identical); re-keyed 2026-09-30 335→300 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged); re-keyed 2026-09-30 300→299 (#530 review follow-up: a stray blank line removed above; statement byte-identical); re-keyed 2026-10-03 299→332 (M1 project binding added lines above; statement byte-identical)"
     },
-    "C5 src/core/operations.ts:191": {
+    "C5 src/core/operations.ts:218": {
       "class": "SAFE-OPTIONAL-COLLECTION",
       "reason": "Omitted tags are no tags, so no project tag: the write then declares a project only through its argument, or none. Two project tags, or one contradicting the argument, are refused right below.",
       "triaged": "2026-10-03 (M1 binding separated; classification carried from C5 src/core/operations.ts:227 at tree 16cc446c, statement byte-identical)"
     },
-    "C5 src/core/operations.ts:205": {
+    "C5 src/core/operations.ts:204": {
       "class": "SAFE-OPTIONAL-COLLECTION",
       "reason": "No relations means no supersedes target to check; the bound-project check then covers only the memory itself. Fails closed: each listed target is checked before any write.",
       "triaged": "2026-10-03 (M1 binding separated; classification carried from C5 src/core/operations.ts:241 at tree 16cc446c, statement byte-identical)"
     },
-    "C5 src/core/operations.ts:293": {
+    "C5 src/core/operations.ts:315": {
       "class": "SAFE-OPTIONAL-COLLECTION",
       "reason": "Omitted tags are no tags; this only decides whether the named project tag is already present before adding it. Nothing reads as success from it.",
       "triaged": "2026-10-03 (M1 binding separated; classification carried from C5 src/core/operations.ts:329 at tree 16cc446c, statement byte-identical)"
     },
-    "C5 src/core/operations.ts:294": {
+    "C5 src/core/operations.ts:316": {
       "class": "SAFE-OPTIONAL-COLLECTION",
       "reason": "Omitted tags are no tags; the bound project tag is appended to them.",
       "triaged": "2026-10-03 (M1 binding separated; classification carried from C5 src/core/operations.ts:330 at tree 16cc446c, statement byte-identical)"

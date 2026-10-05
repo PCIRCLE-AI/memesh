@@ -141,7 +141,9 @@ host is recallable from all of them. Not installed yet? Follow
   with no project and global ones, and says which in `scope`. When you tag by hand (the CLI, or another
   project), use `project:<id>`, where `<id>` is the `project` field of the
   `briefing` result (CLI: `memesh briefing --json`). The injected block shows
-  only the readable name; a tag with the plain repository name is a different
+  only the readable name. `remember` stores a plain-name tag for the call's
+  own project as the id (and says so in `retagged`), but a plain name for any
+  other project, or on a memory already filed under it, stays a different
   scope that this project's sessions never see.
 - **A mistake with a known cause and fix is a `learn` call** (it creates a
   `lesson_learned`, which later sessions show as a lesson). A choice between

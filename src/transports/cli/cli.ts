@@ -493,6 +493,8 @@ program
           name: opts.name,
           type: opts.type,
           tags: opts.tags,
+          // #511: this directory's project, resolved only when a project tag needs it.
+          ...(opts.tags?.some((tag: string) => tag.startsWith('project:')) ? { currentProject: getProjectName() } : {}),
           namespace: opts.namespace,
           relations: relations.length > 0 ? relations : undefined,
           sourceHost: 'cli',
@@ -512,6 +514,7 @@ program
         console.log(JSON.stringify(result));
       } else {
         console.log(`✅ Stored "${result.name}" (${result.observations} observations, ${result.tags} tags)`);
+        if (result.retagged) console.log(`   tag ${result.retagged.from} names this project; stored as ${result.retagged.to}`);
         // The derived shape, so a wrong title is fixable in one more call.
         if (result.derived) {
           // `result.title` is the title the DATABASE holds — operations.ts

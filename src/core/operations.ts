@@ -12,6 +12,7 @@
 import { getDatabase } from '../db.js';
 import { projectOwnershipRefusal } from '../storage/memory-mutation.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
+import { withFullProjectTag } from './plain-project-tag.js';
 import { rankEntities } from './scoring.js';
 import { getProjectName } from './paths.js';
 import { createExplicitLesson } from './lesson-engine.js';
@@ -188,6 +189,32 @@ function rememberInTransaction(
   // intentionally has none), else its one explicit project tag. A memory
   // belongs to one project, so two different project tags, or a tag that
   // contradicts the declared project, are refused before anything is written.
+  // #511: a `project:<name>` tag naming the caller's own project by its plain
+  // name would file the memory under a separate project no briefing for it
+  // reads, so it is stored as the id. When a memory this write touches (the
+  // one it updates, or one a `supersedes` relation archives) is already filed
+  // under the plain tag, the tag is kept — rewriting would move the write to
+  // another project, which the ownership check below refuses;
+  // `memesh kg rename-project` is how those are moved.
+  //
+  // The memory itself, and every memory a `supersedes` relation would
+  // archive: the names this write may change.
+  const touched = [
+    ...(existing ? [args.name] : []),
+    ...(args.relations ?? []).filter((rel) => rel.type === 'supersedes').map((rel) => rel.to),
+  ];
+  let retagged: RememberResult['retagged'];
+  const healed = withFullProjectTag(args.tags, args.currentProject);
+  if (healed.retagged) {
+    const plainTag = healed.retagged.from;
+    const keepsPlain = touched.some((name) => db
+      .prepare('SELECT 1 FROM tags t JOIN entities e ON e.id = t.entity_id WHERE e.name = ? AND t.tag = ?')
+      .get(name, plainTag) !== undefined);
+    if (!keepsPlain) {
+      args = { ...args, tags: healed.tags };
+      retagged = healed.retagged;
+    }
+  }
   const tagProjects = [...new Set((args.tags ?? []).filter((t) => t.startsWith('project:')).map((t) => t.slice('project:'.length)))];
   if (tagProjects.length > 1) {
     throw new Error(`MeMesh did not store this memory: it has more than one project tag (${tagProjects.map((p) => `project:${p}`).join(', ')}); a memory belongs to one project.`);
@@ -197,13 +224,8 @@ function rememberInTransaction(
   }
   const declaredProject = args.project !== undefined ? args.project : tagProjects[0];
   if (declaredProject !== undefined) {
-    // The memory itself, and every memory a `supersedes` relation would
-    // archive: a write that declares its project (or declares none) may
-    // change only memories of that same project (or of none).
-    const touched = [
-      ...(existing ? [args.name] : []),
-      ...(args.relations ?? []).filter((rel) => rel.type === 'supersedes').map((rel) => rel.to),
-    ];
+    // A write that declares its project (or declares none) may change only
+    // memories of that same project (or of none).
     for (const name of touched) {
       const refusal = projectOwnershipRefusal(db, name, declaredProject);
       if (refusal !== undefined) throw new Error(`MeMesh did not store this memory: ${refusal}.`);
@@ -410,6 +432,7 @@ function rememberInTransaction(
       : {}),
     ...(superseded.length > 0 ? { superseded } : {}),
     ...(relationErrors.length > 0 ? { relationErrors } : {}),
+    ...(retagged ? { retagged } : {}),
     ...(args.replace ? { replaced: replacedVersion !== undefined } : {}),
     ...(derived
       ? { derived: { name: args.name, type: retypedTo ?? existing?.type ?? entityType, title: derived.title, observations: derived.observations } }

@@ -1,6 +1,7 @@
 import { getDatabase } from '../db.js';
 import { projectOwnershipRefusal } from '../storage/memory-mutation.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
+import { withFullProjectTag } from './plain-project-tag.js';
 import { rankEntities } from './scoring.js';
 import { getProjectName } from './paths.js';
 import { createExplicitLesson } from './lesson-engine.js';
@@ -78,6 +79,22 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
     const existing = db
         .prepare('SELECT id, namespace, type, title, status FROM entities WHERE name = ?')
         .get(args.name);
+    const touched = [
+        ...(existing ? [args.name] : []),
+        ...(args.relations ?? []).filter((rel) => rel.type === 'supersedes').map((rel) => rel.to),
+    ];
+    let retagged;
+    const healed = withFullProjectTag(args.tags, args.currentProject);
+    if (healed.retagged) {
+        const plainTag = healed.retagged.from;
+        const keepsPlain = touched.some((name) => db
+            .prepare('SELECT 1 FROM tags t JOIN entities e ON e.id = t.entity_id WHERE e.name = ? AND t.tag = ?')
+            .get(name, plainTag) !== undefined);
+        if (!keepsPlain) {
+            args = { ...args, tags: healed.tags };
+            retagged = healed.retagged;
+        }
+    }
     const tagProjects = [...new Set((args.tags ?? []).filter((t) => t.startsWith('project:')).map((t) => t.slice('project:'.length)))];
     if (tagProjects.length > 1) {
         throw new Error(`MeMesh did not store this memory: it has more than one project tag (${tagProjects.map((p) => `project:${p}`).join(', ')}); a memory belongs to one project.`);
@@ -87,10 +104,6 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
     }
     const declaredProject = args.project !== undefined ? args.project : tagProjects[0];
     if (declaredProject !== undefined) {
-        const touched = [
-            ...(existing ? [args.name] : []),
-            ...(args.relations ?? []).filter((rel) => rel.type === 'supersedes').map((rel) => rel.to),
-        ];
         for (const name of touched) {
             const refusal = projectOwnershipRefusal(db, name, declaredProject);
             if (refusal !== undefined)
@@ -201,6 +214,7 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
             : {}),
         ...(superseded.length > 0 ? { superseded } : {}),
         ...(relationErrors.length > 0 ? { relationErrors } : {}),
+        ...(retagged ? { retagged } : {}),
         ...(args.replace ? { replaced: replacedVersion !== undefined } : {}),
         ...(derived
             ? { derived: { name: args.name, type: retypedTo ?? existing?.type ?? entityType, title: derived.title, observations: derived.observations } }

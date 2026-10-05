@@ -69,6 +69,7 @@ export interface RememberInput {
     provenanceOverride?: Record<string, unknown>;
     sourceHost?: string;
     project?: string | null;
+    currentProject?: string;
 }
 export interface RecallInput {
     query?: string;
@@ -94,6 +95,10 @@ export interface RememberResult {
     relations: number;
     superseded?: string[];
     relationErrors?: string[];
+    retagged?: {
+        from: string;
+        to: string;
+    };
     relationsCreated?: Array<{
         to: string;
         type: string;
