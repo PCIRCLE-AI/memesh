@@ -1,5 +1,5 @@
 import { redactShownTogether } from './paths.js';
-import { EVIDENCE_LAYER_TYPES, isAutoInjectable, jsonStringLiteral, projectLabel, topologyLine } from './work-topology.js';
+import { DECISION_TYPES, EVIDENCE_LAYER_TYPES, isAutoInjectable, jsonStringLiteral, projectLabel, isWhyText, topologyLine, unconfirmedDaysSince, utcEpoch, } from './work-topology.js';
 import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
 export const INDEX_MAX_LINES = 40;
 export const INDEX_MAX_BYTES = 3072;
@@ -18,15 +18,9 @@ function byteLength(text) {
 function sectionBytes(lines) {
     return lines.reduce((sum, line) => sum + byteLength(line) + 1, 0);
 }
-function parseActivity(value) {
-    if (!value)
-        return Number.NaN;
-    const iso = /[zZ]|[+-]\d\d:?\d\d$/.test(value) ? value : `${value.replace(' ', 'T')}Z`;
-    return Date.parse(iso);
-}
 function compareIndexCandidates(a, b) {
-    const at = parseActivity(a.lastActivity);
-    const bt = parseActivity(b.lastActivity);
+    const at = utcEpoch(a.lastActivity);
+    const bt = utcEpoch(b.lastActivity);
     const av = Number.isNaN(at) ? -Infinity : at;
     const bv = Number.isNaN(bt) ? -Infinity : bt;
     if (av !== bv)
@@ -49,13 +43,25 @@ function candidateIsAutoInjectable(metadata) {
     return isAutoInjectable(metadata);
 }
 const flat = (text) => (text ? text.replace(/\s+/g, ' ').trim() : '');
-function indexLine(candidate) {
-    const [shownTitle, shownSnippet] = redactShownTogether([candidate.title ?? null, candidate.snippet ?? null]);
+function indexLine(candidate, now) {
+    const decision = DECISION_TYPES.has(candidate.type ?? '') && candidate.why !== undefined;
+    const [shownTitle, shownSnippet, shownWhy] = redactShownTogether([
+        candidate.title ?? null,
+        candidate.snippet ?? null,
+        decision ? candidate.why ?? null : null,
+    ]);
     const title = flat(shownTitle);
-    const snippet = flat(shownSnippet);
+    const why = decision ? flat(shownWhy) || null : undefined;
+    const snippet = why && isWhyText(flat(shownSnippet)) ? '' : flat(shownSnippet);
     const repeats = title && snippet && snippet.toLowerCase().startsWith(title.replace(/…$/, '').toLowerCase());
     const text = title && snippet && !repeats ? `${title} — ${snippet}` : (title || snippet);
-    return topologyLine({ name: String(candidate.id), id: candidate.id, type: candidate.type || 'memory', title: text || null }, INDEX_LINE_MAX_CHARS);
+    return topologyLine({
+        name: String(candidate.id),
+        id: candidate.id,
+        type: candidate.type || 'memory',
+        title: text || null,
+        ...(decision ? { why, unconfirmedDays: unconfirmedDaysSince([candidate.lastAccessedAt, candidate.recency], now) } : {}),
+    }, INDEX_LINE_MAX_CHARS);
 }
 export function injectedIndexReserve(projectName) {
     const worst = [
@@ -107,7 +113,7 @@ export function buildBriefingIndex(candidates, projectName, now, options = {}) {
     const current = [];
     let older = 0;
     for (const c of eligible) {
-        const at = parseActivity(c.lastActivity);
+        const at = utcEpoch(c.lastActivity);
         if (!Number.isNaN(at) && at < cutoff)
             older++;
         else
@@ -132,7 +138,7 @@ export function buildBriefingIndex(candidates, projectName, now, options = {}) {
     for (const c of current) {
         if (rendered.length >= INDEX_MAX_LINES)
             break;
-        const line = indexLine(c);
+        const line = indexLine(c, now);
         const cost = byteLength(line) + 1;
         if (used + cost > budget)
             break;

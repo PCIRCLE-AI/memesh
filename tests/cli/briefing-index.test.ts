@@ -38,7 +38,8 @@ describe('memesh briefing --index', () => {
         ['idx-c', 'commit', 'chore: bump deps'],
       ]) {
         const r = runCli(home, 'remember', '--name', name, '--type', type, '--title', title,
-          '--obs', `${title} observation`, '--tags', `project:${PROJECT}`);
+          '--obs', `${title} observation`, '--tags', `project:${PROJECT}`,
+          ...(type === 'decision' ? ['--why', 'the index is read at a glance; revisit if it needs search'] : []));
         expect(r.status, r.stderr).toBe(0);
       }
 

@@ -180,7 +180,7 @@ describe('#527 HTTP: POST /v1/learn', () => {
 
     it('/v1/task-state and /v1/briefing-index return what is stored under it', async () => {
       setTaskState({ project: LEGACY, patch: { goal: 'legacy goal' } });
-      remember({ name: 'legacy-decision', type: 'decision', observations: ['kept'], tags: [`project:${LEGACY}`] });
+      remember({ name: 'legacy-decision', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['kept'], tags: [`project:${LEGACY}`] });
       const ts = await (await fetch(`${base}/v1/task-state?project=${encodeURIComponent(LEGACY)}`)).json();
       expect(ts.success).toBe(true);
       expect(ts.data.project).toBe(LEGACY);

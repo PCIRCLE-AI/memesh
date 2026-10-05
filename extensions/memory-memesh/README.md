@@ -81,7 +81,7 @@ The plugin imports from `openclaw/plugin-sdk/*` — these are part of the main `
   - Maps to: `POST /v1/recall`
 
 - **`memory_store`** - Store a new memory
-  - Params: `text` (string), `category` (optional), `importance` (optional, 1-10)
+  - Params: `text` (string), `category` (optional), `why` (string; required for `decision`, `architecture_decision` and `design_decision`: the reason, and what would make it stop holding), `importance` (optional, 1-10)
   - Maps to: `POST /v1/remember`
   - Guards: Prompt injection defense (rejects suspicious patterns)
 

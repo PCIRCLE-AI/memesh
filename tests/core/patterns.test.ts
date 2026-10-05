@@ -22,7 +22,7 @@ describe('computePatterns', () => {
   });
 
   it('computes focus areas excluding auto-tracked types', () => {
-    remember({ name: 'e1', type: 'decision', observations: ['arch choice'] });
+    remember({ name: 'e1', type: 'decision', why: 'the simplest layout; revisit if it stops scaling', observations: ['arch choice'] });
     remember({ name: 'e2', type: 'session_keypoint', observations: ['[SESSION] test'] });
     remember({ name: 'e3', type: 'lesson_learned', observations: ['Error: test'] });
     remember({ name: 'e4', type: 'commit', observations: ['fix: something'] });
@@ -36,7 +36,7 @@ describe('computePatterns', () => {
   });
 
   it('does not count the session handoff as a focus area', () => {
-    remember({ name: 'e1', type: 'decision', observations: ['arch choice'] });
+    remember({ name: 'e1', type: 'decision', why: 'the simplest layout; revisit if it stops scaling', observations: ['arch choice'] });
     remember({ name: 'session-handoff:p', type: 'session-handoff', observations: ['Stopped right before the release step.'] });
     const types = computePatterns(getDatabase()).focusAreas.map((f) => f.type);
     expect(types).toContain('decision');
@@ -44,7 +44,7 @@ describe('computePatterns', () => {
   });
 
   it('filters by categories when specified', () => {
-    remember({ name: 'e1', type: 'decision', observations: ['test'] });
+    remember({ name: 'e1', type: 'decision', why: 'a placeholder choice; revisit if the test changes', observations: ['test'] });
     const db = getDatabase();
     const result = computePatterns(db, ['workflow']);
     expect(result.workflow).toBeDefined();

@@ -1011,8 +1011,8 @@ describe('memory-invariants: read-only detector over a real graph', () => {
       openDatabase(dbPath);
       try {
         const big = (tag: string) => Array.from({ length: 4 }, (_, i) => `${tag}-${i}`.padEnd(15000, 'x'));
-        remember({ name: 'replaced-big', type: 'decision', observations: big('v0') });
-        for (let i = 1; i < 12; i++) remember({ name: 'replaced-big', type: 'decision', observations: big(`v${i}`), replace: true });
+        remember({ name: 'replaced-big', type: 'decision', why: 'a long history is the test; revisit if the cap moves', observations: big('v0') });
+        for (let i = 1; i < 12; i++) remember({ name: 'replaced-big', type: 'decision', why: 'a long history is the test; revisit if the cap moves', observations: big(`v${i}`), replace: true });
         importMemories({ data: { version: '3.1.0', exported_at: '2026-10-01T00:00:00.000Z', entity_count: 1, entities: [{ name: 'imported-big', type: 'decision', namespace: 'personal', relations: [], observations: big('i0'), tags: [] }] }, merge_strategy: 'skip' });
         for (let i = 1; i < 12; i++) importMemories({ data: { version: '3.1.0', exported_at: '2026-10-01T00:00:00.000Z', entity_count: 1, entities: [{ name: 'imported-big', type: 'decision', namespace: 'personal', relations: [], observations: big(`i${i}`), tags: [] }] }, merge_strategy: 'overwrite' });
       } finally {

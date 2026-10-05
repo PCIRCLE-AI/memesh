@@ -12,6 +12,9 @@ export interface IndexCandidate {
     title?: string | null;
     snippet?: string | null;
     lastActivity: string | null;
+    why?: string | null;
+    recency?: string | null;
+    lastAccessedAt?: string | null;
     metadata?: unknown;
 }
 export interface BriefingIndex {

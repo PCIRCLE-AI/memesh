@@ -50,6 +50,7 @@ curl -X POST http://localhost:3737/v1/remember \
     "name": "project-decision-2026",
     "type": "decision",
     "observations": ["We chose PostgreSQL"],
+    "why": "Orders and invoices need transactions; revisit if write volume outgrows one primary",
     "tags": ["project:myapp", "topic:database"]
   }'
 ```

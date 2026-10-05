@@ -22,12 +22,15 @@ import { SESSION_HANDOFF_TYPE, sessionHandoffName } from './session-handoff.js';
 import { INDEX_CANDIDATE_CAP, INDEX_EXCLUDED_TYPES, INDEX_SNIPPET_FETCH_CHARS, type IndexCandidate } from './briefing-index.js';
 import {
   DECISION_LAYER_TYPES,
+  DECISION_TYPES,
   GLOBAL_TOPOLOGY_LIMIT,
   LESSON_TYPE_LIST,
   SNIPPET_FETCH_CHARS,
   TOPOLOGY_CANDIDATE_CAP,
+  WHY_PREFIX,
   isAutoInjectable,
   prioritizeDecisions,
+  unconfirmedDaysSince,
   type TopologyEntity,
 } from './work-topology.js';
 
@@ -82,7 +85,7 @@ const nonGlobal = (cols: EntityColumns) => (cols.namespace ? " AND (e.namespace 
 const NO_PROJECT_TAG = "NOT EXISTS (SELECT 1 FROM tags pt WHERE pt.entity_id = e.id AND pt.tag LIKE 'project:%')";
 const titleCol = (cols: EntityColumns) => (cols.title ? 'e.title' : 'NULL AS title');
 const candidateColumns = (cols: EntityColumns) => [
-  'e.id', 'e.name', 'e.type', titleCol(cols), 'e.metadata',
+  'e.id', 'e.name', 'e.type', titleCol(cols), 'e.metadata', 'e.created_at',
   ...SCORING_COLUMNS.map((c) => (cols.scoring.has(c) ? `e.${c}` : `NULL AS ${c}`)),
 ].join(', ');
 
@@ -99,6 +102,8 @@ export interface PoolRow {
   confidence?: number;
   recall_hits?: number;
   recall_misses?: number;
+  /** When the memory was created (raw column). */
+  created_at?: string;
   /** Decision-layer rows only: latest valid activity (see RECENCY_SQL). */
   recency?: string | null;
 }
@@ -123,6 +128,7 @@ const toPoolRow = (row: CandidateRow): PoolRow => ({
   confidence: row.confidence ?? undefined,
   recall_hits: row.recall_hits ?? undefined,
   recall_misses: row.recall_misses ?? undefined,
+  created_at: row.created_at ?? undefined,
   recency: row.recency ?? null,
 });
 
@@ -138,19 +144,23 @@ function selectPool(rows: CandidateRow[], cap: number): PoolRow[] {
 }
 
 /**
+ * A timestamp column that counts: it round-trips through strftime unchanged
+ * (the rule of time-utils' parseSqliteUtcMs) and is not more than 5 minutes in
+ * the future — so an impossible or future date can never make a decision look
+ * newest, or look confirmed.
+ */
+const validUtc = (column: string) => `replace(${column}, 'T', ' ') = strftime('%Y-%m-%d %H:%M:%S', ${column})
+      AND replace(${column}, 'T', ' ') <= strftime('%Y-%m-%d %H:%M:%S', 'now', '+5 minutes')`;
+
+/**
  * A decision's latest VALID activity, as canonical SQLite UTC text: its newest
- * observation, else its creation. A timestamp counts only if it round-trips
- * through strftime unchanged (the rule of time-utils' parseSqliteUtcMs) and is
- * not more than 5 minutes in the future — so an impossible or future date can
- * never make a decision look newest. NULL = unknown, sorted last.
+ * observation, else its creation (see `validUtc`). NULL = unknown, sorted last.
  */
 const RECENCY_SQL = `COALESCE(
   (SELECT MAX(replace(o.created_at, 'T', ' ')) FROM observations o
     WHERE o.entity_id = e.id
-      AND replace(o.created_at, 'T', ' ') = strftime('%Y-%m-%d %H:%M:%S', o.created_at)
-      AND replace(o.created_at, 'T', ' ') <= strftime('%Y-%m-%d %H:%M:%S', 'now', '+5 minutes')),
-  CASE WHEN replace(e.created_at, 'T', ' ') = strftime('%Y-%m-%d %H:%M:%S', e.created_at)
-        AND replace(e.created_at, 'T', ' ') <= strftime('%Y-%m-%d %H:%M:%S', 'now', '+5 minutes')
+      AND ${validUtc('o.created_at')}),
+  CASE WHEN ${validUtc('e.created_at')}
        THEN replace(e.created_at, 'T', ' ') END)`;
 
 /** The handoff row of one project: its newest observation, active. Exported
@@ -281,6 +291,10 @@ export function selectBriefingPools(db: MemeshDatabase, projectName: string, opt
 export interface Snippet {
   first: string | null;
   fix: string | null;
+  /** The latest `Why: ` observation, prefix removed. */
+  why?: string | null;
+  /** When the newest observation was added (valid UTC text, `validUtc`), or null. */
+  lastAddedAt?: string | null;
 }
 
 /**
@@ -299,11 +313,16 @@ export function readSnippets(db: MemeshDatabase, ids: readonly number[]): Map<nu
   const unique = [...new Set(ids)];
   const snippets = new Map<number, Snippet>();
   if (unique.length === 0) return snippets;
+  // A database from before observations carried a time reads as "never
+  // added to": the snippets still render (the hook cannot migrate).
+  const timed = (db.prepare('PRAGMA table_info(observations)').all() as Array<{ name: string }>).some((c) => c.name === 'created_at');
   const rows = db.prepare(
-    `SELECT entity_id, content FROM observations
+    `SELECT entity_id, content,
+       ${timed ? `CASE WHEN ${validUtc('created_at')} THEN replace(created_at, 'T', ' ') END` : 'NULL'} AS added_at
+     FROM observations
      WHERE entity_id IN (${unique.map(() => '?').join(',')})
      ORDER BY id ASC`,
-  ).all(...unique) as Array<{ entity_id: number; content: string | null }>;
+  ).all(...unique) as Array<{ entity_id: number; content: string | null; added_at: string | null }>;
   // Redacted whole, cut to SNIPPET_FETCH_CHARS characters of the redacted
   // text, THEN flattened: text that starts only after that many characters
   // (whitespace included) is not shown, on either reader. A credential that
@@ -312,12 +331,18 @@ export function readSnippets(db: MemeshDatabase, ids: readonly number[]): Map<nu
   const shown = (content: string) => redactMemoryText(content).slice(0, SNIPPET_FETCH_CHARS).replace(/\s+/g, ' ').trim() || null;
   for (const row of rows) {
     const content = String(row.content ?? '');
-    const entry = snippets.get(row.entity_id) ?? { first: null, fix: null };
+    const entry = snippets.get(row.entity_id) ?? { first: null, fix: null, why: null, lastAddedAt: null };
     // The first NON-EMPTY observation: observations are append-only, so it is
     // the defining statement and later ones are refinements.
     if (entry.first === null) entry.first = shown(content);
     // The LATEST fix: learning the same error again appends a corrected one.
     if (content.startsWith('Fix: ')) entry.fix = shown(content);
+    // The LATEST reason: a decision confirmed again may append a new one.
+    if (content.startsWith(WHY_PREFIX)) entry.why = shown(content.slice(WHY_PREFIX.length));
+    // The newest observation's time: it counts as a confirmation of a decision
+    // whatever its type (only the decision layer has `recency`). Canonical
+    // text, so a string comparison orders it.
+    if (row.added_at && (entry.lastAddedAt == null || row.added_at > entry.lastAddedAt)) entry.lastAddedAt = row.added_at;
     snippets.set(row.entity_id, entry);
   }
   return snippets;
@@ -329,17 +354,19 @@ export function readSnippets(db: MemeshDatabase, ids: readonly number[]): Map<nu
  * its budget still says what to do; without it a lesson told an agent only
  * what went wrong.
  */
-export function toTopologyEntity(row: PoolRow, snippets: ReadonlyMap<number, Snippet>): TopologyEntity {
+export function toTopologyEntity(row: PoolRow, snippets: ReadonlyMap<number, Snippet>, now: number = Date.now()): TopologyEntity {
   const signal = parseMetadata(row.metadata)?.signal_score;
   const snippet = snippets.get(row.id);
+  const decision = row.type !== null && DECISION_TYPES.has(row.type);
   // #464: redacted like the index, so a memory that is in both cannot be
   // printed verbatim here and redacted a few lines below. What one line shows
   // is one set: a key split between the title and an observation is masked
   // as a whole.
-  const [title, first, fix] = redactShownTogether([
+  const [title, first, fix, why] = redactShownTogether([
     row.title ?? null,
     snippet?.first ?? null,
     row.type && LESSON_TYPE_LIST.includes(row.type) ? snippet?.fix ?? null : null,
+    decision ? snippet?.why ?? null : null,
   ]);
   // Shown after the fix, unless it IS the fix (a lesson whose only content, or
   // whose title, is its fix), so a line never reads "Fix: X — Fix: X".
@@ -354,6 +381,10 @@ export function toTopologyEntity(row: PoolRow, snippets: ReadonlyMap<number, Sni
     snippet: first,
     signalScore: typeof signal === 'number' ? signal : null,
     recency: row.recency ?? null,
+    // Confirmed when last read (a recall stamps last_accessed_at) or added to:
+    // the newest observation, which every decision type has (`recency` only
+    // the decision layer).
+    ...(decision ? { why, unconfirmedDays: unconfirmedDaysSince([row.last_accessed_at, snippet?.lastAddedAt, row.recency, row.created_at], now) } : {}),
   };
 }
 
@@ -367,20 +398,29 @@ export function readIndexCandidates(
 ): { candidates: Array<IndexCandidate & { name: string }>; truncated: boolean } {
   const cols = entityColumns(db);
   const excluded = INDEX_EXCLUDED_TYPES.map(() => '?').join(',');
+  const decisionTypes = [...DECISION_TYPES];
+  const decisionOnly = `e.type IN (${decisionTypes.map(() => '?').join(',')})`;
   const rows = db.prepare(
     `SELECT e.id, e.name, e.type, ${titleCol(cols)}, e.metadata,
+       ${cols.scoring.has('last_accessed_at') ? 'e.last_accessed_at' : 'NULL AS last_accessed_at'},
        (SELECT o.content FROM observations o
          WHERE o.entity_id = e.id ORDER BY o.id ASC LIMIT 1) AS snippet,
        max(e.created_at, COALESCE((SELECT MAX(o2.created_at) FROM observations o2
-         WHERE o2.entity_id = e.id), e.created_at)) AS last_activity
+         WHERE o2.entity_id = e.id), e.created_at)) AS last_activity,
+       CASE WHEN ${decisionOnly} THEN
+         (SELECT o3.content FROM observations o3
+           WHERE o3.entity_id = e.id AND substr(o3.content, 1, ${WHY_PREFIX.length}) = '${WHY_PREFIX}'
+           ORDER BY o3.id DESC LIMIT 1) END AS why_content,
+       CASE WHEN ${decisionOnly} THEN ${RECENCY_SQL} END AS recency
      FROM entities e
      WHERE e.id IN (SELECT entity_id FROM tags WHERE tag = ?)${active(cols)}${nonGlobal(cols)}
        AND e.type NOT IN (${excluded})
      ORDER BY last_activity DESC, e.id DESC
      LIMIT ?`,
-  ).all(`project:${projectName}`, ...INDEX_EXCLUDED_TYPES, INDEX_CANDIDATE_CAP) as Array<{
+  ).all(...decisionTypes, ...decisionTypes, `project:${projectName}`, ...INDEX_EXCLUDED_TYPES, INDEX_CANDIDATE_CAP) as Array<{
     id: number; name: string; type: string | null; title: string | null; metadata: string | null;
-    snippet: string | null; last_activity: string | null;
+    last_accessed_at: string | null; snippet: string | null; last_activity: string | null;
+    why_content: string | null; recency: string | null;
   }>;
   const candidates = rows.map((row) => ({
     id: row.id,
@@ -390,6 +430,13 @@ export function readIndexCandidates(
     // Whole observation fetched, redacted, THEN bounded (#523; see readSnippets).
     snippet: row.snippet == null ? null : redactMemoryText(row.snippet).slice(0, INDEX_SNIPPET_FETCH_CHARS),
     lastActivity: row.last_activity,
+    // A decision carries its latest reason (null: it has none) and when it
+    // was last confirmed; every other type leaves these unread (undefined).
+    ...(row.type !== null && DECISION_TYPES.has(row.type) ? {
+      why: row.why_content == null ? null : redactMemoryText(row.why_content.slice(WHY_PREFIX.length)).slice(0, INDEX_SNIPPET_FETCH_CHARS),
+      recency: row.recency,
+      lastAccessedAt: row.last_accessed_at,
+    } : {}),
     // The RAW column: the index's gate tells an absent column (allowed) from
     // unparseable JSON (refused); parsing here would collapse both.
     metadata: row.metadata,

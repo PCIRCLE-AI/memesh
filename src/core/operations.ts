@@ -18,7 +18,7 @@ import { rankEntities } from './scoring.js';
 import { getProjectName, redactSecrets, redactTextValues, redactTitleAndObservations, redactVersionText } from './paths.js';
 import { createExplicitLesson } from './lesson-engine.js';
 import { deriveNote, NOTE_DEFAULT_TYPE, type DerivedNote } from './note-derive.js';
-import { canonicalEntityType } from './work-topology.js';
+import { DECISION_TYPES, WHY_PREFIX, canonicalEntityType } from './work-topology.js';
 import { capRecallForAgent, type RecallForAgentResult, type RecallScope } from './recall-agent-view.js';
 import type {
   RememberInput,
@@ -147,6 +147,10 @@ type ResolvedRememberInput = RememberInput & { name: string };
 function resolveRememberInput(
   input: RememberInput,
 ): { args: ResolvedRememberInput; derived?: DerivedNote; typeGiven: boolean } {
+  // A decision's reason is one more observation, redacted with the rest. A
+  // reason typed with its own "Why: " label is not labelled twice.
+  const reason = input.why?.trim().replace(/^why:\s*/i, '') ?? '';
+  const why = reason !== '' ? [`${WHY_PREFIX}${reason}`] : [];
   if (input.note === undefined) {
     if (!input.name) throw new Error('remember needs `name` and `type`, or `note`');
     // ABSENT and BLANK are different inputs, and only the first one is a
@@ -164,7 +168,10 @@ function resolveRememberInput(
     return {
       args: {
         ...input,
-        ...redactTitleAndObservations(typeof input.title === 'string' ? input.title : undefined, input.observations),
+        ...redactTitleAndObservations(
+          typeof input.title === 'string' ? input.title : undefined,
+          why.length > 0 ? [...(input.observations ?? []), ...why] : input.observations,
+        ),
       } as ResolvedRememberInput,
       typeGiven: input.type !== undefined,
     };
@@ -182,8 +189,9 @@ function resolveRememberInput(
       ...input,
       name: input.name ?? derived.name,
       type: input.type ?? NOTE_DEFAULT_TYPE,
-      title: derived.title,
-      observations: derived.observations,
+      ...(why.length > 0
+        ? redactTitleAndObservations(derived.title, [...derived.observations, ...why])
+        : { title: derived.title, observations: derived.observations }),
     },
     derived,
     // The note form DEFAULTS the type, so `args.type` alone cannot tell a
@@ -296,6 +304,22 @@ function rememberInTransaction(
     throw new Error(
       `\`replace\` on "${args.name}": there is no memory named "${args.name}" to inherit a type from, `
       + 'so this call would create one with no type — pass `type` to create it.',
+    );
+  }
+
+  // A decision is stored with the reason it was made and what would make it
+  // stop holding. Without it the conclusion is all a later reader sees, and
+  // it reads as a rule that holds forever. Checked when the decision is
+  // created or rewritten, not on an append. An untrusted writer (a note
+  // file, an import, an accepted dream proposal) is never refused here — a
+  // memory must not be dropped for a missing field; its line in the briefing
+  // says "(no reason recorded)" instead.
+  if (DECISION_TYPES.has(entityType) && (!existing || args.replace) && args.trustOverride !== 'untrusted'
+    && !(args.observations ?? []).some((o) => o.startsWith(WHY_PREFIX))) {
+    throw new Error(
+      `MeMesh did not store this ${entityType}: ${/^[aeiou]/i.test(entityType) ? 'an' : 'a'} ${entityType} needs \`why\` — the reason for it and what would make it `
+      + 'stop holding (for example: "Postgres is too heavy to deploy for one user; revisit if we add a hosted tier"). '
+      + 'Pass `why`, or an observation that starts with "Why: ".',
     );
   }
 

@@ -22,6 +22,24 @@ export const WORK_LAYER_TYPES = new Set([
     'plan',
     'task-state',
 ]);
+export const DECISION_TYPES = new Set(['decision', 'architecture_decision', 'design_decision']);
+export const WHY_PREFIX = 'Why: ';
+export const UNCONFIRMED_DECISION_DAYS = 30;
+export function utcEpoch(at) {
+    if (!at)
+        return NaN;
+    return Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(at) ? at : `${at.replace(' ', 'T')}Z`);
+}
+export function unconfirmedDaysSince(seenAt, now) {
+    const seen = Math.max(...seenAt.map(utcEpoch).filter((t) => !Number.isNaN(t) && t <= now + 5 * 60_000));
+    if (!Number.isFinite(seen))
+        return null;
+    const days = Math.floor((now - seen) / 86_400_000);
+    return days >= UNCONFIRMED_DECISION_DAYS ? days : null;
+}
+export function isWhyText(text) {
+    return text.startsWith(WHY_PREFIX);
+}
 export const DECISION_LAYER_TYPES = [...WORK_LAYER_TYPES]
     .filter((type) => !LESSON_TYPES.has(type) && type !== 'task-state');
 export const EVIDENCE_LAYER_TYPES = new Set([
@@ -57,10 +75,28 @@ export function layerOf(type) {
 export function topologyLine(entity, maxChars) {
     const title = entity.title?.trim();
     const snippet = entity.snippet?.trim();
-    const text = (title || snippet || `${entity.type} memory`).replace(/~[0-9a-f]{32}\b/g, '');
+    const given = (title || snippet || '').replace(/~[0-9a-f]{32}\b/g, '');
     const handle = Number.isInteger(entity.id) && entity.id > 0 ? ` [mem:${entity.id}]` : '';
-    const room = Math.max(8, maxChars - handle.length);
-    return stripControlChars(`- [${entity.type}] ${clip(text, room)}${handle}`);
+    const unconfirmed = entity.unconfirmedDays ? ` (unconfirmed ${entity.unconfirmedDays} days: re-check before relying)` : '';
+    const reason = entity.why ? `${WHY_PREFIX}${entity.why}` : '';
+    const noReason = entity.why === null ? ' (no reason recorded)' : '';
+    const text = reason && isWhyText(given) ? '' : given || (reason ? '' : `${entity.type} memory`);
+    const room = Math.max(8, maxChars - handle.length - unconfirmed.length - noReason.length);
+    return stripControlChars(`- [${entity.type}] ${lineBody(text, reason, room)}${noReason}${unconfirmed}${handle}`);
+}
+const TITLE_FLOOR_CHARS = 40;
+const REASON_SEPARATOR = ' — ';
+function lineBody(text, reason, room) {
+    if (!reason)
+        return clip(text, room);
+    if (!text)
+        return clip(reason, room);
+    const title = text.replace(/\s+/g, ' ').trim();
+    const why = reason.replace(/\s+/g, ' ').trim();
+    if (title.length + REASON_SEPARATOR.length + why.length <= room)
+        return `${title}${REASON_SEPARATOR}${why}`;
+    const head = clip(title, Math.max(Math.min(title.length, TITLE_FLOOR_CHARS), room - REASON_SEPARATOR.length - why.length));
+    return `${head}${REASON_SEPARATOR}${clip(why, Math.max(WHY_PREFIX.length + 1, room - head.length - REASON_SEPARATOR.length))}`;
 }
 export function extractCitedMemoryIds(text) {
     const cited = new Set();

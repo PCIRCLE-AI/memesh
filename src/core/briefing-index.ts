@@ -17,7 +17,17 @@
 // staleness line, the redaction, the caps and the phrasing.
 
 import { redactShownTogether } from './paths.js';
-import { EVIDENCE_LAYER_TYPES, isAutoInjectable, jsonStringLiteral, projectLabel, topologyLine } from './work-topology.js';
+import {
+  DECISION_TYPES,
+  EVIDENCE_LAYER_TYPES,
+  isAutoInjectable,
+  jsonStringLiteral,
+  projectLabel,
+  isWhyText,
+  topologyLine,
+  unconfirmedDaysSince,
+  utcEpoch,
+} from './work-topology.js';
 import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
 
 // --- The budget contract ------------------------------------------------------
@@ -70,6 +80,15 @@ export interface IndexCandidate {
   /** SQLite UTC timestamp (`YYYY-MM-DD HH:MM:SS`) or ISO string: the later
    *  of the entity's creation and its newest observation. */
   lastActivity: string | null;
+  /** A decision's latest `Why: ` observation, prefix removed (`null`: it has
+   *  none and its line says so). `undefined`: not read, and the line shows no
+   *  reason and no age. Meaningful for the decision types only. */
+  why?: string | null;
+  /** A decision's latest VALID activity (newest observation, else creation),
+   *  as SQLite UTC text. */
+  recency?: string | null;
+  /** When the decision was last read; a recall stamps it. */
+  lastAccessedAt?: string | null;
   /** The `metadata` COLUMN as stored (a JSON string) or an already-parsed
    *  object — the auto-injection gate reads it, and fails closed on a string
    *  nothing can parse. Pass the raw column: a consumer that parses first
@@ -109,17 +128,10 @@ function sectionBytes(lines: readonly string[]): number {
   return lines.reduce((sum, line) => sum + byteLength(line) + 1, 0);
 }
 
-/** SQLite's CURRENT_TIMESTAMP has no zone marker but is UTC. */
-function parseActivity(value: string | null): number {
-  if (!value) return Number.NaN;
-  const iso = /[zZ]|[+-]\d\d:?\d\d$/.test(value) ? value : `${value.replace(' ', 'T')}Z`;
-  return Date.parse(iso);
-}
-
 /** Newest activity first; id breaks ties so two independent queries agree. */
 function compareIndexCandidates(a: IndexCandidate, b: IndexCandidate): number {
-  const at = parseActivity(a.lastActivity);
-  const bt = parseActivity(b.lastActivity);
+  const at = utcEpoch(a.lastActivity);
+  const bt = utcEpoch(b.lastActivity);
   const av = Number.isNaN(at) ? -Infinity : at;
   const bv = Number.isNaN(bt) ? -Infinity : bt;
   if (av !== bv) return bv - av;
@@ -162,17 +174,34 @@ function candidateIsAutoInjectable(metadata: unknown): boolean {
 /** Whitespace flattened for one line. */
 const flat = (text: string | null): string => (text ? text.replace(/\s+/g, ' ').trim() : '');
 
-function indexLine(candidate: IndexCandidate): string {
-  // The shared display redaction (paths.ts), title and snippet as one set.
-  const [shownTitle, shownSnippet] = redactShownTogether([candidate.title ?? null, candidate.snippet ?? null]);
+function indexLine(candidate: IndexCandidate, now: number): string {
+  // A decision line carries its reason (or says it has none) and, once nobody
+  // has read or added to it for a month, the unconfirmed note: the same marks
+  // as the ranked block, from the same builder.
+  const decision = DECISION_TYPES.has(candidate.type ?? '') && candidate.why !== undefined;
+  // The shared display redaction (paths.ts), title, snippet and reason as one set.
+  const [shownTitle, shownSnippet, shownWhy] = redactShownTogether([
+    candidate.title ?? null,
+    candidate.snippet ?? null,
+    decision ? candidate.why ?? null : null,
+  ]);
   const title = flat(shownTitle);
-  const snippet = flat(shownSnippet);
+  const why = decision ? flat(shownWhy) || null : undefined;
+  // A decision's first observation can be its reason itself: the line shows
+  // the reason once.
+  const snippet = why && isWhyText(flat(shownSnippet)) ? '' : flat(shownSnippet);
   // Titles are usually derived from the first observation; printing both
   // would send the same sentence twice.
   const repeats = title && snippet && snippet.toLowerCase().startsWith(title.replace(/…$/, '').toLowerCase());
   const text = title && snippet && !repeats ? `${title} — ${snippet}` : (title || snippet);
   return topologyLine(
-    { name: String(candidate.id), id: candidate.id, type: candidate.type || 'memory', title: text || null },
+    {
+      name: String(candidate.id),
+      id: candidate.id,
+      type: candidate.type || 'memory',
+      title: text || null,
+      ...(decision ? { why, unconfirmedDays: unconfirmedDaysSince([candidate.lastAccessedAt, candidate.recency], now) } : {}),
+    },
     INDEX_LINE_MAX_CHARS,
   );
 }
@@ -289,7 +318,7 @@ export function buildBriefingIndex(
   const current: IndexCandidate[] = [];
   let older = 0;
   for (const c of eligible) {
-    const at = parseActivity(c.lastActivity);
+    const at = utcEpoch(c.lastActivity);
     // An unparseable timestamp is listed rather than hidden as "old".
     if (!Number.isNaN(at) && at < cutoff) older++;
     else current.push(c);
@@ -319,7 +348,7 @@ export function buildBriefingIndex(
   let usedChars = 0;
   for (const c of current) {
     if (rendered.length >= INDEX_MAX_LINES) break;
-    const line = indexLine(c);
+    const line = indexLine(c, now);
     const cost = byteLength(line) + 1;
     if (used + cost > budget) break;
     if (usedChars + line.length + 1 > charBudget) break;

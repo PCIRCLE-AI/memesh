@@ -196,10 +196,26 @@ describe('HTTP Transport: POST /v1/remember', () => {
     const res = await req('POST', '/v1/remember', {
       name: 'http-beta',
       type: 'decision',
+      why: 'a fixed choice for this case; revisit if it changes',
       observations: ['Use TLS everywhere'],
     });
     expect(res.status).toBe(200);
-    expect(res.body.data.observations).toBe(1);
+    // The observation and the stored `Why: …`.
+    expect(res.body.data.observations).toBe(2);
+  });
+
+  it('refuses a decision with no why: 400 with the sentence that names both halves, nothing stored', async () => {
+    const refused = await req('POST', '/v1/remember', { name: 'http-bare-decision', type: 'decision', observations: ['Use TLS everywhere'] });
+    expect(refused.status).toBe(400);
+    expect(refused.body.success).toBe(false);
+    expect(refused.body.error).toMatch(/needs `why`.*reason for it and what would make it stop holding/);
+    expect(getDatabase().prepare('SELECT 1 FROM entities WHERE name = ?').get('http-bare-decision')).toBeUndefined();
+
+    const stored = await req('POST', '/v1/remember', {
+      name: 'http-bare-decision', type: 'decision', observations: ['Use TLS everywhere'], why: 'the proxy terminates nothing; revisit if it does',
+    });
+    expect(stored.status).toBe(200);
+    expect(stored.body.data.observations).toBe(2);
   });
 
   it('stores entity with tags', async () => {
@@ -1278,7 +1294,8 @@ describe('HTTP Transport: Startup validation', () => {
       let dirName = '';
       const out = startupOutput((dir) => { dirName = dir; fs.chmodSync(dir, 0o500); });
       expect(out).toContain(`Fix: Run: chmod u+w ${shellQuote(dirName)}`);
-      expect(out).not.toMatch(/Backup and reset|mv |Quick fix/);
+      // `mv` as a command word: the random temp-folder suffix can end in `mv` before a space (`…-oH0Bmv is read-only`).
+      expect(out).not.toMatch(/Backup and reset|(?:^|\s)mv |Quick fix/);
     });
 
     it('a -wal with fewer owner permissions: prints the chmod, not the reset advice', () => {
@@ -1288,7 +1305,7 @@ describe('HTTP Transport: Startup validation', () => {
         fs.writeFileSync(wal, '', { mode: 0o400 });
       });
       expect(out).toContain(`Fix: Run: chmod u+w ${shellQuote(wal)}`);
-      expect(out).not.toMatch(/Backup and reset|mv |Quick fix/);
+      expect(out).not.toMatch(/Backup and reset|(?:^|\s)mv |Quick fix/);
     });
 
     it('a database the owner cannot read or write: prints the chmod doctor prints, not the reset advice', () => {
@@ -1296,7 +1313,7 @@ describe('HTTP Transport: Startup validation', () => {
         let db = '';
         const out = startupOutput((_dir, dbPath) => { db = dbPath; fs.chmodSync(dbPath, fileMode); });
         expect(out, fileMode.toString(8)).toContain(`chmod u+rw ${shellQuote(db)}`);
-        expect(out, fileMode.toString(8)).not.toMatch(/Backup and reset|mv |Quick fix/);
+        expect(out, fileMode.toString(8)).not.toMatch(/Backup and reset|(?:^|\s)mv |Quick fix/);
       }
     });
   });

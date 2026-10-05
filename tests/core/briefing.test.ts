@@ -98,7 +98,7 @@ const RANKED_IN_INDEX_FIXTURE = 6;
 
 function seed() {
   remember({
-    name: 'oauth-pkce-decision', type: 'decision', title: 'Use PKCE for the CLI',
+    name: 'oauth-pkce-decision', type: 'decision', why: 'one reader is enough; revisit if a second appears', title: 'Use PKCE for the CLI',
     observations: ['The CLI cannot hold a client secret.'], tags: [`project:${PROJECT}`],
   });
   remember({
@@ -177,7 +177,7 @@ describe('assembleBriefing', () => {
     atStandard();
     const payload = 'before \x1b[31mred\x1b[0m\x9b after\u202e MARKER';
     remember({
-      name: 'ansi-decision', type: 'decision', title: payload,
+      name: 'ansi-decision', type: 'decision', why: 'one reader is enough; revisit if a second appears', title: payload,
       observations: ['x'], tags: [`project:${PROJECT}`],
     });
 
@@ -219,7 +219,7 @@ describe('assembleBriefing', () => {
     const joinedFake = 'eyJTESTONLYTESTONLYTESTONLY.TESTONLYTESTONLYTESTONLY.TESTONLYTESTONLYTESTONLY';
     const splitFake = 'eyJTESTONLYTESTONLYTESTONLY.TESTONLYTEST\x9bONLYTESTONLY.TESTONLYTESTONLYTESTONLY';
     remember({
-      name: 'fake-token-decision', type: 'decision', title: `token: ${splitFake}`,
+      name: 'fake-token-decision', type: 'decision', why: 'one reader is enough; revisit if a second appears', title: `token: ${splitFake}`,
       observations: ['x'], tags: [`project:${PROJECT}`],
     });
 
@@ -437,7 +437,7 @@ describe('assembleBriefing', () => {
       atStandard(); // the task state and the index are standard-level content
       const { id, label, hash } = idFor('label-fixture');
       const tag = [`project:${id}`];
-      remember({ name: 'lbl-decision', type: 'decision', title: 'Use the label', observations: ['x'], tags: tag });
+      remember({ name: 'lbl-decision', type: 'decision', why: 'one reader is enough; revisit if a second appears', title: 'Use the label', observations: ['x'], tags: tag });
       remember({ name: 'lbl-lesson', type: 'lesson_learned', title: 'Say less', observations: ['x'], tags: tag });
       remember({ name: 'lbl-fact', type: 'note', title: 'A known fact', observations: ['x'], tags: tag });
       remember({ name: 'lbl-commit', type: 'commit', title: 'fix: a thing', observations: ['x'], tags: tag });
@@ -511,7 +511,7 @@ describe('assembleBriefing', () => {
       const { id, label } = weird();
       expect(label).toContain('\n');
       const tag = [`project:${id}`];
-      remember({ name: 'w-decision', type: 'decision', title: 'Use the label', observations: ['x'], tags: tag });
+      remember({ name: 'w-decision', type: 'decision', why: 'one reader is enough; revisit if a second appears', title: 'Use the label', observations: ['x'], tags: tag });
       remember({ name: 'w-lesson', type: 'lesson_learned', title: 'Say less', observations: ['x'], tags: tag });
       remember({ name: 'w-fact', type: 'note', title: 'A known fact', observations: ['x'], tags: tag });
       remember({ name: 'w-commit', type: 'commit', title: 'fix: a thing', observations: ['x'], tags: tag });
@@ -744,7 +744,7 @@ describe('assembleBriefing', () => {
   it('closes the block with the durable-memory index: project-scoped, evidence and archived excluded (#323)', () => {
     seed();
     remember({
-      name: 'other-project-decision', type: 'decision', title: 'Another project decided this',
+      name: 'other-project-decision', type: 'decision', why: 'one reader is enough; revisit if a second appears', title: 'Another project decided this',
       observations: ['Not ours.'], tags: ['project:someone-else'],
     });
     remember({
@@ -902,7 +902,7 @@ describe('assembleBriefing', () => {
     const project = getProjectName(cwd);
 
     remember({
-      name: 'decision-x', type: 'decision', title: 'Ship FTS5 as the baseline',
+      name: 'decision-x', type: 'decision', why: 'one reader is enough; revisit if a second appears', title: 'Ship FTS5 as the baseline',
       observations: ['Vector search is a supplement.'], tags: [`project:${project}`],
     });
     remember({
@@ -911,7 +911,7 @@ describe('assembleBriefing', () => {
     });
     for (let i = 0; i < 7; i++) {
       remember({
-        name: `project-decision-${i}`, type: 'decision', title: `Project decision ${i}`,
+        name: `project-decision-${i}`, type: 'decision', why: 'one reader is enough; revisit if a second appears', title: `Project decision ${i}`,
         observations: [`Project-only detail ${i}`], tags: [`project:${project}`],
       });
     }
@@ -1039,7 +1039,7 @@ describe('assembleBriefing', () => {
     const project = getProjectName(cwd);
 
     remember({
-      name: 'decision-standard', type: 'decision', title: 'Ship the standard level',
+      name: 'decision-standard', type: 'decision', why: 'one reader is enough; revisit if a second appears', title: 'Ship the standard level',
       observations: ['Detail.'], tags: [`project:${project}`],
     });
     remember({
@@ -1098,7 +1098,7 @@ describe('assembleBriefing', () => {
     fs.mkdirSync(cwd, { recursive: true });
     const project = getProjectName(cwd);
     remember({
-      name: 'decision-default', type: 'decision', title: 'Ship the smaller default',
+      name: 'decision-default', type: 'decision', why: 'one reader is enough; revisit if a second appears', title: 'Ship the smaller default',
       observations: ['Detail.'], tags: [`project:${project}`],
     });
     remember({
@@ -1192,7 +1192,7 @@ describe('assembleBriefing', () => {
       });
     }
     remember({
-      name: 'newest-decision', type: 'decision', title: 'Ship the newest decision',
+      name: 'newest-decision', type: 'decision', why: 'one reader is enough; revisit if a second appears', title: 'Ship the newest decision',
       observations: ['Made last.'], tags: [`project:${project}`],
     });
     closeDatabase();
@@ -1590,7 +1590,7 @@ describe('assembleBriefing', () => {
     vi.stubEnv('MEMESH_BRIEFING', 'full');
     for (let i = 1; i <= 5; i++) {
       remember({
-        name: `other-decision-${i}`, type: 'decision', title: `Other project decision ${i}`,
+        name: `other-decision-${i}`, type: 'decision', why: 'one reader is enough; revisit if a second appears', title: `Other project decision ${i}`,
         observations: [`Decision ${i} from elsewhere.`], tags: ['project:other-project'],
       });
     }
@@ -1704,9 +1704,9 @@ describe('the session handoff leads every briefing (#434 step 2)', () => {
 
   it('handoff rows cannot crowd real memories out of the candidate window (excluded before the LIMIT)', () => {
     vi.stubEnv('MEMESH_BRIEFING', 'full');
-    remember({ name: 'crowd-decision', type: 'decision', title: 'CROWD-DECISION survives', observations: ['kept'], tags: [`project:${PROJECT}`] });
+    remember({ name: 'crowd-decision', type: 'decision', why: 'one reader is enough; revisit if a second appears', title: 'CROWD-DECISION survives', observations: ['kept'], tags: [`project:${PROJECT}`] });
     for (let i = 1; i <= 5; i++) {
-      remember({ name: `crowd-other-${i}`, type: 'decision', title: `CROWD-OTHER-${i}`, observations: ['elsewhere'], tags: ['project:crowd-elsewhere'] });
+      remember({ name: `crowd-other-${i}`, type: 'decision', why: 'one reader is enough; revisit if a second appears', title: `CROWD-OTHER-${i}`, observations: ['elsewhere'], tags: ['project:crowd-elsewhere'] });
     }
     // More handoff rows than the whole candidate window, all NEWER than the
     // memories above — a reader that filters after its LIMIT sees only these.
@@ -1728,7 +1728,7 @@ describe('the session handoff leads every briefing (#434 step 2)', () => {
   it('a handoff written through remember is capped like one written by Stop, so ranked memories keep their room', () => {
     vi.stubEnv('MEMESH_BRIEFING', 'standard');
     for (let i = 1; i <= 5; i++) {
-      remember({ name: `room-decision-${i}`, type: 'decision', title: `ROOM-DECISION-${i}`, observations: ['kept'], tags: [`project:${PROJECT}`] });
+      remember({ name: `room-decision-${i}`, type: 'decision', why: 'one reader is enough; revisit if a second appears', title: `ROOM-DECISION-${i}`, observations: ['kept'], tags: [`project:${PROJECT}`] });
     }
     remember({
       name: sessionHandoffName(PROJECT), type: SESSION_HANDOFF_TYPE,
@@ -1746,7 +1746,7 @@ describe('the session handoff leads every briefing (#434 step 2)', () => {
   it.each(['minimal', 'standard'])('at %s the whole memory block stays within its budget with an oversized remembered handoff', (level) => {
     vi.stubEnv('MEMESH_BRIEFING', level);
     for (let i = 1; i <= 30; i++) {
-      remember({ name: `budget-decision-${i}`, type: 'decision', title: `Budget decision ${i} with a reasonably long title to use space`, observations: ['x'.repeat(150)], tags: [`project:${PROJECT}`] });
+      remember({ name: `budget-decision-${i}`, type: 'decision', why: 'one reader is enough; revisit if a second appears', title: `Budget decision ${i} with a reasonably long title to use space`, observations: ['x'.repeat(150)], tags: [`project:${PROJECT}`] });
     }
     remember({ name: sessionHandoffName(PROJECT), type: SESSION_HANDOFF_TYPE, observations: ['y'.repeat(9_000)], tags: [`project:${PROJECT}`] });
     const result = assembleBriefing(PROJECT);
@@ -2121,7 +2121,7 @@ describe('decisions first, one budget — both readers (#434 step 3)', () => {
         expect((block.match(/\] LESSON-\d \[/g) ?? []), `${level} ${label}: each lesson once`).toHaveLength(5);
       }
       for (const [label, t] of [['core', ranked(text)], ['hook', ranked(hook)]] as const) {
-        expect(t, `${level} ${label}: decisions still take the project slots`).toContain('] decision 0 [');
+        expect(t, `${level} ${label}: decisions still take the project slots`).toContain('] decision 0 (no reason recorded) [');
         for (const decoy of ['UNTRUSTED', 'BROKEN', 'ARCHIVED']) expect(t, `${level} ${label} ${decoy}`).not.toContain(`LESSON-${decoy}`);
       }
     }

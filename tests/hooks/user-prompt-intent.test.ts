@@ -268,6 +268,11 @@ describe('Feature: User Prompt Intent Hook', () => {
       expect(hint).toMatch(/namespace:/);
     });
 
+    it('says a decision needs why: (remember refuses one without it)', () => {
+      expect(hint).toMatch(/A decision also needs why:/);
+      expect(hint).toMatch(/what would make it stop holding/);
+    });
+
     it('is wrapped in a recognisable tag pair', () => {
       expect(hint).toMatch(/^<memesh-remember-intent>/);
       expect(hint).toMatch(/<\/memesh-remember-intent>$/);

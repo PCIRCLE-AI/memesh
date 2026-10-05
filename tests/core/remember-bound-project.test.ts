@@ -104,16 +104,16 @@ describe('remember bound to a project', () => {
   });
 
   it('refuses a supersedes relation that would archive another project\'s memory, and writes nothing', () => {
-    remember({ name: 'a-decision', type: 'decision', observations: ['aardvark choice of A'], project: 'A' });
+    remember({ name: 'a-decision', type: 'decision', why: 'a fixture for project scope; revisit if scope rules change', observations: ['aardvark choice of A'], project: 'A' });
     const before = snapshot('a-decision');
-    expect(() => remember({ name: 'b-decision', type: 'decision', observations: ['bandicoot choice of B'], relations: [{ to: 'a-decision', type: 'supersedes' }], project: 'B' }))
+    expect(() => remember({ name: 'b-decision', type: 'decision', why: 'a fixture for project scope; revisit if scope rules change', observations: ['bandicoot choice of B'], relations: [{ to: 'a-decision', type: 'supersedes' }], project: 'B' }))
       .toThrow(/"a-decision".*project:A.*project B/s);
     expect(snapshot('a-decision')).toBe(before);
     expect(JSON.parse(snapshot('b-decision')).row).toBeUndefined();
     expect(keywordHits('aardvark')).toEqual(['a-decision']);
     expect(keywordHits('bandicoot')).toEqual([]);
     // Within its own project a bound write still supersedes.
-    remember({ name: 'a-decision-2', type: 'decision', observations: ['newer aardvark'], relations: [{ to: 'a-decision', type: 'supersedes' }], project: 'A' });
+    remember({ name: 'a-decision-2', type: 'decision', why: 'a fixture for project scope; revisit if scope rules change', observations: ['newer aardvark'], relations: [{ to: 'a-decision', type: 'supersedes' }], project: 'A' });
     expect(JSON.parse(snapshot('a-decision')).row.status).toBe('archived');
   });
 

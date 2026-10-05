@@ -159,6 +159,10 @@ export declare const TOOL_DEFINITIONS: readonly [{
                 };
                 readonly description: "Key facts or observations about this entity";
             };
+            readonly why: {
+                readonly type: "string";
+                readonly description: "For a decision: why it was made AND what would make it stop holding (e.g. \"Postgres is too heavy to deploy for one user; revisit if we add a hosted tier\"). Stored as the observation \"Why: …\" and shown next to the decision wherever it is recalled or briefed. Required to create or `replace` a memory of type decision, architecture_decision or design_decision, unless an observation already starts with \"Why: \".";
+            };
             readonly tags: {
                 readonly type: "array";
                 readonly items: {

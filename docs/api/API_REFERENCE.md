@@ -67,6 +67,7 @@ The note is cleaned before anything is derived from it: control characters (othe
 | `replace` | boolean | No | Rewrite the named memory instead of appending (see above); needs `observations` or `note`. Default `false` |
 | `title` | string | No | Short human-readable label shown wherever the memory is listed (e.g. `"Why we dropped JWT"`), max 200 characters — longer is **rejected**, not truncated, so the caller can shorten it themselves. On an entity that already exists, supplying this replaces the title; omitting it leaves the title it already has. Whitespace-only counts as omitted. |
 | `observations` | string[] | No | Key facts or observations about this entity |
+| `why` | string | For a new decision | Why a decision was made AND what would make it stop holding. Stored as the observation `Why: <text>` (redacted like the others) and shown after the decision's title in `briefing` and at session start. Creating, or `replace`-ing, a memory of type `decision`, `architecture_decision` or `design_decision` without it — and without an observation that starts with `Why: ` — is refused with a message naming both halves; adding to an existing decision does not need it. A decision written by an untrusted writer — a note file or an `import` — is never refused for lacking it: it is stored and `recall`able, and appears in the briefing only once it is trusted. An accepted dream proposal is not refused either; it is briefed as "(no reason recorded)". A reason typed with its own `Why: ` label is stored with one label, not two |
 | `tags` | string[] | No | Tags for filtering (e.g., `"project:<id>"`, where `<id>` is the `project` field of the `briefing` result (CLI: `memesh briefing --json`), `"topic:database"`). A plain repository name is a different project scope — except that a `project:<name>` tag naming the call's own project by its plain name is stored as the id, unless a memory the call updates or supersedes is already filed under the plain tag (see `retagged` below; #511). Over MCP, omit the project tag to file the memory under the session's bound project; at most one project tag |
 | `project` | string \| `false` | No | MCP only. The project id, or `false` for a memory with no project. Omitted or `null`: a `project:` tag, else the bound project (see above) |
 | `relations` | object[] | No | Relations to other entities |
@@ -108,8 +109,8 @@ the graph does not have.
   "name": "auth-decision",
   "title": null,
   "type": "decision",
-  "observations": 2,
-  "tags": 1,
+  "observations": 3,
+  "tags": 2,
   "relations": 0
 }
 ```
@@ -142,6 +143,7 @@ Four more fields are conditional. `retagged` appears when a `project:<name>` tag
     "Chose JWT for authentication",
     "Using RS256 algorithm for token signing"
   ],
+  "why": "The API is stateless behind three regions; revisit if we add server-side sessions",
   "tags": ["project:myapp", "topic:auth"]
 }
 
@@ -749,6 +751,8 @@ The returned text is fenced as untrusted background data; stored memory content 
 
 An eligible handoff leads the saved-memory portion at every level; repository facts, when present, prefix the block. `minimal` otherwise includes this project's decisions, lessons, knowledge, and recent activity, and up to five memories that belong to no project (every level, under their own heading; never global ones, which have their own pool at `full`). `standard` adds fresh task state and the capped durable-memory index. `full` also adds global memory and other projects' recent activity. The work-package notice at `full` belongs only to the Claude Code SessionStart hook, not to the MCP tool or CLI.
 
+A decision (`decision`, `architecture_decision`, `design_decision`) is shown with its latest `Why:` observation after the title — `- [decision] SQLite for local-first storage — Why: PostgreSQL is too heavy to deploy for one user; revisit if we add a hosted tier [mem:12]` — or with `(no reason recorded)` when it has none; a decision whose only observation is its reason shows that reason once. When nobody has read it (`recall` stamps it) or added to it (its newest observation, whatever the decision type) for 30 days, the line also says `(unconfirmed N days: re-check before relying)`; a `recall` that returns it clears that. The durable-memory index below marks its decision lines the same way. The markers and the `[mem:id]` handle are never cut. When a decision line is longer than its budget (160 characters in the ranked block, 120 in the index) the title is clipped first, down to 40 characters, and only then the reason, so the reason gets room before the title does (it is still cut when it is very long, and in the index's 120 characters little room is left for it once the unconfirmed note is shown).
+
 The saved-memory lines inside the fence share one 4000 UTF-16 code-unit limit across the eligible handoff, displayed task state and unread-inbox notice (when addressed to an exact recipient), ranked memories, global memory at `full`, and injected index. Repository facts before the saved-memory lines, the fence/preface, and the hook-only work-package notice are outside that limit. The displayed task state is shortened to at most 1200 code units (320 per line); `memesh task` still reads the complete stored record. Recent trusted project decisions take the project's slots first, newest valid activity first (unknown dates last); remaining slots follow relevance ranking. A separate pool selects up to five trusted active lesson memories (`lesson_learned`, `lesson` or `mistake`) for the project, even if decisions occupy its other slots. A lesson that has a fix (an observation starting `Fix: `, the form `learn` stores; the latest one when there are several) is shown as `Fix: … — <title, else first observation>`, without repeating the fix when the title or first observation is the fix itself. Each line is cut to 160 characters, so a long fix can leave no room for the title or error after it, and a very long fix is itself cut; the shared limit above never shortens a line, it leaves whole lines out, so a lesson that has a fix is not guaranteed to be shown. Other memories, and lessons without a fix, show their title or first non-empty observation as before. Memory lines may be omitted when the shared limit fills.
 
 Claude Code's Stop hook replaces one `session-handoff` memory for the exact project with its latest assistant reply, after credential-shaped redaction and removal of fenced code. Capture needs at least 80 cleaned characters and obeys `autoCapture`; a skipped capture leaves the previous handoff untouched. Display uses only an active, trusted exact-project handoff's newest observation, limited to 800 characters even if the memory was written manually. Up to 72 hours old it appears normally; after 72 hours through 14 days it carries a stale warning; older than 14 days, undatable, or more than five minutes future-dated it is omitted. Imported handoffs are not injected merely because they have the right name. The handoff is background context, not an inferred task list or a guarantee that work resumes.
@@ -789,7 +793,7 @@ At `minimal` on a project with nothing to show, the response has `text: ""` and 
 
 **The durable-memory index.** At `standard`/`full`, the block closes with a capped index of this project's durable memories. `memesh briefing --index` prints it alone regardless of the configured level (`--index --json` for structured output). Use `recall` for questions or more results.
 
-- One line per durable memory — every type except the evidence layer (`EVIDENCE_LAYER_TYPES` in `src/core/work-topology.ts`: commits, session insights and summaries, keypoints, session identity, weekly summaries, checkpoints), `task-state`, and `session-handoff` — as `- [type] title — first observation [mem:id]`, newest activity first (the later of creation and the newest observation; ties by id).
+- One line per durable memory — every type except the evidence layer (`EVIDENCE_LAYER_TYPES` in `src/core/work-topology.ts`: commits, session insights and summaries, keypoints, session identity, weekly summaries, checkpoints), `task-state`, and `session-handoff` — as `- [type] title — first observation [mem:id]`, newest activity first (the later of creation and the newest observation; ties by id). A decision's line also carries its latest `Why:` reason or `(no reason recorded)`, and `(unconfirmed N days: re-check before relying)` after 30 days without a read or a new observation, exactly as in the ranked block; the index keeps its own 120-character line cap, and those marks are never cut from it.
 - Scope: active `project:<name>` rows outside the `global` namespace; imported or untrusted rows are excluded from automatic injection.
 - Titles and snippets have credential-shaped secrets and user paths redacted — in the ranked sections above the index as well as in the index itself (#464). Both `briefing` and the SessionStart hook redact in the row reads and row-to-line mapping they share (`src/core/briefing-pools.ts`), with `redactMemoryText` (`src/core/paths.ts`), because the line builder `topologyLine` is bundled for the browser and cannot; the whole first observation is redacted before it is shortened for the line, so a credential longer than the shortening window does not leak its prefix. Every memory line also has runs of non-whitespace C0/C1 control characters, DEL, and bidi override/isolate characters replaced with a space (`stripControlChars` in `src/core/work-topology.ts`) before it reaches `lines`, whether read through `text`, the standalone `index` field, or `GET /v1/briefing-index` (#374). The heading and empty-state line use the project's readable label without redaction; the `N more` command prints a literal `"project:…"` placeholder rather than a real project name.
 - Memories with no change for 180 days are counted in one `N older memories … — recall to see` line instead of listed.
@@ -1534,7 +1538,7 @@ memesh serve
 # Store knowledge
 curl -s -X POST http://localhost:3737/v1/remember \
   -H 'Content-Type: application/json' \
-  -d '{"name":"auth-decision","type":"decision","observations":["Use OAuth 2.0"]}'
+  -d '{"name":"auth-decision","type":"decision","observations":["Use OAuth 2.0"],"why":"Our IdP only speaks OAuth; revisit if we self-host auth"}'
 
 # Search knowledge
 curl -s -X POST http://localhost:3737/v1/recall \
@@ -1621,6 +1625,13 @@ per memory" — and combined with `--obs "extra one"` (103 observations total)
 it is also rejected — "that is 103 observations; at most 100 are stored per
 memory."
 
+`--why <text>` is a decision's reason and what would make it stop holding
+(stored as `Why: …`). It is required to create or `--replace` a memory of type
+`decision`, `architecture_decision` or `design_decision`; without it the command
+exits 1 and nothing is stored. Adding to an existing decision does not need it.
+In the quick form, the printed `fix it with:` command carries the `--why` you
+gave, or a `--why "…"` placeholder.
+
 `--replace` (requires `--name`, and `--obs` for the observations the memory
 should now hold — without them the call is refused, because it would empty
 the memory) rewrites the named memory and keeps its
@@ -1635,7 +1646,7 @@ where there is no stored type to keep.
 ```bash
 memesh remember "Use PKCE for the public client"            # derived name, type note
 memesh remember --name auth-choice --obs "PKCE, not implicit" --replace   # keeps type
-memesh remember --name auth-choice --type decision --obs "PKCE, not implicit" --replace  # reclassifies
+memesh remember --name auth-choice --type decision --obs "PKCE, not implicit" --why "public client, no secret to keep; holds while the app ships in the browser" --replace  # reclassifies
 ```
 
 ### memesh import — a JSON bundle
@@ -1752,8 +1763,8 @@ they are the two worth typing:
 | `--contradicts <name...>` | Both memories surface as a conflict every time either is recalled (see [recall → Conflict detection](#recall)). |
 
 ```bash
-memesh remember --name auth-v2 --type decision --obs "Sessions, not JWT" --supersedes auth-v1
-memesh remember --name no-jwt --type decision --obs "JWT is out" --contradicts use-jwt
+memesh remember --name auth-v2 --type decision --obs "Sessions, not JWT" --why "revocation is needed now; revisit if tokens get short-lived" --supersedes auth-v1
+memesh remember --name no-jwt --type decision --obs "JWT is out" --why "no revocation; revisit with short-lived tokens" --contradicts use-jwt
 memesh recall jwt        # → Warning: Conflicts detected: "no-jwt" contradicts "use-jwt"
 ```
 

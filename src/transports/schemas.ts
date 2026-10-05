@@ -101,6 +101,7 @@ const rememberShape = {
   type: z.string().min(1).max(100).optional(),
   title: titleField,
   observations: z.array(observationField).max(100).optional(),
+  why: observationField.optional(),
   note: z.string().max(NOTE_MAX_CHARS).optional(),
   replace: z.boolean().optional(),
   tags: z.array(z.string().max(255)).max(50).optional(),

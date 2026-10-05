@@ -157,6 +157,16 @@ describe.skipIf(skipReason !== null)('Hermes MemeshProvider against a real memes
     expect(result.forget.success).toBe(true);
   });
 
+  it('a refused write comes back as the server\'s sentence, not a bare status line; with a reason it is stored', () => {
+    expect(result.remember_refused.success).toBe(false);
+    expect(result.remember_refused.error).toMatch(/needs `why`.*reason for it and what would make it stop holding/);
+    expect(result.remember_refused.error).not.toMatch(/^HTTP \d+/);
+    expect(result.remember_decision.success).toBe(true);
+    expect(query<{ content: string }>(
+      "SELECT o.content FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = 'contract-choice' ORDER BY o.id",
+    ).map((r) => r.content)).toEqual(['Chose the plain option', 'Why: it is the least moving parts; revisit if it stops scaling']);
+  });
+
   it('prefetch parses the recall envelope into an injected block', () => {
     expect(result.prefetch).toContain('[MeMesh recall]');
     expect(result.prefetch).toMatch(/hermes-turn-contract-session-/);

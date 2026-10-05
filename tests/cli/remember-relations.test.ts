@@ -41,8 +41,8 @@ afterEach(() => { fs.rmSync(home, { recursive: true, force: true, maxRetries: 5,
 
 describe('memesh remember --contradicts', () => {
   it('makes recall report the conflict', () => {
-    expect(runCli(['remember', '--name', 'use-jwt', '--type', 'decision', '--obs', 'We use JWT']).exitCode).toBe(0);
-    const stated = runCli(['remember', '--name', 'no-jwt', '--type', 'decision', '--obs', 'We do not use JWT', '--contradicts', 'use-jwt']);
+    expect(runCli(['remember', '--name', 'use-jwt', '--type', 'decision', '--obs', 'We use JWT', '--why', 'the API is stateless; revisit if we add server sessions']).exitCode).toBe(0);
+    const stated = runCli(['remember', '--name', 'no-jwt', '--type', 'decision', '--obs', 'We do not use JWT', '--why', 'tokens cannot be revoked; revisit if we add a deny list', '--contradicts', 'use-jwt']);
     expect(stated.exitCode, stated.stderr).toBe(0);
     expect(stated.stdout).toContain('conflicts stated: use-jwt');
 
@@ -98,8 +98,8 @@ describe('memesh remember --contradicts', () => {
 
 describe('memesh remember --supersedes', () => {
   it('archives the named entity and says that it did', () => {
-    runCli(['remember', '--name', 'auth-v1', '--type', 'decision', '--obs', 'old plan']);
-    const r = runCli(['remember', '--name', 'auth-v2', '--type', 'decision', '--obs', 'new plan', '--supersedes', 'auth-v1']);
+    runCli(['remember', '--name', 'auth-v1', '--type', 'decision', '--obs', 'old plan', '--why', 'it is the simplest start; revisit if it stops scaling']);
+    const r = runCli(['remember', '--name', 'auth-v2', '--type', 'decision', '--obs', 'new plan', '--why', 'the old one stopped scaling; revisit if cost doubles', '--supersedes', 'auth-v1']);
     expect(r.exitCode, r.stderr).toBe(0);
     expect(r.stdout).toContain('archived as superseded: auth-v1');
 

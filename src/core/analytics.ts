@@ -11,6 +11,7 @@
 import type { MemeshDatabase } from '../storage/sqlite.js';
 import type { CountRow } from './types.js';
 import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
+import { DECISION_TYPES } from './work-topology.js';
 
 export interface HealthFactor {
   score: number;
@@ -45,7 +46,7 @@ export interface KnowledgeRadarEntry {
 // cannot ship untranslated.
 export const RADAR_AXES: Array<{ axis: string; types: string[] }> = [
   { axis: 'lessons',      types: ['lesson_learned', 'lesson', 'mistake'] },
-  { axis: 'decisions',    types: ['decision', 'architecture_decision', 'design_decision'] },
+  { axis: 'decisions',    types: [...DECISION_TYPES] },
   { axis: 'patterns',     types: ['pattern', 'technical_pattern', 'best_practice'] },
   { axis: 'bugs',         types: ['bug_fix', 'verification_result', 'test_result'] },
   { axis: 'processes',    types: ['process', 'workflow_checkpoint', 'refactoring', 'maintenance'] },
