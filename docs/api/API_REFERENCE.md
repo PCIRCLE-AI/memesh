@@ -545,7 +545,7 @@ Imported entities are marked with import provenance and treated as untrusted for
 |----------|------------------------------|---------------------------|
 | `skip` | Keep existing entity unchanged, discard imported copy | **No** — "unchanged" includes its namespace |
 | `overwrite` | Replace existing entity's observations and tags with imported values; the replaced observations, tags and title are kept in `metadata.replaced_history`, like `remember` with `replace: true` (an import identical to what is stored adds no version) | Yes |
-| `append` | Append imported observations to existing (skipping any already present verbatim), deduplicate tags | Yes |
+| `append` | Append imported observations to existing (skipping any already present, compared as stored: a lone UTF-16 surrogate is stored as U+FFFD), deduplicate tags. An entry that adds nothing — no new observation or tag, no title change, no namespace move, and not an archived memory being restored — is counted in `skipped` and left untouched, its descriptive metadata included, so re-importing the same file does not mark your memories untrusted (#561) | Yes |
 
 `skip` is the exception because it is the one strategy that promises to touch
 nothing that is already there, and a namespace move is a change — it takes the

@@ -885,6 +885,18 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean })
             // surrogate comes back as U+FFFD and would otherwise never match.
             const existingText = new Set(existing.observations);
             const newObservations = (entity.observations ?? []).map(storedText).filter((o) => !existingText.has(o));
+            // #561: an entry that adds nothing to the memory you already have —
+            // the same backup restored twice — is skipped, not appended. Writing
+            // it anyway marked that memory untrusted for text it already held.
+            // An archived memory reaching this branch is being restored
+            // (restore_archived), which is a change in itself.
+            const existingTags = new Set(existing.tags);
+            const addsNothing = !existing.archived
+              && newObservations.length === 0
+              && (entity.tags === undefined || entity.tags.every((tag) => existingTags.has(storedText(tag))))
+              && (title === undefined || storedText(title) === existing.title)
+              && (namespace === undefined || namespace === (existing.namespace ?? 'personal'));
+            if (addsNothing) return { kind: 'skipped' } as const;
             // Pass trustOverride directly so the createEntity confidence-
             // bump gate denies the lift on untrusted imports. Codex
             // caught a P1 where the trust value was being set via

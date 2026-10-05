@@ -8,7 +8,7 @@ import { importMemories } from '../../src/core/operations.js';
 import { getDatabase } from '../../src/db.js';
 import type { ExportResult } from '../../src/core/types.js';
 import { appendObservations } from '../../src/storage/entity-write.js';
-import { remember } from '../../src/core/operations.js';
+import { forget, remember } from '../../src/core/operations.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
 
 useTestDatabase('memesh-import-surrogate-');
@@ -55,5 +55,61 @@ describe('#561 the shared observation writer dedupes in the stored form', () => 
     const written = appendObservations(getDatabase(), id, ['lone\ud800end', 'new'], { dedupe: true, readExisting: true });
     expect(written).toEqual(['new']);
     expect(stored()).toEqual(['lone\ufffdend', 'new']);
+  });
+});
+
+describe('#561 a re-import that adds nothing appends nothing', () => {
+  it('reports the unchanged memory as skipped and leaves its trust alone', () => {
+    remember({ name: 'kept-561', type: 'decision', observations: ['plain fact', 'lone\ud800end'], tags: ['topic:x'] });
+    const trust = () => (JSON.parse((getDatabase().prepare("SELECT metadata FROM entities WHERE name = 'kept-561'").get() as { metadata: string }).metadata) as { trust?: string }).trust;
+    expect(trust()).toBe('trusted');
+    const again: ExportResult = {
+      version: '3.1.0', exported_at: '2026-10-05T00:00:00.000Z', entity_count: 1,
+      entities: [{ name: 'kept-561', type: 'decision', namespace: 'personal', observations: ['plain fact', 'lone\ud800end'], tags: ['topic:x'], relations: [] }],
+    };
+    const result = importMemories({ data: again, merge_strategy: 'append' });
+    expect({ appended: result.appended, skipped: result.skipped }).toEqual({ appended: 0, skipped: 1 });
+    expect(trust()).toBe('trusted');
+  });
+
+  const entryOf = (overrides: Partial<ExportResult['entities'][number]>): ExportResult => ({
+    version: '3.1.0', exported_at: '2026-10-05T00:00:00.000Z', entity_count: 1,
+    entities: [{ name: 'same-561', type: 'decision', namespace: 'personal', observations: ['fact'], tags: [], relations: [], ...overrides }],
+  });
+  const row = () => getDatabase().prepare("SELECT status, title, namespace FROM entities WHERE name = 'same-561'").get() as { status: string; title: string | null; namespace: string };
+
+  it('restore_archived brings back a forgotten memory even when its text is unchanged', () => {
+    remember({ name: 'same-561', type: 'decision', observations: ['fact'] });
+    forget({ name: 'same-561' });
+    const result = importMemories({ data: entryOf({}), merge_strategy: 'append', restore_archived: true });
+    expect(result.skipped).toBe(0);
+    expect(row().status).toBe('active');
+  });
+
+  it('a new tag, a new title or a namespace move is still a change', () => {
+    remember({ name: 'same-561', type: 'decision', observations: ['fact'] });
+    expect(importMemories({ data: entryOf({ tags: ['topic:new'] }), merge_strategy: 'append' }).appended).toBe(1);
+    expect(importMemories({ data: entryOf({ title: 'A title' }), merge_strategy: 'append' }).appended).toBe(1);
+    expect(row().title).toBe('A title');
+    expect(importMemories({ data: entryOf({}), merge_strategy: 'append', namespace: 'team' }).appended).toBe(1);
+    expect(row().namespace).toBe('team');
+  });
+
+  it('a lone surrogate in a tag or the title does not make an unchanged re-import look new', () => {
+    const data = entryOf({ tags: ['x\ud800y'], title: 'T\ud800' });
+    importMemories({ data, merge_strategy: 'append' });
+    importMemories({ data, merge_strategy: 'append' });
+    const third = importMemories({ data, merge_strategy: 'append' });
+    expect({ appended: third.appended, skipped: third.skipped }).toEqual({ appended: 0, skipped: 1 });
+  });
+
+  it('still appends, and marks untrusted, when the file brings new text', () => {
+    remember({ name: 'grown-561', type: 'decision', observations: ['plain fact'] });
+    const result = importMemories({
+      data: { version: '3.1.0', exported_at: '2026-10-05T00:00:00.000Z', entity_count: 1,
+        entities: [{ name: 'grown-561', type: 'decision', namespace: 'personal', observations: ['plain fact', 'new fact'], tags: [], relations: [] }] },
+      merge_strategy: 'append',
+    });
+    expect(result.appended).toBe(1);
   });
 });

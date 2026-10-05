@@ -270,6 +270,14 @@ export function importMemories(args, options) {
                     if (args.merge_strategy === 'append') {
                         const existingText = new Set(existing.observations);
                         const newObservations = (entity.observations ?? []).map(storedText).filter((o) => !existingText.has(o));
+                        const existingTags = new Set(existing.tags);
+                        const addsNothing = !existing.archived
+                            && newObservations.length === 0
+                            && (entity.tags === undefined || entity.tags.every((tag) => existingTags.has(storedText(tag))))
+                            && (title === undefined || storedText(title) === existing.title)
+                            && (namespace === undefined || namespace === (existing.namespace ?? 'personal'));
+                        if (addsNothing)
+                            return { kind: 'skipped' };
                         kg.createEntity(entity.name, entity.type, {
                             title,
                             observations: newObservations,
