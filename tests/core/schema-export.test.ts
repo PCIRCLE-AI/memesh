@@ -265,3 +265,23 @@ describe('exportOpenAITools', () => {
     }
   });
 });
+
+// #534: the export described `message` without target_kind, intended_session
+// and fallback_to_principal, so a client built from it could not send to a
+// session. Every exported tool now has to carry every field the live MCP tool
+// takes, except the ones listed here on purpose. Descriptions are not compared:
+// several differ deliberately, because the export is read by HTTP clients.
+describe('#534 the export matches the live MCP tools', () => {
+  /** MCP-only on purpose: the session-bound project; the export follows HTTP, which names project tags instead. */
+  const MCP_ONLY: Record<string, string[]> = { remember: ['project'], recall: ['project'], learn: ['project'] };
+  const exported = new Map(exportOpenAITools().map((t: any) => [t.function.name.replace(/^memesh_/, ''), t.function.parameters?.properties ?? {}]));
+
+  it.each(TOOL_DEFINITIONS.map((d: any) => [d.name, d]))('%s', (name, definition: any) => {
+    const live = definition.inputSchema?.properties ?? {};
+    const out = exported.get(name);
+    expect(out, `${name} is not exported`).toBeDefined();
+    for (const key of MCP_ONLY[name] ?? []) expect(live, `${name}.${key} is listed as MCP-only`).toHaveProperty(key);
+    const expected = Object.keys(live).filter((k) => !(MCP_ONLY[name] ?? []).includes(k)).sort();
+    expect(Object.keys(out).sort()).toEqual(expected);
+  });
+});
