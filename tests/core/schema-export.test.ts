@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { exportOpenAITools } from '../../src/core/schema-export.js';
-import { BriefingSchema, LearnSchema, McpLearnSchema, MessageSchema, RememberSchema, RecallSchema, WorkPackageSchema } from '../../src/transports/schemas.js';
+import { BriefingSchema, HttpLearnSchema, LearnSchema, McpLearnSchema, MessageSchema, RememberSchema, RecallSchema, WorkPackageSchema } from '../../src/transports/schemas.js';
 import { TOOL_DEFINITIONS } from '../../src/transports/mcp/handlers.js';
 import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../../src/core/agent-messaging.js';
 
@@ -119,9 +119,14 @@ describe('exportOpenAITools', () => {
     expect(tool.function.parameters.required).toEqual(['name']);
   });
 
-  it('memesh_learn requires error and fix', () => {
+  // The export describes the HTTP API, and `POST /v1/learn` refuses a lesson
+  // without a project (#527): a client that followed an export without it
+  // would get a 400 on every call.
+  it('memesh_learn requires error, fix and project, as POST /v1/learn does', () => {
     const tool = tools.find((t: any) => t.function.name === 'memesh_learn') as any;
-    expect(tool.function.parameters.required).toEqual(['error', 'fix']);
+    expect(tool.function.parameters.required).toEqual(['error', 'fix', 'project']);
+    expect(HttpLearnSchema.safeParse({ error: 'e', fix: 'f' }).success).toBe(false);
+    expect(tool.function.parameters.properties.project.description).toContain('400');
   });
 
   it('memesh_learn exports the exact strict runtime field names', () => {
@@ -129,8 +134,9 @@ describe('exportOpenAITools', () => {
     const mcp = TOOL_DEFINITIONS.find((definition) => definition.name === 'learn') as any;
     const runtimeKeys = Object.keys(LearnSchema.shape);
 
-    expect(Object.keys(exported.function.parameters.properties)).toEqual(runtimeKeys);
-    // MCP adds `project` (an id, or false for no project); HTTP and the export do not.
+    // The export is the HTTP body; MCP's `project` also takes false (no project).
+    expect(Object.keys(exported.function.parameters.properties)).toEqual(Object.keys(HttpLearnSchema.shape));
+    expect(Object.keys(HttpLearnSchema.shape)).toEqual([...runtimeKeys, 'project']);
     expect(Object.keys(mcp.inputSchema.properties)).toEqual(Object.keys(McpLearnSchema.shape));
     expect(Object.keys(McpLearnSchema.shape)).toEqual([...runtimeKeys, 'project']);
     expect(exported.function.parameters.properties).toHaveProperty('root_cause');

@@ -43,8 +43,8 @@
     },
     {
       "path": "scripts/hooks/_generated/agent-scope-id.js",
-      "sha256": "e57c9bbe0bac502f01ed722de8f9397b559b2013e830cb756d6ec6b7694c00ee",
-      "bytes": 2487
+      "sha256": "f78667b12dfa128c2575aaa20029874e9e2bf4f99ac13c98f61bb455897aa2df",
+      "bytes": 3112
     },
     {
       "path": "scripts/hooks/_generated/bash-edited-paths.js",
@@ -203,8 +203,8 @@
     },
     {
       "path": "scripts/hooks/pre-compact.js",
-      "sha256": "b367cc437856a27fda84a1f1c5c41a4dae0b9e1d0e10440818811a034c04199a",
-      "bytes": 10233
+      "sha256": "55fb5a6daed686228251db70e5eef8207f92136cafce878bdfdc7200fc59e72d",
+      "bytes": 10857
     },
     {
       "path": "scripts/hooks/pre-edit-recall.js",

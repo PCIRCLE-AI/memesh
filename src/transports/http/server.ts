@@ -25,6 +25,7 @@ import {
   updateConfig,
 } from '../../core/config.js';
 import { SESSION_LIMIT_MIN, SESSION_LIMIT_MAX } from '../../core/session-limit.js';
+import { AGENT_SCOPE_ID_MAX_LENGTH } from '../../core/agent-scope-id.js';
 import { BRIEFING_LEVELS } from '../../core/briefing-level.js';
 import { isDoctorFixPermissionError, removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
 import { computePatterns } from '../../core/patterns.js';
@@ -39,7 +40,7 @@ import {
   RememberSchema as RememberBody, RecallSchema as RecallBody,
   ForgetSchema as ForgetBody,
   ExportSchema as ExportBody, ImportSchema as ImportBody,
-  LearnSchema as LearnBody,
+  HttpLearnSchema as LearnBody,
   WhySchema as WhyBody,
   MessageSchema as MessageBody,
 } from '../schemas.js';
@@ -938,7 +939,12 @@ app.get('/v1/update-status', (req, res) => handleGet(res, async () => {
 // What the owner STATED about a project with `memesh task` — goal / next /
 // blocked / done — read straight from the task-state entity. Absent fields are
 // returned absent: the dashboard renders "not stated", never a guess.
-const TaskStateQuerySchema = z.object({ project: z.string().trim().min(1).max(200) });
+// The key is used exactly as sent — no trimming, no path handling. Reads must
+// keep reaching a legacy project key already stored (even a path-shaped one);
+// only WRITES refuse a path (#527). Blank and over-long are still refused.
+const TaskStateQuerySchema = z.object({
+  project: z.string().max(AGENT_SCOPE_ID_MAX_LENGTH).refine((value) => value.trim().length > 0, 'project must not be empty'),
+});
 app.get('/v1/task-state', (req, res) => {
   const parsed = TaskStateQuerySchema.safeParse(req.query);
   if (!parsed.success) {

@@ -97,6 +97,47 @@ describe('Feature: PreCompact Hook', () => {
     expect(fs.existsSync(dbPath), 'no database may be created for a non-event').toBe(false);
   });
 
+  function outcomes(): Array<Record<string, unknown>> {
+    const file = path.join(testDir, 'hook-outcomes.jsonl');
+    return fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  }
+
+  it('Scenario: #527 no cwd -> skipped and recorded, nothing written (never the hook process\'s own directory)', () => {
+    const result = runHook({ session_id: 'sess-nocwd', transcript_path: '', trigger: 'auto' });
+    expect(result.trim(), 'nothing was saved, nothing may claim to be').toBe('');
+    expect(fs.existsSync(dbPath), 'no database may be created').toBe(false);
+    expect(outcomes().at(-1)).toMatchObject({
+      hook: 'pre-compact', outcome: 'skipped', reason: 'cwd absent in payload — cannot resolve project',
+    });
+  });
+
+  it('Scenario: #527 no session_id (transcript present) -> skipped and recorded, no shared pre-compact-unknown memory', () => {
+    const transcript = path.join(testDir, 't.jsonl');
+    fs.writeFileSync(transcript, '');
+    const result = runHook({ transcript_path: transcript, cwd: '/tmp/myproject', trigger: 'auto' });
+    expect(result.trim()).toBe('');
+    expect(fs.existsSync(dbPath), 'no database may be created').toBe(false);
+    expect(outcomes().at(-1)).toMatchObject({
+      hook: 'pre-compact', outcome: 'skipped', reason: 'no usable session_id in the payload',
+    });
+  });
+
+  it.each([
+    ['empty session_id', { session_id: '', cwd: '/tmp/myproject' }, 'no usable session_id in the payload'],
+    ['blank session_id', { session_id: '   ', cwd: '/tmp/myproject' }, 'no usable session_id in the payload'],
+    ['object session_id', { session_id: { a: 1 }, cwd: '/tmp/myproject' }, 'no usable session_id in the payload'],
+    ['empty cwd', { session_id: 's1', cwd: '' }, 'cwd absent in payload — cannot resolve project'],
+    ['blank cwd', { session_id: 's1', cwd: '  \t' }, 'cwd absent in payload — cannot resolve project'],
+    ['object cwd', { session_id: 's1', cwd: { a: 1 } }, 'cwd absent in payload — cannot resolve project'],
+  ])('Scenario: #527 %s -> skipped and recorded, no memory written', (_label, payload, reason) => {
+    const transcript = path.join(testDir, 't2.jsonl');
+    fs.writeFileSync(transcript, '');
+    const result = runHook({ transcript_path: transcript, trigger: 'auto', ...payload });
+    expect(result.trim()).toBe('');
+    expect(fs.existsSync(dbPath), 'no database may be created').toBe(false);
+    expect(outcomes().at(-1)).toMatchObject({ hook: 'pre-compact', outcome: 'skipped', reason });
+  });
+
   it('Scenario: a pre-compact memory captured by a Codex hook run names codex as its source host', () => {
     const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-codex-home-'));
     try {

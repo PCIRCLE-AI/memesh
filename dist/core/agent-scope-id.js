@@ -26,6 +26,20 @@ export function agentScopeIdRejection(field, value) {
     return `${field} must be a stable identifier, not a filesystem path (received ${JSON.stringify(canonicalAgentScopeId(value))}). `
         + `Use the name on its own, for example ${JSON.stringify(example)}.`;
 }
+export function projectScopeRejection(value) {
+    if (value.trim() === '')
+        return 'project must not be empty.';
+    if (value.length > AGENT_SCOPE_ID_MAX_LENGTH)
+        return `project must be at most ${AGENT_SCOPE_ID_MAX_LENGTH} characters.`;
+    const absolute = agentScopeIdRejection('project', value);
+    if (absolute)
+        return absolute;
+    if (/[\\/]/.test(value)) {
+        return `project must be a stable name, not a path (received ${JSON.stringify(value)}). `
+            + `Use the name on its own, for example ${JSON.stringify(lastPathSegment(value) ?? 'my-project')}.`;
+    }
+    return null;
+}
 export const AGENT_MESSAGE_SCOPE_COLUMNS = [
     { table: 'agent_messages', columns: ['project', 'recipient'] },
     { table: 'agent_message_deliveries', columns: ['project', 'recipient'] },

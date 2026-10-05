@@ -8,6 +8,7 @@ import { remember, recallWithConflicts, forget, exportMemories, importMemories, 
 import { KnowledgeGraph } from '../../knowledge-graph.js';
 import { readConfig, updateConfig, } from '../../core/config.js';
 import { SESSION_LIMIT_MIN, SESSION_LIMIT_MAX } from '../../core/session-limit.js';
+import { AGENT_SCOPE_ID_MAX_LENGTH } from '../../core/agent-scope-id.js';
 import { BRIEFING_LEVELS } from '../../core/briefing-level.js';
 import { isDoctorFixPermissionError, removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
 import { computePatterns } from '../../core/patterns.js';
@@ -17,7 +18,7 @@ import { computeProjects } from '../../core/projects.js';
 import { getTaskState } from '../../core/task-state-store.js';
 import { readBriefingIndex } from '../../core/briefing.js';
 import { INDEX_STALE_DAYS } from '../../core/briefing-index.js';
-import { RememberSchema as RememberBody, RecallSchema as RecallBody, ForgetSchema as ForgetBody, ExportSchema as ExportBody, ImportSchema as ImportBody, LearnSchema as LearnBody, WhySchema as WhyBody, MessageSchema as MessageBody, } from '../schemas.js';
+import { RememberSchema as RememberBody, RecallSchema as RecallBody, ForgetSchema as ForgetBody, ExportSchema as ExportBody, ImportSchema as ImportBody, HttpLearnSchema as LearnBody, WhySchema as WhyBody, MessageSchema as MessageBody, } from '../schemas.js';
 import { executeAgentMessageAction } from '../agent-messaging.js';
 import { checkForUpdate, getLastUpdateCheck, getUpdateCheck } from '../../core/version-check.js';
 import { getCurrentInstallChannel, getInstallChannelSupport } from '../../core/install-channel.js';
@@ -486,7 +487,9 @@ app.get('/v1/update-status', (req, res) => handleGet(res, async () => {
         deprecationMessage: update?.deprecationMessage ?? null,
     };
 }));
-const TaskStateQuerySchema = z.object({ project: z.string().trim().min(1).max(200) });
+const TaskStateQuerySchema = z.object({
+    project: z.string().max(AGENT_SCOPE_ID_MAX_LENGTH).refine((value) => value.trim().length > 0, 'project must not be empty'),
+});
 app.get('/v1/task-state', (req, res) => {
     const parsed = TaskStateQuerySchema.safeParse(req.query);
     if (!parsed.success) {
