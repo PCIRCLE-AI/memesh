@@ -503,6 +503,15 @@ describe('Feature: memory_20250818 over the knowledge graph', () => {
       expect(entity?.observations).toEqual(['something worth keeping']);
     });
 
+    it('a second delete of the same path says it is gone, and the memory stays archived', () => {
+      seed('twice', ['x']);
+      expect(handleMemoryCommand({ command: 'delete', path: file('twice') }).isError).toBe(false);
+      const again = handleMemoryCommand({ command: 'delete', path: file('twice') });
+      expect(again.isError).toBe(true);
+      expect(again.content).toContain('does not exist');
+      expect(new KnowledgeGraph(getDatabase()).getEntity('twice')?.archived).toBe(true);
+    });
+
     it('refuses to delete the memory root or a namespace', () => {
       seed('keep', ['x']);
       expect(handleMemoryCommand({ command: 'delete', path: MEMORY_ROOT }).isError).toBe(true);
@@ -510,6 +519,111 @@ describe('Feature: memory_20250818 over the knowledge graph', () => {
         handleMemoryCommand({ command: 'delete', path: `${MEMORY_ROOT}/personal` }).isError
       ).toBe(true);
       expect(observationsOf('keep')).toEqual(['x']);
+    });
+  });
+
+  // g29: a deleted memory is archived, and `kg.getEntity` does not filter on
+  // status. `view` used to show it as live, and `str_replace`/`insert` rewrote
+  // it through `createEntity`, which reactivates an archived entity — the
+  // delete was undone and the call reported success.
+  describe('a deleted memory is gone from the model\'s side', () => {
+    const statusOf = (name: string): string =>
+      (getDatabase().prepare('SELECT status FROM entities WHERE name = ?').get(name) as { status: string }).status;
+
+    function seedDeleted(name: string, observations: string[]): void {
+      seed(name, observations);
+      expect(handleMemoryCommand({ command: 'delete', path: file(name) }).isError).toBe(false);
+      expect(statusOf(name)).toBe('archived');
+    }
+
+    it('view says it does not exist', () => {
+      seedDeleted('gone-view', ['alpha', 'beta']);
+      const result = handleMemoryCommand({ command: 'view', path: file('gone-view') });
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain('does not exist');
+      expect(result.content).not.toContain('alpha');
+    });
+
+    it('str_replace fails and does not reactivate it', () => {
+      seedDeleted('gone-replace', ['alpha', 'beta']);
+      const result = handleMemoryCommand({ command: 'str_replace', path: file('gone-replace'), old_str: 'alpha', new_str: 'ALPHA' });
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain('does not exist');
+      expect(statusOf('gone-replace')).toBe('archived');
+      expect(observationsOf('gone-replace')).toEqual(['alpha', 'beta']);
+    });
+
+    it('insert fails and does not reactivate it', () => {
+      seedDeleted('gone-insert', ['alpha', 'beta']);
+      const result = handleMemoryCommand({ command: 'insert', path: file('gone-insert'), insert_line: 1, insert_text: 'new' });
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain('does not exist');
+      expect(statusOf('gone-insert')).toBe('archived');
+      expect(observationsOf('gone-insert')).toEqual(['alpha', 'beta']);
+    });
+
+    it('create over the path writes the new text and brings it back — not the wrong-namespace refusal', () => {
+      seedDeleted('gone-create', ['alpha', 'beta']);
+      const result = handleMemoryCommand({ command: 'create', path: file('gone-create'), file_text: 'fresh' });
+      expect(result.isError, result.content).toBe(false);
+      expect(statusOf('gone-create')).toBe('active');
+      expect(observationsOf('gone-create')).toEqual(['fresh']);
+    });
+
+    it('create with the same text as the deleted memory still brings it back', () => {
+      // The no-change shortcut must not apply to an archived memory.
+      seedDeleted('gone-same', ['alpha']);
+      const result = handleMemoryCommand({ command: 'create', path: file('gone-same'), file_text: 'alpha' });
+      expect(result.isError, result.content).toBe(false);
+      expect(statusOf('gone-same')).toBe('active');
+    });
+  });
+
+  // g29 M: the edit rewrites the memory by deleting every observation and
+  // inserting them again. When the text does not change, that gave every
+  // observation a new id and a created_at of now, and added +0.05 confidence
+  // per call — a model looping on an edit could pump a memory to 1.0.
+  describe('an edit that changes nothing writes nothing', () => {
+    const OLD = '2025-01-01 00:00:00';
+
+    function seedAged(name: string): void {
+      seed(name, ['alpha', 'beta']);
+      const db = getDatabase();
+      db.prepare('UPDATE observations SET created_at = ? WHERE entity_id = (SELECT id FROM entities WHERE name = ?)').run(OLD, name);
+      db.prepare('UPDATE entities SET confidence = 0.5 WHERE name = ?').run(name);
+    }
+
+    function snapshot(name: string): { confidence: number; rows: Array<{ id: number; content: string; created_at: string }> } {
+      const db = getDatabase();
+      return {
+        confidence: (db.prepare('SELECT confidence FROM entities WHERE name = ?').get(name) as { confidence: number }).confidence,
+        rows: db.prepare('SELECT o.id, o.content, o.created_at FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = ? ORDER BY o.id').all(name) as Array<{ id: number; content: string; created_at: string }>,
+      };
+    }
+
+    it('str_replace of a string with itself leaves confidence, ids and created_at alone', () => {
+      seedAged('noop-replace');
+      const before = snapshot('noop-replace');
+      const result = handleMemoryCommand({ command: 'str_replace', path: file('noop-replace'), old_str: 'alpha', new_str: 'alpha' });
+      expect(result.isError, result.content).toBe(false);
+      expect(snapshot('noop-replace')).toEqual(before);
+      expect(before.confidence).toBe(0.5);
+      expect(before.rows.map((r) => r.created_at)).toEqual([OLD, OLD]);
+    });
+
+    it('create with the text the memory already has leaves it alone', () => {
+      seedAged('noop-create');
+      const before = snapshot('noop-create');
+      const result = handleMemoryCommand({ command: 'create', path: file('noop-create'), file_text: 'alpha\nbeta' });
+      expect(result.isError, result.content).toBe(false);
+      expect(snapshot('noop-create')).toEqual(before);
+    });
+
+    it('a real edit still rewrites the memory', () => {
+      seedAged('real-edit');
+      const result = handleMemoryCommand({ command: 'str_replace', path: file('real-edit'), old_str: 'alpha', new_str: 'ALPHA' });
+      expect(result.isError, result.content).toBe(false);
+      expect(observationsOf('real-edit')).toEqual(['ALPHA', 'beta']);
     });
   });
 

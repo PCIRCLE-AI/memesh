@@ -146,7 +146,7 @@ export declare const TOOL_DEFINITIONS: readonly [{
             };
             readonly replace: {
                 readonly type: "boolean";
-                readonly description: "Rewrite the memory named by `name` instead of appending to it: its observations are replaced (and its tags when `tags` is given, its title when `title` or `note` is given). The previous version is kept in metadata.replaced_history with the time it was replaced. Default false (append).";
+                readonly description: "Rewrite the memory named by `name` instead of appending to it: its observations are replaced by the `observations` (or `note`) you give — one of them is required, a replace with neither is refused — and its tags when `tags` is given, its title when `title` or `note` is given. The previous version is kept in metadata.replaced_history with the time it was replaced. Default false (append).";
             };
             readonly title: {
                 readonly type: "string";
@@ -206,7 +206,7 @@ export declare const TOOL_DEFINITIONS: readonly [{
         }, {
             readonly required: readonly ["name", "type"];
         }, {
-            readonly required: readonly ["name", "replace"];
+            readonly required: readonly ["name", "replace", "observations"];
             readonly properties: {
                 readonly replace: {
                     readonly const: true;

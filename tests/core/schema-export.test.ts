@@ -82,12 +82,13 @@ describe('exportOpenAITools', () => {
     // exported schema saying every field is optional — so a model driven off
     // this export is told an empty call is well-formed, and learns otherwise
     // only from a runtime error. The rule is `note`, OR `name` + `type`, OR
-    // `name` + `replace: true` (the correction call, which inherits the
-    // stored type — #333 T4).
+    // `name` + `replace: true` + `observations` (the correction call, which
+    // inherits the stored type — #333 T4; without observations a replace
+    // would empty the memory and is refused).
     expect(tool.function.parameters.anyOf).toEqual([
       { required: ['note'] },
       { required: ['name', 'type'] },
-      { required: ['name', 'replace'], properties: { replace: { const: true } } },
+      { required: ['name', 'replace', 'observations'], properties: { replace: { const: true } } },
     ]);
     // `required` stays absent: a top-level list would be a THIRD claim, and
     // neither field is unconditionally required.
@@ -98,6 +99,8 @@ describe('exportOpenAITools', () => {
     expect(RememberSchema.safeParse({ note: 'a thought' }).success).toBe(true);
     expect(RememberSchema.safeParse({ name: 'n', type: 'decision', observations: ['x'] }).success).toBe(true);
     expect(RememberSchema.safeParse({ name: 'n', replace: true, observations: ['x'] }).success).toBe(true);
+    // The declared third form carries `observations`: `name` + `replace` alone is not a call the runtime accepts.
+    expect(RememberSchema.safeParse({ name: 'n', replace: true }).success).toBe(false);
     // `replace` is what makes the third form a form: without it the same
     // call is a new memory with no type, which the export does not declare.
     expect(RememberSchema.safeParse({ name: 'n', replace: false, observations: ['x'] }).success).toBe(false);
