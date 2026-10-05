@@ -483,7 +483,7 @@ Hook commands are defined in `hooks/hooks.json`: nine run at Claude Code lifecyc
 
 - **Trigger**: `PreCompact` event (before context compaction)
 - **Matcher**: `*` (all sessions)
-- **Behavior**: Saves a snapshot of session knowledge before context is compacted, ensuring memories are not lost during long sessions; opt-out via `MEMESH_AUTO_CAPTURE=false`
+- **Behavior**: Saves a snapshot of session knowledge before context is compacted, ensuring memories are not lost during long sessions; opt-out via `MEMESH_AUTO_CAPTURE=false`. A payload whose `session_id` or `cwd` is missing, blank or not text is skipped and the reason recorded, rather than filed under a shared session or the hook's own directory
 
 ### User Prompt Intent (`scripts/hooks/user-prompt-intent.js`)
 

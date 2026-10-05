@@ -641,7 +641,7 @@ The MCP tool files the lesson under `project` when given, else under the session
 | `root_cause` | string | No | Why it happened |
 | `prevention` | string | No | How to prevent it next time |
 | `severity` | string | No | Severity level: `"critical"`, `"major"`, or `"minor"` (default: `"minor"`) |
-| `project` | string \| `false` | No | MCP only. The project id, or `false` for a lesson with no project. Omitted or `null`: the bound project |
+| `project` | string \| `false` | No (`POST /v1/learn`: yes) | The lesson's project, stored exactly as given; `false` (MCP only) for a lesson with no project. MCP: omitted or `null` uses the bound project. **`POST /v1/learn` requires it**: an HTTP server has no caller to derive a project from, so a missing project answers `400` and nothing is stored. `memesh learn --project <name>`; without it, the working directory's project. Empty, or written as a path (`/Users/me/proj`, `a/b`, `./foo`, `~/foo`), is refused; a bare name such as `.ssh` is accepted. |
 
 **Response**:
 
@@ -1054,7 +1054,7 @@ The limit protects the server from accidentally parsing large payloads (e.g. an 
 | POST | /v1/consolidate | **Retired** — answers `410 Gone`. Use the MCP `work_package` flow from an already-running agent session. |
 | POST | /v1/export | Export memories as JSON bundle |
 | POST | /v1/import | Import memories from JSON bundle with merge strategy |
-| POST | /v1/learn | Record structured lesson from mistake or discovery |
+| POST | /v1/learn | Record structured lesson from mistake or discovery; requires `project` (`400` without it) |
 | POST | /v1/message | Run one durable-message lifecycle action using the same schema as the MCP `message` tool |
 | POST | /v1/why | File attribution: join caller-resolved commit hashes to commit entities, their sessions, and file-tag memories |
 | GET | /v1/entities | List entities (pagination); supports `?type=<type>` and `?limit=<n>` |
@@ -1271,7 +1271,7 @@ What the owner stated about one project with `memesh task` — `goal`, `next`,
 `updated_at` of the last statement. Fields that were never stated are absent,
 not empty strings: the dashboard's Project tab renders an absent field as "not
 stated" and never derives progress from memory counts (#237). `project` is
-required (`400`, `validation.bad-param` without it); a project with no
+required (`400`, `validation.bad-param` without it, or when it is blank or over 200 characters); it is read as an exact key — a legacy project key that is a filesystem path can still be READ here, but `learn`, `task_state` and `briefing` accept no path as a project (messaging and `kg rename-project` rules are unchanged); a project with no
 statement is a `200` with `state: {}`.
 
 **Response**:
@@ -1291,7 +1291,7 @@ statement is a `200` with `state: {}`.
 The durable-memory index for one project — the same section the `briefing`
 tool and the SessionStart block close with at `standard`/`full` (see
 [briefing](#briefing) for selection, redaction and the frozen caps). The dashboard's Project tab renders
-it. `project` is required (`400`, `validation.bad-param` without it); a project
+it. `project` is required (`400`, `validation.bad-param` without it, or when it is blank or over 200 characters). It is read as an exact key: a legacy project key that is a filesystem path can still be read here, while new project names may not be paths; a project
 with no durable memories is a `200` whose `lines` carry the empty-state line.
 `staleDays` is the staleness window, sent so a client does not restate it.
 

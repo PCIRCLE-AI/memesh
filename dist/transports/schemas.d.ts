@@ -196,6 +196,18 @@ export declare const McpLearnSchema: z.ZodObject<{
         minor: "minor";
     }>>;
 }, z.core.$strict>;
+export declare const HttpLearnSchema: z.ZodObject<{
+    project: z.ZodString;
+    error: z.ZodString;
+    fix: z.ZodString;
+    root_cause: z.ZodOptional<z.ZodString>;
+    prevention: z.ZodOptional<z.ZodString>;
+    severity: z.ZodOptional<z.ZodEnum<{
+        critical: "critical";
+        major: "major";
+        minor: "minor";
+    }>>;
+}, z.core.$strict>;
 export declare const TaskStateSchema: z.ZodObject<{
     project: z.ZodOptional<z.ZodString>;
     goal: z.ZodOptional<z.ZodString>;
@@ -204,7 +216,7 @@ export declare const TaskStateSchema: z.ZodObject<{
     done: z.ZodOptional<z.ZodString>;
 }, z.core.$strict>;
 export declare const BriefingSchema: z.ZodObject<{
-    project: z.ZodOptional<z.ZodPipe<z.ZodString, z.ZodTransform<string, string>>>;
+    project: z.ZodOptional<z.ZodString>;
     recipient: z.ZodOptional<z.ZodPipe<z.ZodString, z.ZodTransform<string, string>>>;
 }, z.core.$strict>;
 export declare const WhySchema: z.ZodObject<{
