@@ -427,6 +427,23 @@ describe('dashboard i18n', () => {
   // Fixes are looked up only when the check ships one, so only the summary
   // is universally required. Parity across the other 10 locales is then
   // enforced by the locale-parity test at the top of this file.
+  // The banner shows `trLabel(check)`: the catalogue's label for the check id,
+  // else the server's English one. A check with a translated summary and an
+  // English label reads as a half-translated sentence, and six ids had no label.
+  it('has a label entry for every check id doctor.ts creates', () => {
+    const doctorSrc = readFileSync('src/core/doctor.ts', 'utf8');
+    // `createInfo` too: three checks (codex-session-setup, install_id,
+    // guard_activity) are made by it and a `createCheck`-only scan never saw them.
+    const ids = new Set([...doctorSrc.matchAll(/create(?:Check|Info)\(\s*'([a-zA-Z0-9_-]+)'/g)].map((m) => m[1]));
+    expect(ids.size, 'doctor.ts stopped creating checks by literal id').toBeGreaterThanOrEqual(29);
+    for (const id of ['codex-session-setup', 'install_id', 'guard_activity']) {
+      expect(ids.has(id), `${id}: made by createInfo, so the scan has to read createInfo`).toBe(true);
+    }
+    const englishKeys = parseTranslationKeys().get('en')!;
+    const missing = [...ids].filter((id) => !englishKeys.has(`doctor.label.${id}`));
+    expect(missing, 'check ids whose label would show in English beside a translated summary').toEqual([]);
+  });
+
   it('has an English catalogue entry for every doctor message code', () => {
     const doctorSrc = readFileSync('src/core/doctor.ts', 'utf8');
     const codes = [...doctorSrc.matchAll(/\bcode:\s*'([a-z0-9.-]+)'/g)].map((m) => m[1]);

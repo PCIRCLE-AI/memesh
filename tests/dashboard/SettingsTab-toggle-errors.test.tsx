@@ -198,4 +198,33 @@ describe('SettingsTab behaviour toggles surface POST failures', () => {
       expect(container.textContent).toContain('save failed');
     });
   });
+  it('a failed "Check now" with a status already on screen says so, instead of leaving the old green line', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let down = false;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/v1/update-status')) {
+        if (down) throw new TypeError('Failed to fetch');
+        return jsonResponse({ success: true, data: {
+          currentVersion: '4.9.0', latestVersion: '4.9.0', checkSucceeded: true, freshness: 'fresh',
+          updateAvailable: false, installChannel: 'source-checkout', canSelfUpdate: false,
+        } });
+      }
+      return jsonResponse({ success: true, data: { config: { autoUpdate: 'off' } } });
+    });
+    const { container } = render(<SettingsTab locale="en" onLocaleChange={() => {}} />);
+    await waitFor(() => expect(container.textContent).toContain('4.9.0'));
+    expect(within(container as HTMLElement).queryByRole('alert')).toBeNull();
+
+    down = true;
+    fireEvent.click(within(container as HTMLElement).getByRole('button', { name: 'Check now' }));
+    const alert = await within(container as HTMLElement).findByRole('alert');
+    expect(alert.textContent).toContain('Could not reach the memesh server');
+    expect(container.textContent).toContain('4.9.0'); // the last known status stays visible
+  });
+  it('names its configuration spinner for assistive technology', () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise<Response>(() => { /* pending */ }));
+    const { container } = render(<SettingsTab locale="en" onLocaleChange={() => {}} />);
+    expect(container.querySelector('.loading[role="status"]')?.getAttribute('aria-label')).toBeTruthy();
+  });
 });

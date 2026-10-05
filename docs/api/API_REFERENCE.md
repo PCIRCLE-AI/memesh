@@ -1061,15 +1061,15 @@ The limit protects the server from accidentally parsing large payloads (e.g. an 
 | POST | /v1/learn | Record structured lesson from mistake or discovery; requires `project` (`400` without it) |
 | POST | /v1/message | Run one durable-message lifecycle action using the same schema as the MCP `message` tool |
 | POST | /v1/why | File attribution: join caller-resolved commit hashes to commit entities, their sessions, and file-tag memories |
-| GET | /v1/entities | List entities (pagination); supports `?type=<type>` and `?limit=<n>` |
+| GET | /v1/entities | List entities, newest first; supports `?type=<type>` or `?project=<name>` (not both; `project` follows the same rule as `/v1/projects`: the `project:` tag, else a `lesson-<project>-<pattern>` name of a project at least two characters long; the project's session handoff is not listed), `?limit=<n>` (1–5000, default 20), `?offset=<n>` (skip that many of the newest matches, to page) and `?status=all` (include archived) |
 | GET | /v1/entities/:name | Get single entity |
 | GET | /v1/config | Get current supported non-model config fields |
 | GET | /v1/update-status | Current/latest package version, freshness state, and update guidance |
 | POST | /v1/config | Save supported non-model config fields as a partial update |
 | GET | /v1/stats | Aggregate counts: entities, observations, relations, tags; type/tag/status distributions |
 | GET | /v1/analytics | Health score/factors, memory-loop metric, criticalLessons, citationCompliance, 30-day timeline, ageMatrix, knowledgeRadar |
-| GET | /v1/analytics/pm | Project-management velocity, flow, operational signals, and recommendations |
-| GET | /v1/patterns | User work patterns: schedule, tools, focus areas, workflow, strengths, learning |
+| GET | /v1/analytics/pm | Project-management velocity, graph connectedness, and staleness |
+| GET | /v1/patterns | User work patterns: schedule, focus areas, workflow, strengths, learning areas |
 | GET | /v1/dream/proposals | List staged proposals for human review |
 | GET | /v1/dream/proposals/:id | Read one proposal and its retained evidence detail |
 | POST | /v1/dream/proposals/:id/accept | Human review action: accept and apply one pending proposal |
@@ -1100,6 +1100,7 @@ Every `success: false` envelope carries a machine-readable `errorCode` **alongsi
 | `payload.too-large` | 413 | Body exceeds the 1 MB limit (the legacy `code: "PAYLOAD_TOO_LARGE"` field is also kept) |
 | `operation.failed` | 400 | The request was well-formed but the operation itself rejected it |
 | `operation.permission-denied` | 500 | An explicit local repair could not write its required config or plugin files; the response contains fixed, path-free recovery guidance |
+| `doctor.repair-incomplete` | 500 | A repair that runs two commands (the Codex plugin refresh) ran the first and had too little of its 120 s budget left to start the second; the `error` text names what ran and the command to finish by hand |
 | `server.internal` | 500/503 | Unexpected server-side failure |
 
 ### The origin boundary

@@ -8,6 +8,11 @@ describe('user-facing CLI hints name registered flags', () => {
     'src/core/operations.ts',
     'src/core/doctor.ts',
     'src/db.ts',
+    // The dashboard's translated doctor text is advice too — and it REPLACES
+    // the server's own `fix` wherever a catalogue entry exists. It told every
+    // locale to run `memesh doctor --verbose`, which does not exist, while this
+    // scan only read the four files above.
+    'dashboard/src/lib/i18n.ts',
   ];
 
   it('accepts every recommended memesh command flag', () => {

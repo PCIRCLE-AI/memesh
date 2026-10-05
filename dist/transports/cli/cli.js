@@ -4687,6 +4687,50 @@ var init_work_topology = __esm({
   }
 });
 
+// dist/core/project-attribution.js
+function extractProjectFromName(name) {
+  if (!name.startsWith("lesson-"))
+    return null;
+  const rest = name.slice("lesson-".length);
+  for (const pattern of KNOWN_ERROR_PATTERNS) {
+    const suffix = `-${pattern}`;
+    if (rest.endsWith(suffix)) {
+      const project = rest.slice(0, rest.length - suffix.length);
+      if (project.length >= MIN_NAME_PROJECT_LENGTH)
+        return project;
+    }
+  }
+  return null;
+}
+function extractProjectFromEntity(tags, name) {
+  if (tags) {
+    const tagged = tags.find((t) => t.startsWith(PROJECT_TAG_PREFIX));
+    if (tagged)
+      return { project: tagged.slice(PROJECT_TAG_PREFIX.length), source: "tag" };
+  }
+  const fromName = extractProjectFromName(name);
+  if (fromName)
+    return { project: fromName, source: "heuristic" };
+  return { project: null, source: null };
+}
+var PROJECT_TAG_PREFIX, MIN_NAME_PROJECT_LENGTH, KNOWN_ERROR_PATTERNS;
+var init_project_attribution = __esm({
+  "dist/core/project-attribution.js"() {
+    "use strict";
+    PROJECT_TAG_PREFIX = "project:";
+    MIN_NAME_PROJECT_LENGTH = 2;
+    KNOWN_ERROR_PATTERNS = [
+      "null-reference",
+      "type-error",
+      "import-missing",
+      "config-error",
+      "test-failure",
+      "build-error",
+      "other"
+    ];
+  }
+});
+
 // dist/core/paths.js
 import fs from "fs";
 import os from "os";
@@ -5274,6 +5318,140 @@ var init_paths = __esm({
   }
 });
 
+// dist/core/session-handoff.js
+function sessionHandoffName(project) {
+  return `${SESSION_HANDOFF_TYPE}:${project}`;
+}
+function stripFences(text) {
+  const kept = [];
+  let open = null;
+  for (const line of text.split("\n")) {
+    const m = FENCE_LINE.exec(line);
+    if (open) {
+      if (m && m[1][0] === open.char && m[1].length >= open.len)
+        open = null;
+      continue;
+    }
+    if (m && !(m[1][0] === "`" && m[2].includes("`"))) {
+      open = { char: m[1][0], len: m[1].length };
+      continue;
+    }
+    kept.push(line);
+  }
+  return kept.join("\n");
+}
+function cleanHandoffText(raw) {
+  let text = stripFences(String(raw ?? "").replace(/\r\n?/g, "\n")).split("\n").map((line) => line.trimEnd()).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  if (text.length <= HANDOFF_MAX_CHARS)
+    return text;
+  text = text.slice(-(HANDOFF_MAX_CHARS - 1));
+  const first = text.charCodeAt(0);
+  if (first >= 56320 && first <= 57343)
+    text = text.slice(1);
+  const newline = text.indexOf("\n");
+  if (newline >= 0 && newline < HANDOFF_MAX_CHARS / 3)
+    text = text.slice(newline + 1);
+  return `\u2026${text.trim()}`;
+}
+function ageText(hours) {
+  if (hours < 1)
+    return "less than an hour ago";
+  if (hours < 24) {
+    const h = Math.floor(hours);
+    return `${h} hour${h === 1 ? "" : "s"} ago`;
+  }
+  const d = Math.floor(hours / 24);
+  return `${d} day${d === 1 ? "" : "s"} ago`;
+}
+function handoffView(record2, now = /* @__PURE__ */ new Date()) {
+  const text = record2 ? cleanHandoffText(redactMemoryText(record2.text ?? "")) : "";
+  if (!record2 || !text)
+    return { lines: [], status: "empty" };
+  const then = typeof record2.observedAt === "string" ? parseSqliteUtcMs(record2.observedAt) : null;
+  if (then === null)
+    return { lines: [], status: "undatable" };
+  const hours = (now.getTime() - then) / 36e5;
+  if (hours < -HANDOFF_FUTURE_SKEW_MINUTES / 60)
+    return { lines: [], status: "future" };
+  const age = Math.max(0, hours);
+  if (age > HANDOFF_MAX_AGE_DAYS * 24)
+    return { lines: [], status: "expired" };
+  const stale = age > HANDOFF_STALE_HOURS;
+  const when = stale ? `${ageText(age)} \u2014 may be out of date; check it against the repository` : ageText(age);
+  return {
+    lines: [`Where the last session left off (${when}): [mem:${record2.id}]`, ...text.split("\n")],
+    status: stale ? "stale" : "shown"
+  };
+}
+function handoffLines(record2, now = /* @__PURE__ */ new Date()) {
+  return handoffView(record2, now).lines;
+}
+var SESSION_HANDOFF_TYPE, HANDOFF_STALE_HOURS, HANDOFF_MAX_AGE_DAYS, HANDOFF_FUTURE_SKEW_MINUTES, HANDOFF_MAX_CHARS, HANDOFF_TRANSCRIPT_TAIL_BYTES, FENCE_LINE;
+var init_session_handoff = __esm({
+  "dist/core/session-handoff.js"() {
+    "use strict";
+    init_time_utils();
+    init_paths();
+    SESSION_HANDOFF_TYPE = "session-handoff";
+    HANDOFF_STALE_HOURS = 72;
+    HANDOFF_MAX_AGE_DAYS = 14;
+    HANDOFF_FUTURE_SKEW_MINUTES = 5;
+    HANDOFF_MAX_CHARS = 800;
+    HANDOFF_TRANSCRIPT_TAIL_BYTES = 256 * 1024;
+    FENCE_LINE = /^\s*(`{3,}|~{3,})(.*)$/;
+  }
+});
+
+// dist/core/projects.js
+function computeProjects(db2) {
+  const rows = db2.prepare(`
+    SELECT e.id, e.name, e.type,
+      (SELECT json_group_array(t.tag) FROM tags t WHERE t.entity_id = e.id) AS tags
+    FROM entities e
+    WHERE e.status = 'active'
+      AND ${NOT_A_PROJECT_MEMORY.sql}
+  `).all(NOT_A_PROJECT_MEMORY.param);
+  const acc = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    let tagList = [];
+    if (row.tags) {
+      try {
+        const parsed = JSON.parse(row.tags);
+        if (Array.isArray(parsed))
+          tagList = parsed.filter((t) => typeof t === "string");
+      } catch {
+      }
+    }
+    const { project, source } = extractProjectFromEntity(tagList, row.name);
+    if (!project || !source)
+      continue;
+    let bucket = acc.get(project);
+    if (!bucket) {
+      bucket = { count: 0, types: /* @__PURE__ */ new Map(), sources: /* @__PURE__ */ new Set() };
+      acc.set(project, bucket);
+    }
+    bucket.count++;
+    bucket.types.set(row.type, (bucket.types.get(row.type) ?? 0) + 1);
+    bucket.sources.add(source);
+  }
+  return Array.from(acc.entries()).map(([name, bucket]) => ({
+    name,
+    count: bucket.count,
+    types: Array.from(bucket.types.entries()).sort((a, b) => b[1] - a[1]).map(([t]) => t),
+    source: bucket.sources.size === 2 ? "mixed" : bucket.sources.has("tag") ? "tag" : "heuristic"
+  })).sort((a, b) => b.count - a.count);
+}
+var NOT_A_PROJECT_MEMORY;
+var init_projects = __esm({
+  "dist/core/projects.js"() {
+    "use strict";
+    init_project_attribution();
+    init_session_handoff();
+    init_project_attribution();
+    NOT_A_PROJECT_MEMORY = { sql: "e.type <> ?", param: SESSION_HANDOFF_TYPE };
+  }
+});
+
 // dist/knowledge-graph.js
 var knowledge_graph_exports = {};
 __export(knowledge_graph_exports, {
@@ -5386,6 +5564,8 @@ var init_knowledge_graph = __esm({
     init_schema();
     init_entity_write();
     init_work_topology();
+    init_project_attribution();
+    init_projects();
     init_paths();
     EXACT_MATCH_FIRST = `(${SQL_FOLD_FUNCTION}(e.name) = ? OR ${SQL_FOLD_FUNCTION}(COALESCE(e.title, '')) = ?) DESC`;
     isGuardWithPattern = (guard) => guard !== null && typeof guard === "object" && typeof guard.pattern === "string";
@@ -5799,28 +5979,47 @@ var init_knowledge_graph = __esm({
       findConflicts(entityNames) {
         return findConflicts(this.db, entityNames);
       }
-      listRecent(limit, includeArchived, namespace, countAsAccess = true) {
+      listRecent(limit, includeArchived, namespace, countAsAccess = true, offset = 0) {
         const statusFilter = includeArchived ? "" : "AND status = 'active'";
         const namespaceFilter = namespace ? "AND namespace = ?" : "";
         const params = [];
         if (namespace)
           params.push(namespace);
-        params.push(limit ?? 20);
-        const rows = this.db.prepare(`SELECT id FROM entities WHERE 1=1 ${statusFilter} ${namespaceFilter} ORDER BY id DESC LIMIT ?`).all(...params);
+        params.push(limit ?? 20, offset);
+        const rows = this.db.prepare(`SELECT id FROM entities WHERE 1=1 ${statusFilter} ${namespaceFilter} ORDER BY id DESC LIMIT ? OFFSET ?`).all(...params);
         const results = this.getEntitiesByIds(rows.map((r) => r.id), { includeArchived, namespace });
         if (countAsAccess)
           this.trackAccess(results.map((e) => e.id));
         return results;
       }
-      listByType(type, limit, includeArchived, namespace) {
+      listByType(type, limit, includeArchived, namespace, offset = 0) {
         type = canonicalEntityType(type);
         const statusFilter = includeArchived ? "" : "AND status = 'active'";
         const namespaceFilter = namespace ? "AND namespace = ?" : "";
         const params = [type];
         if (namespace)
           params.push(namespace);
-        params.push(limit ?? 20);
-        const rows = this.db.prepare(`SELECT id FROM entities WHERE type = ? ${statusFilter} ${namespaceFilter} ORDER BY id DESC LIMIT ?`).all(...params);
+        params.push(limit ?? 20, offset);
+        const rows = this.db.prepare(`SELECT id FROM entities WHERE type = ? ${statusFilter} ${namespaceFilter} ORDER BY id DESC LIMIT ? OFFSET ?`).all(...params);
+        return this.getEntitiesByIds(rows.map((r) => r.id), { includeArchived, namespace });
+      }
+      listByProject(project, limit, includeArchived, namespace, offset = 0) {
+        const statusFilter = includeArchived ? "" : "AND e.status = 'active'";
+        const namespaceFilter = namespace ? "AND e.namespace = ?" : "";
+        const lessonNames = project.length >= MIN_NAME_PROJECT_LENGTH ? KNOWN_ERROR_PATTERNS.map((pattern) => `lesson-${project}-${pattern}`) : [];
+        const byName = lessonNames.length === 0 ? "" : `OR (e.name IN (${lessonNames.map(() => "?").join(",")}) AND ${NO_PROJECT_TAG})`;
+        const params = [PROJECT_TAG_PREFIX + project, ...lessonNames, NOT_A_PROJECT_MEMORY.param];
+        if (namespace)
+          params.push(namespace);
+        params.push(limit ?? 20, offset);
+        const rows = this.db.prepare(`SELECT e.id FROM entities e
+         WHERE (
+           EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?)
+           ${byName}
+         )
+         AND ${NOT_A_PROJECT_MEMORY.sql}
+         ${statusFilter} ${namespaceFilter}
+         ORDER BY e.id DESC LIMIT ? OFFSET ?`).all(...params);
         return this.getEntitiesByIds(rows.map((r) => r.id), { includeArchived, namespace });
       }
       listRecentInScope(scope, limit, includeArchived, namespace, countAsAccess = true) {
@@ -7032,7 +7231,6 @@ function inferErrorPattern(error51) {
     return "build-error";
   return "other";
 }
-var KNOWN_ERROR_PATTERNS;
 var init_lesson_engine = __esm({
   "dist/core/lesson-engine.js"() {
     "use strict";
@@ -7040,15 +7238,7 @@ var init_lesson_engine = __esm({
     init_db();
     init_lesson_slug();
     init_paths();
-    KNOWN_ERROR_PATTERNS = [
-      "null-reference",
-      "type-error",
-      "import-missing",
-      "config-error",
-      "test-failure",
-      "build-error",
-      "other"
-    ];
+    init_project_attribution();
   }
 });
 
@@ -8873,7 +9063,7 @@ function refreshPluginCache(packageRoot3, host) {
       throw new Error(`Plugin refresh script is missing at ${script}.`);
     const run = execFileSync3("bash", [script], {
       encoding: "utf8",
-      timeout: 12e4,
+      timeout: PLUGIN_REFRESH_BUDGET_MS,
       stdio: ["ignore", "pipe", "pipe"],
       env: process.env
     });
@@ -8885,15 +9075,19 @@ function refreshPluginCache(packageRoot3, host) {
       restartRequired: true
     };
   }
+  const deadline = Date.now() + PLUGIN_REFRESH_BUDGET_MS;
   const upgrade = execFileSync3("codex", ["plugin", "marketplace", "upgrade", "pcircle-memesh"], {
     encoding: "utf8",
-    timeout: 12e4,
+    timeout: PLUGIN_REFRESH_BUDGET_MS,
     stdio: ["ignore", "pipe", "pipe"],
     env: process.env
   });
-  const add = execFileSync3("codex", ["plugin", "add", "memesh@pcircle-memesh"], {
+  const remaining = deadline - Date.now();
+  if (remaining < MIN_SECOND_COMMAND_MS)
+    throw new PluginRefreshBudgetError();
+  const add = execFileSync3("codex", CODEX_ADD_ARGS, {
     encoding: "utf8",
-    timeout: 12e4,
+    timeout: remaining,
     stdio: ["ignore", "pipe", "pipe"],
     env: process.env
   });
@@ -8906,11 +9100,21 @@ ${String(add)}`),
     restartRequired: true
   };
 }
+var PLUGIN_REFRESH_BUDGET_MS, MIN_SECOND_COMMAND_MS, CODEX_ADD_ARGS, PluginRefreshBudgetError;
 var init_doctor_fixes = __esm({
   "dist/core/doctor-fixes.js"() {
     "use strict";
     init_config();
     init_install_channel();
+    PLUGIN_REFRESH_BUDGET_MS = 12e4;
+    MIN_SECOND_COMMAND_MS = 5e3;
+    CODEX_ADD_ARGS = ["plugin", "add", "memesh@pcircle-memesh"];
+    PluginRefreshBudgetError = class extends Error {
+      constructor() {
+        super(`The Codex marketplace upgrade ran, but the ${PLUGIN_REFRESH_BUDGET_MS / 1e3} s repair budget was nearly used up before the plugin could be added. Finish by hand: codex ${CODEX_ADD_ARGS.join(" ")}`);
+        this.name = "PluginRefreshBudgetError";
+      }
+    };
   }
 });
 
@@ -25911,90 +26115,6 @@ var init_host_session = __esm({
   "dist/core/host-session.js"() {
     "use strict";
     init_agent_scope_id();
-  }
-});
-
-// dist/core/session-handoff.js
-function sessionHandoffName(project) {
-  return `${SESSION_HANDOFF_TYPE}:${project}`;
-}
-function stripFences(text) {
-  const kept = [];
-  let open = null;
-  for (const line of text.split("\n")) {
-    const m = FENCE_LINE.exec(line);
-    if (open) {
-      if (m && m[1][0] === open.char && m[1].length >= open.len)
-        open = null;
-      continue;
-    }
-    if (m && !(m[1][0] === "`" && m[2].includes("`"))) {
-      open = { char: m[1][0], len: m[1].length };
-      continue;
-    }
-    kept.push(line);
-  }
-  return kept.join("\n");
-}
-function cleanHandoffText(raw) {
-  let text = stripFences(String(raw ?? "").replace(/\r\n?/g, "\n")).split("\n").map((line) => line.trimEnd()).join("\n").replace(/\n{3,}/g, "\n\n").trim();
-  if (text.length <= HANDOFF_MAX_CHARS)
-    return text;
-  text = text.slice(-(HANDOFF_MAX_CHARS - 1));
-  const first = text.charCodeAt(0);
-  if (first >= 56320 && first <= 57343)
-    text = text.slice(1);
-  const newline = text.indexOf("\n");
-  if (newline >= 0 && newline < HANDOFF_MAX_CHARS / 3)
-    text = text.slice(newline + 1);
-  return `\u2026${text.trim()}`;
-}
-function ageText(hours) {
-  if (hours < 1)
-    return "less than an hour ago";
-  if (hours < 24) {
-    const h = Math.floor(hours);
-    return `${h} hour${h === 1 ? "" : "s"} ago`;
-  }
-  const d = Math.floor(hours / 24);
-  return `${d} day${d === 1 ? "" : "s"} ago`;
-}
-function handoffView(record2, now = /* @__PURE__ */ new Date()) {
-  const text = record2 ? cleanHandoffText(redactMemoryText(record2.text ?? "")) : "";
-  if (!record2 || !text)
-    return { lines: [], status: "empty" };
-  const then = typeof record2.observedAt === "string" ? parseSqliteUtcMs(record2.observedAt) : null;
-  if (then === null)
-    return { lines: [], status: "undatable" };
-  const hours = (now.getTime() - then) / 36e5;
-  if (hours < -HANDOFF_FUTURE_SKEW_MINUTES / 60)
-    return { lines: [], status: "future" };
-  const age = Math.max(0, hours);
-  if (age > HANDOFF_MAX_AGE_DAYS * 24)
-    return { lines: [], status: "expired" };
-  const stale = age > HANDOFF_STALE_HOURS;
-  const when = stale ? `${ageText(age)} \u2014 may be out of date; check it against the repository` : ageText(age);
-  return {
-    lines: [`Where the last session left off (${when}): [mem:${record2.id}]`, ...text.split("\n")],
-    status: stale ? "stale" : "shown"
-  };
-}
-function handoffLines(record2, now = /* @__PURE__ */ new Date()) {
-  return handoffView(record2, now).lines;
-}
-var SESSION_HANDOFF_TYPE, HANDOFF_STALE_HOURS, HANDOFF_MAX_AGE_DAYS, HANDOFF_FUTURE_SKEW_MINUTES, HANDOFF_MAX_CHARS, HANDOFF_TRANSCRIPT_TAIL_BYTES, FENCE_LINE;
-var init_session_handoff = __esm({
-  "dist/core/session-handoff.js"() {
-    "use strict";
-    init_time_utils();
-    init_paths();
-    SESSION_HANDOFF_TYPE = "session-handoff";
-    HANDOFF_STALE_HOURS = 72;
-    HANDOFF_MAX_AGE_DAYS = 14;
-    HANDOFF_FUTURE_SKEW_MINUTES = 5;
-    HANDOFF_MAX_CHARS = 800;
-    HANDOFF_TRANSCRIPT_TAIL_BYTES = 256 * 1024;
-    FENCE_LINE = /^\s*(`{3,}|~{3,})(.*)$/;
   }
 });
 
@@ -55508,80 +55628,6 @@ var init_stats = __esm({
   }
 });
 
-// dist/core/projects.js
-function extractProjectFromName(name) {
-  if (!name.startsWith("lesson-"))
-    return null;
-  const rest = name.slice("lesson-".length);
-  for (const pattern of KNOWN_ERROR_PATTERNS) {
-    const suffix = `-${pattern}`;
-    if (rest.endsWith(suffix)) {
-      const project = rest.slice(0, rest.length - suffix.length);
-      if (project.length >= 2)
-        return project;
-    }
-  }
-  return null;
-}
-function extractProjectFromEntity(tags, name) {
-  if (tags) {
-    const tagged = tags.find((t) => t.startsWith(PROJECT_TAG_PREFIX));
-    if (tagged)
-      return { project: tagged.slice(PROJECT_TAG_PREFIX.length), source: "tag" };
-  }
-  const fromName = extractProjectFromName(name);
-  if (fromName)
-    return { project: fromName, source: "heuristic" };
-  return { project: null, source: null };
-}
-function computeProjects(db2) {
-  const rows = db2.prepare(`
-    SELECT e.id, e.name, e.type,
-      (SELECT json_group_array(t.tag) FROM tags t WHERE t.entity_id = e.id) AS tags
-    FROM entities e
-    WHERE e.status = 'active'
-      AND e.type <> ?
-  `).all(SESSION_HANDOFF_TYPE);
-  const acc = /* @__PURE__ */ new Map();
-  for (const row of rows) {
-    let tagList = [];
-    if (row.tags) {
-      try {
-        const parsed = JSON.parse(row.tags);
-        if (Array.isArray(parsed))
-          tagList = parsed.filter((t) => typeof t === "string");
-      } catch {
-      }
-    }
-    const { project, source } = extractProjectFromEntity(tagList, row.name);
-    if (!project || !source)
-      continue;
-    let bucket = acc.get(project);
-    if (!bucket) {
-      bucket = { count: 0, types: /* @__PURE__ */ new Map(), sources: /* @__PURE__ */ new Set() };
-      acc.set(project, bucket);
-    }
-    bucket.count++;
-    bucket.types.set(row.type, (bucket.types.get(row.type) ?? 0) + 1);
-    bucket.sources.add(source);
-  }
-  return Array.from(acc.entries()).map(([name, bucket]) => ({
-    name,
-    count: bucket.count,
-    types: Array.from(bucket.types.entries()).sort((a, b) => b[1] - a[1]).map(([t]) => t),
-    source: bucket.sources.size === 2 ? "mixed" : bucket.sources.has("tag") ? "tag" : "heuristic"
-  })).sort((a, b) => b.count - a.count);
-}
-var PROJECT_TAG_PREFIX;
-var init_projects = __esm({
-  "dist/core/projects.js"() {
-    "use strict";
-    init_lesson_engine();
-    init_session_handoff();
-    PROJECT_TAG_PREFIX = "project:";
-  }
-});
-
 // dist/core/database-diagnosis.js
 import fs18 from "fs";
 import path15 from "path";
@@ -60982,6 +61028,9 @@ var init_server = __esm({
       } catch (error51) {
         if (error51 instanceof HttpError)
           throw error51;
+        if (error51 instanceof PluginRefreshBudgetError) {
+          throw new HttpError(500, "doctor.repair-incomplete", error51.message);
+        }
         if (isDoctorFixPermissionError(error51)) {
           throw new HttpError(500, "operation.permission-denied", "MeMesh cannot modify the local files required for this repair. Close this dashboard, start `memesh serve` from your own Terminal, and retry. If it still fails, run `memesh doctor`.");
         }
@@ -61225,17 +61274,22 @@ var init_server = __esm({
     EntitiesQuerySchema = external_exports.object({
       type: external_exports.string().min(1).max(100).optional(),
       limit: external_exports.coerce.number().int().min(1).max(5e3).default(20),
+      offset: external_exports.coerce.number().int().min(0).max(1e6).default(0),
+      project: external_exports.string().min(1).max(300).optional(),
       status: external_exports.enum(["all", "active"]).optional()
+    }).refine((q) => !(q.type && q.project), {
+      message: "type and project cannot be combined",
+      path: ["project"]
     });
     app.get("/v1/entities", (req, res) => {
       const query = parseQuery(EntitiesQuerySchema, req, res);
       if (!query)
         return;
       handleGet(res, () => {
-        const { type: typeFilter, limit, status } = query;
+        const { type: typeFilter, limit, offset, project, status } = query;
         const includeArchived = status === "all";
         const kg = new KnowledgeGraph(getDatabase());
-        return (typeFilter ? kg.listByType(typeFilter, limit, includeArchived) : kg.listRecent(limit, includeArchived, void 0, false)).map(shownEntity);
+        return (project ? kg.listByProject(project, limit, includeArchived, void 0, offset) : typeFilter ? kg.listByType(typeFilter, limit, includeArchived, void 0, offset) : kg.listRecent(limit, includeArchived, void 0, false, offset)).map(shownEntity);
       });
     });
     app.get("/v1/entities/:name", (req, res) => handleGet(res, () => {

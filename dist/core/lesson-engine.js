@@ -39,15 +39,7 @@ export function createExplicitLesson(rawError, rawFix, projectName, opts) {
         .run(name);
     return { name };
 }
-export const KNOWN_ERROR_PATTERNS = [
-    'null-reference',
-    'type-error',
-    'import-missing',
-    'config-error',
-    'test-failure',
-    'build-error',
-    'other',
-];
+export { KNOWN_ERROR_PATTERNS } from './project-attribution.js';
 function inferErrorPattern(error) {
     const lower = error.toLowerCase();
     if (lower.includes('null') || lower.includes('undefined') || lower.includes('cannot read prop'))

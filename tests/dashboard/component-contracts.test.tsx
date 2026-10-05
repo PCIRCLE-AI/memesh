@@ -360,11 +360,12 @@ const CASES: Array<{ name: string; node: () => ComponentChildren }> = [
   {
     name: 'HealthScore',
     // Weights are the constants `src/core/analytics.ts` emits (30/30/20/20), not
-    // zeroes. `HealthScore` renders `Math.round((score / weight) * 100)`, so a
-    // zero weight produces `NaN%` — but no code path can send one, and guarding
-    // a value that is a literal in the same repository would be defending
-    // against nothing. A brand-new install sends score 0 against those weights,
-    // which is the degenerate case that actually occurs.
+    // zeroes: this fixture is what the server really sends. `HealthScore`
+    // renders `Math.round((score / weight) * 100)`, so a zero weight would
+    // produce `NaN%`; `isAnalyticsRenderable` refuses such a payload (see its
+    // own test below), so the fixture does not need to. A brand-new install
+    // sends score 0 against those weights, which is the degenerate case that
+    // actually occurs.
     node: () => {
       const z = (weight: number) => ({ score: 0, weight, detail: '' });
       return (
@@ -675,7 +676,7 @@ const GUARD_LEAVES: Array<{
         freshness: { score: 1, weight: 20 },
         lessons: { score: 1, weight: 20 },
       },
-      loopMetric: { trend: [] },
+      loopMetric: { reusedThisWeek: 0, trend: [] },
       timeline: [],
     }),
     leaves: [
@@ -684,6 +685,7 @@ const GUARD_LEAVES: Array<{
       'healthFactors.quality.score', 'healthFactors.quality.weight',
       'healthFactors.freshness.score', 'healthFactors.freshness.weight',
       'healthFactors.lessons.score', 'healthFactors.lessons.weight',
+      'loopMetric.reusedThisWeek',
       'loopMetric.trend',
       'timeline',
     ],
@@ -1076,6 +1078,13 @@ describe('dashboard components on degenerate data', () => {
   });
 
   describe('shape guards, leaf by leaf', () => {
+    it('isAnalyticsRenderable rejects a zero weight — HealthScore divides by it (NaN%)', () => {
+      const guard = GUARD_LEAVES.find((g) => g.name === 'isAnalyticsRenderable')!;
+      const payload = guard.valid() as { healthFactors: { quality: { weight: number } } };
+      payload.healthFactors.quality.weight = 0;
+      expect(guard.guard(payload)).toBe(false);
+    });
+
     for (const g of GUARD_LEAVES) {
       it(`${g.name} accepts the payload it exists to admit`, () => {
         expect(g.guard(g.valid())).toBe(true);

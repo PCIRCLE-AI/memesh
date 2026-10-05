@@ -14,8 +14,21 @@
 // effects, no caching.
 
 import type { MemeshDatabase } from '../storage/sqlite.js';
-import { KNOWN_ERROR_PATTERNS } from './lesson-engine.js';
+import { extractProjectFromEntity } from './project-attribution.js';
 import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
+
+// The attribution rule lives in project-attribution.ts (pure, shared with the
+// dashboard); re-exported here for the existing importers.
+export { extractProjectFromName, extractProjectFromEntity } from './project-attribution.js';
+
+/**
+ * The one type a project never counts: the Stop hook writes a session handoff
+ * for every project, tagged `project:<name>`, and it is not one of the
+ * project's memories. `computeProjects` (the chips) and `listByProject` (the
+ * list behind a chip) both filter with this fragment, so neither can start or
+ * stop counting it without the other. Alias `e` is the entities table.
+ */
+export const NOT_A_PROJECT_MEMORY = { sql: 'e.type <> ?', param: SESSION_HANDOFF_TYPE } as const;
 
 export interface ProjectInfo {
   /** Canonical project key, suitable for matching against tag values. */
@@ -26,55 +39,6 @@ export interface ProjectInfo {
   types: string[];
   /** Whether the assignment came from an explicit tag (vs. name-prefix heuristic). */
   source: 'tag' | 'heuristic' | 'mixed';
-}
-
-const PROJECT_TAG_PREFIX = 'project:';
-
-/**
- * Heuristic: extract a project hint from an entity name like
- * "lesson-claude-code-buddy-config-error" → "claude-code-buddy".
- * Returns null when the name has no recognisable prefix.
- *
- * The lesson naming convention emitted by `lesson-engine.ts createLesson` is
- * `lesson-{project}-{errorPattern}` where `errorPattern` is itself one of a
- * fixed set produced by `inferErrorPattern()`. Several of those patterns
- * contain a dash (`config-error`, `import-missing`, `null-reference`,
- * `test-failure`, `build-error`), so the previous "split on the last dash"
- * approach was wrong — for `lesson-claude-code-buddy-config-error` it
- * yielded `claude-code-buddy-config` instead of `claude-code-buddy`.
- *
- * Fix: anchor on the fixed pattern set. Match the trailing slug against
- * `KNOWN_ERROR_PATTERNS` and treat everything before it as the project. We
- * intentionally restrict the heuristic to `lesson-` only — other prefixes
- * (`plan-`, `decision-`, etc.) have no fixed naming convention and the old
- * heuristic produced more wrong answers than right ones.
- */
-export function extractProjectFromName(name: string): string | null {
-  if (!name.startsWith('lesson-')) return null;
-  const rest = name.slice('lesson-'.length);
-  // Try each known pattern as the trailing slug.
-  for (const pattern of KNOWN_ERROR_PATTERNS) {
-    const suffix = `-${pattern}`;
-    if (rest.endsWith(suffix)) {
-      const project = rest.slice(0, rest.length - suffix.length);
-      if (project.length >= 2) return project;
-    }
-  }
-  return null;
-}
-
-/** Pull the project name out of a single entity's tags + name. */
-export function extractProjectFromEntity(
-  tags: string[] | null | undefined,
-  name: string,
-): { project: string | null; source: 'tag' | 'heuristic' | null } {
-  if (tags) {
-    const tagged = tags.find((t) => t.startsWith(PROJECT_TAG_PREFIX));
-    if (tagged) return { project: tagged.slice(PROJECT_TAG_PREFIX.length), source: 'tag' };
-  }
-  const fromName = extractProjectFromName(name);
-  if (fromName) return { project: fromName, source: 'heuristic' };
-  return { project: null, source: null };
 }
 
 type RawEntity = {
@@ -96,8 +60,8 @@ export function computeProjects(db: MemeshDatabase): ProjectInfo[] {
       (SELECT json_group_array(t.tag) FROM tags t WHERE t.entity_id = e.id) AS tags
     FROM entities e
     WHERE e.status = 'active'
-      AND e.type <> ?
-  `).all(SESSION_HANDOFF_TYPE) as RawEntity[];
+      AND ${NOT_A_PROJECT_MEMORY.sql}
+  `).all(NOT_A_PROJECT_MEMORY.param) as RawEntity[];
 
   const acc = new Map<string, { count: number; types: Map<string, number>; sources: Set<'tag' | 'heuristic'> }>();
 

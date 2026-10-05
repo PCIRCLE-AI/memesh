@@ -61,3 +61,47 @@ describe('FeedbackWidget GitHub handoff', () => {
     expect(container.textContent).not.toMatch(/issue (created|submitted)|已建立 issue|已送出 issue/i);
   });
 });
+
+describe('FeedbackWidget submit edge cases', () => {
+  const bodyOf = (url: string) => new URL(url).searchParams.get('body') ?? '';
+
+  it('keeps Open GitHub Issue disabled until there is a description (no silent no-op click)', () => {
+    const { container } = openAndFill('');
+    const submit = container.querySelector('.fb-submit') as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+    fireEvent.input(container.querySelector('.fb-desc')!, { target: { value: '   ' } });
+    expect(submit.disabled).toBe(true);
+    fireEvent.input(container.querySelector('.fb-desc')!, { target: { value: 'something broke' } });
+    expect(submit.disabled).toBe(false);
+  });
+
+  it('survives a lone surrogate in the description instead of dying on a URIError', async () => {
+    const open = vi.spyOn(window, 'open').mockReturnValue({ opener: window } as unknown as Window);
+    const { container } = openAndFill('before \uD800 after');
+    fireEvent.click(container.querySelector('.fb-submit')!);
+
+    await waitFor(() => expect(open).toHaveBeenCalledTimes(1));
+    expect(bodyOf(open.mock.calls[0]![0] as string)).toContain('before � after');
+  });
+
+  it('says in the issue that system info was unavailable when the dashboard has no health reading', async () => {
+    const open = vi.spyOn(window, 'open').mockReturnValue({ opener: window } as unknown as Window);
+    const { container } = openAndFill('no health yet');
+    fireEvent.click(container.querySelector('.fb-submit')!);
+
+    await waitFor(() => expect(open).toHaveBeenCalledTimes(1));
+    expect(bodyOf(open.mock.calls[0]![0] as string)).toMatch(/System Info[\s\S]*Unavailable/);
+  });
+
+  it('says in the issue that the doctor probe failed instead of silently omitting it', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('Failed to fetch'));
+    const open = vi.spyOn(window, 'open').mockReturnValue({ opener: window } as unknown as Window);
+    const rendered = render(<FeedbackWidget health={{ status: 'ok', version: '4.10.11', entity_count: 3 }} />);
+    fireEvent.click(rendered.container.querySelector('.fb-btn')!);
+    fireEvent.input(rendered.container.querySelector('.fb-desc')!, { target: { value: 'doctor is down' } });
+    fireEvent.click(rendered.container.querySelector('.fb-submit')!);
+
+    await waitFor(() => expect(open).toHaveBeenCalledTimes(1));
+    expect(bodyOf(open.mock.calls[0]![0] as string)).toContain('Diagnostics unavailable: doctor probe failed.');
+  });
+});

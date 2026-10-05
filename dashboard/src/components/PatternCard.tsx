@@ -56,6 +56,15 @@ interface PatternCardProps {
   statusLabel: (status: string) => string;
 }
 
+/** The card's one-line preview, or null when there is nothing to show: a null
+ *  from the server and an empty (or blank) first observation both mean "no
+ *  summary text", and an ellipsis after nothing is a dangling mark. The
+ *  ellipsis after real text says "this is a preview of a longer memory". */
+export function previewLine(preview: string | null): string | null {
+  if (!preview || !preview.trim()) return null;
+  return `${preview}…`;
+}
+
 // Severity is surfaced via stored proposal tags; we recognise
 // severity:high|medium|low (matching the project's existing
 // project:foo / lesson:bar tag convention) and fall back to
@@ -127,12 +136,10 @@ export function PatternCard(props: PatternCardProps) {
             </span>
           </div>
           <div style={{ marginTop: 6, color: 'var(--text-2)', fontSize: 14, lineHeight: 1.5 }}>
-            {/* null = no observations at all (the server used to send the
-                literal '(empty)' sentinel) — render a localised empty state,
-                never a dangling ellipsis. */}
-            {p.digest_observations_preview !== null
-              ? <>{p.digest_observations_preview}…</>
-              : <span style={{ fontStyle: 'italic', color: 'var(--text-3)' }}>{t('insights.noPreview')}</span>}
+            {/* null or empty = no summary text — render a localised empty
+                state, never a dangling ellipsis. */}
+            {previewLine(p.digest_observations_preview)
+              ?? <span style={{ fontStyle: 'italic', color: 'var(--text-3)' }}>{t('insights.noPreview')}</span>}
           </div>
           <div style={{ marginTop: 4, color: 'var(--text-3)', fontSize: 14 }}>
             {formatRelative(p.created_at)}
@@ -147,11 +154,13 @@ export function PatternCard(props: PatternCardProps) {
           >
             {expanded ? t('insights.collapse') : t('insights.viewDetail')}
           </button>
-          {isPending && expanded && detail?.proposed_digest && (
+          {isPending && expanded && detail && (
             <>
-              <button class="btn btn-primary" onClick={() => onAccept(p.id)} disabled={inFlight}>
-                {inFlight ? t('insights.applying') : t('insights.accept')}
-              </button>
+              {detail.proposed_digest && (
+                <button class="btn btn-primary" onClick={() => onAccept(p.id)} disabled={inFlight}>
+                  {inFlight ? t('insights.applying') : t('insights.accept')}
+                </button>
+              )}
               <button class="btn btn-ghost" onClick={() => onReject(p.id)} disabled={inFlight} style={{ color: 'var(--danger)' }}>
                 {t('insights.reject')}
               </button>
@@ -159,6 +168,15 @@ export function PatternCard(props: PatternCardProps) {
           )}
         </div>
       </div>
+
+      {/* `proposed_digest: null` is stored content the server could not parse:
+          nothing below would render, so a click on View detail looked like
+          nothing happened. */}
+      {detail && !detail.proposed_digest && (
+        <div role="status" style={{ marginTop: 12, color: 'var(--text-3)', fontSize: 14 }}>
+          {t('insights.contentUnreadable')}
+        </div>
+      )}
 
       {detail && detail.proposed_digest && (
         <div style={{ marginTop: 12, padding: 12, background: 'var(--bg-1)', borderRadius: 'var(--radius-xs)', fontSize: 14 }}>

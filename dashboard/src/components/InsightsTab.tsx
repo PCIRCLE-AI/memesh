@@ -3,7 +3,8 @@ import { api } from '../lib/api';
 import { t } from '../lib/i18n';
 import { actionFailureMessage, classifyLoadError, failureMessage } from '../lib/failure';
 import { relativeDate, shortProjectId } from '../lib/entity-display';
-import { PatternCard } from './PatternCard';
+import { Chip } from './Chip';
+import { PatternCard, previewLine } from './PatternCard';
 import type { JSX } from 'preact';
 
 // Review proposals that an agent or deterministic rule already staged.
@@ -14,10 +15,15 @@ import type { JSX } from 'preact';
 // differently:
 //   - 'digest'           — weekly compaction recap (success-green)
 //   - 'pattern_emergent' — emerging concern (amber, see PatternCard)
-// The kind is plumbed through from the server in `listProposals`
-// (commit added `kind` to ProposalSummary).
+// The kind comes from the server's `listProposals` (`ProposalSummary.kind`).
 
 type ProposalStatus = 'pending' | 'applied' | 'rejected';
+
+/** The part of the server's `ApplyResult` the reviewer is told about. */
+interface AcceptResult {
+  sourcesArchived?: number;
+  sourcesAlreadyCompacted?: number;
+}
 
 interface ProposalSummary {
   id: number;
@@ -158,17 +164,21 @@ export function InsightsTab({
   const [allProposals, setAllProposals] = useState<ProposalSummary[]>([]);
   const [filter, setFilter] = useState<'pending' | 'applied' | 'rejected' | 'all'>('pending');
   const [expanded, setExpanded] = useState<Map<number, ProposalDetail>>(new Map());
-  const [loading, setLoading] = useState(false);
+  // True from the first render: the mount effect starts the load, and an
+  // initial `false` told the parent "loaded, nothing pending" for one frame.
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [proposalLoadFailed, setProposalLoadFailed] = useState(false);
-  // Set-based in-flight tracking. The earlier scalar `busyId` had a
-  // race: clicking accept on A then accept on B before A's
-  // `await refresh()` resolved would let B's `setBusyId(B)` overwrite
-  // A's busy state, then A's `finally { setBusyId(null) }` would
-  // clear B's state mid-flight. With a Set we add on click and
-  // remove in the matching finally, so two concurrent ops can each
-  // own their own button-disabled state.
+  // Set-based in-flight tracking: two concurrent accept/reject operations
+  // each own their own button-disabled state — a single "busy id" would let
+  // the second click overwrite the first's state, and the first finishing
+  // would then clear the second's mid-flight. Add on click, remove in the
+  // matching finally.
   const [inFlight, setInFlight] = useState<Set<number>>(new Set());
+  // What the last accept actually did to the library. Accepting a compaction
+  // digest archives its source memories and takes them out of search; the
+  // server says how many (and how many it refused), and the reviewer is told.
+  const [acceptNotice, setAcceptNotice] = useState('');
   const refreshGen = useRef(0);
 
   const refresh = useCallback(async () => {
@@ -209,16 +219,19 @@ export function InsightsTab({
 
   const expand = useCallback(async (id: number) => {
     if (expanded.has(id)) {
-      const next = new Map(expanded);
-      next.delete(id);
-      setExpanded(next);
+      setExpanded((prev) => {
+        const next = new Map(prev);
+        next.delete(id);
+        return next;
+      });
       return;
     }
     try {
       const detail = await api<ProposalDetail>('GET', `/v1/dream/proposals/${id}`);
-      const next = new Map(expanded);
-      next.set(id, detail);
-      setExpanded(next);
+      // Functional update: two cards expanded in quick succession each resolve
+      // against the state of their own click, and the later reply used to
+      // overwrite the earlier card's detail.
+      setExpanded((prev) => new Map(prev).set(id, detail));
     } catch (e) {
       setError(actionFailureMessage(e));
     }
@@ -241,8 +254,15 @@ export function InsightsTab({
 
   const accept = useCallback(async (id: number) => {
     markBusy(id);
+    setAcceptNotice('');
     try {
-      await api('POST', `/v1/dream/proposals/${id}/accept`);
+      const result = await api<AcceptResult>('POST', `/v1/dream/proposals/${id}/accept`);
+      const archived = result?.sourcesArchived ?? 0;
+      const refused = result?.sourcesAlreadyCompacted ?? 0;
+      setAcceptNotice([
+        archived > 0 ? t('insights.acceptedArchived', { n: archived }) : '',
+        refused > 0 ? t('insights.acceptedKept', { n: refused }) : '',
+      ].filter(Boolean).join(' '));
       window.dispatchEvent(new Event('memesh:data-changed'));
     } catch (e) {
       setError(actionFailureMessage(e));
@@ -252,11 +272,13 @@ export function InsightsTab({
   }, []);
 
   // Rejection is one click and permanent, so it remains confirmed. Acceptance
-  // is exposed only after the complete proposal detail has loaded below: a
-  // truncated card preview is not the human-review boundary.
+  // is exposed only once the proposal's content has loaded below and can be
+  // read: a truncated card preview is not the human-review boundary, and a
+  // proposal whose stored content cannot be shown cannot be reviewed.
   const reject = useCallback(async (id: number) => {
     if (!confirm(t('insights.rejectConfirm'))) return;
     markBusy(id);
+    setAcceptNotice('');
     try {
       await api('POST', `/v1/dream/proposals/${id}/reject`, { reason: 'rejected via dashboard' });
       window.dispatchEvent(new Event('memesh:data-changed'));
@@ -295,31 +317,14 @@ export function InsightsTab({
 
       {/* Filter tabs */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }} role="group" aria-label={t('insights.title')}>
-        {(['pending', 'applied', 'rejected', 'all'] as const).map(f => {
-          const active = filter === f;
-          return (
-            <button
-              key={f}
-              class={`tag`}
-              aria-pressed={active}
-              style={{
-                padding: '4px 10px',
-                borderRadius: 'var(--radius-xs)',
-                cursor: 'pointer',
-                border: '1px solid ' + (active ? 'var(--life)' : 'var(--border)'),
-                background: active ? 'rgba(143,242,92,0.12)' : 'transparent',
-                color: active ? 'var(--life)' : 'var(--text-2)',
-              }}
-              onClick={() => setFilter(f)}
-            >
-              {t(`insights.filter.${f}`)}
-            </button>
-          );
-        })}
-        <button class="btn btn-ghost" onClick={refresh} style={{ marginLeft: 'auto' }}>{t('insights.refresh')}</button>
+        {(['pending', 'applied', 'rejected', 'all'] as const).map(f => (
+          <Chip key={f} label={t(`insights.filter.${f}`)} active={filter === f} onClick={() => setFilter(f)} />
+        ))}
+        <button class="btn btn-ghost" onClick={() => { setAcceptNotice(''); refresh(); }} style={{ marginLeft: 'auto' }}>{t('insights.refresh')}</button>
       </div>
 
       {error && <div class="card" role="alert" style={{ padding: 12, color: 'var(--danger)' }}>{error}</div>}
+      {acceptNotice && <div class="card" role="status" style={{ padding: 12, color: 'var(--text-2)' }}>{acceptNotice}</div>}
       {loading && <div style={{ color: 'var(--text-3)', fontSize: 14 }}>{t('insights.loading')}</div>}
       {!loading && proposals.length === 0 && (
         <div class="card" style={{ padding: 16, textAlign: 'center', color: 'var(--text-2)' }}>
@@ -355,10 +360,9 @@ export function InsightsTab({
         }
 
         // digest_observations_preview is null when the digest has no
-        // observations (the server used to send the literal '(empty)'
-        // sentinel, which every consumer had to string-compare). Render a
-        // localised empty state instead — never a dangling ellipsis.
-        const preview = p.digest_observations_preview;
+        // observations, and an empty string when its first one is blank.
+        // Render a localised empty state for both — never a dangling ellipsis.
+        const preview = previewLine(p.digest_observations_preview);
 
         return (
           <div key={p.id} class="card" style={{ padding: 14 }}>
@@ -383,9 +387,7 @@ export function InsightsTab({
                   </span>
                 </div>
                 <div style={{ marginTop: 6, color: 'var(--text-2)', fontSize: 14, lineHeight: 1.5 }}>
-                  {preview !== null
-                    ? <>{preview}…</>
-                    : <span style={{ fontStyle: 'italic', color: 'var(--text-3)' }}>{t('insights.noPreview')}</span>}
+                  {preview ?? <span style={{ fontStyle: 'italic', color: 'var(--text-3)' }}>{t('insights.noPreview')}</span>}
                 </div>
                 <div style={{ marginTop: 4, color: 'var(--text-3)', fontSize: 14 }}>
                   {formatRelative(p.created_at)}
@@ -402,9 +404,11 @@ export function InsightsTab({
                 </button>
                 {isPending && isExpanded && detail && (
                   <>
-                    <button class="btn btn-primary" onClick={() => accept(p.id)} disabled={isBusy}>
-                      {isBusy ? t('insights.applying') : t('insights.accept')}
-                    </button>
+                    {detail.proposed_digest && (
+                      <button class="btn btn-primary" onClick={() => accept(p.id)} disabled={isBusy}>
+                        {isBusy ? t('insights.applying') : t('insights.accept')}
+                      </button>
+                    )}
                     <button class="btn btn-ghost" onClick={() => reject(p.id)} disabled={isBusy} style={{ color: 'var(--danger)' }}>
                       {t('insights.reject')}
                     </button>
@@ -412,6 +416,14 @@ export function InsightsTab({
                 )}
               </div>
             </div>
+
+            {/* The server sends `proposed_digest: null` for stored content it
+                could not parse. Nothing below would render, so say why. */}
+            {detail && !detail.proposed_digest && (
+              <div role="status" style={{ marginTop: 12, color: 'var(--text-3)', fontSize: 14 }}>
+                {t('insights.contentUnreadable')}
+              </div>
+            )}
 
             {/* Relation proposals (the conflict judge) carry a judge payload
                 in proposed_digest, not a digest — routing them through the

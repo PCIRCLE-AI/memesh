@@ -8,10 +8,12 @@ interface TabItem {
 
 /**
  * Main navigation as a WAI-ARIA tablist. Before this it was a row of plain
- * buttons: a screen reader announced eight unrelated buttons with no "tab 3 of
- * 8", no selected state, and arrow keys did nothing. Now it is a single tab
- * stop (roving tabIndex) with Left/Right/Home/End moving selection, each tab
- * wired to its panel via aria-controls (panels carry the matching id +
+ * buttons: a screen reader announced unrelated buttons with no "tab 3 of N",
+ * no selected state, and arrow keys did nothing. Now it is a single tab
+ * stop (roving tabIndex) with Left/Right/Home/End moving selection (Up/Down
+ * are left alone — a horizontal tablist does not use them, and swallowing them
+ * stopped the page from scrolling while a tab had focus), each tab wired to
+ * its panel via aria-controls (panels carry the matching id +
  * role="tabpanel" in App.tsx).
  *
  * The nav strip scrolls horizontally with its scrollbar hidden (see .nav in
@@ -50,12 +52,14 @@ export function TabNav({
       el.removeEventListener('scroll', recomputeOverflow);
       window.removeEventListener('resize', recomputeOverflow);
     };
-  }, [recomputeOverflow, tabs.length]);
+    // Labels, not just the count: switching the interface language makes the
+    // same four tabs wider or narrower, and the fade has to follow.
+  }, [recomputeOverflow, tabs.length, tabs.map((tab) => tab.label).join('\u0000')]);
 
   const onKeyDown = (e: KeyboardEvent, i: number) => {
     let next: number;
-    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = (i + 1) % tabs.length;
-    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = (i - 1 + tabs.length) % tabs.length;
+    if (e.key === 'ArrowRight') next = (i + 1) % tabs.length;
+    else if (e.key === 'ArrowLeft') next = (i - 1 + tabs.length) % tabs.length;
     else if (e.key === 'Home') next = 0;
     else if (e.key === 'End') next = tabs.length - 1;
     else return;

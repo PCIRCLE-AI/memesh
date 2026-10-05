@@ -34,8 +34,9 @@ export declare class KnowledgeGraph {
     private scanActiveRows;
     trackAccess(entityIds: number[]): void;
     findConflicts(entityNames: string[]): string[];
-    listRecent(limit?: number, includeArchived?: boolean, namespace?: string, countAsAccess?: boolean): Entity[];
-    listByType(type: string, limit?: number, includeArchived?: boolean, namespace?: string): Entity[];
+    listRecent(limit?: number, includeArchived?: boolean, namespace?: string, countAsAccess?: boolean, offset?: number): Entity[];
+    listByType(type: string, limit?: number, includeArchived?: boolean, namespace?: string, offset?: number): Entity[];
+    listByProject(project: string, limit?: number, includeArchived?: boolean, namespace?: string, offset?: number): Entity[];
     private listRecentInScope;
     private listRecentByTag;
     clearEntityData(name: string): void;

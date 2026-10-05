@@ -31,7 +31,7 @@ interface Props {
  * any tab. Without this, users only see proposals if they land on Home
  * — which a user parked on another tab may not revisit for days.
  *
- * Visual style mirrors `OnboardingBanner` (accent-tinted gradient) so
+ * Visual style mirrors `OnboardingBanner` (accent-tinted, flat fill) so
  * it reads as a friendly nudge rather than an error/warn (those slots
  * are owned by `DoctorBanner`).
  *
@@ -58,27 +58,32 @@ export function InsightsBanner({ currentTab, onNavigateToInsights }: Props) {
       api<ProposalSummary[]>('GET', '/v1/dream/proposals?status=pending')
         .then((data) => {
           if (!mounted) return;
-          // Server returns a wrapped { success, data } envelope which
-          // api() unwraps to the inner data — but defensively handle
-          // either shape since InsightsTab does the same belt-and-
-          // braces parse for the same endpoint.
-          const list = Array.isArray(data) ? data : (data as { data?: ProposalSummary[] })?.data ?? [];
-          setPendingCount(list.length);
+          // api() already unwraps the server's { success, data } envelope,
+          // so `data` IS the proposal array. Anything else is a payload this
+          // bundle cannot read — logged, and the count it already has stays.
+          if (!Array.isArray(data)) {
+            console.warn('[memesh dashboard] /v1/dream/proposals answered, but with a shape this bundle cannot render:', data);
+            return;
+          }
+          setPendingCount(data.length);
         })
-        .catch(() => { /* endpoint unavailable — banner stays hidden */ });
+        .catch((e: unknown) => {
+          // Endpoint unavailable: the banner keeps what it last knew (or stays
+          // hidden if it never knew). Logged, like the same request in
+          // InsightsTab.
+          if (mounted) console.warn('[memesh dashboard] /v1/dream/proposals failed to load:', e);
+        });
     };
     fetch();
-    const handler = () => fetch();
-    window.addEventListener('memesh:data-changed', handler);
-    return () => { mounted = false; window.removeEventListener('memesh:data-changed', handler); };
+    window.addEventListener('memesh:data-changed', fetch);
+    return () => { mounted = false; window.removeEventListener('memesh:data-changed', fetch); };
   }, []);
 
   if (currentTab === 'Home') return null;
   if (dismissed) return null;
   if (pendingCount === 0) return null;
 
-  function dismiss(e: Event) {
-    e.stopPropagation();
+  function dismiss() {
     setDismissed(true);
     try { sessionStorage.setItem(DISMISS_KEY, 'true'); } catch { /* private mode */ }
   }
@@ -91,50 +96,51 @@ export function InsightsBanner({ currentTab, onNavigateToInsights }: Props) {
   const message = t('banner.pendingInsights', { n: pendingCount, s: pendingCount === 1 ? '' : 's' });
 
   return (
-    // The whole banner is one click target that navigates — that is a
-    // button, not a named region. role="region" told assistive tech
-    // "landmark you can skip" while click/Enter/Space all navigated.
+    // Two sibling buttons in a plain box: one that goes to the insights, one
+    // that dismisses. Nesting the × inside a clickable banner (a div with
+    // role="button") put a control inside a control: assistive tech may not
+    // expose the inner one, and Enter/Space on it had to be special-cased.
     <div
-      role="button"
-      aria-label={t('banner.viewAll')}
-      onClick={onNavigateToInsights}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          onNavigateToInsights();
-        }
-      }}
-      tabIndex={0}
       style={{
-        position: 'relative',
         margin: '12px auto 0',
         maxWidth: 920,
-        padding: '10px 40px 10px 16px',
         border: '1px solid rgba(143, 242, 92, 0.32)',
         borderRadius: 'var(--radius)',
         background: 'var(--life-soft)', /* flattened: a decorative gradient is ornament (DESIGN.md) */
-        color: 'var(--text-1)',
-        cursor: 'pointer',
         fontSize: 14,
         lineHeight: 1.5,
         display: 'flex',
         alignItems: 'center',
-        justifyContent: 'space-between',
         gap: 8,
       }}
     >
-      <span style={{ flex: 1 }}>
+      <button
+        type="button"
+        // The visible text is part of the name (WCAG 2.5.3): a bare "View all"
+        // replaced "3 new insights…" for assistive tech.
+        aria-label={`${message} — ${t('banner.viewAll')}`}
+        onClick={onNavigateToInsights}
+        style={{
+          flex: 1,
+          minWidth: 0,
+          padding: '10px 0 10px 16px',
+          background: 'transparent',
+          border: 'none',
+          color: 'var(--text-1)',
+          font: 'inherit',
+          textAlign: 'left',
+          cursor: 'pointer',
+        }}
+      >
         <span style={{ marginRight: 6 }} aria-hidden="true">💡</span>
         {message}
-      </span>
+      </button>
       <button
         type="button"
         onClick={dismiss}
         aria-label={t('banner.dismiss')}
         style={{
-          position: 'absolute',
-          top: 6,
-          right: 8,
+          margin: '0 8px 0 0',
           background: 'transparent',
           border: 'none',
           color: 'var(--text-3)',

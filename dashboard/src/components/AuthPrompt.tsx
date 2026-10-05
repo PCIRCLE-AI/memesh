@@ -23,14 +23,14 @@ interface Props {
  *
  * The token is the same string the operator set via MEMESH_REMOTE_TOKEN
  * (or the file at <memeshDir>/remote-token). Stored in localStorage so
- * it survives page reload on the same origin. Cleared by entering an
- * empty value or by the operator rotating the token (the next 401
- * will reopen this prompt).
+ * it survives page reload on the same origin. An empty value is refused
+ * here and stores nothing; the stored token is replaced when the operator
+ * rotates it (the next 401 reopens this prompt) and the new one is pasted.
  *
  * Translation lookups here are bare, with no `|| 'English literal'` fallback
  * after them, deliberately. Such a fallback reads as a safety net and is not
  * one: the lookup returns the key string itself on a miss, which is truthy, so
- * the right-hand branch can never execute. When these five keys were genuinely
+ * the right-hand branch can never execute. When these keys were genuinely
  * absent this file rendered `auth.title` at an operator and the fallback did
  * nothing to stop it. English is already the fallback inside the lookup
  * (locale -> en -> key), and `tests/dashboard-i18n.test.ts` fails the build if

@@ -5,7 +5,7 @@ import { MetricsRow } from './MetricsRow';
 import { type HealthData } from '../lib/api';
 import { t } from '../lib/i18n';
 
-type HomeDestination = 'Memories' | 'Settings';
+type HomeDestination = 'Memories';
 type NextActionKind = 'loading' | 'empty' | 'insights' | 'healthy' | 'unavailable';
 
 interface InsightState {
@@ -17,9 +17,12 @@ interface InsightState {
 export function chooseNextAction(
   entityCount: number | null,
   insights: InsightState,
+  healthFailed = false,
 ): NextActionKind {
   if (entityCount === 0) return 'empty';
-  if (insights.failed) return 'unavailable';
+  // The library size never arrived and the request failed: that is a status
+  // check that could not be read, not one that is still loading.
+  if (insights.failed || (entityCount === null && healthFailed)) return 'unavailable';
   if (insights.loading || entityCount === null) return 'loading';
   if (insights.pendingCount > 0) return 'insights';
   return 'healthy';
@@ -65,17 +68,20 @@ function NextBestAction({
 /**
  * Home = what memesh did for the user (Insights, leading) + the analytics
  * stack folded into an expander. AnalyticsTab fires three fetches on mount
- * and two more from self-fetching panels, so the expander renders it only
+ * and `PmAnalyticsPanel` inside it a fourth, so the expander renders it only
  * after the FIRST expand (a `<details>` element would mount — and fetch —
  * while closed); once visited it stays mounted so collapse/expand keeps
  * its state without refetching (DESIGN.md expander pattern).
  */
 export function HomeTab({
   health = null,
+  healthFailed = false,
   dataRevision = 0,
   onNavigate = () => {},
 }: {
   health?: HealthData | null;
+  /** The health request failed and no reading has ever arrived. */
+  healthFailed?: boolean;
   dataRevision?: number;
   onNavigate?: (destination: HomeDestination) => void;
 }) {
@@ -83,14 +89,13 @@ export function HomeTab({
   const [analyticsVisited, setAnalyticsVisited] = useState(false);
   const [insights, setInsights] = useState<InsightState>({ pendingCount: 0, loading: true, failed: false });
 
-  const updateInsights = useCallback((next: InsightState) => setInsights(next), []);
   const reviewInsights = useCallback(() => {
     const target = document.getElementById('home-insights');
     target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     target?.focus({ preventScroll: true });
   }, []);
 
-  const nextAction = chooseNextAction(health?.entity_count ?? null, insights);
+  const nextAction = chooseNextAction(health?.entity_count ?? null, insights, healthFailed);
 
   function toggleAnalytics() {
     const next = !analyticsOpen;
@@ -104,8 +109,8 @@ export function HomeTab({
       {/* The recommendation leads; measurements are supporting context. The
           row still degrades per tile: one unmeasured metric says so and the
           others continue to show. */}
-      <MetricsRow dataRevision={dataRevision} />
-      <InsightsTab dataRevision={dataRevision} onStateChange={updateInsights} />
+      <MetricsRow dataRevision={dataRevision} libraryEmpty={health?.entity_count === 0} />
+      <InsightsTab dataRevision={dataRevision} onStateChange={setInsights} />
       <div class="card" style={{ marginTop: 8 }}>
         <button
           onClick={toggleAnalytics}
@@ -126,7 +131,7 @@ export function HomeTab({
           }}
         >
           <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true" style={{ transform: analyticsOpen ? 'rotate(90deg)' : 'none', transition: 'transform 150ms', color: 'var(--text-2)', flexShrink: 0 }}>
-            <path d="M6 4 L10 8 L6 12" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="M6 4 L10 8 L6 12" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round" />
           </svg>
           {t('home.analyticsTitle')}
           {!analyticsOpen && (

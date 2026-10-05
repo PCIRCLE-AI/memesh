@@ -77,3 +77,57 @@ describe('MemoryLoopCard — SPEC-2 acceptance criteria', () => {
     expect(cx).toBeLessThan(140);
   });
 });
+
+describe('MemoryLoopCard reads a sparse trend by calendar, not by array position', () => {
+  const now = new Date('2026-10-05T12:00:00Z');
+  const day = (date: string, count: number) => ({ date, count });
+
+  it('shows no percentage when the previous calendar week is empty', () => {
+    // The server only sends days WITH activity. Six quiet weeks sit between
+    // these two clusters; "the last 7 array entries" compared them anyway and
+    // printed ↑140% while the calendar says last week had nothing.
+    const trend = [
+      ...['09-06', '09-07', '09-08', '09-09', '09-10', '09-11', '09-12'].map((d) => day(`2026-${d}`, 1)),
+      ...['10-01', '10-02', '10-03', '10-04', '10-05'].map((d) => day(`2026-${d}`, 2)),
+    ];
+    const { container } = render(
+      <MemoryLoopCard now={now} metric={{ reusedThisWeek: 10, trend, computedFrom: 'recall_hits' }} />,
+    );
+    expect(container.textContent).not.toMatch(/[↑↓]/);
+  });
+
+  it('compares the last 7 calendar days with the 7 before them', () => {
+    const trend = [
+      day('2026-09-23', 2), day('2026-09-25', 2), day('2026-09-27', 2), // prior week: 6
+      day('2026-09-30', 4), day('2026-10-02', 4), day('2026-10-04', 4), // last week: 12
+    ];
+    const { container } = render(
+      <MemoryLoopCard now={now} metric={{ reusedThisWeek: 12, trend, computedFrom: 'recall_hits' }} />,
+    );
+    expect(container.textContent).toContain('↑ 100%');
+  });
+
+  it('spaces sparkline points by date, so a three-week gap looks like one', () => {
+    const trend = [day('2026-10-01', 1), day('2026-10-02', 1), day('2026-10-31', 1)];
+    const { container } = render(
+      <MemoryLoopCard now={now} metric={{ reusedThisWeek: 1, trend, computedFrom: 'recall_hits' }} />,
+    );
+    const line = container.querySelector('path[stroke-linecap]')!;
+    const xs = [...line.getAttribute('d')!.matchAll(/[ML]([\d.]+),/g)].map((m) => Number(m[1]));
+    expect(xs).toHaveLength(3);
+    // 1 day of 30 across the 216px inner width ≈ 7px after the left pad of 2.
+    expect(xs[1] - xs[0]).toBeLessThan(10);
+    expect(xs[2] - xs[1]).toBeGreaterThan(200);
+  });
+
+  it('writes SVG attributes in their real (kebab-case) names', () => {
+    // Preact's core copies a camelCase prop onto the element as-is, and the
+    // browser ignores `strokeWidth`: the stroke silently fell back to 1px.
+    const { container } = render(
+      <MemoryLoopCard now={now} metric={{ reusedThisWeek: 1, trend: baseTrend, computedFrom: 'recall_hits' }} />,
+    );
+    const line = container.querySelector('path[stroke-linecap]')!;
+    expect(line.getAttribute('stroke-width')).toBe('1.5');
+    expect(line.getAttribute('strokeWidth')).toBeNull();
+  });
+});

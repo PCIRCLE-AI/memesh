@@ -66,3 +66,17 @@ describe('extractProjectFromName', () => {
     expect(extractProjectFromName('lesson-x-other')).toBeNull();
   });
 });
+
+import { extractProjectFromEntity, KNOWN_ERROR_PATTERNS as ATTRIBUTION_PATTERNS } from '../../src/core/project-attribution.js';
+
+describe('project-attribution (shared by the server and the dashboard bundle)', () => {
+  it('a project tag beats a lesson-<project>-<pattern> name', () => {
+    expect(extractProjectFromEntity(['project:memesh'], 'lesson-other-config-error')).toEqual({ project: 'memesh', source: 'tag' });
+    expect(extractProjectFromEntity([], 'lesson-other-config-error')).toEqual({ project: 'other', source: 'heuristic' });
+    expect(extractProjectFromEntity(null, 'note-1')).toEqual({ project: null, source: null });
+  });
+
+  it('is the same pattern list the lesson engine anchors on', () => {
+    expect(KNOWN_ERROR_PATTERNS).toBe(ATTRIBUTION_PATTERNS);
+  });
+});

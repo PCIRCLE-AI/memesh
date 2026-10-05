@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/preact';
-import { ProjectRoadmap } from '../../dashboard/src/components/ProjectRoadmap';
+import { ProjectRoadmap, groupByDate } from '../../dashboard/src/components/ProjectRoadmap';
+import { typeLabel } from '../../dashboard/src/lib/entity-display';
 import { t } from '../../dashboard/src/lib/i18n';
 import type { Entity } from '../../dashboard/src/lib/api';
 
@@ -24,6 +25,12 @@ function makeMindmapEntities(): Entity[] {
     makeEntity({ id: 103, name: 'phase-one-release', title: 'Phase One Release', type: 'release', created_at: '2026-04-18T09:00:00.000Z' }),
   ];
 }
+
+const openTab = (container: Element, label: string) => {
+  const tab = [...container.querySelectorAll<HTMLElement>('[role="tab"]')].find((x) => (x.textContent ?? '').includes(label));
+  if (!tab) throw new Error(`no ${label} tab`);
+  fireEvent.click(tab);
+};
 
 describe('ProjectRoadmap — SPEC-9 v0/v1 acceptance criteria', () => {
   it('renders the header band with project name and entity count (v0 AC3)', () => {
@@ -199,5 +206,160 @@ describe('ProjectRoadmap — SPEC-9 v0/v1 acceptance criteria', () => {
     expect(high).toBeGreaterThanOrEqual(0);
     expect(mid).toBeGreaterThan(high);
     expect(low).toBeGreaterThan(mid);
+  });
+});
+
+// ── Decisions view and lineage: behaviour the review fixes did not change ───
+
+describe('ProjectRoadmap decisions view and lineage', () => {
+  it('Decisions view: a decision that something supersedes reads as superseded, and the chain links to its winner', () => {
+    const old = makeEntity({ id: 1, name: 'dec-old', title: 'Old decision', created_at: '2026-04-10T00:00:00.000Z' });
+    const winner = makeEntity({
+      id: 2, name: 'dec-new', title: 'New decision', created_at: '2026-04-12T00:00:00.000Z',
+      relations: [{ from: 'dec-new', to: 'dec-old', type: 'supersedes' }],
+    });
+    const { container } = render(<ProjectRoadmap projectName="p" entities={[old, winner]} />);
+    openTab(container, t('roadmap.viewDecisions'));
+    expect(container.textContent).toContain(t('adr.statusSuperseded'));
+    expect(container.textContent).toContain(t('adr.statusActive'));
+    const header = [...container.querySelectorAll<HTMLElement>('button[aria-expanded]')].find((b) => (b.textContent ?? '').includes('Old decision'))!;
+    fireEvent.click(header);
+    expect(container.textContent).toContain(t('adr.supersededBy'));
+    expect(container.textContent).toContain('New decision');
+  });
+
+  it('draws the lineage legend only for arcs between rows that are on screen', async () => {
+    const old = makeEntity({ id: 1, name: 'dec-old', title: 'Old decision', created_at: '2026-04-10T00:00:00.000Z' });
+    const winner = makeEntity({
+      id: 2, name: 'dec-new', title: 'New decision', created_at: '2026-04-12T00:00:00.000Z',
+      relations: [{ from: 'dec-new', to: 'dec-old', type: 'supersedes' }],
+    });
+    // Three memories inside one week make a phase — the trunk the arcs hang from.
+    const third = makeEntity({ id: 3, name: 'dec-third', title: 'Third decision', created_at: '2026-04-13T00:00:00.000Z' });
+    const { container } = render(<ProjectRoadmap projectName="p" entities={[old, winner, third]} />);
+    await waitFor(() => expect(container.textContent).toContain(t('roadmap.lineageSupersedes', { n: 1 })));
+  });
+});
+
+// ── Review fixes: counts, empty states, jumps, time zones, labels ───────────
+
+describe('ProjectRoadmap review fixes', () => {
+  // The jump test replaces two browser globals; the next test gets them back.
+  const scrollIntoViewBefore = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+  const requestAnimationFrameBefore = Object.getOwnPropertyDescriptor(window, 'requestAnimationFrame');
+  const restoreProperty = (target: object, name: string, before: PropertyDescriptor | undefined) => {
+    if (before) Object.defineProperty(target, name, before);
+    else delete (target as Record<string, unknown>)[name];
+  };
+  afterEach(() => {
+    vi.restoreAllMocks();
+    restoreProperty(HTMLElement.prototype, 'scrollIntoView', scrollIntoViewBefore);
+    restoreProperty(window, 'requestAnimationFrame', requestAnimationFrameBefore);
+  });
+
+  const releases = (n: number): Entity[] => Array.from({ length: n }, (_, i) =>
+    makeEntity({ id: 500 + i, name: `rel-${i}`, title: `Release ${i}`, type: 'release', created_at: `2026-03-${String(10 + i).padStart(2, '0')}T08:00:00.000Z` }));
+
+  it('does not call releases past the six-item cap "low-signal hidden" — releases are exempt from the gate', () => {
+    const { container } = render(<ProjectRoadmap projectName="p" entities={releases(8)} />);
+    expect(container.textContent).not.toContain(t('roadmap.lowSignalHidden', { count: 2 }));
+  });
+
+  it('counts as "low-signal hidden" only what the signal gate removed', () => {
+    const passing = Array.from({ length: 9 }, (_, i) => makeEntity({ id: 600 + i, name: `f-${i}`, title: `Feature ${i}`, type: 'feature', created_at: `2026-03-${String(10 + i).padStart(2, '0')}T08:00:00.000Z` }));
+    const low = [0, 1].map((i) => makeEntity({ id: 700 + i, name: `low-${i}`, title: `Weak ${i}`, type: 'feature', metadata: { signal_score: 0.2 }, created_at: `2026-03-${String(25 + i)}T08:00:00.000Z` }));
+    const { container } = render(<ProjectRoadmap projectName="p" entities={[...passing, ...low]} />);
+    expect(container.textContent).toContain(t('roadmap.lowSignalHidden', { count: 2 }));
+  });
+
+  it('a project WITH memories but no phase does not tell the mindmap viewer it has no memories', () => {
+    const { container } = render(<ProjectRoadmap projectName="p" entities={[makeEntity({ id: 1, title: 'Only one' })]} />);
+    openTab(container, t('roadmap.viewMindmap'));
+    expect(container.textContent).toContain(t('roadmap.mindmapNeedsPhases'));
+    expect(container.textContent).not.toContain(t('roadmap.emptyProject'));
+  });
+
+  it('a phase chip clicked in the mindmap view switches to the tree and scrolls to its anchor', async () => {
+    const scroll = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scroll });
+    Object.defineProperty(window, 'requestAnimationFrame', {
+      configurable: true,
+      value: (callback: FrameRequestCallback) => window.setTimeout(() => callback(0), 0),
+    });
+    const { container } = render(<ProjectRoadmap projectName="p" entities={makeMindmapEntities()} />);
+    openTab(container, t('roadmap.viewMindmap'));
+    fireEvent.click(container.querySelector<HTMLElement>('button[title*="→"]')!);
+
+    await waitFor(() => expect(scroll).toHaveBeenCalled());
+    const selected = container.querySelector('[role="tab"][aria-selected="true"]');
+    expect(selected?.textContent).toContain(t('roadmap.viewTree'));
+  });
+
+  describe('west-of-Greenwich time zones', () => {
+    const originalTz = process.env.TZ;
+    afterEach(() => { if (originalTz === undefined) delete process.env.TZ; else process.env.TZ = originalTz; });
+
+    it('labels an older month by its UTC month, not the month before', () => {
+      process.env.TZ = 'America/Los_Angeles';
+      const e = makeEntity({ id: 1, created_at: '2026-03-15 10:00:00', last_accessed_at: undefined });
+      const [group] = groupByDate([e], new Date('2026-10-05T12:00:00Z'));
+      expect(group.label).toMatch(/March/);
+    });
+
+    it('puts a Sunday and the Monday after it in the same week group', () => {
+      process.env.TZ = 'America/Los_Angeles';
+      const sunday = makeEntity({ id: 1, created_at: '2026-10-11 10:00:00' });
+      const monday = makeEntity({ id: 2, created_at: '2026-10-12 10:00:00' });
+      expect(groupByDate([sunday, monday], new Date('2026-10-20T12:00:00Z'))).toHaveLength(1);
+    });
+  });
+
+  it('calls the latest phase "active" only while it is still open', () => {
+    const at = (daysAgo: number) => new Date(Date.now() - daysAgo * 86_400_000).toISOString();
+    const trio = (daysAgo: number) => [
+      makeEntity({ id: 1, title: 'Anchor release', type: 'release', created_at: at(daysAgo + 2) }),
+      makeEntity({ id: 2, title: 'Second', type: 'pattern', created_at: at(daysAgo + 1) }),
+      makeEntity({ id: 3, title: 'Third', type: 'decision', created_at: at(daysAgo) }),
+    ];
+    const fresh = render(<ProjectRoadmap projectName="p" entities={trio(1)} />);
+    expect(fresh.container.textContent).toContain(t('roadmap.activePhase'));
+    fresh.unmount();
+    const old = render(<ProjectRoadmap projectName="p" entities={trio(400)} />);
+    expect(old.container.textContent).not.toContain(t('roadmap.activePhase'));
+  });
+
+  it('marks the latest chip of the phase strip current only while that phase is still open', () => {
+    const at = (daysAgo: number) => new Date(Date.now() - daysAgo * 86_400_000).toISOString();
+    const trio = (daysAgo: number) => [
+      makeEntity({ id: 1, title: 'Anchor release', type: 'release', created_at: at(daysAgo + 2) }),
+      makeEntity({ id: 2, title: 'Second', type: 'pattern', created_at: at(daysAgo + 1) }),
+      makeEntity({ id: 3, title: 'Third', type: 'decision', created_at: at(daysAgo) }),
+    ];
+    const lastChipStyle = (container: Element) => {
+      const chips = container.querySelectorAll<HTMLElement>('button[title*="→"]');
+      return chips[chips.length - 1].getAttribute('style') ?? '';
+    };
+    const fresh = render(<ProjectRoadmap projectName="p" entities={trio(1)} />);
+    expect(lastChipStyle(fresh.container)).toContain('--life-soft');
+    fresh.unmount();
+    const old = render(<ProjectRoadmap projectName="p" entities={trio(400)} />);
+    expect(lastChipStyle(old.container)).not.toContain('--life-soft');
+  });
+
+  it('keeps the ~suffix of a long project id on the mindmap root and gives the full id as its title', () => {
+    const id = 'a-very-long-project-name~2c0fe491888c8efb9a4894828bbc2733';
+    const { container } = render(<ProjectRoadmap projectName={id} entities={makeMindmapEntities()} />);
+    openTab(container, t('roadmap.viewMindmap'));
+    const root = container.querySelector('svg text')!.textContent ?? '';
+    expect(root.endsWith('~2c0fe4')).toBe(true);
+    expect(root).toContain('…');
+    expect(container.querySelector('svg g title')?.textContent).toBe(id);
+  });
+
+  it('names a mindmap leaf\'s type in the user\'s language, as its aria-label does', () => {
+    const { container } = render(<ProjectRoadmap projectName="p" entities={makeMindmapEntities()} />);
+    openTab(container, t('roadmap.viewMindmap'));
+    const titles = [...container.querySelectorAll('svg g[role="button"] title')].map((x) => x.textContent);
+    expect(titles).toContain(`Entity One (${typeLabel('decision')})`);
   });
 });

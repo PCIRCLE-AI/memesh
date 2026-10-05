@@ -27,7 +27,7 @@ import {
 import { SESSION_LIMIT_MIN, SESSION_LIMIT_MAX } from '../../core/session-limit.js';
 import { AGENT_SCOPE_ID_MAX_LENGTH } from '../../core/agent-scope-id.js';
 import { BRIEFING_LEVELS } from '../../core/briefing-level.js';
-import { isDoctorFixPermissionError, removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
+import { isDoctorFixPermissionError, PluginRefreshBudgetError, removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
 import { computePatterns } from '../../core/patterns.js';
 import { computeAnalytics, computePmAnalytics } from '../../core/analytics.js';
 import { computeStats } from '../../core/stats.js';
@@ -92,6 +92,7 @@ type ErrorCode =
   | 'payload.too-large'     // 413 — body exceeds the 1 MB limit
   | 'operation.failed'      // 400 — valid request, but the operation itself rejected it
   | 'operation.permission-denied' // 500 — explicit local mutation lacked filesystem permission
+  | 'doctor.repair-incomplete' // 500 — a multi-step repair ran its first step and could not run the next; the body names it
   | 'rate.limited'          // 429 — too many requests in the window (non-loopback only)
   | 'server.internal';      // 500/503 — unexpected server-side failure
 
@@ -595,6 +596,11 @@ app.post('/v1/doctor/fix', (req, res) => handlePost(DoctorFixBody, req, res, asy
     }
   } catch (error) {
     if (error instanceof HttpError) throw error;
+    // The first Codex command ran; the second had no time left. Not a generic
+    // 500: the dashboard would show "unexpected error" and hide the step left.
+    if (error instanceof PluginRefreshBudgetError) {
+      throw new HttpError(500, 'doctor.repair-incomplete', error.message);
+    }
     if (isDoctorFixPermissionError(error)) {
       throw new HttpError(
         500,
@@ -1134,7 +1140,16 @@ const EntitiesQuerySchema = z.object({
   // Cap at 5000 — Browse legitimately fetches the full set for client-side
   // filter / sort / search across the whole DB.
   limit: z.coerce.number().int().min(1).max(5000).default(20),
+  // Paging: skip this many of the newest matches. The Project page loads one
+  // project's memories a page at a time instead of the newest 2000 of the
+  // whole library.
+  offset: z.coerce.number().int().min(0).max(1_000_000).default(0),
+  // Only this project's memories (the rule `/v1/projects` counts with).
+  project: z.string().min(1).max(300).optional(),
   status: z.enum(['all', 'active']).optional(),
+}).refine((q) => !(q.type && q.project), {
+  message: 'type and project cannot be combined',
+  path: ['project'],
 });
 
 // --- List entities ---
@@ -1145,7 +1160,7 @@ app.get('/v1/entities', (req, res) => {
   const query = parseQuery(EntitiesQuerySchema, req, res);
   if (!query) return;
   handleGet(res, () => {
-    const { type: typeFilter, limit, status } = query;
+    const { type: typeFilter, limit, offset, project, status } = query;
     const includeArchived = status === 'all';
     const kg = new KnowledgeGraph(getDatabase());
     // Neither branch counts as a use.
@@ -1160,9 +1175,11 @@ app.get('/v1/entities', (req, res) => {
     // triggered by looking rather than by taking a backup.
     // Shown like recall (#523): a credential stored before redaction is
     // masked here, the stored row is not touched.
-    return (typeFilter
-      ? kg.listByType(typeFilter, limit, includeArchived)
-      : kg.listRecent(limit, includeArchived, undefined, false)).map(shownEntity);
+    return (project
+      ? kg.listByProject(project, limit, includeArchived, undefined, offset)
+      : typeFilter
+        ? kg.listByType(typeFilter, limit, includeArchived, undefined, offset)
+        : kg.listRecent(limit, includeArchived, undefined, false, offset)).map(shownEntity);
   });
 });
 

@@ -11,7 +11,7 @@
  * not load, and a hardcoded fallback would be exactly the drift this file
  * exists to prevent.
  */
-export type ResolvedTokens = Record<string, string>;
+type ResolvedTokens = Record<string, string>;
 
 export function resolveTokens(el: Element, names: readonly string[]): ResolvedTokens {
   const cs = getComputedStyle(el);
