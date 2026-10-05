@@ -4397,10 +4397,10 @@ function topologyLine(entity, maxChars) {
   return stripControlChars(`- [${entity.type}] ${clip(text, room)}${handle}`);
 }
 function clip(text, maxChars) {
-  const flat = text.replace(/\s+/g, " ").trim();
-  if (flat.length <= maxChars)
-    return flat;
-  const cut = sliceWholeChars(flat, maxChars);
+  const flat2 = text.replace(/\s+/g, " ").trim();
+  if (flat2.length <= maxChars)
+    return flat2;
+  const cut = sliceWholeChars(flat2, maxChars);
   const lastSpace = cut.lastIndexOf(" ");
   const base = lastSpace > maxChars * 0.6 ? cut.slice(0, lastSpace) : cut;
   return `${base.trimEnd()}\u2026`;
@@ -5101,6 +5101,15 @@ function redactUserPaths(text) {
 function redactMemoryText(text) {
   return redactUserPaths(redactSecrets(text));
 }
+function redactShownTogether(texts) {
+  const present = texts.flatMap((text, i) => text == null ? [] : [{ i, text }]);
+  const masked = redactSecretList(present.map(({ text }) => text));
+  const shown = texts.map(() => null);
+  present.forEach(({ i }, k) => {
+    shown[i] = redactUserPaths(masked[k]);
+  });
+  return shown;
+}
 function redactTextValues(value, skipKeys = /* @__PURE__ */ new Set()) {
   if (value === void 0)
     return void 0;
@@ -5213,7 +5222,7 @@ var init_paths = __esm({
     SENDGRID_KEY = "SG\\.[A-Za-z0-9_-]{16,}\\.[A-Za-z0-9_-]{16,}";
     SECRET_PATTERN_SOURCES = [
       "-----BEGIN[A-Z ]*PRIVATE KEY-----(?:[\\s\\S]*?-----END[A-Z ]*PRIVATE KEY-----|[\\s\\S]*)",
-      "(?:postgres|postgresql|mysql|mariadb|mongodb(?:\\+srv)?|redis|rediss|amqp|amqps)://[^\\s:@/]+:[^\\s:@/]+@",
+      "(?:postgres|postgresql|mysql|mariadb|mongodb(?:\\+srv)?|redis|rediss|amqp|amqps)://[^\\s:@/]*:[^\\s:@/]+@",
       JWT_TOKEN,
       SENDGRID_KEY,
       "[srp]k_(?:live|test)_[A-Za-z0-9]{16,}",
@@ -25539,10 +25548,10 @@ function parseTaskState(metadata) {
   return state;
 }
 function normalizeFieldValue(value) {
-  const flat = value.replace(/\s+/g, " ").trim();
-  if (!flat)
+  const flat2 = value.replace(/\s+/g, " ").trim();
+  if (!flat2)
     return null;
-  return flat.length > MAX_FIELD_CHARS ? `${flat.slice(0, MAX_FIELD_CHARS - 1).trimEnd()}\u2026` : flat;
+  return flat2.length > MAX_FIELD_CHARS ? `${flat2.slice(0, MAX_FIELD_CHARS - 1).trimEnd()}\u2026` : flat2;
 }
 function mergeTaskState(previous, patch, now) {
   const state = { ...previous };
@@ -25587,11 +25596,9 @@ function taskStateLines(state, project, now = /* @__PURE__ */ new Date()) {
   const days = ageInDays(state.updated_at, now);
   const age = days === null ? "at some point" : days === 0 ? "today" : days === 1 ? "yesterday" : `${days} days ago`;
   const lines = [`Stated about ${jsonStringLiteral(projectLabel(project))} ${age}, and not revisited since:`];
-  for (const field of TASK_STATE_FIELDS) {
-    const value = state[field];
-    if (value)
-      lines.push(`- ${FIELD_LABELS[field]}: ${redactMemoryText(value)}`);
-  }
+  const present = TASK_STATE_FIELDS.filter((field) => state[field]);
+  const shown = redactShownTogether(present.map((field) => state[field]));
+  present.forEach((field, i) => lines.push(`- ${FIELD_LABELS[field]}: ${shown[i]}`));
   return lines;
 }
 function isLeapYear(year) {
@@ -25911,14 +25918,10 @@ function candidateIsAutoInjectable(metadata) {
   }
   return isAutoInjectable(metadata);
 }
-function redact(text) {
-  if (!text)
-    return "";
-  return redactMemoryText(String(text)).replace(/\s+/g, " ").trim();
-}
 function indexLine(candidate) {
-  const title = redact(candidate.title);
-  const snippet = redact(candidate.snippet);
+  const [shownTitle, shownSnippet] = redactShownTogether([candidate.title ?? null, candidate.snippet ?? null]);
+  const title = flat(shownTitle);
+  const snippet = flat(shownSnippet);
   const repeats = title && snippet && snippet.toLowerCase().startsWith(title.replace(/…$/, "").toLowerCase());
   const text = title && snippet && !repeats ? `${title} \u2014 ${snippet}` : title || snippet;
   return topologyLine({ name: String(candidate.id), id: candidate.id, type: candidate.type || "memory", title: text || null }, INDEX_LINE_MAX_CHARS);
@@ -26015,7 +26018,7 @@ function buildBriefingIndex(candidates, projectName, now, options = {}) {
   const closed = closeWithFooter(above, rendered.length);
   return { ...closed, shown: rendered.length, more, older, truncated, ids };
 }
-var INDEX_MAX_LINES, INDEX_MAX_BYTES, INDEX_STALE_DAYS, INDEX_LINE_MAX_CHARS, INDEX_SNIPPET_FETCH_CHARS, INDEX_CANDIDATE_CAP, INDEX_EXCLUDED_TYPES, DAY_MS;
+var INDEX_MAX_LINES, INDEX_MAX_BYTES, INDEX_STALE_DAYS, INDEX_LINE_MAX_CHARS, INDEX_SNIPPET_FETCH_CHARS, INDEX_CANDIDATE_CAP, INDEX_EXCLUDED_TYPES, DAY_MS, flat;
 var init_briefing_index = __esm({
   "dist/core/briefing-index.js"() {
     "use strict";
@@ -26030,6 +26033,7 @@ var init_briefing_index = __esm({
     INDEX_CANDIDATE_CAP = 2e3;
     INDEX_EXCLUDED_TYPES = [...EVIDENCE_LAYER_TYPES, "task-state", SESSION_HANDOFF_TYPE];
     DAY_MS = 24 * 60 * 60 * 1e3;
+    flat = (text) => text ? text.replace(/\s+/g, " ").trim() : "";
   }
 });
 
@@ -26145,9 +26149,11 @@ function readSnippets(db2, ids) {
 function toTopologyEntity(row, snippets) {
   const signal = parseMetadata(row.metadata)?.signal_score;
   const snippet = snippets.get(row.id);
-  const title = row.title == null ? null : redactMemoryText(row.title);
-  const first = snippet?.first ?? null;
-  const fix = row.type && LESSON_TYPE_LIST.includes(row.type) ? snippet?.fix ?? null : null;
+  const [title, first, fix] = redactShownTogether([
+    row.title ?? null,
+    snippet?.first ?? null,
+    row.type && LESSON_TYPE_LIST.includes(row.type) ? snippet?.fix ?? null : null
+  ]);
   const background = title || first;
   const after = background === fix ? null : background;
   return {

@@ -7,7 +7,7 @@
 // byte-locked to core — eliminating the hand-mirror drift behind the P0 FTS bug.
 // ============================================================================
 import { jsonStringLiteral, projectLabel } from './work-topology.js';
-import { redactMemoryText } from './core-paths.js';
+import { redactShownTogether } from './core-paths.js';
 export const TASK_STATE_TYPE = 'task-state';
 export const TASK_STATE_FIELDS = ['goal', 'next', 'blocked', 'done'];
 export const MAX_FIELD_CHARS = 300;
@@ -91,11 +91,9 @@ export function taskStateLines(state, project, now = new Date()) {
     const days = ageInDays(state.updated_at, now);
     const age = days === null ? 'at some point' : days === 0 ? 'today' : days === 1 ? 'yesterday' : `${days} days ago`;
     const lines = [`Stated about ${jsonStringLiteral(projectLabel(project))} ${age}, and not revisited since:`];
-    for (const field of TASK_STATE_FIELDS) {
-        const value = state[field];
-        if (value)
-            lines.push(`- ${FIELD_LABELS[field]}: ${redactMemoryText(value)}`);
-    }
+    const present = TASK_STATE_FIELDS.filter((field) => state[field]);
+    const shown = redactShownTogether(present.map((field) => state[field]));
+    present.forEach((field, i) => lines.push(`- ${FIELD_LABELS[field]}: ${shown[i]}`));
     return lines;
 }
 export const STALE_TASK_STATE_HOURS = 72;

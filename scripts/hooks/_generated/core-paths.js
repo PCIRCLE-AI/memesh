@@ -169,7 +169,7 @@ const JWT_TOKEN = 'eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}'
 const SENDGRID_KEY = 'SG\\.[A-Za-z0-9_-]{16,}\\.[A-Za-z0-9_-]{16,}';
 export const SECRET_PATTERN_SOURCES = [
     '-----BEGIN[A-Z ]*PRIVATE KEY-----(?:[\\s\\S]*?-----END[A-Z ]*PRIVATE KEY-----|[\\s\\S]*)',
-    '(?:postgres|postgresql|mysql|mariadb|mongodb(?:\\+srv)?|redis|rediss|amqp|amqps)://[^\\s:@/]+:[^\\s:@/]+@',
+    '(?:postgres|postgresql|mysql|mariadb|mongodb(?:\\+srv)?|redis|rediss|amqp|amqps)://[^\\s:@/]*:[^\\s:@/]+@',
     JWT_TOKEN,
     SENDGRID_KEY,
     '[srp]k_(?:live|test)_[A-Za-z0-9]{16,}',
@@ -500,6 +500,13 @@ export function redactUserPaths(text) {
 }
 export function redactMemoryText(text) {
     return redactUserPaths(redactSecrets(text));
+}
+export function redactShownTogether(texts) {
+    const present = texts.flatMap((text, i) => (text == null ? [] : [{ i, text }]));
+    const masked = redactSecretList(present.map(({ text }) => text));
+    const shown = texts.map(() => null);
+    present.forEach(({ i }, k) => { shown[i] = redactUserPaths(masked[k]); });
+    return shown;
 }
 export function redactTextValues(value, skipKeys = new Set()) {
     if (value === undefined)

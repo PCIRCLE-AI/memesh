@@ -19,6 +19,7 @@ export declare function holdsSecret(items: readonly string[]): boolean;
 export declare function redactSecrets(input: string): string;
 export declare function redactUserPaths(text: string): string;
 export declare function redactMemoryText(text: string): string;
+export declare function redactShownTogether(texts: ReadonlyArray<string | null>): Array<string | null>;
 export declare function redactTextValues(value: unknown, skipKeys?: ReadonlySet<string>): unknown;
 export declare function redactVersionText(entry: unknown): unknown;
 export declare function textsIn(value: unknown): Set<string>;

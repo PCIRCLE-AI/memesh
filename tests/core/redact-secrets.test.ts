@@ -794,4 +794,15 @@ describe('a JWT-shaped run that never completes is searched in linear time (#567
     const glued = `prefixeyJ${'A'.repeat(8)}eyJ${'B'.repeat(8)}.${'C'.repeat(8)}.${'D'.repeat(8)}`;
     expect(redactSecrets(glued)).toBe('prefix***REDACTED***');
   });
+
+});
+
+// Redis's usual URL has no username: `redis://:<password>@host`.
+describe('a connection string whose username is empty', () => {
+  it('is masked', () => {
+    const url = ['redis://', ':hunter2hunter2@cache.internal:6379/0'].join('');
+    const out = redactSecrets(`cache at ${url} ok`);
+    expect(out).not.toContain('hunter2hunter2');
+    expect(out).toBe('cache at ***REDACTED***cache.internal:6379/0 ok');
+  });
 });

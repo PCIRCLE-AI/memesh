@@ -16,7 +16,7 @@
 // must exist exactly once lives here: which types count, the order, the
 // staleness line, the redaction, the caps and the phrasing.
 
-import { redactMemoryText } from './paths.js';
+import { redactShownTogether } from './paths.js';
 import { EVIDENCE_LAYER_TYPES, isAutoInjectable, jsonStringLiteral, projectLabel, topologyLine } from './work-topology.js';
 import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
 
@@ -159,15 +159,14 @@ function candidateIsAutoInjectable(metadata: unknown): boolean {
   return isAutoInjectable(metadata);
 }
 
-/** The shared display redaction (paths.ts), then whitespace flattened for one line. */
-function redact(text: string | null | undefined): string {
-  if (!text) return '';
-  return redactMemoryText(String(text)).replace(/\s+/g, ' ').trim();
-}
+/** Whitespace flattened for one line. */
+const flat = (text: string | null): string => (text ? text.replace(/\s+/g, ' ').trim() : '');
 
 function indexLine(candidate: IndexCandidate): string {
-  const title = redact(candidate.title);
-  const snippet = redact(candidate.snippet);
+  // The shared display redaction (paths.ts), title and snippet as one set.
+  const [shownTitle, shownSnippet] = redactShownTogether([candidate.title ?? null, candidate.snippet ?? null]);
+  const title = flat(shownTitle);
+  const snippet = flat(shownSnippet);
   // Titles are usually derived from the first observation; printing both
   // would send the same sentence twice.
   const repeats = title && snippet && snippet.toLowerCase().startsWith(title.replace(/…$/, '').toLowerCase());

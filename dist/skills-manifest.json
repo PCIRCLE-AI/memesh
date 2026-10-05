@@ -53,8 +53,8 @@
     },
     {
       "path": "scripts/hooks/_generated/briefing-index.js",
-      "sha256": "9a435aed7ecbddd4523c2ed108b0a0306ff98e71a7d87588184ad1b2fdb54b5b",
-      "bytes": 7036
+      "sha256": "b6414b76618d059e5fc6191c0fdb54cae30ff08fe38ed5093ff8a85c8b5a5619",
+      "bytes": 7079
     },
     {
       "path": "scripts/hooks/_generated/briefing-level.js",
@@ -63,8 +63,8 @@
     },
     {
       "path": "scripts/hooks/_generated/briefing-pools.js",
-      "sha256": "28fd0cec6f2001b0c25dc365e426aa440aa798577d784a69cad1b6bbeed7b51d",
-      "bytes": 9983
+      "sha256": "e14f605c43c5bb38a1dd289caaca63b2eff28a7638e17a52c788754f0a0e8fcf",
+      "bytes": 10001
     },
     {
       "path": "scripts/hooks/_generated/capture-flag.js",
@@ -88,8 +88,8 @@
     },
     {
       "path": "scripts/hooks/_generated/core-paths.js",
-      "sha256": "3e781bbb1f7fd76a04a5607897c03d9b75c6ff67c627daaabbd1b415a05dbee7",
-      "bytes": 23622
+      "sha256": "9ea4a269d337370d6365f91257ea32fe4af3a7176e737dfb192d626846d0741b",
+      "bytes": 23962
     },
     {
       "path": "scripts/hooks/_generated/entity-write.js",
@@ -143,8 +143,8 @@
     },
     {
       "path": "scripts/hooks/_generated/task-state.js",
-      "sha256": "a4ef7493a9453f92b0627334fff39825e930c4f39776ec8d51f43b58c92aa85e",
-      "bytes": 6926
+      "sha256": "8041dba578432b8bfd975663599a61bc7bea85d9c5c575f771a0a9e53ae59bf3",
+      "bytes": 6979
     },
     {
       "path": "scripts/hooks/_generated/time-utils.js",

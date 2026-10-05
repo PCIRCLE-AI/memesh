@@ -6,7 +6,7 @@
 // always-on capture path survives a missing or stale dist/ while staying
 // byte-locked to core — eliminating the hand-mirror drift behind the P0 FTS bug.
 // ============================================================================
-import { redactMemoryText } from './core-paths.js';
+import { redactShownTogether } from './core-paths.js';
 import { EVIDENCE_LAYER_TYPES, isAutoInjectable, jsonStringLiteral, projectLabel, topologyLine } from './work-topology.js';
 import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
 export const INDEX_MAX_LINES = 40;
@@ -56,14 +56,11 @@ function candidateIsAutoInjectable(metadata) {
     }
     return isAutoInjectable(metadata);
 }
-function redact(text) {
-    if (!text)
-        return '';
-    return redactMemoryText(String(text)).replace(/\s+/g, ' ').trim();
-}
+const flat = (text) => (text ? text.replace(/\s+/g, ' ').trim() : '');
 function indexLine(candidate) {
-    const title = redact(candidate.title);
-    const snippet = redact(candidate.snippet);
+    const [shownTitle, shownSnippet] = redactShownTogether([candidate.title ?? null, candidate.snippet ?? null]);
+    const title = flat(shownTitle);
+    const snippet = flat(shownSnippet);
     const repeats = title && snippet && snippet.toLowerCase().startsWith(title.replace(/…$/, '').toLowerCase());
     const text = title && snippet && !repeats ? `${title} — ${snippet}` : (title || snippet);
     return topologyLine({ name: String(candidate.id), id: candidate.id, type: candidate.type || 'memory', title: text || null }, INDEX_LINE_MAX_CHARS);

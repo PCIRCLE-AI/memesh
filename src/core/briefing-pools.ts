@@ -16,7 +16,7 @@
 // (or reads as NULL) instead of failing it.
 
 import type { MemeshDatabase } from '../storage/sqlite.js';
-import { redactMemoryText } from './paths.js';
+import { redactMemoryText, redactShownTogether } from './paths.js';
 import { rankEntities } from './scoring.js';
 import { SESSION_HANDOFF_TYPE, sessionHandoffName } from './session-handoff.js';
 import { INDEX_CANDIDATE_CAP, INDEX_EXCLUDED_TYPES, INDEX_SNIPPET_FETCH_CHARS, type IndexCandidate } from './briefing-index.js';
@@ -304,9 +304,11 @@ export function readSnippets(db: MemeshDatabase, ids: readonly number[]): Map<nu
      WHERE entity_id IN (${unique.map(() => '?').join(',')})
      ORDER BY id ASC`,
   ).all(...unique) as Array<{ entity_id: number; content: string | null }>;
-  // Redacted whole, cut to SNIPPET_FETCH_CHARS characters of the text as
-  // written, THEN flattened: text that starts only after that many characters
-  // (whitespace included) is not shown, on either reader.
+  // Redacted whole, cut to SNIPPET_FETCH_CHARS characters of the redacted
+  // text, THEN flattened: text that starts only after that many characters
+  // (whitespace included) is not shown, on either reader. A credential that
+  // redaction shortens can bring later text inside the bound; that text is
+  // redacted too.
   const shown = (content: string) => redactMemoryText(content).slice(0, SNIPPET_FETCH_CHARS).replace(/\s+/g, ' ').trim() || null;
   for (const row of rows) {
     const content = String(row.content ?? '');
@@ -331,10 +333,14 @@ export function toTopologyEntity(row: PoolRow, snippets: ReadonlyMap<number, Sni
   const signal = parseMetadata(row.metadata)?.signal_score;
   const snippet = snippets.get(row.id);
   // #464: redacted like the index, so a memory that is in both cannot be
-  // printed verbatim here and redacted a few lines below.
-  const title = row.title == null ? null : redactMemoryText(row.title);
-  const first = snippet?.first ?? null;
-  const fix = row.type && LESSON_TYPE_LIST.includes(row.type) ? snippet?.fix ?? null : null;
+  // printed verbatim here and redacted a few lines below. What one line shows
+  // is one set: a key split between the title and an observation is masked
+  // as a whole.
+  const [title, first, fix] = redactShownTogether([
+    row.title ?? null,
+    snippet?.first ?? null,
+    row.type && LESSON_TYPE_LIST.includes(row.type) ? snippet?.fix ?? null : null,
+  ]);
   // Shown after the fix, unless it IS the fix (a lesson whose only content, or
   // whose title, is its fix), so a line never reads "Fix: X — Fix: X".
   const background = title || first;

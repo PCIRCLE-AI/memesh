@@ -348,8 +348,9 @@ export const SECRET_PATTERN_SOURCES: readonly string[] = [
   // of that string, because redactSecrets redacts decoded strings.
   '-----BEGIN[A-Z ]*PRIVATE KEY-----(?:[\\s\\S]*?-----END[A-Z ]*PRIVATE KEY-----|[\\s\\S]*)',
   // DB / message-broker connection string with embedded credentials. Scheme
-  // anchored so it cannot fire on ordinary `word:word@word` prose.
-  '(?:postgres|postgresql|mysql|mariadb|mongodb(?:\\+srv)?|redis|rediss|amqp|amqps)://[^\\s:@/]+:[^\\s:@/]+@',
+  // anchored so it cannot fire on ordinary `word:word@word` prose. The
+  // username may be empty, as in Redis's `redis://:<password>@host`.
+  '(?:postgres|postgresql|mysql|mariadb|mongodb(?:\\+srv)?|redis|rediss|amqp|amqps)://[^\\s:@/]*:[^\\s:@/]+@',
   // JWT — three base64url segments; `eyJ` is base64 of `{"`.
   JWT_TOKEN,
   // SendGrid API key.
@@ -955,6 +956,22 @@ export function redactUserPaths(text: string): string {
  */
 export function redactMemoryText(text: string): string {
   return redactUserPaths(redactSecrets(text));
+}
+
+/**
+ * Texts shown together (a title beside its snippet, the fields of one task
+ * state), redacted for display as ONE set, then their user paths: a private
+ * key stored before write-time redaction, with its header in one text and its
+ * body in another, is masked as a whole instead of showing the body. A null
+ * stays null. A body line with no header or footer anywhere in the set is not
+ * recognisable as a key and is left as it is.
+ */
+export function redactShownTogether(texts: ReadonlyArray<string | null>): Array<string | null> {
+  const present = texts.flatMap((text, i) => (text == null ? [] : [{ i, text }]));
+  const masked = redactSecretList(present.map(({ text }) => text));
+  const shown: Array<string | null> = texts.map(() => null);
+  present.forEach(({ i }, k) => { shown[i] = redactUserPaths(masked[k]); });
+  return shown;
 }
 
 /**

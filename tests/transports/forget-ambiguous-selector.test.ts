@@ -150,4 +150,14 @@ describe('a selector matching neither spelling keeps the not-found answer', () =
     expect(tool.content).toContain('did not appear verbatim');
     expect(rows('absent')).toEqual(stored);
   });
+
+  // A credential-shaped selector whose text and masked spelling are both
+  // absent is not-found too, not the ambiguity refusal.
+  it('a credential-shaped selector that matches neither spelling', () => {
+    seed('absent-cred', ['keep']);
+    expect(forget({ name: 'absent-cred', observation: SECRET_C })).toMatchObject({ observation_removed: false, entity_found: true });
+    const tool = handleMemoryCommand({ command: 'str_replace', path: `${MEMORY_ROOT}/personal/absent-cred.md`, old_str: SECRET_C, new_str: 'x' });
+    expect(tool.content).toContain('did not appear verbatim');
+    expect(rows('absent-cred')).toEqual(['keep']);
+  });
 });

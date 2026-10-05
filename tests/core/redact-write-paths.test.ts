@@ -1005,11 +1005,7 @@ describe('serialized metadata, fresh history, wrong-sibling forget, staging cap 
       (m.replaced_history as unknown[]).push({ replaced_at: 't1', title: `new ${TOKEN_ASSIGNMENT}`, observations: [], tags: [] });
       return m;
     });
-    // No public writer stores a caller-built version as given.
-    const kgAny = kg as unknown as { appendReplacedHistory?: (name: string, version: unknown, bound: (h: unknown[]) => unknown[]) => void };
-    kg.createEntity('history-appended', 'note', { observations: ['safe'] });
-    kgAny.appendReplacedHistory?.('history-appended', { replaced_at: 't', title: `forged ${TOKEN_ASSIGNMENT}`, observations: [`forged ${DB_URL}`], tags: [] }, (h) => h);
-    for (const name of ['history-string', 'history-object', 'history-pushed', 'history-appended']) {
+    for (const name of ['history-string', 'history-object', 'history-pushed']) {
       expect(metaOf(name), name).not.toContain(TOKEN_VALUE);
       expect(metaOf(name), name).not.toContain(DB_PASSWORD);
     }

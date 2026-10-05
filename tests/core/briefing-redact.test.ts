@@ -19,7 +19,9 @@ import { openDatabase, closeDatabase, getDatabase } from '../../src/db.js';
 import { assembleBriefing } from '../../src/core/briefing.js';
 import { getProjectName, homeDir } from '../../src/core/paths.js';
 import { SNIPPET_FETCH_CHARS } from '../../src/core/work-topology.js';
-import { taskStateName } from '../../src/core/task-state.js';
+import { taskStateLines, taskStateName } from '../../src/core/task-state.js';
+import { buildBriefingIndex } from '../../src/core/briefing-index.js';
+import { toTopologyEntity } from '../../src/core/briefing-pools.js';
 import { sessionHandoffName, SESSION_HANDOFF_TYPE } from '../../src/core/session-handoff.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
 
@@ -75,7 +77,7 @@ function seedUnredactedRows(): void {
   addObs.run(untitled, `Cache lives at ${['redis://cache', `${SNIPPET_PASSWORD}@cache.internal:6379`].join(':')} for now`);
   addTag.run(untitled, `project:${project}`);
 
-  // Snippets are fetched `substr(content, 1, SNIPPET_FETCH_CHARS)` and then
+  // A snippet that was cut before it was redacted (the old SQL `substr(content, 1, SNIPPET_FETCH_CHARS)`, then redaction)
   // redacted, so a credential straddling that cut is seen by the redactor
   // as a fragment. This row places the password exactly across the cut.
   const cutAt = SNIPPET_FETCH_CHARS;
@@ -182,10 +184,10 @@ describe('briefing redaction (#464)', () => {
     expectRedactedEverywhere(injected);
   });
 
-  it('the SessionStart hook reads a bounded part of a huge legacy observation, so the redactor cannot spend its time budget', () => {
+  it('the SessionStart hook redacts a 300,000-character legacy observation within its time budget', () => {
     // 300,000 characters of `eyJ`: no write path accepts this any more, but
-    // an older version stored such rows, and redacting all of it takes tens
-    // of seconds. The hook reads a bounded prefix and stays within budget.
+    // an older version stored such rows. The hook reads it whole and redacts
+    // it; redaction is linear on runs of `eyJ` (#567), so it stays in budget.
     const db = getDatabase();
     const huge = Number(db.prepare("INSERT INTO entities (name, type, title, status) VALUES ('huge-legacy-decision', 'decision', 'huge legacy decision', 'active')").run().lastInsertRowid);
     db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(huge, 'eyJ'.repeat(100_000));
@@ -204,11 +206,11 @@ describe('briefing redaction (#464)', () => {
     expectRedactedEverywhere(injected);
   });
 
-  it('a credential crossing the read window is left out whole, and a huge legacy handoff is read within budget', () => {
+  it('a long credential does not pull a later credential into the snippet, and a huge legacy handoff is redacted within budget', () => {
     const db = getDatabase();
     // A long first credential redacts to a short marker, pulling what follows
-    // it into the printed snippet; the URL's `@` sits exactly at 16384, past
-    // the read window, so a cut there would print its prefix.
+    // it into the printed snippet; the later URL is redacted with the rest,
+    // so its password never prints.
     const pw = 'straddlepw';
     const crossing = `password=${'A'.repeat(16350)} ${['postgres://u1', `${pw}@host/db`].join(':')} tail`;
     const row = Number(db.prepare("INSERT INTO entities (name, type, title, status) VALUES ('crossing-window-decision', 'decision', 'crossing window decision', 'active')").run().lastInsertRowid);
@@ -232,5 +234,41 @@ describe('briefing redaction (#464)', () => {
     expect(injected).not.toContain('postgres://u1');
     expect(injected).toContain('Where the last session left off');
     expect(injected).toContain('finish the migration script');
+  });
+});
+
+// A private key stored before write-time redaction, with its header in one
+// shown text and its body in another, is masked as a whole on every display
+// path that puts those texts on one line or one block.
+describe('a key split across shown texts is masked as a whole (#565, display)', () => {
+  const dashes = '-'.repeat(5);
+  const kind = ['RSA', 'PRIVATE', 'KEY'].join(' ');
+  const header = `${dashes}BEGIN ${kind}${dashes}`;
+  const footer = `${dashes}END ${kind}${dashes}`;
+  const body = 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7';
+
+  it('task state: header in one field, body in another', () => {
+    const lines = taskStateLines({ goal: header, next: body, blocked: footer }, 'split-key');
+    expect(lines.join('\n')).not.toContain(body);
+    expect(lines.join('\n')).toContain('***REDACTED***');
+  });
+
+  it('durable-memory index: header in the title, body in the snippet', () => {
+    const index = buildBriefingIndex(
+      [{ id: 1, type: 'decision', title: header, snippet: body, lastActivity: '2026-10-01 00:00:00', metadata: null }],
+      'split-key',
+      Date.parse('2026-10-05T00:00:00Z'),
+    );
+    expect(JSON.stringify(index)).not.toContain(body);
+    expect(JSON.stringify(index)).toContain('***REDACTED***');
+  });
+
+  it('ranked line: header in the title, body in the first observation', () => {
+    const entity = toTopologyEntity(
+      { id: 7, name: 'split', type: 'decision', title: header, metadata: null },
+      new Map([[7, { first: body, fix: null }]]),
+    );
+    expect(JSON.stringify(entity)).not.toContain(body);
+    expect(entity.title).toBe('***REDACTED***');
   });
 });

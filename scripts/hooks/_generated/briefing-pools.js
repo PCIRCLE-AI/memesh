@@ -6,7 +6,7 @@
 // always-on capture path survives a missing or stale dist/ while staying
 // byte-locked to core — eliminating the hand-mirror drift behind the P0 FTS bug.
 // ============================================================================
-import { redactMemoryText } from './core-paths.js';
+import { redactMemoryText, redactShownTogether } from './core-paths.js';
 import { rankEntities } from './scoring.js';
 import { SESSION_HANDOFF_TYPE, sessionHandoffName } from './session-handoff.js';
 import { INDEX_CANDIDATE_CAP, INDEX_EXCLUDED_TYPES, INDEX_SNIPPET_FETCH_CHARS } from './briefing-index.js';
@@ -166,9 +166,11 @@ export function readSnippets(db, ids) {
 export function toTopologyEntity(row, snippets) {
     const signal = parseMetadata(row.metadata)?.signal_score;
     const snippet = snippets.get(row.id);
-    const title = row.title == null ? null : redactMemoryText(row.title);
-    const first = snippet?.first ?? null;
-    const fix = row.type && LESSON_TYPE_LIST.includes(row.type) ? snippet?.fix ?? null : null;
+    const [title, first, fix] = redactShownTogether([
+        row.title ?? null,
+        snippet?.first ?? null,
+        row.type && LESSON_TYPE_LIST.includes(row.type) ? snippet?.fix ?? null : null,
+    ]);
     const background = title || first;
     const after = background === fix ? null : background;
     return {
