@@ -20,6 +20,7 @@ import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
 import { buildCredentialFreeBaseEnv, buildIsolatedRuntimeEnv, buildIsolatedSuiteEnv } from '../scripts/lib/isolated-env.mjs';
 import { findOrphanedTypeScriptOutputs } from '../scripts/check-generated-mirror.mjs';
+import { writeNodeShim } from '../scripts/lib/node-shim.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -954,8 +955,7 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
         try {
           const binDir = path.join(tmp, 'bin');
           fs.mkdirSync(binDir);
-          fs.writeFileSync(path.join(binDir, 'npm'), NPM_STUB);
-          fs.chmodSync(path.join(binDir, 'npm'), 0o755);
+          writeNodeShim(binDir, 'npm', NPM_STUB, 'commonjs');
           // A no-op sleep: the "poll never propagates" case below runs its
           // full 20 attempts in milliseconds instead of 10 real minutes,
           // without editing the script's own POLL_INTERVAL_SECONDS.
