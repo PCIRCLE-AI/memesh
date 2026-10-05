@@ -56729,6 +56729,45 @@ var init_install_id = __esm({
   }
 });
 
+// dist/core/project-identity-split.js
+function findProjectIdentitySplits(db2) {
+  const rows = db2.prepare(`SELECT t.tag AS tag,
+            SUM(CASE WHEN e.status = 'active' AND NOT EXISTS (
+                  SELECT 1 FROM tags own
+                   WHERE own.entity_id = e.id
+                     AND substr(own.tag, 1, length(t.tag) + 1) = t.tag || '~'
+                ) THEN 1 ELSE 0 END) AS active
+       FROM tags t JOIN entities e ON e.id = t.entity_id
+      WHERE t.tag LIKE 'project:%'
+      GROUP BY t.tag`).all();
+  const projects = rows.map((row) => ({ project: row.tag.slice("project:".length), active: Number(row.active) }));
+  const idsByLabel = /* @__PURE__ */ new Map();
+  for (const { project } of projects) {
+    const label = projectLabel(project);
+    if (label === project)
+      continue;
+    const ids = idsByLabel.get(label);
+    if (ids)
+      ids.push(project);
+    else
+      idsByLabel.set(label, [project]);
+  }
+  const splits = [];
+  for (const { project, active: active2 } of projects) {
+    const ids = idsByLabel.get(project);
+    if (ids === void 0 || active2 === 0 || projectLabel(project) !== project)
+      continue;
+    splits.push({ plain: project, ids: [...ids].sort(), activeMemories: active2 });
+  }
+  return splits.sort((a, b) => b.activeMemories - a.activeMemories || a.plain.localeCompare(b.plain));
+}
+var init_project_identity_split = __esm({
+  "dist/core/project-identity-split.js"() {
+    "use strict";
+    init_work_topology();
+  }
+});
+
 // dist/core/capture-flag.js
 function autoCaptureDecision(envVal, configAutoCapture) {
   if (envVal === "false")
@@ -57269,6 +57308,18 @@ function inspectCodexQueueDaemon(db2) {
   } catch (err) {
     return createCheck("codex-queue-daemon", "Codex stuck-message release", "warn", `Could not read the Codex host_activation receipts: ${err instanceof Error ? err.message : String(err)}`, "Run `memesh doctor` again; if this persists, check the database rows above for the underlying error.");
   }
+}
+function inspectProjectIdentitySplit(db2) {
+  let splits;
+  try {
+    splits = findProjectIdentitySplits(db2);
+  } catch (err) {
+    return createCheck("project-identity-split", "Project tags", "warn", `The project tag check could not run (${err instanceof Error ? err.message : String(err)}), so a project split is not ruled out.`, "Run `memesh kg rename-project` to list every project tag.");
+  }
+  if (splits.length === 0)
+    return void 0;
+  const total = splits.reduce((sum, split) => sum + split.activeMemories, 0);
+  return createCheck("project-identity-split", "Project tags", "warn", `${total} active ${total === 1 ? "memory" : "memories"} in ${splits.length} ${splits.length === 1 ? "project is" : "projects are"} filed under a plain project name (project:<name>) that the project's sessions never read; they use the full id (project:<name>~<hash>).`, "Run `memesh kg rename-project` to list every project tag with its count. For a plain name listed next to an id of the same name, kg rename-project --from <name> --to <id> previews moving its memories to that id, and the same command with --apply moves them (it backs the database up first). A shared name does not prove one project: if a different repository used that name, leave it.");
 }
 function inspectCodexSessionSetup(codexPluginCacheDetected, existsSyncImpl) {
   if (!codexPluginCacheDetected)
@@ -58426,6 +58477,9 @@ async function runDoctor(options) {
     const codexQueueDaemon = inspectCodexQueueDaemon(db2);
     if (codexQueueDaemon)
       dbChecks.push(codexQueueDaemon);
+    const projectSplit = inspectProjectIdentitySplit(db2);
+    if (projectSplit)
+      dbChecks.push(projectSplit);
     const hasVocab = db2.prepare(`SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'fts_vocab'`).get();
     if (hasVocab?.present) {
       const unsegmented = db2.prepare(`SELECT COUNT(*) AS c FROM fts_vocab
@@ -58590,6 +58644,7 @@ var init_doctor = __esm({
     init_database_diagnosis();
     init_citation_rule();
     init_paths();
+    init_project_identity_split();
     init_agent_router();
     init_install_hooks();
     init_fts_index();

@@ -2046,6 +2046,8 @@ memesh kg backfill-relations [--project <name>] [--dry-run] [--max-per-source <n
 
 Merge or rename a project across every entity **and every durable agent message scoped to it**. Automatic identities use `<readable repo label>~<32 hex>` and hash either a password-free remote locator or a native real path, preventing unrelated same-basename repositories from sharing an inbox. Standard GitHub HTTPS and SSH spellings converge; generic SSH retains its login, absolute-versus-home-relative path semantics, and literal `.git` suffix. Existing bare Git names and older non-Git `<name>-<8 hex>` values are not rewritten automatically: run with no flags to inspect the stored spellings, then use an explicit mapping when one old project has one unambiguous destination. An old basename that already mixed multiple repositories has no stored provenance from which MeMesh can safely split its rows; do not guess that migration.
 
+`memesh doctor` names the case this command is most often needed for (#408): memories under a plain project name (`project:memesh`) that shares its readable name with a project id in the same graph (`project:memesh~<hash>`). Sessions resolve the id, so those memories never reach them. The `project-identity-split` row (warn) counts the active ones that carry no id of that name and points here; it names no project, because doctor rows are copied into public feedback reports. Run this command with no flags to see the names, then preview and `--apply` each move. A shared name does not prove one project: an old plain name may have been used by a different repository.
+
 **Usage**:
 
 ```bash

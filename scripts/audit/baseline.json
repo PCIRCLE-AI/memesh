@@ -456,6 +456,11 @@
       "reason": "`e.relations ?? []` in selectProjectEntities — an entity without relations simply readmits nothing; the readmission rule is pinned by tests/dashboard/ProjectTab.select.test.ts including the no-relations path. (re-keyed 43→44 on 2026-08-29; line shift only, classification unchanged)",
       "triaged": "2026-08-16 (UX-3 readmission rule); re-keyed 2026-09-10 (#237: Fragment import added above; same statement — verified)"
     },
+    "C1 tests/core/project-identity-split-doctor.test.ts": {
+      "class": "SAFE",
+      "reason": "the emptiness assertion is the no-split case; the same file pins the split exactly (toEqual with the one expected split and its count) and asserts the warn row, its count and its command",
+      "triaged": "2026-10-05 (#408)"
+    },
     "C1 tests/cli/task-corrupted-record.test.ts": {
       "class": "SAFE",
       "reason": "the not.toMatch/not.toContain assertions (no stack frames, no install path, no internal entity name) are the contract under test and each is paired with positive assertions on the same output (status 1, recovery text present, JSON error object)",
