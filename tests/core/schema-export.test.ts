@@ -88,8 +88,11 @@ describe('exportOpenAITools', () => {
     expect(tool.function.parameters.anyOf).toEqual([
       { required: ['note'] },
       { required: ['name', 'type'] },
-      { required: ['name', 'replace', 'observations'], properties: { replace: { const: true } } },
+      { required: ['name', 'replace', 'observations'], properties: { replace: { const: true }, observations: { minItems: 1 } } },
     ]);
+    // The MCP tool definition an agent actually reads states the same branches.
+    const mcpRemember = TOOL_DEFINITIONS.find((t) => t.name === 'remember') as { inputSchema: { anyOf?: unknown } } | undefined;
+    expect(mcpRemember?.inputSchema.anyOf).toEqual(tool.function.parameters.anyOf);
     // `required` stays absent: a top-level list would be a THIRD claim, and
     // neither field is unconditionally required.
     expect(tool.function.parameters.required).toBeUndefined();

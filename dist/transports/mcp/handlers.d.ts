@@ -211,6 +211,9 @@ export declare const TOOL_DEFINITIONS: readonly [{
                 readonly replace: {
                     readonly const: true;
                 };
+                readonly observations: {
+                    readonly minItems: 1;
+                };
             };
         }];
     };

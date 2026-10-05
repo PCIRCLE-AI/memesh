@@ -33331,7 +33331,7 @@ var TOOL_DEFINITIONS = [
       anyOf: [
         { required: ["note"] },
         { required: ["name", "type"] },
-        { required: ["name", "replace", "observations"], properties: { replace: { const: true } } }
+        { required: ["name", "replace", "observations"], properties: { replace: { const: true }, observations: { minItems: 1 } } }
       ]
     }
   },

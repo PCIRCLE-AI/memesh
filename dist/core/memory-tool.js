@@ -129,7 +129,7 @@ function findEntity(kg, namespace, name, includeArchived = false) {
 }
 function rewriteObservations(kg, entity, observations) {
     const next = redactSecretList(observations);
-    if (!entity.archived && next.length === entity.observations.length && next.every((line, i) => line === entity.observations[i]))
+    if (!entity.archived && next.join('\n') === entity.observations.join('\n'))
         return;
     getDatabase().transaction(() => {
         kg.clearEntityData(entity.name);

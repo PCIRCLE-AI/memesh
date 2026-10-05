@@ -372,7 +372,9 @@ function rewriteObservations(
   // active or lift its confidence. Compared after redaction, so a credential
   // stored before #523 is still masked by the next edit. An archived memory is
   // written anyway: a `create` over a deleted path is what brings it back.
-  if (!entity.archived && next.length === entity.observations.length && next.every((line, i) => line === entity.observations[i])) return;
+  // The text is compared whole: the edit splits the body on newlines, so a
+  // stored observation that holds a newline comes back as two lines.
+  if (!entity.archived && next.join('\n') === entity.observations.join('\n')) return;
   // One transaction, because the two halves are a delete and a restore. On its
   // own, `clearEntityData` removes every observation AND every tag; if
   // `createEntity` then threw — a disk-full, a lock lost to one of the seven

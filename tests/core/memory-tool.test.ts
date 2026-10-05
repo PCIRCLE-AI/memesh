@@ -619,6 +619,21 @@ describe('Feature: memory_20250818 over the knowledge graph', () => {
       expect(snapshot('noop-create')).toEqual(before);
     });
 
+    it('an observation that holds a newline does not defeat the no-op check', () => {
+      const name = 'noop-wrapped';
+      seed(name, ['wrapped line one\nwrapped line two', 'plain']);
+      const db = getDatabase();
+      db.prepare('UPDATE observations SET created_at = ? WHERE entity_id = (SELECT id FROM entities WHERE name = ?)').run(OLD, name);
+      db.prepare('UPDATE entities SET confidence = 0.5 WHERE name = ?').run(name);
+      const before = snapshot(name);
+      const replaced = handleMemoryCommand({ command: 'str_replace', path: file(name), old_str: 'plain', new_str: 'plain' });
+      expect(replaced.isError, replaced.content).toBe(false);
+      expect(snapshot(name)).toEqual(before);
+      const created = handleMemoryCommand({ command: 'create', path: file(name), file_text: 'wrapped line one\nwrapped line two\nplain' });
+      expect(created.isError, created.content).toBe(false);
+      expect(snapshot(name)).toEqual(before);
+    });
+
     it('a real edit still rewrites the memory', () => {
       seedAged('real-edit');
       const result = handleMemoryCommand({ command: 'str_replace', path: file('real-edit'), old_str: 'alpha', new_str: 'ALPHA' });
