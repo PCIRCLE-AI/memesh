@@ -39,7 +39,7 @@ const nonGlobal = (cols) => (cols.namespace ? " AND (e.namespace IS NULL OR e.na
 const NO_PROJECT_TAG = "NOT EXISTS (SELECT 1 FROM tags pt WHERE pt.entity_id = e.id AND pt.tag LIKE 'project:%')";
 const titleCol = (cols) => (cols.title ? 'e.title' : 'NULL AS title');
 const candidateColumns = (cols) => [
-    'e.id', 'e.name', 'e.type', titleCol(cols), 'e.metadata',
+    'e.id', 'e.name', 'e.type', titleCol(cols), 'e.metadata', 'e.created_at',
     ...SCORING_COLUMNS.map((c) => (cols.scoring.has(c) ? `e.${c}` : `NULL AS ${c}`)),
 ].join(', ');
 const toPoolRow = (row) => ({
@@ -53,6 +53,7 @@ const toPoolRow = (row) => ({
     confidence: row.confidence ?? undefined,
     recall_hits: row.recall_hits ?? undefined,
     recall_misses: row.recall_misses ?? undefined,
+    created_at: row.created_at ?? undefined,
     recency: row.recency ?? null,
 });
 function selectPool(rows, cap) {
@@ -182,7 +183,7 @@ export function toTopologyEntity(row, snippets, now = Date.now()) {
         snippet: first,
         signalScore: typeof signal === 'number' ? signal : null,
         recency: row.recency ?? null,
-        ...(decision ? { why, unconfirmedDays: unconfirmedDaysSince([row.last_accessed_at, snippet?.lastAddedAt, row.recency], now) } : {}),
+        ...(decision ? { why, unconfirmedDays: unconfirmedDaysSince([row.last_accessed_at, snippet?.lastAddedAt, row.recency, row.created_at], now) } : {}),
     };
 }
 export function readIndexCandidates(db, projectName) {

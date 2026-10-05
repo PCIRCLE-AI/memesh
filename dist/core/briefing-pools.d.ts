@@ -12,6 +12,7 @@ export interface PoolRow {
     confidence?: number;
     recall_hits?: number;
     recall_misses?: number;
+    created_at?: string;
     recency?: string | null;
 }
 export interface HandoffRow {

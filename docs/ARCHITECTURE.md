@@ -267,7 +267,7 @@ Tool call: remember({name, type, observations, why, tags, relations})
         -> name from a slug of the title + a digest of the text
   -> `why` becomes one more observation, `Why: <text>` (one leading `Why: ` label is not doubled)
   -> a new or `replace`d decision, architecture_decision or design_decision with no `Why: ` observation is refused,
-     unless the writer is untrusted (note files, imports)
+     unless the writer is untrusted (note files); imports and dream accepts do not go through remember, so are not refused
   -> replace: true only:
      -> refuse when the memory was archived with forget
      -> snapshot the previous title/observations/tags FIRST
@@ -627,7 +627,7 @@ For release safety, `npm run test:packaged` creates a real npm tarball, extracts
 - Entities not accessed in 30+ days: confidence *= 0.9
 - Floor: confidence never below 0.01
 - Never deletes — only affects search ranking
-- Decisions decay like everything else, but are never hidden by it: the briefing orders them by recency, shows each with its latest `Why:` observation (or "no reason recorded"), and marks one that nobody has recalled or added to for 30+ days "unconfirmed N days: re-check before relying" (`toTopologyEntity` in `briefing-pools.ts`, rendered by `topologyLine`). A recall stamps `last_accessed_at` and clears the mark. The age counts the newest observation of every decision type (`readSnippets`), not only the decision layer's `recency`, and the durable-memory index marks its decision lines the same way (`readIndexCandidates`, `indexLine` in `briefing-index.ts`; one `unconfirmedDaysSince` in the `work-topology.ts` leaf). When a decision line is cut to its budget, `topologyLine` clips the title first (down to 40 characters), then the reason; the markers and the handle are never cut. `remember` refuses to create, or `replace`, a decision without `why` (operations.ts); untrusted writers are exempt
+- Decisions decay like everything else, but are never hidden by it: the briefing orders them by recency, shows each with its latest `Why:` observation (or "no reason recorded"), and marks one that nobody has recalled or added to for 30+ days "unconfirmed N days: re-check before relying" (`toTopologyEntity` in `briefing-pools.ts`, rendered by `topologyLine`). A recall stamps `last_accessed_at` and clears the mark. The age counts the newest observation of every decision type (`readSnippets`), not only the decision layer's `recency`, and the durable-memory index marks its decision lines the same way (`readIndexCandidates`, `indexLine` in `briefing-index.ts`; one `unconfirmedDaysSince` in the `work-topology.ts` leaf). When a decision line is cut to its budget, `topologyLine` gives the reason room before the title: the title is clipped first (down to 40 characters), then the reason; the markers and the handle are never cut. `remember` refuses to create, or `replace`, a decision without `why` (operations.ts); untrusted writers are exempt
 
 ### Agent-assisted digest and transcript review
 - `work_package` prepares one bounded calendar digest or visible-turn transcript package.

@@ -7,7 +7,7 @@
 // byte-locked to core — eliminating the hand-mirror drift behind the P0 FTS bug.
 // ============================================================================
 import { redactShownTogether } from './core-paths.js';
-import { DECISION_TYPES, EVIDENCE_LAYER_TYPES, isAutoInjectable, jsonStringLiteral, projectLabel, restatesWhy, topologyLine, unconfirmedDaysSince, utcEpoch, } from './work-topology.js';
+import { DECISION_TYPES, EVIDENCE_LAYER_TYPES, isAutoInjectable, jsonStringLiteral, projectLabel, isWhyText, topologyLine, unconfirmedDaysSince, utcEpoch, } from './work-topology.js';
 import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
 export const INDEX_MAX_LINES = 40;
 export const INDEX_MAX_BYTES = 3072;
@@ -60,7 +60,7 @@ function indexLine(candidate, now) {
     ]);
     const title = flat(shownTitle);
     const why = decision ? flat(shownWhy) || null : undefined;
-    const snippet = why && restatesWhy(flat(shownSnippet), why) ? '' : flat(shownSnippet);
+    const snippet = why && isWhyText(flat(shownSnippet)) ? '' : flat(shownSnippet);
     const repeats = title && snippet && snippet.toLowerCase().startsWith(title.replace(/…$/, '').toLowerCase());
     const text = title && snippet && !repeats ? `${title} — ${snippet}` : (title || snippet);
     return topologyLine({
@@ -68,7 +68,7 @@ function indexLine(candidate, now) {
         id: candidate.id,
         type: candidate.type || 'memory',
         title: text || null,
-        ...(decision ? { why, unconfirmedDays: unconfirmedDaysSince([candidate.lastAccessedAt, candidate.recency ?? candidate.lastActivity], now) } : {}),
+        ...(decision ? { why, unconfirmedDays: unconfirmedDaysSince([candidate.lastAccessedAt, candidate.recency], now) } : {}),
     }, INDEX_LINE_MAX_CHARS);
 }
 export function injectedIndexReserve(projectName) {

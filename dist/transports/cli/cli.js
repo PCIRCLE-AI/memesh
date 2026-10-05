@@ -4394,15 +4394,14 @@ function utcEpoch(at) {
   return Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(at) ? at : `${at.replace(" ", "T")}Z`);
 }
 function unconfirmedDaysSince(seenAt, now) {
-  const seen = Math.max(...seenAt.map(utcEpoch).filter((t) => !Number.isNaN(t)));
+  const seen = Math.max(...seenAt.map(utcEpoch).filter((t) => !Number.isNaN(t) && t <= now + 5 * 6e4));
   if (!Number.isFinite(seen))
     return null;
   const days = Math.floor((now - seen) / 864e5);
   return days >= UNCONFIRMED_DECISION_DAYS ? days : null;
 }
-function restatesWhy(text, why) {
-  const core = text.replace(/…$/, "").trim();
-  return core.startsWith(WHY_PREFIX) && `${WHY_PREFIX}${why}`.startsWith(core);
+function isWhyText(text) {
+  return text.startsWith(WHY_PREFIX);
 }
 function isAutoInjectable(metadata) {
   if (metadata == null)
@@ -4431,7 +4430,7 @@ function topologyLine(entity, maxChars) {
   const unconfirmed = entity.unconfirmedDays ? ` (unconfirmed ${entity.unconfirmedDays} days: re-check before relying)` : "";
   const reason = entity.why ? `${WHY_PREFIX}${entity.why}` : "";
   const noReason = entity.why === null ? " (no reason recorded)" : "";
-  const text = reason && restatesWhy(given, entity.why) ? "" : given || (reason ? "" : `${entity.type} memory`);
+  const text = reason && isWhyText(given) ? "" : given || (reason ? "" : `${entity.type} memory`);
   const room = Math.max(8, maxChars - handle.length - unconfirmed.length - noReason.length);
   return stripControlChars(`- [${entity.type}] ${lineBody(text, reason, room)}${noReason}${unconfirmed}${handle}`);
 }
@@ -26082,7 +26081,7 @@ function indexLine(candidate, now) {
   ]);
   const title = flat(shownTitle);
   const why = decision ? flat(shownWhy) || null : void 0;
-  const snippet = why && restatesWhy(flat(shownSnippet), why) ? "" : flat(shownSnippet);
+  const snippet = why && isWhyText(flat(shownSnippet)) ? "" : flat(shownSnippet);
   const repeats = title && snippet && snippet.toLowerCase().startsWith(title.replace(/…$/, "").toLowerCase());
   const text = title && snippet && !repeats ? `${title} \u2014 ${snippet}` : title || snippet;
   return topologyLine({
@@ -26090,7 +26089,7 @@ function indexLine(candidate, now) {
     id: candidate.id,
     type: candidate.type || "memory",
     title: text || null,
-    ...decision ? { why, unconfirmedDays: unconfirmedDaysSince([candidate.lastAccessedAt, candidate.recency ?? candidate.lastActivity], now) } : {}
+    ...decision ? { why, unconfirmedDays: unconfirmedDaysSince([candidate.lastAccessedAt, candidate.recency], now) } : {}
   }, INDEX_LINE_MAX_CHARS);
 }
 function injectedIndexReserve(projectName2) {
@@ -26340,7 +26339,7 @@ function toTopologyEntity(row, snippets, now = Date.now()) {
     snippet: first,
     signalScore: typeof signal === "number" ? signal : null,
     recency: row.recency ?? null,
-    ...decision ? { why, unconfirmedDays: unconfirmedDaysSince([row.last_accessed_at, snippet?.lastAddedAt, row.recency], now) } : {}
+    ...decision ? { why, unconfirmedDays: unconfirmedDaysSince([row.last_accessed_at, snippet?.lastAddedAt, row.recency, row.created_at], now) } : {}
   };
 }
 function readIndexCandidates(db2, projectName2) {
@@ -26404,6 +26403,7 @@ var init_briefing_pools = __esm({
       "e.type",
       titleCol(cols),
       "e.metadata",
+      "e.created_at",
       ...SCORING_COLUMNS.map((c) => cols.scoring.has(c) ? `e.${c}` : `NULL AS ${c}`)
     ].join(", ");
     toPoolRow = (row) => ({
@@ -26417,6 +26417,7 @@ var init_briefing_pools = __esm({
       confidence: row.confidence ?? void 0,
       recall_hits: row.recall_hits ?? void 0,
       recall_misses: row.recall_misses ?? void 0,
+      created_at: row.created_at ?? void 0,
       recency: row.recency ?? null
     });
     validUtc = (column) => `replace(${column}, 'T', ' ') = strftime('%Y-%m-%d %H:%M:%S', ${column})

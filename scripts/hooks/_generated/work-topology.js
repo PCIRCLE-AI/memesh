@@ -31,15 +31,14 @@ export function utcEpoch(at) {
     return Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(at) ? at : `${at.replace(' ', 'T')}Z`);
 }
 export function unconfirmedDaysSince(seenAt, now) {
-    const seen = Math.max(...seenAt.map(utcEpoch).filter((t) => !Number.isNaN(t)));
+    const seen = Math.max(...seenAt.map(utcEpoch).filter((t) => !Number.isNaN(t) && t <= now + 5 * 60_000));
     if (!Number.isFinite(seen))
         return null;
     const days = Math.floor((now - seen) / 86_400_000);
     return days >= UNCONFIRMED_DECISION_DAYS ? days : null;
 }
-export function restatesWhy(text, why) {
-    const core = text.replace(/…$/, '').trim();
-    return core.startsWith(WHY_PREFIX) && `${WHY_PREFIX}${why}`.startsWith(core);
+export function isWhyText(text) {
+    return text.startsWith(WHY_PREFIX);
 }
 export const DECISION_LAYER_TYPES = [...WORK_LAYER_TYPES]
     .filter((type) => !LESSON_TYPES.has(type) && type !== 'task-state');
@@ -81,7 +80,7 @@ export function topologyLine(entity, maxChars) {
     const unconfirmed = entity.unconfirmedDays ? ` (unconfirmed ${entity.unconfirmedDays} days: re-check before relying)` : '';
     const reason = entity.why ? `${WHY_PREFIX}${entity.why}` : '';
     const noReason = entity.why === null ? ' (no reason recorded)' : '';
-    const text = reason && restatesWhy(given, entity.why) ? '' : given || (reason ? '' : `${entity.type} memory`);
+    const text = reason && isWhyText(given) ? '' : given || (reason ? '' : `${entity.type} memory`);
     const room = Math.max(8, maxChars - handle.length - unconfirmed.length - noReason.length);
     return stripControlChars(`- [${entity.type}] ${lineBody(text, reason, room)}${noReason}${unconfirmed}${handle}`);
 }

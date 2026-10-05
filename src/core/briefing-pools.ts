@@ -85,7 +85,7 @@ const nonGlobal = (cols: EntityColumns) => (cols.namespace ? " AND (e.namespace 
 const NO_PROJECT_TAG = "NOT EXISTS (SELECT 1 FROM tags pt WHERE pt.entity_id = e.id AND pt.tag LIKE 'project:%')";
 const titleCol = (cols: EntityColumns) => (cols.title ? 'e.title' : 'NULL AS title');
 const candidateColumns = (cols: EntityColumns) => [
-  'e.id', 'e.name', 'e.type', titleCol(cols), 'e.metadata',
+  'e.id', 'e.name', 'e.type', titleCol(cols), 'e.metadata', 'e.created_at',
   ...SCORING_COLUMNS.map((c) => (cols.scoring.has(c) ? `e.${c}` : `NULL AS ${c}`)),
 ].join(', ');
 
@@ -102,6 +102,8 @@ export interface PoolRow {
   confidence?: number;
   recall_hits?: number;
   recall_misses?: number;
+  /** When the memory was created (raw column). */
+  created_at?: string;
   /** Decision-layer rows only: latest valid activity (see RECENCY_SQL). */
   recency?: string | null;
 }
@@ -126,6 +128,7 @@ const toPoolRow = (row: CandidateRow): PoolRow => ({
   confidence: row.confidence ?? undefined,
   recall_hits: row.recall_hits ?? undefined,
   recall_misses: row.recall_misses ?? undefined,
+  created_at: row.created_at ?? undefined,
   recency: row.recency ?? null,
 });
 
@@ -381,7 +384,7 @@ export function toTopologyEntity(row: PoolRow, snippets: ReadonlyMap<number, Sni
     // Confirmed when last read (a recall stamps last_accessed_at) or added to:
     // the newest observation, which every decision type has (`recency` only
     // the decision layer).
-    ...(decision ? { why, unconfirmedDays: unconfirmedDaysSince([row.last_accessed_at, snippet?.lastAddedAt, row.recency], now) } : {}),
+    ...(decision ? { why, unconfirmedDays: unconfirmedDaysSince([row.last_accessed_at, snippet?.lastAddedAt, row.recency, row.created_at], now) } : {}),
   };
 }
 

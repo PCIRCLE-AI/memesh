@@ -232,7 +232,8 @@ describe('the durable-memory index marks decisions like the briefing does', () =
       lastActivity: sqliteAt(NOW - 40 * DAY),
     }));
     expect(line).toMatch(/ \(unconfirmed 40 days: re-check before relying\) \[mem:7\]$/);
-    expect(line).toContain('Why: ');
+    // The reason is not reduced to a stub: at least a dozen of its own characters survive.
+    expect(line.match(/Why: (\S.*?)(?:…)? \(unconfirmed/)?.[1].length ?? 0).toBeGreaterThanOrEqual(12);
     expect(line.length).toBeLessThanOrEqual(INDEX_LINE_MAX_CHARS + '- [decision] '.length + 1);
   });
 
@@ -358,6 +359,33 @@ describe('the 30-day line is exact', () => {
     const readAt = (ms: number) => topologyLine(toTopologyEntity({ id: 7, name: 'd', type: 'decision', title: 'T', metadata: null, last_accessed_at: sqliteAt(ms) }, snippets(sqliteAt(NOW - 90 * DAY)), NOW), 400);
     expect(readAt(NOW - 30 * DAY)).toContain('unconfirmed 30 days');
     expect(readAt(NOW - 30 * DAY + MINUTE)).not.toContain('unconfirmed');
+  });
+});
+
+describe('the latest reason, and the same age on both readers', () => {
+  it('an older Why as the first observation is not printed beside the newer one', () => {
+    remember({ name: 'two-whys', type: 'decision', observations: ['Why: the old reason; revisit if x'], why: 'the new reason; revisit if y', tags: [`project:${PROJECT}`] });
+    for (const lines of [rankedLines(assembleBriefing(PROJECT).text), readBriefingIndex(getDatabase(), PROJECT).lines]) {
+      const line = lineOf(lines, 'two-whys');
+      expect(line).toBe(`- [decision] Why: the new reason; revisit if y [mem:${idOf('two-whys')}]`);
+    }
+  });
+
+  it('a read stamped in the future does not hide the age note', () => {
+    remember({ name: 'future-read', type: 'decision', title: 'Keep it', observations: ['Keep it'], why: 'a reason; revisit if x', tags: [`project:${PROJECT}`] });
+    backdate(40);
+    getDatabase().prepare("UPDATE entities SET last_accessed_at = '2099-01-01 00:00:00'").run();
+    for (const lines of [rankedLines(assembleBriefing(PROJECT).text), readBriefingIndex(getDatabase(), PROJECT).lines]) {
+      expect(lineOf(lines, 'future-read')).toContain('(unconfirmed 40 days: re-check before relying)');
+    }
+  });
+
+  it('a decision with no observation at all is marked the same way in the ranked block and the index', () => {
+    const id = Number(getDatabase().prepare("INSERT INTO entities (name, type, title, created_at) VALUES ('bare-arch', 'architecture_decision', 'Bare', datetime('now', '-40 days'))").run().lastInsertRowid);
+    getDatabase().prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, `project:${PROJECT}`);
+    for (const lines of [rankedLines(assembleBriefing(PROJECT).text), readBriefingIndex(getDatabase(), PROJECT).lines]) {
+      expect(lineOf(lines, 'bare-arch')).toBe(`- [architecture_decision] Bare (no reason recorded) (unconfirmed 40 days: re-check before relying) [mem:${id}]`);
+    }
   });
 });
 

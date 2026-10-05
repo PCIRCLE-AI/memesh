@@ -23,7 +23,7 @@ import {
   isAutoInjectable,
   jsonStringLiteral,
   projectLabel,
-  restatesWhy,
+  isWhyText,
   topologyLine,
   unconfirmedDaysSince,
   utcEpoch,
@@ -189,7 +189,7 @@ function indexLine(candidate: IndexCandidate, now: number): string {
   const why = decision ? flat(shownWhy) || null : undefined;
   // A decision's first observation can be its reason itself: the line shows
   // the reason once.
-  const snippet = why && restatesWhy(flat(shownSnippet), why) ? '' : flat(shownSnippet);
+  const snippet = why && isWhyText(flat(shownSnippet)) ? '' : flat(shownSnippet);
   // Titles are usually derived from the first observation; printing both
   // would send the same sentence twice.
   const repeats = title && snippet && snippet.toLowerCase().startsWith(title.replace(/…$/, '').toLowerCase());
@@ -200,7 +200,7 @@ function indexLine(candidate: IndexCandidate, now: number): string {
       id: candidate.id,
       type: candidate.type || 'memory',
       title: text || null,
-      ...(decision ? { why, unconfirmedDays: unconfirmedDaysSince([candidate.lastAccessedAt, candidate.recency ?? candidate.lastActivity], now) } : {}),
+      ...(decision ? { why, unconfirmedDays: unconfirmedDaysSince([candidate.lastAccessedAt, candidate.recency], now) } : {}),
     },
     INDEX_LINE_MAX_CHARS,
   );

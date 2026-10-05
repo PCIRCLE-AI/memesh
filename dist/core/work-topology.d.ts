@@ -6,7 +6,7 @@ export declare const WHY_PREFIX = "Why: ";
 export declare const UNCONFIRMED_DECISION_DAYS = 30;
 export declare function utcEpoch(at: string | null | undefined): number;
 export declare function unconfirmedDaysSince(seenAt: ReadonlyArray<string | null | undefined>, now: number): number | null;
-export declare function restatesWhy(text: string, why: string): boolean;
+export declare function isWhyText(text: string): boolean;
 export declare const DECISION_LAYER_TYPES: readonly string[];
 export declare const EVIDENCE_LAYER_TYPES: ReadonlySet<string>;
 export declare function isAutoInjectable(metadata: unknown): boolean;

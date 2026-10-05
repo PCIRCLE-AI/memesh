@@ -109,8 +109,8 @@ the graph does not have.
   "name": "auth-decision",
   "title": null,
   "type": "decision",
-  "observations": 2,
-  "tags": 1,
+  "observations": 3,
+  "tags": 2,
   "relations": 0
 }
 ```
@@ -751,7 +751,7 @@ The returned text is fenced as untrusted background data; stored memory content 
 
 An eligible handoff leads the saved-memory portion at every level; repository facts, when present, prefix the block. `minimal` otherwise includes this project's decisions, lessons, knowledge, and recent activity, and up to five memories that belong to no project (every level, under their own heading; never global ones, which have their own pool at `full`). `standard` adds fresh task state and the capped durable-memory index. `full` also adds global memory and other projects' recent activity. The work-package notice at `full` belongs only to the Claude Code SessionStart hook, not to the MCP tool or CLI.
 
-A decision (`decision`, `architecture_decision`, `design_decision`) is shown with its latest `Why:` observation after the title — `- [decision] SQLite for local-first storage — Why: PostgreSQL is too heavy to deploy for one user; revisit if we add a hosted tier [mem:12]` — or with `(no reason recorded)` when it has none; a decision whose only observation is its reason shows that reason once. When nobody has read it (`recall` stamps it) or added to it (its newest observation, whatever the decision type) for 30 days, the line also says `(unconfirmed N days: re-check before relying)`; a `recall` that returns it clears that. The durable-memory index below marks its decision lines the same way. The markers and the `[mem:id]` handle are never cut. When a decision line is longer than its budget (160 characters in the ranked block, 120 in the index) the title is clipped first, down to 40 characters, and only then the reason, so the condition under which the decision stops holding outlives the title.
+A decision (`decision`, `architecture_decision`, `design_decision`) is shown with its latest `Why:` observation after the title — `- [decision] SQLite for local-first storage — Why: PostgreSQL is too heavy to deploy for one user; revisit if we add a hosted tier [mem:12]` — or with `(no reason recorded)` when it has none; a decision whose only observation is its reason shows that reason once. When nobody has read it (`recall` stamps it) or added to it (its newest observation, whatever the decision type) for 30 days, the line also says `(unconfirmed N days: re-check before relying)`; a `recall` that returns it clears that. The durable-memory index below marks its decision lines the same way. The markers and the `[mem:id]` handle are never cut. When a decision line is longer than its budget (160 characters in the ranked block, 120 in the index) the title is clipped first, down to 40 characters, and only then the reason, so the reason gets room before the title does (it is still cut when it is very long, and in the index's 120 characters little room is left for it once the unconfirmed note is shown).
 
 The saved-memory lines inside the fence share one 4000 UTF-16 code-unit limit across the eligible handoff, displayed task state and unread-inbox notice (when addressed to an exact recipient), ranked memories, global memory at `full`, and injected index. Repository facts before the saved-memory lines, the fence/preface, and the hook-only work-package notice are outside that limit. The displayed task state is shortened to at most 1200 code units (320 per line); `memesh task` still reads the complete stored record. Recent trusted project decisions take the project's slots first, newest valid activity first (unknown dates last); remaining slots follow relevance ranking. A separate pool selects up to five trusted active lesson memories (`lesson_learned`, `lesson` or `mistake`) for the project, even if decisions occupy its other slots. A lesson that has a fix (an observation starting `Fix: `, the form `learn` stores; the latest one when there are several) is shown as `Fix: … — <title, else first observation>`, without repeating the fix when the title or first observation is the fix itself. Each line is cut to 160 characters, so a long fix can leave no room for the title or error after it, and a very long fix is itself cut; the shared limit above never shortens a line, it leaves whole lines out, so a lesson that has a fix is not guaranteed to be shown. Other memories, and lessons without a fix, show their title or first non-empty observation as before. Memory lines may be omitted when the shared limit fills.
 
@@ -1629,7 +1629,7 @@ memory."
 type `decision`, `architecture_decision` or `design_decision` and to `--replace`
 one: without it the command exits 1 with the sentence that names both halves,
 and nothing is stored. Adding to a decision that exists does not need it. In the
-quick form the printed `fix it with:` command carries the same `--why` for a
+quick form the printed `fix it with:` command carries the same `--why` (the one you gave, else a `--why "…"` placeholder to fill in) for a
 decision, so copying it works.
 
 `--replace` (requires `--name`) rewrites the named memory and keeps its

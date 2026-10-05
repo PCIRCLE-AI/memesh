@@ -102,21 +102,21 @@ export function utcEpoch(at: string | null | undefined): number {
  * call this, so they cannot disagree about when the marker appears.
  */
 export function unconfirmedDaysSince(seenAt: ReadonlyArray<string | null | undefined>, now: number): number | null {
-  const seen = Math.max(...seenAt.map(utcEpoch).filter((t) => !Number.isNaN(t)));
+  // A time more than 5 minutes ahead of `now` is a clock fault, not a confirmation.
+  const seen = Math.max(...seenAt.map(utcEpoch).filter((t) => !Number.isNaN(t) && t <= now + 5 * 60_000));
   if (!Number.isFinite(seen)) return null;
   const days = Math.floor((now - seen) / 86_400_000);
   return days >= UNCONFIRMED_DECISION_DAYS ? days : null;
 }
 
 /**
- * Is `text` just the `Why: ` observation again? A decision whose only
- * observation is its reason has that observation as its snippet (and a title
- * derived from it), and the line already prints the reason on its own: the
- * text must not repeat it. Tolerates the clip's trailing ellipsis.
+ * Is `text` itself a `Why: ` observation? A decision whose first observation
+ * (or title derived from it) is a reason has that text as its snippet, and the
+ * line already prints its latest reason on its own: the text must not repeat
+ * it, nor print an older reason beside the newer one.
  */
-export function restatesWhy(text: string, why: string): boolean {
-  const core = text.replace(/…$/, '').trim();
-  return core.startsWith(WHY_PREFIX) && `${WHY_PREFIX}${why}`.startsWith(core);
+export function isWhyText(text: string): boolean {
+  return text.startsWith(WHY_PREFIX);
 }
 
 /**
@@ -268,7 +268,7 @@ export function topologyLine(entity: TopologyEntity, maxChars: number): string {
   const noReason = entity.why === null ? ' (no reason recorded)' : '';
   // A decision whose only observation is its reason has nothing else to say:
   // the line shows that reason once, not "Why: x — Why: x".
-  const text = reason && restatesWhy(given, entity.why as string) ? '' : given || (reason ? '' : `${entity.type} memory`);
+  const text = reason && isWhyText(given) ? '' : given || (reason ? '' : `${entity.type} memory`);
   const room = Math.max(8, maxChars - handle.length - unconfirmed.length - noReason.length);
   return stripControlChars(`- [${entity.type}] ${lineBody(text, reason, room)}${noReason}${unconfirmed}${handle}`);
 }
