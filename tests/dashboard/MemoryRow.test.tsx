@@ -2,6 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import { render } from '@testing-library/preact';
 import { MemoryRow } from '../../dashboard/src/components/MemoryRow';
+import { SeverityBadge, parseStructuredBlocks } from '../../dashboard/src/components/LessonCards';
 import { setLocale } from '../../dashboard/src/lib/i18n';
 import type { Entity } from '../../dashboard/src/lib/api';
 
@@ -122,5 +123,40 @@ describe('MemoryRow', () => {
     // SDD plan SPEC-5 AC1: no emoji in component-rendered DOM.
     const TYPE_GLYPHS = /💡|🎯|🐛|🧩|✨|♻️|📝|📋|🗺️|📓|🚀|⏱️|📅|🔖|🏗️|⚙️|📚/;
     expect(container.textContent ?? '').not.toMatch(TYPE_GLYPHS);
+  });
+});
+
+describe('MemoryRow text handling', () => {
+  it('highlights the characters that matched even when lower-casing changes the text length', () => {
+    // 'İ'.toLowerCase() is two code units, so an index found in the lower-cased
+    // copy pointed one character too far into the original.
+    const { container } = render(<MemoryRow entity={makeEntity({ title: 'İstanbul notes' })} highlight="stanbul" />);
+    expect(container.querySelector('mark')?.textContent).toBe('stanbul');
+  });
+
+  it('truncates a long headline without splitting an emoji in two', () => {
+    const title = `${'a'.repeat(159)}😀 tail`;
+    const { container } = render(<MemoryRow entity={makeEntity({ title })} />);
+    const text = container.querySelector('.mem-preview')?.textContent ?? '';
+    expect(text.endsWith('…')).toBe(true);
+    expect(text).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+  });
+});
+
+describe('lesson bodies and badges', () => {
+  it('keeps every line of a failure lesson: repeated fixes are joined, unknown lines are shown', () => {
+    const [block] = parseStructuredBlocks([
+      'Error: boom', 'Root cause: r', 'Solution 1: try A', 'Solution 2: try B',
+      'Prevention: p', 'Context: seen on CI only',
+    ]);
+    expect(block.fix).toBe('try A\ntry B');
+    expect(block.extra).toEqual(['Context: seen on CI only']);
+  });
+
+  it('colours a severity badge with its -soft token (a hex suffix on var() is not a colour)', () => {
+    const { container } = render(<SeverityBadge entity={makeEntity({ tags: ['severity:critical'] })} />);
+    const style = container.querySelector('.badge')!.getAttribute('style') ?? '';
+    expect(style).toContain('var(--danger-soft)');
+    expect(style).not.toMatch(/\)18/);
   });
 });

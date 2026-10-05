@@ -1,39 +1,15 @@
-import { KNOWN_ERROR_PATTERNS } from './lesson-engine.js';
+import { extractProjectFromEntity } from './project-attribution.js';
 import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
-const PROJECT_TAG_PREFIX = 'project:';
-export function extractProjectFromName(name) {
-    if (!name.startsWith('lesson-'))
-        return null;
-    const rest = name.slice('lesson-'.length);
-    for (const pattern of KNOWN_ERROR_PATTERNS) {
-        const suffix = `-${pattern}`;
-        if (rest.endsWith(suffix)) {
-            const project = rest.slice(0, rest.length - suffix.length);
-            if (project.length >= 2)
-                return project;
-        }
-    }
-    return null;
-}
-export function extractProjectFromEntity(tags, name) {
-    if (tags) {
-        const tagged = tags.find((t) => t.startsWith(PROJECT_TAG_PREFIX));
-        if (tagged)
-            return { project: tagged.slice(PROJECT_TAG_PREFIX.length), source: 'tag' };
-    }
-    const fromName = extractProjectFromName(name);
-    if (fromName)
-        return { project: fromName, source: 'heuristic' };
-    return { project: null, source: null };
-}
+export { extractProjectFromName, extractProjectFromEntity } from './project-attribution.js';
+export const NOT_A_PROJECT_MEMORY = { sql: 'e.type <> ?', param: SESSION_HANDOFF_TYPE };
 export function computeProjects(db) {
     const rows = db.prepare(`
     SELECT e.id, e.name, e.type,
       (SELECT json_group_array(t.tag) FROM tags t WHERE t.entity_id = e.id) AS tags
     FROM entities e
     WHERE e.status = 'active'
-      AND e.type <> ?
-  `).all(SESSION_HANDOFF_TYPE);
+      AND ${NOT_A_PROJECT_MEMORY.sql}
+  `).all(NOT_A_PROJECT_MEMORY.param);
     const acc = new Map();
     for (const row of rows) {
         let tagList = [];

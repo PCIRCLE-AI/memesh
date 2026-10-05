@@ -79,7 +79,21 @@ export function OnboardingBanner({ health }: Props) {
     setPending('reset');
     try {
       await api<SeedResult>('POST', '/v1/demo/reset');
-      const readback = await api<HealthData>('GET', '/v1/health');
+      let readback: HealthData;
+      try {
+        readback = await api<HealthData>('GET', '/v1/health');
+      } catch (e) {
+        // The reset POST landed; only the readback could not say what the
+        // library looks like now. Let every surface refetch for itself, or the
+        // banner keeps saying "Demo data is loaded" until the next poll. And
+        // say that, not "server unreachable": the reset itself went through.
+        window.dispatchEvent(new Event('memesh:data-changed'));
+        console.warn('[memesh dashboard] demo reset succeeded, but /v1/health could not be read back:', e);
+        setError(t('onboarding.resetUnconfirmed'));
+        return;
+      }
+      // A readback that still reports demo memories means the reset did not
+      // do what it was asked to: no refresh is announced for it.
       if ((readback.demo_entity_count ?? 0) !== 0) {
         throw new Error(t('onboarding.resetReadbackFailed'));
       }
@@ -185,20 +199,6 @@ export function OnboardingBanner({ health }: Props) {
           </span>
         </div>
         <TerminalHandoff id="demo-cli-fallback" command="memesh demo --reset --yes" />
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginTop: 8, alignItems: 'center' }}>
-          <button
-            type="button"
-            class="btn"
-            onClick={runReset}
-            disabled={pending !== null}
-            style={{ fontSize: 14, padding: '4px 10px' }}
-          >
-            {pending === 'reset' ? t('onboarding.resettingButton') : t('onboarding.resetButton')}
-          </button>
-          <span style={{ fontSize: 14, color: 'var(--text-3)' }}>
-            {t('onboarding.hintReset')}
-          </span>
-        </div>
       </details>}
 
       {error && (

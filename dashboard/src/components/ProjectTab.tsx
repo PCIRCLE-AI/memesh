@@ -4,12 +4,21 @@ import { api, fetchBriefingIndex, fetchProjects, fetchTaskState, type BriefingIn
 import { ProjectRoadmap } from './ProjectRoadmap';
 import { EmptyLibraryState } from './EmptyLibraryState';
 import { Chip } from './Chip';
-import { t } from '../lib/i18n';
+import { t, getLocale } from '../lib/i18n';
 import { classifyLoadError, failureMessage } from '../lib/failure';
 import { extractProject, projectChipLabels, relativeDate } from '../lib/entity-display';
 import { TerminalHandoff } from './ExternalHandoff';
 
-const FETCH_LIMIT = 2000;
+/** How many of a project's memories one request loads. The Project page used
+ *  to fetch the newest 2000 memories of the WHOLE library and filter them down
+ *  in the browser, so a project whose memories were older than the 2000th
+ *  newest read as "no memories" while its chip counted them. It now asks the
+ *  server for the selected project only, a page at a time. */
+const PAGE_SIZE = 200;
+
+/** One shared empty list, so a project with nothing loaded does not hand
+ *  `useMemo` a new array on every render. */
+const NO_ROWS: Entity[] = [];
 
 /** `?project=` deep-link read. Unvalidated on purpose: a stale name renders
  *  the roadmap's own honest empty state, and the chip row is still there to
@@ -62,13 +71,6 @@ export function selectProjectEntities(entities: Entity[], selected: string | nul
   return [...active, ...readmitted].sort((a, b) => b.created_at.localeCompare(a.created_at));
 }
 
-/**
- * The Project tab — a thin host for ProjectRoadmap, which is 100%
- * parent-fed (it fetches nothing itself). This tab owns the fetch, the
- * project selector and the `?project=` deep link. No `memesh:data-changed`
- * dispatch here: this surface is read-only, and the event exists to sync
- * the header after mutations.
- */
 /**
  * What the owner said about a project — goal, next, blocked, done — exactly
  * as `memesh task` recorded it. Nothing here is derived: an absent field is
@@ -194,6 +196,105 @@ export function BriefingIndexCard({ data, error }: { data: BriefingIndexData | n
 }
 
 /**
+ * The selected project's memories, loaded a page at a time (newest first).
+ *
+ * `hasMore` is "the last page came back full": the server answers a page, not a
+ * total, so a project with exactly PAGE_SIZE memories costs one extra request
+ * that returns nothing. A failed FIRST page is an error with nothing to show; a
+ * failed later page leaves what was loaded in place and says so beside the
+ * button. Stale answers (the project changed, or a newer load started) are
+ * dropped by a ticket, like every other loader in this dashboard.
+ */
+function useProjectMemories(selected: string | null, dataRevision: number) {
+  // The rows carry the project they were loaded for. Picking another project
+  // changes `selected` before anything new arrives, and rows of the previous
+  // project must never be shown (or counted) as the new one's: a first page
+  // that fails would otherwise leave them in place, filtered down to a false
+  // "no memories". The SAME project's refresh keeps its rows.
+  const [loaded, setLoaded] = useState<{ project: string | null; rows: Entity[] }>({ project: null, rows: NO_ROWS });
+  const entities = loaded.project === selected ? loaded.rows : NO_ROWS;
+  // The project the first page last settled for (loaded or failed). `loading`
+  // is derived from it, so the render right after a project is picked already
+  // says "loading" instead of showing the previous project's rows filtered
+  // down to a false "no memories".
+  const [settledFor, setSettledFor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState('');
+  const [moreError, setMoreError] = useState('');
+  const [hasMore, setHasMore] = useState(false);
+  // A further page has been loaded for this project: the notice below the list
+  // then outlives the button, to say it is all loaded and to keep keyboard
+  // focus somewhere real when the button is gone.
+  const [pagedMore, setPagedMore] = useState(false);
+  const gen = useRef(0);
+
+  const fetchPage = (project: string, offset: number) =>
+    api<Entity[]>('GET', `/v1/entities?project=${encodeURIComponent(project)}&status=all&limit=${PAGE_SIZE}&offset=${offset}`);
+
+  useEffect(() => {
+    const ticket = ++gen.current;
+    setHasMore(false);
+    setPagedMore(false);
+    setError('');
+    setMoreError('');
+    setLoadingMore(false);
+    if (!selected) return;
+    fetchPage(selected, 0)
+      .then((page) => {
+        if (ticket !== gen.current) return;
+        if (!Array.isArray(page)) {
+          console.warn('[memesh dashboard] /v1/entities answered, but with a shape this bundle cannot render — stale bundle or version skew, not an outage:', page);
+          setError(failureMessage('unreadable'));
+          return;
+        }
+        setLoaded({ project: selected, rows: page });
+        setHasMore(page.length === PAGE_SIZE);
+      })
+      .catch((e: unknown) => {
+        if (ticket !== gen.current) return;
+        console.warn('[memesh dashboard] /v1/entities failed to load:', e);
+        setError(failureMessage(classifyLoadError(e)));
+      })
+      .finally(() => { if (ticket === gen.current) setSettledFor(selected); });
+  }, [selected, dataRevision]);
+
+  function loadMore() {
+    if (!selected || loadingMore || !hasMore) return;
+    const ticket = gen.current;
+    const project = selected;
+    setLoadingMore(true);
+    setMoreError('');
+    fetchPage(project, entities.length)
+      .then((page) => {
+        if (ticket !== gen.current) return;
+        if (!Array.isArray(page)) {
+          console.warn('[memesh dashboard] /v1/entities answered, but with a shape this bundle cannot render:', page);
+          setMoreError(failureMessage('unreadable'));
+          return;
+        }
+        // New memories written since the first page push the offset: drop a row
+        // already shown rather than listing it twice.
+        setLoaded((prev) => {
+          if (prev.project !== project) return prev;
+          const seen = new Set(prev.rows.map((e) => e.id));
+          return { project, rows: [...prev.rows, ...page.filter((e) => !seen.has(e.id))] };
+        });
+        setPagedMore(true);
+        setHasMore(page.length === PAGE_SIZE);
+      })
+      .catch((e: unknown) => {
+        if (ticket !== gen.current) return;
+        console.warn('[memesh dashboard] /v1/entities failed to load a further page:', e);
+        setMoreError(failureMessage(classifyLoadError(e)));
+      })
+      .finally(() => { if (ticket === gen.current) setLoadingMore(false); });
+  }
+
+  const loading = selected !== null && settledFor !== selected;
+  return { entities, loading, loadingMore, error, moreError, hasMore, pagedMore, loadMore };
+}
+
+/**
  * One per-project fetch: null until it lands, a named failure if it does not.
  *
  * The stated task state and the durable-memory index were two identical
@@ -226,43 +327,37 @@ function useProjectResource<T>(
   return [data, error];
 }
 
+/**
+ * The Project tab — a thin host for ProjectRoadmap, which is 100%
+ * parent-fed (it fetches nothing itself). This tab owns the project selector,
+ * the `?project=` deep link and the paged fetch of the selected project's
+ * memories. No `memesh:data-changed` dispatch here: this surface is
+ * read-only, and the event exists to sync the header after mutations.
+ */
 export function ProjectTab({ health, dataRevision = 0 }: { health?: HealthData | null; dataRevision?: number }) {
-  const [entities, setEntities] = useState<Entity[]>([]);
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [selected, setSelected] = useState<string | null>(urlProject);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
   const [projectsError, setProjectsError] = useState('');
   const loadGen = useRef(0);
 
   useEffect(() => {
     const gen = ++loadGen.current;
     setLoading(true);
-    setError('');
     setProjectsError('');
-    Promise.all([
-      api<Entity[]>('GET', `/v1/entities?limit=${FETCH_LIMIT}&status=all`),
-      // `.catch(() => [])` reported a projects fetch that FAILED as a library
-      // with no projects, and this tab renders that as "No project memories
-      // yet" — a claim about the user's data made from an answer nobody
-      // received. It is not a rare path: `computeProjects` scans with no LIMIT
-      // while api() aborts at 10s, so a large graph produces the false
-      // first-run claim reliably, WHILE the sibling entities fetch beside it
-      // has already loaded thousands of rows. Settled rather than caught, so
-      // the failure survives as a diagnosis instead of an empty list — and so
-      // one dead endpoint still does not take the entities down with it.
-      fetchProjects().then(
-        (list) => ({ ok: true as const, list }),
-        (e: unknown) => ({ ok: false as const, failure: classifyLoadError(e) }),
-      ),
-    ])
-      .then(([data, projs]) => {
+    // `.catch(() => [])` reported a projects fetch that FAILED as a library
+    // with no projects, and this tab renders that as "No project memories
+    // yet" — a claim about the user's data made from an answer nobody
+    // received. It is not a rare path: `computeProjects` scans with no LIMIT
+    // while api() aborts at 10s, so a large graph produces the false
+    // first-run claim reliably. Settled rather than caught, so the failure
+    // survives as a diagnosis instead of an empty list.
+    fetchProjects().then(
+      (list) => ({ ok: true as const, list }),
+      (e: unknown) => ({ ok: false as const, failure: classifyLoadError(e) }),
+    )
+      .then((projs) => {
         if (gen !== loadGen.current) return;
-        if (!Array.isArray(data)) {
-          setError(failureMessage('unreadable'));
-        } else {
-          setEntities(data);
-        }
         if (projs.ok) {
           setProjects(projs.list);
           // One project = no choice to make; walk straight in — unless a
@@ -273,18 +368,15 @@ export function ProjectTab({ health, dataRevision = 0 }: { health?: HealthData |
           setProjectsError(failureMessage(projs.failure));
         }
       })
-      .catch((e) => {
-        if (gen !== loadGen.current) return;
-        setError(failureMessage(classifyLoadError(e)));
-      })
       .finally(() => {
         if (gen === loadGen.current) setLoading(false);
       });
   }, [dataRevision]);
 
+  const memories = useProjectMemories(selected, dataRevision);
   const projectEntities = useMemo(
-    () => selectProjectEntities(entities, selected),
-    [entities, selected],
+    () => selectProjectEntities(memories.entities, selected),
+    [memories.entities, selected],
   );
   // Chip text at phone width (#493): a project id's routing hash has no
   // break opportunity, so the raw id cannot wrap. `projectChipText` is keyed
@@ -295,17 +387,26 @@ export function ProjectTab({ health, dataRevision = 0 }: { health?: HealthData |
     [projects],
   );
 
+  // Keyboard focus across "Load older memories". The button stays focusable
+  // while a page loads (`aria-disabled`, not `disabled` — a disabled button
+  // drops focus to <body>). When the last page arrives the button goes away and
+  // focus falls to <body>; only then does it move to the notice line that
+  // replaces the button. Focus the user has moved elsewhere in the meantime
+  // (a project chip, say) is left where it is.
+  const noticeRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (memories.hasMore || document.activeElement !== document.body) return;
+    noticeRef.current?.focus();
+  }, [memories.hasMore]);
+
   const [taskState, taskStateError] = useProjectResource(fetchTaskState, selected, dataRevision);
   const [briefingIndex, briefingIndexError] = useProjectResource(fetchBriefingIndex, selected, dataRevision);
-
-  if (loading && entities.length === 0) return <div class="empty"><div class="loading" /></div>;
-  if (error && entities.length === 0) return <div class="error-box" role="alert">{error}</div>;
 
   // Tri-state before claiming emptiness: health arrives from App's own
   // async fetch, and `null?.entity_count === 0` is false — deciding before
   // it lands would render a false first-run claim.
-  if (entities.length === 0 && health == null) return <div class="empty"><div class="loading" /></div>;
   if (health?.entity_count === 0) return <EmptyLibraryState />;
+  if (loading && projects.length === 0) return <div class="empty"><div class="loading" /></div>;
 
   // The projects fetch gets the same tri-state as health above, for the same
   // reason: an empty list because the request failed is not a library without
@@ -315,6 +416,7 @@ export function ProjectTab({ health, dataRevision = 0 }: { health?: HealthData |
   if (projectsError && projects.length === 0) return <div class="error-box" role="alert">{projectsError}</div>;
 
   if (projects.length === 0) {
+    if (health == null) return <div class="empty"><div class="loading" /></div>;
     return <div class="empty">
       <div>{t('project.empty')}</div>
       <TerminalHandoff id="project-hook-setup" command="memesh install-hooks" />
@@ -324,7 +426,6 @@ export function ProjectTab({ health, dataRevision = 0 }: { health?: HealthData |
   return (
     <div>
       {loading && <Loading />}
-      {error && <div class="error-box" role="alert">{error}</div>}
       {projectsError && <div class="error-box" role="alert">{projectsError}</div>}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12, alignItems: 'center' }}>
         <span style={{ fontSize: 14, color: 'var(--text-3)', marginRight: 4 }}>{t('project.selectLabel')}</span>
@@ -348,7 +449,36 @@ export function ProjectTab({ health, dataRevision = 0 }: { health?: HealthData |
           <>
             <TaskStateCard data={taskState} error={taskStateError} />
             <BriefingIndexCard data={briefingIndex} error={briefingIndexError} />
-            <div class="card" style={{ marginTop: 12 }}><ProjectRoadmap projectName={selected} entities={projectEntities} /></div>
+            <div class="card" style={{ marginTop: 12 }}>
+              {memories.error && <div class="error-box" role="alert">{memories.error}</div>}
+              {memories.loading
+                ? <div class="empty"><div class="loading" /></div>
+                // A refresh that failed keeps the rows already loaded in place
+                // under its error; with nothing loaded the error stands alone
+                // (an empty roadmap would claim the project has no memories).
+                : (!memories.error || memories.entities.length > 0) && <ProjectRoadmap projectName={selected} entities={projectEntities} />}
+              {!memories.loading && (memories.hasMore || memories.pagedMore) && (
+                <div style={{ marginTop: 12, display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', fontSize: 14, color: 'var(--text-2)' }}>
+                  {/* The row count is what the list SHOWS (archived rows nobody
+                      points at are loaded but not listed). The error below is
+                      its own live region: nested in this one it was read twice. */}
+                  <div ref={noticeRef} role="status" tabIndex={-1} style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+                    <span>{t(memories.hasMore ? 'project.partial' : 'project.allLoaded', { n: projectEntities.length.toLocaleString(getLocale()) })}</span>
+                    {memories.hasMore && (
+                      <button
+                        class="btn btn-sm"
+                        aria-disabled={memories.loadingMore}
+                        // Pressed while a page loads, it does nothing: `loadMore` ignores it.
+                        onClick={memories.loadMore}
+                      >
+                        {memories.loadingMore ? t('common.loading') : t('project.loadMore')}
+                      </button>
+                    )}
+                  </div>
+                  {memories.moreError && <span role="alert" style={{ color: 'var(--danger)' }}>{memories.moreError}</span>}
+                </div>
+              )}
+            </div>
           </>
         )
         : <div class="empty">{t('project.selectPrompt')}</div>}

@@ -16,5 +16,8 @@ export declare function isDoctorFixPermissionError(error: unknown): boolean;
 export declare function pluginHostFromDoctorCheck(check: {
     params?: Record<string, string | number>;
 }): 'claude-code' | 'codex';
+export declare class PluginRefreshBudgetError extends Error {
+    constructor();
+}
 export declare function refreshPluginCache(packageRoot: string, host: 'claude-code' | 'codex'): PluginRefreshResult;
 //# sourceMappingURL=doctor-fixes.d.ts.map

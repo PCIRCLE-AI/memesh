@@ -26,6 +26,8 @@ import { dropEntityFromIndexes } from './storage/entity-index.js';
 import { ftsIndexIsCurrent } from './storage/schema.js';
 import { addTags, appendObservations, insertOrGetEntity, reindexEntityFts, runEntityWrite } from './storage/entity-write.js';
 import { canonicalEntityType } from './core/work-topology.js';
+import { KNOWN_ERROR_PATTERNS, MIN_NAME_PROJECT_LENGTH, PROJECT_TAG_PREFIX } from './core/project-attribution.js';
+import { NOT_A_PROJECT_MEMORY } from './core/projects.js';
 import { addsNewText, besideRefusal, clearPartsOfKey, metadataRefusal, redactTextValues, redactTitleAndObservations, redactVersionText, textsIn } from './core/paths.js';
 
 /**
@@ -1266,14 +1268,15 @@ export class KnowledgeGraph {
     return findConflicts(this.db, entityNames);
   }
 
-  listRecent(limit?: number, includeArchived?: boolean, namespace?: string, countAsAccess = true): Entity[] {
+  /** `offset` skips that many of the newest rows, for paging (newest first). */
+  listRecent(limit?: number, includeArchived?: boolean, namespace?: string, countAsAccess = true, offset = 0): Entity[] {
     const statusFilter = includeArchived ? '' : "AND status = 'active'";
     const namespaceFilter = namespace ? 'AND namespace = ?' : '';
     const params: (string | number)[] = [];
     if (namespace) params.push(namespace);
-    params.push(limit ?? 20);
+    params.push(limit ?? 20, offset);
     const rows = this.db
-      .prepare(`SELECT id FROM entities WHERE 1=1 ${statusFilter} ${namespaceFilter} ORDER BY id DESC LIMIT ?`)
+      .prepare(`SELECT id FROM entities WHERE 1=1 ${statusFilter} ${namespaceFilter} ORDER BY id DESC LIMIT ? OFFSET ?`)
       .all(...params) as { id: number }[];
 
     // Batch-hydrate instead of getEntity()-in-a-loop (4 queries per row →
@@ -1298,15 +1301,55 @@ export class KnowledgeGraph {
    * #451: `type` is canonicalized, so `?type=lesson` or `?type=mistake` still
    * finds the rows the repair renamed to `lesson_learned`.
    */
-  listByType(type: string, limit?: number, includeArchived?: boolean, namespace?: string): Entity[] {
+  listByType(type: string, limit?: number, includeArchived?: boolean, namespace?: string, offset = 0): Entity[] {
     type = canonicalEntityType(type);
     const statusFilter = includeArchived ? '' : "AND status = 'active'";
     const namespaceFilter = namespace ? 'AND namespace = ?' : '';
     const params: (string | number)[] = [type];
     if (namespace) params.push(namespace);
-    params.push(limit ?? 20);
+    params.push(limit ?? 20, offset);
     const rows = this.db
-      .prepare(`SELECT id FROM entities WHERE type = ? ${statusFilter} ${namespaceFilter} ORDER BY id DESC LIMIT ?`)
+      .prepare(`SELECT id FROM entities WHERE type = ? ${statusFilter} ${namespaceFilter} ORDER BY id DESC LIMIT ? OFFSET ?`)
+      .all(...params) as { id: number }[];
+    return this.getEntitiesByIds(
+      rows.map((r) => r.id),
+      { includeArchived, namespace }
+    );
+  }
+
+  /**
+   * One page of a project's memories, newest first. "Belongs to the project"
+   * follows the rule `/v1/projects` counts with (project-attribution.ts,
+   * projects.ts): carries the `project:<name>` tag, or — with no project tag
+   * at all — is named `lesson-<name>-<known pattern>` (a name of at least
+   * MIN_NAME_PROJECT_LENGTH characters); the session handoff is never one of
+   * them. Like `listByType` it is a catalogue read: it does not count as an
+   * access. `includeArchived` keeps the project's archived rows, which a
+   * supersession chain points at.
+   */
+  listByProject(project: string, limit?: number, includeArchived?: boolean, namespace?: string, offset = 0): Entity[] {
+    const statusFilter = includeArchived ? '' : "AND e.status = 'active'";
+    const namespaceFilter = namespace ? 'AND e.namespace = ?' : '';
+    const lessonNames = project.length >= MIN_NAME_PROJECT_LENGTH
+      ? KNOWN_ERROR_PATTERNS.map((pattern) => `lesson-${project}-${pattern}`)
+      : [];
+    const byName = lessonNames.length === 0
+      ? ''
+      : `OR (e.name IN (${lessonNames.map(() => '?').join(',')}) AND ${NO_PROJECT_TAG})`;
+    const params: (string | number)[] = [PROJECT_TAG_PREFIX + project, ...lessonNames, NOT_A_PROJECT_MEMORY.param];
+    if (namespace) params.push(namespace);
+    params.push(limit ?? 20, offset);
+    const rows = this.db
+      .prepare(
+        `SELECT e.id FROM entities e
+         WHERE (
+           EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?)
+           ${byName}
+         )
+         AND ${NOT_A_PROJECT_MEMORY.sql}
+         ${statusFilter} ${namespaceFilter}
+         ORDER BY e.id DESC LIMIT ? OFFSET ?`
+      )
       .all(...params) as { id: number }[];
     return this.getEntitiesByIds(
       rows.map((r) => r.id),

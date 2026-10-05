@@ -7,6 +7,8 @@ import { dropEntityFromIndexes } from './storage/entity-index.js';
 import { ftsIndexIsCurrent } from './storage/schema.js';
 import { addTags, appendObservations, insertOrGetEntity, reindexEntityFts, runEntityWrite } from './storage/entity-write.js';
 import { canonicalEntityType } from './core/work-topology.js';
+import { KNOWN_ERROR_PATTERNS, MIN_NAME_PROJECT_LENGTH, PROJECT_TAG_PREFIX } from './core/project-attribution.js';
+import { NOT_A_PROJECT_MEMORY } from './core/projects.js';
 import { addsNewText, besideRefusal, clearPartsOfKey, metadataRefusal, redactTextValues, redactTitleAndObservations, redactVersionText, textsIn } from './core/paths.js';
 const isGuardWithPattern = (guard) => guard !== null && typeof guard === 'object' && typeof guard.pattern === 'string';
 function redactMetadataForStore(next, stored, sameCall = []) {
@@ -589,31 +591,56 @@ export class KnowledgeGraph {
     findConflicts(entityNames) {
         return findConflicts(this.db, entityNames);
     }
-    listRecent(limit, includeArchived, namespace, countAsAccess = true) {
+    listRecent(limit, includeArchived, namespace, countAsAccess = true, offset = 0) {
         const statusFilter = includeArchived ? '' : "AND status = 'active'";
         const namespaceFilter = namespace ? 'AND namespace = ?' : '';
         const params = [];
         if (namespace)
             params.push(namespace);
-        params.push(limit ?? 20);
+        params.push(limit ?? 20, offset);
         const rows = this.db
-            .prepare(`SELECT id FROM entities WHERE 1=1 ${statusFilter} ${namespaceFilter} ORDER BY id DESC LIMIT ?`)
+            .prepare(`SELECT id FROM entities WHERE 1=1 ${statusFilter} ${namespaceFilter} ORDER BY id DESC LIMIT ? OFFSET ?`)
             .all(...params);
         const results = this.getEntitiesByIds(rows.map((r) => r.id), { includeArchived, namespace });
         if (countAsAccess)
             this.trackAccess(results.map((e) => e.id));
         return results;
     }
-    listByType(type, limit, includeArchived, namespace) {
+    listByType(type, limit, includeArchived, namespace, offset = 0) {
         type = canonicalEntityType(type);
         const statusFilter = includeArchived ? '' : "AND status = 'active'";
         const namespaceFilter = namespace ? 'AND namespace = ?' : '';
         const params = [type];
         if (namespace)
             params.push(namespace);
-        params.push(limit ?? 20);
+        params.push(limit ?? 20, offset);
         const rows = this.db
-            .prepare(`SELECT id FROM entities WHERE type = ? ${statusFilter} ${namespaceFilter} ORDER BY id DESC LIMIT ?`)
+            .prepare(`SELECT id FROM entities WHERE type = ? ${statusFilter} ${namespaceFilter} ORDER BY id DESC LIMIT ? OFFSET ?`)
+            .all(...params);
+        return this.getEntitiesByIds(rows.map((r) => r.id), { includeArchived, namespace });
+    }
+    listByProject(project, limit, includeArchived, namespace, offset = 0) {
+        const statusFilter = includeArchived ? '' : "AND e.status = 'active'";
+        const namespaceFilter = namespace ? 'AND e.namespace = ?' : '';
+        const lessonNames = project.length >= MIN_NAME_PROJECT_LENGTH
+            ? KNOWN_ERROR_PATTERNS.map((pattern) => `lesson-${project}-${pattern}`)
+            : [];
+        const byName = lessonNames.length === 0
+            ? ''
+            : `OR (e.name IN (${lessonNames.map(() => '?').join(',')}) AND ${NO_PROJECT_TAG})`;
+        const params = [PROJECT_TAG_PREFIX + project, ...lessonNames, NOT_A_PROJECT_MEMORY.param];
+        if (namespace)
+            params.push(namespace);
+        params.push(limit ?? 20, offset);
+        const rows = this.db
+            .prepare(`SELECT e.id FROM entities e
+         WHERE (
+           EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?)
+           ${byName}
+         )
+         AND ${NOT_A_PROJECT_MEMORY.sql}
+         ${statusFilter} ${namespaceFilter}
+         ORDER BY e.id DESC LIMIT ? OFFSET ?`)
             .all(...params);
         return this.getEntitiesByIds(rows.map((r) => r.id), { includeArchived, namespace });
     }

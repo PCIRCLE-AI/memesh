@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
 import { HomeTab, chooseNextAction } from '../../dashboard/src/components/HomeTab';
-import { setLocale } from '../../dashboard/src/lib/i18n';
+import { getLocales, setLocale, t } from '../../dashboard/src/lib/i18n';
 
 function response(data: unknown): Response {
   return new Response(JSON.stringify({ success: true, data }), {
@@ -96,5 +96,37 @@ describe('issue #234 — one truthful next-best action', () => {
     fireEvent.click(view.getByRole('button', { name: 'Retry status checks' }));
     expect(reload).toHaveBeenCalledTimes(1);
     vi.unstubAllGlobals();
+  });
+});
+
+describe('next-action truthfulness', () => {
+  it('does not say it checked a "search index" — no input to the decision reads one', () => {
+    // Every locale, each with its own word for "index" (the old texts named it).
+    const indexWord = /search index|搜尋索引|搜索索引|検索インデックス|검색 인덱스|índice|\bindex\b|Suchindex|chỉ mục|ดัชนี/i;
+    const locales = getLocales();
+    expect(locales).toHaveLength(11);
+    try {
+      for (const { code } of locales) {
+        setLocale(code);
+        for (const key of ['home.nextAction.loading.why', 'home.nextAction.healthy.why']) {
+          expect(t(key), `${code} ${key}`).not.toMatch(indexWord);
+        }
+      }
+    } finally {
+      setLocale('en');
+    }
+  });
+
+  it('a library size that never arrives because /v1/health failed is "unavailable", not "checking" forever', async () => {
+    const ready = { pendingCount: 0, loading: false, failed: false };
+    expect(chooseNextAction(null, ready, true)).toBe('unavailable');
+    expect(chooseNextAction(null, { ...ready, loading: true }, true)).toBe('unavailable');
+    expect(chooseNextAction(null, ready, false)).toBe('loading');
+    // A health reading that DID arrive wins over a stale failure flag.
+    expect(chooseNextAction(4, ready, true)).toBe('healthy');
+
+    stubHome();
+    const view = render(<HomeTab health={null} healthFailed />);
+    await waitFor(() => expect(view.getAllByRole('heading', { level: 2 })[0].textContent).toBe('Current recommendation is unavailable'));
   });
 });

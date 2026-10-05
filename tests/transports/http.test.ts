@@ -415,6 +415,76 @@ describe('HTTP Transport: GET /v1/entities', () => {
   });
 });
 
+describe('HTTP Transport: GET /v1/entities paging and ?project=', () => {
+  const names = (res: { body: { data: Array<{ name: string }> } }) => res.body.data.map((e) => e.name);
+
+  beforeAll(async () => {
+    for (const n of ['pg-a-1', 'pg-a-2', 'pg-a-3']) {
+      await req('POST', '/v1/remember', { name: n, type: 'note', tags: ['project:pg-proj'] });
+    }
+    await req('POST', '/v1/remember', { name: 'pg-a-arch', type: 'note', tags: ['project:pg-proj'] });
+    await req('POST', '/v1/forget', { name: 'pg-a-arch' });
+    await req('POST', '/v1/remember', { name: 'pg-b-1', type: 'note', tags: ['project:pg-other'] });
+    // Named like pg-proj's lesson, but tagged to another project: the tag wins.
+    await req('POST', '/v1/remember', { name: 'lesson-pg-proj-config-error', type: 'lesson_learned', tags: ['project:pg-other'] });
+    // No project tag at all: the name says which project it belongs to.
+    await req('POST', '/v1/remember', { name: 'lesson-pg-heur-config-error', type: 'lesson_learned' });
+    // A project whose name begins with another's: an exact tag match keeps them apart.
+    await req('POST', '/v1/remember', { name: 'pg-c-1', type: 'note', tags: ['project:pg-proj-2'] });
+    // The Stop hook's handoff carries the project tag but is not one of its memories.
+    await req('POST', '/v1/remember', { name: 'session-handoff:pg-proj', type: 'session-handoff', tags: ['project:pg-proj'] });
+    // A one-character name is not a project (the chips never read one out of a lesson name).
+    await req('POST', '/v1/remember', { name: 'lesson-x-config-error', type: 'lesson_learned' });
+  });
+
+  it('pages one project newest-first with limit and offset', async () => {
+    const first = await req('GET', '/v1/entities?project=pg-proj&limit=2');
+    expect(first.status).toBe(200);
+    expect(names(first)).toEqual(['pg-a-3', 'pg-a-2']);
+    const second = await req('GET', '/v1/entities?project=pg-proj&limit=2&offset=2');
+    expect(names(second)).toEqual(['pg-a-1']);
+    expect(names(await req('GET', '/v1/entities?project=pg-proj&limit=2&offset=50'))).toEqual([]);
+  });
+
+  it('leaves out archived memories unless asked for them (status=all)', async () => {
+    expect(names(await req('GET', '/v1/entities?project=pg-proj&limit=50'))).not.toContain('pg-a-arch');
+    const withArchived = names(await req('GET', '/v1/entities?project=pg-proj&limit=50&status=all'));
+    expect(withArchived).toContain('pg-a-arch');
+    expect(withArchived).not.toContain('pg-b-1'); // still only this project's
+  });
+
+  it('attributes a memory to a project by the rule /v1/projects counts with', async () => {
+    const tagged = names(await req('GET', '/v1/entities?project=pg-proj&limit=50'));
+    expect(tagged).not.toContain('lesson-pg-proj-config-error'); // its tag names another project
+    expect(tagged).not.toContain('pg-b-1');
+    expect(names(await req('GET', '/v1/entities?project=pg-heur&limit=50'))).toEqual(['lesson-pg-heur-config-error']);
+
+    const counted = (await req('GET', '/v1/projects')).body.data as Array<{ name: string; count: number }>;
+    for (const project of ['pg-proj', 'pg-other', 'pg-heur', 'pg-proj-2']) {
+      const listed = (await req('GET', `/v1/entities?project=${project}&limit=5000`)).body.data.length;
+      expect(listed, `${project}: the chip count and the list behind it`).toBe(counted.find((p) => p.name === project)!.count);
+    }
+    // Names that share a prefix stay apart, and the handoff is in neither the count nor the list.
+    expect(names(await req('GET', '/v1/entities?project=pg-proj-2&limit=50'))).toEqual(['pg-c-1']);
+    expect(names(await req('GET', '/v1/entities?project=pg-proj&limit=50'))).not.toContain('session-handoff:pg-proj');
+    // Too short to be a project from a lesson name: no chip, and no list either.
+    expect(counted.find((p) => p.name === 'x')).toBeUndefined();
+    expect(names(await req('GET', '/v1/entities?project=x&limit=50'))).toEqual([]);
+  });
+
+  it('refuses a type and a project together, and a negative offset', async () => {
+    expect((await req('GET', '/v1/entities?type=note&project=pg-proj')).status).toBe(400);
+    expect((await req('GET', '/v1/entities?offset=-1')).status).toBe(400);
+  });
+
+  it('offset pages the unfiltered and the type-filtered lists too', async () => {
+    const all = names(await req('GET', '/v1/entities?limit=50'));
+    expect(names(await req('GET', '/v1/entities?limit=2&offset=1'))).toEqual(all.slice(1, 3));
+    const notes = names(await req('GET', '/v1/entities?type=note&limit=50'));
+    expect(names(await req('GET', '/v1/entities?type=note&limit=1&offset=1'))).toEqual(notes.slice(1, 2));
+  });
+});
+
 // ── Forget ────────────────────────────────────────────────────────────────────
 
 describe('HTTP Transport: POST /v1/forget', () => {

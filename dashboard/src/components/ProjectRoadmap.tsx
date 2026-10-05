@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { Entity } from '../lib/api';
 import { MemoryRow } from './MemoryRow';
 import { t, getLocale } from '../lib/i18n';
-import { relativeDate, timeBucket, accessSignal, typeLabel, displayTitle, shortProjectId } from '../lib/entity-display';
+import { relativeDate, timeBucket, accessSignal, typeLabel, displayTitle, shortProjectId, timestampDate } from '../lib/entity-display';
 import { EntityIcon } from './icons/EntityIcon';
 import { CaptureDensityBand } from './CaptureDensityBand';
 import { EntityTechnicalDetails } from './LessonCards';
@@ -18,15 +18,15 @@ const DECISION_TYPES = new Set(['decision', 'design_decision', 'architecture_dec
  *  for it would be advertising an edge that cannot occur. */
 const LINEAGE_EDGE_TYPES = new Set(['supersedes', 'contradicts']);
 
-/** Type set that qualifies as a milestone for the rail. Releases are the
- *  primary signal; workflow_checkpoint and weekly-summary are optional
- *  secondary signals only when explicitly tagged. */
+/** Type set that qualifies as a milestone for the rail: releases and
+ *  features. */
 const MILESTONE_TYPES = new Set(['release', 'feature']);
 
-/** Milestone signal gate: feature/plan/decision entries below this are
- *  filtered from the milestone rail. 'release' type is always exempt —
- *  a shipped release is always PM-meaningful regardless of score. Entities
- *  without signal_score (created before the scorer) pass through unfiltered. */
+/** Milestone signal gate: milestone-type entries (features) whose
+ *  signal_score is below this are filtered from the milestone rail. 'release'
+ *  type is always exempt — a shipped release is always PM-meaningful
+ *  regardless of score. Entities without signal_score (created before the
+ *  scorer) pass through unfiltered. */
 const MILESTONE_SIGNAL_THRESHOLD = 0.65;
 const MILESTONE_ALWAYS_INCLUDE_TYPES = new Set(['release']);
 
@@ -72,7 +72,7 @@ interface Phase {
   startIso: string;
   endIso: string;
   entityCount: number;
-  /** Localised-or-derived label for the phase strip header. */
+  /** Label for the phase strip header: the anchor's display title. */
   label: string;
   /** The entity used to derive the label, when one exists. Lets the
    *  UI scroll-to that entity on click. */
@@ -96,8 +96,15 @@ interface Phase {
  * its run. There is no date-range fallback; if we can't name what
  * happened in a period, the period is not a milestone.
  */
+const MAX_GAP_DAYS = 7;
+
+/** A phase is open until a gap longer than the one that separates phases has
+ *  passed since its last memory. */
+function isPhaseOpen(phase: Phase, now: Date = new Date()): boolean {
+  return (now.getTime() - timestampDate(phase.endIso).getTime()) / 86400000 <= MAX_GAP_DAYS;
+}
+
 function derivePhases(entities: Entity[]): Phase[] {
-  const MAX_GAP_DAYS = 7;
   const MIN_PHASE_ENTITIES = 3;
 
   if (entities.length < MIN_PHASE_ENTITIES) return [];
@@ -193,7 +200,7 @@ interface DateGroup {
   entries: Entity[];
 }
 
-function groupByDate(entities: Entity[], now: Date = new Date()): DateGroup[] {
+export function groupByDate(entities: Entity[], now: Date = new Date()): DateGroup[] {
   const buckets = new Map<string, DateGroup>();
 
   for (const e of entities) {
@@ -220,7 +227,9 @@ function groupByDate(entities: Entity[], now: Date = new Date()): DateGroup[] {
       const day = ts.slice(0, 10);
       const d = new Date(day);
       const weekStart = new Date(d);
-      weekStart.setDate(d.getDate() - d.getDay()); // Sunday
+      // `day` is a UTC date, so its weekday is read in UTC too — the local
+      // getDay()/setDate() moved the week boundary by a day west of Greenwich.
+      weekStart.setUTCDate(d.getUTCDate() - d.getUTCDay()); // Sunday
       const wkKey = weekStart.toISOString().slice(0, 10);
       key = `month:${wkKey}`;
       label = relativeDate(wkKey, now);
@@ -230,7 +239,9 @@ function groupByDate(entities: Entity[], now: Date = new Date()): DateGroup[] {
       const month = ts.slice(0, 7); // YYYY-MM
       key = `older:${month}`;
       const d = new Date(month + '-01');
-      label = d.toLocaleDateString(getLocale(), { year: 'numeric', month: 'long' });
+      // `month` is a UTC month: format it in UTC, or a viewer west of
+      // Greenwich saw the month before.
+      label = d.toLocaleDateString(getLocale(), { year: 'numeric', month: 'long', timeZone: 'UTC' });
       sort = d.getTime();
     }
 
@@ -279,23 +290,22 @@ export function ProjectRoadmap({ projectName, entities }: Props) {
 
   // Milestones: release/feature entities, signal-gated, newest first, capped at 6.
   // 'release' type is always included; legacy entities (no signal_score) pass through.
-  const milestones = useMemo(() => {
-    return entities
-      .filter((e) => {
-        if (!MILESTONE_TYPES.has(e.type)) return false;
-        if (MILESTONE_ALWAYS_INCLUDE_TYPES.has(e.type)) return true;
-        const score = (e.metadata as Record<string, unknown> | undefined)?.signal_score;
-        if (typeof score !== 'number') return true; // legacy: pass through
-        return score >= MILESTONE_SIGNAL_THRESHOLD;
-      })
-      .sort((a, b) => b.created_at.localeCompare(a.created_at))
-      .slice(0, 6);
-  }, [entities]);
-
-  const filteredMilestoneCount = useMemo(() => {
+  const { milestones, filteredMilestoneCount } = useMemo(() => {
     const eligible = entities.filter((e) => MILESTONE_TYPES.has(e.type));
-    return eligible.length - milestones.length;
-  }, [entities, milestones]);
+    const passing = eligible.filter((e) => {
+      if (MILESTONE_ALWAYS_INCLUDE_TYPES.has(e.type)) return true;
+      const score = (e.metadata as Record<string, unknown> | undefined)?.signal_score;
+      if (typeof score !== 'number') return true; // legacy: pass through
+      return score >= MILESTONE_SIGNAL_THRESHOLD;
+    });
+    return {
+      milestones: passing.sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 6),
+      // Only what the SIGNAL GATE removed is "low-signal hidden". The cap of 6
+      // above is a different cut, and counting it here told the user that
+      // releases — which are exempt from the gate — had been judged low-signal.
+      filteredMilestoneCount: eligible.length - passing.length,
+    };
+  }, [entities]);
 
   // Key lessons: top 5 lesson types by access_count desc
   const keyLessons = useMemo(
@@ -307,8 +317,11 @@ export function ProjectRoadmap({ projectName, entities }: Props) {
   );
 
   // v2 auto-phases. Empty array for projects below the density threshold;
-  // the strip renders a small placeholder note in that case.
+  // the strip renders nothing then, and the mindmap says why it cannot draw.
   const phases = useMemo(() => derivePhases(entities), [entities]);
+  // The latest phase reads as current (the strip) and active (the tree) only
+  // while it is still open: both views make the same claim.
+  const latestPhaseOpen = phases.length > 0 && isPhaseOpen(phases[phases.length - 1]);
 
   // Refs for scroll-to-milestone targeting
   const entryRefs = useRef<Map<number, HTMLDivElement>>(new Map());
@@ -329,6 +342,9 @@ export function ProjectRoadmap({ projectName, entities }: Props) {
     setView('tree');
     window.requestAnimationFrame(() => focusEntry(id));
   };
+  // The tree rows only exist in the tree view; from any other view the target
+  // is reached by switching to it first.
+  const jumpToEntry = (id: number) => (view === 'tree' ? focusEntry(id) : focusTreeEntry(id));
 
   /* ---------- lineage overlay (supersedes / contradicts arcs) ---------- */
 
@@ -400,8 +416,8 @@ export function ProjectRoadmap({ projectName, entities }: Props) {
         <span class="empty-icon" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-3)' }}>
           {/* Map outline — empty roadmap fallback */}
           <svg width="32" height="32" viewBox="0 0 16 16" aria-hidden="true">
-            <path d="M2 4 L6 2 L10 4 L14 2 V12 L10 14 L6 12 L2 14 z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
-            <path d="M6 2 V12 M10 4 V14" stroke="currentColor" strokeWidth="1.5" />
+            <path d="M2 4 L6 2 L10 4 L14 2 V12 L10 14 L6 12 L2 14 z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+            <path d="M6 2 V12 M10 4 V14" stroke="currentColor" stroke-width="1.5" />
           </svg>
         </span>
         {t('roadmap.emptyProject')}
@@ -427,7 +443,7 @@ export function ProjectRoadmap({ projectName, entities }: Props) {
           <div style={{ flex: '1 1 240px', minWidth: 0 }}>
             <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--text-0)', display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
               <svg width="18" height="18" viewBox="0 0 16 16" aria-hidden="true" style={{ color: 'var(--life)', flexShrink: 0 }}>
-                <path d="M2 4 a1 1 0 0 1 1 -1 h4 l2 2 h5 a1 1 0 0 1 1 1 v6 a1 1 0 0 1 -1 1 H3 a1 1 0 0 1 -1 -1 z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+                <path d="M2 4 a1 1 0 0 1 1 -1 h4 l2 2 h5 a1 1 0 0 1 1 1 v6 a1 1 0 0 1 -1 1 H3 a1 1 0 0 1 -1 -1 z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
               </svg>
               {/* #493: prose label, full id kept as the tooltip — see shortProjectId. */}
               <span title={projectName} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{shortProjectId(projectName)}</span>
@@ -550,7 +566,7 @@ export function ProjectRoadmap({ projectName, entities }: Props) {
           {phases.map((phase, i) => (
             <button
               key={`${phase.startIso}-${phase.label}`}
-              onClick={() => phase.anchorId !== undefined && focusEntry(phase.anchorId)}
+              onClick={() => phase.anchorId !== undefined && jumpToEntry(phase.anchorId)}
               disabled={phase.anchorId === undefined}
               style={{
                 flexShrink: 0,
@@ -559,9 +575,9 @@ export function ProjectRoadmap({ projectName, entities }: Props) {
                 alignItems: 'flex-start',
                 gap: 2,
                 padding: '6px 10px',
-                background: i === phases.length - 1 ? 'var(--life-soft)' : 'transparent',
+                background: i === phases.length - 1 && latestPhaseOpen ? 'var(--life-soft)' : 'transparent',
                 border: '1px solid',
-                borderColor: i === phases.length - 1 ? 'rgba(143, 242, 92, 0.3)' : 'var(--border-subtle)',
+                borderColor: i === phases.length - 1 && latestPhaseOpen ? 'rgba(143, 242, 92, 0.3)' : 'var(--border-subtle)',
                 borderRadius: 'var(--radius-xs)',
                 color: 'var(--text-1)',
                 cursor: phase.anchorId !== undefined ? 'pointer' : 'default',
@@ -595,7 +611,7 @@ export function ProjectRoadmap({ projectName, entities }: Props) {
       )}
       {view === 'mindmap' && phases.length === 0 && (
         <div class="empty" style={{ padding: 24 }}>
-          {t('roadmap.emptyProject')} — {t('roadmap.mindmapNeedsPhases')}
+          {t('roadmap.mindmapNeedsPhases')}
         </div>
       )}
 
@@ -610,7 +626,7 @@ export function ProjectRoadmap({ projectName, entities }: Props) {
 
       {/* Two-column layout on wide screens: timeline + rails sidebar */}
       {view === 'tree' && (
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 280px', gap: 16, alignItems: 'start' }}>
+      <div class="roadmap-grid">
         {/* Vertical-timeline tree.
             Each phase is a dot on the trunk; entities branch off as
             indented leaves. ● for completed phases, ○ for the most-
@@ -665,8 +681,8 @@ export function ProjectRoadmap({ projectName, entities }: Props) {
                       d={p.d}
                       fill="none"
                       stroke={p.type === 'contradicts' ? 'var(--warning)' : 'var(--text-3)'}
-                      strokeWidth={1.5}
-                      strokeDasharray={p.type === 'contradicts' ? '3 3' : undefined}
+                      stroke-width={1.5}
+                      stroke-dasharray={p.type === 'contradicts' ? '3 3' : undefined}
                       opacity={0.8}
                     />
                   ))}
@@ -696,13 +712,15 @@ export function ProjectRoadmap({ projectName, entities }: Props) {
                 }
                 // Show phases newest-first to match visual expectation
                 const phasesView = phases
-                  .map((p, i) => ({ phase: p, entries: phaseEntries[i], idx: i }))
+                  .map((p, i) => ({ phase: p, entries: phaseEntries[i] }))
                   .reverse();
 
                 return (
                   <>
                     {phasesView.map(({ phase, entries: phEntries }, vIdx) => {
-                      const isActive = vIdx === 0; // most-recent phase
+                      // The latest phase is "active" only while it is still
+                      // open: no memory for longer than the phase gap closes it.
+                      const isActive = vIdx === 0 && isPhaseOpen(phase);
                       return (
                         <div
                           key={`${phase.startIso}-${phase.label}`}
@@ -1197,6 +1215,20 @@ interface MindmapProps {
   onNodeClick: (entityId: number) => void;
 }
 
+const ROOT_LABEL_MAX = 14;
+
+/** Shorten the centre node's label to fit, keeping the `~xxxxxx` suffix that
+ *  tells two same-named projects apart (#493) — the plain slice cut the suffix
+ *  off exactly when the name was long enough to need it. */
+function fitRootLabel(label: string): string {
+  if (label.length <= ROOT_LABEL_MAX) return label;
+  const at = label.lastIndexOf('~');
+  const suffix = at > 0 ? label.slice(at) : '';
+  const room = ROOT_LABEL_MAX - suffix.length - 1;
+  if (suffix && room >= 1) return `${label.slice(0, Math.min(room, at))}…${suffix}`;
+  return `${label.slice(0, ROOT_LABEL_MAX - 2)}…`;
+}
+
 function RoadmapMindmap({ projectName, phases, entities, onNodeClick }: MindmapProps) {
   // Bucket entities by phase (same logic as tree view)
   const phaseEntries: Entity[][] = phases.map(() => []);
@@ -1428,7 +1460,7 @@ function RoadmapMindmap({ projectName, phases, entities, onNodeClick }: MindmapP
               d={`M ${cx} ${cy} Q ${(cx + px) / 2} ${(cy + py) / 2 - 10} ${px} ${py}`}
               fill="none"
               stroke="rgba(143, 242, 92, 0.4)"
-              strokeWidth={1.5}
+              stroke-width={1.5}
             />
           );
         })}
@@ -1445,7 +1477,7 @@ function RoadmapMindmap({ projectName, phases, entities, onNodeClick }: MindmapP
                 d={`M ${phasePx} ${phasePy} Q ${(phasePx + ex) / 2} ${(phasePy + ey) / 2} ${ex} ${ey}`}
                 fill="none"
                 stroke="rgba(255,255,255,0.18)"
-                strokeWidth={1}
+                stroke-width={1}
               />
             );
           });
@@ -1453,7 +1485,8 @@ function RoadmapMindmap({ projectName, phases, entities, onNodeClick }: MindmapP
 
         {/* Project node — centre */}
         <g>
-          <circle cx={cx} cy={cy} r={42} fill="rgba(143, 242, 92, 0.18)" stroke="var(--life)" strokeWidth={1.5} />
+          <title>{projectName}</title>
+          <circle cx={cx} cy={cy} r={42} fill="rgba(143, 242, 92, 0.18)" stroke="var(--life)" stroke-width={1.5} />
           <text
             x={cx}
             y={cy}
@@ -1464,7 +1497,7 @@ function RoadmapMindmap({ projectName, phases, entities, onNodeClick }: MindmapP
             fill="var(--text-0)"
             style={{ pointerEvents: 'none' }}
           >
-            {rootLabel.length > 14 ? rootLabel.slice(0, 12) + '…' : rootLabel}
+            {fitRootLabel(rootLabel)}
           </text>
         </g>
 
@@ -1494,7 +1527,7 @@ function RoadmapMindmap({ projectName, phases, entities, onNodeClick }: MindmapP
                 r={28}
                 fill="rgba(143, 242, 92, 0.10)"
                 stroke="var(--life)"
-                strokeWidth={1.25}
+                stroke-width={1.25}
               />
               <text
                 x={px}
@@ -1540,7 +1573,7 @@ function RoadmapMindmap({ projectName, phases, entities, onNodeClick }: MindmapP
                       }
                     }}
                   >
-                    <title>{`${label} (${e.type})`}</title>
+                    <title>{`${label} (${typeLabel(e.type)})`}</title>
                     <circle
                       cx={ex}
                       cy={ey}

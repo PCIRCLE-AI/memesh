@@ -6,9 +6,9 @@ interface KnowledgeRadarProps {
   data: RadarEntry[];
 }
 
-/** Look up a localised label for a radar axis. Falls back to the raw
- *  `axis` value (e.g. "patterns") if the i18n key is missing — the
- *  i18n.ts catalogue defines a key per known axis. */
+/** Look up a localised label for a radar axis. A missing key renders the
+ *  whole key (`radar.axis.foo`), not the bare axis: t() falls back
+ *  locale -> en -> key. The i18n.ts catalogue defines a key per known axis. */
 function axisLabel(axis: string): string {
   // No `|| axis` fallback: t() already falls back locale -> en -> key, so
   // the right-hand branch of `||` was unreachable (a non-empty string is
@@ -79,7 +79,7 @@ export function KnowledgeRadar({ data }: KnowledgeRadarProps) {
                 points={pts.join(' ')}
                 fill="none"
                 stroke="rgba(255,255,255,0.06)"
-                strokeWidth={1}
+                stroke-width={1}
               />
             );
           })}
@@ -95,7 +95,7 @@ export function KnowledgeRadar({ data }: KnowledgeRadarProps) {
                 x2={x.toFixed(1)}
                 y2={y.toFixed(1)}
                 stroke="rgba(255,255,255,0.06)"
-                strokeWidth={1}
+                stroke-width={1}
               />
             );
           })}
@@ -105,8 +105,8 @@ export function KnowledgeRadar({ data }: KnowledgeRadarProps) {
             d={dataPath}
             fill="rgba(143,242,92,0.15)"
             stroke="var(--life)"
-            strokeWidth={1.5}
-            strokeLinejoin="round"
+            stroke-width={1.5}
+            stroke-linejoin="round"
           />
 
           {/* Data points */}

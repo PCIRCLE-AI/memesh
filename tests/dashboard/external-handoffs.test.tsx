@@ -160,3 +160,36 @@ describe('issue #235 — the Terminal label follows the primary action', () => {
     }
   });
 });
+
+describe('handoff inventory, the other direction', () => {
+  it('every handoff a component renders is an inventory entry whose destination matches its kind', () => {
+    // The forward check above cannot see a NEW handoff nobody listed: the
+    // inventory says "complete" but only its own entries were ever verified.
+    const kinds = { TerminalHandoff: 'terminal', GitHubDestination: 'github' } as const;
+    const rendered: Array<{ id: string; destination: string; file: string }> = [];
+    const dir = path.join(root, 'dashboard/src/components');
+    for (const name of fs.readdirSync(dir).filter(n => n.endsWith('.tsx') && n !== 'ExternalHandoff.tsx')) {
+      const source = fs.readFileSync(path.join(dir, name), 'utf8');
+      for (const m of source.matchAll(/<(TerminalHandoff|GitHubDestination)\b[^>]*?\bid="([^"]+)"/g)) {
+        rendered.push({ id: m[2], destination: kinds[m[1] as keyof typeof kinds], file: name });
+      }
+    }
+    expect(rendered.length).toBeGreaterThan(5);
+    for (const { id, destination, file } of rendered) {
+      const entry = DASHBOARD_EXTERNAL_HANDOFFS.find(item => item.id === id);
+      expect(entry, `${file} renders "${id}", which the inventory does not list`).toBeDefined();
+      expect(entry!.destination, `${id} in ${file}`).toBe(destination);
+    }
+  });
+});
+
+describe('copying a Terminal command', () => {
+  it('says so when the clipboard is unavailable (a non-secure origin has no navigator.clipboard)', async () => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+    const view = render(<TerminalHandoff id="settings-update" command="memesh update" />);
+    fireEvent.click(view.getByRole('button', { name: t('handoff.copyCommand') }));
+
+    await waitFor(() => expect(view.container.textContent).toContain(t('handoff.copyFailed')));
+    expect(view.container.textContent).not.toContain(t('handoff.commandCopied'));
+  });
+});

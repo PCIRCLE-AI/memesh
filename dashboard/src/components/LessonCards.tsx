@@ -17,6 +17,9 @@ interface StructuredBlock {
   rootCause: string;
   fix: string;
   prevention: string;
+  /** Lines the parser does not recognise (a `Context:` line, say). Kept and
+   *  shown as plain lines — dropping them would be a silent loss of content. */
+  extra: string[];
 }
 
 /** Parse a failure-driven lesson into 1+ structured blocks. Each block has
@@ -25,21 +28,30 @@ interface StructuredBlock {
 export function parseStructuredBlocks(observations: string[]): StructuredBlock[] {
   const blocks: StructuredBlock[] = [];
   let current: StructuredBlock | null = null;
+  // Lines seen before the first recognised one; they join the first block.
+  const leading: string[] = [];
+  const fresh = (error = ''): StructuredBlock => ({ error, rootCause: '', fix: '', prevention: '', extra: [...leading.splice(0)] });
+  // A field that appears twice keeps both: `Solution 1:` and `Solution 2:` are
+  // two fixes, and the second used to overwrite the first.
+  const append = (existing: string, value: string) => (existing ? `${existing}\n${value}` : value);
 
   for (const raw of observations) {
     const obs = raw.trim();
     if (obs.startsWith('Error:')) {
       if (current) blocks.push(current);
-      current = { error: obs.slice('Error:'.length).trim(), rootCause: '', fix: '', prevention: '' };
+      current = fresh(obs.slice('Error:'.length).trim());
     } else if (obs.startsWith('Root cause:')) {
-      if (!current) current = { error: '', rootCause: '', fix: '', prevention: '' };
-      current.rootCause = obs.slice('Root cause:'.length).trim();
+      current ??= fresh();
+      current.rootCause = append(current.rootCause, obs.slice('Root cause:'.length).trim());
     } else if (obs.startsWith('Fix:') || obs.startsWith('Solution')) {
-      if (!current) current = { error: '', rootCause: '', fix: '', prevention: '' };
-      current.fix = obs.replace(/^(Fix|Solution\s*\d*):/i, '').trim();
+      current ??= fresh();
+      current.fix = append(current.fix, obs.replace(/^(Fix|Solution\s*\d*):/i, '').trim());
     } else if (obs.startsWith('Prevention:')) {
-      if (!current) current = { error: '', rootCause: '', fix: '', prevention: '' };
-      current.prevention = obs.slice('Prevention:'.length).trim();
+      current ??= fresh();
+      current.prevention = append(current.prevention, obs.slice('Prevention:'.length).trim());
+    } else if (obs) {
+      if (current) current.extra.push(obs);
+      else leading.push(obs);
     }
   }
   if (current) blocks.push(current);
@@ -55,7 +67,7 @@ interface PlanRecord {
   commits: string[];
 }
 
-export function parsePlan(entity: Entity): PlanRecord {
+function parsePlan(entity: Entity): PlanRecord {
   const obs = entity.observations ?? [];
   const planMatch = obs[0]?.match(/^Plan "(.+?)" completed \((\d+) steps?\)/);
   const stepsLine = obs.find((o) => o.startsWith('Steps:'))?.slice('Steps:'.length).trim() ?? '';
@@ -76,7 +88,16 @@ const SEVERITY_COLORS: Record<string, string> = {
   minor: 'var(--info)',
 };
 
-export function severityOf(entity: Entity): 'critical' | 'major' | 'minor' | null {
+// The -soft fill that pairs with each colour (DESIGN.md pair rule). A hex alpha
+// suffix glued onto `var(--danger)` ("var(--danger)18") is not a colour, so the
+// old badge background silently did not render.
+const SEVERITY_SOFT: Record<string, string> = {
+  critical: 'var(--danger-soft)',
+  major: 'var(--warning-soft)',
+  minor: 'var(--info-soft)',
+};
+
+function severityOf(entity: Entity): 'critical' | 'major' | 'minor' | null {
   const tags = entity.tags ?? [];
   if (tags.includes('severity:critical')) return 'critical';
   if (tags.includes('severity:major')) return 'major';
@@ -90,7 +111,7 @@ export function SeverityBadge({ entity }: { entity: Entity }) {
   const severity = severityOf(entity);
   if (!severity) return null;
   return (
-    <span class="badge" style={{ background: `${SEVERITY_COLORS[severity]}18`, color: SEVERITY_COLORS[severity] }}>
+    <span class="badge" style={{ background: SEVERITY_SOFT[severity], color: SEVERITY_COLORS[severity] }}>
       {t(`lessons.severity.${severity}`)}
     </span>
   );
@@ -102,7 +123,7 @@ function Field({ label, color, text }: { label: string; color: string; text: str
   return (
     <div style={{ marginBottom: 8 }}>
       <div style={{ fontSize: 14, fontWeight: 600, color, marginBottom: 2, fontFamily: 'var(--font-ui)' }}>{label}</div>
-      <div style={{ fontSize: 14, lineHeight: 1.55 }}>{text}</div>
+      <div style={{ fontSize: 14, lineHeight: 1.55, whiteSpace: 'pre-line' }}>{text}</div>
     </div>
   );
 }
@@ -120,6 +141,7 @@ function FailureBody({ entity }: { entity: Entity }) {
           {b.rootCause && <Field label={t('lessons.rootCause')} color="var(--warning)" text={b.rootCause} />}
           {b.fix && <Field label={t('lessons.fix')} color="var(--success)" text={b.fix} />}
           {b.prevention && <Field label={t('lessons.prevention')} color="var(--info)" text={b.prevention} />}
+          {b.extra.map((line, j) => <div key={j} style={{ fontSize: 14, lineHeight: 1.55, color: 'var(--text-2)', marginBottom: 4 }}>{line}</div>)}
         </div>
       ))}
     </>

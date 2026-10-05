@@ -2,7 +2,9 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, render } from '@testing-library/preact';
 import { KnowledgeRadar } from '../../dashboard/src/components/KnowledgeRadar';
-import { drawTimeline, TIMELINE_AXIS_FONT_SIZE } from '../../dashboard/src/components/MemoryTimeline';
+import { densifyByDay, drawTimeline, TIMELINE_AXIS_FONT_SIZE } from '../../dashboard/src/components/MemoryTimeline';
+import { MemoryAgeMatrix } from '../../dashboard/src/components/MemoryAgeMatrix';
+import { typeLabel } from '../../dashboard/src/lib/entity-display';
 import { ProjectRoadmap } from '../../dashboard/src/components/ProjectRoadmap';
 import type { Entity } from '../../dashboard/src/lib/api';
 
@@ -148,5 +150,69 @@ describe('chart label geometry', () => {
     expect(ctx.font).toContain('14px');
     expect(labels).toHaveLength(3);
     expect(labels.every(({ x }) => x - 18 >= 0 && x + 18 <= 180)).toBe(true);
+  });
+});
+
+describe('timeline canvas behaviour', () => {
+  function stubCanvas(width = 400) {
+    const canvas = document.createElement('canvas');
+    const widthAtMeasure: string[] = [];
+    Object.defineProperty(canvas, 'getBoundingClientRect', {
+      value: () => { widthAtMeasure.push(canvas.style.width); return { width, height: 120 }; },
+    });
+    const drawn = { alphaAtFill: [] as number[], fillStyleAtFill: [] as string[], cleared: 0 };
+    const ctx = {
+      globalAlpha: 1, fillStyle: '',
+      scale: () => {}, beginPath: () => {}, moveTo: () => {}, lineTo: () => {}, stroke: () => {}, fillText: () => {},
+      measureText: () => ({ width: 36 }),
+      fillRect(this: { globalAlpha: number; fillStyle: unknown }) { drawn.alphaAtFill.push(this.globalAlpha); drawn.fillStyleAtFill.push(String(this.fillStyle)); },
+      clearRect: () => { drawn.cleared++; },
+    } as unknown as CanvasRenderingContext2D & { globalAlpha: number };
+    Object.defineProperty(canvas, 'getContext', { value: () => ctx });
+    return { canvas, ctx, widthAtMeasure, drawn };
+  }
+  const day = (n: number) => ({ date: `2026-04-${String(n).padStart(2, '0')}`, created: 2, recalled: 1 });
+
+  it('measures against the stylesheet width (100%), not the 240px intrinsic size left by clearing it', () => {
+    const { canvas, widthAtMeasure } = stubCanvas();
+    canvas.style.width = '240px';
+    drawTimeline(canvas, [day(1), day(2), day(3)]);
+    expect(widthAtMeasure).toEqual(['100%']);
+    expect(canvas.style.width).toBe('400px'); // pinned to the measured width after the draw
+  });
+
+  it('wipes the old bars when the data becomes empty, so the chart cannot contradict its legend', () => {
+    const { canvas, drawn } = stubCanvas();
+    drawTimeline(canvas, []);
+    expect(drawn.cleared).toBe(1);
+  });
+
+  it('fills bars with the --life token at 30% alpha, not a hand-rolled rgba literal', () => {
+    const { canvas, drawn } = stubCanvas();
+    drawTimeline(canvas, [day(1), day(2)]);
+    expect(drawn.alphaAtFill.every((a) => a === 0.3)).toBe(true);
+    expect(drawn.fillStyleAtFill.join('')).not.toMatch(/rgba/);
+  });
+
+  it('gives a day with no activity its own (empty) bar, so "every 7 bars" is a week', () => {
+    const dense = densifyByDay([day(1), day(2), day(9)]);
+    expect(dense.map((d) => d.date.slice(8))).toEqual(['01', '02', '03', '04', '05', '06', '07', '08', '09']);
+    expect(dense[4]).toMatchObject({ created: 0, recalled: 0 });
+    // Not consecutive dates (or too long a span): left exactly as received.
+    const odd = [{ date: 'garbage', created: 1, recalled: 1 }, day(2)];
+    expect(densifyByDay(odd)).toBe(odd);
+  });
+});
+
+describe('MemoryAgeMatrix covers every type in the data', () => {
+  it('shows types outside its preferred list instead of dropping their rows', () => {
+    const { container } = render(<MemoryAgeMatrix data={[
+      { type: 'lesson_learned', bucket: 'week', count: 2 },
+      { type: 'plan', bucket: 'week', count: 9 },
+      { type: 'release', bucket: 'older', count: 1 },
+    ]} />);
+    const text = container.textContent ?? '';
+    expect(text).toContain(typeLabel('plan'));
+    expect(text).toContain(typeLabel('release'));
   });
 });

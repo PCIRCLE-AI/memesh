@@ -12,7 +12,12 @@ import {
 import { EntityIcon } from './icons/EntityIcon';
 
 function truncate(s: string, n: number): string {
-  return s.length > n ? s.slice(0, n) + '…' : s;
+  if (s.length <= n) return s;
+  // Never cut between the two halves of a surrogate pair (an emoji): the lone
+  // half renders as garbage.
+  const code = s.charCodeAt(n - 1);
+  const cut = code >= 0xd800 && code <= 0xdbff ? n - 1 : n;
+  return s.slice(0, cut) + '…';
 }
 
 /** Format a created_at ISO string as `YYYY-MM-DD HH:mm` in the user's
@@ -79,7 +84,7 @@ export function MemoryRow({ entity: e, actions, highlight }: Props) {
               title={`${translate('memory.tooltip.project')}: ${project}`}
             >
               <svg width="11" height="11" viewBox="0 0 16 16" aria-hidden="true" style={{ flexShrink: 0 }}>
-                <path d="M2 4 a1 1 0 0 1 1 -1 h4 l2 2 h5 a1 1 0 0 1 1 1 v6 a1 1 0 0 1 -1 1 H3 a1 1 0 0 1 -1 -1 z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+                <path d="M2 4 a1 1 0 0 1 1 -1 h4 l2 2 h5 a1 1 0 0 1 1 1 v6 a1 1 0 0 1 -1 1 H3 a1 1 0 0 1 -1 -1 z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
               </svg>
               <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{shortProjectId(project)}</span>
             </span>
@@ -132,15 +137,17 @@ export function MemoryRow({ entity: e, actions, highlight }: Props) {
 function Highlight({ text, term }: { text: string; term: string }) {
   if (!term) return <>{text}</>;
   const parts: preact.ComponentChild[] = [];
-  const lower = text.toLowerCase();
-  const lt = term.toLowerCase();
+  // Match against the ORIGINAL text: lower-casing can change its length ("İ"
+  // becomes two code units), and indexes found in the lower-cased copy then
+  // pointed at the wrong characters of the original.
+  const matcher = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
   let pos = 0;
-  while (pos < text.length) {
-    const idx = lower.indexOf(lt, pos);
-    if (idx === -1) { parts.push(text.slice(pos)); break; }
+  for (const match of text.matchAll(matcher)) {
+    const idx = match.index as number;
     if (idx > pos) parts.push(text.slice(pos, idx));
-    parts.push(<mark>{text.slice(idx, idx + lt.length)}</mark>);
-    pos = idx + lt.length;
+    parts.push(<mark>{match[0]}</mark>);
+    pos = idx + match[0].length;
   }
+  if (pos < text.length) parts.push(text.slice(pos));
   return <>{parts}</>;
 }

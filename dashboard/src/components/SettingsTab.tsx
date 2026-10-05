@@ -6,7 +6,7 @@ import {
   type UpdateStatusData,
 } from '../lib/api';
 import { t, setLocale, getLocales, type Locale } from '../lib/i18n';
-import { actionFailureMessage } from '../lib/failure';
+import { actionFailureMessage, classifyLoadError, failureMessage } from '../lib/failure';
 import { TerminalHandoff } from './ExternalHandoff';
 import { InstallationDetails } from './InstallationDetails';
 import {
@@ -124,7 +124,13 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
   const [configMessage, setConfigMessage] = useState<ConfigMessage | null>(null);
   const [updateLoading, setUpdateLoading] = useState(true);
   const [updateRefreshing, setUpdateRefreshing] = useState(false);
-  async function loadUpdateStatus(forceFresh = true, keepCurrentState = false) {
+  // What went wrong with a RE-check ("Check now" with a status already on
+  // screen). It used to change nothing at all — the old green "Up to date" line
+  // stayed and the click looked like it had worked. A first load that fails
+  // already shows the card's own "unavailable" state.
+  const [updateCheckError, setUpdateCheckError] = useState('');
+  async function loadUpdateStatus(keepCurrentState = false) {
+    setUpdateCheckError('');
     if (keepCurrentState) {
       setUpdateRefreshing(true);
     } else {
@@ -132,18 +138,21 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
     }
 
     try {
-      const path = forceFresh ? '/v1/update-status' : '/v1/update-status?cached=1';
-      const data = await api<UpdateStatusData>('GET', path);
+      const data = await api<UpdateStatusData>('GET', '/v1/update-status');
       if (!isUpdateStatusRenderable(data)) {
         // The request SUCCEEDED, so no error path will ever log this — and a
         // hollow payload here would read as "Up to date", not as a failure.
         console.warn('[memesh dashboard] /v1/update-status answered, but with a shape this bundle cannot render — stale bundle or version skew, not an outage:', data);
-        if (!keepCurrentState) setUpdateStatus(null);
+        if (keepCurrentState) setUpdateCheckError(failureMessage('unreadable'));
+        else setUpdateStatus(null);
         return;
       }
       setUpdateStatus(data);
-    } catch {
-      if (!keepCurrentState) {
+    } catch (e) {
+      console.warn('[memesh dashboard] /v1/update-status failed to load:', e);
+      if (keepCurrentState) {
+        setUpdateCheckError(failureMessage(classifyLoadError(e)));
+      } else {
         setUpdateStatus(null);
       }
     } finally {
@@ -350,6 +359,9 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
             </div>
           </div>
         )}
+        {updateCheckError && (
+          <div class="error-box" role="alert" style={{ marginBottom: 12 }}>{updateCheckError}</div>
+        )}
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'baseline', marginBottom: 12, flexWrap: 'wrap' }}>
           <div style={{ color: updateSummaryColor, fontSize: 16, fontWeight: 600 }}>{updateSummary}</div>
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -359,7 +371,7 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
             <button
               class="btn btn-sm"
               type="button"
-              onClick={() => { void loadUpdateStatus(true, Boolean(updateStatus)); }}
+              onClick={() => { void loadUpdateStatus(Boolean(updateStatus)); }}
               disabled={updateActionInProgress}
             >
               {updateActionInProgress ? t('settings.updateChecking') : t('settings.checkNow')}
@@ -421,7 +433,7 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
         <div class="card-title">{t('settings.behaviourTitle')}</div>
 
         <div style={{ marginTop: 8 }}>
-          {configLoading && <div class="loading" role="status" />}
+          {configLoading && <div class="loading" role="status" aria-label={t('common.loading')} />}
           <label id="settings-autoupdate-label" style={{ fontSize: 14, color: 'var(--text-2)', display: 'block', marginBottom: 4 }}>
             {t('settings.autoUpdateLabel')}
           </label>

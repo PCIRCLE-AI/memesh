@@ -11,6 +11,7 @@ import { OnboardingBanner } from './components/OnboardingBanner';
 import { DoctorBanner } from './components/DoctorBanner';
 import { InsightsBanner } from './components/InsightsBanner';
 import { api, AuthRequiredError, getApiToken, setApiToken, type HealthData } from './lib/api';
+import { classifyLoadError, failureMessage } from './lib/failure';
 import { initLocale, t, type Locale } from './lib/i18n';
 
 // Four tabs, one job each. Home leads because it answers the visit's real
@@ -55,7 +56,10 @@ function initialTab(): Tab {
   const resolve = (raw: string | null): Tab | null => {
     if (!raw) return null;
     if ((TAB_KEYS as readonly string[]).includes(raw)) return raw as Tab;
-    return LEGACY_TAB_MAP[raw] ?? null;
+    // Own keys only: a plain object also answers `constructor`, `toString`
+    // and `__proto__` from its prototype, and `?tab=constructor` then made
+    // `tab` a function that matched no panel (a blank dashboard).
+    return Object.prototype.hasOwnProperty.call(LEGACY_TAB_MAP, raw) ? LEGACY_TAB_MAP[raw] : null;
   };
   try {
     const params = new URLSearchParams(window.location.search);
@@ -75,9 +79,10 @@ export function App() {
   const selectTab = useCallback((next: Tab) => {
     setTab(next);
   }, []);
-  // Tabs that have been activated at least once. Memories and Project each
-  // fetch /v1/entities?limit=2000 fully hydrated plus /v1/projects on
-  // mount — they keep their component state across tab switches
+  // Tabs that have been activated at least once. Memories fetches
+  // /v1/entities?limit=2000 fully hydrated plus /v1/projects on mount, and
+  // Project fetches /v1/projects plus a page of the selected project's
+  // memories — they keep their component state across tab switches
   // (mounted-but-hidden), but must not mount BEFORE first activation, or
   // every page load pays those requests for tabs the user may never open.
   const [visitedTabs, setVisitedTabs] = useState<ReadonlySet<Tab>>(() => new Set<Tab>());
@@ -120,12 +125,18 @@ export function App() {
   // mid-session — and each tab catches its own errors, so without this the
   // only symptom was one tab's "failed to load". api() announces every 401
   // on this event; swap in the auth prompt no matter whose request tripped.
+  const [authRejected, setAuthRejected] = useState(false);
   useEffect(() => {
-    const onAuthRequired = () => setNeedsAuth(true);
+    const onAuthRequired = () => {
+      // A 401 while a token is already stored means that token was rejected
+      // (expired or rotated), not that none was supplied — say so on the
+      // prompt, whichever request tripped it.
+      setAuthRejected(getApiToken() !== null);
+      setNeedsAuth(true);
+    };
     window.addEventListener('memesh:auth-required', onAuthRequired);
     return () => window.removeEventListener('memesh:auth-required', onAuthRequired);
   }, []);
-  const [authRejected, setAuthRejected] = useState(false);
 
   const refetchHealth = useCallback(() => {
     const gen = ++healthGen.current;
@@ -146,7 +157,10 @@ export function App() {
           setError('');
           return;
         }
-        setError(e.message);
+        // Through failure.ts like every other load path: the raw message is
+        // the browser's "Failed to fetch" or an `HTTP 500`, which names
+        // neither what happened nor what to do.
+        setError(failureMessage(classifyLoadError(e)));
       });
   }, []);
 
@@ -214,7 +228,7 @@ export function App() {
       {/* Each panel is the tabpanel for its TabNav tab: id + role +
           aria-labelledby wire the roving-tablist relationship (see TabNav). */}
       <div class="main">
-        <div id="panel-Home" role="tabpanel" aria-labelledby="tab-Home" class={`panel ${tab === 'Home' ? 'active' : ''}`}>{tab === 'Home' && <HomeTab health={health} dataRevision={dataRevision} onNavigate={selectTab} />}</div>
+        <div id="panel-Home" role="tabpanel" aria-labelledby="tab-Home" class={`panel ${tab === 'Home' ? 'active' : ''}`}>{tab === 'Home' && <HomeTab health={health} healthFailed={health === null && error !== ''} dataRevision={dataRevision} onNavigate={selectTab} />}</div>
         <div id="panel-Memories" role="tabpanel" aria-labelledby="tab-Memories" class={`panel ${tab === 'Memories' ? 'active' : ''}`}>{keepMounted('Memories') && <MemoriesTab health={health} dataRevision={dataRevision} />}</div>
         <div id="panel-Project" role="tabpanel" aria-labelledby="tab-Project" class={`panel ${tab === 'Project' ? 'active' : ''}`}>{keepMounted('Project') && <ProjectTab health={health} dataRevision={dataRevision} />}</div>
         <div id="panel-Settings" role="tabpanel" aria-labelledby="tab-Settings" class={`panel ${tab === 'Settings' ? 'active' : ''}`}>

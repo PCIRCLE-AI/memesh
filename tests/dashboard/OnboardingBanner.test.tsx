@@ -10,7 +10,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/preact';
 import { OnboardingBanner } from '../../dashboard/src/components/OnboardingBanner';
 import type { HealthData } from '../../dashboard/src/lib/api';
-import { getLocale, setLocale } from '../../dashboard/src/lib/i18n';
+import { getLocale, setLocale, t } from '../../dashboard/src/lib/i18n';
 
 const emptyHealth: HealthData = { status: 'ok', version: 'test', entity_count: 0 };
 const populatedHealth: HealthData = { status: 'ok', version: 'test', entity_count: 30 };
@@ -193,5 +193,41 @@ describe('OnboardingBanner', () => {
       expect(alert!.hasAttribute('aria-live')).toBe(false);
       expect((alert!.textContent ?? '').length).toBeGreaterThan(0);
     });
+  });
+  it('announces the change when the reset POST landed but the readback could not be fetched', async () => {
+    vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({ success: true, data: { inserted: 0, removed: 30 } }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      }))
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    const changed = vi.fn();
+    window.addEventListener('memesh:data-changed', changed);
+    try {
+      const { container } = render(<OnboardingBanner health={populatedDemoHealth} />);
+      fireEvent.click(container.querySelector('button.btn')!);
+      await waitFor(() => expect(container.querySelector('[role="alert"]')).not.toBeNull());
+      // The data HAS changed; every surface must refetch, or the banner keeps
+      // saying "Demo data is loaded" until the next poll.
+      expect(changed).toHaveBeenCalledTimes(1);
+      // And it says what happened: the reset went through, the check could not
+      // be read — not that the server is unreachable.
+      const text = container.querySelector('[role="alert"]')!.textContent;
+      expect(text).toBe(t('onboarding.resetUnconfirmed'));
+      expect(text).not.toContain(t('common.serverUnreachable'));
+      // The cause is not lost: it goes to the console for whoever debugs this.
+      expect(warn.mock.calls.some((call) => String(call[0]).includes('/v1/health'))).toBe(true);
+    } finally {
+      window.removeEventListener('memesh:data-changed', changed);
+    }
+  });
+
+  it('does not offer a Reset-demo button inside the empty library\'s CLI reference (nothing to reset there)', () => {
+    const { container } = render(<OnboardingBanner health={emptyHealth} />);
+    const details = container.querySelector('details')!;
+    const labels = [...details.querySelectorAll('button')].map((b) => b.textContent);
+    expect(labels).not.toContain(t('onboarding.resetButton'));
+    expect(details.textContent).toContain('memesh demo --reset --yes');
   });
 });

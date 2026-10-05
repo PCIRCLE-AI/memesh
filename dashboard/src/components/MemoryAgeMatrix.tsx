@@ -10,14 +10,17 @@ interface MemoryAgeMatrixProps {
 
 const BUCKETS: AgeBucket[] = ['week', 'month', 'quarter', 'older'];
 
-/** Look up a localised header for an age bucket. Falls back to the
- *  raw bucket key if the i18n catalogue is missing the entry. */
+/** Look up a localised header for an age bucket. A missing catalogue entry
+ *  renders the whole key (`ageMatrix.bucket.foo`), not the bare bucket: t()
+ *  falls back locale -> en -> key. */
 function bucketLabel(bucket: AgeBucket): string {
   // See KnowledgeRadar.axisLabel — `|| bucket` was unreachable.
   return t(`ageMatrix.bucket.${bucket}`);
 }
 
-// Types displayed in order (most diagnostic ones first)
+// Types displayed first, in this order (most diagnostic ones first). Any other
+// type in the data follows, biggest first — a type is never dropped from the
+// matrix for being absent from this list.
 const TYPE_ORDER = [
   'lesson_learned', 'lesson', 'mistake',
   'decision', 'architecture_decision',
@@ -29,7 +32,7 @@ const TYPE_ORDER = [
 
 // Type-column labels come from the shared typeLabel (type.* catalogue keys);
 // the panel-private ageMatrix.type.* copies were retired — two catalogues for
-// the same 13 nouns is exactly the duplicated-list drift this repo hunts.
+// the same nouns is exactly the duplicated-list drift this repo hunts.
 
 // Keep the heatmap subdued so its counts remain readable at every intensity.
 function cellStyle(count: number, max: number): string {
@@ -49,8 +52,17 @@ export function MemoryAgeMatrix({ data }: MemoryAgeMatrixProps) {
     lookup.get(row.type)!.set(row.bucket, row.count);
   }
 
-  // Only include types that appear in data, sorted by TYPE_ORDER
-  const types = TYPE_ORDER.filter(t => lookup.has(t));
+  // Every type that appears in data: the preferred order first, then the rest
+  // by total. The old filter kept only the 13 listed types, so a type outside
+  // the list (plan, release, note…) vanished from the matrix — and still set
+  // the colour scale below, washing out the cells that were shown.
+  const totalOf = (type: string) => Array.from(lookup.get(type)!.values()).reduce((s, v) => s + v, 0);
+  const types = [
+    ...TYPE_ORDER.filter(t => lookup.has(t)),
+    ...Array.from(lookup.keys())
+      .filter(type => !TYPE_ORDER.includes(type))
+      .sort((a, b) => totalOf(b) - totalOf(a)),
+  ];
   const maxCount = Math.max(1, ...data.map(r => r.count));
 
   return (

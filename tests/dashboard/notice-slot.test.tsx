@@ -15,7 +15,8 @@
 // All network is stubbed — nothing here touches ~/.memesh or any config.
 
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
-import { render, waitFor } from '@testing-library/preact';
+import { fireEvent, render, waitFor } from '@testing-library/preact';
+import { InsightsBanner } from '../../dashboard/src/components/InsightsBanner';
 import { readFileSync } from 'fs';
 import { t } from '../../dashboard/src/lib/i18n';
 import { App } from '../../dashboard/src/App';
@@ -132,5 +133,72 @@ describe('the notice slot shows one banner at a time, by priority', () => {
     // is display:none. Whitespace-tolerant, but the selector and the
     // declaration must both survive.
     expect(css).toMatch(/\.notice-slot\s*>\s*\*\s*~\s*\*\s*\{\s*display:\s*none;?\s*\}/);
+  });
+});
+
+describe('InsightsBanner keyboard and reporting', () => {
+  afterEach(() => { sessionStorage.clear(); vi.restoreAllMocks(); });
+
+  function stubPending(count: number) {
+    return vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      jsonResponse({ success: true, data: Array.from({ length: count }, (_, i) => ({ id: i + 1, status: 'pending' })) }));
+  }
+
+  // The banner is two sibling buttons. A real <button> is keyboard-operable by
+  // the browser (Enter and Space click it), so nothing here handles keys.
+  const navigateButton = (container: Element) => container.querySelector(`button[aria-label$="${t('banner.viewAll')}"]`) as HTMLButtonElement | null;
+  const dismissButton = (container: Element) => container.querySelector(`button[aria-label="${t('banner.dismiss')}"]`) as HTMLButtonElement | null;
+  const shown = (container: Element) => waitFor(() => {
+    if (!navigateButton(container)) throw new Error('banner not shown yet');
+  });
+
+  it('has the view-all button and the × button side by side, neither inside the other', async () => {
+    stubPending(2);
+    const { container } = render(<InsightsBanner currentTab="Memories" onNavigateToInsights={() => {}} />);
+    await shown(container);
+    const view = navigateButton(container)!;
+    const dismiss = dismissButton(container)!;
+    expect(view.contains(dismiss)).toBe(false);
+    expect(dismiss.contains(view)).toBe(false);
+    expect(view.parentElement).toBe(dismiss.parentElement);
+    // No element pretends to be a button around other controls.
+    expect(container.querySelector('[role="button"]')).toBeNull();
+    expect(container.querySelector('button button')).toBeNull();
+  });
+
+  it('× dismisses without navigating, and the view-all button navigates', async () => {
+    stubPending(2);
+    const onNavigate = vi.fn();
+    const { container } = render(<InsightsBanner currentTab="Memories" onNavigateToInsights={onNavigate} />);
+    await shown(container);
+
+    fireEvent.click(navigateButton(container)!);
+    expect(onNavigate).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(dismissButton(container)!);
+    expect(onNavigate).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('button')).toBeNull();
+    expect(sessionStorage.getItem('memesh.insightsBanner.dismissed')).toBe('true');
+  });
+
+  it('keeps its visible text in the accessible name', async () => {
+    stubPending(3);
+    const { container } = render(<InsightsBanner currentTab="Memories" onNavigateToInsights={() => {}} />);
+    await shown(container);
+    expect(navigateButton(container)!.getAttribute('aria-label')).toContain(t('banner.pendingInsights', { n: 3, s: 's' }));
+  });
+
+  it('logs when the proposals request fails instead of failing in silence', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('Failed to fetch'));
+    render(<InsightsBanner currentTab="Memories" onNavigateToInsights={() => {}} />);
+    await waitFor(() => expect(warn).toHaveBeenCalled());
+    expect(String(warn.mock.calls[0]![0])).toContain('/v1/dream/proposals');
+  });
+
+  // Keep this last: it checks what the test before it left behind.
+  it('starts without the spies of the test before it', () => {
+    expect(vi.isMockFunction(console.warn)).toBe(false);
+    expect(vi.isMockFunction(globalThis.fetch)).toBe(false);
   });
 });

@@ -96,11 +96,13 @@ export function PmAnalyticsPanel({ dataRevision = 0 }: { dataRevision?: number }
 
   return (
     <div>
-      {loading && <div class="loading" role="status" />}
+      {loading && <div class="loading" role="status" aria-label={t('common.loading')} />}
       {failure && <div class="error-box" role="alert">{failureMessage(failure)}</div>}
       <div class="card" style={{ marginTop: 8, padding: 16 }}>
       <div class="card-title" style={{ marginBottom: 12 }}>{t('pm.title')}</div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+      {/* auto-fit, not a fixed four columns: the widest label cannot break, and
+          four of them do not fit a phone's width. */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 12 }}>
         <div style={{ textAlign: 'center' }}>
           <div style={{ fontSize: 22, fontWeight: 700, fontFamily: 'var(--mono)' }}>
             {data.velocity.decisionsPerWeek.toFixed(1)}

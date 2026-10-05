@@ -152,18 +152,6 @@ body {
   border-radius: var(--radius-xs);
 }
 
-.theme-btn {
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 5px 9px;
-  cursor: pointer;
-  color: var(--text-2);
-  font-size: 14px;
-  transition: border-color 150ms;
-}
-.theme-btn:hover { border-color: var(--text-3); }
-
 /* ---- Notice slot ---- */
 /* One notice at a time. The banners inside self-decide eligibility (an
    ineligible banner renders no DOM node), so the slot's FIRST rendered
@@ -230,7 +218,6 @@ body {
   backdrop-filter: blur(8px);
   transition: border-color 200ms, box-shadow 200ms;
 }
-.card:hover { border-color: var(--border); }
 .card-title {
   font-size: 16px;
   font-weight: 600;
@@ -275,7 +262,7 @@ input::placeholder, textarea::placeholder { color: var(--text-3); }
   white-space: nowrap;
 }
 .btn:hover { border-color: var(--text-3); background: var(--bg-hover); }
-.btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.btn:disabled, .btn[aria-disabled="true"] { opacity: 0.35; cursor: not-allowed; }
 .btn-primary { background: var(--life); border-color: var(--life); color: var(--bg-0); }
 .btn-primary:hover { background: var(--life-hover); }
 .btn-danger { color: var(--danger); border-color: rgba(255, 122, 107, 0.2); background: transparent; }
@@ -283,7 +270,6 @@ input::placeholder, textarea::placeholder { color: var(--text-3); }
 .btn-sm { padding: 8px 14px; font-size: 14px; min-height: 40px; }
 
 /* Tables */
-.table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); }
 table { width: 100%; border-collapse: collapse; }
 th {
   text-align: left;
@@ -316,7 +302,6 @@ tbody tr:last-child td { border-bottom: none; }
   font-weight: 500;
   letter-spacing: .01em;
 }
-.badge-active { background: var(--success-soft); color: var(--life); }
 .badge-archived { background: var(--danger-soft); color: var(--danger); }
 .badge-type { background: var(--life-soft); color: var(--life); }
 
@@ -338,9 +323,7 @@ tbody tr:last-child td { border-bottom: none; }
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 16px;
-  transition: border-color 150ms;
 }
-.stat:hover { border-color: rgba(143, 242, 92, 0.2); box-shadow: 0 2px 12px rgba(143, 242, 92, 0.04); }
 .stat-val { font: 700 24px/1.1 var(--mono); color: var(--life); letter-spacing: -0.02em; }
 .stat-lbl { font: 500 14px/1.5 var(--font-ui); color: var(--text-2); margin-top: 4px; }
 
@@ -373,13 +356,6 @@ tbody tr:last-child td { border-bottom: none; }
   align-items: center;
 }
 .mem-actions { flex-shrink: 0; display: flex; gap: 6px; }
-
-/* Insight cards */
-.insight { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border-subtle); }
-.insight:last-child { border-bottom: none; }
-.insight-icon { font-size: 18px; flex-shrink: 0; }
-.insight-text { font-size: 14px; color: var(--text-1); }
-.insight-val { font: 600 14px var(--mono); color: var(--life); }
 
 /* Empty / loading */
 .empty { text-align: center; padding: 48px 20px; color: var(--text-3); font-size: 14px; }
@@ -450,15 +426,21 @@ tbody tr:last-child td { border-bottom: none; }
 .fb-submit { width: 100%; justify-content: center; }
 
 /* Highlight */
-mark { background: rgba(143, 242, 92, 0.15); color: inherit; padding: 1px 2px; border-radius: var(--radius-hairline); }
+mark { background: var(--life-soft); color: inherit; padding: 1px 2px; border-radius: var(--radius-hairline); }
 
 /* Modal overlay */
 .overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.6); display: flex; align-items: center; justify-content: center; z-index: 200; }
 .modal { background: var(--bg-1); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; max-width: 480px; width: 90%; max-height: 80vh; overflow-y: auto; box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5); }
 .modal h3 { font-size: 15px; font-weight: 600; color: var(--text-0); margin-bottom: 14px; }
 
+/* Project roadmap: the timeline with its milestone / lesson rails beside it.
+   A class, not an inline style, so the phone breakpoint below can reach it —
+   at 375px the fixed 280px rail left the timeline about 13px. */
+.roadmap-grid { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 16px; align-items: start; }
+
 /* Responsive */
 @media (max-width: 768px) {
+  .roadmap-grid { grid-template-columns: minmax(0, 1fr); }
   .main { padding: 14px; }
   .nav-btn { padding: 10px 11px; font-size: 14px; }
   .header-brand h1 { font-size: 14px; }
@@ -488,7 +470,7 @@ mark { background: rgba(143, 242, 92, 0.15); color: inherit; padding: 1px 2px; b
 .auth-prompt-card {
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
   padding: 28px 32px;
   max-width: 440px;
   width: 100%;
@@ -502,7 +484,7 @@ mark { background: rgba(143, 242, 92, 0.15); color: inherit; padding: 1px 2px; b
 .auth-prompt-card input {
   background: var(--bg-input);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   padding: 10px 12px;
   color: inherit;
   font-family: var(--mono);
@@ -514,7 +496,7 @@ mark { background: rgba(143, 242, 92, 0.15); color: inherit; padding: 1px 2px; b
   background: var(--border-focus);
   color: var(--bg-0);
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   padding: 10px 14px;
   font-size: 14px;
   cursor: pointer;

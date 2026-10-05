@@ -18,9 +18,12 @@ import { t } from '../lib/i18n';
  * "align" the band to that, it is a different axis.)
  *
  * Rendering follows DESIGN.md's composition-bar precedent: the bar itself
- * is aria-hidden ornament over data; the visible text (title, note,
- * legend counts) carries everything a screen reader needs. Bucket height
- * is linear in count — luminance/height carry data or they do not appear.
+ * is aria-hidden and shows WHEN (its buckets are days, weeks or months by
+ * span, and carry no axis labels); the visible text (title, note, legend
+ * counts) says WHAT and how much — per-category totals, not the timing. A
+ * screen-reader user gets the totals, not the shape over time. Bucket height
+ * is linear in count, with a 1px floor so a bucket holding any memory never
+ * disappears.
  */
 
 const CLUSTERS: TypeCluster[] = ['knowledge', 'activity', 'session', 'reference'];

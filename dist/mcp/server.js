@@ -25998,6 +25998,19 @@ function stripControlChars(s) {
   return s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]+/g, " ");
 }
 
+// dist/core/project-attribution.js
+var PROJECT_TAG_PREFIX = "project:";
+var MIN_NAME_PROJECT_LENGTH = 2;
+var KNOWN_ERROR_PATTERNS = [
+  "null-reference",
+  "type-error",
+  "import-missing",
+  "config-error",
+  "test-failure",
+  "build-error",
+  "other"
+];
+
 // dist/core/paths.js
 import fs from "fs";
 import os from "os";
@@ -26579,6 +26592,85 @@ function clearPartsOfKey(metadata) {
   return mapJson({ ...metadata, ...entries }, clear, clear);
 }
 
+// dist/core/session-handoff.js
+var SESSION_HANDOFF_TYPE = "session-handoff";
+var HANDOFF_STALE_HOURS = 72;
+var HANDOFF_MAX_AGE_DAYS = 14;
+var HANDOFF_FUTURE_SKEW_MINUTES = 5;
+var HANDOFF_MAX_CHARS = 800;
+var HANDOFF_TRANSCRIPT_TAIL_BYTES = 256 * 1024;
+function sessionHandoffName(project) {
+  return `${SESSION_HANDOFF_TYPE}:${project}`;
+}
+var FENCE_LINE = /^\s*(`{3,}|~{3,})(.*)$/;
+function stripFences(text) {
+  const kept = [];
+  let open = null;
+  for (const line of text.split("\n")) {
+    const m = FENCE_LINE.exec(line);
+    if (open) {
+      if (m && m[1][0] === open.char && m[1].length >= open.len)
+        open = null;
+      continue;
+    }
+    if (m && !(m[1][0] === "`" && m[2].includes("`"))) {
+      open = { char: m[1][0], len: m[1].length };
+      continue;
+    }
+    kept.push(line);
+  }
+  return kept.join("\n");
+}
+function cleanHandoffText(raw) {
+  let text = stripFences(String(raw ?? "").replace(/\r\n?/g, "\n")).split("\n").map((line) => line.trimEnd()).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  if (text.length <= HANDOFF_MAX_CHARS)
+    return text;
+  text = text.slice(-(HANDOFF_MAX_CHARS - 1));
+  const first = text.charCodeAt(0);
+  if (first >= 56320 && first <= 57343)
+    text = text.slice(1);
+  const newline = text.indexOf("\n");
+  if (newline >= 0 && newline < HANDOFF_MAX_CHARS / 3)
+    text = text.slice(newline + 1);
+  return `\u2026${text.trim()}`;
+}
+function ageText(hours) {
+  if (hours < 1)
+    return "less than an hour ago";
+  if (hours < 24) {
+    const h = Math.floor(hours);
+    return `${h} hour${h === 1 ? "" : "s"} ago`;
+  }
+  const d = Math.floor(hours / 24);
+  return `${d} day${d === 1 ? "" : "s"} ago`;
+}
+function handoffView(record2, now = /* @__PURE__ */ new Date()) {
+  const text = record2 ? cleanHandoffText(redactMemoryText(record2.text ?? "")) : "";
+  if (!record2 || !text)
+    return { lines: [], status: "empty" };
+  const then = typeof record2.observedAt === "string" ? parseSqliteUtcMs(record2.observedAt) : null;
+  if (then === null)
+    return { lines: [], status: "undatable" };
+  const hours = (now.getTime() - then) / 36e5;
+  if (hours < -HANDOFF_FUTURE_SKEW_MINUTES / 60)
+    return { lines: [], status: "future" };
+  const age = Math.max(0, hours);
+  if (age > HANDOFF_MAX_AGE_DAYS * 24)
+    return { lines: [], status: "expired" };
+  const stale = age > HANDOFF_STALE_HOURS;
+  const when = stale ? `${ageText(age)} \u2014 may be out of date; check it against the repository` : ageText(age);
+  return {
+    lines: [`Where the last session left off (${when}): [mem:${record2.id}]`, ...text.split("\n")],
+    status: stale ? "stale" : "shown"
+  };
+}
+function handoffLines(record2, now = /* @__PURE__ */ new Date()) {
+  return handoffView(record2, now).lines;
+}
+
+// dist/core/projects.js
+var NOT_A_PROJECT_MEMORY = { sql: "e.type <> ?", param: SESSION_HANDOFF_TYPE };
+
 // dist/knowledge-graph.js
 var EXACT_MATCH_FIRST = `(${SQL_FOLD_FUNCTION}(e.name) = ? OR ${SQL_FOLD_FUNCTION}(COALESCE(e.title, '')) = ?) DESC`;
 var isGuardWithPattern = (guard) => guard !== null && typeof guard === "object" && typeof guard.pattern === "string";
@@ -27087,28 +27179,47 @@ var KnowledgeGraph = class {
   findConflicts(entityNames) {
     return findConflicts(this.db, entityNames);
   }
-  listRecent(limit, includeArchived, namespace, countAsAccess = true) {
+  listRecent(limit, includeArchived, namespace, countAsAccess = true, offset = 0) {
     const statusFilter = includeArchived ? "" : "AND status = 'active'";
     const namespaceFilter = namespace ? "AND namespace = ?" : "";
     const params = [];
     if (namespace)
       params.push(namespace);
-    params.push(limit ?? 20);
-    const rows = this.db.prepare(`SELECT id FROM entities WHERE 1=1 ${statusFilter} ${namespaceFilter} ORDER BY id DESC LIMIT ?`).all(...params);
+    params.push(limit ?? 20, offset);
+    const rows = this.db.prepare(`SELECT id FROM entities WHERE 1=1 ${statusFilter} ${namespaceFilter} ORDER BY id DESC LIMIT ? OFFSET ?`).all(...params);
     const results = this.getEntitiesByIds(rows.map((r) => r.id), { includeArchived, namespace });
     if (countAsAccess)
       this.trackAccess(results.map((e) => e.id));
     return results;
   }
-  listByType(type, limit, includeArchived, namespace) {
+  listByType(type, limit, includeArchived, namespace, offset = 0) {
     type = canonicalEntityType(type);
     const statusFilter = includeArchived ? "" : "AND status = 'active'";
     const namespaceFilter = namespace ? "AND namespace = ?" : "";
     const params = [type];
     if (namespace)
       params.push(namespace);
-    params.push(limit ?? 20);
-    const rows = this.db.prepare(`SELECT id FROM entities WHERE type = ? ${statusFilter} ${namespaceFilter} ORDER BY id DESC LIMIT ?`).all(...params);
+    params.push(limit ?? 20, offset);
+    const rows = this.db.prepare(`SELECT id FROM entities WHERE type = ? ${statusFilter} ${namespaceFilter} ORDER BY id DESC LIMIT ? OFFSET ?`).all(...params);
+    return this.getEntitiesByIds(rows.map((r) => r.id), { includeArchived, namespace });
+  }
+  listByProject(project, limit, includeArchived, namespace, offset = 0) {
+    const statusFilter = includeArchived ? "" : "AND e.status = 'active'";
+    const namespaceFilter = namespace ? "AND e.namespace = ?" : "";
+    const lessonNames = project.length >= MIN_NAME_PROJECT_LENGTH ? KNOWN_ERROR_PATTERNS.map((pattern) => `lesson-${project}-${pattern}`) : [];
+    const byName = lessonNames.length === 0 ? "" : `OR (e.name IN (${lessonNames.map(() => "?").join(",")}) AND ${NO_PROJECT_TAG})`;
+    const params = [PROJECT_TAG_PREFIX + project, ...lessonNames, NOT_A_PROJECT_MEMORY.param];
+    if (namespace)
+      params.push(namespace);
+    params.push(limit ?? 20, offset);
+    const rows = this.db.prepare(`SELECT e.id FROM entities e
+         WHERE (
+           EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?)
+           ${byName}
+         )
+         AND ${NOT_A_PROJECT_MEMORY.sql}
+         ${statusFilter} ${namespaceFilter}
+         ORDER BY e.id DESC LIMIT ? OFFSET ?`).all(...params);
     return this.getEntitiesByIds(rows.map((r) => r.id), { includeArchived, namespace });
   }
   listRecentInScope(scope, limit, includeArchived, namespace, countAsAccess = true) {
@@ -29838,82 +29949,6 @@ function executeWorkPackage(db2, input, context = {}) {
     return input.action === "prepare" ? { status: "none_available", selection_mode: "calendar", available_action: [] } : failure("stale_package");
   };
   return input.action === "submit" ? db2.transaction(execute).immediate() : execute();
-}
-
-// dist/core/session-handoff.js
-var SESSION_HANDOFF_TYPE = "session-handoff";
-var HANDOFF_STALE_HOURS = 72;
-var HANDOFF_MAX_AGE_DAYS = 14;
-var HANDOFF_FUTURE_SKEW_MINUTES = 5;
-var HANDOFF_MAX_CHARS = 800;
-var HANDOFF_TRANSCRIPT_TAIL_BYTES = 256 * 1024;
-function sessionHandoffName(project) {
-  return `${SESSION_HANDOFF_TYPE}:${project}`;
-}
-var FENCE_LINE = /^\s*(`{3,}|~{3,})(.*)$/;
-function stripFences(text) {
-  const kept = [];
-  let open = null;
-  for (const line of text.split("\n")) {
-    const m = FENCE_LINE.exec(line);
-    if (open) {
-      if (m && m[1][0] === open.char && m[1].length >= open.len)
-        open = null;
-      continue;
-    }
-    if (m && !(m[1][0] === "`" && m[2].includes("`"))) {
-      open = { char: m[1][0], len: m[1].length };
-      continue;
-    }
-    kept.push(line);
-  }
-  return kept.join("\n");
-}
-function cleanHandoffText(raw) {
-  let text = stripFences(String(raw ?? "").replace(/\r\n?/g, "\n")).split("\n").map((line) => line.trimEnd()).join("\n").replace(/\n{3,}/g, "\n\n").trim();
-  if (text.length <= HANDOFF_MAX_CHARS)
-    return text;
-  text = text.slice(-(HANDOFF_MAX_CHARS - 1));
-  const first = text.charCodeAt(0);
-  if (first >= 56320 && first <= 57343)
-    text = text.slice(1);
-  const newline = text.indexOf("\n");
-  if (newline >= 0 && newline < HANDOFF_MAX_CHARS / 3)
-    text = text.slice(newline + 1);
-  return `\u2026${text.trim()}`;
-}
-function ageText(hours) {
-  if (hours < 1)
-    return "less than an hour ago";
-  if (hours < 24) {
-    const h = Math.floor(hours);
-    return `${h} hour${h === 1 ? "" : "s"} ago`;
-  }
-  const d = Math.floor(hours / 24);
-  return `${d} day${d === 1 ? "" : "s"} ago`;
-}
-function handoffView(record2, now = /* @__PURE__ */ new Date()) {
-  const text = record2 ? cleanHandoffText(redactMemoryText(record2.text ?? "")) : "";
-  if (!record2 || !text)
-    return { lines: [], status: "empty" };
-  const then = typeof record2.observedAt === "string" ? parseSqliteUtcMs(record2.observedAt) : null;
-  if (then === null)
-    return { lines: [], status: "undatable" };
-  const hours = (now.getTime() - then) / 36e5;
-  if (hours < -HANDOFF_FUTURE_SKEW_MINUTES / 60)
-    return { lines: [], status: "future" };
-  const age = Math.max(0, hours);
-  if (age > HANDOFF_MAX_AGE_DAYS * 24)
-    return { lines: [], status: "expired" };
-  const stale = age > HANDOFF_STALE_HOURS;
-  const when = stale ? `${ageText(age)} \u2014 may be out of date; check it against the repository` : ageText(age);
-  return {
-    lines: [`Where the last session left off (${when}): [mem:${record2.id}]`, ...text.split("\n")],
-    status: stale ? "stale" : "shown"
-  };
-}
-function handoffLines(record2, now = /* @__PURE__ */ new Date()) {
-  return handoffView(record2, now).lines;
 }
 
 // dist/core/patterns.js

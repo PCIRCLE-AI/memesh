@@ -12,11 +12,11 @@ export function Header({ health, error }: { health: HealthData | null; error: st
       </div>
       <div class="header-right">
         <div class="header-meta">
-          {/* Signal Mode toggle. Browse defaults to the knowledge cluster
-              when ON; Graph default-hides noise types; Analytics scopes
-              its own counts. The single source of truth lives in the
-              `useSignalMode` hook so every tab sees the same value
-              without prop-drilling. */}
+          {/* Signal Mode toggle. When ON, Memories starts on the work layer
+              (goals, decisions, lessons, patterns, plans); no other tab reads
+              it. The single source of truth lives in the `useSignalMode` hook
+              so the header and Memories see the same value without
+              prop-drilling. */}
           <button
             type="button"
             class="signal-toggle"

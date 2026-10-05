@@ -66,19 +66,21 @@ export function isMetricsRenderable(d: Partial<AnalyticsData> | null | undefined
   return true;
 }
 
-export function buildTiles(data: AnalyticsData, locale: string): Tile[] {
+export function buildTiles(data: AnalyticsData, locale: string, libraryEmpty = false): Tile[] {
   const n = (x: number) => x.toLocaleString(locale);
 
-  // Health score. Measured from real counts, so it is always a number — but
-  // an empty library scores 0 out of arithmetic, not out of judgement, and
-  // telling a fresh install its memory is "poor" is the same lie in a
-  // different costume. The caller passes `total` so we can say which it is.
+  // Health score. Measured from real counts, so it is a number — except on an
+  // empty library, which scores 0 out of arithmetic, not out of judgement:
+  // telling a fresh install its memory is "poor" is the same lie as printing
+  // a zero for an instrument that never ran. The caller says when the
+  // library is empty (Home knows the entity count), and the tile then says
+  // "not measured".
   const health: Tile = {
     key: 'health',
     label: t('metrics.health'),
-    value: `${data.healthScore}`,
+    value: libraryEmpty ? null : `${data.healthScore}`,
     note: t('metrics.healthNote'),
-    tone: data.healthScore >= 60 ? 'life' : data.healthScore >= 40 ? 'warning' : 'muted',
+    tone: libraryEmpty ? 'muted' : data.healthScore >= 60 ? 'life' : data.healthScore >= 40 ? 'warning' : 'muted',
   };
 
   const cl = data.criticalLessons;
@@ -101,7 +103,9 @@ export function buildTiles(data: AnalyticsData, locale: string): Tile[] {
       };
 
   const cc = data.citationCompliance;
-  const citation: Tile = cc === null
+  // `total === 0` is not a rate either (0 of 0 is NaN%); the server sends null
+  // for it, and a payload that sends the zero pair anyway reads the same way.
+  const citation: Tile = cc === null || cc.total === 0
     ? {
         key: 'citation',
         label: t('metrics.citation'),
@@ -129,7 +133,7 @@ export function buildTiles(data: AnalyticsData, locale: string): Tile[] {
   return [health, critical, citation, loop];
 }
 
-export function MetricsRow({ dataRevision = 0 }: { dataRevision?: number }) {
+export function MetricsRow({ dataRevision = 0, libraryEmpty = false }: { dataRevision?: number; libraryEmpty?: boolean }) {
   const [data, setData] = useState<AnalyticsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [failure, setFailure] = useState<LoadFailure | null>(null);
@@ -172,7 +176,7 @@ export function MetricsRow({ dataRevision = 0 }: { dataRevision?: number }) {
   }
 
   if (!data) return null;
-  const tiles = buildTiles(data, getLocale());
+  const tiles = buildTiles(data, getLocale(), libraryEmpty);
   return (
     <div>
       {failure && <div role="alert" class="card" style={{ marginBottom: 8 }}>{failureMessage(failure)}</div>}

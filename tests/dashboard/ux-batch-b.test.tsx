@@ -20,7 +20,7 @@
 // All network is stubbed — nothing here touches ~/.memesh or any config.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, fireEvent, waitFor } from '@testing-library/preact';
+import { render, fireEvent, waitFor, cleanup } from '@testing-library/preact';
 import { api, HttpError, NetworkError, type Entity } from '../../dashboard/src/lib/api';
 import { actionFailureMessage } from '../../dashboard/src/lib/failure';
 import { t } from '../../dashboard/src/lib/i18n';
@@ -278,13 +278,15 @@ describe('ProjectTab empty states', () => {
     // tri-state holds a neutral spinner until health !== null.
     stubMemories([]);
     const { container } = render(<ProjectTab health={null} />);
-    // Let the tab's own two fetches (entities + projects) settle first, so
+    // Let the tab's own fetch (the project list) settle first, so
     // this pins the post-load decision, not the initial loading spinner.
     // (Break-tested: with `entity_count: 0` instead of null, EmptyLibraryState
     // is already visible at this exact flush point — so the negative
     // assertions below run against the settled frame, not the initial one.)
     await waitFor(() => {
-      expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+      // With no project selected the tab asks only for the project list; a
+      // project's memories are fetched once one is chosen.
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
     });
     await new Promise((r) => setTimeout(r, 0));
     await new Promise((r) => setTimeout(r, 0));
@@ -312,6 +314,18 @@ describe('InsightsTab action failure routing', () => {
       const url = String(input);
       const method = (init?.method ?? 'GET').toUpperCase();
       if (dead) throw new TypeError('Failed to fetch');
+      if (method === 'GET' && /\/v1\/dream\/proposals\/\d+$/.test(url)) {
+        // A reviewable proposal: Accept is only offered for content that loaded.
+        return jsonResponse({
+          success: true,
+          data: {
+            id: 1, project: 'p', cluster_key: 'k', status: 'pending', reason: null,
+            created_at: '2026-08-05 00:00:00', reviewed_at: null, kind: 'digest',
+            proposed_digest: { name: 'd', type: 'digest', observations: ['o'], tags: [] },
+            source_ids: [1, 2],
+          },
+        });
+      }
       if (method === 'GET' && url.includes('/v1/dream/proposals')) {
         return jsonResponse({
           success: true,
@@ -369,5 +383,249 @@ describe('EmptyLibraryState', () => {
     });
     // finally-block: the button re-enables so the user can retry.
     expect(btn.disabled).toBe(false);
+  });
+});
+
+/* ── Project page: the selected project's memories, a page at a time ─────── */
+
+describe('ProjectTab loads the selected project a page at a time', () => {
+  const PAGE = 200; // PAGE_SIZE in ProjectTab.tsx
+  const rows = (from: number, n: number) => Array.from({ length: n }, (_, i) =>
+    entity(from + i, { title: `big memory ${from + i}`, tags: ['project:big'], created_at: '2026-03-01T00:00:00.000Z' }));
+
+  function stub(pages: Array<Entity[] | 'fail'>) {
+    const urls: string[] = [];
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      urls.push(url);
+      if (url.includes('/v1/projects')) return jsonResponse({ success: true, data: [{ name: 'big', count: 450, types: ['decision'], source: 'tag' }] });
+      if (url.includes('/v1/entities')) {
+        const offset = Number(new URL(url, 'http://localhost').searchParams.get('offset'));
+        const page = pages[offset / PAGE] ?? [];
+        if (page === 'fail') throw new TypeError('Failed to fetch');
+        return jsonResponse({ success: true, data: page });
+      }
+      return jsonResponse({ success: true, data: {} });
+    });
+    return urls;
+  }
+  const renderTab = () => render(<ProjectTab health={{ status: 'ok', version: 't', entity_count: 450 }} />);
+
+  it('asks the server for this project only — never the newest 2000 of the whole library', async () => {
+    const urls = stub([rows(1, 3)]);
+    const { container } = renderTab();
+    await waitFor(() => expect(container.textContent).toContain('big memory 1'));
+
+    const entityCalls = urls.filter((u) => u.includes('/v1/entities'));
+    expect(entityCalls).toEqual([`/v1/entities?project=big&status=all&limit=${PAGE}&offset=0`]);
+    expect(container.textContent).not.toContain(t('roadmap.emptyProject'));
+    // A short page is the whole project: no partial notice, no button.
+    expect(container.textContent).not.toContain(t('project.loadMore'));
+  });
+
+  it('says it is showing the newest page and loads the older ones on request', async () => {
+    const urls = stub([rows(1, PAGE), rows(PAGE + 1, 5)]);
+    const { container, getByRole } = renderTab();
+    await waitFor(() => expect(container.textContent).toContain(t('project.partial', { n: PAGE.toLocaleString('en') })));
+
+    fireEvent.click(getByRole('button', { name: t('project.loadMore') }));
+    await waitFor(() => expect(container.textContent).toContain(`big memory ${PAGE + 5}`));
+    expect(urls.some((u) => u.includes(`offset=${PAGE}`))).toBe(true);
+    // The last page was short: everything is loaded, so the notice retires.
+    expect(container.textContent).not.toContain(t('project.loadMore'));
+  });
+
+  it('a failed further page keeps what was loaded and says why', async () => {
+    stub([rows(1, PAGE), 'fail']);
+    const { container, getByRole } = renderTab();
+    await waitFor(() => expect(container.textContent).toContain(t('project.loadMore')));
+
+    fireEvent.click(getByRole('button', { name: t('project.loadMore') }));
+    await waitFor(() => expect(container.textContent).toContain(unreachableSentence));
+    expect(container.textContent).toContain('big memory 1');
+  });
+});
+
+describe('ProjectTab: the previous project, the overlap between pages and keyboard focus', () => {
+  const PAGE = 200; // PAGE_SIZE in ProjectTab.tsx
+  const rowsOf = (project: string, from: number, n: number, over: Partial<Entity> = {}) => Array.from({ length: n }, (_, i) =>
+    entity(from + i, { title: `${project} memory ${from + i}`, tags: [`project:${project}`], ...over }));
+  const renderTab = () => render(<ProjectTab health={{ status: 'ok', version: 't', entity_count: 900 }} />);
+  // `getByRole` searches the whole document: a previous test's tab must be
+  // gone, and so must the `?project=` a chip click wrote to the address.
+  afterEach(() => {
+    cleanup();
+    history.replaceState(null, '', '/');
+  });
+
+  /** One handler per project's entity pages; everything else answers `{}`. */
+  function stubProjects(projects: string[], pages: (project: string, offset: number) => Promise<Entity[]> | Entity[] | 'fail') {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), 'http://localhost');
+      if (url.pathname === '/v1/projects') {
+        return jsonResponse({ success: true, data: projects.map((name) => ({ name, count: 450, types: ['decision'], source: 'tag' })) });
+      }
+      if (url.pathname === '/v1/entities') {
+        const answer = await pages(url.searchParams.get('project')!, Number(url.searchParams.get('offset')));
+        if (answer === 'fail') throw new TypeError('Failed to fetch');
+        return jsonResponse({ success: true, data: answer });
+      }
+      return jsonResponse({ success: true, data: {} });
+    });
+  }
+  const chip = (container: Element, name: string) => container.querySelector(`button[title="${name}"]`) as HTMLButtonElement;
+
+  it('after a switch, a first page that fails shows the error alone — not the old rows as "no memories"', async () => {
+    stubProjects(['alpha', 'beta'], (project) => (project === 'alpha' ? rowsOf('alpha', 1, 3) : 'fail'));
+    const { container } = renderTab();
+    await waitFor(() => expect(chip(container, 'alpha')).not.toBeNull());
+    fireEvent.click(chip(container, 'alpha'));
+    await waitFor(() => expect(container.textContent).toContain('alpha memory 1'));
+
+    fireEvent.click(chip(container, 'beta'));
+    await waitFor(() => expect(container.textContent).toContain(unreachableSentence));
+    expect(container.textContent).not.toContain(t('roadmap.emptyProject'));
+    expect(container.textContent).not.toContain('alpha memory 1');
+  });
+
+  it('a page that overlaps the previous one (a memory written since) lists each memory once', async () => {
+    stubProjects(['big'], (_project, offset) => (offset === 0 ? rowsOf('big', 1, PAGE) : rowsOf('big', PAGE - 1, 6)));
+    const { container, getByRole } = renderTab();
+    await waitFor(() => expect(container.textContent).toContain(t('project.loadMore')));
+    fireEvent.click(getByRole('button', { name: t('project.loadMore') }));
+    await waitFor(() => expect(container.textContent).toContain(`big memory ${PAGE + 4}`));
+
+    const count = (title: string) => container.textContent!.split(title).length - 1;
+    expect(count(`big memory ${PAGE}`)).toBe(1);
+    expect(count(`big memory ${PAGE - 1}`)).toBe(1);
+  });
+
+  it('"Load older memories" keeps keyboard focus while it loads, and hands it to the notice when the last page arrives', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let furtherPageRequests = 0;
+    stubProjects(['big'], async (_project, offset) => {
+      if (offset === 0) return rowsOf('big', 1, PAGE);
+      furtherPageRequests++;
+      await gate;
+      return rowsOf('big', PAGE + 1, 5);
+    });
+    const { container, getByRole } = renderTab();
+    await waitFor(() => expect(container.textContent).toContain(t('project.loadMore')));
+    const button = getByRole('button', { name: t('project.loadMore') }) as HTMLButtonElement;
+    button.focus();
+    expect(document.activeElement).toBe(button);
+
+    fireEvent.click(button);
+    // Loading: still the same focusable control (a disabled button loses focus to <body>), marked busy for AT.
+    await waitFor(() => expect(button.getAttribute('aria-disabled')).toBe('true'));
+    expect(button.disabled).toBe(false);
+    expect(document.activeElement).toBe(button);
+    // A second press while the page loads must not ask for another page.
+    fireEvent.click(button);
+
+    release();
+    await waitFor(() => expect(container.textContent).toContain(`big memory ${PAGE + 5}`));
+    expect(furtherPageRequests).toBe(1);
+    // The button is gone (everything is loaded); focus sits on the notice that says so.
+    expect(container.textContent).not.toContain(t('project.loadMore'));
+    const notice = container.querySelector('[role="status"][tabindex="-1"]') as HTMLElement;
+    expect(notice.textContent).toBe(t('project.allLoaded', { n: (PAGE + 5).toLocaleString('en') }));
+    expect(document.activeElement).toBe(notice);
+  });
+
+  it('"Load older memories": focus the user moved to a project chip while the last page loaded stays on the chip', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    stubProjects(['big', 'other'], async (project, offset) => {
+      if (project !== 'big') return [];
+      if (offset === 0) return rowsOf('big', 1, PAGE);
+      await gate;
+      return rowsOf('big', PAGE + 1, 5);
+    });
+    const { container, getByRole } = renderTab();
+    await waitFor(() => expect(chip(container, 'big')).not.toBeNull());
+    fireEvent.click(chip(container, 'big'));
+    await waitFor(() => expect(container.textContent).toContain(t('project.loadMore')));
+    const button = getByRole('button', { name: t('project.loadMore') }) as HTMLButtonElement;
+    button.focus();
+    fireEvent.click(button);
+    await waitFor(() => expect(button.getAttribute('aria-disabled')).toBe('true'));
+
+    // The user tabs away to another project's chip (tabbing only focuses it).
+    const other = chip(container, 'other');
+    other.focus();
+    expect(document.activeElement).toBe(other);
+
+    release();
+    await waitFor(() => expect(container.textContent).toContain(`big memory ${PAGE + 5}`));
+    const notice = container.querySelector('[role="status"][tabindex="-1"]') as HTMLElement;
+    expect(notice.textContent).toBe(t('project.allLoaded', { n: (PAGE + 5).toLocaleString('en') }));
+    expect(document.activeElement).toBe(other);
+  });
+
+  it('the notice counts the rows it shows, not the rows loaded (unlinked archived memories are loaded but not listed)', async () => {
+    stubProjects(['big'], () => [...rowsOf('big', 1, 150), ...rowsOf('big', 151, 50, { status: 'archived' })]);
+    const { container } = renderTab();
+    await waitFor(() => expect(container.textContent).toContain(t('project.partial', { n: '150' })));
+    expect(container.textContent).not.toContain(t('project.partial', { n: String(PAGE) }));
+  });
+
+  it('a failed further page is announced on its own, not from inside the status line that already speaks', async () => {
+    stubProjects(['big'], (_project, offset) => (offset === 0 ? rowsOf('big', 1, PAGE) : 'fail'));
+    const { container, getByRole } = renderTab();
+    await waitFor(() => expect(container.textContent).toContain(t('project.loadMore')));
+    fireEvent.click(getByRole('button', { name: t('project.loadMore') }));
+    await waitFor(() => expect(container.textContent).toContain(unreachableSentence));
+    const alert = Array.from(container.querySelectorAll('[role="alert"]')).find((el) => el.textContent?.includes(unreachableSentence))!;
+    expect(alert.closest('[role="status"]')).toBeNull();
+    // The failed page leaves the button usable for a retry.
+    expect(getByRole('button', { name: t('project.loadMore') }).getAttribute('aria-disabled')).not.toBe('true');
+  });
+});
+
+/* ── Memories: a failed project list is said, and Archive acts on ranked results ── */
+
+describe('MemoriesTab edge behaviour', () => {
+  it('says so when /v1/projects fails instead of silently dropping the project filter row', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/v1/projects')) throw new TypeError('Failed to fetch');
+      return jsonResponse({ success: true, data: [entity(1)] });
+    });
+    const { container } = render(<MemoriesTab />);
+    await waitFor(() => expect(container.textContent).toContain(unreachableSentence));
+    expect(container.textContent).toContain('obs 1'); // the entities themselves still load
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('/v1/projects'))).toBe(true);
+  });
+
+  it('Archive on a ranked-search result changes that row (it offers Restore afterwards)', async () => {
+    vi.stubGlobal('confirm', () => true);
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.includes('/v1/projects')) return jsonResponse({ success: true, data: [] });
+      if (url.includes('/v1/recall')) return jsonResponse({ success: true, data: { entities: [entity(7, { name: 'ranked-seven', observations: ['ranked obs'] })] } });
+      if (url.includes('/v1/forget') && method === 'POST') return jsonResponse({ success: true, data: { archived: true } });
+      return jsonResponse({ success: true, data: [entity(7, { name: 'ranked-seven', observations: ['ranked obs'] })] });
+    });
+    const { container, getByRole } = render(<MemoriesTab />);
+    await waitFor(() => expect(container.textContent).toContain('ranked obs'));
+
+    const input = container.querySelector('input[type="search"]') as HTMLInputElement;
+    fireEvent.input(input, { target: { value: 'ranked' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(container.textContent).toContain(t('memories.rankedBy')));
+
+    const archiveButtons = container.querySelectorAll<HTMLButtonElement>('button.btn-danger');
+    expect(archiveButtons).toHaveLength(1);
+    fireEvent.click(archiveButtons[0]);
+    try {
+      await waitFor(() => expect(getByRole('button', { name: t('browse.restore') })).toBeTruthy());
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
