@@ -166,7 +166,7 @@ vector supplement, or model-powered query expansion to configure or diagnose.
 
 Manages the SQLite connection lifecycle and schema initialization.
 
-- `openDatabase(path?)` -- Opens (or reuses) a SQLite connection
+- `openDatabase(path?, { busyTimeoutMs? })` -- Opens (or reuses) a SQLite connection. `busyTimeoutMs` shortens the default 30 s lock wait and makes the open fail after that one wait when another process holds the write lock; the hooks pass their 2 s limit. It has no effect on a connection that is already open.
 - `closeDatabase()` -- Closes the connection
 - `getDatabase()` -- Returns the active connection (throws if not opened)
 - Schema: Creates tables (`entities`, `observations`, `relations`, `tags`) and FTS5 virtual table (`entities_fts`)

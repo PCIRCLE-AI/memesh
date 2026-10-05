@@ -6073,7 +6073,7 @@ __export(db_exports, {
 });
 import path2 from "path";
 import fs3 from "fs";
-function openDatabase(dbPath) {
+function openDatabase(dbPath, opts = {}) {
   if (db)
     return db;
   const resolvedPath = dbPath ?? getDbPath();
@@ -6099,7 +6099,7 @@ function openDatabase(dbPath) {
     const fix = notYours ? "Point MEMESH_DB_PATH at a database you own, in a folder you own." : `chmod u+w ${shellQuote(realDir)}`;
     throw Object.assign(new Error(`MeMesh: ${realDir} is read-only and ${path2.basename(realPath)} has no ${missing.join(" or ")} file there, so it cannot be opened without writing to the folder. ` + (notYours ? `${realDir} belongs to another user, so you cannot make it writable. ${fix}` : `Copy the database to a writable folder and point MEMESH_DB_PATH at the copy, or make the folder writable: ${fix}`)), { fix });
   }
-  db = openInitialisedDatabase(resolvedPath);
+  db = openInitialisedDatabase(resolvedPath, opts);
   const writeBack = ownerWriteCommand(resolvedPath);
   if (writeBack) {
     try {
@@ -6110,9 +6110,13 @@ function openDatabase(dbPath) {
   }
   return db;
 }
-function openInitialisedDatabase(resolvedPath) {
+function openInitialisedDatabase(resolvedPath, opts = {}) {
   const opening = new MemeshDatabase(resolvedPath);
   try {
+    if (opts.busyTimeoutMs !== void 0) {
+      opening.pragma(`busy_timeout = ${opts.busyTimeoutMs}`);
+      giveUpIfWriteLocked(opening);
+    }
     initialiseDatabase(opening);
   } catch (err) {
     try {
@@ -6122,6 +6126,16 @@ function openInitialisedDatabase(resolvedPath) {
     throw err;
   }
   return opening;
+}
+function giveUpIfWriteLocked(db2) {
+  try {
+    db2.exec("BEGIN IMMEDIATE");
+  } catch (err) {
+    if (isTransientDbError(err))
+      throw err;
+    return;
+  }
+  db2.exec("COMMIT");
 }
 function isReadonlyDbError(err) {
   const msg = err instanceof Error ? err.message : String(err);

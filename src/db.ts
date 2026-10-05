@@ -17,6 +17,7 @@ import {
   ensureFtsSegmentation,
   rebuildFtsIndex,
   runOnceMigration,
+  isTransientDbError,
   FTS_SEGMENTATION_VERSION,
 } from './storage/schema.js';
 
@@ -36,7 +37,14 @@ let db: MemeshDatabase | null = null;
 
 
 
-export function openDatabase(dbPath?: string): MemeshDatabase {
+/**
+ * `busyTimeoutMs` replaces the default 30 s lock wait, so a hook can give up
+ * inside its own time limit instead of being killed while it waits (#506).
+ * With it, a write lock held by another process fails the open after that one
+ * wait, before any migration runs. It applies only to the call that opens the
+ * handle.
+ */
+export function openDatabase(dbPath?: string, opts: { busyTimeoutMs?: number } = {}): MemeshDatabase {
   if (db) return db;
 
   const resolvedPath = dbPath ?? getDbPath();
@@ -109,7 +117,7 @@ export function openDatabase(dbPath?: string): MemeshDatabase {
   // `insertFtsRow`'s current segmentation rules into an index that was never
   // migrated, which is the contentless-FTS delete mismatch the rest of this
   // release exists to eliminate.
-  db = openInitialisedDatabase(resolvedPath);
+  db = openInitialisedDatabase(resolvedPath, opts);
   // Opened read-only because the owner took write access away: every later
   // write will be refused, so say once, here, what gives it back.
   const writeBack = ownerWriteCommand(resolvedPath);
@@ -132,9 +140,13 @@ export function openDatabase(dbPath?: string): MemeshDatabase {
  * a caller opening anything but a file it just created in a private folder
  * must run guardDatabaseFiles (with an owner-only umask) first.
  */
-export function openInitialisedDatabase(resolvedPath: string): MemeshDatabase {
+export function openInitialisedDatabase(resolvedPath: string, opts: { busyTimeoutMs?: number } = {}): MemeshDatabase {
   const opening = new MemeshDatabase(resolvedPath);
   try {
+    if (opts.busyTimeoutMs !== undefined) {
+      opening.pragma(`busy_timeout = ${opts.busyTimeoutMs}`);
+      giveUpIfWriteLocked(opening);
+    }
     initialiseDatabase(opening);
   } catch (err) {
     try { opening.close(); } catch { /* already closing down */ }
@@ -149,6 +161,23 @@ export function openInitialisedDatabase(resolvedPath: string): MemeshDatabase {
  * was inline, "assign the singleton" and "finish initialising it" could not be
  * separated.
  */
+/**
+ * Take the write lock once and let it go. Bringing a database current after an
+ * upgrade is a dozen separate writes, and a deferred one-time migration does
+ * not stop the next from waiting the whole timeout again: behind a held lock a
+ * 2 s wait apiece still ran past a hook's 10 s limit (#506). Any other refusal
+ * (a read-only file) is left to initialiseDatabase.
+ */
+function giveUpIfWriteLocked(db: MemeshDatabase): void {
+  try {
+    db.exec('BEGIN IMMEDIATE');
+  } catch (err) {
+    if (isTransientDbError(err)) throw err;
+    return;
+  }
+  db.exec('COMMIT');
+}
+
 /**
  * Is this error SQLite refusing a write because the database FILE is
  * read-only? The one error class the open path deliberately survives.

@@ -7,11 +7,11 @@ import { getDbPath } from './core/paths.js';
 import { belongsToAnotherUser, databaseFiles, guardDatabaseFiles, ownerWriteCommand, removeGroupAndOtherAccess, shellQuote } from './core/file-mode.js';
 import { insertFtsRow, joinIndexedObservations, removeFromFts } from './storage/fts-index.js';
 import { canonicalizeLessonTypes, dedupeObservations, dropArchivedIndexRows, removeJunkFileTags, repairFusedLessonShellHistory, retractZeroEditClaims, splitFusedLessons } from './storage/graph-repairs.js';
-import { SCHEMA_SQL, FTS_SQL, safeAlter, migrateEntitiesSchema, ensureTagsUniqueIndex, ensureHookRunsSince, ensureFtsSegmentation, rebuildFtsIndex, runOnceMigration, FTS_SEGMENTATION_VERSION, } from './storage/schema.js';
+import { SCHEMA_SQL, FTS_SQL, safeAlter, migrateEntitiesSchema, ensureTagsUniqueIndex, ensureHookRunsSince, ensureFtsSegmentation, rebuildFtsIndex, runOnceMigration, isTransientDbError, FTS_SEGMENTATION_VERSION, } from './storage/schema.js';
 export { runOnceMigration, FTS_SEGMENTATION_VERSION };
 import { truncateTitle, isBoilerplateObservation } from './core/title.js';
 let db = null;
-export function openDatabase(dbPath) {
+export function openDatabase(dbPath, opts = {}) {
     if (db)
         return db;
     const resolvedPath = dbPath ?? getDbPath();
@@ -42,7 +42,7 @@ export function openDatabase(dbPath) {
                 ? `${realDir} belongs to another user, so you cannot make it writable. ${fix}`
                 : `Copy the database to a writable folder and point MEMESH_DB_PATH at the copy, or make the folder writable: ${fix}`)), { fix });
     }
-    db = openInitialisedDatabase(resolvedPath);
+    db = openInitialisedDatabase(resolvedPath, opts);
     const writeBack = ownerWriteCommand(resolvedPath);
     if (writeBack) {
         try {
@@ -53,9 +53,13 @@ export function openDatabase(dbPath) {
     }
     return db;
 }
-export function openInitialisedDatabase(resolvedPath) {
+export function openInitialisedDatabase(resolvedPath, opts = {}) {
     const opening = new MemeshDatabase(resolvedPath);
     try {
+        if (opts.busyTimeoutMs !== undefined) {
+            opening.pragma(`busy_timeout = ${opts.busyTimeoutMs}`);
+            giveUpIfWriteLocked(opening);
+        }
         initialiseDatabase(opening);
     }
     catch (err) {
@@ -66,6 +70,17 @@ export function openInitialisedDatabase(resolvedPath) {
         throw err;
     }
     return opening;
+}
+function giveUpIfWriteLocked(db) {
+    try {
+        db.exec('BEGIN IMMEDIATE');
+    }
+    catch (err) {
+        if (isTransientDbError(err))
+            throw err;
+        return;
+    }
+    db.exec('COMMIT');
 }
 function isReadonlyDbError(err) {
     const msg = err instanceof Error ? err.message : String(err);
