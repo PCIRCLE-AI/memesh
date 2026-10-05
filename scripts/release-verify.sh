@@ -3,7 +3,7 @@
 #
 # Use:
 #   bash scripts/release-verify.sh                    # full pass
-#   bash scripts/release-verify.sh --quick            # build + tests only (no smoke / install probe)
+#   bash scripts/release-verify.sh --quick            # typecheck + build only (no suite, smoke or install probe)
 #   bash scripts/release-verify.sh --skip-suite       # build + smoke / install probes; for CI, where
 #                                                     # every Build & Test leg already runs typecheck
 #                                                     # (in verify:release) and the full suite
@@ -30,7 +30,7 @@ for arg in "$@"; do
     --quick)          QUICK=1 ;;
     --skip-suite)     SKIP_SUITE=1 ;;
     -h|--help)
-      sed -n '2,21p' "$0"
+      sed -n '2,19p' "$0"
       exit 0
       ;;
     *)

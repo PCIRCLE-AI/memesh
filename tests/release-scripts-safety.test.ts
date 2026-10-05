@@ -355,7 +355,7 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     expect(withoutProbeIdentity).not.toMatch(/\d+\.\d+\.\d+/);
   });
 
-  it('gives the complete release verification job the proven degraded-runner budget', () => {
+  it('gives the release verification job the proven degraded-runner budget', () => {
     const ci = read('.github/workflows/ci.yml');
     const releaseJob = ci.match(/\n {2}release-verify:\n[\s\S]*?(?=\n {2}[A-Za-z0-9_-]+:\n|$)/)?.[0] ?? '';
     expect(releaseJob).not.toBe('');
@@ -431,7 +431,7 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       verify: { steps: Array<{ id: string; command: string; args?: string[]; journeys?: boolean }> };
     };
     // --journeys runs only the steps marked as journeys, so these two must stay marked.
-    for (const id of ['packaged', 'dashboard-e2e']) {
+    for (const id of ['build', 'packaged', 'dashboard-e2e']) {
       expect(config.verify.steps.find((step) => step.id === id)?.journeys, id).toBe(true);
     }
     const commands = config.verify.steps.map((step) => [step.command, ...(step.args ?? [])].join(' '));
