@@ -280,15 +280,20 @@ export function executeWorkPackage(
         WHERE project = ? AND source_kind = 'transcript'
           AND (cluster_key = ? OR CASE WHEN json_valid(source_ids) THEN json_extract(source_ids, '$.sessionId') END = ?)
         LIMIT 1`);
-      const sessions = scanTranscripts({ cwd }).sort((a, b) =>
+      // #552: a `prepare` that finds nothing says what it left out, and why.
+      const skipped: Record<string, number> = {};
+      const skip = (reason: string, count = 1) => {
+        if (input.action === 'prepare') skipped[reason] = (skipped[reason] ?? 0) + count;
+      };
+      const sessions = scanTranscripts({ cwd, onSkip: skip }).sort((a, b) =>
         a.modifiedAt === b.modifiedAt ? (a.sessionId < b.sessionId ? -1 : a.sessionId > b.sessionId ? 1 : 0)
           : a.modifiedAt > b.modifiedAt ? -1 : 1);
       for (const session of sessions) {
-        if (!session.sessionId.trim() || session.sessionId.length > 255) continue;
+        if (!session.sessionId.trim() || session.sessionId.length > 255) { skip('invalid_session_id'); continue; }
         if (input.action !== 'prepare' && (input.ref.kind !== 'transcript' || input.ref.session_id !== session.sessionId)) continue;
-        if (represented.get(project, `transcript:${session.sessionId}`, session.sessionId)) continue;
+        if (represented.get(project, `transcript:${session.sessionId}`, session.sessionId)) { skip('already_proposed'); continue; }
         const snapshot = readTranscriptSnapshot(session.path, session);
-        if (!snapshot || !transcriptMatchesProject(snapshot.bytes, cwd)) continue;
+        if (!snapshot || !transcriptMatchesProject(snapshot.bytes, cwd)) { skip('changed_since_scan'); continue; }
         // The visible conversation and its SHA-256 consume this same byte snapshot.
         const turns = parseVisibleConversation(snapshot.bytes)
           .map(turn => ({ ...turn, text: redactSecrets(turn.text) }));
@@ -302,7 +307,7 @@ export function executeWorkPackage(
           sourceBytes += size;
         }
         sources.reverse();
-        if (sources.length === 0) continue;
+        if (sources.length === 0) { skip('no_visible_turns'); continue; }
         const ref = { kind: 'transcript' as const, project, session_id: session.sessionId,
           modified_at: session.modifiedAt, source_hash: snapshot.contentHash,
           workspace_hash: workspaceHash! };
@@ -335,7 +340,8 @@ export function executeWorkPackage(
         return { status: 'staged', proposal_id: Number(inserted.lastInsertRowid), proposal_status: 'pending', review_authority: 'human', available_action: [] };
       }
       return input.action === 'prepare'
-        ? { status: 'none_available', selection_mode: 'newest_session', available_action: [] }
+        ? { status: 'none_available', selection_mode: 'newest_session',
+          ...(Object.keys(skipped).length > 0 ? { skipped_sessions: skipped } : {}), available_action: [] }
         : failure('stale_package');
     }
 

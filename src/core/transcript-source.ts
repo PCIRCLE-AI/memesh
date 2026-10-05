@@ -165,9 +165,15 @@ export interface TranscriptSession {
   changedAtNanoseconds: string;
 }
 
+/** Why a transcript inside the time window was not offered (#552). */
+export type TranscriptSkipReason =
+  | 'too_many_candidates' | 'scan_too_large' | 'too_large' | 'unreadable' | 'no_recorded_cwd' | 'other_project';
+
 export interface ScanOptions {
   /** Project cwd whose transcripts to find. */
   cwd: string;
+  /** Called for each transcript left out, with the reason and how many it covers. */
+  onSkip?: (reason: TranscriptSkipReason, count: number) => void;
   /** Only sessions modified within this many days. Default 3 (72h). */
   windowDays?: number;
   /** Test seam. */
@@ -191,7 +197,10 @@ export function scanTranscripts(opts: ScanOptions): TranscriptSession[] {
   }
   // Refuse an attacker-controlled directory fan-out instead of selecting an
   // arbitrary subset whose newest member could depend on enumeration order.
-  if (names.length > MAX_TRANSCRIPT_CANDIDATES) return [];
+  if (names.length > MAX_TRANSCRIPT_CANDIDATES) {
+    opts.onSkip?.('too_many_candidates', names.length);
+    return [];
+  }
 
   // Bound aggregate transcript bytes before content reads. This metadata pass
   // is itself bounded by MAX_TRANSCRIPT_CANDIDATES; descriptor reads below
@@ -201,10 +210,16 @@ export function scanTranscripts(opts: ScanOptions): TranscriptSession[] {
   try {
     for (const name of names) {
       const stat = fs.lstatSync(path.join(dir, name));
-      if (stat.isSymbolicLink() || !stat.isFile() || stat.size > MAX_TRANSCRIPT_SOURCE_BYTES
-        || stat.mtimeMs < cutoffMs) continue;
+      if (stat.isSymbolicLink() || !stat.isFile() || stat.mtimeMs < cutoffMs) continue;
+      if (stat.size > MAX_TRANSCRIPT_SOURCE_BYTES) {
+        opts.onSkip?.('too_large', 1);
+        continue;
+      }
       plannedBytes += stat.size;
-      if (plannedBytes > MAX_TRANSCRIPT_SCAN_BYTES) return [];
+      if (plannedBytes > MAX_TRANSCRIPT_SCAN_BYTES) {
+        opts.onSkip?.('scan_too_large', eligibleNames.length + 1);
+        return [];
+      }
       eligibleNames.push(name);
     }
   } catch {
@@ -217,9 +232,15 @@ export function scanTranscripts(opts: ScanOptions): TranscriptSession[] {
     const full = path.join(dir, name);
 
     const read = readTranscriptSnapshotWithin(full, undefined, MAX_TRANSCRIPT_SCAN_BYTES - bytesRead);
-    if (read.aggregateLimitExceeded) return [];
+    if (read.aggregateLimitExceeded) {
+      opts.onSkip?.('scan_too_large', eligibleNames.length);
+      return [];
+    }
     const snapshot = read.snapshot;
-    if (!snapshot) continue;
+    if (!snapshot) {
+      opts.onSkip?.('unreadable', 1);
+      continue;
+    }
     bytesRead += snapshot.sizeBytes;
     try {
       if (Date.parse(snapshot.modifiedAt) < cutoffMs) continue;
@@ -238,7 +259,10 @@ export function scanTranscripts(opts: ScanOptions): TranscriptSession[] {
       // cosmetic OR a symlink difference (macOS /tmp vs /private/tmp) does not
       // cause a false skip. Still FAIL-CLOSED: a present-but-genuinely-different
       // recorded cwd is dropped so the "current project only" promise holds.
-      if (!transcriptMatchesProject(buf, cwd)) continue;
+      if (!transcriptMatchesProject(buf, cwd)) {
+        opts.onSkip?.(recordedCwd(buf.toString('utf8')) === null ? 'no_recorded_cwd' : 'other_project', 1);
+        continue;
+      }
 
       sessions.push({
         contentHash: snapshot.contentHash,

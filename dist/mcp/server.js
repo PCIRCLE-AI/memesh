@@ -28566,18 +28566,26 @@ function scanTranscripts(opts) {
   } catch {
     return [];
   }
-  if (names.length > MAX_TRANSCRIPT_CANDIDATES)
+  if (names.length > MAX_TRANSCRIPT_CANDIDATES) {
+    opts.onSkip?.("too_many_candidates", names.length);
     return [];
+  }
   let plannedBytes = 0;
   const eligibleNames = [];
   try {
     for (const name of names) {
       const stat = fs4.lstatSync(path3.join(dir, name));
-      if (stat.isSymbolicLink() || !stat.isFile() || stat.size > MAX_TRANSCRIPT_SOURCE_BYTES || stat.mtimeMs < cutoffMs)
+      if (stat.isSymbolicLink() || !stat.isFile() || stat.mtimeMs < cutoffMs)
         continue;
+      if (stat.size > MAX_TRANSCRIPT_SOURCE_BYTES) {
+        opts.onSkip?.("too_large", 1);
+        continue;
+      }
       plannedBytes += stat.size;
-      if (plannedBytes > MAX_TRANSCRIPT_SCAN_BYTES)
+      if (plannedBytes > MAX_TRANSCRIPT_SCAN_BYTES) {
+        opts.onSkip?.("scan_too_large", eligibleNames.length + 1);
         return [];
+      }
       eligibleNames.push(name);
     }
   } catch {
@@ -28588,11 +28596,15 @@ function scanTranscripts(opts) {
   for (const name of eligibleNames) {
     const full = path3.join(dir, name);
     const read = readTranscriptSnapshotWithin(full, void 0, MAX_TRANSCRIPT_SCAN_BYTES - bytesRead);
-    if (read.aggregateLimitExceeded)
+    if (read.aggregateLimitExceeded) {
+      opts.onSkip?.("scan_too_large", eligibleNames.length);
       return [];
+    }
     const snapshot = read.snapshot;
-    if (!snapshot)
+    if (!snapshot) {
+      opts.onSkip?.("unreadable", 1);
       continue;
+    }
     bytesRead += snapshot.sizeBytes;
     try {
       if (Date.parse(snapshot.modifiedAt) < cutoffMs)
@@ -28602,8 +28614,10 @@ function scanTranscripts(opts) {
       for (let i = 0; i < buf.length; i++)
         if (buf[i] === 10)
           lineCount++;
-      if (!transcriptMatchesProject(buf, cwd))
+      if (!transcriptMatchesProject(buf, cwd)) {
+        opts.onSkip?.(recordedCwd(buf.toString("utf8")) === null ? "no_recorded_cwd" : "other_project", 1);
         continue;
+      }
       sessions.push({
         contentHash: snapshot.contentHash,
         sessionId: name.replace(/\.jsonl$/, ""),
@@ -29044,17 +29058,28 @@ function executeWorkPackage(db2, input, context = {}) {
         WHERE project = ? AND source_kind = 'transcript'
           AND (cluster_key = ? OR CASE WHEN json_valid(source_ids) THEN json_extract(source_ids, '$.sessionId') END = ?)
         LIMIT 1`);
-      const sessions = scanTranscripts({ cwd }).sort((a, b) => a.modifiedAt === b.modifiedAt ? a.sessionId < b.sessionId ? -1 : a.sessionId > b.sessionId ? 1 : 0 : a.modifiedAt > b.modifiedAt ? -1 : 1);
+      const skipped = {};
+      const skip = (reason, count = 1) => {
+        if (input.action === "prepare")
+          skipped[reason] = (skipped[reason] ?? 0) + count;
+      };
+      const sessions = scanTranscripts({ cwd, onSkip: skip }).sort((a, b) => a.modifiedAt === b.modifiedAt ? a.sessionId < b.sessionId ? -1 : a.sessionId > b.sessionId ? 1 : 0 : a.modifiedAt > b.modifiedAt ? -1 : 1);
       for (const session of sessions) {
-        if (!session.sessionId.trim() || session.sessionId.length > 255)
+        if (!session.sessionId.trim() || session.sessionId.length > 255) {
+          skip("invalid_session_id");
           continue;
+        }
         if (input.action !== "prepare" && (input.ref.kind !== "transcript" || input.ref.session_id !== session.sessionId))
           continue;
-        if (represented.get(project, `transcript:${session.sessionId}`, session.sessionId))
+        if (represented.get(project, `transcript:${session.sessionId}`, session.sessionId)) {
+          skip("already_proposed");
           continue;
+        }
         const snapshot = readTranscriptSnapshot(session.path, session);
-        if (!snapshot || !transcriptMatchesProject(snapshot.bytes, cwd))
+        if (!snapshot || !transcriptMatchesProject(snapshot.bytes, cwd)) {
+          skip("changed_since_scan");
           continue;
+        }
         const turns = parseVisibleConversation(snapshot.bytes).map((turn) => ({ ...turn, text: redactSecrets(turn.text) }));
         const sources = [];
         let sourceBytes = 2;
@@ -29066,8 +29091,10 @@ function executeWorkPackage(db2, input, context = {}) {
           sourceBytes += size;
         }
         sources.reverse();
-        if (sources.length === 0)
+        if (sources.length === 0) {
+          skip("no_visible_turns");
           continue;
+        }
         const ref = {
           kind: "transcript",
           project,
@@ -29110,7 +29137,12 @@ function executeWorkPackage(db2, input, context = {}) {
           VALUES (?, ?, ?, ?, 'work-package-v1', 'transcript', 'digest')`).run(project, `transcript:${session.sessionId}`, JSON.stringify(evidence), JSON.stringify(proposed));
         return { status: "staged", proposal_id: Number(inserted.lastInsertRowid), proposal_status: "pending", review_authority: "human", available_action: [] };
       }
-      return input.action === "prepare" ? { status: "none_available", selection_mode: "newest_session", available_action: [] } : failure("stale_package");
+      return input.action === "prepare" ? {
+        status: "none_available",
+        selection_mode: "newest_session",
+        ...Object.keys(skipped).length > 0 ? { skipped_sessions: skipped } : {},
+        available_action: []
+      } : failure("stale_package");
     }
     const entityIdentity = db2.prepare("SELECT created_at, metadata, namespace FROM entities WHERE id = ?");
     const entityTags = db2.prepare("SELECT tag FROM tags WHERE entity_id = ? ORDER BY tag");

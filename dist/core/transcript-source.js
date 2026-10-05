@@ -124,19 +124,26 @@ export function scanTranscripts(opts) {
     catch {
         return [];
     }
-    if (names.length > MAX_TRANSCRIPT_CANDIDATES)
+    if (names.length > MAX_TRANSCRIPT_CANDIDATES) {
+        opts.onSkip?.('too_many_candidates', names.length);
         return [];
+    }
     let plannedBytes = 0;
     const eligibleNames = [];
     try {
         for (const name of names) {
             const stat = fs.lstatSync(path.join(dir, name));
-            if (stat.isSymbolicLink() || !stat.isFile() || stat.size > MAX_TRANSCRIPT_SOURCE_BYTES
-                || stat.mtimeMs < cutoffMs)
+            if (stat.isSymbolicLink() || !stat.isFile() || stat.mtimeMs < cutoffMs)
                 continue;
+            if (stat.size > MAX_TRANSCRIPT_SOURCE_BYTES) {
+                opts.onSkip?.('too_large', 1);
+                continue;
+            }
             plannedBytes += stat.size;
-            if (plannedBytes > MAX_TRANSCRIPT_SCAN_BYTES)
+            if (plannedBytes > MAX_TRANSCRIPT_SCAN_BYTES) {
+                opts.onSkip?.('scan_too_large', eligibleNames.length + 1);
                 return [];
+            }
             eligibleNames.push(name);
         }
     }
@@ -148,11 +155,15 @@ export function scanTranscripts(opts) {
     for (const name of eligibleNames) {
         const full = path.join(dir, name);
         const read = readTranscriptSnapshotWithin(full, undefined, MAX_TRANSCRIPT_SCAN_BYTES - bytesRead);
-        if (read.aggregateLimitExceeded)
+        if (read.aggregateLimitExceeded) {
+            opts.onSkip?.('scan_too_large', eligibleNames.length);
             return [];
+        }
         const snapshot = read.snapshot;
-        if (!snapshot)
+        if (!snapshot) {
+            opts.onSkip?.('unreadable', 1);
             continue;
+        }
         bytesRead += snapshot.sizeBytes;
         try {
             if (Date.parse(snapshot.modifiedAt) < cutoffMs)
@@ -162,8 +173,10 @@ export function scanTranscripts(opts) {
             for (let i = 0; i < buf.length; i++)
                 if (buf[i] === 0x0a)
                     lineCount++;
-            if (!transcriptMatchesProject(buf, cwd))
+            if (!transcriptMatchesProject(buf, cwd)) {
+                opts.onSkip?.(recordedCwd(buf.toString('utf8')) === null ? 'no_recorded_cwd' : 'other_project', 1);
                 continue;
+            }
             sessions.push({
                 contentHash: snapshot.contentHash,
                 sessionId: name.replace(/\.jsonl$/, ''),

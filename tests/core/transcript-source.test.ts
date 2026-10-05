@@ -101,7 +101,8 @@ describe('work-package source boundary', () => {
     const file = seedSession(foreign, 'cwd-less-foreign', 1, 0);
     fs.writeFileSync(file, JSON.stringify({ type: 'user', message: { content: 'FOREIGN_PRIVATE_TEXT' } }));
     const response = prepare();
-    expect(response).toEqual({ status: 'none_available', selection_mode: 'newest_session', available_action: [] });
+    // #552: the skip is reported by reason and count only; the content never appears.
+    expect(response).toEqual({ status: 'none_available', selection_mode: 'newest_session', skipped_sessions: { no_recorded_cwd: 1 }, available_action: [] });
     expect(JSON.stringify(response)).not.toContain('FOREIGN_PRIVATE_TEXT');
     expect(db.prepare('SELECT count(*) AS n FROM dream_proposals').get()).toEqual({ n: 0 });
   });
