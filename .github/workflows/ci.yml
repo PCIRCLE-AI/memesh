@@ -284,10 +284,12 @@ jobs:
   release-verify:
     name: Release Verification Gate
     runs-on: ubuntu-latest
-    # This gate runs the same fully serial suite covered by the matrix's
-    # measured degraded-runner policy above. Run 33299144173 reached the old
-    # 15-minute cap while Vitest was still running; no test failure had been
-    # reported before GitHub cancelled the job.
+    # --skip-suite: every Build & Test leg already runs typecheck (inside
+    # verify:release) and the full suite, so this gate runs only the build and
+    # the CLI checks: doctor under a throwaway HOME with no check at fail, the
+    # install-hooks dry run, the feedback URL and the demo seed. The 40-minute
+    # cap is kept from when it ran the suite too (run 33299144173 reached the
+    # old 15-minute cap mid-Vitest).
     timeout-minutes: 40
 
     steps:
@@ -306,12 +308,14 @@ jobs:
         run: npm ci
 
       - name: Run release verification
-        run: bash scripts/release-verify.sh
+        run: bash scripts/release-verify.sh --skip-suite
 
-  # `node scripts/verify.mjs` runs the same steps a person runs locally as
-  # `npm run verify` — build, verify:release, the isolated suite, the
-  # packaged smoke, the dashboard e2e — and logs the git tree hash it
-  # verified. A receipt quoted in a PR (.verify/receipt.json, bound to that
+  # `node scripts/verify.mjs --journeys` runs the journey steps of
+  # `npm run verify` — build, the packaged smoke, the dashboard e2e — and
+  # logs the git tree hash it verified. verify:release and the suite are not
+  # repeated here: every Build & Test leg runs them, one on this OS and Node.
+  #
+  # A receipt quoted in a PR (.verify/receipt.json, bound to that
   # hash) can therefore be compared with what CI saw for the same tree; a
   # receipt for a different tree is a finding. The test step before it keeps
   # scripts/verify.mjs and scripts/verify-receipt.mjs honest about themselves.
@@ -319,7 +323,7 @@ jobs:
   # This is the only job that runs the packaged dashboard e2e on a pull
   # request. A separate job used to run the same command on the same OS and
   # Node; tests/release-scripts-safety.test.ts pins that this job runs the
-  # full verify and that the e2e step is still in scripts/verify.config.json.
+  # journeys and that the packaged and e2e steps are still marked as journeys.
   sdlc-verify:
     name: SDLC verify
     runs-on: ubuntu-latest
@@ -355,8 +359,8 @@ jobs:
       - name: Verify module tests (tree hash, receipt, verify runner)
         run: node --test scripts/verify.test.mjs scripts/lib/verify-core.test.mjs
 
-      - name: Golden journeys (node scripts/verify.mjs, logs the tree hash)
-        run: node scripts/verify.mjs
+      - name: Golden journeys (node scripts/verify.mjs --journeys, logs the tree hash)
+        run: node scripts/verify.mjs --journeys
 
       - name: Keep the verify record on failure
         if: failure()

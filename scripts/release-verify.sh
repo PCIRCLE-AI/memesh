@@ -4,6 +4,9 @@
 # Use:
 #   bash scripts/release-verify.sh                    # full pass
 #   bash scripts/release-verify.sh --quick            # build + tests only (no smoke / install probe)
+#   bash scripts/release-verify.sh --skip-suite       # build + smoke / install probes; for CI, where
+#                                                     # every Build & Test leg already runs typecheck
+#                                                     # (in verify:release) and the full suite
 #
 # Exit code:
 #   0 — this script's checks passed; release authorization is separate
@@ -21,11 +24,13 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
 QUICK=0
+SKIP_SUITE=0
 for arg in "$@"; do
   case "$arg" in
     --quick)          QUICK=1 ;;
+    --skip-suite)     SKIP_SUITE=1 ;;
     -h|--help)
-      sed -n '2,18p' "$0"
+      sed -n '2,21p' "$0"
       exit 0
       ;;
     *)
@@ -179,11 +184,11 @@ gate_demo_seed_idempotent() {
 echo "release-verify @ $(date)"
 echo "repo: $REPO_ROOT"
 
-run_gate "typecheck (tsc -p tsconfig.check.json)" gate_typecheck
+[ "$SKIP_SUITE" = 0 ] && run_gate "typecheck (tsc -p tsconfig.check.json)" gate_typecheck
 run_gate "build (tsc + dashboard)" gate_build
 
 if [ "$QUICK" = 0 ]; then
-  run_gate "full vitest suite (throwaway HOME, no real config)" gate_full_test_suite
+  [ "$SKIP_SUITE" = 0 ] && run_gate "full vitest suite (throwaway HOME, no real config)" gate_full_test_suite
   run_gate "memesh doctor — overall status not FAIL" gate_doctor_runs
   run_gate "memesh install-hooks --dry-run" gate_install_hooks_dryrun
   run_gate "feedback draft URL build (no browser/submission)" gate_feedback_url_builds
