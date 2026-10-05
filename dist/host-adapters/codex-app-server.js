@@ -111,6 +111,7 @@ export async function startCodexAppServerThread(input, options = {}) {
 }
 async function withInitializedCodexConnection(controlSocketPath, options, operation) {
     const socket = options.websocketFactory(controlSocketPath, options.timeoutMs);
+    socket.on('error', () => undefined);
     try {
         await waitForOpen(socket, options.timeoutMs);
         await exchange(socket, {
@@ -239,6 +240,10 @@ function exchange(socket, request, timeoutMs) {
                 response = JSON.parse(responseText);
             }
             catch {
+                fail(new CodexAppServerProtocolError());
+                return;
+            }
+            if (typeof response !== 'object' || response === null) {
                 fail(new CodexAppServerProtocolError());
                 return;
             }

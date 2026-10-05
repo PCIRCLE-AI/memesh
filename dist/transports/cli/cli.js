@@ -7955,6 +7955,9 @@ function rememberInTransaction(args, derived, typeGiven, db2, kg) {
     }
   }
   const tagProjects = [...new Set((args.tags ?? []).filter((t) => t.startsWith("project:")).map((t) => t.slice("project:".length)))];
+  if (tagProjects.some((p) => p.trim() === "")) {
+    throw new Error("MeMesh did not store this memory: its tag `project:` names no project; give the project after the colon, or leave the tag out.");
+  }
   if (tagProjects.length > 1) {
     throw new Error(`MeMesh did not store this memory: it has more than one project tag (${tagProjects.map((p) => `project:${p}`).join(", ")}); a memory belongs to one project.`);
   }
@@ -25494,11 +25497,13 @@ function refineRemember(data, ctx) {
       ctx.addIssue({ code: "custom", path: ["name"], message: "name is required (or pass `note` to have it derived)" });
     if (data.type === void 0 && !(data.replace && data.name !== void 0))
       ctx.addIssue({ code: "custom", path: ["type"], message: 'type is required (or pass `note`, which defaults it to "note", or `replace: true` with a `name` to keep the type that memory already has)' });
+    if (data.replace && (data.observations === void 0 || data.observations.length === 0))
+      ctx.addIssue({ code: "custom", path: ["observations"], message: "replace rewrites the memory's observations, so it needs `observations` (or `note`) \u2014 a replace without them would empty the memory. To change only the title or tags, send the observations the memory already has together with the new title or tags" });
     return;
   }
   for (const key of ["title", "observations"]) {
     if (data[key] !== void 0) {
-      ctx.addIssue({ code: "custom", path: [key], message: `${key} cannot be combined with note \u2014 note derives it; to correct the derived ${key}, call again with name, replace: true and a structured ${key} (pass \`type\` only to also change the memory's type)` });
+      ctx.addIssue({ code: "custom", path: [key], message: `${key} cannot be combined with note \u2014 note derives it; to correct what was derived, call again with name, replace: true and a structured title and observations \u2014 the response's \`derived\` shows what was derived, so the observations to keep can be copied from it (pass \`type\` only to also change the memory's type)` });
     }
   }
   if (data.replace && data.name === void 0) {
@@ -27470,6 +27475,14 @@ function parseStoredObject(raw, label) {
   }
   throw new AgentMessagingError(`Invalid stored JSON object in ${label}.`);
 }
+function principalFallbackKey(idempotencyKey) {
+  return `principal-fallback:${createHash10("sha256").update(idempotencyKey).digest("hex")}`;
+}
+function hasPrincipalFallback(db2, sent, idempotencyKey) {
+  return db2.prepare(`
+    SELECT 1 FROM agent_message_idempotency WHERE project = ? AND sender = ? AND idempotency_key = ?
+  `).get(sent.project, sent.sender, principalFallbackKey(idempotencyKey)) !== void 0;
+}
 function sendPrincipalFallback(db2, message, refused) {
   const session = db2.prepare(`
     SELECT principal_id FROM agent_session_instances WHERE project = ? AND session_instance_id = ?
@@ -27484,7 +27497,7 @@ function sendPrincipalFallback(db2, message, refused) {
       recipient: session.principal_id,
       target_kind: "principal",
       intended_session: refused.recipient,
-      idempotency_key: `principal-fallback:${createHash10("sha256").update(message.idempotency_key).digest("hex")}`
+      idempotency_key: principalFallbackKey(message.idempotency_key)
     }, {
       notifier: optionalRouterNotifier(),
       storage_quota_bytes: configuredAgentMessageStorageQuotaBytes()
@@ -27547,6 +27560,9 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
       });
       if (sent.target_kind !== "session")
         return sent;
+      if (hasPrincipalFallback(db2, sent, input.idempotency_key)) {
+        return sendPrincipalFallback(db2, message, sent);
+      }
       try {
         return {
           ...sent,
@@ -27950,7 +27966,7 @@ function exportOpenAITools() {
             title: { type: "string", description: "Short human-readable label, distinct from name (a stable machine key)" },
             observations: { type: "array", items: { type: "string" }, description: "Key facts about this entity" },
             note: { type: "string", description: "Free text instead of title + observations: first line \u2192 title, each following paragraph \u2192 one observation" },
-            replace: { type: "boolean", description: "Rewrite the named memory instead of appending; the previous version moves to metadata.replaced_history" },
+            replace: { type: "boolean", description: "Rewrite the named memory instead of appending; send the observations it should now hold (a replace with none is refused); the previous version moves to metadata.replaced_history" },
             tags: { type: "array", items: { type: "string" }, description: "Tags for filtering" },
             relations: {
               type: "array",
@@ -27969,7 +27985,7 @@ function exportOpenAITools() {
           anyOf: [
             { required: ["note"] },
             { required: ["name", "type"] },
-            { required: ["name", "replace"], properties: { replace: { const: true } } }
+            { required: ["name", "replace", "observations"], properties: { replace: { const: true }, observations: { minItems: 1 } } }
           ]
         }
       }
@@ -63754,7 +63770,7 @@ var pkg = JSON.parse(fs24.readFileSync(packageJsonPath2, "utf8"));
 var RECALL_OMITTED_HINT = "omitted to keep the response under size \u2014 narrow the query, or open the dashboard for the full text";
 var RECALL_SCAN_NOTE = "The search index is out of date; these results come from a scan of the stored text.";
 var program2 = new Command();
-program2.name("memesh").description("MeMesh \u2014 Agentic memory for coding agents").version(pkg.version).allowExcessArguments(true).showSuggestionAfterError(true);
+program2.name("memesh").description("MeMesh \u2014 Agentic memory for coding agents").version(pkg.version).showSuggestionAfterError(true);
 var UPDATE_NOTICE_SILENT_COMMANDS = /* @__PURE__ */ new Set([
   "status",
   "update",
@@ -64241,20 +64257,21 @@ function boundedCliDeclaration(value, option, maxCharacters) {
   }
   return normalized;
 }
-async function readCliMessagePayloadFromStdin(contentType) {
-  let raw = "";
+async function readCliMessagePayloadFromStdin(contentType, input = process.stdin) {
+  const chunks = [];
   let bytes = 0;
-  for await (const chunk of process.stdin) {
-    const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
-    bytes += Buffer.byteLength(text, "utf8");
+  for await (const chunk of input) {
+    const buffer = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : Buffer.from(chunk);
+    bytes += buffer.length;
     if (bytes > AGENT_MESSAGE_JSON_MAX_BYTES) {
       throw new Error(`stdin payload exceeds ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes.`);
     }
-    raw += text;
+    chunks.push(buffer);
   }
   if (bytes === 0) {
     throw new Error("stdin payload is empty.");
   }
+  const raw = Buffer.concat(chunks).toString("utf8");
   const payload = parseCliMessagePayload(raw, contentType);
   const encodedBytes = Buffer.byteLength(JSON.stringify(payload), "utf8");
   if (encodedBytes > AGENT_MESSAGE_JSON_MAX_BYTES) {
@@ -65784,6 +65801,7 @@ ${line}`);
     }
   }
 });
+program2.allowExcessArguments(true);
 program2.action(async () => {
   const stray = program2.args.filter((a) => !a.startsWith("-"));
   if (stray.length > 0) {
@@ -65813,6 +65831,7 @@ export {
   createHostConfigAtomically,
   feedbackBrowserOpenCommand,
   isPromptAbort,
+  readCliMessagePayloadFromStdin,
   resolveUpgradePluginScript,
   runCli
 };

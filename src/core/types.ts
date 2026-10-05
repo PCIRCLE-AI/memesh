@@ -284,8 +284,9 @@ export interface RememberResult {
   replaced?: boolean;
   /**
    * `note` only: the shape the server derived from the text, echoed so a
-   * caller can correct it in one more call (e.g. `replace: true` with a
-   * better `title`).
+   * caller can correct it in one more call (`replace: true` with a better
+   * `title` and the observations to keep: a replace carrying neither
+   * `observations` nor `note` is refused, because it would empty the memory).
    */
   derived?: { name: string; type: string; title: string; observations: string[] };
 }

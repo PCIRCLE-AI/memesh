@@ -319,11 +319,26 @@ function tagsOf(name: string): string[] {
   ).map((t) => t.tag);
 }
 
-function findEntity(kg: KnowledgeGraph, namespace: string, name: string): Entity | null {
+/**
+ * The memory at this path, or null.
+ *
+ * An archived memory is a miss unless the caller asks for it: `delete`
+ * archives, `view` lists only active memories, and from the model's side a
+ * deleted file is gone. `kg.getEntity` does not filter on status, so without
+ * this a deleted path could still be viewed, and `str_replace`/`insert` on it
+ * rewrote the memory through `createEntity`, which reactivates an archived
+ * entity — a silent undo of the delete that reported success.
+ *
+ * `includeArchived` is for the callers that must see the row to act on it:
+ * `create` (an overwrite that brings a deleted path back) and `rename` (an
+ * archived memory keeps its archived status when moved).
+ */
+function findEntity(kg: KnowledgeGraph, namespace: string, name: string, includeArchived = false): Entity | null {
   const entity = kg.getEntity(name);
   // Entity names are unique database-wide, so a name that exists in another
   // namespace is a real miss for THIS path rather than a hit to be borrowed.
   if (!entity || entity.namespace !== namespace) return null;
+  if (entity.archived && !includeArchived) return null;
   return entity;
 }
 
@@ -342,6 +357,24 @@ function rewriteObservations(
   entity: Entity,
   observations: string[]
 ): void {
+  // #523: the model's text is redacted like every other write path. The
+  // file's lines are one set (redactSecretList), which covers `insert`
+  // (one new line) and is a second pass for `create`/`str_replace`, which
+  // redact the whole text before splitting it. It also re-redacts lines
+  // the edit did not touch: a memory written before #523 that still holds
+  // a credential loses it on its next edit (documented in the CHANGELOG).
+  const next = redactSecretList(observations);
+  // Nothing changes: write nothing. The rewrite below deletes every
+  // observation and inserts them again, which gives each one a new id and a
+  // created_at of now, and `createEntity` counts the re-inserted lines as new
+  // evidence (+0.05 confidence). An edit that leaves the text as it was (a
+  // `str_replace` of a string with itself) must not make a memory look recently
+  // active or lift its confidence. Compared after redaction, so a credential
+  // stored before #523 is still masked by the next edit. An archived memory is
+  // written anyway: a `create` over a deleted path is what brings it back.
+  // The text is compared whole: the edit splits the body on newlines, so a
+  // stored observation that holds a newline comes back as two lines.
+  if (!entity.archived && next.join('\n') === entity.observations.join('\n')) return;
   // One transaction, because the two halves are a delete and a restore. On its
   // own, `clearEntityData` removes every observation AND every tag; if
   // `createEntity` then threw — a disk-full, a lock lost to one of the seven
@@ -351,13 +384,7 @@ function rewriteObservations(
   getDatabase().transaction(() => {
     kg.clearEntityData(entity.name);
     kg.createEntity(entity.name, entity.type, {
-      // #523: the model's text is redacted like every other write path. The
-      // file's lines are one set (redactSecretList), which covers `insert`
-      // (one new line) and is a second pass for `create`/`str_replace`, which
-      // redact the whole text before splitting it. It also re-redacts lines
-      // the edit did not touch: a memory written before #523 that still holds
-      // a credential loses it on its next edit (documented in the CHANGELOG).
-      observations: redactSecretList(observations),
+      observations: next,
       tags: entity.tags,
       namespace: entity.namespace,
     });
@@ -464,7 +491,9 @@ function createEntityFile(
     return err('Error: `file_text` must be a string.');
   }
   const kg = graph();
-  const existing = findEntity(kg, namespace, name);
+  // An archived memory counts: this overwrite is how a deleted path comes back,
+  // and treating it as absent would fall through to the wrong-namespace refusal.
+  const existing = findEntity(kg, namespace, name, true);
   // The contract calls create "creates or overwrites" and offers the
   // already-exists error as the reference behaviour. Overwriting is chosen
   // here: the model is told it may overwrite, and refusing would leave it
@@ -707,9 +736,9 @@ function renamePath(oldRaw: unknown, newRaw: unknown): MemoryToolResult {
     // IMMEDIATE. A source snapshot taken before the write lock allowed another
     // connection to append or rename in between, making the contentless FTS
     // delete use stale text and leave permanent old-name tokens behind.
-    const source = findEntity(kg, from.namespace, from.name);
+    const source = findEntity(kg, from.namespace, from.name, true);
     if (!source) return err(`Error: The path ${String(oldRaw)} does not exist`);
-    if (findEntity(kg, to.namespace, to.name)) {
+    if (findEntity(kg, to.namespace, to.name, true)) {
       return err(`Error: The destination ${String(newRaw)} already exists`);
     }
     // Checked across ALL namespaces, not just the destination's: entity names

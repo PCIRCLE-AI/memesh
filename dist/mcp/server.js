@@ -28951,6 +28951,9 @@ function rememberInTransaction(args, derived, typeGiven, db2, kg) {
     }
   }
   const tagProjects = [...new Set((args.tags ?? []).filter((t) => t.startsWith("project:")).map((t) => t.slice("project:".length)))];
+  if (tagProjects.some((p) => p.trim() === "")) {
+    throw new Error("MeMesh did not store this memory: its tag `project:` names no project; give the project after the colon, or leave the tag out.");
+  }
   if (tagProjects.length > 1) {
     throw new Error(`MeMesh did not store this memory: it has more than one project tag (${tagProjects.map((p) => `project:${p}`).join(", ")}); a memory belongs to one project.`);
   }
@@ -31848,11 +31851,13 @@ function refineRemember(data, ctx) {
       ctx.addIssue({ code: "custom", path: ["name"], message: "name is required (or pass `note` to have it derived)" });
     if (data.type === void 0 && !(data.replace && data.name !== void 0))
       ctx.addIssue({ code: "custom", path: ["type"], message: 'type is required (or pass `note`, which defaults it to "note", or `replace: true` with a `name` to keep the type that memory already has)' });
+    if (data.replace && (data.observations === void 0 || data.observations.length === 0))
+      ctx.addIssue({ code: "custom", path: ["observations"], message: "replace rewrites the memory's observations, so it needs `observations` (or `note`) \u2014 a replace without them would empty the memory. To change only the title or tags, send the observations the memory already has together with the new title or tags" });
     return;
   }
   for (const key of ["title", "observations"]) {
     if (data[key] !== void 0) {
-      ctx.addIssue({ code: "custom", path: [key], message: `${key} cannot be combined with note \u2014 note derives it; to correct the derived ${key}, call again with name, replace: true and a structured ${key} (pass \`type\` only to also change the memory's type)` });
+      ctx.addIssue({ code: "custom", path: [key], message: `${key} cannot be combined with note \u2014 note derives it; to correct what was derived, call again with name, replace: true and a structured title and observations \u2014 the response's \`derived\` shows what was derived, so the observations to keep can be copied from it (pass \`type\` only to also change the memory's type)` });
     }
   }
   if (data.replace && data.name === void 0) {
@@ -32601,6 +32606,14 @@ function parseStoredObject(raw, label) {
   }
   throw new AgentMessagingError(`Invalid stored JSON object in ${label}.`);
 }
+function principalFallbackKey(idempotencyKey) {
+  return `principal-fallback:${createHash10("sha256").update(idempotencyKey).digest("hex")}`;
+}
+function hasPrincipalFallback(db2, sent, idempotencyKey) {
+  return db2.prepare(`
+    SELECT 1 FROM agent_message_idempotency WHERE project = ? AND sender = ? AND idempotency_key = ?
+  `).get(sent.project, sent.sender, principalFallbackKey(idempotencyKey)) !== void 0;
+}
 function sendPrincipalFallback(db2, message, refused) {
   const session = db2.prepare(`
     SELECT principal_id FROM agent_session_instances WHERE project = ? AND session_instance_id = ?
@@ -32615,7 +32628,7 @@ function sendPrincipalFallback(db2, message, refused) {
       recipient: session.principal_id,
       target_kind: "principal",
       intended_session: refused.recipient,
-      idempotency_key: `principal-fallback:${createHash10("sha256").update(message.idempotency_key).digest("hex")}`
+      idempotency_key: principalFallbackKey(message.idempotency_key)
     }, {
       notifier: optionalRouterNotifier(),
       storage_quota_bytes: configuredAgentMessageStorageQuotaBytes()
@@ -32678,6 +32691,9 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
       });
       if (sent.target_kind !== "session")
         return sent;
+      if (hasPrincipalFallback(db2, sent, input.idempotency_key)) {
+        return sendPrincipalFallback(db2, message, sent);
+      }
       try {
         return {
           ...sent,
@@ -33263,7 +33279,7 @@ function writeProject(arg, tags, context) {
     return { project: null };
   if (arg !== void 0)
     return { project: arg };
-  if ((tags ?? []).some((t) => t.startsWith("project:")))
+  if ((tags ?? []).some((t) => t.startsWith("project:") && t.slice("project:".length).trim() !== ""))
     return { project: void 0 };
   return projectFor(void 0, context, PROJECT_ACTION);
 }
@@ -33297,7 +33313,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "remember",
-    description: 'Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions, patterns, lessons learned, and important context. An omitted namespace keeps an existing memory in its current namespace; a "supersedes" relation archives its target, while "contradicts" marks a conflict. Quickest form: pass only `note` (free text) and the server derives title, observations and name; the response echoes what it derived. To correct a memory, call again with its `name` and `replace: true` \u2014 the memory keeps the `type` it has unless you pass a different one \u2014 and the old content moves to metadata.replaced_history instead of staying next to the fix.',
+    description: 'Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions, patterns, lessons learned, and important context. An omitted namespace keeps an existing memory in its current namespace; a "supersedes" relation archives its target, while "contradicts" marks a conflict. Quickest form: pass only `note` (free text) and the server derives title, observations and name; the response echoes what it derived. To correct a memory, call again with its `name`, `replace: true` and the `observations` it should now hold (a replace without `observations` or `note` is refused, so re-send the ones to keep along with the fix) \u2014 the memory keeps the `type` it has unless you pass a different one \u2014 and the old content moves to metadata.replaced_history instead of staying next to the fix.',
     inputSchema: {
       type: "object",
       properties: {
@@ -33315,7 +33331,7 @@ var TOOL_DEFINITIONS = [
         },
         replace: {
           type: "boolean",
-          description: "Rewrite the memory named by `name` instead of appending to it: its observations are replaced (and its tags when `tags` is given, its title when `title` or `note` is given). The previous version is kept in metadata.replaced_history with the time it was replaced. Default false (append)."
+          description: "Rewrite the memory named by `name` instead of appending to it: its observations are replaced by the `observations` (or `note`) you give \u2014 one of them is required, a replace with neither is refused \u2014 and its tags when `tags` is given, its title when `title` or `note` is given. The previous version is kept in metadata.replaced_history with the time it was replaced. Default false (append)."
         },
         title: {
           type: "string",
@@ -33361,7 +33377,7 @@ var TOOL_DEFINITIONS = [
       anyOf: [
         { required: ["note"] },
         { required: ["name", "type"] },
-        { required: ["name", "replace"], properties: { replace: { const: true } } }
+        { required: ["name", "replace", "observations"], properties: { replace: { const: true }, observations: { minItems: 1 } } }
       ]
     }
   },
@@ -33982,7 +33998,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   const { name, arguments: args } = request.params;
   const record2 = args && typeof args === "object" ? args : void 0;
   const ref = record2?.ref && typeof record2.ref === "object" ? record2.ref : void 0;
-  const needsProjectBinding = (name === "task_state" || name === "briefing") && record2?.project == null || name === "learn" && record2?.project == null || name === "remember" && record2?.project == null && !(Array.isArray(record2?.tags) && record2.tags.some((t) => typeof t === "string" && t.startsWith("project:"))) || name === "recall" && record2?.project == null && (record2?.tag == null || record2.tag === "") && record2?.cross_project !== true;
+  const needsProjectBinding = (name === "task_state" || name === "briefing") && record2?.project == null || name === "learn" && record2?.project == null || name === "remember" && record2?.project == null || name === "recall" && record2?.project == null && (record2?.tag == null || record2.tag === "") && record2?.cross_project !== true;
   const needsWorkspaceRoots = needsProjectBinding || name === "work_package" && (record2?.kind === "transcript" || ref?.kind === "transcript");
   let workspaceRootUris = [];
   let rootsUnreadable = false;

@@ -194,6 +194,37 @@ describe.skipIf(process.platform === 'win32')('managed Codex host runtime', () =
   });
 });
 
+describe.skipIf(process.platform === 'win32')('a managed Codex that dies while the host connects to the router', () => {
+  it.each([
+    ['closes the registration', async () => {}],
+    ['reports the exit even when that close fails', async () => { throw new Error('close failed'); }],
+  ])('fails closed with the reason and %s instead of returning a live-looking host', async (_label, close) => {
+    const socket = await privateSocket();
+    const config = await configFor(socket.socketPath, socket.directory);
+    const child = new FakeChild();
+    const routerConnection = { connection_id: 'connection-1', generation: 7, close: vi.fn(close) };
+    try {
+      await expect(startManagedCodexHost(config, {
+        spawn: vi.fn(() => child) as never,
+        start_thread: vi.fn(async () => {
+          await socket.listen();
+          return { thread_id: 'thread-owned-1' };
+        }),
+        create_adapter: vi.fn(() => ({ queue: vi.fn() })),
+        connect_router_host: vi.fn(async () => {
+          // The app-server ends after the router handshake began and before it returned.
+          child.exitCode = 1;
+          child.emit('exit', 1, null);
+          return routerConnection;
+        }) as never,
+      })).rejects.toThrow('exited while this host was registering with the router');
+      expect(routerConnection.close).toHaveBeenCalled();
+    } finally {
+      await socket.close();
+    }
+  });
+});
+
 describe.skipIf(process.platform === 'win32')('#532 a managed Codex host replaced by a newer connection', () => {
   const replaced = 'memesh-host-codex: replaced by a newer connection for this session; stopping.\n';
 

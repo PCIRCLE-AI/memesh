@@ -55,7 +55,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   const needsProjectBinding = ((name === 'task_state' || name === 'briefing') && record?.project == null)
     // A write or recall that names its project (an id or false) needs no binding.
     || (name === 'learn' && record?.project == null)
-    || (name === 'remember' && record?.project == null && !(Array.isArray(record?.tags) && record.tags.some(t => typeof t === 'string' && t.startsWith('project:'))))
+    // `remember` is bound whenever `project` is not given, tags or not: a
+    // `project:<plain name>` tag naming this session's own project is stored as
+    // the project's id, and only the binding says which project that is. A
+    // tagged write is never refused for lack of one (writeProject).
+    || (name === 'remember' && record?.project == null)
     || (name === 'recall' && record?.project == null && (record?.tag == null || record.tag === '') && record?.cross_project !== true);
   const needsWorkspaceRoots = needsProjectBinding || (name === 'work_package'
     && (record?.kind === 'transcript' || ref?.kind === 'transcript'));

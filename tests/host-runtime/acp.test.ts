@@ -2,9 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { canonicalAgentScopeId } from '../../src/core/agent-scope-id.js';
 import { getProjectName } from '../../src/core/paths.js';
 import {
+  AcpClientHostAdapter,
   AcpProcessExitError,
   AcpRemoteError,
   AcpUnsupportedCapabilityError,
@@ -23,6 +25,9 @@ import {
   type ConnectRouterHost,
 } from '../../src/host-runtime/acp.js';
 import { runHostEntry } from '../../src/host-runtime/entry.js';
+import type { ConnectRouterHostInput } from '../../src/host-runtime/router-client.js';
+
+const acpFixture = fileURLToPath(new URL('../fixtures/acp/agent.mjs', import.meta.url));
 
 const temporaryDirectories: string[] = [];
 
@@ -281,6 +286,34 @@ describe('managed Gemini ACP runtime', () => {
     expect(events.slice(-4)).toEqual(['prompt', 'cancel', 'disconnect', 'terminate']);
     expect(events.filter((event) => event === 'disconnect')).toHaveLength(1);
     expect(events.filter((event) => event === 'terminate')).toHaveLength(1);
+  });
+
+  it.skipIf(process.platform === 'win32')('keeps delivering after the router connection re-registers under a new generation', async () => {
+    let routerInput: ConnectRouterHostInput | undefined;
+    // Like the router client, one connection object whose generation changes when it reconnects.
+    const routerConnection = { connection_id: 'connection-1', generation: 1, close: vi.fn(async () => {}) };
+    const runtime = await startManagedAcpHost(managedConfig(), {
+      connect_router_host: (async (input: ConnectRouterHostInput) => {
+        routerInput = input;
+        return routerConnection;
+      }) as never,
+      // The real adapter against the fixture agent, so the generation check is the shipped one.
+      connect_acp_host: (options) => AcpClientHostAdapter.connect({
+        ...options, command: process.execPath, args: [acpFixture, 'normal'],
+      }),
+    });
+    try {
+      const envelope = { message_id: 'm', sender: 's', recipient: 'gemini-managed', payload: { text: 'hi' }, provenance: {} };
+      const deliver = (generation: number) => routerInput!.deliver({ envelope, generation } as never);
+      await expect(deliver(1)).resolves.toMatchObject({ accepted: true });
+
+      routerConnection.generation = 2;
+      await expect(deliver(2)).resolves.toMatchObject({ accepted: true });
+      // A frame still carrying the previous generation is refused, under the error's own name.
+      await expect(deliver(1)).rejects.toMatchObject({ name: 'AcpStaleGenerationError' });
+    } finally {
+      await runtime.close();
+    }
   });
 
   it.skipIf(process.platform === 'win32')('loads only through ACP and rejects ordinary Gemini UI lifecycle arguments before spawning', async () => {
