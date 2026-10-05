@@ -466,6 +466,33 @@ describe('transcript work_package', () => {
     }
   });
 
+  it('#552 offers a session whose cwd sits past 100 KB of metadata', async () => {
+    writeSession('late-cwd', [
+      { type: 'file-history-snapshot', snapshot: 'x'.repeat(100_000) },
+      user('Decide after the long preamble'),
+    ]);
+    const available = await prepare();
+    expect(available.status).toBe('available');
+    expect(available.package.ref.session_id).toBe('late-cwd');
+    expect(available.package.sources).toEqual([{ role: 'user', text: 'Decide after the long preamble' }]);
+  });
+
+  it('#552 a prepare that finds nothing says which sessions it left out and why', async () => {
+    writeSession('other-project', [user('Work in another project', path.join(tmpDir, 'sibling'))]);
+    writeSession('no-cwd', [{ type: 'user', message: { role: 'user', content: 'No working directory recorded' } }]);
+    const result = await prepare();
+    expect(result.status).toBe('none_available');
+    expect(result.skipped_sessions).toEqual({ other_project: 1, no_recorded_cwd: 1 });
+  });
+
+  it('#552 a prepare that finds a session does not report skips', async () => {
+    writeSession('other-project', [user('Work in another project', path.join(tmpDir, 'sibling'))]);
+    writeSession('mine', [user('My own work')]);
+    const result = await prepare();
+    expect(result.status).toBe('available');
+    expect(result).not.toHaveProperty('skipped_sessions');
+  });
+
   it('skips a transcript that becomes unreadable after discovery', async () => {
     writeSession('older-readable', [user('Use the readable fallback session.')], new Date(Date.now() - 4000));
     const newest = writeSession('newest-unreadable', [user('This session disappears during selection.')]);

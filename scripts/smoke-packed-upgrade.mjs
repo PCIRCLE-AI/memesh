@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { npmSync } from './lib/npm-bin.mjs';
+import { writeNodeShim } from './lib/node-shim.mjs';
 import { buildCredentialFreeBaseEnv } from './lib/isolated-env.mjs';
 import { assertEveryPathProven, fetchPackument, selectUpgradePaths } from './lib/upgrade-matrix.mjs';
 
@@ -128,7 +129,6 @@ function runCandidateAutoUpdate({ candidateTarball, candidateVersion, env, rowRo
   const stage = path.join(rowRoot, 'candidate-stage');
   const shimDir = path.join(rowRoot, 'npm-shim');
   const calls = path.join(rowRoot, 'auto-update-npm-calls.log');
-  fs.mkdirSync(shimDir, { recursive: true });
   npmSync(['install', '--prefix', stage, '--omit=dev', '--cache', env.npm_config_cache,
     '--userconfig', env.npm_config_userconfig, candidateTarball], {
     cwd: repoRoot,
@@ -140,8 +140,7 @@ function runCandidateAutoUpdate({ candidateTarball, candidateVersion, env, rowRo
   const runner = path.join(stage, 'node_modules', '@pcircle', 'memesh', 'scripts', 'hooks', 'auto-update-runner.mjs');
   assert.ok(fs.existsSync(runner), 'packed candidate is missing its auto-update runner');
 
-  const shim = path.join(shimDir, 'npm');
-  fs.writeFileSync(shim, `#!/usr/bin/env node
+  writeNodeShim(shimDir, 'npm', `#!/usr/bin/env node
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const args = process.argv.slice(2);
@@ -154,7 +153,7 @@ const child = spawnSync(process.execPath, [process.env.MEMESH_UPGRADE_NPM_CLI, .
 });
 if (child.error) throw child.error;
 process.exit(child.status ?? 1);
-`, { mode: 0o700 });
+`, 'commonjs');
 
   const specifier = `${packageName}@${candidateVersion}`;
   const runnerEnv = {

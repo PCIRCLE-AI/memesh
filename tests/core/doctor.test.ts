@@ -339,6 +339,12 @@ function makeDatabase(
       if (sql.includes("receipt_kind = 'host_activation'")) {
         return { all: () => [] };
       }
+      // #408's project-split row reads every project tag; this stub has none,
+      // so no split. tests/core/project-identity-split-doctor.test.ts runs it
+      // against a real database.
+      if (sql.includes("t.tag LIKE 'project:%'")) {
+        return { all: () => [] };
+      }
       // hook-activity counts entities carrying the auto-capture provenance
       // tag, so its statement is `COUNT(DISTINCT e.id)` over a join. This
       // stub cannot tell the two counts apart — it never runs the SQL. The

@@ -300,5 +300,9 @@ memesh reindex --fts                         # rebuild the local keyword index
 5. **Tag by project** and **be specific** — "Use OAuth 2.0 with PKCE", not
    "auth stuff decided". The project tag is `project:<id>`, where `<id>` is
    the `project` field of the `briefing` result, from the CLI `memesh briefing --json` (`myapp` in the
-   examples above stands for it); a plain repository name is a different
-   scope that this project's sessions never see.
+   examples above stands for it). `remember` stores a plain-name tag for
+   your own project as the id and reports it in `retagged` — unless a memory
+   the call updates or supersedes is already filed under the plain tag, which
+   then stays as written (`memesh kg rename-project` moves those); otherwise a
+   plain repository name is a different scope that this project's sessions
+   never see.

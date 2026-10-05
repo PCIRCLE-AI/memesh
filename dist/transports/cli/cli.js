@@ -3602,6 +3602,15 @@ function registerNfcFunction(db2) {
   db2.function(SQL_NFC_FUNCTION, { deterministic: true }, (value) => typeof value === "string" ? value.normalize("NFC") : value);
   nfcRegistered.add(db2);
 }
+function foldForExactMatch(value) {
+  return value.normalize("NFC").trim().toLowerCase();
+}
+function registerFoldFunction(db2) {
+  if (foldRegistered.has(db2))
+    return;
+  db2.function(SQL_FOLD_FUNCTION, { deterministic: true }, (value) => typeof value === "string" ? foldForExactMatch(value) : value);
+  foldRegistered.add(db2);
+}
 function renderMatchExpression(terms) {
   if (terms.length === 0)
     return null;
@@ -3638,7 +3647,7 @@ function indexedObservationText(db2, entityId) {
 function insertFtsRow(db2, entityId, name, observationsText, title) {
   db2.prepare("INSERT INTO entities_fts (rowid, name, observations) VALUES (?, ?, ?)").run(entityId, toIndexForm(name), toIndexForm(foldTitleIntoObservations(title, observationsText)));
 }
-var UNSPACED_SCRIPT_RANGES, UNSPACED_SCRIPT_CLASS, UNSPACED_SCRIPT_GLOB_RUN3, UNSPACED_SCRIPT, SQL_NFC_FUNCTION, nfcRegistered, LONE_UNSPACED_CHAR;
+var UNSPACED_SCRIPT_RANGES, UNSPACED_SCRIPT_CLASS, UNSPACED_SCRIPT_GLOB_RUN3, UNSPACED_SCRIPT, SQL_NFC_FUNCTION, nfcRegistered, SQL_FOLD_FUNCTION, foldRegistered, LONE_UNSPACED_CHAR;
 var init_fts_index = __esm({
   "dist/storage/fts-index.js"() {
     "use strict";
@@ -3659,6 +3668,8 @@ var init_fts_index = __esm({
     UNSPACED_SCRIPT = new RegExp(`[${UNSPACED_SCRIPT_CLASS}]+`, "gu");
     SQL_NFC_FUNCTION = "memesh_nfc";
     nfcRegistered = /* @__PURE__ */ new WeakSet();
+    SQL_FOLD_FUNCTION = "memesh_fold";
+    foldRegistered = /* @__PURE__ */ new WeakSet();
     LONE_UNSPACED_CHAR = new RegExp(`[${UNSPACED_SCRIPT_CLASS}]`, "u");
   }
 });
@@ -3767,6 +3778,10 @@ function parseSqliteUtcMs(sqliteTimestamp) {
   if (d.getUTCFullYear() !== +m[1] || d.getUTCMonth() !== +m[2] - 1 || d.getUTCDate() !== +m[3] || d.getUTCHours() !== +m[4] || d.getUTCMinutes() !== +m[5] || d.getUTCSeconds() !== +m[6])
     return null;
   return then;
+}
+function sqliteUtcToIso(sqliteTimestamp) {
+  const ms = parseSqliteUtcMs(sqliteTimestamp);
+  return ms === null ? sqliteTimestamp : new Date(ms).toISOString().replace(".000Z", "Z");
 }
 var init_time_utils = __esm({
   "dist/core/time-utils.js"() {
@@ -4327,12 +4342,16 @@ function insertOrGetEntity(db2, entity) {
     return null;
   return { ...row, isNew };
 }
+function storedText(text) {
+  return text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "\uFFFD");
+}
 function appendObservations(db2, entityId, observations, options) {
   const seen = new Set(options.dedupe && options.readExisting ? db2.prepare("SELECT content FROM observations WHERE entity_id = ?").all(entityId).map((o) => o.content) : []);
   const written = [];
-  for (const observation of observations) {
-    if (options.exclude?.(observation))
+  for (const given of observations) {
+    if (options.exclude?.(given))
       continue;
+    const observation = storedText(given);
     if (options.dedupe) {
       if (seen.has(observation))
         continue;
@@ -5356,7 +5375,7 @@ function projectScopeFilter(scope) {
     params: [scope]
   };
 }
-var isGuardWithPattern, withoutGuardPattern, MAX_QUERY_TERMS, UBIQUITOUS_TERM_FRACTION, MIN_ROWS_FOR_DF_GUARD, MAX_DF_LOOKUP_TERMS, LATIN_FOLDABLE, NO_PROJECT_TAG, KnowledgeGraph;
+var EXACT_MATCH_FIRST, isGuardWithPattern, withoutGuardPattern, MAX_QUERY_TERMS, UBIQUITOUS_TERM_FRACTION, MIN_ROWS_FOR_DF_GUARD, MAX_DF_LOOKUP_TERMS, LATIN_FOLDABLE, NO_PROJECT_TAG, KnowledgeGraph;
 var init_knowledge_graph = __esm({
   "dist/knowledge-graph.js"() {
     "use strict";
@@ -5368,6 +5387,7 @@ var init_knowledge_graph = __esm({
     init_entity_write();
     init_work_topology();
     init_paths();
+    EXACT_MATCH_FIRST = `(${SQL_FOLD_FUNCTION}(e.name) = ? OR ${SQL_FOLD_FUNCTION}(COALESCE(e.title, '')) = ?) DESC`;
     isGuardWithPattern = (guard) => guard !== null && typeof guard === "object" && typeof guard.pattern === "string";
     withoutGuardPattern = (metadata) => isGuardWithPattern(metadata.guard) ? { ...metadata, guard: { ...metadata.guard, pattern: void 0 } } : metadata;
     MAX_QUERY_TERMS = 32;
@@ -5666,19 +5686,20 @@ var init_knowledge_graph = __esm({
         const scope = opts?.tag ? void 0 : opts?.projectScope;
         const scoped = scope === void 0 ? void 0 : projectScopeFilter(scope);
         const tagFilter = opts?.tag ? "AND EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?)" : scoped ? scoped.sql : "";
-        const filterParams = [];
+        const scopeParams = [];
         if (opts?.tag)
-          filterParams.push(opts.tag);
+          scopeParams.push(opts.tag);
         else if (scoped)
-          filterParams.push(...scoped.params);
+          scopeParams.push(...scoped.params);
         if (opts?.namespace)
-          filterParams.push(opts.namespace);
-        filterParams.push(limit);
+          scopeParams.push(opts.namespace);
+        const exactQuery = foldForExactMatch(query);
+        registerFoldFunction(this.db);
         let ftsRows;
         let strictSelected = false;
         const fallback = ftsIndexIsCurrent(this.db) ? null : "index_out_of_date";
         const findFtsRows = (ftsQuery) => {
-          const queryParams = [ftsQuery, ...filterParams];
+          const queryParams = [ftsQuery, ...scopeParams, exactQuery, exactQuery, limit];
           return this.db.prepare(`SELECT e.id FROM entities_fts f
            JOIN entities e ON e.id = f.rowid
            WHERE entities_fts MATCH ?
@@ -5691,11 +5712,11 @@ var init_knowledge_graph = __esm({
            -- tiebreaker the same query over the same corpus can return
            -- different memories run to run. Newest-first among equals is the
            -- same preference the rest of the scorer expresses.
-           ORDER BY f.rank, e.id DESC
+           ORDER BY ${EXACT_MATCH_FIRST}, f.rank, e.id DESC
            LIMIT ?`).all(...queryParams);
         };
         if (fallback) {
-          const scanned = this.scanActiveRows(query, tagFilter, namespaceFilter, filterParams);
+          const scanned = this.scanActiveRows(query, tagFilter, namespaceFilter, [...scopeParams, exactQuery, exactQuery, limit]);
           ftsRows = scanned.rows;
           strictSelected = scanned.strictSelected;
         } else {
@@ -5740,8 +5761,8 @@ var init_knowledge_graph = __esm({
              AND (${termClause})
              ${tagFilter2}
              ${archivedNamespaceFilter}
-           ORDER BY e.id DESC
-           LIMIT ?`).all(...archivedParams, limit);
+           ORDER BY ${EXACT_MATCH_FIRST}, e.id DESC
+           LIMIT ?`).all(...archivedParams, exactQuery, exactQuery, limit);
           const archivedIds = archivedRows.map((r) => r.id).filter((id) => !seenIds.has(id));
           const archivedEntities = this.getEntitiesByIds(archivedIds, {
             includeArchived: true,
@@ -5763,7 +5784,7 @@ var init_knowledge_graph = __esm({
              ${tagFilter}
              AND e.status = 'active'
              ${namespaceFilter}
-           ORDER BY e.id DESC
+           ORDER BY ${EXACT_MATCH_FIRST}, e.id DESC
            LIMIT ?`).all(...terms.flatMap((t) => [t, t, t]), ...filterParams);
         if (allTerms.length >= 3) {
           const strict = run(" AND ");
@@ -6415,9 +6436,12 @@ function repairFusedLessonShellHistory(db2) {
 }
 function canonicalizeLessonTypes(db2) {
   let renamed = -1;
+  const stored = db2.prepare("SELECT value FROM memesh_metadata WHERE key = ?").get(LESSON_TYPE_CANONICAL_KEY);
+  const pending = db2.prepare(`SELECT 1 FROM entities WHERE type IN ('lesson', 'mistake') LIMIT 1`).get() !== void 0;
+  const version2 = stored && pending ? parseInt(stored.value, 10) + 1 : 1;
   runOnceMigration(db2, {
     key: LESSON_TYPE_CANONICAL_KEY,
-    version: 1,
+    version: version2,
     describe: "lesson type canonicalization",
     migrate: (conn) => {
       const rows = conn.prepare(`SELECT id, name, type, metadata FROM entities WHERE type IN ('lesson', 'mistake')`).all();
@@ -6532,7 +6556,7 @@ __export(db_exports, {
 });
 import path2 from "path";
 import fs3 from "fs";
-function openDatabase(dbPath) {
+function openDatabase(dbPath, opts = {}) {
   if (db)
     return db;
   const resolvedPath = dbPath ?? getDbPath();
@@ -6558,7 +6582,7 @@ function openDatabase(dbPath) {
     const fix = notYours ? "Point MEMESH_DB_PATH at a database you own, in a folder you own." : `chmod u+w ${shellQuote(realDir)}`;
     throw Object.assign(new Error(`MeMesh: ${realDir} is read-only and ${path2.basename(realPath)} has no ${missing.join(" or ")} file there, so it cannot be opened without writing to the folder. ` + (notYours ? `${realDir} belongs to another user, so you cannot make it writable. ${fix}` : `Copy the database to a writable folder and point MEMESH_DB_PATH at the copy, or make the folder writable: ${fix}`)), { fix });
   }
-  db = openInitialisedDatabase(resolvedPath);
+  db = openInitialisedDatabase(resolvedPath, opts);
   const writeBack = ownerWriteCommand(resolvedPath);
   if (writeBack) {
     try {
@@ -6569,9 +6593,13 @@ function openDatabase(dbPath) {
   }
   return db;
 }
-function openInitialisedDatabase(resolvedPath) {
+function openInitialisedDatabase(resolvedPath, opts = {}) {
   const opening = new MemeshDatabase(resolvedPath);
   try {
+    if (opts.busyTimeoutMs !== void 0) {
+      opening.pragma(`busy_timeout = ${opts.busyTimeoutMs}`);
+      giveUpIfWriteLocked(opening);
+    }
     initialiseDatabase(opening);
   } catch (err) {
     try {
@@ -6581,6 +6609,16 @@ function openInitialisedDatabase(resolvedPath) {
     throw err;
   }
   return opening;
+}
+function giveUpIfWriteLocked(db2) {
+  try {
+    db2.exec("BEGIN IMMEDIATE");
+  } catch (err) {
+    if (isTransientDbError(err))
+      throw err;
+    return;
+  }
+  db2.exec("COMMIT");
 }
 function isReadonlyDbError(err) {
   const msg = err instanceof Error ? err.message : String(err);
@@ -6610,7 +6648,14 @@ function migrateToCurrentSchema(db2) {
   runAutoDecay(db2);
   backfillSignalScores(db2);
   ensureFtsSegmentation(db2);
-  backfillTitles(db2);
+  if (ftsIndexIsCurrent(db2)) {
+    backfillTitles(db2);
+  } else {
+    try {
+      process.stderr.write("MeMesh: adding titles to older memories waits until the search index is rebuilt.\n");
+    } catch {
+    }
+  }
   backfillAcceptedProposalTrust(db2);
   dedupeObservations(db2);
   retractZeroEditClaims(db2);
@@ -6867,6 +6912,28 @@ function projectOwnershipRefusal(db2, name, project) {
 var init_memory_mutation = __esm({
   "dist/storage/memory-mutation.js"() {
     "use strict";
+  }
+});
+
+// dist/core/plain-project-tag.js
+function withFullProjectTag(tags, projectId) {
+  if (tags === void 0)
+    return { tags: void 0 };
+  if (projectId === void 0)
+    return { tags: [...tags] };
+  const label = projectLabel(projectId);
+  if (label === projectId)
+    return { tags: [...tags] };
+  const plain = `project:${label}`;
+  if (!tags.includes(plain))
+    return { tags: [...tags] };
+  const full = `project:${projectId}`;
+  return { tags: [...new Set(tags.map((tag) => tag === plain ? full : tag))], retagged: { from: plain, to: full } };
+}
+var init_plain_project_tag = __esm({
+  "dist/core/plain-project-tag.js"() {
+    "use strict";
+    init_work_topology();
   }
 });
 
@@ -7453,7 +7520,11 @@ function importMemories(args, options) {
             return { kind: "keptArchived" };
           if (args.merge_strategy === "append") {
             const existingText = new Set(existing.observations);
-            const newObservations = observations.filter((o) => !existingText.has(o));
+            const newObservations = observations.map(storedText).filter((o) => !existingText.has(o));
+            const existingTags = new Set(existing.tags);
+            const addsNothing = !existing.archived && newObservations.length === 0 && (entity.tags === void 0 || entity.tags.every((tag) => existingTags.has(storedText(tag)))) && (title === void 0 || storedText(title) === existing.title) && (namespace === void 0 || namespace === (existing.namespace ?? "personal"));
+            if (addsNothing)
+              return { kind: "skipped" };
             kg.createEntity(entity.name, entity.type, {
               title,
               observations: newObservations,
@@ -7546,6 +7617,7 @@ var init_serializer = __esm({
     "use strict";
     init_db();
     init_knowledge_graph();
+    init_entity_write();
     init_title();
     init_paths();
     init_time_utils();
@@ -7678,6 +7750,20 @@ function resolveRememberInput(input) {
 }
 function rememberInTransaction(args, derived, typeGiven, db2, kg) {
   const existing = db2.prepare("SELECT id, namespace, type, title, status FROM entities WHERE name = ?").get(args.name);
+  const touched = [
+    ...existing ? [args.name] : [],
+    ...(args.relations ?? []).filter((rel) => rel.type === "supersedes").map((rel) => rel.to)
+  ];
+  let retagged;
+  const healed = withFullProjectTag(args.tags, args.currentProject);
+  if (healed.retagged) {
+    const plainTag = healed.retagged.from;
+    const keepsPlain = touched.some((name) => db2.prepare("SELECT 1 FROM tags t JOIN entities e ON e.id = t.entity_id WHERE e.name = ? AND t.tag = ?").get(name, plainTag) !== void 0);
+    if (!keepsPlain) {
+      args = { ...args, tags: healed.tags };
+      retagged = healed.retagged;
+    }
+  }
   const tagProjects = [...new Set((args.tags ?? []).filter((t) => t.startsWith("project:")).map((t) => t.slice("project:".length)))];
   if (tagProjects.length > 1) {
     throw new Error(`MeMesh did not store this memory: it has more than one project tag (${tagProjects.map((p) => `project:${p}`).join(", ")}); a memory belongs to one project.`);
@@ -7687,10 +7773,6 @@ function rememberInTransaction(args, derived, typeGiven, db2, kg) {
   }
   const declaredProject = args.project !== void 0 ? args.project : tagProjects[0];
   if (declaredProject !== void 0) {
-    const touched = [
-      ...existing ? [args.name] : [],
-      ...(args.relations ?? []).filter((rel) => rel.type === "supersedes").map((rel) => rel.to)
-    ];
     for (const name of touched) {
       const refusal = projectOwnershipRefusal(db2, name, declaredProject);
       if (refusal !== void 0)
@@ -7790,9 +7872,17 @@ function rememberInTransaction(args, derived, typeGiven, db2, kg) {
     ...existing && args.namespace !== void 0 && (existing.namespace ?? "personal") !== args.namespace ? { movedFromNamespace: existing.namespace ?? "personal" } : {},
     ...superseded.length > 0 ? { superseded } : {},
     ...relationErrors.length > 0 ? { relationErrors } : {},
+    ...retagged ? { retagged } : {},
     ...args.replace ? { replaced: replacedVersion !== void 0 } : {},
     ...derived ? { derived: { name: args.name, type: retypedTo ?? existing?.type ?? entityType, title: derived.title, observations: derived.observations } } : {}
   };
+}
+function exactMatchesFirst(ranked, query) {
+  const wanted = query === void 0 ? "" : foldForExactMatch(query);
+  if (!wanted)
+    return ranked;
+  const isExact = (e) => foldForExactMatch(e.name) === wanted || e.title != null && foldForExactMatch(e.title) === wanted;
+  return [...ranked.filter(isExact), ...ranked.filter((e) => !isExact(e))];
 }
 function searchAndScore(args) {
   const kg = new KnowledgeGraph(getDatabase());
@@ -7818,7 +7908,7 @@ async function recallEnhanced(args) {
     }
   }
   const limit = args.limit ?? 20;
-  const ranked = rankEntities(entities, relevanceMap).slice(0, limit);
+  const ranked = exactMatchesFirst(rankEntities(entities, relevanceMap), args.query).slice(0, limit);
   return {
     entities: ranked,
     retrieval: fallback ? { mode: "scan", degraded: true, reason: fallback, truncated: ranked.length === limit } : { mode: "fts", degraded: false, truncated: ranked.length === limit }
@@ -7892,6 +7982,8 @@ var init_operations = __esm({
     init_db();
     init_memory_mutation();
     init_knowledge_graph();
+    init_fts_index();
+    init_plain_project_tag();
     init_scoring();
     init_paths();
     init_lesson_engine();
@@ -23967,7 +24059,7 @@ var init_zod = __esm({
 import { createHash as createHash5, randomUUID } from "node:crypto";
 import fs10 from "node:fs";
 function getAgentMessageStorageReport(db2, options) {
-  const cutoff = normalizeCutoff(options.cutoff);
+  const cutoff = normalizeAgentMessageCutoff(options.cutoff);
   const states = readMessageStates(db2, cutoff);
   const lifecycle = db2.prepare(`
     SELECT
@@ -24021,7 +24113,7 @@ function getAgentMessageStorageReport(db2, options) {
   };
 }
 function pruneTerminalAgentMessagePayloads(db2, options) {
-  const cutoff = normalizeCutoff(options.cutoff);
+  const cutoff = normalizeAgentMessageCutoff(options.cutoff);
   const batchSize = normalizeBatchSize(options.batchSize);
   const dryRun = options.dryRun === void 0 ? true : options.dryRun;
   const actor = normalizeActor(options.actor);
@@ -24251,8 +24343,9 @@ function stableTombstone(payloadHash, originalPayloadBytes) {
     }
   });
 }
-function normalizeCutoff(value) {
-  const date5 = value instanceof Date ? value : new Date(value);
+function normalizeAgentMessageCutoff(value) {
+  const sqliteMs = typeof value === "string" && SQLITE_FORM.test(value) ? parseSqliteUtcMs(value) : null;
+  const date5 = value instanceof Date ? value : new Date(sqliteMs ?? value);
   if (Number.isNaN(date5.getTime())) {
     throw new AgentMessageStorageError("invalid_retention_cutoff", "Agent message retention cutoff must be a valid date.");
   }
@@ -24297,10 +24390,12 @@ function safeFileSize(filePath) {
     return null;
   }
 }
-var TERMINAL_WORKFLOW_STATES, DEFAULT_BATCH_SIZE, MAX_BATCH_SIZE, AgentMessageStorageError, AgentMessageStorageQuotaExceededError, AGENT_MESSAGE_TERMINAL_WORKFLOW_STATES;
+var SQLITE_FORM, TERMINAL_WORKFLOW_STATES, DEFAULT_BATCH_SIZE, MAX_BATCH_SIZE, AgentMessageStorageError, AgentMessageStorageQuotaExceededError, AGENT_MESSAGE_TERMINAL_WORKFLOW_STATES;
 var init_agent_message_storage = __esm({
   "dist/core/agent-message-storage.js"() {
     "use strict";
+    init_time_utils();
+    SQLITE_FORM = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
     TERMINAL_WORKFLOW_STATES = /* @__PURE__ */ new Set(["completed", "cancelled", "rejected"]);
     DEFAULT_BATCH_SIZE = 100;
     MAX_BATCH_SIZE = 1e3;
@@ -24613,7 +24708,7 @@ function fetchAgentMessage(db2, input) {
     correlation_id: row.correlation_id,
     reply_to: row.reply_to_message_id,
     privacy: parsePrivacy(row.privacy),
-    created_at: row.created_at,
+    created_at: sqliteUtcToIso(row.created_at),
     payload: parseJsonObjectOrValue(row.payload_json),
     provenance: parseJsonObject(row.provenance_json, "provenance_json")
   };
@@ -24947,7 +25042,7 @@ function rowToSentAgentMessage(row) {
     correlation_id: row.correlation_id,
     reply_to: row.reply_to_message_id,
     privacy: parsePrivacy(row.privacy),
-    created_at: row.created_at,
+    created_at: sqliteUtcToIso(row.created_at),
     provenance: parseJsonObject(row.provenance_json, "provenance_json")
   };
 }
@@ -24963,7 +25058,7 @@ function rowToEventHeader(row) {
     correlation_id: row.correlation_id,
     reply_to: row.reply_to_message_id,
     privacy: parsePrivacy(row.privacy),
-    created_at: row.created_at
+    created_at: sqliteUtcToIso(row.created_at)
   };
 }
 function rowToReceipt(row) {
@@ -24975,7 +25070,7 @@ function rowToReceipt(row) {
     recipient: row.recipient,
     actor: row.actor,
     idempotency_key: row.idempotency_key,
-    created_at: row.created_at
+    created_at: sqliteUtcToIso(row.created_at)
   };
   switch (row.receipt_kind) {
     case "intake": {
@@ -25146,6 +25241,7 @@ var init_agent_messaging = __esm({
     "use strict";
     init_agent_message_storage();
     init_agent_message_inbox();
+    init_time_utils();
     init_agent_scope_id();
     MAX_SCOPE_FIELD = AGENT_SCOPE_ID_MAX_LENGTH;
     MAX_IDEMPOTENCY_KEY = 200;
@@ -26992,7 +27088,7 @@ function nativeAcceptance(row) {
     delivery_id: row.delivery_id,
     adapter_kind: row.adapter_kind,
     receipt: parseStoredObject(row.receipt_json, "agent_host_accepts.receipt_json"),
-    accepted_at: row.created_at
+    accepted_at: sqliteUtcToIso(row.created_at)
   };
 }
 async function requireExactSessionNativeAcceptance(db2, sent, dependencies) {
@@ -27127,7 +27223,7 @@ function readPublicReceiptsSnapshot(db2, input) {
         actor: row.actor,
         idempotency_key: row.idempotency_key,
         detail: parseStoredObject(row.detail_json, "agent_ack_facts.detail_json"),
-        created_at: row.created_at
+        created_at: sqliteUtcToIso(row.created_at)
       }),
       rank: 2,
       order: row.fact_order
@@ -27149,7 +27245,7 @@ function readPublicReceiptsSnapshot(db2, input) {
         workflow_state: row.workflow_state,
         idempotency_key: row.idempotency_key,
         detail: parseStoredObject(row.detail_json, "agent_workflow_facts.detail_json"),
-        created_at: row.created_at
+        created_at: sqliteUtcToIso(row.created_at)
       }),
       rank: 3,
       order: row.fact_order
@@ -27205,7 +27301,7 @@ function projectHostAccept(delivery, fact) {
     attempt_id: fact.attempt_id,
     adapter_kind: fact.adapter_kind,
     receipt: parseStoredObject(fact.receipt_json, "agent_host_accepts.receipt_json"),
-    created_at: fact.created_at
+    created_at: sqliteUtcToIso(fact.created_at)
   };
 }
 function projectAckFact(delivery, fact) {
@@ -27412,6 +27508,7 @@ var init_agent_messaging2 = __esm({
     init_paths();
     init_agent_message_inbox();
     init_work_topology();
+    init_time_utils();
     AgentRecipientUnavailableError = class extends AgentMessagingError {
       code = "recipient_unavailable";
       constructor(detail) {
@@ -27950,6 +28047,9 @@ function exportOpenAITools() {
             project: { type: "string", description: "Local project scope. A stable identifier, never a filesystem path; compared exactly, after Unicode NFC normalisation." },
             sender: { type: "string", description: "Required for send. Stable local sender identifier; provenance only, and stored exactly as given." },
             recipient: { type: "string", description: "Required for every action except discover. Stable target local agent/host identifier, never a filesystem path; compared exactly, after Unicode NFC normalisation, so no prefix is treated as a namespace." },
+            target_kind: { type: "string", enum: ["principal", "session"], description: "Recipient identity kind for send and fetch. Defaults to principal; exact-session delivery and fetch require session." },
+            intended_session: { type: "string", description: "Optional for send with target_kind principal: the one session of that principal this message is meant for. Only that session is reminded of it and may record intake or a disposition." },
+            fallback_to_principal: { type: "boolean", description: "Optional for send with target_kind session: if that session refuses the message (recipient_unavailable), send it to the principal it registered under, with intended_session set to it." },
             idempotency_key: { type: "string", description: "Required for send and receipt writes. Stable retry key." },
             payload: { type: ["string", "number", "boolean", "object", "array", "null"], description: `Required for send. Untrusted JSON value limited to ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes (64 KiB) after JSON encoding. Native push additionally requires the complete envelope to fit ${AGENT_NATIVE_MESSAGE_MAX_BYTES} bytes (16 KiB). Never executed by MeMesh.` },
             content_type: { type: "string", enum: ["text/plain", "application/json"], description: "Send media type; defaults to text/plain." },
@@ -57283,6 +57383,45 @@ var init_install_id = __esm({
   }
 });
 
+// dist/core/project-identity-split.js
+function findProjectIdentitySplits(db2) {
+  const rows = db2.prepare(`SELECT t.tag AS tag,
+            SUM(CASE WHEN e.status = 'active' AND NOT EXISTS (
+                  SELECT 1 FROM tags own
+                   WHERE own.entity_id = e.id
+                     AND substr(own.tag, 1, length(t.tag) + 1) = t.tag || '~'
+                ) THEN 1 ELSE 0 END) AS active
+       FROM tags t JOIN entities e ON e.id = t.entity_id
+      WHERE t.tag LIKE 'project:%'
+      GROUP BY t.tag`).all();
+  const projects = rows.map((row) => ({ project: row.tag.slice("project:".length), active: Number(row.active) }));
+  const idsByLabel = /* @__PURE__ */ new Map();
+  for (const { project } of projects) {
+    const label = projectLabel(project);
+    if (label === project)
+      continue;
+    const ids = idsByLabel.get(label);
+    if (ids)
+      ids.push(project);
+    else
+      idsByLabel.set(label, [project]);
+  }
+  const splits = [];
+  for (const { project, active: active2 } of projects) {
+    const ids = idsByLabel.get(project);
+    if (ids === void 0 || active2 === 0 || projectLabel(project) !== project)
+      continue;
+    splits.push({ plain: project, ids: [...ids].sort(), activeMemories: active2 });
+  }
+  return splits.sort((a, b) => b.activeMemories - a.activeMemories || a.plain.localeCompare(b.plain));
+}
+var init_project_identity_split = __esm({
+  "dist/core/project-identity-split.js"() {
+    "use strict";
+    init_work_topology();
+  }
+});
+
 // dist/core/capture-flag.js
 function autoCaptureDecision(envVal, configAutoCapture) {
   if (envVal === "false")
@@ -57376,6 +57515,8 @@ function parseHookOutcomeLine(line) {
   const reason = typeof rec.reason === "string" ? sanitizeRecordText(rec.reason) : "";
   if (reason)
     record2.reason = reason;
+  if (typeof rec.run === "string" && /^[0-9a-f]{8,64}$/.test(rec.run))
+    record2.run = rec.run;
   const entity = typeof rec.entity === "string" ? sanitizeRecordText(rec.entity) : "";
   if (entity)
     record2.entity = entity;
@@ -57395,18 +57536,29 @@ function summarizeHookOutcomes(file2) {
   });
   return names.map((hook) => summarizeOne(hook, file2.hooks[hook] ?? []));
 }
+function renderableErrorReason(reason) {
+  if (typeof reason !== "string")
+    return "an unlabelled error";
+  if (FIXED_ERROR_REASONS.has(reason))
+    return reason;
+  if (/^(?:[a-z][a-z -]{0,30}: )?uncaught [A-Za-z][\w-]{0,39}$/.test(reason))
+    return reason;
+  const step = /^([a-z][a-z-]{0,30}): /.exec(reason);
+  return step ? `${step[1]}: \u2026` : "an unlabelled error";
+}
 function summarizeOne(hook, records) {
   let writes = 0;
   let skips = 0;
   let errors = 0;
   let lastRunAt = null;
   let firstTriggeredAt = null;
-  let triggeredRuns = 0;
   let lastWriteAt = null;
   let lastEntity = null;
   let notifies = 0;
   let lastNotifiedAt = null;
   let lastSkipReason = null;
+  let lastErrorAt = null;
+  let lastErrorReason = null;
   const skipCounts = /* @__PURE__ */ new Map();
   const hosts = /* @__PURE__ */ new Set();
   for (const r of records) {
@@ -57415,7 +57567,6 @@ function summarizeOne(hook, records) {
       lastRunAt = r.at;
     const triggered = isTriggeredRecord(r);
     if (triggered) {
-      triggeredRuns++;
       if (firstTriggeredAt === null || r.at < firstTriggeredAt)
         firstTriggeredAt = r.at;
     }
@@ -57438,6 +57589,10 @@ function summarizeOne(hook, records) {
       }
     } else {
       errors++;
+      if (lastErrorAt === null || r.at >= lastErrorAt) {
+        lastErrorAt = r.at;
+        lastErrorReason = renderableErrorReason(r.reason);
+      }
     }
   }
   let dominantSkipReason = null;
@@ -57448,7 +57603,22 @@ function summarizeOne(hook, records) {
       dominantSkipReason = reason;
     }
   }
-  const runs = records.length;
+  const runKey = (r, i) => r.run ?? `#${i}`;
+  const runs = new Set(records.map(runKey)).size;
+  const triggeredRuns = new Set(records.map((r, i) => isTriggeredRecord(r) ? runKey(r, i) : null).filter((k) => k !== null)).size;
+  const triggeredByRun = /* @__PURE__ */ new Map();
+  records.forEach((r, i) => {
+    if (!isTriggeredRecord(r))
+      return;
+    const key = runKey(r, i);
+    const run = triggeredByRun.get(key) ?? { at: r.at, error: false };
+    if (r.at > run.at)
+      run.at = r.at;
+    if (r.outcome === "error")
+      run.error = true;
+    triggeredByRun.set(key, run);
+  });
+  const recentErrors = [...triggeredByRun.values()].sort((a, b) => a.at < b.at ? 1 : a.at > b.at ? -1 : 0).slice(0, RECENT_ERROR_RUNS).filter((run) => run.error).length;
   return {
     hook,
     runs,
@@ -57465,6 +57635,9 @@ function summarizeOne(hook, records) {
     lastSkipReason,
     dominantSkipReason,
     dominantSkipCount,
+    lastErrorAt,
+    lastErrorReason,
+    recentErrors,
     hosts: [...hosts].sort(),
     silent: SILENT_ELIGIBLE_HOOKS.includes(hook) && triggeredRuns >= SILENT_HOOK_MIN_RUNS && writes === 0
   };
@@ -57478,14 +57651,15 @@ function captureLivenessVerdict(input) {
   const deadHooks = graceOver ? (input.neverRanHooks ?? []).filter((h) => FAIL_ELIGIBLE_HOOKS.includes(h) && !withRecords.has(h)).sort() : [];
   const silent = input.hooks.filter((h) => h.silent).sort((a, b) => b.triggeredRuns - a.triggeredRuns);
   const stoppedTypes = input.types.filter((t) => t.stopped);
+  const erroring = input.hooks.filter((h) => h.recentErrors > 0).sort((a, b) => b.recentErrors - a.recentErrors || b.errors - a.errors);
   let status = "PASS";
   if (deadHooks.length > 0)
     status = "FAIL";
-  else if (silent.length > 0 || stoppedTypes.length > 0)
+  else if (silent.length > 0 || stoppedTypes.length > 0 || erroring.length > 0)
     status = "PASS_WITH_CONCERNS";
-  return { status, silentHook: silent[0] ?? null, stoppedTypes, deadHooks };
+  return { status, silentHook: silent[0] ?? null, erroringHook: erroring[0] ?? null, stoppedTypes, deadHooks };
 }
-var HOOK_OUTCOMES_FILENAME, HOOK_OUTCOMES_PER_HOOK, HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK, HOOK_OUTCOMES_ROTATE_BYTES, SILENT_HOOK_MIN_RUNS, CAPTURE_HOOKS, FAIL_ELIGIBLE_HOOKS, SILENT_ELIGIBLE_HOOKS, SKIP_REASONS, KNOWN_SKIP_REASONS, UNRECOGNISED_REASON, NOT_TRIGGERED_SKIP_REASONS, NEVER_RAN_GRACE_HOURS, RECORD_TEXT_MAX;
+var HOOK_OUTCOMES_FILENAME, HOOK_OUTCOMES_PER_HOOK, HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK, HOOK_OUTCOMES_ROTATE_BYTES, SILENT_HOOK_MIN_RUNS, CAPTURE_HOOKS, FAIL_ELIGIBLE_HOOKS, SILENT_ELIGIBLE_HOOKS, SKIP_REASONS, KNOWN_SKIP_REASONS, UNRECOGNISED_REASON, NOT_TRIGGERED_SKIP_REASONS, NEVER_RAN_GRACE_HOURS, RECORD_TEXT_MAX, FIXED_ERROR_REASONS, RECENT_ERROR_RUNS;
 var init_capture_liveness = __esm({
   "dist/core/capture-liveness.js"() {
     "use strict";
@@ -57584,6 +57758,15 @@ var init_capture_liveness = __esm({
     };
     NEVER_RAN_GRACE_HOURS = 72;
     RECORD_TEXT_MAX = 200;
+    FIXED_ERROR_REASONS = /* @__PURE__ */ new Set([
+      "malformed stdin JSON",
+      "captureEntity did not land the write",
+      "the transcript could not be read",
+      "the host closed stdout before the nudge could be written",
+      "the database stayed locked past the hook busy timeout",
+      "stdout: host closed the pipe before the block reason was delivered"
+    ]);
+    RECENT_ERROR_RUNS = 5;
   }
 });
 
@@ -57818,11 +58001,23 @@ function inspectCodexQueueDaemon(db2) {
     if (stuck.length === 0) {
       return createInfo("codex-queue-daemon", "Codex stuck-message release", `${latestPerThread.size} Codex thread(s) ran the stuck-message release in the last 7 days; the latest run in each found the app-server daemon. Nothing is waiting on it.`);
     }
-    const named = stuck.map((row) => `${row.recipient} in ${row.project} (${row.created_at.replace(" ", "T")}Z)`).join(", ");
+    const named = stuck.map((row) => `${row.recipient} in ${row.project} (${sqliteUtcToIso(row.created_at)})`).join(", ");
     return createCheck("codex-queue-daemon", "Codex stuck-message release", "warn", `${stuck.length} Codex thread(s) last ran the stuck-message release without the app-server daemon: ${named}. A MeMesh message queued there after an interrupted turn stays in that thread's queue until you send the thread a prompt.`, "Send a prompt in each thread named above to drain its queue. To restore the automatic release, run Codex with its app-server daemon (avoid `--no-daemon`).");
   } catch (err) {
     return createCheck("codex-queue-daemon", "Codex stuck-message release", "warn", `Could not read the Codex host_activation receipts: ${err instanceof Error ? err.message : String(err)}`, "Run `memesh doctor` again; if this persists, check the database rows above for the underlying error.");
   }
+}
+function inspectProjectIdentitySplit(db2) {
+  let splits;
+  try {
+    splits = findProjectIdentitySplits(db2);
+  } catch (err) {
+    return createCheck("project-identity-split", "Project tags", "warn", `The project tag check could not run (${err instanceof Error ? err.message : String(err)}), so a project split is not ruled out.`, "Run `memesh kg rename-project` to list every project tag.");
+  }
+  if (splits.length === 0)
+    return void 0;
+  const total = splits.reduce((sum, split) => sum + split.activeMemories, 0);
+  return createCheck("project-identity-split", "Project tags", "warn", `${total} active ${total === 1 ? "memory" : "memories"} in ${splits.length} ${splits.length === 1 ? "project is" : "projects are"} filed under a plain project name (project:<name>) that the project's sessions never read; they use the full id (project:<name>~<hash>).`, "Run `memesh kg rename-project` to list every project tag with its count. For a plain name listed next to an id of the same name, kg rename-project --from <name> --to <id> previews moving its memories to that id, and the same command with --apply moves them (it backs the database up first). A shared name does not prove one project: if a different repository used that name, leave it.");
 }
 function inspectCodexSessionSetup(codexPluginCacheDetected, existsSyncImpl) {
   if (!codexPluginCacheDetected)
@@ -58289,6 +58484,15 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
     }
     return {
       check: createCheck("capture-liveness", TITLE, "fail", `The ${hook} hook has left no record and no heartbeat in the ${Math.round(measuringHours ?? 0)} hours since tracking began \u2014 it has never run, so nothing it would capture is being saved.`, "Run `memesh install-hooks` and restart your agent, then end one work session and re-run `memesh doctor`.", { code: "capture-liveness.never-ran", params: { hook, hours: Math.round(measuringHours ?? 0) } }),
+      report
+    };
+  }
+  if (verdict.erroringHook) {
+    const h = verdict.erroringHook;
+    const day = h.lastErrorAt !== null && /^\d{4}-\d{2}-\d{2}/.test(h.lastErrorAt) ? ` on ${h.lastErrorAt.slice(0, 10)}` : "";
+    const newest = Math.min(RECENT_ERROR_RUNS, h.triggeredRuns);
+    return {
+      check: createCheck("capture-liveness", TITLE, "warn", `${h.hook}: ${h.recentErrors} of its ${newest} most recent runs ended in an error (${h.errors} in its recorded window); the latest was '${h.lastErrorReason}'${day}.`, "The reason says what failed; `memesh doctor --json` has the per-hook figures. This row clears once the hook's most recent runs (those its trigger applied to) end without an error. If it keeps failing, run `memesh install-hooks` and restart your agent.", { params: { hook: h.hook } }),
       report
     };
   }
@@ -58980,6 +59184,9 @@ async function runDoctor(options) {
     const codexQueueDaemon = inspectCodexQueueDaemon(db2);
     if (codexQueueDaemon)
       dbChecks.push(codexQueueDaemon);
+    const projectSplit = inspectProjectIdentitySplit(db2);
+    if (projectSplit)
+      dbChecks.push(projectSplit);
     const hasVocab = db2.prepare(`SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'fts_vocab'`).get();
     if (hasVocab?.present) {
       const unsegmented = db2.prepare(`SELECT COUNT(*) AS c FROM fts_vocab
@@ -59144,6 +59351,7 @@ var init_doctor = __esm({
     init_database_diagnosis();
     init_citation_rule();
     init_paths();
+    init_project_identity_split();
     init_agent_router();
     init_install_hooks();
     init_fts_index();
@@ -59233,21 +59441,28 @@ function claudeProjectsDir() {
 function projectTranscriptSlug(cwd) {
   return cwd.replace(/[^a-zA-Z0-9]/g, "-");
 }
-function recordedCwd(text) {
-  let seen = 0;
-  for (const line of text.split("\n")) {
-    if (!line.trim())
-      continue;
-    if (++seen > 40)
-      break;
-    try {
-      const entry = JSON.parse(line);
-      if (typeof entry.cwd === "string" && entry.cwd.length > 0)
-        return entry.cwd;
-    } catch {
-    }
+function lineCwd(line) {
+  try {
+    const entry = JSON.parse(line);
+    return entry !== null && typeof entry === "object" && typeof entry.cwd === "string" && entry.cwd.length > 0 ? entry.cwd : null;
+  } catch {
+    return null;
   }
-  return null;
+}
+function recordedCwd(text) {
+  let from = 0;
+  for (; ; ) {
+    const at = text.indexOf('"cwd"', from);
+    if (at < 0)
+      return null;
+    const start = text.lastIndexOf("\n", at) + 1;
+    const newline = text.indexOf("\n", at);
+    const end = newline < 0 ? text.length : newline;
+    const cwd = lineCwd(text.slice(start, end));
+    if (cwd !== null)
+      return cwd;
+    from = end + 1;
+  }
 }
 function sameProjectPath(a, b) {
   if (path18.normalize(a) === path18.normalize(b))
@@ -59260,7 +59475,7 @@ function sameProjectPath(a, b) {
   return false;
 }
 function transcriptMatchesProject(bytes, cwd) {
-  const sessionCwd = recordedCwd(bytes.subarray(0, 65536).toString("utf8"));
+  const sessionCwd = recordedCwd(bytes.toString("utf8"));
   return sessionCwd !== null && sameProjectPath(sessionCwd, cwd);
 }
 function scanTranscripts(opts) {
@@ -59278,21 +59493,31 @@ function scanTranscripts(opts) {
   } catch {
     return [];
   }
-  if (names.length > MAX_TRANSCRIPT_CANDIDATES)
+  if (names.length > MAX_TRANSCRIPT_CANDIDATES) {
+    opts.onSkip?.("too_many_candidates", names.length);
     return [];
+  }
   let plannedBytes = 0;
   const eligibleNames = [];
-  try {
-    for (const name of names) {
-      const stat = fs21.lstatSync(path18.join(dir, name));
-      if (stat.isSymbolicLink() || !stat.isFile() || stat.size > MAX_TRANSCRIPT_SOURCE_BYTES || stat.mtimeMs < cutoffMs)
-        continue;
-      plannedBytes += stat.size;
-      if (plannedBytes > MAX_TRANSCRIPT_SCAN_BYTES)
-        return [];
-      eligibleNames.push(name);
+  for (const name of names) {
+    let stat;
+    try {
+      stat = fs21.lstatSync(path18.join(dir, name));
+    } catch {
+      opts.onSkip?.("unreadable", 1);
+      continue;
     }
-  } catch {
+    if (stat.isSymbolicLink() || !stat.isFile() || stat.mtimeMs < cutoffMs)
+      continue;
+    if (stat.size > MAX_TRANSCRIPT_SOURCE_BYTES) {
+      opts.onSkip?.("too_large", 1);
+      continue;
+    }
+    plannedBytes += stat.size;
+    eligibleNames.push(name);
+  }
+  if (plannedBytes > MAX_TRANSCRIPT_SCAN_BYTES) {
+    opts.onSkip?.("scan_too_large", eligibleNames.length);
     return [];
   }
   const sessions = [];
@@ -59300,11 +59525,15 @@ function scanTranscripts(opts) {
   for (const name of eligibleNames) {
     const full = path18.join(dir, name);
     const read = readTranscriptSnapshotWithin(full, void 0, MAX_TRANSCRIPT_SCAN_BYTES - bytesRead);
-    if (read.aggregateLimitExceeded)
+    if (read.aggregateLimitExceeded) {
+      opts.onSkip?.("scan_too_large", eligibleNames.length);
       return [];
+    }
     const snapshot = read.snapshot;
-    if (!snapshot)
+    if (!snapshot) {
+      opts.onSkip?.("unreadable", 1);
       continue;
+    }
     bytesRead += snapshot.sizeBytes;
     try {
       if (Date.parse(snapshot.modifiedAt) < cutoffMs)
@@ -59314,8 +59543,10 @@ function scanTranscripts(opts) {
       for (let i = 0; i < buf.length; i++)
         if (buf[i] === 10)
           lineCount++;
-      if (!transcriptMatchesProject(buf, cwd))
+      if (!transcriptMatchesProject(buf, cwd)) {
+        opts.onSkip?.(recordedCwd(buf.toString("utf8")) === null ? "no_recorded_cwd" : "other_project", 1);
         continue;
+      }
       sessions.push({
         contentHash: snapshot.contentHash,
         sessionId: name.replace(/\.jsonl$/, ""),
@@ -59645,17 +59876,28 @@ function executeWorkPackage(db2, input, context = {}) {
         WHERE project = ? AND source_kind = 'transcript'
           AND (cluster_key = ? OR CASE WHEN json_valid(source_ids) THEN json_extract(source_ids, '$.sessionId') END = ?)
         LIMIT 1`);
-      const sessions = scanTranscripts({ cwd }).sort((a, b) => a.modifiedAt === b.modifiedAt ? a.sessionId < b.sessionId ? -1 : a.sessionId > b.sessionId ? 1 : 0 : a.modifiedAt > b.modifiedAt ? -1 : 1);
+      const skipped = {};
+      const skip = (reason, count = 1) => {
+        if (input.action === "prepare")
+          skipped[reason] = (skipped[reason] ?? 0) + count;
+      };
+      const sessions = scanTranscripts({ cwd, onSkip: skip }).sort((a, b) => a.modifiedAt === b.modifiedAt ? a.sessionId < b.sessionId ? -1 : a.sessionId > b.sessionId ? 1 : 0 : a.modifiedAt > b.modifiedAt ? -1 : 1);
       for (const session of sessions) {
-        if (!session.sessionId.trim() || session.sessionId.length > 255)
+        if (!session.sessionId.trim() || session.sessionId.length > 255) {
+          skip("invalid_session_id");
           continue;
+        }
         if (input.action !== "prepare" && (input.ref.kind !== "transcript" || input.ref.session_id !== session.sessionId))
           continue;
-        if (represented.get(project, `transcript:${session.sessionId}`, session.sessionId))
+        if (represented.get(project, `transcript:${session.sessionId}`, session.sessionId)) {
+          skip("already_proposed");
           continue;
+        }
         const snapshot = readTranscriptSnapshot(session.path, session);
-        if (!snapshot || !transcriptMatchesProject(snapshot.bytes, cwd))
+        if (!snapshot || !transcriptMatchesProject(snapshot.bytes, cwd)) {
+          skip("changed_since_scan");
           continue;
+        }
         const turns = parseVisibleConversation(snapshot.bytes).map((turn) => ({ ...turn, text: redactSecrets(turn.text) }));
         const sources = [];
         let sourceBytes = 2;
@@ -59667,8 +59909,10 @@ function executeWorkPackage(db2, input, context = {}) {
           sourceBytes += size;
         }
         sources.reverse();
-        if (sources.length === 0)
+        if (sources.length === 0) {
+          skip("no_visible_turns");
           continue;
+        }
         const ref = {
           kind: "transcript",
           project,
@@ -59711,7 +59955,12 @@ function executeWorkPackage(db2, input, context = {}) {
           VALUES (?, ?, ?, ?, 'work-package-v1', 'transcript', 'digest')`).run(project, `transcript:${session.sessionId}`, JSON.stringify(evidence), JSON.stringify(proposed));
         return { status: "staged", proposal_id: Number(inserted.lastInsertRowid), proposal_status: "pending", review_authority: "human", available_action: [] };
       }
-      return input.action === "prepare" ? { status: "none_available", selection_mode: "newest_session", available_action: [] } : failure("stale_package");
+      return input.action === "prepare" ? {
+        status: "none_available",
+        selection_mode: "newest_session",
+        ...Object.keys(skipped).length > 0 ? { skipped_sessions: skipped } : {},
+        available_action: []
+      } : failure("stale_package");
     }
     const entityIdentity = db2.prepare("SELECT created_at, metadata, namespace FROM entities WHERE id = ?");
     const entityTags = db2.prepare("SELECT tag FROM tags WHERE entity_id = ? ORDER BY tag");
@@ -61169,7 +61418,16 @@ function proposeBackfillCandidates(opts = {}, db2) {
   `).all();
   const tagsByEntity = /* @__PURE__ */ new Map();
   const entitiesByTag = /* @__PURE__ */ new Map();
+  const projectTagsById = /* @__PURE__ */ new Map();
   for (const row of allTagRows) {
+    if (row.tag.startsWith("project:")) {
+      let projects = projectTagsById.get(row.entity_id);
+      if (!projects) {
+        projects = /* @__PURE__ */ new Set();
+        projectTagsById.set(row.entity_id, projects);
+      }
+      projects.add(row.tag.slice("project:".length));
+    }
     if (!isTopicalTag(row.tag))
       continue;
     let set2 = tagsByEntity.get(row.entity_id);
@@ -61185,6 +61443,7 @@ function proposeBackfillCandidates(opts = {}, db2) {
     }
     list.push(row.entity_id);
   }
+  const inScope = (id) => !opts.project || (projectTagsById.get(id)?.has(opts.project) ?? false);
   const candidates = [];
   const orphanById = /* @__PURE__ */ new Map();
   for (const o of orphans)
@@ -61201,7 +61460,7 @@ function proposeBackfillCandidates(opts = {}, db2) {
     for (const tag of orphanTags) {
       const peerIds = entitiesByTag.get(tag) ?? [];
       for (const peerId of peerIds) {
-        if (peerId === orphan.id)
+        if (peerId === orphan.id || !inScope(peerId))
           continue;
         overlapByPeer.set(peerId, (overlapByPeer.get(peerId) ?? 0) + 1);
       }
@@ -61244,38 +61503,28 @@ function proposeBackfillCandidates(opts = {}, db2) {
   for (const list of anchorsByProject.values()) {
     list.sort((a, b) => (parseSqliteUtcMs(b.created_at) ?? -Infinity) - (parseSqliteUtcMs(a.created_at) ?? -Infinity));
   }
-  const orphanProjectRows = conn.prepare(`
-    SELECT t.entity_id, t.tag
-    FROM tags t
-    JOIN entities e ON e.id = t.entity_id
-    WHERE 1=1 ${statusFilter}
-      AND t.tag LIKE 'project:%'
-      AND NOT EXISTS (SELECT 1 FROM relations r WHERE r.from_entity_id = e.id OR r.to_entity_id = e.id)
-  `).all();
-  const orphanProject = /* @__PURE__ */ new Map();
-  for (const r of orphanProjectRows)
-    orphanProject.set(r.entity_id, r.tag.slice("project:".length));
   for (const orphan of orphans) {
     if (!consumerTypes.has(orphan.type))
       continue;
-    const project = orphanProject.get(orphan.id);
-    if (!project)
-      continue;
-    const anchors = anchorsByProject.get(project);
-    if (!anchors || anchors.length === 0)
-      continue;
-    const anchor = anchors[0];
-    if (anchor.id === orphan.id)
-      continue;
-    candidates.push({
-      fromEntityId: orphan.id,
-      fromName: orphan.name,
-      toEntityId: anchor.id,
-      toName: anchor.name,
-      relationType: "belongs-to-project",
-      reason: `same-project anchor (${anchor.type})`,
-      strength: 1
-    });
+    const projects = opts.project ? [opts.project] : [...projectTagsById.get(orphan.id) ?? []].sort();
+    const anchored = /* @__PURE__ */ new Set();
+    for (const project of projects) {
+      if (anchored.size >= maxPerSource)
+        break;
+      const anchor = anchorsByProject.get(project)?.[0];
+      if (!anchor || anchor.id === orphan.id || anchored.has(anchor.id))
+        continue;
+      anchored.add(anchor.id);
+      candidates.push({
+        fromEntityId: orphan.id,
+        fromName: orphan.name,
+        toEntityId: anchor.id,
+        toName: anchor.name,
+        relationType: "belongs-to-project",
+        reason: `same-project anchor (${anchor.type})`,
+        strength: 1
+      });
+    }
   }
   if (opts.includeSessionCooccurrence) {
     const minScore = opts.minSessionSignalScore ?? 0.6;
@@ -61342,7 +61591,7 @@ function proposeBackfillCandidates(opts = {}, db2) {
       let added = 0;
       const proposedPeers = /* @__PURE__ */ new Set();
       for (const stag of sessionTags) {
-        const peers = (entitiesBySession.get(stag) ?? []).filter((id) => id !== orphan.id);
+        const peers = (entitiesBySession.get(stag) ?? []).filter((id) => id !== orphan.id && inScope(id));
         for (const peerId of peers) {
           if (added >= maxPerSource)
             break;
@@ -61384,7 +61633,7 @@ function proposeBackfillCandidates(opts = {}, db2) {
         continue;
       const scored = [];
       for (const [candidateId, candidateTokens] of tokensByEntity) {
-        if (candidateId === orphan.id)
+        if (candidateId === orphan.id || !inScope(candidateId))
           continue;
         const pairKey = `${Math.min(orphan.id, candidateId)}-${Math.max(orphan.id, candidateId)}`;
         if (proposedNamePairs.has(pairKey))
@@ -61451,23 +61700,15 @@ function proposeBackfillCandidates(opts = {}, db2) {
         }
       };
       const sessionTagsById = /* @__PURE__ */ new Map();
-      const projectTagsById = /* @__PURE__ */ new Map();
       for (const row of allTagRows) {
-        if (row.tag.startsWith("session:")) {
-          let s = sessionTagsById.get(row.entity_id);
-          if (!s) {
-            s = /* @__PURE__ */ new Set();
-            sessionTagsById.set(row.entity_id, s);
-          }
-          s.add(row.tag.slice("session:".length));
-        } else if (row.tag.startsWith("project:")) {
-          let s = projectTagsById.get(row.entity_id);
-          if (!s) {
-            s = /* @__PURE__ */ new Set();
-            projectTagsById.set(row.entity_id, s);
-          }
-          s.add(row.tag.slice("project:".length));
+        if (!row.tag.startsWith("session:"))
+          continue;
+        let s = sessionTagsById.get(row.entity_id);
+        if (!s) {
+          s = /* @__PURE__ */ new Set();
+          sessionTagsById.set(row.entity_id, s);
         }
+        s.add(row.tag.slice("session:".length));
       }
       const sessionKeysOf = (id, meta3) => {
         const keys = new Set(sessionTagsById.get(id) ?? []);
@@ -63560,6 +63801,7 @@ program2.command("remember").argument("[text]", "Quick-capture text \u2014 title
         name: opts.name,
         type: opts.type,
         tags: opts.tags,
+        ...opts.tags?.some((tag) => tag.startsWith("project:")) ? { currentProject: getProjectName() } : {},
         namespace: opts.namespace,
         relations: relations.length > 0 ? relations : void 0,
         sourceHost: "cli",
@@ -63573,6 +63815,8 @@ program2.command("remember").argument("[text]", "Quick-capture text \u2014 title
       console.log(JSON.stringify(result));
     } else {
       console.log(`\u2705 Stored "${result.name}" (${result.observations} observations, ${result.tags} tags)`);
+      if (result.retagged)
+        console.log(`   tag ${result.retagged.from} names this project; stored as ${result.retagged.to}`);
       if (result.derived) {
         if (result.title)
           console.log(`   title: ${result.title}`);
@@ -63759,10 +64003,16 @@ program2.command("import").description("Import memories from a JSON export file,
         console.error(code === "ENOENT" ? `Error: directory not found: ${opts.notes}` : `Error: cannot read ${opts.notes}: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
+      const accepted = result.created.length + result.replaced.length + result.unchanged + result.repathed.length + result.restored.length;
+      const allRefused = result.skipped.length > 0 && accepted === 0;
+      if (allRefused)
+        process.exitCode = 1;
       if (opts.json) {
         console.log(JSON.stringify(result));
         return;
       }
+      if (allRefused)
+        console.error(`Error: every note file found was refused; nothing was imported.`);
       console.log(`Notes: ${summarizeNoteIngest(result)} (${result.discovered} note files found)`);
       for (const s of result.skipped)
         console.error(`  skipped ${s.path}: ${s.reason}`);
@@ -64112,7 +64362,7 @@ messageStorageCmd.command("report").description("Report logical payload, unresol
     });
     console.log(JSON.stringify({
       policy: {
-        cutoff: new Date(opts.cutoff).toISOString(),
+        cutoff: normalizeAgentMessageCutoff(opts.cutoff),
         quota_bytes: process.env.MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES ?? null,
         automatic_pruning: false
       },
@@ -64664,29 +64914,60 @@ program2.command("upgrade-plugin").description("Upgrade the Claude Code plugin i
   process.exit(run.status ?? 1);
 });
 var kgCmd = program2.command("kg").description("Knowledge graph maintenance");
-kgCmd.command("backfill-relations").description("Propose / apply deterministic relations to connect orphan entities").option("--project <name>", "Restrict to one project").option("--dry-run", "Show proposals without writing (default off \u2014 use to preview)").option("--max-per-source <n>", "Max edges per orphan (default 3)", wholeNumber("--max-per-source"), 3).option("--min-shared-tags <n>", "Min shared topical tags to gate co-occurrence rule (default 2)", wholeNumber("--min-shared-tags"), 2).option("--include-archived", "Also process archived entities").option("--session-cooccurrence", "Rule 3: link high-signal orphans co-created in the same session").option("--name-tokens", "Rule 4: link orphans sharing \u22653 name content tokens (or Jaccard \u2265 0.50)").option("--min-jaccard <n>", "Jaccard threshold for name similarity (default 0.50)", unitFraction("--min-jaccard")).option("--all-rules", "Enable all heuristic rules (Rules 1\u20135)").option("--no-evidence-links", "Disable Rule 5: evidence \u2192 work-item links via shared session id (on by default \u2014 these edges feed the graph's evidence badges)").option("--reset-idempotency", 'Clear the persistent "already-attempted" orphan cache before running (use after schema changes or to reconsider every orphan)').option("--json", "Output as JSON").action(async (opts) => {
-  await withDatabase(async () => {
-    const { backfillRelations: backfillRelations2, proposeBackfillCandidates: proposeBackfillCandidates2 } = await Promise.resolve().then(() => (init_kg_backfill(), kg_backfill_exports));
-    const allRules = !!opts.allRules;
-    const baseOpts = {
-      project: opts.project,
-      maxEdgesPerSource: opts.maxPerSource,
-      minSharedTags: opts.minSharedTags,
-      includeArchived: !!opts.includeArchived,
-      dryRun: !!opts.dryRun,
-      includeSessionCooccurrence: allRules || !!opts.sessionCooccurrence,
-      includeNameTokenSimilarity: allRules || !!opts.nameTokens,
-      includeEvidenceLinks: opts.evidenceLinks !== false,
-      minNameJaccard: opts.minJaccard,
-      resetIdempotency: !!opts.resetIdempotency
-    };
-    if (opts.dryRun) {
-      const { candidates, skippedOrphanIds } = proposeBackfillCandidates2(baseOpts);
+function backUpDatabase(label) {
+  const dbPath = getDbPath();
+  const backupDir = path21.join(path21.dirname(dbPath), "backups");
+  const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
+  const backupPath = path21.join(backupDir, `kg-before-${label}-${stamp}.db`);
+  fs24.mkdirSync(backupDir, { recursive: true, mode: 448 });
+  getDatabase().prepare("VACUUM INTO ?").run(backupPath);
+  return { dbPath, backupPath };
+}
+function restoreCommand(dbPath, backupPath) {
+  const dotQuoted = `"${backupPath.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  return `sqlite3 ${shellQuoteIfNeeded(dbPath)} ${shellQuoteIfNeeded(`.restore ${dotQuoted}`)}`;
+}
+kgCmd.command("backfill-relations").description("Propose relations that connect orphan entities; writes them only with --apply, after a backup").option("--project <name>", "Restrict to one project: both ends of every proposed relation carry it").option("--apply", "Write the proposed relations. Backs up the database first. Without it, only a preview is shown.").option("--dry-run", "Preview only (the default)").option("--max-per-source <n>", "Max edges per orphan (default 3)", wholeNumber("--max-per-source"), 3).option("--min-shared-tags <n>", "Min shared topical tags to gate co-occurrence rule (default 2)", wholeNumber("--min-shared-tags"), 2).option("--include-archived", "Also process archived entities").option("--session-cooccurrence", "Rule 3: link high-signal orphans co-created in the same session").option("--name-tokens", "Rule 4: link orphans sharing \u22653 name content tokens (or Jaccard \u2265 0.50)").option("--min-jaccard <n>", "Jaccard threshold for name similarity (default 0.50)", unitFraction("--min-jaccard")).option("--all-rules", "Enable all heuristic rules (Rules 1\u20135)").option("--no-evidence-links", "Disable Rule 5: evidence \u2192 work-item links via shared session id (on by default \u2014 these edges feed the graph's evidence badges)").option("--reset-idempotency", 'Reconsider every orphan, including those already attempted. With --apply it also clears the "already-attempted" cache.').option("--json", "Output as JSON").action(async (opts) => {
+  if (opts.apply && opts.dryRun) {
+    console.error("Error: --apply writes and --dry-run previews; pass one of them.");
+    process.exitCode = 1;
+    return;
+  }
+  const { backfillRelations: backfillRelations2, proposeBackfillCandidates: proposeBackfillCandidates2 } = await Promise.resolve().then(() => (init_kg_backfill(), kg_backfill_exports));
+  const allRules = !!opts.allRules;
+  const baseOpts = {
+    project: opts.project,
+    maxEdgesPerSource: opts.maxPerSource,
+    minSharedTags: opts.minSharedTags,
+    includeArchived: !!opts.includeArchived,
+    includeSessionCooccurrence: allRules || !!opts.sessionCooccurrence,
+    includeNameTokenSimilarity: allRules || !!opts.nameTokens,
+    includeEvidenceLinks: opts.evidenceLinks !== false,
+    minNameJaccard: opts.minJaccard
+  };
+  if (!opts.apply) {
+    if (!fs24.existsSync(getDbPath())) {
+      if (opts.json)
+        console.log(JSON.stringify({ candidates: [], skippedOrphanIds: [] }, null, 2));
+      else
+        console.log(`No MeMesh database yet (${getDbPath()}); nothing to connect.`);
+      return;
+    }
+    let readOnlyDb;
+    try {
+      readOnlyDb = (await Promise.resolve().then(() => (init_project_tags(), project_tags_exports))).openReadOnlyForPreview(getDbPath());
+    } catch (err) {
+      console.error(`Error: memesh cannot open its database read-only (${err instanceof Error ? err.message : String(err)}). Run \`memesh doctor\`.`);
+      process.exitCode = 1;
+      return;
+    }
+    try {
+      const { candidates, skippedOrphanIds } = proposeBackfillCandidates2({ ...baseOpts, ignoreIdempotency: !!opts.resetIdempotency }, readOnlyDb);
       if (opts.json) {
         console.log(JSON.stringify({ candidates, skippedOrphanIds }, null, 2));
         return;
       }
-      console.log(`Proposed ${candidates.length} relation${candidates.length === 1 ? "" : "s"} (dry-run, nothing written).`);
+      console.log(`Proposed ${candidates.length} relation${candidates.length === 1 ? "" : "s"}.`);
       const sample = candidates.slice(0, 20);
       for (const c of sample) {
         console.log(`  ${c.fromName}  --[${c.relationType}]-->  ${c.toName}   (${c.reason})`);
@@ -64704,11 +64985,28 @@ kgCmd.command("backfill-relations").description("Propose / apply deterministic r
         console.log("");
         console.log(`  idempotency: ${skippedOrphanIds.length} orphan${skippedOrphanIds.length === 1 ? "" : "s"} skipped (already attempted in a prior run; use --reset-idempotency to reconsider).`);
       }
+      console.log(`
+Nothing written. Re-run with --apply to write ${candidates.length === 1 ? "it" : "them"} (the database is backed up first).`);
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
+    } finally {
+      readOnlyDb.close();
+    }
+    return;
+  }
+  await withDatabase(async () => {
+    let backup;
+    try {
+      backup = backUpDatabase("backfill-relations");
+    } catch (err) {
+      console.error(`Error: could not back up the database before writing (${err instanceof Error ? err.message : String(err)}); nothing was changed.`);
+      process.exitCode = 1;
       return;
     }
-    const result = backfillRelations2(baseOpts);
+    const result = backfillRelations2({ ...baseOpts, dryRun: false, resetIdempotency: !!opts.resetIdempotency });
     if (opts.json) {
-      console.log(JSON.stringify(result, null, 2));
+      console.log(JSON.stringify({ ...result, backupPath: backup.backupPath }, null, 2));
       return;
     }
     console.log(`Proposed ${result.candidatesProposed} relations, wrote ${result.edgesWritten} new edges.`);
@@ -64726,6 +65024,8 @@ kgCmd.command("backfill-relations").description("Propose / apply deterministic r
     if (result.orphansMarkedProcessed > 0) {
       console.log(`  idempotency: marked ${result.orphansMarkedProcessed} new orphan${result.orphansMarkedProcessed === 1 ? "" : "s"} as attempted.`);
     }
+    console.log(`  Backup: ${backup.backupPath}`);
+    console.log(`  Restore if needed (stop every memesh process first): ${restoreCommand(backup.dbPath, backup.backupPath)}`);
   });
 });
 function requireProjectFlag(value) {
@@ -64797,13 +65097,10 @@ Nothing written. Re-run with --apply to commit (the DB is backed up first).`);
       console.log(`Nothing carries project ${opts.from} \u2014 no entity tags and no agent-message rows. Nothing to do.`);
       return;
     }
-    const dbPath = getDbPath();
-    const backupDir = path21.join(path21.dirname(dbPath), "backups");
-    const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-    const backupPath = path21.join(backupDir, `kg-before-rename-project-${stamp}.db`);
+    let dbPath;
+    let backupPath;
     try {
-      fs24.mkdirSync(backupDir, { recursive: true, mode: 448 });
-      getDatabase().prepare("VACUUM INTO ?").run(backupPath);
+      ({ dbPath, backupPath } = backUpDatabase("rename-project"));
     } catch (err) {
       console.error(`\u274C Could not back up the DB before applying (${err instanceof Error ? err.message : err}); aborting without changes.`);
       process.exitCode = 1;
@@ -64825,8 +65122,7 @@ Nothing written. Re-run with --apply to commit (the DB is backed up first).`);
     console.log(`  ${result.renamed} renamed, ${result.merged} merged (${result.affectedEntities} entities total)`);
     console.log(`  ${result.messageRows - result.messageRowsBlocked} agent-message row(s) moved${result.messageRowsBlocked > 0 ? `, ${result.messageRowsBlocked} left in place (${to2} already holds an equivalent row)` : ""}`);
     console.log(`  Backup: ${backupPath}`);
-    const dotQuoted = `"${backupPath.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-    console.log(`  Restore if needed (stop every memesh process first): sqlite3 ${shellQuoteIfNeeded(dbPath)} ${shellQuoteIfNeeded(`.restore ${dotQuoted}`)}`);
+    console.log(`  Restore if needed (stop every memesh process first): ${restoreCommand(dbPath, backupPath)}`);
   };
   if (!opts.from !== !opts.to) {
     console.error("Error: provide BOTH --from and --to (or neither, to list).");

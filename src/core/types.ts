@@ -206,6 +206,9 @@ export interface RememberInput {
   // memory is tagged with it, and a name that belongs to another project (or
   // to none) is refused rather than shared.
   project?: string | null;
+  // Transport-set (#511): the caller's own project id (`<name>~<hash>`). A
+  // `project:<name>` tag naming it by its plain name is stored as the id.
+  currentProject?: string;
 }
 
 export interface RecallInput {
@@ -248,6 +251,8 @@ export interface RememberResult {
   relations: number;
   superseded?: string[];
   relationErrors?: string[];
+  /** #511: a plain-name project tag for the caller's own project, stored as its id. */
+  retagged?: { from: string; to: string };
   /**
    * The relations that were actually created, not the ones that were asked for.
    *

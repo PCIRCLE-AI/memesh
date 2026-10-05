@@ -75,6 +75,7 @@ docs/                # ARCHITECTURE.md, api/API_REFERENCE.md
 - `getProjectName()` (git-remote-slug → repo-root → cwd-basename, cached) → `src/core/paths.ts`
   (build-generated as `scripts/hooks/_generated/core-paths.js`, then imported by `_shared.js`)
 - List / merge / rename `project:*` tags → `src/core/project-tags.ts` (backs `memesh kg rename-project`)
+- Find plain project tags that share their name with a project id (doctor's `project-identity-split`) → `src/core/project-identity-split.ts`
 - Heuristic relation backfill (orphan connector) → `src/core/kg-backfill.ts`
 
 ### Config / self-update

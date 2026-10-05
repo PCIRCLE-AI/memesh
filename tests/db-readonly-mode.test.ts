@@ -135,6 +135,18 @@ describe('Feature: #520 a read-only snapshot folder is read, never made writable
     }
   }
 
+  // #506: a hook opens with a short lock wait, which first takes the write
+  // lock once (nothing is written). A read-only snapshot must still open for
+  // reads that way.
+  it.skipIf(!posix || process.getuid?.() === 0)('a hook-style open with a short lock wait still opens it for reading', () => {
+    makeReadOnly();
+    const db = openDatabase(dbPath, { busyTimeoutMs: 2000 });
+    expect((db.prepare('SELECT name FROM entities ORDER BY name').all() as Array<{ name: string }>).map((r) => r.name))
+      .toEqual(['snapshot-row', 'wal-only-row']);
+    expect(() => db.prepare("INSERT INTO entities (name, type) VALUES ('should-not-land', 'note')").run())
+      .toThrow(/readonly/i);
+  });
+
   it.skipIf(!posix || process.getuid?.() === 0)('with its -wal and -shm files present it opens for reading; a write is refused and changes nothing', () => {
     makeReadOnly();
     const before = files().map(sha);

@@ -84,12 +84,14 @@ import { guardFromMetadata as guardFromMetadataLocal } from './_generated/guards
 /**
  * Every accepted, enabled guard for one tool. Guards live as
  * `metadata.guard` on lesson-family entities (G1); the LIKE is a cheap
- * prefilter and `guardFromMetadata` is the tolerant parser. Any failure —
- * missing column on an old schema, corrupt metadata — returns an empty
- * list: a broken guard store must degrade to "no warnings", never to a
- * broken hook.
+ * prefilter and `guardFromMetadata` is the tolerant parser, so one row with
+ * corrupt metadata is skipped and the rest still load. A failure of the read
+ * itself — a missing column on an old schema, a damaged file — returns an
+ * empty list: a broken guard store must degrade to "no warnings", never to
+ * a broken hook. It is handed to `onError` (#560): an unreadable store is not
+ * the same as no guard matching, and the caller must be able to say so.
  */
-export function loadActiveGuards(db, tool) {
+export function loadActiveGuards(db, tool, onError) {
   try {
     const rows = db.prepare(
       `SELECT id, metadata FROM entities
@@ -103,7 +105,8 @@ export function loadActiveGuards(db, tool) {
       if (g && g.tool === tool) out.push(g);
     }
     return out;
-  } catch {
+  } catch (err) {
+    onError?.(err);
     return [];
   }
 }
@@ -819,14 +822,14 @@ function inboxReadFailed(err, recordFailure) {
 
 /** The outcome reason a hook records when {@link hookMessageSessionId} reports a mismatch. */
 export const SESSION_ID_MISMATCH_REASON =
-  'session: session_id_mismatch (CODEX_THREAD_ID differs from the payload session_id; only messages meant for no particular session are counted)';
+  'session: session_id_mismatch (CODEX_THREAD_ID differs from the payload session_id; neither is trusted, so this hook is counted as one that named no session id)';
 
 /**
  * #497: the session id a hook narrows the waiting count by — the payload's
  * own `session_id`. Under Codex the hook's environment also has
  * `CODEX_THREAD_ID`, and the payload's `session_id` and `CODEX_THREAD_ID`
  * name the same thread. When both are set and differ, neither is trusted: the result
- * is no session (only messages meant for no particular session count), and
+ * is no session, counted exactly as a hook that named none, and
  * `mismatch` is true so the caller records it — never a silent downgrade.
  *
  * @returns {{ sessionId: string | undefined, mismatch: boolean }}
@@ -847,7 +850,9 @@ export function hookMessageSessionId(payloadSessionId, env = process.env) {
  *
  * `sessionId` comes from {@link hookMessageSessionId} (#497): a message meant
  * for another session of the same principal is left out, and with no
- * `sessionId` only messages meant for no session in particular are counted.
+ * `sessionId` only messages meant for no session in particular are counted —
+ * except a `target_kind: "session"` delivery, which then counts for any live
+ * session of the principal (#490; with a `sessionId`, only its own, #566).
  * `excludeHostAccepted` (pass it under Codex) leaves out a delivery the
  * router already pushed into the thread.
  */
@@ -1167,6 +1172,10 @@ export function hookSourceHost(payload, env = process.env) {
   return host === 'unknown' ? null : host;
 }
 
+// #555: one id per hook process — one hook run — so doctor counts a run that
+// records an error and then its outcome as one run, not two.
+const HOOK_RUN_ID = randomBytes(8).toString('hex');
+
 /**
  * Record what `hook` DID, on every exit path (issue #327).
  *
@@ -1215,6 +1224,7 @@ export function recordHookOutcome(env, { hook, outcome, reason, entity, payload 
     const filePath = join(dir, HOOK_OUTCOMES_FILENAME);
     const record = {
       hook,
+      run: HOOK_RUN_ID,
       at: new Date().toISOString(),
       host: detectHookHost(payload ?? null, env, { pluginRootIsHookRoot: pluginRootIsHookRoot(env) }),
       outcome,

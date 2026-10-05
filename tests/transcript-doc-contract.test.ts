@@ -36,7 +36,7 @@ describe('work_package transcript discovery documentation contract', () => {
 
   it.each([
     ['missing-cwd acceptance', source.replace('return sessionCwd !== null && sameProjectPath(sessionCwd, cwd);', 'return sessionCwd === null || sameProjectPath(sessionCwd, cwd);'), dreamer],
-    ['mismatched-cwd acceptance', source.replace('if (!transcriptMatchesProject(buf, cwd)) continue;', 'if (transcriptMatchesProject(buf, cwd)) continue;'), dreamer],
+    ['mismatched-cwd acceptance', source.replace('if (!transcriptMatchesProject(buf, cwd)) {', 'if (transcriptMatchesProject(buf, cwd)) {'), dreamer],
     ['pinned digest acceptance', source, dreamer.replace('if (pinned || compacted) continue;', 'if (!pinned || compacted) continue;')],
   ])('rejects %s source semantics that contradict the public contract', (_label, changedSource, changedDreamer) => {
     expect(checkTranscriptDiscoveryContract(changedSource, changedDreamer, schemas, api)).toMatchObject({ ok: false });

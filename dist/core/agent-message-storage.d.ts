@@ -72,5 +72,6 @@ export declare function getAgentMessageStorageReport(db: MemeshDatabase, options
 export declare function pruneTerminalAgentMessagePayloads(db: MemeshDatabase, options: AgentMessageRetentionOptions): AgentMessageRetentionResult;
 export declare function enforceAgentMessageStorageQuota(db: MemeshDatabase, input: AgentMessageStorageQuotaInput): void;
 export declare function agentMessagePayloadStorageBytes(payloadJson: string): number;
+export declare function normalizeAgentMessageCutoff(value: Date | string): string;
 export declare const AGENT_MESSAGE_TERMINAL_WORKFLOW_STATES: readonly string[];
 //# sourceMappingURL=agent-message-storage.d.ts.map

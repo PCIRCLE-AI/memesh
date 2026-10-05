@@ -1708,7 +1708,7 @@ process.stdin.on('end', async () => {
       const pluginRoot = resolvePluginRoot(import.meta.url);
       const dbMod = await importFromPluginRoot(pluginRoot, 'dist/db.js');
       const lifecycleMod = await importFromPluginRoot(pluginRoot, 'dist/core/lifecycle.js');
-      dbMod.openDatabase();
+      dbMod.openDatabase(undefined, { busyTimeoutMs: HOOK_BUSY_TIMEOUT_MS });
       try {
         // Say what it did. This archives at least 20 of the user's memories
         // per week processed and the count was thrown away, so the one

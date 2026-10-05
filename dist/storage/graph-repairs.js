@@ -306,9 +306,12 @@ export function repairFusedLessonShellHistory(db) {
 }
 export function canonicalizeLessonTypes(db) {
     let renamed = -1;
+    const stored = db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(LESSON_TYPE_CANONICAL_KEY);
+    const pending = db.prepare(`SELECT 1 FROM entities WHERE type IN ('lesson', 'mistake') LIMIT 1`).get() !== undefined;
+    const version = stored && pending ? parseInt(stored.value, 10) + 1 : 1;
     runOnceMigration(db, {
         key: LESSON_TYPE_CANONICAL_KEY,
-        version: 1,
+        version,
         describe: 'lesson type canonicalization',
         migrate: (conn) => {
             const rows = conn

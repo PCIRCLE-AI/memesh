@@ -9,6 +9,7 @@ import { pathToFileURL } from 'node:url';
 import { binTargets, hookCommands, mcpEntry, mcpManifestPath } from './lib/executable-targets.mjs';
 import { buildIsolatedRuntimeEnv } from './lib/isolated-env.mjs';
 import { npmSync } from './lib/npm-bin.mjs';
+import { writeNodeShim } from './lib/node-shim.mjs';
 
 const repoRoot = process.cwd();
 
@@ -785,9 +786,7 @@ if (process.platform !== 'win32') {
   const routerToken = path.join(nativeDir, 'agent-router.token');
   const fakeBin = path.join(nativeHome, 'bin');
   const queueCapture = path.join(nativeHome, 'codex-queue.json');
-  fs.mkdirSync(fakeBin, { recursive: true });
-  const fakeCodex = path.join(fakeBin, 'codex');
-  fs.writeFileSync(fakeCodex, `#!/usr/bin/env node
+  writeNodeShim(fakeBin, 'codex', `#!/usr/bin/env node
 const fs = require('node:fs');
 const args = process.argv.slice(2);
 if (args[0] !== 'queue' || args[1] !== '--thread' || args[3] !== '--message' || !args[2] || !args[4]) {
@@ -795,7 +794,7 @@ if (args[0] !== 'queue' || args[1] !== '--thread' || args[3] !== '--message' || 
   process.exit(2);
 }
 fs.writeFileSync(process.env.MEMESH_CODEX_QUEUE_CAPTURE, JSON.stringify({ thread_id: args[2], message: JSON.parse(args[4]) }));
-`, { mode: 0o700 });
+`, 'commonjs');
   // `getMemeshDirFromDbPath()` (src/host-runtime/router.ts) follows
   // MEMESH_DB_PATH, not MEMESH_DIR — so setting MEMESH_DIR alone here left an
   // ambient MEMESH_DB_PATH free to send the router's data directory (and the

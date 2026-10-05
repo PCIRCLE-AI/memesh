@@ -36,6 +36,7 @@ import { dirname, join } from 'path';
 import {
   ensurePrivateDir,
   getMemeshDirFromDbPath,
+  HOOK_BUSY_TIMEOUT_MS,
   SKIP_REASONS,
   hookErrorReason,
   importFromPluginRoot,
@@ -182,7 +183,7 @@ export async function runNoteIngestion({ memoryDir, project, metaUrl }) {
   const { ingestNoteDirectory, summarizeNoteIngest } = await importFromPluginRoot(pluginRoot, 'dist/core/note-ingest.js');
   const { openDatabase, closeDatabase } = await importFromPluginRoot(pluginRoot, 'dist/db.js');
   const startedAt = Date.now();
-  openDatabase();
+  openDatabase(undefined, { busyTimeoutMs: HOOK_BUSY_TIMEOUT_MS });
   let result;
   try {
     result = ingestNoteDirectory({ dir: memoryDir, project, maxFiles: INGEST_MAX_FILES });

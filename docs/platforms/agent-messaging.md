@@ -53,12 +53,20 @@ message) ...`. `intake` or a `disposition` for such a delivery from a caller
 that is itself another registered session of the project
 (`CLAUDE_CODE_SESSION_ID` / `CODEX_THREAD_ID`) is refused with
 `intended_for_other_session` (#497). A caller with no session id, or with an
-id no session registered, still can — a Codex MCP process has none. Under
+id no session registered, still can — a Codex MCP process has none. The
+reminder and the Stop gate follow the same line (#566): a hook that knows its
+session id counts a session-targeted delivery only when it is addressed to
+that session (or to an id it had before `/clear`), so another live session of
+the same principal is neither reminded of it nor blocked on it. Under
 Codex, SessionStart and the prompt hook do not remind about a delivery the
-router already pushed into THIS thread (its host acceptance names this
-thread); a delivery pushed into a different thread of the same principal, for
-example one that ended without running it, is still reminded until the
-recipient records intake. Under Claude Code they still remind.
+router already pushed into THIS thread with its body (its host acceptance
+names this thread and is not a `content: "notice"` acceptance — see below)
+while the MeMesh host connection that accepted it is still live; a delivery
+pushed into a different thread of the same principal, or accepted by a host
+connection that has since ended — for example an acceptance recorded by an
+older release, before the queue carried only notices, whose `codex exec` run
+exited before running it — is still reminded until the recipient records
+intake (#514). Under Claude Code they still remind.
 
 Every Claude Code session in one project shares one principal, so a message
 sent to that principal reaches all of them. A message can instead name the

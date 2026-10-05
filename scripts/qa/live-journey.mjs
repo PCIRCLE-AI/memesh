@@ -81,6 +81,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { getProjectName } from '../../dist/core/paths.js';
 import { runCoreLiveJourneys } from './core-live-journeys.mjs';
 import { buildCredentialFreeBaseEnv } from '../lib/isolated-env.mjs';
+import { writeNodeShim } from '../lib/node-shim.mjs';
 import { isMain } from '../lib/verify-core.mjs';
 import {
   CLAUDE_MODEL_INTAKE_ARMING_CONFIRMATION,
@@ -545,12 +546,20 @@ export function assertDistPresent(repoRoot, exists = (file) => fs.existsSync(fil
 
 /**
  * A report that names a revision is claiming the code it exercised is that
- * revision. `dist/` is what actually ran, so if any of it predates the newest
- * source file the report must say so rather than imply a rebuild happened.
+ * revision. `dist/` is what actually ran, so the report must say when it may
+ * not be that revision's build rather than imply a rebuild happened.
  *
- * @param {{newestSrcMs: number, oldestDistMs: number}} input
+ * In a clean tree the required artefacts are the committed ones (they are
+ * tracked, and `check-generated-mirror` in verify:release proves the committed
+ * dist/ is a fresh build of the committed source), so the build is that
+ * revision's. File times say nothing there: `git switch` touches the source it
+ * changes and leaves an unchanged dist/ older, which reported a correct build
+ * as stale (#477). Only a dirty tree falls back to comparing times.
+ *
+ * @param {{dirty: boolean, newestSrcMs: number, oldestDistMs: number}} input
  */
 export function isDistStale(input) {
+  if (input.dirty === false) return false;
   return input.oldestDistMs < input.newestSrcMs;
 }
 
@@ -1464,10 +1473,8 @@ class Journey {
 
   installCodexQueueStub() {
     const bin = path.join(this.dir, 'bin');
-    fs.mkdirSync(bin, { recursive: true, mode: 0o700 });
     this.codexQueueLog = path.join(this.dir, 'codex-queue.jsonl');
-    const executable = path.join(bin, 'codex');
-    fs.writeFileSync(executable, `#!/usr/bin/env node
+    const executable = writeNodeShim(bin, 'codex', `#!/usr/bin/env node
 import fs from 'node:fs';
 
 if (process.argv[2] !== 'queue' || process.argv[3] !== '--thread' || process.argv[5] !== '--message') {
@@ -1480,8 +1487,7 @@ const record = {
   serialized_message: process.argv[6],
 };
 fs.appendFileSync(process.env.MEMESH_FAKE_CODEX_QUEUE_LOG, JSON.stringify(record) + '\\n');
-`, { mode: 0o700 });
-    fs.chmodSync(executable, 0o700);
+`, 'module');
     this.env = {
       ...this.env,
       PATH: `${bin}${path.delimiter}${this.env.PATH ?? ''}`,
@@ -2534,13 +2540,17 @@ async function main() {
   assertDistPresent(repoRoot);
   const revision = run('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }).stdout.trim();
   if (revision.length === 0) throw new Error('Could not read the repository revision; the report would name no code.');
-  const dirty = run('git', ['status', '--porcelain'], { cwd: repoRoot }).stdout.trim() !== '';
+  const status = run('git', ['status', '--porcelain'], { cwd: repoRoot });
+  // A clean tree is trusted to run the committed build (isDistStale), so a
+  // failed status must not read as clean.
+  if (status.status !== 0) throw new Error(`Could not read the working tree state: ${status.stderr.trim()}`);
+  const dirty = status.stdout.trim() !== '';
   const newestSrcMs = newestMtimeMs(path.join(repoRoot, 'src'));
   // Hook and QA source files are required runtime inputs, but `npm run build`
   // does not regenerate them. Only compiled/bundled dist files can prove that
   // build output is at least as new as src/.
   const oldestDistMs = Math.min(...REQUIRED_BUILD_ARTIFACTS.map((relative) => fs.statSync(dist(relative)).mtimeMs));
-  const distStale = isDistStale({ newestSrcMs, oldestDistMs });
+  const distStale = isDistStale({ dirty, newestSrcMs, oldestDistMs });
 
   const journey = new Journey(options);
   const startedAt = new Date().toISOString();

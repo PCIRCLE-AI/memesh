@@ -10,7 +10,17 @@ import {
   renderMatchExpression,
   registerNfcFunction,
   SQL_NFC_FUNCTION,
+  foldForExactMatch,
+  registerFoldFunction,
+  SQL_FOLD_FUNCTION,
 } from './storage/fts-index.js';
+
+/**
+ * #525: rows whose name or title is exactly the query sort first, so LIMIT
+ * keeps them however BM25 or recency would order them. Takes the folded query
+ * twice; needs `registerFoldFunction` on the connection.
+ */
+const EXACT_MATCH_FIRST = `(${SQL_FOLD_FUNCTION}(e.name) = ? OR ${SQL_FOLD_FUNCTION}(COALESCE(e.title, '')) = ?) DESC`;
 import { computeSignalScore } from './core/signal-scorer.js';
 import { dropEntityFromIndexes } from './storage/entity-index.js';
 import { ftsIndexIsCurrent } from './storage/schema.js';
@@ -1042,8 +1052,8 @@ export class KnowledgeGraph {
     // multi-row `tags` table needs SELECT DISTINCT to dedupe, and DISTINCT both
     // adds a temp B-tree and constrains what ORDER BY can reference. EXISTS
     // keeps this to one statement for every filter combination.
-    // Parameter order is MATCH → tag → namespace → limit, matching the clause
-    // order below; `tests/recall-relevance.test.ts` pins it.
+    // Parameter order is MATCH → tag → namespace → exact name → limit, matching
+    // the clause order below; `tests/recall-relevance.test.ts` pins it.
     const statusFilter = opts?.includeArchived ? '' : "AND e.status = 'active'";
     const namespaceFilter = opts?.namespace ? 'AND e.namespace = ?' : '';
     // A default recall's project scope sits in the tag's place: an explicit tag wins.
@@ -1052,11 +1062,16 @@ export class KnowledgeGraph {
     const tagFilter = opts?.tag
       ? 'AND EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?)'
       : scoped ? scoped.sql : '';
-    const filterParams: (string | number)[] = [];
-    if (opts?.tag) filterParams.push(opts.tag);
-    else if (scoped) filterParams.push(...scoped.params);
-    if (opts?.namespace) filterParams.push(opts.namespace);
-    filterParams.push(limit);
+    const scopeParams: (string | number)[] = [];
+    if (opts?.tag) scopeParams.push(opts.tag);
+    else if (scoped) scopeParams.push(...scoped.params);
+    if (opts?.namespace) scopeParams.push(opts.namespace);
+    // #525: a memory whose name or title is exactly the query must reach the
+    // scorer even when BM25 or recency ranks other matches above it and LIMIT
+    // would cut it — in the index search, the stale-index scan and the
+    // archived supplement alike. recall() then puts it first.
+    const exactQuery = foldForExactMatch(query);
+    registerFoldFunction(this.db);
     let ftsRows: Array<{ id: number }>;
     let strictSelected = false;
     // An index built by an older segmentation holds tokens today's query
@@ -1066,7 +1081,7 @@ export class KnowledgeGraph {
     // their stored text for the same terms, and the result says so.
     const fallback = ftsIndexIsCurrent(this.db) ? null : 'index_out_of_date' as const;
     const findFtsRows = (ftsQuery: string): Array<{ id: number }> => {
-      const queryParams = [ftsQuery, ...filterParams];
+      const queryParams = [ftsQuery, ...scopeParams, exactQuery, exactQuery, limit];
       return this.db
         .prepare(
           `SELECT e.id FROM entities_fts f
@@ -1081,13 +1096,13 @@ export class KnowledgeGraph {
            -- tiebreaker the same query over the same corpus can return
            -- different memories run to run. Newest-first among equals is the
            -- same preference the rest of the scorer expresses.
-           ORDER BY f.rank, e.id DESC
+           ORDER BY ${EXACT_MATCH_FIRST}, f.rank, e.id DESC
            LIMIT ?`
         )
         .all(...queryParams) as Array<{ id: number }>;
     };
     if (fallback) {
-      const scanned = this.scanActiveRows(query, tagFilter, namespaceFilter, filterParams);
+      const scanned = this.scanActiveRows(query, tagFilter, namespaceFilter, [...scopeParams, exactQuery, exactQuery, limit]);
       ftsRows = scanned.rows;
       strictSelected = scanned.strictSelected;
     } else {
@@ -1167,10 +1182,10 @@ export class KnowledgeGraph {
              AND (${termClause})
              ${tagFilter}
              ${archivedNamespaceFilter}
-           ORDER BY e.id DESC
+           ORDER BY ${EXACT_MATCH_FIRST}, e.id DESC
            LIMIT ?`
         )
-        .all(...archivedParams, limit) as Array<{ id: number; name: string }>;
+        .all(...archivedParams, exactQuery, exactQuery, limit) as Array<{ id: number; name: string }>;
 
       const archivedIds = archivedRows.map(r => r.id).filter(id => !seenIds.has(id));
       const archivedEntities = this.getEntitiesByIds(archivedIds, {
@@ -1198,7 +1213,8 @@ export class KnowledgeGraph {
    * memory has them all does it take any term, as the index search does.
    * Same filters and the same result window, chosen newest first since there
    * is no index rank (recall then ranks them as it ranks index hits).
-   * `filterParams` ends with the limit.
+   * `filterParams` ends with the folded query twice (exact matches first,
+   * #525) and the limit.
    */
   private scanActiveRows(
     query: string,
@@ -1221,7 +1237,7 @@ export class KnowledgeGraph {
              ${tagFilter}
              AND e.status = 'active'
              ${namespaceFilter}
-           ORDER BY e.id DESC
+           ORDER BY ${EXACT_MATCH_FIRST}, e.id DESC
            LIMIT ?`
         )
         .all(...terms.flatMap((t) => [t, t, t]), ...filterParams) as Array<{ id: number }>;
@@ -1280,7 +1296,7 @@ export class KnowledgeGraph {
    * catalogue read, matching the prior transport behavior).
    *
    * #451: `type` is canonicalized, so `?type=lesson` or `?type=mistake` still
-   * finds the rows the one-time repair renamed to `lesson_learned`.
+   * finds the rows the repair renamed to `lesson_learned`.
    */
   listByType(type: string, limit?: number, includeArchived?: boolean, namespace?: string): Entity[] {
     type = canonicalEntityType(type);

@@ -643,11 +643,12 @@ export function repairFusedLessonShellHistory(db: MemeshDatabase): number {
 
 /**
  * #451 — one lesson type. `lesson` and `mistake` mean the same as
- * `lesson_learned`; the write path canonicalizes every insert, and this
- * one-time pass renames the rows written before that, archived ones included.
- * It runs once, so a row an older plugin writes later keeps its type; the
- * readers still accept all three, and `lesson-family-uses-one-type`
- * (scripts/audit/memory-invariants.mjs) reports such rows.
+ * `lesson_learned`; the write path canonicalizes every insert, and this pass
+ * renames the rows written before that, archived ones included. An older
+ * plugin still running elsewhere can write the old type after the pass ran
+ * (#551), so when such a row exists the pass asks for the next version and
+ * runs again; otherwise it runs once. The check is one lookup on
+ * `idx_entities_type_created`.
  *
  * A renamed row's `metadata.signal_score` is recomputed for `lesson_learned`
  * when it still equals what `computeSignalScore` gives its old type, which
@@ -659,9 +660,12 @@ export function repairFusedLessonShellHistory(db: MemeshDatabase): number {
  */
 export function canonicalizeLessonTypes(db: MemeshDatabase): number {
   let renamed = -1;
+  const stored = db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(LESSON_TYPE_CANONICAL_KEY) as { value: string } | undefined;
+  const pending = db.prepare(`SELECT 1 FROM entities WHERE type IN ('lesson', 'mistake') LIMIT 1`).get() !== undefined;
+  const version = stored && pending ? parseInt(stored.value, 10) + 1 : 1;
   runOnceMigration(db, {
     key: LESSON_TYPE_CANONICAL_KEY,
-    version: 1,
+    version,
     describe: 'lesson type canonicalization',
     migrate: (conn) => {
       // Read the about-to-be-renamed rows, WITH their old `type`, BEFORE the

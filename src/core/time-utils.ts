@@ -38,3 +38,14 @@ export function parseSqliteUtcMs(sqliteTimestamp: string): number | null {
   ) return null;
   return then;
 }
+
+/**
+ * A SQLite UTC timestamp as ISO 8601 UTC (`YYYY-MM-DDTHH:MM:SSZ`), for output
+ * a client parses (#403): `new Date('2026-09-21 20:35:59')` reads the SQLite
+ * form as local time, hours off. A value this cannot parse is returned as it
+ * is rather than guessed at.
+ */
+export function sqliteUtcToIso(sqliteTimestamp: string): string {
+  const ms = parseSqliteUtcMs(sqliteTimestamp);
+  return ms === null ? sqliteTimestamp : new Date(ms).toISOString().replace('.000Z', 'Z');
+}

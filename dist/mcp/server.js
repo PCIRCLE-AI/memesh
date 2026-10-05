@@ -24936,6 +24936,17 @@ function registerNfcFunction(db2) {
   db2.function(SQL_NFC_FUNCTION, { deterministic: true }, (value) => typeof value === "string" ? value.normalize("NFC") : value);
   nfcRegistered.add(db2);
 }
+function foldForExactMatch(value) {
+  return value.normalize("NFC").trim().toLowerCase();
+}
+var SQL_FOLD_FUNCTION = "memesh_fold";
+var foldRegistered = /* @__PURE__ */ new WeakSet();
+function registerFoldFunction(db2) {
+  if (foldRegistered.has(db2))
+    return;
+  db2.function(SQL_FOLD_FUNCTION, { deterministic: true }, (value) => typeof value === "string" ? foldForExactMatch(value) : value);
+  foldRegistered.add(db2);
+}
 function renderMatchExpression(terms) {
   if (terms.length === 0)
     return null;
@@ -25067,6 +25078,10 @@ function parseSqliteUtcMs(sqliteTimestamp) {
   if (d.getUTCFullYear() !== +m[1] || d.getUTCMonth() !== +m[2] - 1 || d.getUTCDate() !== +m[3] || d.getUTCHours() !== +m[4] || d.getUTCMinutes() !== +m[5] || d.getUTCSeconds() !== +m[6])
     return null;
   return then;
+}
+function sqliteUtcToIso(sqliteTimestamp) {
+  const ms = parseSqliteUtcMs(sqliteTimestamp);
+  return ms === null ? sqliteTimestamp : new Date(ms).toISOString().replace(".000Z", "Z");
 }
 
 // dist/storage/schema.js
@@ -25614,12 +25629,16 @@ function insertOrGetEntity(db2, entity) {
     return null;
   return { ...row, isNew };
 }
+function storedText(text) {
+  return text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "\uFFFD");
+}
 function appendObservations(db2, entityId, observations, options) {
   const seen = new Set(options.dedupe && options.readExisting ? db2.prepare("SELECT content FROM observations WHERE entity_id = ?").all(entityId).map((o) => o.content) : []);
   const written = [];
-  for (const observation of observations) {
-    if (options.exclude?.(observation))
+  for (const given of observations) {
+    if (options.exclude?.(given))
       continue;
+    const observation = storedText(given);
     if (options.dedupe) {
       if (seen.has(observation))
         continue;
@@ -26525,6 +26544,7 @@ function clearPartsOfKey(metadata) {
 }
 
 // dist/knowledge-graph.js
+var EXACT_MATCH_FIRST = `(${SQL_FOLD_FUNCTION}(e.name) = ? OR ${SQL_FOLD_FUNCTION}(COALESCE(e.title, '')) = ?) DESC`;
 var isGuardWithPattern = (guard) => guard !== null && typeof guard === "object" && typeof guard.pattern === "string";
 function redactMetadataForStore(next, stored, sameCall = []) {
   const storedHistory = stored?.replaced_history;
@@ -26918,19 +26938,20 @@ var KnowledgeGraph = class {
     const scope = opts?.tag ? void 0 : opts?.projectScope;
     const scoped = scope === void 0 ? void 0 : projectScopeFilter(scope);
     const tagFilter = opts?.tag ? "AND EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?)" : scoped ? scoped.sql : "";
-    const filterParams = [];
+    const scopeParams = [];
     if (opts?.tag)
-      filterParams.push(opts.tag);
+      scopeParams.push(opts.tag);
     else if (scoped)
-      filterParams.push(...scoped.params);
+      scopeParams.push(...scoped.params);
     if (opts?.namespace)
-      filterParams.push(opts.namespace);
-    filterParams.push(limit);
+      scopeParams.push(opts.namespace);
+    const exactQuery = foldForExactMatch(query);
+    registerFoldFunction(this.db);
     let ftsRows;
     let strictSelected = false;
     const fallback = ftsIndexIsCurrent(this.db) ? null : "index_out_of_date";
     const findFtsRows = (ftsQuery) => {
-      const queryParams = [ftsQuery, ...filterParams];
+      const queryParams = [ftsQuery, ...scopeParams, exactQuery, exactQuery, limit];
       return this.db.prepare(`SELECT e.id FROM entities_fts f
            JOIN entities e ON e.id = f.rowid
            WHERE entities_fts MATCH ?
@@ -26943,11 +26964,11 @@ var KnowledgeGraph = class {
            -- tiebreaker the same query over the same corpus can return
            -- different memories run to run. Newest-first among equals is the
            -- same preference the rest of the scorer expresses.
-           ORDER BY f.rank, e.id DESC
+           ORDER BY ${EXACT_MATCH_FIRST}, f.rank, e.id DESC
            LIMIT ?`).all(...queryParams);
     };
     if (fallback) {
-      const scanned = this.scanActiveRows(query, tagFilter, namespaceFilter, filterParams);
+      const scanned = this.scanActiveRows(query, tagFilter, namespaceFilter, [...scopeParams, exactQuery, exactQuery, limit]);
       ftsRows = scanned.rows;
       strictSelected = scanned.strictSelected;
     } else {
@@ -26992,8 +27013,8 @@ var KnowledgeGraph = class {
              AND (${termClause})
              ${tagFilter2}
              ${archivedNamespaceFilter}
-           ORDER BY e.id DESC
-           LIMIT ?`).all(...archivedParams, limit);
+           ORDER BY ${EXACT_MATCH_FIRST}, e.id DESC
+           LIMIT ?`).all(...archivedParams, exactQuery, exactQuery, limit);
       const archivedIds = archivedRows.map((r) => r.id).filter((id) => !seenIds.has(id));
       const archivedEntities = this.getEntitiesByIds(archivedIds, {
         includeArchived: true,
@@ -27015,7 +27036,7 @@ var KnowledgeGraph = class {
              ${tagFilter}
              AND e.status = 'active'
              ${namespaceFilter}
-           ORDER BY e.id DESC
+           ORDER BY ${EXACT_MATCH_FIRST}, e.id DESC
            LIMIT ?`).all(...terms.flatMap((t) => [t, t, t]), ...filterParams);
     if (allTerms.length >= 3) {
       const strict = run(" AND ");
@@ -27630,9 +27651,12 @@ function repairFusedLessonShellHistory(db2) {
 }
 function canonicalizeLessonTypes(db2) {
   let renamed = -1;
+  const stored = db2.prepare("SELECT value FROM memesh_metadata WHERE key = ?").get(LESSON_TYPE_CANONICAL_KEY);
+  const pending = db2.prepare(`SELECT 1 FROM entities WHERE type IN ('lesson', 'mistake') LIMIT 1`).get() !== void 0;
+  const version2 = stored && pending ? parseInt(stored.value, 10) + 1 : 1;
   runOnceMigration(db2, {
     key: LESSON_TYPE_CANONICAL_KEY,
-    version: 1,
+    version: version2,
     describe: "lesson type canonicalization",
     migrate: (conn) => {
       const rows = conn.prepare(`SELECT id, name, type, metadata FROM entities WHERE type IN ('lesson', 'mistake')`).all();
@@ -27710,7 +27734,7 @@ function isBoilerplateObservation(text) {
 
 // dist/db.js
 var db = null;
-function openDatabase(dbPath) {
+function openDatabase(dbPath, opts = {}) {
   if (db)
     return db;
   const resolvedPath = dbPath ?? getDbPath();
@@ -27736,7 +27760,7 @@ function openDatabase(dbPath) {
     const fix = notYours ? "Point MEMESH_DB_PATH at a database you own, in a folder you own." : `chmod u+w ${shellQuote(realDir)}`;
     throw Object.assign(new Error(`MeMesh: ${realDir} is read-only and ${path2.basename(realPath)} has no ${missing.join(" or ")} file there, so it cannot be opened without writing to the folder. ` + (notYours ? `${realDir} belongs to another user, so you cannot make it writable. ${fix}` : `Copy the database to a writable folder and point MEMESH_DB_PATH at the copy, or make the folder writable: ${fix}`)), { fix });
   }
-  db = openInitialisedDatabase(resolvedPath);
+  db = openInitialisedDatabase(resolvedPath, opts);
   const writeBack = ownerWriteCommand(resolvedPath);
   if (writeBack) {
     try {
@@ -27747,9 +27771,13 @@ function openDatabase(dbPath) {
   }
   return db;
 }
-function openInitialisedDatabase(resolvedPath) {
+function openInitialisedDatabase(resolvedPath, opts = {}) {
   const opening = new MemeshDatabase(resolvedPath);
   try {
+    if (opts.busyTimeoutMs !== void 0) {
+      opening.pragma(`busy_timeout = ${opts.busyTimeoutMs}`);
+      giveUpIfWriteLocked(opening);
+    }
     initialiseDatabase(opening);
   } catch (err) {
     try {
@@ -27759,6 +27787,16 @@ function openInitialisedDatabase(resolvedPath) {
     throw err;
   }
   return opening;
+}
+function giveUpIfWriteLocked(db2) {
+  try {
+    db2.exec("BEGIN IMMEDIATE");
+  } catch (err) {
+    if (isTransientDbError(err))
+      throw err;
+    return;
+  }
+  db2.exec("COMMIT");
 }
 function isReadonlyDbError(err) {
   const msg = err instanceof Error ? err.message : String(err);
@@ -27788,7 +27826,14 @@ function migrateToCurrentSchema(db2) {
   runAutoDecay(db2);
   backfillSignalScores(db2);
   ensureFtsSegmentation(db2);
-  backfillTitles(db2);
+  if (ftsIndexIsCurrent(db2)) {
+    backfillTitles(db2);
+  } else {
+    try {
+      process.stderr.write("MeMesh: adding titles to older memories waits until the search index is rebuilt.\n");
+    } catch {
+    }
+  }
   backfillAcceptedProposalTrust(db2);
   dedupeObservations(db2);
   retractZeroEditClaims(db2);
@@ -28016,6 +28061,22 @@ function projectOwnershipRefusal(db2, name, project) {
     return void 0;
   const owner = projects.length > 0 ? `it belongs to ${projects.join(", ")}` : "it has no project tag";
   return `a memory named ${JSON.stringify(name)} already exists and ${owner}, not project ${project}. Use a different name`;
+}
+
+// dist/core/plain-project-tag.js
+function withFullProjectTag(tags, projectId) {
+  if (tags === void 0)
+    return { tags: void 0 };
+  if (projectId === void 0)
+    return { tags: [...tags] };
+  const label = projectLabel(projectId);
+  if (label === projectId)
+    return { tags: [...tags] };
+  const plain = `project:${label}`;
+  if (!tags.includes(plain))
+    return { tags: [...tags] };
+  const full = `project:${projectId}`;
+  return { tags: [...new Set(tags.map((tag) => tag === plain ? full : tag))], retagged: { from: plain, to: full } };
 }
 
 // dist/core/scoring.js
@@ -28581,7 +28642,11 @@ function importMemories(args, options) {
             return { kind: "keptArchived" };
           if (args.merge_strategy === "append") {
             const existingText = new Set(existing.observations);
-            const newObservations = observations.filter((o) => !existingText.has(o));
+            const newObservations = observations.map(storedText).filter((o) => !existingText.has(o));
+            const existingTags = new Set(existing.tags);
+            const addsNothing = !existing.archived && newObservations.length === 0 && (entity.tags === void 0 || entity.tags.every((tag) => existingTags.has(storedText(tag)))) && (title === void 0 || storedText(title) === existing.title) && (namespace === void 0 || namespace === (existing.namespace ?? "personal"));
+            if (addsNothing)
+              return { kind: "skipped" };
             kg.createEntity(entity.name, entity.type, {
               title,
               observations: newObservations,
@@ -28760,6 +28825,20 @@ function resolveRememberInput(input) {
 }
 function rememberInTransaction(args, derived, typeGiven, db2, kg) {
   const existing = db2.prepare("SELECT id, namespace, type, title, status FROM entities WHERE name = ?").get(args.name);
+  const touched = [
+    ...existing ? [args.name] : [],
+    ...(args.relations ?? []).filter((rel) => rel.type === "supersedes").map((rel) => rel.to)
+  ];
+  let retagged;
+  const healed = withFullProjectTag(args.tags, args.currentProject);
+  if (healed.retagged) {
+    const plainTag = healed.retagged.from;
+    const keepsPlain = touched.some((name) => db2.prepare("SELECT 1 FROM tags t JOIN entities e ON e.id = t.entity_id WHERE e.name = ? AND t.tag = ?").get(name, plainTag) !== void 0);
+    if (!keepsPlain) {
+      args = { ...args, tags: healed.tags };
+      retagged = healed.retagged;
+    }
+  }
   const tagProjects = [...new Set((args.tags ?? []).filter((t) => t.startsWith("project:")).map((t) => t.slice("project:".length)))];
   if (tagProjects.length > 1) {
     throw new Error(`MeMesh did not store this memory: it has more than one project tag (${tagProjects.map((p) => `project:${p}`).join(", ")}); a memory belongs to one project.`);
@@ -28769,10 +28848,6 @@ function rememberInTransaction(args, derived, typeGiven, db2, kg) {
   }
   const declaredProject = args.project !== void 0 ? args.project : tagProjects[0];
   if (declaredProject !== void 0) {
-    const touched = [
-      ...existing ? [args.name] : [],
-      ...(args.relations ?? []).filter((rel) => rel.type === "supersedes").map((rel) => rel.to)
-    ];
     for (const name of touched) {
       const refusal = projectOwnershipRefusal(db2, name, declaredProject);
       if (refusal !== void 0)
@@ -28872,9 +28947,17 @@ function rememberInTransaction(args, derived, typeGiven, db2, kg) {
     ...existing && args.namespace !== void 0 && (existing.namespace ?? "personal") !== args.namespace ? { movedFromNamespace: existing.namespace ?? "personal" } : {},
     ...superseded.length > 0 ? { superseded } : {},
     ...relationErrors.length > 0 ? { relationErrors } : {},
+    ...retagged ? { retagged } : {},
     ...args.replace ? { replaced: replacedVersion !== void 0 } : {},
     ...derived ? { derived: { name: args.name, type: retypedTo ?? existing?.type ?? entityType, title: derived.title, observations: derived.observations } } : {}
   };
+}
+function exactMatchesFirst(ranked, query) {
+  const wanted = query === void 0 ? "" : foldForExactMatch(query);
+  if (!wanted)
+    return ranked;
+  const isExact = (e) => foldForExactMatch(e.name) === wanted || e.title != null && foldForExactMatch(e.title) === wanted;
+  return [...ranked.filter(isExact), ...ranked.filter((e) => !isExact(e))];
 }
 function searchAndScore(args) {
   const kg = new KnowledgeGraph(getDatabase());
@@ -28900,7 +28983,7 @@ async function recallEnhanced(args) {
     }
   }
   const limit = args.limit ?? 20;
-  const ranked = rankEntities(entities, relevanceMap).slice(0, limit);
+  const ranked = exactMatchesFirst(rankEntities(entities, relevanceMap), args.query).slice(0, limit);
   return {
     entities: ranked,
     retrieval: fallback ? { mode: "scan", degraded: true, reason: fallback, truncated: ranked.length === limit } : { mode: "fts", degraded: false, truncated: ranked.length === limit }
@@ -29025,21 +29108,28 @@ function claudeProjectsDir() {
 function projectTranscriptSlug(cwd) {
   return cwd.replace(/[^a-zA-Z0-9]/g, "-");
 }
-function recordedCwd(text) {
-  let seen = 0;
-  for (const line of text.split("\n")) {
-    if (!line.trim())
-      continue;
-    if (++seen > 40)
-      break;
-    try {
-      const entry = JSON.parse(line);
-      if (typeof entry.cwd === "string" && entry.cwd.length > 0)
-        return entry.cwd;
-    } catch {
-    }
+function lineCwd(line) {
+  try {
+    const entry = JSON.parse(line);
+    return entry !== null && typeof entry === "object" && typeof entry.cwd === "string" && entry.cwd.length > 0 ? entry.cwd : null;
+  } catch {
+    return null;
   }
-  return null;
+}
+function recordedCwd(text) {
+  let from = 0;
+  for (; ; ) {
+    const at = text.indexOf('"cwd"', from);
+    if (at < 0)
+      return null;
+    const start = text.lastIndexOf("\n", at) + 1;
+    const newline = text.indexOf("\n", at);
+    const end = newline < 0 ? text.length : newline;
+    const cwd = lineCwd(text.slice(start, end));
+    if (cwd !== null)
+      return cwd;
+    from = end + 1;
+  }
 }
 function sameProjectPath(a, b) {
   if (path3.normalize(a) === path3.normalize(b))
@@ -29052,7 +29142,7 @@ function sameProjectPath(a, b) {
   return false;
 }
 function transcriptMatchesProject(bytes, cwd) {
-  const sessionCwd = recordedCwd(bytes.subarray(0, 65536).toString("utf8"));
+  const sessionCwd = recordedCwd(bytes.toString("utf8"));
   return sessionCwd !== null && sameProjectPath(sessionCwd, cwd);
 }
 function scanTranscripts(opts) {
@@ -29070,21 +29160,31 @@ function scanTranscripts(opts) {
   } catch {
     return [];
   }
-  if (names.length > MAX_TRANSCRIPT_CANDIDATES)
+  if (names.length > MAX_TRANSCRIPT_CANDIDATES) {
+    opts.onSkip?.("too_many_candidates", names.length);
     return [];
+  }
   let plannedBytes = 0;
   const eligibleNames = [];
-  try {
-    for (const name of names) {
-      const stat = fs4.lstatSync(path3.join(dir, name));
-      if (stat.isSymbolicLink() || !stat.isFile() || stat.size > MAX_TRANSCRIPT_SOURCE_BYTES || stat.mtimeMs < cutoffMs)
-        continue;
-      plannedBytes += stat.size;
-      if (plannedBytes > MAX_TRANSCRIPT_SCAN_BYTES)
-        return [];
-      eligibleNames.push(name);
+  for (const name of names) {
+    let stat;
+    try {
+      stat = fs4.lstatSync(path3.join(dir, name));
+    } catch {
+      opts.onSkip?.("unreadable", 1);
+      continue;
     }
-  } catch {
+    if (stat.isSymbolicLink() || !stat.isFile() || stat.mtimeMs < cutoffMs)
+      continue;
+    if (stat.size > MAX_TRANSCRIPT_SOURCE_BYTES) {
+      opts.onSkip?.("too_large", 1);
+      continue;
+    }
+    plannedBytes += stat.size;
+    eligibleNames.push(name);
+  }
+  if (plannedBytes > MAX_TRANSCRIPT_SCAN_BYTES) {
+    opts.onSkip?.("scan_too_large", eligibleNames.length);
     return [];
   }
   const sessions = [];
@@ -29092,11 +29192,15 @@ function scanTranscripts(opts) {
   for (const name of eligibleNames) {
     const full = path3.join(dir, name);
     const read = readTranscriptSnapshotWithin(full, void 0, MAX_TRANSCRIPT_SCAN_BYTES - bytesRead);
-    if (read.aggregateLimitExceeded)
+    if (read.aggregateLimitExceeded) {
+      opts.onSkip?.("scan_too_large", eligibleNames.length);
       return [];
+    }
     const snapshot = read.snapshot;
-    if (!snapshot)
+    if (!snapshot) {
+      opts.onSkip?.("unreadable", 1);
       continue;
+    }
     bytesRead += snapshot.sizeBytes;
     try {
       if (Date.parse(snapshot.modifiedAt) < cutoffMs)
@@ -29106,8 +29210,10 @@ function scanTranscripts(opts) {
       for (let i = 0; i < buf.length; i++)
         if (buf[i] === 10)
           lineCount++;
-      if (!transcriptMatchesProject(buf, cwd))
+      if (!transcriptMatchesProject(buf, cwd)) {
+        opts.onSkip?.(recordedCwd(buf.toString("utf8")) === null ? "no_recorded_cwd" : "other_project", 1);
         continue;
+      }
       sessions.push({
         contentHash: snapshot.contentHash,
         sessionId: name.replace(/\.jsonl$/, ""),
@@ -29552,17 +29658,28 @@ function executeWorkPackage(db2, input, context = {}) {
         WHERE project = ? AND source_kind = 'transcript'
           AND (cluster_key = ? OR CASE WHEN json_valid(source_ids) THEN json_extract(source_ids, '$.sessionId') END = ?)
         LIMIT 1`);
-      const sessions = scanTranscripts({ cwd }).sort((a, b) => a.modifiedAt === b.modifiedAt ? a.sessionId < b.sessionId ? -1 : a.sessionId > b.sessionId ? 1 : 0 : a.modifiedAt > b.modifiedAt ? -1 : 1);
+      const skipped = {};
+      const skip = (reason, count = 1) => {
+        if (input.action === "prepare")
+          skipped[reason] = (skipped[reason] ?? 0) + count;
+      };
+      const sessions = scanTranscripts({ cwd, onSkip: skip }).sort((a, b) => a.modifiedAt === b.modifiedAt ? a.sessionId < b.sessionId ? -1 : a.sessionId > b.sessionId ? 1 : 0 : a.modifiedAt > b.modifiedAt ? -1 : 1);
       for (const session of sessions) {
-        if (!session.sessionId.trim() || session.sessionId.length > 255)
+        if (!session.sessionId.trim() || session.sessionId.length > 255) {
+          skip("invalid_session_id");
           continue;
+        }
         if (input.action !== "prepare" && (input.ref.kind !== "transcript" || input.ref.session_id !== session.sessionId))
           continue;
-        if (represented.get(project, `transcript:${session.sessionId}`, session.sessionId))
+        if (represented.get(project, `transcript:${session.sessionId}`, session.sessionId)) {
+          skip("already_proposed");
           continue;
+        }
         const snapshot = readTranscriptSnapshot(session.path, session);
-        if (!snapshot || !transcriptMatchesProject(snapshot.bytes, cwd))
+        if (!snapshot || !transcriptMatchesProject(snapshot.bytes, cwd)) {
+          skip("changed_since_scan");
           continue;
+        }
         const turns = parseVisibleConversation(snapshot.bytes).map((turn) => ({ ...turn, text: redactSecrets(turn.text) }));
         const sources = [];
         let sourceBytes = 2;
@@ -29574,8 +29691,10 @@ function executeWorkPackage(db2, input, context = {}) {
           sourceBytes += size;
         }
         sources.reverse();
-        if (sources.length === 0)
+        if (sources.length === 0) {
+          skip("no_visible_turns");
           continue;
+        }
         const ref = {
           kind: "transcript",
           project,
@@ -29618,7 +29737,12 @@ function executeWorkPackage(db2, input, context = {}) {
           VALUES (?, ?, ?, ?, 'work-package-v1', 'transcript', 'digest')`).run(project, `transcript:${session.sessionId}`, JSON.stringify(evidence), JSON.stringify(proposed));
         return { status: "staged", proposal_id: Number(inserted.lastInsertRowid), proposal_status: "pending", review_authority: "human", available_action: [] };
       }
-      return input.action === "prepare" ? { status: "none_available", selection_mode: "newest_session", available_action: [] } : failure("stale_package");
+      return input.action === "prepare" ? {
+        status: "none_available",
+        selection_mode: "newest_session",
+        ...Object.keys(skipped).length > 0 ? { skipped_sessions: skipped } : {},
+        available_action: []
+      } : failure("stale_package");
     }
     const entityIdentity = db2.prepare("SELECT created_at, metadata, namespace FROM entities WHERE id = ?");
     const entityTags = db2.prepare("SELECT tag FROM tags WHERE entity_id = ? ORDER BY tag");
@@ -31099,7 +31223,7 @@ function fetchAgentMessage(db2, input) {
     correlation_id: row.correlation_id,
     reply_to: row.reply_to_message_id,
     privacy: parsePrivacy(row.privacy),
-    created_at: row.created_at,
+    created_at: sqliteUtcToIso(row.created_at),
     payload: parseJsonObjectOrValue(row.payload_json),
     provenance: parseJsonObject(row.provenance_json, "provenance_json")
   };
@@ -31433,7 +31557,7 @@ function rowToSentAgentMessage(row) {
     correlation_id: row.correlation_id,
     reply_to: row.reply_to_message_id,
     privacy: parsePrivacy(row.privacy),
-    created_at: row.created_at,
+    created_at: sqliteUtcToIso(row.created_at),
     provenance: parseJsonObject(row.provenance_json, "provenance_json")
   };
 }
@@ -31449,7 +31573,7 @@ function rowToEventHeader(row) {
     correlation_id: row.correlation_id,
     reply_to: row.reply_to_message_id,
     privacy: parsePrivacy(row.privacy),
-    created_at: row.created_at
+    created_at: sqliteUtcToIso(row.created_at)
   };
 }
 function rowToReceipt(row) {
@@ -31461,7 +31585,7 @@ function rowToReceipt(row) {
     recipient: row.recipient,
     actor: row.actor,
     idempotency_key: row.idempotency_key,
-    created_at: row.created_at
+    created_at: sqliteUtcToIso(row.created_at)
   };
   switch (row.receipt_kind) {
     case "intake": {
@@ -32180,7 +32304,7 @@ function nativeAcceptance(row) {
     delivery_id: row.delivery_id,
     adapter_kind: row.adapter_kind,
     receipt: parseStoredObject(row.receipt_json, "agent_host_accepts.receipt_json"),
-    accepted_at: row.created_at
+    accepted_at: sqliteUtcToIso(row.created_at)
   };
 }
 async function requireExactSessionNativeAcceptance(db2, sent, dependencies) {
@@ -32315,7 +32439,7 @@ function readPublicReceiptsSnapshot(db2, input) {
         actor: row.actor,
         idempotency_key: row.idempotency_key,
         detail: parseStoredObject(row.detail_json, "agent_ack_facts.detail_json"),
-        created_at: row.created_at
+        created_at: sqliteUtcToIso(row.created_at)
       }),
       rank: 2,
       order: row.fact_order
@@ -32337,7 +32461,7 @@ function readPublicReceiptsSnapshot(db2, input) {
         workflow_state: row.workflow_state,
         idempotency_key: row.idempotency_key,
         detail: parseStoredObject(row.detail_json, "agent_workflow_facts.detail_json"),
-        created_at: row.created_at
+        created_at: sqliteUtcToIso(row.created_at)
       }),
       rank: 3,
       order: row.fact_order
@@ -32393,7 +32517,7 @@ function projectHostAccept(delivery, fact) {
     attempt_id: fact.attempt_id,
     adapter_kind: fact.adapter_kind,
     receipt: parseStoredObject(fact.receipt_json, "agent_host_accepts.receipt_json"),
-    created_at: fact.created_at
+    created_at: sqliteUtcToIso(fact.created_at)
   };
 }
 function projectAckFact(delivery, fact) {
@@ -33170,7 +33294,7 @@ var TOOL_DEFINITIONS = [
         tags: {
           type: "array",
           items: { type: "string" },
-          description: 'Tags for filtering by subject (e.g. "topic:database"). A "project:<id>" tag is the same as passing `project` (<id> is the `project` field of the `briefing` result; CLI: `memesh briefing --json`); a plain repository name is a different project. At most one project.'
+          description: 'Tags for filtering by subject (e.g. "topic:database"). A "project:<id>" tag is the same as passing `project` (<id> is the `project` field of the `briefing` result; CLI: `memesh briefing --json`); a plain repository name is a different project, except your own project\'s plain name, which is stored as the id and reported in `retagged` \u2014 unless a memory the call updates or supersedes is already filed under the plain tag, which then stays as written. At most one project.'
         },
         relations: {
           type: "array",
@@ -33560,7 +33684,9 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
       const resolved = writeProject(projectArg, input.tags, requestContext);
       if ("result" in resolved)
         return resolved.result;
-      return ok(remember({ ...input, sourceHost, project: resolved.project }));
+      const binding = requestContext.projectBinding;
+      const currentProject = typeof projectArg === "string" ? projectArg : projectArg === void 0 && binding !== void 0 && "project" in binding ? binding.project : void 0;
+      return ok(remember({ ...input, sourceHost, project: resolved.project, currentProject }));
     }
     if (name === "recall") {
       const r = parseOrFail(McpRecallSchema, args);

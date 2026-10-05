@@ -185,18 +185,29 @@ export function executeWorkPackage(db, input, context = {}) {
         WHERE project = ? AND source_kind = 'transcript'
           AND (cluster_key = ? OR CASE WHEN json_valid(source_ids) THEN json_extract(source_ids, '$.sessionId') END = ?)
         LIMIT 1`);
-            const sessions = scanTranscripts({ cwd }).sort((a, b) => a.modifiedAt === b.modifiedAt ? (a.sessionId < b.sessionId ? -1 : a.sessionId > b.sessionId ? 1 : 0)
+            const skipped = {};
+            const skip = (reason, count = 1) => {
+                if (input.action === 'prepare')
+                    skipped[reason] = (skipped[reason] ?? 0) + count;
+            };
+            const sessions = scanTranscripts({ cwd, onSkip: skip }).sort((a, b) => a.modifiedAt === b.modifiedAt ? (a.sessionId < b.sessionId ? -1 : a.sessionId > b.sessionId ? 1 : 0)
                 : a.modifiedAt > b.modifiedAt ? -1 : 1);
             for (const session of sessions) {
-                if (!session.sessionId.trim() || session.sessionId.length > 255)
+                if (!session.sessionId.trim() || session.sessionId.length > 255) {
+                    skip('invalid_session_id');
                     continue;
+                }
                 if (input.action !== 'prepare' && (input.ref.kind !== 'transcript' || input.ref.session_id !== session.sessionId))
                     continue;
-                if (represented.get(project, `transcript:${session.sessionId}`, session.sessionId))
+                if (represented.get(project, `transcript:${session.sessionId}`, session.sessionId)) {
+                    skip('already_proposed');
                     continue;
+                }
                 const snapshot = readTranscriptSnapshot(session.path, session);
-                if (!snapshot || !transcriptMatchesProject(snapshot.bytes, cwd))
+                if (!snapshot || !transcriptMatchesProject(snapshot.bytes, cwd)) {
+                    skip('changed_since_scan');
                     continue;
+                }
                 const turns = parseVisibleConversation(snapshot.bytes)
                     .map(turn => ({ ...turn, text: redactSecrets(turn.text) }));
                 const sources = [];
@@ -209,8 +220,10 @@ export function executeWorkPackage(db, input, context = {}) {
                     sourceBytes += size;
                 }
                 sources.reverse();
-                if (sources.length === 0)
+                if (sources.length === 0) {
+                    skip('no_visible_turns');
                     continue;
+                }
                 const ref = { kind: 'transcript', project, session_id: session.sessionId,
                     modified_at: session.modifiedAt, source_hash: snapshot.contentHash,
                     workspace_hash: workspaceHash };
@@ -246,7 +259,8 @@ export function executeWorkPackage(db, input, context = {}) {
                 return { status: 'staged', proposal_id: Number(inserted.lastInsertRowid), proposal_status: 'pending', review_authority: 'human', available_action: [] };
             }
             return input.action === 'prepare'
-                ? { status: 'none_available', selection_mode: 'newest_session', available_action: [] }
+                ? { status: 'none_available', selection_mode: 'newest_session',
+                    ...(Object.keys(skipped).length > 0 ? { skipped_sessions: skipped } : {}), available_action: [] }
                 : failure('stale_package');
         }
         const entityIdentity = db.prepare('SELECT created_at, metadata, namespace FROM entities WHERE id = ?');

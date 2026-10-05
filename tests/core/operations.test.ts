@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { remember, recall, forget, learn, importMemories, setPinned } from '../../src/core/operations.js';
+import { remember, recall, recallEnhanced, forget, learn, importMemories, setPinned } from '../../src/core/operations.js';
 import { getDatabase } from '../../src/db.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
 
@@ -321,6 +321,83 @@ describe('Core Operations: recall', () => {
 
     expect(recall({ query: 'unique-obs-xyz' })).toHaveLength(0);
     expect(recall({ query: 'unique-obs-xyz', include_archived: true })).toHaveLength(1);
+  });
+
+  // #525: the keyword match puts an exact-name memory first, then the combined
+  // score (recency, frequency, confidence) used to move it below partial
+  // matches — and a size-capped response drops entries from the end.
+  describe('#525 a memory whose name or title is exactly the query comes first', () => {
+    function makeRivalsStronger(names: string[]): void {
+      const db = getDatabase();
+      for (const name of names) {
+        db.prepare("UPDATE entities SET access_count = 50, last_accessed_at = datetime('now'), confidence = 1 WHERE name = ?").run(name);
+      }
+      db.prepare("UPDATE entities SET access_count = 0, last_accessed_at = datetime('now', '-400 days'), confidence = 0.3 WHERE name = 'release-decision'").run();
+    }
+
+    beforeEach(() => {
+      remember({ name: 'release-decision', type: 'decision', observations: ['ship on Fridays only after the smoke run'] });
+      const rivals = ['release-notes-style', 'release-checklist', 'decision-log-format', 'release-decision-history'];
+      for (const name of rivals) remember({ name, type: 'decision', observations: [`about the release decision: ${name}`] });
+      makeRivalsStronger(rivals);
+    });
+
+    it('recall and recallEnhanced return the exact name first', async () => {
+      expect(recall({ query: 'release-decision' })[0].name).toBe('release-decision');
+      expect((await recallEnhanced({ query: 'release-decision' })).entities[0].name).toBe('release-decision');
+    });
+
+    it('matches the name case-insensitively and ignoring surrounding spaces', () => {
+      expect(recall({ query: '  Release-Decision ' })[0].name).toBe('release-decision');
+    });
+
+    it('a memory whose title is exactly the query comes first too', () => {
+      remember({ name: 'rd-2026', type: 'decision', title: 'Friday release rule', observations: ['the Friday release rule, written down'] });
+      getDatabase().prepare("UPDATE entities SET access_count = 0, last_accessed_at = datetime('now', '-400 days'), confidence = 0.3 WHERE name = 'rd-2026'").run();
+      remember({ name: 'friday-release-rule-notes', type: 'decision', observations: ['notes on the Friday release rule'] });
+      getDatabase().prepare("UPDATE entities SET access_count = 50, last_accessed_at = datetime('now'), confidence = 1 WHERE name = 'friday-release-rule-notes'").run();
+      expect(recall({ query: 'Friday release rule' })[0].name).toBe('rd-2026');
+    });
+
+    it('survives a limit that cuts the rest', () => {
+      expect(recall({ query: 'release-decision', limit: 1 }).map((e) => e.name)).toEqual(['release-decision']);
+    });
+
+    // A limit of 1 makes the SQL candidate window decide alone: these pin each
+    // part of the "exact" comparison there, not only the reorder after it.
+    it('letter case and surrounding spaces still match when the limit cuts the rest', () => {
+      expect(recall({ query: '  Release-Decision ', limit: 1 }).map((e) => e.name)).toEqual(['release-decision']);
+    });
+
+    it('a title match survives a limit that cuts the rest', () => {
+      remember({ name: 'rd-2026', type: 'decision', title: 'Friday release rule', observations: ['the Friday release rule, written down'] });
+      remember({ name: 'friday-release-rule-notes', type: 'decision', observations: ['notes on the Friday release rule, the Friday release rule again'] });
+      expect(recall({ query: 'friday release rule', limit: 1 }).map((e) => e.name)).toEqual(['rd-2026']);
+    });
+
+    it('a name with non-ASCII capitals matches in another letter case', () => {
+      remember({ name: 'Äpfel-Rezept', type: 'decision', observations: ['Kuchen'] });
+      for (const name of ['äpfel-rezept-sammlung', 'äpfel-rezept-notizen']) {
+        remember({ name, type: 'decision', observations: ['äpfel rezept, äpfel rezept, äpfel rezept'] });
+      }
+      expect(recall({ query: 'äpfel-rezept', limit: 1 }).map((e) => e.name)).toEqual(['Äpfel-Rezept']);
+    });
+
+    it('an archived exact match survives newer archived matches', () => {
+      remember({ name: 'old-plan', type: 'decision', observations: ['the first plan'] });
+      forget({ name: 'old-plan' });
+      for (let i = 0; i < 5; i++) {
+        remember({ name: `old-plan-v${i}`, type: 'decision', observations: [`old plan revision ${i}`] });
+        forget({ name: `old-plan-v${i}` });
+      }
+      expect(recall({ query: 'old-plan', include_archived: true, limit: 1 }).map((e) => e.name)).toEqual(['old-plan']);
+    });
+
+    it('the stale-index scan keeps an exact match ahead of newer matches', () => {
+      // An index from an older segmentation sends the search to the stored-text scan (#571).
+      getDatabase().prepare("UPDATE memesh_metadata SET value = '0' WHERE key = 'fts_segmentation_version'").run();
+      expect(recall({ query: 'release-decision', limit: 1 }).map((e) => e.name)).toEqual(['release-decision']);
+    });
   });
 });
 

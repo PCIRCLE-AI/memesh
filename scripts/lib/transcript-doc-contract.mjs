@@ -34,7 +34,7 @@ export function checkTranscriptDiscoveryContract(source, dreamer, schemas, apiRe
     return { ok: false, bounds, error: 'transcript discovery bound extraction stopped matching transcript-source.ts' };
   }
   if (!/return sessionCwd !== null && sameProjectPath\(sessionCwd, cwd\);/.test(source)
-    || !/if \(!transcriptMatchesProject\(buf, cwd\)\) continue;/.test(source)) {
+    || !/if \(!transcriptMatchesProject\(buf, cwd\)\) \{[^}]*\bcontinue;\s*\}/.test(source)) {
     return { ok: false, bounds, error: 'transcript discovery source no longer rejects missing or mismatched recorded cwd' };
   }
   if (!/if \(pinned \|\| compacted\) continue;/.test(dreamer)

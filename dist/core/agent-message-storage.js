@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
+import { parseSqliteUtcMs } from './time-utils.js';
+const SQLITE_FORM = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 const TERMINAL_WORKFLOW_STATES = new Set(['completed', 'cancelled', 'rejected']);
 const DEFAULT_BATCH_SIZE = 100;
 const MAX_BATCH_SIZE = 1_000;
@@ -24,7 +26,7 @@ export class AgentMessageStorageQuotaExceededError extends AgentMessageStorageEr
     }
 }
 export function getAgentMessageStorageReport(db, options) {
-    const cutoff = normalizeCutoff(options.cutoff);
+    const cutoff = normalizeAgentMessageCutoff(options.cutoff);
     const states = readMessageStates(db, cutoff);
     const lifecycle = db.prepare(`
     SELECT
@@ -78,7 +80,7 @@ export function getAgentMessageStorageReport(db, options) {
     };
 }
 export function pruneTerminalAgentMessagePayloads(db, options) {
-    const cutoff = normalizeCutoff(options.cutoff);
+    const cutoff = normalizeAgentMessageCutoff(options.cutoff);
     const batchSize = normalizeBatchSize(options.batchSize);
     const dryRun = options.dryRun === undefined ? true : options.dryRun;
     const actor = normalizeActor(options.actor);
@@ -308,8 +310,9 @@ function stableTombstone(payloadHash, originalPayloadBytes) {
         },
     });
 }
-function normalizeCutoff(value) {
-    const date = value instanceof Date ? value : new Date(value);
+export function normalizeAgentMessageCutoff(value) {
+    const sqliteMs = typeof value === 'string' && SQLITE_FORM.test(value) ? parseSqliteUtcMs(value) : null;
+    const date = value instanceof Date ? value : new Date(sqliteMs ?? value);
     if (Number.isNaN(date.getTime())) {
         throw new AgentMessageStorageError('invalid_retention_cutoff', 'Agent message retention cutoff must be a valid date.');
     }

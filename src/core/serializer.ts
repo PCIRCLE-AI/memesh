@@ -5,6 +5,7 @@
 
 import { getDatabase } from '../db.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
+import { storedText } from '../storage/entity-write.js';
 import { truncateTitle } from './title.js';
 import { redactTextValues, redactTitleAndObservations, redactVersionText } from './paths.js';
 import { parseSqliteUtcMs } from './time-utils.js';
@@ -921,8 +922,22 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean })
             // this, re-running `import --merge append` on the same file
             // grows every shared entity's observation list without bound —
             // dogfooded: the same sentence duplicated on every re-run.
+            // Compared in the form the database stores (#561): a lone
+            // surrogate comes back as U+FFFD and would otherwise never match.
             const existingText = new Set(existing.observations);
-            const newObservations = observations.filter((o) => !existingText.has(o));
+            const newObservations = observations.map(storedText).filter((o) => !existingText.has(o));
+            // #561: an entry that adds nothing to the memory you already have —
+            // the same backup restored twice — is skipped, not appended. Writing
+            // it anyway marked that memory untrusted for text it already held.
+            // An archived memory reaching this branch is being restored
+            // (restore_archived), which is a change in itself.
+            const existingTags = new Set(existing.tags);
+            const addsNothing = !existing.archived
+              && newObservations.length === 0
+              && (entity.tags === undefined || entity.tags.every((tag) => existingTags.has(storedText(tag))))
+              && (title === undefined || storedText(title) === existing.title)
+              && (namespace === undefined || namespace === (existing.namespace ?? 'personal'));
+            if (addsNothing) return { kind: 'skipped' } as const;
             // Pass trustOverride directly so the createEntity confidence-
             // bump gate denies the lift on untrusted imports. Codex
             // caught a P1 where the trust value was being set via
