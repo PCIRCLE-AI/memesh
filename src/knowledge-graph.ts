@@ -1147,7 +1147,7 @@ export class KnowledgeGraph {
    * catalogue read, matching the prior transport behavior).
    *
    * #451: `type` is canonicalized, so `?type=lesson` or `?type=mistake` still
-   * finds the rows the one-time repair renamed to `lesson_learned`.
+   * finds the rows the repair renamed to `lesson_learned`.
    */
   listByType(type: string, limit?: number, includeArchived?: boolean, namespace?: string): Entity[] {
     type = canonicalEntityType(type);

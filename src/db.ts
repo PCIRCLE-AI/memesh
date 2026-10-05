@@ -249,7 +249,7 @@ function migrateToCurrentSchema(db: MemeshDatabase): void {
   // not part of the FTS document (see removeJunkFileTags's own docstring).
   removeJunkFileTags(db);
 
-  // #451: rename `lesson`/`mistake` rows to `lesson_learned` once. Before
+  // #451/#551: rename `lesson`/`mistake` rows to `lesson_learned`. Before
   // splitFusedLessons, which only selects `lesson_learned` buckets.
   canonicalizeLessonTypes(db);
 
