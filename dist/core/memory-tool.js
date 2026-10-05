@@ -119,17 +119,22 @@ function tagsOf(name) {
         .prepare('SELECT tag FROM tags WHERE entity_id = (SELECT id FROM entities WHERE name = ?)')
         .all(name).map((t) => t.tag);
 }
-function findEntity(kg, namespace, name) {
+function findEntity(kg, namespace, name, includeArchived = false) {
     const entity = kg.getEntity(name);
     if (!entity || entity.namespace !== namespace)
+        return null;
+    if (entity.archived && !includeArchived)
         return null;
     return entity;
 }
 function rewriteObservations(kg, entity, observations) {
+    const next = redactSecretList(observations);
+    if (!entity.archived && next.join('\n') === entity.observations.join('\n'))
+        return;
     getDatabase().transaction(() => {
         kg.clearEntityData(entity.name);
         kg.createEntity(entity.name, entity.type, {
-            observations: redactSecretList(observations),
+            observations: next,
             tags: entity.tags,
             namespace: entity.namespace,
         });
@@ -200,7 +205,7 @@ function createEntityFile(namespace, name, fileText, path) {
         return err('Error: `file_text` must be a string.');
     }
     const kg = graph();
-    const existing = findEntity(kg, namespace, name);
+    const existing = findEntity(kg, namespace, name, true);
     const text = redactSecrets(fileText);
     const oversize = tooLarge(text, path);
     if (oversize)
@@ -318,10 +323,10 @@ function renamePath(oldRaw, newRaw) {
     const db = getDatabase();
     const kg = graph();
     return db.transaction(() => {
-        const source = findEntity(kg, from.namespace, from.name);
+        const source = findEntity(kg, from.namespace, from.name, true);
         if (!source)
             return err(`Error: The path ${String(oldRaw)} does not exist`);
-        if (findEntity(kg, to.namespace, to.name)) {
+        if (findEntity(kg, to.namespace, to.name, true)) {
             return err(`Error: The destination ${String(newRaw)} already exists`);
         }
         if (kg.getEntity(to.name)) {

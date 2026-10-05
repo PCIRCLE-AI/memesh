@@ -117,6 +117,15 @@ describe('remember bound to a project', () => {
     expect(JSON.parse(snapshot('a-decision')).row.status).toBe('archived');
   });
 
+  it('refuses a bare `project:` tag on every transport, and writes nothing', () => {
+    const before = counts();
+    for (const tag of ['project:', 'project:   ']) {
+      expect(() => remember({ name: 'blank-project', type: 'fact', observations: ['x'], tags: [tag] }))
+        .toThrow(/names no project/);
+    }
+    expect(counts()).toEqual(before);
+  });
+
   it('without a bound project, remember is unchanged', () => {
     remember({ name: 'plain', type: 'fact', observations: ['x'] });
     expect(tagsOf('plain')).toEqual([]);
