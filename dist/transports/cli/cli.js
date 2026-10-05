@@ -6151,7 +6151,14 @@ function migrateToCurrentSchema(db2) {
   runAutoDecay(db2);
   backfillSignalScores(db2);
   ensureFtsSegmentation(db2);
-  backfillTitles(db2);
+  if (ftsIndexIsCurrent(db2)) {
+    backfillTitles(db2);
+  } else {
+    try {
+      process.stderr.write("MeMesh: adding titles to older memories waits until the search index is rebuilt.\n");
+    } catch {
+    }
+  }
   backfillAcceptedProposalTrust(db2);
   dedupeObservations(db2);
   retractZeroEditClaims(db2);

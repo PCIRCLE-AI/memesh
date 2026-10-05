@@ -15,6 +15,7 @@ import {
   ensureTagsUniqueIndex,
   ensureHookRunsSince,
   ensureFtsSegmentation,
+  ftsIndexIsCurrent,
   rebuildFtsIndex,
   runOnceMigration,
   FTS_SEGMENTATION_VERSION,
@@ -227,9 +228,23 @@ function migrateToCurrentSchema(db: MemeshDatabase): void {
   // delete fail with "database disk image is malformed" on every open (#522).
   ensureFtsSegmentation(db);
 
-  // UX-1: give pre-title rows a human-readable heuristic title. Same
-  // marker + fill-only discipline as backfillSignalScores above.
-  backfillTitles(db);
+  // #568: when that rebuild failed (a full disk, say) it waits 24 hours before
+  // retrying, and the index is still the old one. The title backfill removes
+  // index rows one by one, which then fails exactly as #522 describes and took
+  // every open down with it — `memesh reindex --fts`, the documented way out,
+  // included. It waits for the rebuild instead; it records its marker only when
+  // it runs, so the first open after the rebuild runs it. The repair passes
+  // below rebuild the index whole rather than row by row, so an old index does
+  // not stop them.
+  if (ftsIndexIsCurrent(db)) {
+    // UX-1: give pre-title rows a human-readable heuristic title. Same
+    // marker + fill-only discipline as backfillSignalScores above.
+    backfillTitles(db);
+  } else {
+    try {
+      process.stderr.write('MeMesh: adding titles to older memories waits until the search index is rebuilt.\n');
+    } catch { /* stderr gone */ }
+  }
 
   // A1: release the auto-injection block on memories a human already
   // accepted via `dream accept`. Same marker + fill-only discipline.

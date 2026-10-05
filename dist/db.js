@@ -7,7 +7,7 @@ import { getDbPath } from './core/paths.js';
 import { belongsToAnotherUser, databaseFiles, guardDatabaseFiles, ownerWriteCommand, removeGroupAndOtherAccess, shellQuote } from './core/file-mode.js';
 import { insertFtsRow, joinIndexedObservations, removeFromFts } from './storage/fts-index.js';
 import { canonicalizeLessonTypes, dedupeObservations, dropArchivedIndexRows, removeJunkFileTags, repairFusedLessonShellHistory, retractZeroEditClaims, splitFusedLessons } from './storage/graph-repairs.js';
-import { SCHEMA_SQL, FTS_SQL, safeAlter, migrateEntitiesSchema, ensureTagsUniqueIndex, ensureHookRunsSince, ensureFtsSegmentation, rebuildFtsIndex, runOnceMigration, FTS_SEGMENTATION_VERSION, } from './storage/schema.js';
+import { SCHEMA_SQL, FTS_SQL, safeAlter, migrateEntitiesSchema, ensureTagsUniqueIndex, ensureHookRunsSince, ensureFtsSegmentation, ftsIndexIsCurrent, rebuildFtsIndex, runOnceMigration, FTS_SEGMENTATION_VERSION, } from './storage/schema.js';
 export { runOnceMigration, FTS_SEGMENTATION_VERSION };
 import { truncateTitle, isBoilerplateObservation } from './core/title.js';
 let db = null;
@@ -97,7 +97,15 @@ function migrateToCurrentSchema(db) {
     runAutoDecay(db);
     backfillSignalScores(db);
     ensureFtsSegmentation(db);
-    backfillTitles(db);
+    if (ftsIndexIsCurrent(db)) {
+        backfillTitles(db);
+    }
+    else {
+        try {
+            process.stderr.write('MeMesh: adding titles to older memories waits until the search index is rebuilt.\n');
+        }
+        catch { }
+    }
     backfillAcceptedProposalTrust(db);
     dedupeObservations(db);
     retractZeroEditClaims(db);
