@@ -26,6 +26,7 @@ class ActiveRouterHostConnection {
     retryTimer = null;
     cancelRetryWait = null;
     reconnectTask = null;
+    reconnectAttempt = 0;
     closed = false;
     deliveryTail = Promise.resolve();
     acceptedDeliveries = new Map();
@@ -208,6 +209,13 @@ class ActiveRouterHostConnection {
                         }
                         continue;
                     }
+                    if (registrationSettled && frame.ok === true)
+                        this.reconnectAttempt = 0;
+                    if (registrationSettled && frame.ok === false
+                        && isRecord(frame.error) && frame.error.code === 'stale_generation') {
+                        socket.destroy();
+                        return;
+                    }
                     if (frame.type === 'session_superseded') {
                         if (frame.version !== AGENT_ROUTER_PROTOCOL_VERSION
                             || frame.connection_id !== connectionId
@@ -332,11 +340,10 @@ class ActiveRouterHostConnection {
         });
     }
     async reconnectLoop() {
-        let attempt = 0;
         while (!this.closed) {
-            if (!await this.waitForRetry(this.retryDelay(attempt)))
+            if (!await this.waitForRetry(this.retryDelay(this.reconnectAttempt)))
                 return;
-            attempt += 1;
+            this.reconnectAttempt += 1;
             try {
                 await this.connectOnce();
                 if (this.currentSocket)
@@ -548,8 +555,15 @@ function requiredFrameInteger(value) {
     return value;
 }
 function failureCode(error) {
+    const code = isRecord(error) ? error.code : undefined;
+    if (typeof code === 'string' && /^[a-z0-9_]{1,64}$/.test(code))
+        return code;
     const name = error instanceof Error ? error.name : 'host_rejected';
-    return name.replace(/[^A-Za-z0-9_]/g, '_').slice(0, 120) || 'host_rejected';
+    return name
+        .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+        .toLowerCase()
+        .replace(/[^a-z0-9_]/g, '_')
+        .slice(0, 64) || 'host_rejected';
 }
 function isRecord(value) {
     return typeof value === 'object' && value !== null && !Array.isArray(value);

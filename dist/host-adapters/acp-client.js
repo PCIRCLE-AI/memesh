@@ -20,6 +20,10 @@ const MAX_CONFIGURED_TIMEOUT_MS = 10 * 60_000;
 const MAX_CONFIGURED_QUEUE_DEPTH = 1_000;
 const utf8 = new TextDecoder('utf-8', { fatal: true });
 export class AcpHostAdapterError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = new.target.name;
+    }
 }
 export class AcpProtocolError extends AcpHostAdapterError {
 }
@@ -66,7 +70,7 @@ export class AcpClientHostAdapter {
     active = null;
     terminalError = null;
     unregister = null;
-    routerGeneration;
+    routerConnection = null;
     unregisterStarted = false;
     closing = false;
     exited = false;
@@ -77,7 +81,6 @@ export class AcpClientHostAdapter {
             generation: options.generation,
             workspace: options.workspace,
         });
-        this.routerGeneration = options.generation;
         this.child = child;
         this.router = options.router;
         this.onSessionUpdate = options.onSessionUpdate;
@@ -155,7 +158,7 @@ export class AcpClientHostAdapter {
         if (this.closing || this.exited) {
             return Promise.reject(new AcpProcessExitError('ACP adapter is not active.'));
         }
-        if (!sameGeneration(delivery.generation, this.routerGeneration)) {
+        if (!sameGeneration(delivery.generation, this.routerConnection?.generation ?? this.identity.generation)) {
             return Promise.reject(new AcpStaleGenerationError('ACP delivery generation is stale.'));
         }
         if (delivery.signal?.aborted) {
@@ -217,7 +220,7 @@ export class AcpClientHostAdapter {
             this.unregister = unregister;
         }
         else if (unregister) {
-            this.routerGeneration = unregister.generation;
+            this.routerConnection = unregister;
             this.unregister = unregister.unregister ?? null;
         }
     }

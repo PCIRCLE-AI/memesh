@@ -168,9 +168,16 @@ function recordCompanionLog(dataDir: string, line: string): void {
   }
 }
 
-/** The one-line reason to show a user for `error`, else ''. */
+/**
+ * The one-line reason to show a user for `error`: always the error's own words, so a failure
+ * that only says "session registration failed." cannot hide what to fix. Empty only when the
+ * error carries no message at all.
+ */
 function companionFailureDetail(error: unknown): string {
-  return routerOutdatedDetail(error) || (error instanceof CompanionRefusal ? ` ${error.message}` : '');
+  const outdated = routerOutdatedDetail(error);
+  if (outdated) return outdated;
+  const message = errorText(error).trim().slice(0, 1000);
+  return message ? ` ${message}` : '';
 }
 
 /**
@@ -217,6 +224,7 @@ function takeCompanionFailure(file: string): Error | null {
   if (typeof parsed.message !== 'string') return null;
   if (parsed.code === 'router_outdated') return new AgentRouterProtocolError('router_outdated', parsed.message.slice(0, 1000));
   if (parsed.code === 'companion_busy') return new CompanionRefusal(parsed.message.slice(0, 1000));
+  if (parsed.code === 'failed') return new Error(parsed.message.slice(0, 1000));
   return null;
 }
 
@@ -777,15 +785,16 @@ async function runDetachedCompanion(
   } catch (error) {
     process.exitCode = 1;
     try {
+      // Recorded first, so the reason survives even if publishing it fails: this process
+      // has no stdio, and the log is where a user can read it afterwards.
+      recordCompanionLog(dataDir, `companion ${process.pid} could not start: ${errorText(error)}`);
       // Published before cleanup: the launcher waits for this process to exit
       // after reading it, and a signal arriving during cleanup cannot drop it.
-      const detail = companionFailureDetail(error);
-      if (detail) {
-        publishCompanionFailure(failurePath, {
-          code: error instanceof CompanionRefusal ? 'companion_busy' : 'router_outdated',
-          message: (error as Error).message,
-        });
-      }
+      publishCompanionFailure(failurePath, {
+        code: error instanceof CompanionRefusal ? 'companion_busy'
+          : routerOutdatedDetail(error) ? 'router_outdated' : 'failed',
+        message: errorText(error),
+      });
     } finally {
       await shutdown();
     }

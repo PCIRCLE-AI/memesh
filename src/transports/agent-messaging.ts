@@ -505,6 +505,21 @@ function parseStoredObject(raw: string, label: string): AgentJsonObject {
   throw new AgentMessagingError(`Invalid stored JSON object in ${label}.`);
 }
 
+function principalFallbackKey(idempotencyKey: string): string {
+  return `principal-fallback:${createHash('sha256').update(idempotencyKey).digest('hex')}`;
+}
+
+/** Whether a send with this idempotency key already fell back to its principal. */
+function hasPrincipalFallback(
+  db: MemeshDatabase,
+  sent: { project: string; sender: string },
+  idempotencyKey: string,
+): boolean {
+  return db.prepare(`
+    SELECT 1 FROM agent_message_idempotency WHERE project = ? AND sender = ? AND idempotency_key = ?
+  `).get(sent.project, sent.sender, principalFallbackKey(idempotencyKey)) !== undefined;
+}
+
 /**
  * #497 `fallback_to_principal`: the exact session refused a session send, so
  * send the same message to that session's principal, meant for that session
@@ -545,7 +560,7 @@ function sendPrincipalFallback(
       recipient: session.principal_id,
       target_kind: 'principal',
       intended_session: refused.recipient,
-      idempotency_key: `principal-fallback:${createHash('sha256').update(message.idempotency_key).digest('hex')}`,
+      idempotency_key: principalFallbackKey(message.idempotency_key),
     }, {
       notifier: optionalRouterNotifier(),
       storage_quota_bytes: configuredAgentMessageStorageQuotaBytes(),
@@ -627,6 +642,12 @@ export async function executeAgentMessageAction(
         storage_quota_bytes: configuredAgentMessageStorageQuotaBytes(),
       });
       if (sent.target_kind !== 'session') return sent;
+      // A retry of a send that already fell back returns that principal message, with or
+      // without the flag, even when the session is back by now; trying the session again
+      // would deliver a second copy.
+      if (hasPrincipalFallback(db, sent, input.idempotency_key)) {
+        return sendPrincipalFallback(db, message, sent);
+      }
       try {
         return {
           ...sent,

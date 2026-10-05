@@ -259,6 +259,11 @@ async function withInitializedCodexConnection<T>(
   operation: (socket: CodexWebSocketLike) => Promise<T>,
 ): Promise<T> {
   const socket = options.websocketFactory(controlSocketPath, options.timeoutMs);
+  // ws emits a late 'error' on a later tick when a connecting socket is terminated or closed
+  // (the open timeout does exactly that), after the per-phase listeners below are gone. An
+  // 'error' event with no listener is thrown, which would kill the whole host. Every outcome is
+  // already reported through the per-phase listeners, so this one only has to exist.
+  socket.on('error', () => undefined);
   try {
     await waitForOpen(socket, options.timeoutMs);
     await exchange(socket, {
@@ -406,6 +411,10 @@ function exchange(socket: CodexWebSocketLike, request: JsonRpcRequest, timeoutMs
       try {
         response = JSON.parse(responseText) as JsonRpcResponse;
       } catch {
+        fail(new CodexAppServerProtocolError());
+        return;
+      }
+      if (typeof response !== 'object' || response === null) {
         fail(new CodexAppServerProtocolError());
         return;
       }

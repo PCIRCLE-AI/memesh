@@ -94,6 +94,16 @@ export async function startManagedCodexHost(config, dependencies = {}) {
             },
             on_superseded: reportSuperseded,
         });
+        if (closeTask !== undefined || !isChildRunning(child)) {
+            let closeError;
+            try {
+                await routerConnection.close();
+            }
+            catch (error) {
+                closeError = error;
+            }
+            throw new Error('Managed Codex app-server exited while this host was registering with the router.', closeError === undefined ? undefined : { cause: closeError });
+        }
         return {
             thread_id: thread.thread_id,
             session_instance_id: normalized.sessionInstanceId,

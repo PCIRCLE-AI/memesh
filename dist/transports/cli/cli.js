@@ -27350,6 +27350,14 @@ function parseStoredObject(raw, label) {
   }
   throw new AgentMessagingError(`Invalid stored JSON object in ${label}.`);
 }
+function principalFallbackKey(idempotencyKey) {
+  return `principal-fallback:${createHash10("sha256").update(idempotencyKey).digest("hex")}`;
+}
+function hasPrincipalFallback(db2, sent, idempotencyKey) {
+  return db2.prepare(`
+    SELECT 1 FROM agent_message_idempotency WHERE project = ? AND sender = ? AND idempotency_key = ?
+  `).get(sent.project, sent.sender, principalFallbackKey(idempotencyKey)) !== void 0;
+}
 function sendPrincipalFallback(db2, message, refused) {
   const session = db2.prepare(`
     SELECT principal_id FROM agent_session_instances WHERE project = ? AND session_instance_id = ?
@@ -27364,7 +27372,7 @@ function sendPrincipalFallback(db2, message, refused) {
       recipient: session.principal_id,
       target_kind: "principal",
       intended_session: refused.recipient,
-      idempotency_key: `principal-fallback:${createHash10("sha256").update(message.idempotency_key).digest("hex")}`
+      idempotency_key: principalFallbackKey(message.idempotency_key)
     }, {
       notifier: optionalRouterNotifier(),
       storage_quota_bytes: configuredAgentMessageStorageQuotaBytes()
@@ -27427,6 +27435,9 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
       });
       if (sent.target_kind !== "session")
         return sent;
+      if (hasPrincipalFallback(db2, sent, input.idempotency_key)) {
+        return sendPrincipalFallback(db2, message, sent);
+      }
       try {
         return {
           ...sent,
@@ -63700,7 +63711,7 @@ var pkg = JSON.parse(fs24.readFileSync(packageJsonPath2, "utf8"));
 var RECALL_OMITTED_HINT = "omitted to keep the response under size \u2014 narrow the query, or open the dashboard for the full text";
 var RECALL_SCAN_NOTE = "The search index is out of date; these results come from a scan of the stored text.";
 var program2 = new Command();
-program2.name("memesh").description("MeMesh \u2014 Agentic memory for coding agents").version(pkg.version).allowExcessArguments(true).showSuggestionAfterError(true);
+program2.name("memesh").description("MeMesh \u2014 Agentic memory for coding agents").version(pkg.version).showSuggestionAfterError(true);
 var UPDATE_NOTICE_SILENT_COMMANDS = /* @__PURE__ */ new Set([
   "status",
   "update",
@@ -64187,20 +64198,21 @@ function boundedCliDeclaration(value, option, maxCharacters) {
   }
   return normalized;
 }
-async function readCliMessagePayloadFromStdin(contentType) {
-  let raw = "";
+async function readCliMessagePayloadFromStdin(contentType, input = process.stdin) {
+  const chunks = [];
   let bytes = 0;
-  for await (const chunk of process.stdin) {
-    const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
-    bytes += Buffer.byteLength(text, "utf8");
+  for await (const chunk of input) {
+    const buffer = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : Buffer.from(chunk);
+    bytes += buffer.length;
     if (bytes > AGENT_MESSAGE_JSON_MAX_BYTES) {
       throw new Error(`stdin payload exceeds ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes.`);
     }
-    raw += text;
+    chunks.push(buffer);
   }
   if (bytes === 0) {
     throw new Error("stdin payload is empty.");
   }
+  const raw = Buffer.concat(chunks).toString("utf8");
   const payload = parseCliMessagePayload(raw, contentType);
   const encodedBytes = Buffer.byteLength(JSON.stringify(payload), "utf8");
   if (encodedBytes > AGENT_MESSAGE_JSON_MAX_BYTES) {
@@ -65730,6 +65742,7 @@ ${line}`);
     }
   }
 });
+program2.allowExcessArguments(true);
 program2.action(async () => {
   const stray = program2.args.filter((a) => !a.startsWith("-"));
   if (stray.length > 0) {
@@ -65759,6 +65772,7 @@ export {
   createHostConfigAtomically,
   feedbackBrowserOpenCommand,
   isPromptAbort,
+  readCliMessagePayloadFromStdin,
   resolveUpgradePluginScript,
   runCli
 };
