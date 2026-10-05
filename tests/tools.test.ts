@@ -466,6 +466,17 @@ describe('transcript work_package', () => {
     }
   });
 
+  it('#552 offers a session whose cwd sits past 100 KB of metadata', async () => {
+    writeSession('late-cwd', [
+      { type: 'file-history-snapshot', snapshot: 'x'.repeat(100_000) },
+      user('Decide after the long preamble'),
+    ]);
+    const available = await prepare();
+    expect(available.status).toBe('available');
+    expect(available.package.ref.session_id).toBe('late-cwd');
+    expect(available.package.sources).toEqual([{ role: 'user', text: 'Decide after the long preamble' }]);
+  });
+
   it('skips a transcript that becomes unreadable after discovery', async () => {
     writeSession('older-readable', [user('Use the readable fallback session.')], new Date(Date.now() - 4000));
     const newest = writeSession('newest-unreadable', [user('This session disappears during selection.')]);

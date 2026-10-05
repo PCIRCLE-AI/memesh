@@ -15,6 +15,7 @@ import {
   MAX_TRANSCRIPT_SCAN_BYTES,
   MAX_TRANSCRIPT_SOURCE_BYTES,
   recordedCwd,
+  transcriptMatchesProject,
   readTranscriptSnapshot,
 } from '../../src/core/transcript-source.js';
 
@@ -404,6 +405,43 @@ describe('transcript-source slug-collision guard', () => {
     fs.writeFileSync(file, lines.join('\n') + '\n');
     fs.utimesSync(file, new Date(), new Date());
   }
+
+  // #552: Claude Code transcripts can open with long metadata lines (a 13 KB
+  // file-history-snapshot; on one real transcript the first cwd was at byte
+  // 102,486). Only the first 64 KB and 40 lines were read, so the project's
+  // own session was dropped as "no project", with no message.
+  it('#552 a cwd past 64 KB of metadata still matches the project', () => {
+    const preamble = JSON.stringify({ type: 'file-history-snapshot', snapshot: 'x'.repeat(100_000) });
+    const bytes = Buffer.from(`${preamble}\n${JSON.stringify({ type: 'user', cwd: '/p/my-project' })}\n`);
+    expect(transcriptMatchesProject(bytes, '/p/my-project')).toBe(true);
+    expect(transcriptMatchesProject(bytes, '/p/other')).toBe(false);
+  });
+
+  it('#552 a cwd past 40 metadata lines is found, and a nested "cwd" (a tool input) is not taken for it', () => {
+    const lines = Array.from({ length: 50 }, (_, i) => JSON.stringify({ type: 'summary', n: i }));
+    lines.push(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', input: { cwd: '/somewhere/else' } }] } }));
+    lines.push(JSON.stringify({ type: 'user', cwd: '/p/my-project' }));
+    expect(recordedCwd(lines.join('\n'))).toBe('/p/my-project');
+    expect(transcriptMatchesProject(Buffer.from(lines.join('\n')), '/p/my-project')).toBe(true);
+  });
+
+  it('#552 only the first top-level cwd counts: a later line cannot claim the session for another project', () => {
+    const projectFirst = [{ type: 'user', cwd: '/p/my-project' }, { type: 'user', cwd: '/p/other' }].map(e => JSON.stringify(e)).join('\n');
+    const otherFirst = [{ type: 'user', cwd: '/p/other' }, { type: 'user', cwd: '/p/my-project' }].map(e => JSON.stringify(e)).join('\n');
+    expect(transcriptMatchesProject(Buffer.from(projectFirst), '/p/my-project')).toBe(true);
+    expect(transcriptMatchesProject(Buffer.from(otherFirst), '/p/my-project')).toBe(false);
+  });
+
+  it('#552 scanTranscripts keeps the project\'s own session when its cwd sits past 100 KB of metadata', () => {
+    const dir = path.join(root, projectTranscriptSlug('/p/my-project'));
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'late-cwd-sess.jsonl');
+    const preamble = JSON.stringify({ type: 'file-history-snapshot', snapshot: 'x'.repeat(100_000) });
+    fs.writeFileSync(file, `${preamble}\n${JSON.stringify({ type: 'user', cwd: '/p/my-project', text: 'hi' })}\n`);
+    fs.utimesSync(file, new Date(), new Date());
+
+    expect(scanTranscripts({ cwd: '/p/my-project', windowDays: 3 }).map(s => s.sessionId)).toEqual(['late-cwd-sess']);
+  });
 
   it('recordedCwd finds the cwd past the metadata preamble, not just line 1', () => {
     const text = [

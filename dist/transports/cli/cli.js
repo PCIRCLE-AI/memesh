@@ -58679,21 +58679,28 @@ function claudeProjectsDir() {
 function projectTranscriptSlug(cwd) {
   return cwd.replace(/[^a-zA-Z0-9]/g, "-");
 }
-function recordedCwd(text) {
-  let seen = 0;
-  for (const line of text.split("\n")) {
-    if (!line.trim())
-      continue;
-    if (++seen > 40)
-      break;
-    try {
-      const entry = JSON.parse(line);
-      if (typeof entry.cwd === "string" && entry.cwd.length > 0)
-        return entry.cwd;
-    } catch {
-    }
+function lineCwd(line) {
+  try {
+    const entry = JSON.parse(line);
+    return entry !== null && typeof entry === "object" && typeof entry.cwd === "string" && entry.cwd.length > 0 ? entry.cwd : null;
+  } catch {
+    return null;
   }
-  return null;
+}
+function recordedCwd(text) {
+  let from = 0;
+  for (; ; ) {
+    const at = text.indexOf('"cwd"', from);
+    if (at < 0)
+      return null;
+    const start = text.lastIndexOf("\n", at) + 1;
+    const newline = text.indexOf("\n", at);
+    const end = newline < 0 ? text.length : newline;
+    const cwd = lineCwd(text.slice(start, end));
+    if (cwd !== null)
+      return cwd;
+    from = end + 1;
+  }
 }
 function sameProjectPath(a, b) {
   if (path18.normalize(a) === path18.normalize(b))
@@ -58706,7 +58713,7 @@ function sameProjectPath(a, b) {
   return false;
 }
 function transcriptMatchesProject(bytes, cwd) {
-  const sessionCwd = recordedCwd(bytes.subarray(0, 65536).toString("utf8"));
+  const sessionCwd = recordedCwd(bytes.toString("utf8"));
   return sessionCwd !== null && sameProjectPath(sessionCwd, cwd);
 }
 function scanTranscripts(opts) {
