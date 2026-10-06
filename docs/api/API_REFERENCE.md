@@ -46,7 +46,7 @@ If `remember` is called again with an existing `name`, MeMesh treats it as an ap
 
 **Project over MCP.** A memory belongs to one project, or to none. `project: "<id>"` or a `project:<id>` tag names the project (a `project:` tag with no id names nothing, and is refused beside the bound project). `project: false` stores a memory that belongs to no project — a preference, a general lesson — with no project tag and no binding needed. With neither (a `null` `project` counts as not given), the MCP tool files the memory under the session's bound project — `MEMESH_PROJECT_ROOT` from the launch, or the client's single workspace root — and adds its `project:` tag; with no bound project the call is refused with `workspace_unavailable` (or `workspace_ambiguous`), naming these options. A `project` that contradicts a project tag, and two different project tags, are refused. A name is one memory for every project, so a write that names a project — by argument, tag or binding — is refused on a name, or a `supersedes` target, that belongs to another project or to no project; a write with no project is refused on one that belongs to a project. Use a different name. A refused call writes nothing. The same ownership check, the two-tag refusal and the tag-contradiction refusal apply to the CLI and the HTTP API when they carry a project tag; otherwise they keep their own defaults.
 
-Two forms. **Structured**: `name` + `type`, with `title` / `observations`. **Note**: `note` alone (free text), with optional `type`, `tags`, `name` — the server derives the rest:
+Two forms. **Structured**: `name` + `type`, with `title` / `observations`. **Note**: `note` alone (free text), with optional `type`, `tags`, `name`, `why` — the server derives the rest:
 
 - `title` = the first non-empty line (a leading `#` heading or list marker is dropped; a line over 200 characters is cut to its first sentence, then to 200). When the line had to be cut, the full original line is *also* kept as the first observation — nothing the caller wrote is dropped, so a long first line ends up in the response twice: shortened as the title, in full as an observation;
 - `observations` = the remaining paragraphs, one each (blank-line separated; a paragraph made only of list items gives one observation per item). A one-line note keeps its line as the single observation;
@@ -124,9 +124,9 @@ it. Do not read `derived.title` as the stored title — that is the title the
 text would have produced, which on an existing memory is exactly the one that
 was not used.
 
-With `note`, the response also carries `derived: { name, type, title, observations }` — the shape the server derived, so a wrong title can be corrected with one more call (`name` + `replace: true` + `title` + the `observations` to keep, which can be copied from `derived.observations`; without observations the call is refused). `type` is required on a call that omits `note` **except** on a `replace` with a `name`: that call keeps the type the memory already has, so a correction does not have to restate it. Pass a `type` there only to reclassify — `replace` rewrites the stored type when it differs from what you pass, compared with the canonical form of what you pass: `type: "lesson"` does not retype a memory stored as `lesson_learned`, and it does retype one an older version stored as `lesson` (#451). On a `replace` whose `name` does not exist there is no stored type to inherit, so `type` is required to create it. With `replace: true` the response also carries `replaced: true` when an existing memory was rewritten, `false` when there was nothing to replace.
+With `note`, the response also carries `derived: { name, type, title, observations }` — the shape the server derived, so a wrong title can be corrected with one more call (`name` + `replace: true` + `title` + the `observations` to keep, which can be copied from `derived.observations`; without observations the call is refused). `derived.observations` is only what the note produced: it does not include the `Why:` line, so a replace that corrects a `decision` must send `why` again. `type` is required on a call that omits `note` **except** on a `replace` with a `name`: that call keeps the type the memory already has, so a correction does not have to restate it. Pass a `type` there only to reclassify — `replace` rewrites the stored type when it differs from what you pass, compared with the canonical form of what you pass: `type: "lesson"` does not retype a memory stored as `lesson_learned`, and it does retype one an older version stored as `lesson` (#451). On a `replace` whose `name` does not exist there is no stored type to inherit, so `type` is required to create it. With `replace: true` the response also carries `replaced: true` when an existing memory was rewritten, `false` when there was nothing to replace.
 
-Four more fields are conditional. `retagged` appears when a `project:<name>` tag named the call's own project by its plain name (MCP: the `project` argument or the bound project; CLI: the current directory's project) while that project's id is `<name>~<hash>`: the tag was stored as the full id, and `retagged` is `{ from, to }`, each a whole tag (`"project:<name>"`, `"project:<name>~<hash>"`). It is absent when a memory the call updates or supersedes already carries the plain tag, which then stays as written (#511). `relationsCreated` lists the relations actually created — report from it rather than subtracting errors from what you asked for. `relationErrors` is included when a relation target does not exist; the entity is still stored. `movedFromNamespace` appears only when the call MOVED a memory that already existed, naming the scope it came from, and pairs with `metadata.previous_namespace` so the move can be reversed.
+Five more fields are conditional. `retagged` appears when a `project:<name>` tag named the call's own project by its plain name (MCP: the `project` argument or the bound project; CLI: the current directory's project) while that project's id is `<name>~<hash>`: the tag was stored as the full id, and `retagged` is `{ from, to }`, each a whole tag (`"project:<name>"`, `"project:<name>~<hash>"`). It is absent when a memory the call updates or supersedes already carries the plain tag, which then stays as written (#511). `relationsCreated` lists the relations actually created — report from it rather than subtracting errors from what you asked for. `superseded` lists the names archived because a `supersedes` relation pointed at them. `relationErrors` is included when a relation target does not exist; the entity is still stored. `movedFromNamespace` appears only when the call MOVED a memory that already existed, naming the scope it came from, and pairs with `metadata.previous_namespace` so the move can be reversed.
 
 **Write provenance.** Every entity created through `remember` or `learn` carries `metadata.provenance.source_host` — which surface wrote it. It is **not an input parameter** on any transport (a provenance field the caller's model could fill in is not provenance); the transport sets it: the MCP server stamps the client's self-declared `initialize` name (`claude-code`, `codex`, `gemini-cli`, …; `mcp` when the client declares none), the CLI stamps `cli`, and the HTTP API stamps `http`. The stamp lands on first insert only — appending to an existing entity from another host does not rewrite it. Memories the hooks capture on their own (commits, session summaries, the session handoff) are stamped with the host that ran the hook, `claude-code` or `codex` — the same host the hook's outcome record names — and carry no host when the hook cannot tell. The field is returned wherever entity `metadata` is returned (e.g. `recall` results).
 
@@ -505,8 +505,8 @@ Export memories to a portable JSON bundle. Use for personal backup, migrating be
 
 | field | on export | on import |
 |---|---|---|
-| `created_at` | always | restored for entities the import CREATES, and only when `parseSqliteUtcMs` can read the value. An entity you already had keeps its own creation time. |
-| `status` | present only for archived entities | the entity is archived after it is created — for an entity the import CREATES. An existing entity keeps its own status: an archived one stays archived under `append` and `overwrite` unless `restore_archived` is set (see **Archived memories** under `import`). Archived memories are part of a backup: without them, `forget` then export then restore brought the memory back. |
+| `created_at` | always | restored for entities the import CREATES, and only when `parseSqliteUtcMs` can read the value — **only through the CLI (`memesh import <file>`)**. The MCP `import` tool and `POST /v1/import` strip it (the bundle schema does not declare it), so entities they create get the time of the import. An entity you already had keeps its own creation time. |
+| `status` | present only for archived entities | the entity is archived after it is created — for an entity the import CREATES, **only through the CLI**. The MCP `import` tool and `POST /v1/import` strip `status`, so a memory that was archived in the bundle comes back active. An existing entity keeps its own status: an archived one stays archived under `append` and `overwrite` unless `restore_archived` is set (see **Archived memories** under `import`). `export` includes archived memories, but only the CLI import restores them as archived. |
 | `metadata` | present when the entity has any | **among the CLI, MCP and HTTP entrypoints, only CLI JSON import retains bundle metadata at all** — `ExportResultSchema` does not declare `metadata`, so the MCP `import` tool and `POST /v1/import` have Zod strip it before it exists to merge (the bare `importMemories()` function has no such restriction). Filtered by an ALLOW-list: only a purely descriptive key (display/provenance) is ever taken from the bundle. `trust` and `provenance` are always rebuilt by the import, never read from the bundle. Every behaviour-changing key is refused by default — `guard` (installs a Bash-command warning), `demo` (`demo --reset` HARD-DELETES every entity carrying it, #361), `task_state` (injected verbatim into SessionStart/`memesh briefing` context — a bundle must not be able to put text in front of the agent), `evidence_for` (a `dream accept` idempotency gate — refused and rebuilt by the real `dream accept` path instead), `consolidation_depth`, `compacted_into`, `proposal_id`, `session_id` — for an entity you already have AND for one the import creates, no exception. Four keys get a narrow FRESH-entity-only, VALIDATED exception: `forgotten_observation_hashes` (64-hex SHA-256, de-duplicated, capped at 1000, or the whole list is dropped), `pin` (only the literal boolean `true`; anything else is refused), `signal_score` (only a finite number with `0 <= x <= 1` — `computeSignalScore`'s own documented range; anything else is dropped and the entity gets its own content-derived score), and `replaced_history` (only an array of at most 50 entries shaped exactly like `--replace`'s own history entries — `replaced_at`/`title`/`observations`/`tags`, optional `truncated` (a boolean), no other key, the WHOLE array's own serialized JSON at most 256 KiB — a budget over the entire array together, not per entry — or the whole list is dropped). An EXISTING entity's own value for any of these four always wins regardless of what the bundle says, same as every other authority key. |
 | `relations` | always | created in a SECOND pass, after every entity in the bundle exists. A relation that still cannot be created points outside the bundle, and is named in `skipped_relations` rather than dropped — reported, but not an error, because every narrowed bundle has them. |
 
@@ -571,7 +571,8 @@ still reactivates an archived memory that is stated again.
 A bundle entry that is left untouched this way contributes none of its own
 relations, as with `skip`; a relation from another entry in the bundle *to* it
 is still created. A bundle entry's own `status: "archived"` applies only to
-entities the import creates, as before.
+entities the import creates, and only through the CLI: the MCP `import` tool
+and `POST /v1/import` strip it.
 
 A bundle's `title` is applied to the entities the import creates, and replaces
 the title of one it updates (`overwrite`, `append`). A bundle entry with no
@@ -764,7 +765,7 @@ Task state older than 72 hours, missing or unreadable timestamps, and timestamps
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `project` | string | No | Project name. When omitted, the session's bound project: `MEMESH_PROJECT_ROOT` from the launch, or the client's single workspace root (`roots/list`). They must agree. Unbound, an invalid `MEMESH_PROJECT_ROOT`, a workspace root that is not an existing local directory, or advertised roots that could not be read → `workspace_unavailable`; disagreement → `workspace_ambiguous`. The server's own working directory is never used. An explicit `project` is used as given. |
-| `recipient` | string | No | Exact logical recipient, in the same canonical form the `message` tool uses — NFC, never a filesystem path — because this counts the same inbox key. When supplied, reports only that recipient's unfetched deliveries for the project. At zero unread, the block also says so explicitly if this exact recipient id has never been addressed in this project either (durable delivery or live connection) — distinct from a real, quiet inbox, so a typo'd recipient is never indistinguishable from "nothing waiting". Omit for generic context; generic briefing never reports unread activity. |
+| `recipient` | string | No | Exact logical recipient, in the same canonical form the `message` tool uses — NFC, never a filesystem path — because this counts the same inbox key. When supplied, reports only that recipient's deliveries for the project that have no `intake` receipt yet. Fetching a message does not clear it; only recording `intake` does. At zero unread, the block also says so explicitly if this exact recipient id has never been addressed in this project either (durable delivery or live connection) — distinct from a real, quiet inbox, so a typo'd recipient is never indistinguishable from "nothing waiting". Omit for generic context; generic briefing never reports unread activity. |
 
 **Response** (shown at level `standard`, which has a task state and the index to show; at the default, `minimal`, `hasTaskState` is `false` for a fresh task state and `text` carries neither it nor the index):
 
@@ -1053,7 +1054,7 @@ The limit protects the server from accidentally parsing large payloads (e.g. an 
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | /v1/health | Health check + version + entity count |
+| GET | /v1/health | Health check + version + entity count + demo entity count (`demo_entity_count`) |
 | GET | /v1/doctor | Run the full doctor check suite; secrets in the result are redacted before the response leaves the server |
 | POST | /v1/doctor/fix | Apply one explicitly selected, recoverable doctor repair and return a fresh readback |
 | POST | /v1/remember | Store knowledge |
@@ -1065,7 +1066,7 @@ The limit protects the server from accidentally parsing large payloads (e.g. an 
 | POST | /v1/learn | Record structured lesson from mistake or discovery; requires `project` (`400` without it) |
 | POST | /v1/message | Run one durable-message lifecycle action using the same schema as the MCP `message` tool |
 | POST | /v1/why | File attribution: join caller-resolved commit hashes to commit entities, their sessions, and file-tag memories |
-| GET | /v1/entities | List entities, newest first; supports `?type=<type>` or `?project=<name>` (not both; `project` follows the same rule as `/v1/projects`: the `project:` tag, else a `lesson-<project>-<pattern>` name of a project at least two characters long; the project's session handoff is not listed), `?limit=<n>` (1–5000, default 20), `?offset=<n>` (skip that many of the newest matches, to page) and `?status=all` (include archived) |
+| GET | /v1/entities | List entities, newest first; supports `?type=<type>` or `?project=<name>` (not both; `project` follows the same rule as `/v1/projects`: the `project:` tag, else a `lesson-<project>-<pattern>` name of a project at least two characters long; the project's session handoff is not listed), `?limit=<n>` (1–5000, default 20), `?offset=<n>` (0–1000000; skip that many of the newest matches, to page) and `?status=all|active` (default `active`; `all` includes archived). `project` is at most 300 characters. |
 | GET | /v1/entities/:name | Get single entity |
 | GET | /v1/config | Get current supported non-model config fields |
 | GET | /v1/update-status | Current/latest package version, freshness state, and update guidance |
@@ -1081,7 +1082,7 @@ The limit protects the server from accidentally parsing large payloads (e.g. an 
 | POST | /v1/verify | **Retired** — answers `410 Gone`. Removed with the agentic-orchestration experiment. |
 | POST | /v1/demo/seed | Insert the demo tour dataset (entities tagged `metadata.demo = true`) |
 | POST | /v1/demo/reset | Remove every demo entity; all-or-nothing transaction |
-| GET | /v1/projects | Distinct projects from `project:*` tags and name-prefix heuristics, with per-project counts |
+| GET | /v1/projects | Distinct projects from `project:*` tags and `lesson-<project>-<pattern>` names, with per-project counts, largest first |
 | GET | /v1/task-state | The owner-stated task state of one project (`memesh task`); requires the `project` query parameter |
 | GET | /v1/briefing-index | The durable-memory index of one project (the section `briefing` closes with at `standard`/`full`); requires the `project` query parameter |
 All responses: `{ success: true, data: ... }` or `{ success: false, errorCode: "...", error: "..." }`
@@ -1393,7 +1394,7 @@ The response is path- and secret-redacted like `GET /v1/doctor`.
 
 ### GET /v1/projects
 
-Lists distinct projects extracted from entity tags (`project:*`) and entity name prefixes. The dashboard's Memories and Project tabs use it to populate the project chips.
+Lists distinct projects extracted from entity tags (`project:*`) and lesson names. Only active memories count, and a project's session handoff is not counted. The list is sorted by `count`, largest first. The dashboard's Memories and Project tabs use it to populate the project chips.
 
 **Response:**
 
@@ -1406,7 +1407,7 @@ Lists distinct projects extracted from entity tags (`project:*`) and entity name
 }
 ```
 
-`source` says how the assignment was made: an explicit `project:` tag, the name-prefix heuristic, or both.
+`source` says how the assignment was made: an explicit `project:` tag, the name rule, or both. A memory's first `project:` tag decides its project. Without one, only a name shaped `lesson-<project>-<pattern>` (`<pattern>` one of `null-reference`, `type-error`, `import-missing`, `config-error`, `test-failure`, `build-error`, `other`) gives a project, and only when `<project>` is at least two characters. Any other memory is in no project.
 
 ### POST /v1/demo/seed / POST /v1/demo/reset
 
@@ -1527,6 +1528,8 @@ Returns the full interactive MeMesh Dashboard as a self-contained HTML page. Ser
 
 Request/response bodies for `POST /v1/remember`, `/v1/recall`, `/v1/forget`, and `/v1/message` mirror the MCP tool schemas above (same field names, same types). HTTP responses wrap results as `{ "success": true, "data": ... }`.
 
+When `POST /v1/forget` names a memory that does not exist, the response is still HTTP 200 with `"archived": false` in `data`. Check that field; the MCP `forget` tool returns an error result for the same call, and the CLI exits 1.
+
 `POST /v1/message` supports every `message` action above. A waiting `poll` request ends when a targeted event arrives, the bounded timeout expires, or the HTTP request is cancelled. The server removes the wait listener when the request closes.
 
 **Example**:
@@ -1559,6 +1562,7 @@ The CLI exposes the same local lifecycle as the MCP and HTTP `message` surface:
 
 | Command | Purpose |
 |---------|---------|
+| `memesh message discover` | List the live registrations in one project: `--project <name>` (required) and `--limit <n>` (1–100, default 50). It sends, fetches and acknowledges nothing |
 | `memesh message send` | Durably send one exact-recipient untrusted JSON payload (64 KiB max); exact-session native envelopes have a separate 16 KiB cap and report `native_message_too_large` distinctly. `--intended-session <id>` and `--fallback-to-principal` are the `send` fields of the same names |
 | `memesh message watch` | Emit `ready`, then one bounded `events` or `timeout` JSONL record with `next_cursor` |
 | `memesh message fetch` | Fetch one authorized payload without acknowledging it |
@@ -1606,7 +1610,8 @@ separate private, human-governed product-proposal workflow.
 note form: title, observations and name are derived from the text and
 validated exactly as for `remember({ note })` above (the same 20,000-character
 and 100-observation caps), and the output echoes the derived title. `--type`
-and `--tags` apply.
+and `--tags` apply. Quote the text as one argument: a second unquoted word is
+rejected with `too many arguments` and exit 1 instead of being dropped.
 
 `--obs` or `--title` alongside the text take a second path that keeps the
 text as an observation and adds theirs, rather than replacing it —
@@ -2108,7 +2113,7 @@ Review proposals that an agent or deterministic rule has already staged. These
 commands do not generate proposals and do not wake or dispatch an agent.
 
 ```bash
-memesh dream list [--status <pending|applied|rejected|all>]
+memesh dream list [--status <pending|applied|rejected>]
 memesh dream show <id> [--json]
 memesh dream accept <id>
 memesh dream reject <id> [--reason <text>]
@@ -2282,7 +2287,7 @@ An observation may itself contain newlines, so the line → memory map is comput
 | `delete` | `path` | **Archives** the entity — never destroys it. |
 | `rename` | `old_path`, `new_path` | Renames the entity and reindexes it under the new name. |
 
-Two behaviours worth stating because they differ from a filesystem:
+Three behaviours worth stating because they differ from a filesystem:
 
 - **`delete` archives.** The person whose memory it is did not ask for the deletion — a model did. From the model's side the file is gone (`view` lists only active entities); from the user's side it is restorable. A deleted path stays gone for `view`, a second `delete`, `str_replace` and `insert`: each answers that the path does not exist and changes nothing, so an edit cannot reactivate it. `create` over the path writes the new text and brings the memory back; `rename` still moves an archived memory and leaves it archived.
 - **An edit that changes nothing writes nothing.** A `str_replace` or `create` that leaves the memory's lines as they are does not raise its confidence or reset its observations' creation times.
@@ -2357,7 +2362,7 @@ Lists proposals that an agent or deterministic rule has already staged for human
 
 Full proposal detail for the Dashboard review view.
 
-**Response:** `{ id, project, cluster_key, source_ids, proposed_digest, status, reason, created_at, reviewed_at, kind, source_kind }`. `proposed_digest` includes the complete kind-specific payload. Digest payloads include `name`, `type`, `observations`, and `tags`.
+**Response:** `{ id, project, cluster_key, source_ids, proposed_digest, prompt_version, status, reason, created_at, reviewed_at, kind, source_kind }`. `proposed_digest` includes the complete kind-specific payload. Digest payloads include `name`, `type`, `observations`, and `tags`.
 
 ### POST /v1/dream/proposals/:id/accept
 

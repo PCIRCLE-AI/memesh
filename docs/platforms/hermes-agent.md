@@ -76,9 +76,10 @@ Two consequences to plan for:
   `Environment=` is not your shell's.
 - **No `project:` tag.** Hermes writes carry `platform:hermes` and
   `session:<id>`, but no project, because a gateway's working directory says
-  nothing reliable about which project a conversation is about. They
-  therefore do not appear in project-scoped views such as the session-start
-  briefing; recall them by query or by `platform:hermes`.
+  nothing reliable about which project a conversation is about. A memory with
+  no project counts as one that belongs to no project, so up to five of them
+  can appear in every project's session-start briefing; recall them by query
+  or by `platform:hermes`.
 
 Activate with `hermes memory setup memesh` (non-interactive: the second
 positional arg skips the picker) — this writes `memory.provider: memesh` to

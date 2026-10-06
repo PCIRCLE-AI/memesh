@@ -86,7 +86,8 @@ Use memory for:
 - user preferences that should persist
 
 Before answering project-specific questions, recall relevant memories.
-After important decisions, fixes, or lessons, store concise memories with tags such as project:<name>, topic:<area>, and tech:<tool>.
+After important decisions, fixes, or lessons, store concise memories with tags such as project:<id> (the `project` field of `memesh briefing --json`), topic:<area>, and tech:<tool>.
+Send `why` with every decision: the reason, and what would make it stop holding.
 Do not invent memory results. If the connector is unavailable, say so and continue without memory.
 ```
 

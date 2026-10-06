@@ -65,9 +65,10 @@ require a bearer token when bound to `localhost`.
   the default when both run as the same user on the same machine. If
   `memesh serve` runs under systemd with `MEMESH_DB_PATH`/`MEMESH_DIR` in its
   unit file, give the Hermes process the same values.
-- Hermes writes have no `project:` tag, so they don't show up in
-  project-scoped views (for example the session-start briefing). Recall them
-  by query or by the `platform:hermes` tag.
+- Hermes writes have no `project:` tag, so MeMesh treats them as memories
+  that belong to no project: up to five of them can appear in every
+  project's session-start briefing. Recall them by query or by the
+  `platform:hermes` tag.
 - `sync_turn()` never waits: turns go to one background worker through a
   queue of 8; when it is full the turn is dropped with a warning in the log.
   At session end and shutdown the plugin waits up to 5 s in total (one

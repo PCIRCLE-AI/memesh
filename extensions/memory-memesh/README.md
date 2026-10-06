@@ -84,6 +84,7 @@ The plugin imports from `openclaw/plugin-sdk/*` — these are part of the main `
   - Params: `text` (string), `category` (optional), `why` (string; required for `decision`, `architecture_decision` and `design_decision`: the reason, and what would make it stop holding), `importance` (optional, 1-10)
   - Maps to: `POST /v1/remember`
   - Guards: Prompt injection defense (rejects suspicious patterns)
+  - Project: the write carries an `agent:<id>` tag and no `project:` tag, so MeMesh treats it as a memory that belongs to no project; up to five such memories can appear in every project's session-start briefing
 
 - **`memory_forget`** - Archive up to 20 matching, agent-scoped memories immediately; no preview or confirmation
   - Params: `query` (string)

@@ -322,7 +322,7 @@ in memory; an explicit custom socket remains exact and reports
 `router_version_mismatch` when it exposes the known legacy response shape.
 
 Within one protocol version, the router also reports the MeMesh version it
-runs, and each host sends its own when it registers (#518). A router that
+runs, and each host sends its own when it registers. A router that
 started before an upgrade is caught this way instead of silently routing with
 the old code:
 
