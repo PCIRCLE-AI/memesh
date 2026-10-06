@@ -500,9 +500,10 @@ process.stdin.on('end', () => {
                 if (LESSON_TYPE_LIST.includes(r.type)) {
                   const shown = toTopologyEntity(r, lessonSnippets);
                   const text = shown.title || shown.snippet;
+                  const lessonName = redactMemoryText(r.name);
                   snippetLines.push(text
-                    ? `• ${r.name} (${r.type}): ${text.slice(0, 120)} [mem:${r.id}]`
-                    : `• ${r.name} (${r.type}) [mem:${r.id}]`
+                    ? `• ${lessonName} (${r.type}): ${text.slice(0, 120)} [mem:${r.id}]`
+                    : `• ${lessonName} (${r.type}) [mem:${r.id}]`
                   );
                   continue;
                 }

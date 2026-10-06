@@ -208,8 +208,8 @@
     },
     {
       "path": "scripts/hooks/pre-edit-recall.js",
-      "sha256": "59c22e4cb8c587543452cca3aad7943787745c50a319ebdf576d892fb9e3bb4b",
-      "bytes": 38529
+      "sha256": "5ecbce9d388fc246bb861f9904bc547f4e9656dafb64b8d9ab1a54da92678f67",
+      "bytes": 38600
     },
     {
       "path": "scripts/hooks/session-start.js",

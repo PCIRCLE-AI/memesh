@@ -310,6 +310,23 @@ describe('Feature: Pre-Edit Recall Hook', () => {
     expect(context).toContain('deploy ***REDACTED***');
   });
 
+  it('redacts a credential in a lesson name too', () => {
+    const tokenValue = 'abc123abc123abc123';
+    const name = `deploy ${['token', tokenValue].join('=')}`;
+    const db = createTestDb();
+    db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run(name, 'lesson');
+    const row = db.prepare('SELECT id FROM entities WHERE name = ?').get(name) as any;
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(row.id, 'rotate it quarterly');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, 'file:auth.ts');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, projectTag());
+    db.close();
+
+    const context = JSON.parse(runHook({ tool_input: { file_path: '/src/auth.ts' } })).hookSpecificOutput.additionalContext;
+    expect(context).toContain('(lesson)');
+    expect(context).not.toContain(tokenValue);
+    expect(context).toContain('deploy ***REDACTED***');
+  });
+
   it('redacts BEFORE cutting the snippet to 120 characters (#554)', () => {
     // The password starts at character 118, so a cut-then-redact order prints
     // `postgres://appuser:hu` — the prefix of a credential the pattern can no
