@@ -1,11 +1,53 @@
 import { createHash } from 'node:crypto';
 import { findConflicts, trackAccess } from './storage/conflicts.js';
-import { indexedObservationText, joinIndexedObservations, tokenizeQuery, renderMatchExpression, registerNfcFunction, SQL_NFC_FUNCTION, } from './storage/fts-index.js';
+import { indexedObservationText, joinIndexedObservations, tokenizeQuery, renderMatchExpression, registerNfcFunction, SQL_NFC_FUNCTION, foldForExactMatch, registerFoldFunction, SQL_FOLD_FUNCTION, } from './storage/fts-index.js';
+const EXACT_MATCH_FIRST = `(${SQL_FOLD_FUNCTION}(e.name) = ? OR ${SQL_FOLD_FUNCTION}(COALESCE(e.title, '')) = ?) DESC`;
 import { computeSignalScore } from './core/signal-scorer.js';
 import { dropEntityFromIndexes } from './storage/entity-index.js';
 import { ftsIndexIsCurrent } from './storage/schema.js';
 import { addTags, appendObservations, insertOrGetEntity, reindexEntityFts, runEntityWrite } from './storage/entity-write.js';
 import { canonicalEntityType } from './core/work-topology.js';
+import { KNOWN_ERROR_PATTERNS, MIN_NAME_PROJECT_LENGTH, PROJECT_TAG_PREFIX } from './core/project-attribution.js';
+import { NOT_A_PROJECT_MEMORY } from './core/projects.js';
+import { addsNewText, besideRefusal, clearPartsOfKey, metadataRefusal, redactTextValues, redactTitleAndObservations, redactVersionText, textsIn } from './core/paths.js';
+const isGuardWithPattern = (guard) => guard !== null && typeof guard === 'object' && typeof guard.pattern === 'string';
+function redactMetadataForStore(next, stored, sameCall = []) {
+    const storedHistory = stored?.replaced_history;
+    const incoming = next.replaced_history;
+    const kept = new Map();
+    if (Array.isArray(storedHistory))
+        for (const entry of storedHistory)
+            kept.set(JSON.stringify(entry), entry);
+    const fresh = withoutGuardPattern({
+        ...next,
+        ...(Array.isArray(incoming)
+            ? { replaced_history: incoming.filter((entry) => !kept.has(JSON.stringify(entry))).map(redactVersionText) }
+            : {}),
+    });
+    const known = textsIn(stored);
+    const keptText = [...textsIn(withoutGuardPattern(next))].filter((text) => known.has(text));
+    const refusal = metadataRefusal(fresh, known, [...keptText, ...sameCall]);
+    if (refusal !== undefined) {
+        throw new Error(`MeMesh did not store this memory: ${refusal}.`);
+    }
+    const redacted = redactTextValues(next, new Set(['guard', ...(Array.isArray(incoming) ? ['replaced_history'] : [])]));
+    if (redacted.guard !== undefined) {
+        const guard = redacted.guard;
+        redacted.guard = redactTextValues(redacted.guard, new Set(typeof guard?.pattern === 'string' ? ['pattern'] : []));
+    }
+    const out = !Array.isArray(incoming) ? redacted : {
+        ...redacted,
+        replaced_history: redacted.replaced_history.map((entry) => {
+            const key = JSON.stringify(entry);
+            return kept.has(key) ? kept.get(key) : redactVersionText(entry);
+        }),
+    };
+    if (addsNewText(fresh, known))
+        return out;
+    const cleared = clearPartsOfKey(withoutGuardPattern(out));
+    return isGuardWithPattern(out.guard) ? { ...cleared, guard: { ...cleared.guard, pattern: out.guard.pattern } } : cleared;
+}
+const withoutGuardPattern = (metadata) => isGuardWithPattern(metadata.guard) ? { ...metadata, guard: { ...metadata.guard, pattern: undefined } } : metadata;
 const MAX_QUERY_TERMS = 32;
 function buildMatchExpression(db, query) {
     const terms = tokenizeQuery(query);
@@ -83,20 +125,51 @@ export class KnowledgeGraph {
     constructor(db) {
         this.db = db;
     }
+    storedMetadata(name) {
+        const row = this.db.prepare('SELECT metadata FROM entities WHERE name = ?').get(name);
+        return row ? this.parseMetadata(row.metadata) : undefined;
+    }
+    storedText(name, keepTitle) {
+        const row = this.db.prepare('SELECT id, title FROM entities WHERE name = ?').get(name);
+        if (!row)
+            return [];
+        const observations = this.db.prepare('SELECT content FROM observations WHERE entity_id = ?').all(row.id)
+            .map((o) => o.content);
+        return keepTitle && row.title !== null ? [row.title, ...observations] : observations;
+    }
     updateEntityMetadata(name, updater) {
         const row = this.db
             .prepare('SELECT metadata FROM entities WHERE name = ?')
             .get(name);
         if (!row)
             return;
-        const currentMetadata = this.parseMetadata(row.metadata);
-        const nextMetadata = updater(currentMetadata);
+        const stored = this.parseMetadata(row.metadata);
+        const nextMetadata = updater(this.parseMetadata(row.metadata));
+        const safe = nextMetadata
+            ? redactMetadataForStore(nextMetadata, stored, this.storedText(name, true))
+            : nextMetadata;
         this.db
             .prepare('UPDATE entities SET metadata = ? WHERE name = ?')
-            .run(nextMetadata ? JSON.stringify(nextMetadata) : null, name);
+            .run(safe ? JSON.stringify(safe) : null, name);
     }
     createEntity(name, type, opts) {
-        return runEntityWrite(this.db, () => this.createEntityInner(name, type, opts));
+        const stored = this.storedMetadata(name);
+        const written = [
+            ...(typeof opts?.title === 'string' ? [opts.title] : []),
+            ...(opts?.observations === undefined ? [] : opts.observations),
+        ];
+        const kept = stored === undefined ? [] : this.storedText(name, typeof opts?.title !== 'string');
+        const refusal = stored === undefined ? undefined : besideRefusal(written.length > 0, [...textsIn(withoutGuardPattern(stored)), ...kept]);
+        if (refusal !== undefined)
+            throw new Error(`MeMesh did not store this memory: ${refusal}.`);
+        const safe = opts === undefined ? undefined : {
+            ...opts,
+            ...redactTitleAndObservations(typeof opts.title === 'string' ? opts.title : undefined, opts.observations),
+            ...(opts.metadata !== undefined
+                ? { metadata: redactMetadataForStore(opts.metadata, stored, [...kept, ...written]) }
+                : {}),
+        };
+        return runEntityWrite(this.db, () => this.createEntityInner(name, type, safe));
     }
     createEntityInner(name, type, opts) {
         type = canonicalEntityType(type);
@@ -390,19 +463,20 @@ export class KnowledgeGraph {
         const tagFilter = opts?.tag
             ? 'AND EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?)'
             : scoped ? scoped.sql : '';
-        const filterParams = [];
+        const scopeParams = [];
         if (opts?.tag)
-            filterParams.push(opts.tag);
+            scopeParams.push(opts.tag);
         else if (scoped)
-            filterParams.push(...scoped.params);
+            scopeParams.push(...scoped.params);
         if (opts?.namespace)
-            filterParams.push(opts.namespace);
-        filterParams.push(limit);
+            scopeParams.push(opts.namespace);
+        const exactQuery = foldForExactMatch(query);
+        registerFoldFunction(this.db);
         let ftsRows;
         let strictSelected = false;
         const fallback = ftsIndexIsCurrent(this.db) ? null : 'index_out_of_date';
         const findFtsRows = (ftsQuery) => {
-            const queryParams = [ftsQuery, ...filterParams];
+            const queryParams = [ftsQuery, ...scopeParams, exactQuery, exactQuery, limit];
             return this.db
                 .prepare(`SELECT e.id FROM entities_fts f
            JOIN entities e ON e.id = f.rowid
@@ -416,12 +490,12 @@ export class KnowledgeGraph {
            -- tiebreaker the same query over the same corpus can return
            -- different memories run to run. Newest-first among equals is the
            -- same preference the rest of the scorer expresses.
-           ORDER BY f.rank, e.id DESC
+           ORDER BY ${EXACT_MATCH_FIRST}, f.rank, e.id DESC
            LIMIT ?`)
                 .all(...queryParams);
         };
         if (fallback) {
-            const scanned = this.scanActiveRows(query, tagFilter, namespaceFilter, filterParams);
+            const scanned = this.scanActiveRows(query, tagFilter, namespaceFilter, [...scopeParams, exactQuery, exactQuery, limit]);
             ftsRows = scanned.rows;
             strictSelected = scanned.strictSelected;
         }
@@ -474,9 +548,9 @@ export class KnowledgeGraph {
              AND (${termClause})
              ${tagFilter}
              ${archivedNamespaceFilter}
-           ORDER BY e.id DESC
+           ORDER BY ${EXACT_MATCH_FIRST}, e.id DESC
            LIMIT ?`)
-                .all(...archivedParams, limit);
+                .all(...archivedParams, exactQuery, exactQuery, limit);
             const archivedIds = archivedRows.map(r => r.id).filter(id => !seenIds.has(id));
             const archivedEntities = this.getEntitiesByIds(archivedIds, {
                 includeArchived: true,
@@ -501,7 +575,7 @@ export class KnowledgeGraph {
              ${tagFilter}
              AND e.status = 'active'
              ${namespaceFilter}
-           ORDER BY e.id DESC
+           ORDER BY ${EXACT_MATCH_FIRST}, e.id DESC
            LIMIT ?`)
             .all(...terms.flatMap((t) => [t, t, t]), ...filterParams);
         if (allTerms.length >= 3) {
@@ -517,31 +591,56 @@ export class KnowledgeGraph {
     findConflicts(entityNames) {
         return findConflicts(this.db, entityNames);
     }
-    listRecent(limit, includeArchived, namespace, countAsAccess = true) {
+    listRecent(limit, includeArchived, namespace, countAsAccess = true, offset = 0) {
         const statusFilter = includeArchived ? '' : "AND status = 'active'";
         const namespaceFilter = namespace ? 'AND namespace = ?' : '';
         const params = [];
         if (namespace)
             params.push(namespace);
-        params.push(limit ?? 20);
+        params.push(limit ?? 20, offset);
         const rows = this.db
-            .prepare(`SELECT id FROM entities WHERE 1=1 ${statusFilter} ${namespaceFilter} ORDER BY id DESC LIMIT ?`)
+            .prepare(`SELECT id FROM entities WHERE 1=1 ${statusFilter} ${namespaceFilter} ORDER BY id DESC LIMIT ? OFFSET ?`)
             .all(...params);
         const results = this.getEntitiesByIds(rows.map((r) => r.id), { includeArchived, namespace });
         if (countAsAccess)
             this.trackAccess(results.map((e) => e.id));
         return results;
     }
-    listByType(type, limit, includeArchived, namespace) {
+    listByType(type, limit, includeArchived, namespace, offset = 0) {
         type = canonicalEntityType(type);
         const statusFilter = includeArchived ? '' : "AND status = 'active'";
         const namespaceFilter = namespace ? 'AND namespace = ?' : '';
         const params = [type];
         if (namespace)
             params.push(namespace);
-        params.push(limit ?? 20);
+        params.push(limit ?? 20, offset);
         const rows = this.db
-            .prepare(`SELECT id FROM entities WHERE type = ? ${statusFilter} ${namespaceFilter} ORDER BY id DESC LIMIT ?`)
+            .prepare(`SELECT id FROM entities WHERE type = ? ${statusFilter} ${namespaceFilter} ORDER BY id DESC LIMIT ? OFFSET ?`)
+            .all(...params);
+        return this.getEntitiesByIds(rows.map((r) => r.id), { includeArchived, namespace });
+    }
+    listByProject(project, limit, includeArchived, namespace, offset = 0) {
+        const statusFilter = includeArchived ? '' : "AND e.status = 'active'";
+        const namespaceFilter = namespace ? 'AND e.namespace = ?' : '';
+        const lessonNames = project.length >= MIN_NAME_PROJECT_LENGTH
+            ? KNOWN_ERROR_PATTERNS.map((pattern) => `lesson-${project}-${pattern}`)
+            : [];
+        const byName = lessonNames.length === 0
+            ? ''
+            : `OR (e.name IN (${lessonNames.map(() => '?').join(',')}) AND ${NO_PROJECT_TAG})`;
+        const params = [PROJECT_TAG_PREFIX + project, ...lessonNames, NOT_A_PROJECT_MEMORY.param];
+        if (namespace)
+            params.push(namespace);
+        params.push(limit ?? 20, offset);
+        const rows = this.db
+            .prepare(`SELECT e.id FROM entities e
+         WHERE (
+           EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?)
+           ${byName}
+         )
+         AND ${NOT_A_PROJECT_MEMORY.sql}
+         ${statusFilter} ${namespaceFilter}
+         ORDER BY e.id DESC LIMIT ? OFFSET ?`)
             .all(...params);
         return this.getEntitiesByIds(rows.map((r) => r.id), { includeArchived, namespace });
     }

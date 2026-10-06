@@ -32,7 +32,10 @@ import {
   getDbPath,
   getMemeshDirFromDbPath,
   getProjectName,
+  redactSecretList,
   redactSecrets,
+  redactMemoryText,
+  redactTextValues,
   canonicalRemoteLocator,
   gitRepoRoot,
 } from './_generated/core-paths.js';
@@ -81,12 +84,14 @@ import { guardFromMetadata as guardFromMetadataLocal } from './_generated/guards
 /**
  * Every accepted, enabled guard for one tool. Guards live as
  * `metadata.guard` on lesson-family entities (G1); the LIKE is a cheap
- * prefilter and `guardFromMetadata` is the tolerant parser. Any failure —
- * missing column on an old schema, corrupt metadata — returns an empty
- * list: a broken guard store must degrade to "no warnings", never to a
- * broken hook.
+ * prefilter and `guardFromMetadata` is the tolerant parser, so one row with
+ * corrupt metadata is skipped and the rest still load. A failure of the read
+ * itself — a missing column on an old schema, a damaged file — returns an
+ * empty list: a broken guard store must degrade to "no warnings", never to
+ * a broken hook. It is handed to `onError` (#560): an unreadable store is not
+ * the same as no guard matching, and the caller must be able to say so.
  */
-export function loadActiveGuards(db, tool) {
+export function loadActiveGuards(db, tool, onError) {
   try {
     const rows = db.prepare(
       `SELECT id, metadata FROM entities
@@ -100,7 +105,8 @@ export function loadActiveGuards(db, tool) {
       if (g && g.tool === tool) out.push(g);
     }
     return out;
-  } catch {
+  } catch (err) {
+    onError?.(err);
     return [];
   }
 }
@@ -109,12 +115,14 @@ export function loadActiveGuards(db, tool) {
  * The lines a fired guard injects — the message is memory content
  * (attacker-influenced in the general case), so callers wrap these with
  * buildReferenceContext like every other injection path. The `[mem:id]`
- * handle ties a heeded warning into citation accounting (R1).
+ * handle ties a heeded warning into citation accounting (R1). The message is
+ * redacted as it is printed (#523): one stored before the write-time
+ * redaction can still hold a credential.
  */
 export function guardWarningLines(matches, toolName) {
   const lines = [`A guard you accepted matched this ${toolName} input — check before proceeding:`];
   for (const g of matches) {
-    lines.push(`- [guard] ${g.message} [mem:${g.lessonId}]`);
+    lines.push(`- [guard] ${redactMemoryText(g.message)} [mem:${g.lessonId}]`);
   }
   return lines;
 }
@@ -814,14 +822,14 @@ function inboxReadFailed(err, recordFailure) {
 
 /** The outcome reason a hook records when {@link hookMessageSessionId} reports a mismatch. */
 export const SESSION_ID_MISMATCH_REASON =
-  'session: session_id_mismatch (CODEX_THREAD_ID differs from the payload session_id; only messages meant for no particular session are counted)';
+  'session: session_id_mismatch (CODEX_THREAD_ID differs from the payload session_id; neither is trusted, so this hook is counted as one that named no session id)';
 
 /**
  * #497: the session id a hook narrows the waiting count by — the payload's
  * own `session_id`. Under Codex the hook's environment also has
  * `CODEX_THREAD_ID`, and the payload's `session_id` and `CODEX_THREAD_ID`
  * name the same thread. When both are set and differ, neither is trusted: the result
- * is no session (only messages meant for no particular session count), and
+ * is no session, counted exactly as a hook that named none, and
  * `mismatch` is true so the caller records it — never a silent downgrade.
  *
  * @returns {{ sessionId: string | undefined, mismatch: boolean }}
@@ -842,7 +850,9 @@ export function hookMessageSessionId(payloadSessionId, env = process.env) {
  *
  * `sessionId` comes from {@link hookMessageSessionId} (#497): a message meant
  * for another session of the same principal is left out, and with no
- * `sessionId` only messages meant for no session in particular are counted.
+ * `sessionId` only messages meant for no session in particular are counted —
+ * except a `target_kind: "session"` delivery, which then counts for any live
+ * session of the principal (#490; with a `sessionId`, only its own, #566).
  * `excludeHostAccepted` (pass it under Codex) leaves out a delivery the
  * router already pushed into the thread.
  */
@@ -1162,6 +1172,10 @@ export function hookSourceHost(payload, env = process.env) {
   return host === 'unknown' ? null : host;
 }
 
+// #555: one id per hook process — one hook run — so doctor counts a run that
+// records an error and then its outcome as one run, not two.
+const HOOK_RUN_ID = randomBytes(8).toString('hex');
+
 /**
  * Record what `hook` DID, on every exit path (issue #327).
  *
@@ -1210,6 +1224,7 @@ export function recordHookOutcome(env, { hook, outcome, reason, entity, payload 
     const filePath = join(dir, HOOK_OUTCOMES_FILENAME);
     const record = {
       hook,
+      run: HOOK_RUN_ID,
       at: new Date().toISOString(),
       host: detectHookHost(payload ?? null, env, { pluginRootIsHookRoot: pluginRootIsHookRoot(env) }),
       outcome,
@@ -1845,7 +1860,18 @@ export function captureEntity(db, { name, type, observations = [], tags = [], ti
   return runEntityWrite(db, () => captureEntityInner(db, { name, type, observations, tags, title, metadata, replace, localHandoff, sourceHost }));
 }
 
-function captureEntityInner(db, { name, type, observations, tags, title, metadata, replace, localHandoff, sourceHost }) {
+function captureEntityInner(db, { name, type, observations: rawObservations, tags, title: rawTitle, metadata, replace, localHandoff, sourceHost }) {
+  // #523: every hook write is redacted here, once, before anything below
+  // reads or compares the text — the post-commit hook stored a commit
+  // subject like `set token=… for staging` verbatim as title and first
+  // observation. The dedupe and the contentless-FTS delete further down read
+  // the STORED text back from the database, so they stay exact. `name` and
+  // `tags` are dedup keys and are left alone.
+  // Title and observations are one set: a key split between them is masked as a whole.
+  const head = typeof rawTitle === 'string' ? [rawTitle] : [];
+  const texts = redactSecretList([...head, ...rawObservations.filter((o) => typeof o === 'string')]);
+  const title = head.length > 0 ? texts.shift() : rawTitle;
+  const observations = rawObservations.map((o) => (typeof o === 'string' ? texts.shift() : o));
   // source_host provenance: the host this hook run is under, as the caller
   // detected it. Claude Code and Codex both run these hooks, so it cannot be
   // assumed. Stamped only on the INSERT — an OR IGNORE re-capture of an
@@ -1859,7 +1885,12 @@ function captureEntityInner(db, { name, type, observations, tags, title, metadat
   // [WORKAROUND: no record here on purpose — a null sourceHost means the host
   // is unknown, and this same run's hook outcome already records it as
   // host 'unknown'; a stamp would only guess.]
-  const insertMetadata = { ...(metadata ?? {}), provenance: sourceHost ? { source_host: sourceHost } : {} };
+  // Metadata text (a commit's file names, for example) is caller text too and
+  // is redacted string by string, like the graph's own writer does (#523).
+  const insertMetadata = {
+    ...redactTextValues(metadata),
+    provenance: sourceHost ? { source_host: sourceHost } : {},
+  };
   if (title != null) insertMetadata.title_source = 'heuristic';
   // No namespace: a hook-written entity takes the column default.
   const row = insertOrGetEntity(db, { name, type, metadataJson: JSON.stringify(insertMetadata), title: title ?? null });

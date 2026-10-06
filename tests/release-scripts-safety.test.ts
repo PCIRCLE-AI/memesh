@@ -20,6 +20,7 @@ import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
 import { buildCredentialFreeBaseEnv, buildIsolatedRuntimeEnv, buildIsolatedSuiteEnv } from '../scripts/lib/isolated-env.mjs';
 import { findOrphanedTypeScriptOutputs } from '../scripts/check-generated-mirror.mjs';
+import { writeNodeShim } from '../scripts/lib/node-shim.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -354,12 +355,14 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     expect(withoutProbeIdentity).not.toMatch(/\d+\.\d+\.\d+/);
   });
 
-  it('gives the complete release verification job the proven degraded-runner budget', () => {
+  it('gives the release verification job the proven degraded-runner budget', () => {
     const ci = read('.github/workflows/ci.yml');
     const releaseJob = ci.match(/\n {2}release-verify:\n[\s\S]*?(?=\n {2}[A-Za-z0-9_-]+:\n|$)/)?.[0] ?? '';
     expect(releaseJob).not.toBe('');
     expect(releaseJob).toMatch(/timeout-minutes:\s*40/);
-    expect(releaseJob).toContain('bash scripts/release-verify.sh');
+    // --skip-suite drops only what every Build & Test leg already runs (typecheck
+    // inside verify:release, the full suite); the smoke and install probes stay.
+    expect(releaseJob).toContain('bash scripts/release-verify.sh --skip-suite');
     expect(releaseJob).not.toContain('--skip-llm-probe');
     expect(releaseJob).not.toContain('--quick');
   });
@@ -421,11 +424,16 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     expect(sdlcJob).not.toMatch(/\n {4}if:/);
     expect(sdlcJob).not.toMatch(/\n {4}continue-on-error/);
     unconditionalStep(sdlcJob, 'npx playwright install --with-deps chromium');
-    // The full run, not `--journeys`: the full run is the one with the suite.
-    unconditionalStep(sdlcJob, 'node scripts/verify.mjs');
+    // Journeys only: every Build & Test leg already runs the build, verify:release
+    // and the full suite, so the full run here repeated them on the same OS and Node.
+    unconditionalStep(sdlcJob, 'node scripts/verify.mjs --journeys');
     const config = JSON.parse(read('scripts/verify.config.json')) as {
-      verify: { steps: Array<{ command: string; args?: string[] }> };
+      verify: { steps: Array<{ id: string; command: string; args?: string[]; journeys?: boolean }> };
     };
+    // --journeys runs only the steps marked as journeys, so these two must stay marked.
+    for (const id of ['build', 'packaged', 'dashboard-e2e']) {
+      expect(config.verify.steps.find((step) => step.id === id)?.journeys, id).toBe(true);
+    }
     const commands = config.verify.steps.map((step) => [step.command, ...(step.args ?? [])].join(' '));
     expect(commands).toEqual(
       expect.arrayContaining([
@@ -954,8 +962,7 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
         try {
           const binDir = path.join(tmp, 'bin');
           fs.mkdirSync(binDir);
-          fs.writeFileSync(path.join(binDir, 'npm'), NPM_STUB);
-          fs.chmodSync(path.join(binDir, 'npm'), 0o755);
+          writeNodeShim(binDir, 'npm', NPM_STUB, 'commonjs');
           // A no-op sleep: the "poll never propagates" case below runs its
           // full 20 attempts in milliseconds instead of 10 real minutes,
           // without editing the script's own POLL_INTERVAL_SECONDS.
@@ -1245,6 +1252,23 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     });
     expect(clean).toEqual({ PATH: '/bin', LANG: 'en_US.UTF-8', TMPDIR: '/tmp' });
     expect(read('scripts/smoke-packed-upgrade.mjs')).toContain("const registry = 'https://registry.npmjs.org/'");
+  });
+
+  // #477: each smoke script writes its fake binary through the shared helper,
+  // with the module type its `require` body needs, so an ancestor
+  // package.json declaring "type": "module" cannot turn the shim into ESM.
+  it('smoke scripts write their fake binaries through writeNodeShim as commonjs', () => {
+    for (const [rel, call] of [
+      ['scripts/smoke-packed-artifact.mjs', "writeNodeShim(fakeBin, 'codex',"],
+      ['scripts/smoke-packed-upgrade.mjs', "writeNodeShim(shimDir, 'npm',"],
+    ]) {
+      const source = read(rel);
+      expect(source).toContain("import { writeNodeShim } from './lib/node-shim.mjs';");
+      const start = source.indexOf(call);
+      expect(start, rel).toBeGreaterThan(-1);
+      const end = source.indexOf(');', source.indexOf('`, ', start));
+      expect(source.slice(start, end), rel).toMatch(/`, 'commonjs'$/);
+    }
   });
 
   // The other half. `buildIsolatedRuntimeEnv` pins a database path; the suite

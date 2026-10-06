@@ -10,12 +10,96 @@ import {
   renderMatchExpression,
   registerNfcFunction,
   SQL_NFC_FUNCTION,
+  foldForExactMatch,
+  registerFoldFunction,
+  SQL_FOLD_FUNCTION,
 } from './storage/fts-index.js';
+
+/**
+ * #525: rows whose name or title is exactly the query sort first, so LIMIT
+ * keeps them however BM25 or recency would order them. Takes the folded query
+ * twice; needs `registerFoldFunction` on the connection.
+ */
+const EXACT_MATCH_FIRST = `(${SQL_FOLD_FUNCTION}(e.name) = ? OR ${SQL_FOLD_FUNCTION}(COALESCE(e.title, '')) = ?) DESC`;
 import { computeSignalScore } from './core/signal-scorer.js';
 import { dropEntityFromIndexes } from './storage/entity-index.js';
 import { ftsIndexIsCurrent } from './storage/schema.js';
 import { addTags, appendObservations, insertOrGetEntity, reindexEntityFts, runEntityWrite } from './storage/entity-write.js';
 import { canonicalEntityType } from './core/work-topology.js';
+import { KNOWN_ERROR_PATTERNS, MIN_NAME_PROJECT_LENGTH, PROJECT_TAG_PREFIX } from './core/project-attribution.js';
+import { NOT_A_PROJECT_MEMORY } from './core/projects.js';
+import { addsNewText, besideRefusal, clearPartsOfKey, metadataRefusal, redactTextValues, redactTitleAndObservations, redactVersionText, textsIn } from './core/paths.js';
+
+/**
+ * Metadata as it will be STORED: every string redacted, with two exceptions.
+ *
+ * - `guard.pattern`, when it is a string, is kept as given. It is a regular expression, and one
+ *   that DETECTS a credential (`api_key=[A-Za-z0-9_-]+`) looks like one:
+ *   rewriting it into `***REDACTED***` produced an invalid regex that the
+ *   hook skipped forever (#523). Everything else in `guard` — the message
+ *   the hook injects, the examples, any other key — is caller text and is
+ *   redacted (#523).
+ * - `replaced_history` follows provenance: an entry byte-identical to one
+ *   the row already holds (`storedHistory`, read from the row before any
+ *   updater ran) is the accepted old record and stays exactly as stored; any
+ *   other entry is NEW caller material and is redacted (#523). A
+ *   value that is not an array is redacted like any other text (#523).
+ */
+const isGuardWithPattern = (guard: unknown): guard is Record<string, unknown> & { pattern: string } =>
+  guard !== null && typeof guard === 'object' && typeof (guard as { pattern?: unknown }).pattern === 'string';
+
+function redactMetadataForStore(
+  next: Record<string, unknown>,
+  stored: Record<string, unknown> | undefined,
+  sameCall: readonly string[] = [],
+): Record<string, unknown> {
+  const storedHistory = stored?.replaced_history;
+  const incoming = next.replaced_history;
+  const kept = new Map<string, unknown>();
+  if (Array.isArray(storedHistory)) for (const entry of storedHistory) kept.set(JSON.stringify(entry), entry);
+  // Metadata is redacted string by string, so `trust`, `kind` and timestamps
+  // never become the marker. A key split across its strings would then keep
+  // its other parts, so new metadata that holds part of a private key, or a
+  // credential in a key name, is refused and nothing is written. A new
+  // history entry is redacted as its own set first (redactVersionText), and
+  // text the row already holds is not checked again (metadataRefusal).
+  const fresh = withoutGuardPattern({
+    ...next,
+    ...(Array.isArray(incoming)
+      ? { replaced_history: incoming.filter((entry) => !kept.has(JSON.stringify(entry))).map(redactVersionText) }
+      : {}),
+  });
+  // The rest of the write: the stored text it keeps, and the title and
+  // observations of the same call. Part of a key there plus a new string
+  // here is refused as a whole (metadataRefusal).
+  const known = textsIn(stored);
+  const keptText = [...textsIn(withoutGuardPattern(next))].filter((text) => known.has(text));
+  const refusal = metadataRefusal(fresh, known, [...keptText, ...sameCall]);
+  if (refusal !== undefined) {
+    throw new Error(`MeMesh did not store this memory: ${refusal}.`);
+  }
+  const redacted = redactTextValues(next, new Set(['guard', ...(Array.isArray(incoming) ? ['replaced_history'] : [])])) as Record<string, unknown>;
+  if (redacted.guard !== undefined) {
+    const guard = redacted.guard as { pattern?: unknown } | null;
+    redacted.guard = redactTextValues(redacted.guard, new Set(typeof guard?.pattern === 'string' ? ['pattern'] : []));
+  }
+  const out = !Array.isArray(incoming) ? redacted : {
+    ...redacted,
+    replaced_history: (redacted.replaced_history as unknown[]).map((entry) => {
+      const key = JSON.stringify(entry);
+      return kept.has(key) ? kept.get(key) : redactVersionText(entry);
+    }),
+  };
+  // A write that adds no new text (a pin, an unpin) masks every part of a key
+  // the row holds, history included, so the memory takes new text again.
+  if (addsNewText(fresh, known)) return out;
+  const cleared = clearPartsOfKey(withoutGuardPattern(out));
+  return isGuardWithPattern(out.guard) ? { ...cleared, guard: { ...(cleared.guard as object), pattern: out.guard.pattern } } : cleared;
+}
+
+/** The metadata without `guard.pattern`, which is kept exactly as given and is not caller prose. */
+const withoutGuardPattern = (metadata: Record<string, unknown>): Record<string, unknown> =>
+  isGuardWithPattern(metadata.guard) ? { ...metadata, guard: { ...metadata.guard, pattern: undefined } } : metadata;
 
 /**
  * Cap on how many terms of a query reach the FTS5 MATCH expression. The broad
@@ -311,6 +395,22 @@ function projectScopeFilter(scope: string | null): { sql: string; params: string
 export class KnowledgeGraph {
   constructor(private db: MemeshDatabase) {}
 
+  /** The metadata a row already holds, or undefined when there is no row —
+   *  the provenance `redactMetadataForStore` keys on. */
+  private storedMetadata(name: string): Record<string, unknown> | undefined {
+    const row = this.db.prepare('SELECT metadata FROM entities WHERE name = ?').get(name) as { metadata: string | null } | undefined;
+    return row ? this.parseMetadata(row.metadata) : undefined;
+  }
+
+  /** The observations a row already holds, and its title unless the write replaces it (#523: text kept beside what a write adds). */
+  private storedText(name: string, keepTitle: boolean): string[] {
+    const row = this.db.prepare('SELECT id, title FROM entities WHERE name = ?').get(name) as { id: number; title: string | null } | undefined;
+    if (!row) return [];
+    const observations = (this.db.prepare('SELECT content FROM observations WHERE entity_id = ?').all(row.id) as { content: string }[])
+      .map((o) => o.content);
+    return keepTitle && row.title !== null ? [row.title, ...observations] : observations;
+  }
+
   updateEntityMetadata(
     name: string,
     updater: (currentMetadata: Record<string, unknown>) => Record<string, unknown> | null | undefined
@@ -321,11 +421,20 @@ export class KnowledgeGraph {
 
     if (!row) return;
 
-    const currentMetadata = this.parseMetadata(row.metadata);
-    const nextMetadata = updater(currentMetadata);
+    // #523: the public updater is a writer of caller text as much as
+    // `createEntity` is (task_state, dreamer, a library caller), so what it
+    // returns is redacted (see redactMetadataForStore). The stored history
+    // is read from the row on its own, BEFORE the updater runs: the updater
+    // gets a mutable object, and an entry pushed onto that object's array
+    // must not count as one the row already held (#523).
+    const stored = this.parseMetadata(row.metadata);
+    const nextMetadata = updater(this.parseMetadata(row.metadata));
+    const safe = nextMetadata
+      ? redactMetadataForStore(nextMetadata, stored, this.storedText(name, true))
+      : nextMetadata;
     this.db
       .prepare('UPDATE entities SET metadata = ? WHERE name = ?')
-      .run(nextMetadata ? JSON.stringify(nextMetadata) : null, name);
+      .run(safe ? JSON.stringify(safe) : null, name);
   }
 
   createEntity(
@@ -371,7 +480,43 @@ export class KnowledgeGraph {
     // Safe to nest: `MemeshDatabase` tracks depth and turns an inner
     // transaction into a SAVEPOINT, so `createEntitiesBatch`'s outer
     // transaction and the import/dreamer callers keep working unchanged.
-    return runEntityWrite(this.db, () => this.createEntityInner(name, type, opts));
+    //
+    // #523 — credential redaction at the ONE writer, for the same reason
+    // #451 canonicalizes the type here: `KnowledgeGraph` is exported from
+    // the package root, so a caller that never goes through `remember`
+    // (the memory tool, import, dreamer acceptance, a library user) reaches
+    // this method directly with user or model text. The callers that must
+    // redact EARLIER keep doing so — `learn` before deriving its name, the
+    // memory tool before splitting lines, the hooks before cutting a title
+    // — because a name or a cut fragment is already lost by the time text
+    // arrives here. `name` and `tags` are keys and are left alone (the FTS
+    // delete below reads the stored text back, so it stays exact); metadata
+    // STRING values are redacted too, except `guard.pattern` and the history
+    // entries the row already holds (redactMetadataForStore). Redaction is
+    // the identity on ordinary text.
+    // Text this call writes, and the text the row keeps beside it. A title
+    // or observations added to a memory whose kept text holds part of a
+    // private key is refused as a whole (besideRefusal), whatever the
+    // metadata does.
+    const stored = this.storedMetadata(name);
+    const written = [
+      ...(typeof opts?.title === 'string' ? [opts.title] : []),
+      ...(opts?.observations === undefined ? [] : opts.observations),
+    ];
+    const kept = stored === undefined ? [] : this.storedText(name, typeof opts?.title !== 'string');
+    const refusal = stored === undefined ? undefined : besideRefusal(written.length > 0, [...textsIn(withoutGuardPattern(stored)), ...kept]);
+    if (refusal !== undefined) throw new Error(`MeMesh did not store this memory: ${refusal}.`);
+    const safe = opts === undefined ? undefined : {
+      ...opts,
+      ...redactTitleAndObservations(typeof opts.title === 'string' ? opts.title : undefined, opts.observations),
+      // Metadata STRING values are caller text too (a library caller can put
+      // a `verification_scenario` here); structure, numbers and booleans are
+      // untouched.
+      ...(opts.metadata !== undefined
+        ? { metadata: redactMetadataForStore(opts.metadata, stored, [...kept, ...written]) }
+        : {}),
+    };
+    return runEntityWrite(this.db, () => this.createEntityInner(name, type, safe));
   }
 
   private createEntityInner(
@@ -909,8 +1054,8 @@ export class KnowledgeGraph {
     // multi-row `tags` table needs SELECT DISTINCT to dedupe, and DISTINCT both
     // adds a temp B-tree and constrains what ORDER BY can reference. EXISTS
     // keeps this to one statement for every filter combination.
-    // Parameter order is MATCH → tag → namespace → limit, matching the clause
-    // order below; `tests/recall-relevance.test.ts` pins it.
+    // Parameter order is MATCH → tag → namespace → exact name → limit, matching
+    // the clause order below; `tests/recall-relevance.test.ts` pins it.
     const statusFilter = opts?.includeArchived ? '' : "AND e.status = 'active'";
     const namespaceFilter = opts?.namespace ? 'AND e.namespace = ?' : '';
     // A default recall's project scope sits in the tag's place: an explicit tag wins.
@@ -919,11 +1064,16 @@ export class KnowledgeGraph {
     const tagFilter = opts?.tag
       ? 'AND EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?)'
       : scoped ? scoped.sql : '';
-    const filterParams: (string | number)[] = [];
-    if (opts?.tag) filterParams.push(opts.tag);
-    else if (scoped) filterParams.push(...scoped.params);
-    if (opts?.namespace) filterParams.push(opts.namespace);
-    filterParams.push(limit);
+    const scopeParams: (string | number)[] = [];
+    if (opts?.tag) scopeParams.push(opts.tag);
+    else if (scoped) scopeParams.push(...scoped.params);
+    if (opts?.namespace) scopeParams.push(opts.namespace);
+    // #525: a memory whose name or title is exactly the query must reach the
+    // scorer even when BM25 or recency ranks other matches above it and LIMIT
+    // would cut it — in the index search, the stale-index scan and the
+    // archived supplement alike. recall() then puts it first.
+    const exactQuery = foldForExactMatch(query);
+    registerFoldFunction(this.db);
     let ftsRows: Array<{ id: number }>;
     let strictSelected = false;
     // An index built by an older segmentation holds tokens today's query
@@ -933,7 +1083,7 @@ export class KnowledgeGraph {
     // their stored text for the same terms, and the result says so.
     const fallback = ftsIndexIsCurrent(this.db) ? null : 'index_out_of_date' as const;
     const findFtsRows = (ftsQuery: string): Array<{ id: number }> => {
-      const queryParams = [ftsQuery, ...filterParams];
+      const queryParams = [ftsQuery, ...scopeParams, exactQuery, exactQuery, limit];
       return this.db
         .prepare(
           `SELECT e.id FROM entities_fts f
@@ -948,13 +1098,13 @@ export class KnowledgeGraph {
            -- tiebreaker the same query over the same corpus can return
            -- different memories run to run. Newest-first among equals is the
            -- same preference the rest of the scorer expresses.
-           ORDER BY f.rank, e.id DESC
+           ORDER BY ${EXACT_MATCH_FIRST}, f.rank, e.id DESC
            LIMIT ?`
         )
         .all(...queryParams) as Array<{ id: number }>;
     };
     if (fallback) {
-      const scanned = this.scanActiveRows(query, tagFilter, namespaceFilter, filterParams);
+      const scanned = this.scanActiveRows(query, tagFilter, namespaceFilter, [...scopeParams, exactQuery, exactQuery, limit]);
       ftsRows = scanned.rows;
       strictSelected = scanned.strictSelected;
     } else {
@@ -1034,10 +1184,10 @@ export class KnowledgeGraph {
              AND (${termClause})
              ${tagFilter}
              ${archivedNamespaceFilter}
-           ORDER BY e.id DESC
+           ORDER BY ${EXACT_MATCH_FIRST}, e.id DESC
            LIMIT ?`
         )
-        .all(...archivedParams, limit) as Array<{ id: number; name: string }>;
+        .all(...archivedParams, exactQuery, exactQuery, limit) as Array<{ id: number; name: string }>;
 
       const archivedIds = archivedRows.map(r => r.id).filter(id => !seenIds.has(id));
       const archivedEntities = this.getEntitiesByIds(archivedIds, {
@@ -1065,7 +1215,8 @@ export class KnowledgeGraph {
    * memory has them all does it take any term, as the index search does.
    * Same filters and the same result window, chosen newest first since there
    * is no index rank (recall then ranks them as it ranks index hits).
-   * `filterParams` ends with the limit.
+   * `filterParams` ends with the folded query twice (exact matches first,
+   * #525) and the limit.
    */
   private scanActiveRows(
     query: string,
@@ -1088,7 +1239,7 @@ export class KnowledgeGraph {
              ${tagFilter}
              AND e.status = 'active'
              ${namespaceFilter}
-           ORDER BY e.id DESC
+           ORDER BY ${EXACT_MATCH_FIRST}, e.id DESC
            LIMIT ?`
         )
         .all(...terms.flatMap((t) => [t, t, t]), ...filterParams) as Array<{ id: number }>;
@@ -1117,14 +1268,15 @@ export class KnowledgeGraph {
     return findConflicts(this.db, entityNames);
   }
 
-  listRecent(limit?: number, includeArchived?: boolean, namespace?: string, countAsAccess = true): Entity[] {
+  /** `offset` skips that many of the newest rows, for paging (newest first). */
+  listRecent(limit?: number, includeArchived?: boolean, namespace?: string, countAsAccess = true, offset = 0): Entity[] {
     const statusFilter = includeArchived ? '' : "AND status = 'active'";
     const namespaceFilter = namespace ? 'AND namespace = ?' : '';
     const params: (string | number)[] = [];
     if (namespace) params.push(namespace);
-    params.push(limit ?? 20);
+    params.push(limit ?? 20, offset);
     const rows = this.db
-      .prepare(`SELECT id FROM entities WHERE 1=1 ${statusFilter} ${namespaceFilter} ORDER BY id DESC LIMIT ?`)
+      .prepare(`SELECT id FROM entities WHERE 1=1 ${statusFilter} ${namespaceFilter} ORDER BY id DESC LIMIT ? OFFSET ?`)
       .all(...params) as { id: number }[];
 
     // Batch-hydrate instead of getEntity()-in-a-loop (4 queries per row →
@@ -1147,17 +1299,57 @@ export class KnowledgeGraph {
    * catalogue read, matching the prior transport behavior).
    *
    * #451: `type` is canonicalized, so `?type=lesson` or `?type=mistake` still
-   * finds the rows the one-time repair renamed to `lesson_learned`.
+   * finds the rows the repair renamed to `lesson_learned`.
    */
-  listByType(type: string, limit?: number, includeArchived?: boolean, namespace?: string): Entity[] {
+  listByType(type: string, limit?: number, includeArchived?: boolean, namespace?: string, offset = 0): Entity[] {
     type = canonicalEntityType(type);
     const statusFilter = includeArchived ? '' : "AND status = 'active'";
     const namespaceFilter = namespace ? 'AND namespace = ?' : '';
     const params: (string | number)[] = [type];
     if (namespace) params.push(namespace);
-    params.push(limit ?? 20);
+    params.push(limit ?? 20, offset);
     const rows = this.db
-      .prepare(`SELECT id FROM entities WHERE type = ? ${statusFilter} ${namespaceFilter} ORDER BY id DESC LIMIT ?`)
+      .prepare(`SELECT id FROM entities WHERE type = ? ${statusFilter} ${namespaceFilter} ORDER BY id DESC LIMIT ? OFFSET ?`)
+      .all(...params) as { id: number }[];
+    return this.getEntitiesByIds(
+      rows.map((r) => r.id),
+      { includeArchived, namespace }
+    );
+  }
+
+  /**
+   * One page of a project's memories, newest first. "Belongs to the project"
+   * follows the rule `/v1/projects` counts with (project-attribution.ts,
+   * projects.ts): carries the `project:<name>` tag, or — with no project tag
+   * at all — is named `lesson-<name>-<known pattern>` (a name of at least
+   * MIN_NAME_PROJECT_LENGTH characters); the session handoff is never one of
+   * them. Like `listByType` it is a catalogue read: it does not count as an
+   * access. `includeArchived` keeps the project's archived rows, which a
+   * supersession chain points at.
+   */
+  listByProject(project: string, limit?: number, includeArchived?: boolean, namespace?: string, offset = 0): Entity[] {
+    const statusFilter = includeArchived ? '' : "AND e.status = 'active'";
+    const namespaceFilter = namespace ? 'AND e.namespace = ?' : '';
+    const lessonNames = project.length >= MIN_NAME_PROJECT_LENGTH
+      ? KNOWN_ERROR_PATTERNS.map((pattern) => `lesson-${project}-${pattern}`)
+      : [];
+    const byName = lessonNames.length === 0
+      ? ''
+      : `OR (e.name IN (${lessonNames.map(() => '?').join(',')}) AND ${NO_PROJECT_TAG})`;
+    const params: (string | number)[] = [PROJECT_TAG_PREFIX + project, ...lessonNames, NOT_A_PROJECT_MEMORY.param];
+    if (namespace) params.push(namespace);
+    params.push(limit ?? 20, offset);
+    const rows = this.db
+      .prepare(
+        `SELECT e.id FROM entities e
+         WHERE (
+           EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?)
+           ${byName}
+         )
+         AND ${NOT_A_PROJECT_MEMORY.sql}
+         ${statusFilter} ${namespaceFilter}
+         ORDER BY e.id DESC LIMIT ? OFFSET ?`
+      )
       .all(...params) as { id: number }[];
     return this.getEntitiesByIds(
       rows.map((r) => r.id),

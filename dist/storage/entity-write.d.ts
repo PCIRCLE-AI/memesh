@@ -16,6 +16,7 @@ export declare function insertOrGetEntity(db: MemeshDatabase, entity: {
     title: string | null;
     namespace?: string;
 }): EntityRowState | null;
+export declare function storedText(text: string): string;
 export declare function appendObservations(db: MemeshDatabase, entityId: number, observations: readonly string[], options: {
     dedupe: boolean;
     readExisting: boolean;

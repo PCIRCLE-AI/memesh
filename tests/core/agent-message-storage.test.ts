@@ -4,6 +4,7 @@ import {
   AgentMessageStorageQuotaExceededError,
   enforceAgentMessageStorageQuota,
   getAgentMessageStorageReport,
+  normalizeAgentMessageCutoff,
   pruneTerminalAgentMessagePayloads,
 } from '../../src/core/agent-message-storage.js';
 import {
@@ -467,5 +468,32 @@ describe('bounded agent message storage', () => {
     expect(after.payload_bytes).toBeLessThan(before.payload_bytes / 10);
     expect(after.allocated_database_bytes).toBeGreaterThanOrEqual(before.allocated_database_bytes);
     expect(after.reusable_freelist_bytes).toBeGreaterThanOrEqual(0);
+  });
+});
+
+// #403: SQLite's own form is UTC. `new Date('2026-01-01 12:00:00')` reads it as
+// local time, so at UTC+8 a noon cutoff became 04:00 UTC and a fact from 06:00
+// UTC counted as newer than it.
+describe('#403 a cutoff in SQLite form is UTC', () => {
+  it('counts the same messages as the ISO cutoff under a non-UTC TZ', () => {
+    const previousTz = process.env.TZ;
+    process.env.TZ = 'Asia/Taipei';
+    try {
+      const message = send();
+      ack(message);
+      workflow(message, 'completed', '2026-01-01 06:00:00');
+      const sqliteForm = getAgentMessageStorageReport(getDatabase(), { cutoff: '2026-01-01 12:00:00' });
+      const isoForm = getAgentMessageStorageReport(getDatabase(), { cutoff: '2026-01-01T12:00:00Z' });
+      expect(isoForm.terminal_prunable_message_count).toBe(1);
+      expect(sqliteForm.terminal_prunable_message_count).toBe(1);
+      // ISO with a T and no zone is still read by `new Date()` as before, as
+      // local time: 12:00 at UTC+8 is 04:00 UTC, older than the 06:00 UTC fact.
+      const isoNoZone = getAgentMessageStorageReport(getDatabase(), { cutoff: '2026-01-01T12:00:00' });
+      expect(isoNoZone.terminal_prunable_message_count).toBe(0);
+      expect(normalizeAgentMessageCutoff('2026-01-01 12:00:00')).toBe('2026-01-01T12:00:00.000Z');
+      expect(normalizeAgentMessageCutoff('2026-01-01T12:00:00')).toBe(new Date('2026-01-01T12:00:00').toISOString());
+    } finally {
+      if (previousTz === undefined) delete process.env.TZ; else process.env.TZ = previousTz;
+    }
   });
 });

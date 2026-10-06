@@ -196,10 +196,26 @@ describe('HTTP Transport: POST /v1/remember', () => {
     const res = await req('POST', '/v1/remember', {
       name: 'http-beta',
       type: 'decision',
+      why: 'a fixed choice for this case; revisit if it changes',
       observations: ['Use TLS everywhere'],
     });
     expect(res.status).toBe(200);
-    expect(res.body.data.observations).toBe(1);
+    // The observation and the stored `Why: …`.
+    expect(res.body.data.observations).toBe(2);
+  });
+
+  it('refuses a decision with no why: 400 with the sentence that names both halves, nothing stored', async () => {
+    const refused = await req('POST', '/v1/remember', { name: 'http-bare-decision', type: 'decision', observations: ['Use TLS everywhere'] });
+    expect(refused.status).toBe(400);
+    expect(refused.body.success).toBe(false);
+    expect(refused.body.error).toMatch(/needs `why`.*reason for it and what would make it stop holding/);
+    expect(getDatabase().prepare('SELECT 1 FROM entities WHERE name = ?').get('http-bare-decision')).toBeUndefined();
+
+    const stored = await req('POST', '/v1/remember', {
+      name: 'http-bare-decision', type: 'decision', observations: ['Use TLS everywhere'], why: 'the proxy terminates nothing; revisit if it does',
+    });
+    expect(stored.status).toBe(200);
+    expect(stored.body.data.observations).toBe(2);
   });
 
   it('stores entity with tags', async () => {
@@ -210,6 +226,21 @@ describe('HTTP Transport: POST /v1/remember', () => {
     });
     expect(res.status).toBe(200);
     expect(res.body.data.tags).toBe(1);
+  });
+
+  it('a replace with no observations and no note is refused with 400 and the memory keeps its content', async () => {
+    await req('POST', '/v1/remember', { name: 'http-replace-keep', type: 'note', observations: ['first fact', 'second fact'] });
+    const res = await req('POST', '/v1/remember', { name: 'http-replace-keep', replace: true, title: 'Better title' });
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+    expect(res.body.errorCode).toBe('validation.bad-body');
+    expect(res.body.error).toMatch(/send the observations the memory already has/);
+    const stored = (getDatabase().prepare('SELECT o.content FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = ? ORDER BY o.id').all('http-replace-keep') as Array<{ content: string }>).map(o => o.content);
+    expect(stored).toEqual(['first fact', 'second fact']);
+    // With the observations, the same correction goes through.
+    const ok = await req('POST', '/v1/remember', { name: 'http-replace-keep', replace: true, title: 'Better title', observations: ['first fact', 'second fact'] });
+    expect(ok.status).toBe(200);
+    expect(ok.body.data.replaced).toBe(true);
   });
 
   it('stamps source_host=http on the stored entity', async () => {
@@ -315,6 +346,56 @@ describe('HTTP Transport: GET /v1/entities/:name', () => {
     expect(res.status).toBe(404);
     expect(res.body.success).toBe(false);
   });
+
+  it('shows a credential stored before redaction masked, in the list and the detail, and leaves the row as stored (#523)', async () => {
+    // Assembled at runtime so no line in the repository looks like a credential.
+    const password = 'hunter2hunter2';
+    const url = ['postgres://appuser', `${password}@db:5432/app`].join(':');
+    const token = ['token', 'abc123abc123abc123'].join('=');
+    // A version whose key header is in its title and its body in an observation:
+    // only masking the version as one set hides the body.
+    const keyHeader = ['-----BEGIN', 'RSA PRIVATE KEY-----'].join(' ');
+    const keyBody = 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7';
+    // A guard pattern that itself looks like a credential, so keeping it as
+    // given is visible.
+    const guardPattern = 'api_key=[A-Za-z0-9_-]+';
+    const db = getDatabase();
+    // Raw SQL: every writer redacts now, so only a row written this way holds the text.
+    const metadata = JSON.stringify({
+      note: `see ${token}`,
+      guard: { pattern: guardPattern, message: `never commit ${token}` },
+      replaced_history: [
+        { replaced_at: '2026-01-01T00:00:00.000Z', title: `old ${token}`, observations: [`was ${url}`], tags: [] },
+        { replaced_at: '2026-01-02T00:00:00.000Z', title: keyHeader, observations: [keyBody], tags: [] },
+      ],
+    });
+    const id = Number(db.prepare("INSERT INTO entities (name, type, title, metadata) VALUES ('legacy-shown', 'note', ?, ?)").run(`db ${token}`, metadata).lastInsertRowid);
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(id, `primary is ${url}`);
+    const stored = () => JSON.stringify([
+      db.prepare("SELECT title, metadata FROM entities WHERE name = 'legacy-shown'").get(),
+      db.prepare('SELECT content FROM observations WHERE entity_id = ?').all(id),
+    ]);
+    const before = stored();
+
+    const detail = await req('GET', '/v1/entities/legacy-shown');
+    expect(detail.status).toBe(200);
+    const list = await req('GET', '/v1/entities?limit=5000&status=all');
+    const listed = (list.body.data as Array<{ name: string }>).find((e) => e.name === 'legacy-shown');
+    expect(listed, 'the list carries the memory').toBeTruthy();
+    for (const shown of [detail.body.data, listed]) {
+      const text = JSON.stringify(shown);
+      expect(text).not.toContain(password);
+      expect(text).not.toContain('abc123abc123');
+      expect(text).not.toContain(keyBody);
+      expect(shown.title).toBe('db ***REDACTED***');
+      expect(shown.observations).toEqual(['primary is ***REDACTED***db:5432/app']);
+      expect(shown.metadata.replaced_history[0].observations).toEqual(['was ***REDACTED***db:5432/app']);
+      expect(shown.metadata.replaced_history[0].replaced_at).toBe('2026-01-01T00:00:00.000Z');
+      // A guard's pattern is a matcher, not content: kept as given.
+      expect(shown.metadata.guard.pattern).toBe(guardPattern);
+    }
+    expect(stored()).toBe(before);
+  });
 });
 
 // ── List entities ─────────────────────────────────────────────────────────────
@@ -331,6 +412,76 @@ describe('HTTP Transport: GET /v1/entities', () => {
     const res = await req('GET', '/v1/entities?limit=1');
     expect(res.status).toBe(200);
     expect(res.body.data.length).toBeLessThanOrEqual(1);
+  });
+});
+
+describe('HTTP Transport: GET /v1/entities paging and ?project=', () => {
+  const names = (res: { body: { data: Array<{ name: string }> } }) => res.body.data.map((e) => e.name);
+
+  beforeAll(async () => {
+    for (const n of ['pg-a-1', 'pg-a-2', 'pg-a-3']) {
+      await req('POST', '/v1/remember', { name: n, type: 'note', tags: ['project:pg-proj'] });
+    }
+    await req('POST', '/v1/remember', { name: 'pg-a-arch', type: 'note', tags: ['project:pg-proj'] });
+    await req('POST', '/v1/forget', { name: 'pg-a-arch' });
+    await req('POST', '/v1/remember', { name: 'pg-b-1', type: 'note', tags: ['project:pg-other'] });
+    // Named like pg-proj's lesson, but tagged to another project: the tag wins.
+    await req('POST', '/v1/remember', { name: 'lesson-pg-proj-config-error', type: 'lesson_learned', tags: ['project:pg-other'] });
+    // No project tag at all: the name says which project it belongs to.
+    await req('POST', '/v1/remember', { name: 'lesson-pg-heur-config-error', type: 'lesson_learned' });
+    // A project whose name begins with another's: an exact tag match keeps them apart.
+    await req('POST', '/v1/remember', { name: 'pg-c-1', type: 'note', tags: ['project:pg-proj-2'] });
+    // The Stop hook's handoff carries the project tag but is not one of its memories.
+    await req('POST', '/v1/remember', { name: 'session-handoff:pg-proj', type: 'session-handoff', tags: ['project:pg-proj'] });
+    // A one-character name is not a project (the chips never read one out of a lesson name).
+    await req('POST', '/v1/remember', { name: 'lesson-x-config-error', type: 'lesson_learned' });
+  });
+
+  it('pages one project newest-first with limit and offset', async () => {
+    const first = await req('GET', '/v1/entities?project=pg-proj&limit=2');
+    expect(first.status).toBe(200);
+    expect(names(first)).toEqual(['pg-a-3', 'pg-a-2']);
+    const second = await req('GET', '/v1/entities?project=pg-proj&limit=2&offset=2');
+    expect(names(second)).toEqual(['pg-a-1']);
+    expect(names(await req('GET', '/v1/entities?project=pg-proj&limit=2&offset=50'))).toEqual([]);
+  });
+
+  it('leaves out archived memories unless asked for them (status=all)', async () => {
+    expect(names(await req('GET', '/v1/entities?project=pg-proj&limit=50'))).not.toContain('pg-a-arch');
+    const withArchived = names(await req('GET', '/v1/entities?project=pg-proj&limit=50&status=all'));
+    expect(withArchived).toContain('pg-a-arch');
+    expect(withArchived).not.toContain('pg-b-1'); // still only this project's
+  });
+
+  it('attributes a memory to a project by the rule /v1/projects counts with', async () => {
+    const tagged = names(await req('GET', '/v1/entities?project=pg-proj&limit=50'));
+    expect(tagged).not.toContain('lesson-pg-proj-config-error'); // its tag names another project
+    expect(tagged).not.toContain('pg-b-1');
+    expect(names(await req('GET', '/v1/entities?project=pg-heur&limit=50'))).toEqual(['lesson-pg-heur-config-error']);
+
+    const counted = (await req('GET', '/v1/projects')).body.data as Array<{ name: string; count: number }>;
+    for (const project of ['pg-proj', 'pg-other', 'pg-heur', 'pg-proj-2']) {
+      const listed = (await req('GET', `/v1/entities?project=${project}&limit=5000`)).body.data.length;
+      expect(listed, `${project}: the chip count and the list behind it`).toBe(counted.find((p) => p.name === project)!.count);
+    }
+    // Names that share a prefix stay apart, and the handoff is in neither the count nor the list.
+    expect(names(await req('GET', '/v1/entities?project=pg-proj-2&limit=50'))).toEqual(['pg-c-1']);
+    expect(names(await req('GET', '/v1/entities?project=pg-proj&limit=50'))).not.toContain('session-handoff:pg-proj');
+    // Too short to be a project from a lesson name: no chip, and no list either.
+    expect(counted.find((p) => p.name === 'x')).toBeUndefined();
+    expect(names(await req('GET', '/v1/entities?project=x&limit=50'))).toEqual([]);
+  });
+
+  it('refuses a type and a project together, and a negative offset', async () => {
+    expect((await req('GET', '/v1/entities?type=note&project=pg-proj')).status).toBe(400);
+    expect((await req('GET', '/v1/entities?offset=-1')).status).toBe(400);
+  });
+
+  it('offset pages the unfiltered and the type-filtered lists too', async () => {
+    const all = names(await req('GET', '/v1/entities?limit=50'));
+    expect(names(await req('GET', '/v1/entities?limit=2&offset=1'))).toEqual(all.slice(1, 3));
+    const notes = names(await req('GET', '/v1/entities?type=note&limit=50'));
+    expect(names(await req('GET', '/v1/entities?type=note&limit=1&offset=1'))).toEqual(notes.slice(1, 2));
   });
 });
 
@@ -624,7 +775,7 @@ describe('HTTP Transport: stable errorCode on error envelopes', () => {
 
 describe('HTTP Transport: POST /v1/learn', () => {
   it('creates a lesson_learned entity and returns learned=true', async () => {
-    const res = await req('POST', '/v1/learn', { error: 'NullPointerException', fix: 'Added null guard' });
+    const res = await req('POST', '/v1/learn', { error: 'NullPointerException', fix: 'Added null guard', project: 'http-learn' });
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(res.body.data.learned).toBe(true);
@@ -635,7 +786,7 @@ describe('HTTP Transport: POST /v1/learn', () => {
   it('stamps source_host=http on the lesson entity', async () => {
     // Same guard as the remember route: the wrapper injection is the only
     // thing carrying provenance here, so its absence must turn a test red.
-    await req('POST', '/v1/learn', { error: 'http-learn-prov-unique boom', fix: 'reseat the cable' });
+    await req('POST', '/v1/learn', { error: 'http-learn-prov-unique boom', fix: 'reseat the cable', project: 'http-learn' });
     const res = await req('POST', '/v1/recall', { query: 'http-learn-prov-unique' });
     const found = res.body.data.entities.find((e: any) => e.name.startsWith('lesson-'));
     expect(found.metadata.provenance.source_host).toBe('http');
@@ -648,19 +799,20 @@ describe('HTTP Transport: POST /v1/learn', () => {
       root_cause: 'Default timeout too low',
       prevention: 'Always configure timeouts explicitly',
       severity: 'major',
+      project: 'http-learn',
     });
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
   });
 
   it('returns 400 when error field is missing', async () => {
-    const res = await req('POST', '/v1/learn', { fix: 'Some fix' });
+    const res = await req('POST', '/v1/learn', { fix: 'Some fix', project: 'http-learn' });
     expect(res.status).toBe(400);
     expect(res.body.success).toBe(false);
   });
 
   it('returns 400 when fix field is missing', async () => {
-    const res = await req('POST', '/v1/learn', { error: 'Some error' });
+    const res = await req('POST', '/v1/learn', { error: 'Some error', project: 'http-learn' });
     expect(res.status).toBe(400);
     expect(res.body.success).toBe(false);
   });
@@ -1142,7 +1294,8 @@ describe('HTTP Transport: Startup validation', () => {
       let dirName = '';
       const out = startupOutput((dir) => { dirName = dir; fs.chmodSync(dir, 0o500); });
       expect(out).toContain(`Fix: Run: chmod u+w ${shellQuote(dirName)}`);
-      expect(out).not.toMatch(/Backup and reset|mv |Quick fix/);
+      // `mv` as a command word: the random temp-folder suffix can end in `mv` before a space (`…-oH0Bmv is read-only`).
+      expect(out).not.toMatch(/Backup and reset|(?:^|\s)mv |Quick fix/);
     });
 
     it('a -wal with fewer owner permissions: prints the chmod, not the reset advice', () => {
@@ -1152,7 +1305,7 @@ describe('HTTP Transport: Startup validation', () => {
         fs.writeFileSync(wal, '', { mode: 0o400 });
       });
       expect(out).toContain(`Fix: Run: chmod u+w ${shellQuote(wal)}`);
-      expect(out).not.toMatch(/Backup and reset|mv |Quick fix/);
+      expect(out).not.toMatch(/Backup and reset|(?:^|\s)mv |Quick fix/);
     });
 
     it('a database the owner cannot read or write: prints the chmod doctor prints, not the reset advice', () => {
@@ -1160,7 +1313,7 @@ describe('HTTP Transport: Startup validation', () => {
         let db = '';
         const out = startupOutput((_dir, dbPath) => { db = dbPath; fs.chmodSync(dbPath, fileMode); });
         expect(out, fileMode.toString(8)).toContain(`chmod u+rw ${shellQuote(db)}`);
-        expect(out, fileMode.toString(8)).not.toMatch(/Backup and reset|mv |Quick fix/);
+        expect(out, fileMode.toString(8)).not.toMatch(/Backup and reset|(?:^|\s)mv |Quick fix/);
       }
     });
   });

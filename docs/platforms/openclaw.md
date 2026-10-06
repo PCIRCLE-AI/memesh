@@ -31,7 +31,7 @@ The current source provides:
 | Plugin entry `memory-memesh` | — | Exports a memory-kind entry, registers tools and a hook, and calls `api.registerMemoryCapability?.({})` when available. |
 | **Config schema** (TypeBox `Type.Object()`) | — | `baseUrl` defaults to `http://localhost:3737`; `autoRecall` controls the registered hook. `autoCapture` is present but currently unused. |
 | **Tool: `memory_recall`** | `POST /v1/recall` | Search. Param: `query` (string), `limit` (optional int, default 5). Return: `{ content: [{type:"text", text:"..."}], details: {count: N} }`. On empty: `"No relevant memories found."` |
-| **Tool: `memory_store`** | `POST /v1/remember` | Persist. Params: `text` (required), `category` (optional, default `"note"`), `importance` (optional, 1-10). Reject if `looksLikePromptInjection(text)`. |
+| **Tool: `memory_store`** | `POST /v1/remember` | Persist. Params: `text` (required), `category` (optional, default `"note"`), `why` (the reason, and what would make it stop holding; required for `decision`, `architecture_decision` and `design_decision`), `importance` (optional, 1-10). Reject if `looksLikePromptInjection(text)`. |
 | **Tool: `memory_forget`** | `POST /v1/forget` | Recalls up to 20 agent-scoped matches and immediately archives each by name. There is no preview or confirmation; inspect the target scope before calling it. |
 | **Hook: `api.on("before_prompt_build", ...)`** | `POST /v1/recall` | Automatic recall. Extract `extractLatestUserText(event.messages)`, normalize the query, run local FTS5 search, and inject a bounded top-N result. Guard on `autoRecall` config. Skip on cooldown after a timeout. |
 
@@ -71,6 +71,7 @@ The plugin is not available from npm. For a source compatibility test, use the i
 - `autoCapture` has no effect. Store deliberately with `memory_store`; its pattern-based prompt-injection guard is a baseline, not a guarantee that content is safe.
 - `memory_forget` performs agent-scoped query recall and archives up to 20 returned entities immediately. It has no preview or confirmation. Inspect the intended targets first and test with disposable data.
 - The agent ID tag is cooperative isolation inside one MeMesh instance, not cryptographic tenant isolation. Separate server instances are needed for hard isolation.
+- Writes carry an `agent:<id>` tag and no `project:` tag, so MeMesh treats them as memories that belong to no project: up to five of them can appear in every project's session-start briefing.
 - Recall times out and uses a temporary per-agent cooldown on timeout; a failed recall must not be treated as proof that no memory exists.
 
 ## Reference

@@ -2,7 +2,7 @@
 
 import { basename } from 'path';
 import { existsSync, readFileSync } from 'fs';
-import { AUTO_CAPTURE_TAG, captureEntity, getProjectName, isAutoCaptureEnabled, openHookDb, hookErrorReason, hookSourceHost, SKIP_REASONS, recordHookOutcome, recordHookRun, truncateTitle } from './_shared.js';
+import { AUTO_CAPTURE_TAG, captureEntity, getProjectName, isAutoCaptureEnabled, openHookDb, hookErrorReason, hookSourceHost, SKIP_REASONS, recordHookOutcome, recordHookRun, redactSecrets, truncateTitle } from './_shared.js';
 
 // There is no in-process timeout guard, and its absence is deliberate.
 //
@@ -38,7 +38,7 @@ process.stdin.on('end', () => {
 
     const data = JSON.parse(input);
     payload = data;
-    const sessionId = data.session_id || 'unknown';
+    const sessionId = data.session_id;
     const transcriptPath = data.transcript_path || '';
     // A payload with NEITHER a session id NOR a transcript is not a
     // PreCompact event — it used to fall through anyway, write a junk entity
@@ -50,7 +50,21 @@ process.stdin.on('end', () => {
       record('skipped', SKIP_REASONS.noSessionOrTranscript);
       process.exit(0);
     }
-    const cwd = data.cwd || process.cwd();
+    // Both identities below name WHICH project and WHICH session this memory
+    // belongs to, and neither has a safe default (#527). This hook's own
+    // working directory is not the session's project, and every payload
+    // without a session id used to land in one shared `pre-compact-unknown`
+    // memory across projects. Skip and say why instead.
+    const usable = (v) => typeof v === 'string' && v.trim().length > 0;
+    if (!usable(data.session_id)) {
+      record('skipped', SKIP_REASONS.noSessionId);
+      process.exit(0);
+    }
+    if (!usable(data.cwd)) {
+      record('skipped', SKIP_REASONS.cwdAbsent);
+      process.exit(0);
+    }
+    const cwd = data.cwd;
     // Claude Code's PreCompact payload names this field `trigger` ('manual' |
     // 'auto'), not `reason` — verified against the shipped cli.js bundle
     // (`hook_event_name:"PreCompact",trigger:A.trigger,custom_instructions:...`).
@@ -121,7 +135,10 @@ process.stdin.on('end', () => {
     // terse observation ("Compaction reason: manual") standing in as the
     // display label.
     const titleDate = new Date().toISOString().slice(0, 10);
-    const title = truncateTitle(`${titleDate} ${projectName}: ${reason} compaction (${toolCallCount} tool calls)`);
+    // #523: `reason` is payload text (the legacy field is free-form), so it
+    // is redacted BEFORE the 200-character cut — `captureEntity` redacts
+    // again, but a secret already cut in half no longer matches its pattern.
+    const title = truncateTitle(redactSecrets(`${titleDate} ${projectName}: ${reason} compaction (${toolCallCount} tool calls)`));
     if (editedFiles.size > 0) {
       obsLines.push(`Files edited: ${Array.from(editedFiles).join(', ')}`);
     }

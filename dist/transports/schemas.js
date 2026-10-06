@@ -3,7 +3,7 @@ import { NAMESPACES } from '../core/types.js';
 import { TITLE_MAX_LENGTH } from '../core/title.js';
 import { deriveNote, NOTE_MAX_CHARS, NOTE_MAX_OBSERVATIONS } from '../core/note-derive.js';
 import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../core/agent-messaging.js';
-import { AGENT_SCOPE_ID_MAX_LENGTH, agentScopeIdRejection, canonicalAgentScopeId, } from '../core/agent-scope-id.js';
+import { AGENT_SCOPE_ID_MAX_LENGTH, agentScopeIdRejection, canonicalAgentScopeId, projectScopeRejection, } from '../core/agent-scope-id.js';
 const sanitizeName = (s) => s.replace(/[\r\n\t]+/g, ' ').trim();
 const nameField = z.string().min(1).max(255).transform(sanitizeName).refine(s => s.length > 0, {
     message: 'Name must not be blank after sanitization',
@@ -59,6 +59,7 @@ const rememberShape = {
     type: z.string().min(1).max(100).optional(),
     title: titleField,
     observations: z.array(observationField).max(100).optional(),
+    why: observationField.optional(),
     note: z.string().max(NOTE_MAX_CHARS).optional(),
     replace: z.boolean().optional(),
     tags: z.array(z.string().max(255)).max(50).optional(),
@@ -74,11 +75,13 @@ function refineRemember(data, ctx) {
             ctx.addIssue({ code: 'custom', path: ['name'], message: 'name is required (or pass `note` to have it derived)' });
         if (data.type === undefined && !(data.replace && data.name !== undefined))
             ctx.addIssue({ code: 'custom', path: ['type'], message: 'type is required (or pass `note`, which defaults it to "note", or `replace: true` with a `name` to keep the type that memory already has)' });
+        if (data.replace && (data.observations === undefined || data.observations.length === 0))
+            ctx.addIssue({ code: 'custom', path: ['observations'], message: 'replace rewrites the memory\'s observations, so it needs `observations` (or `note`) — a replace without them would empty the memory. To change only the title or tags, send the observations the memory already has together with the new title or tags' });
         return;
     }
     for (const key of ['title', 'observations']) {
         if (data[key] !== undefined) {
-            ctx.addIssue({ code: 'custom', path: [key], message: `${key} cannot be combined with note — note derives it; to correct the derived ${key}, call again with name, replace: true and a structured ${key} (pass \`type\` only to also change the memory's type)` });
+            ctx.addIssue({ code: 'custom', path: [key], message: `${key} cannot be combined with note — note derives it; to correct what was derived, call again with name, replace: true and a structured title and observations — the response's \`derived\` shows what was derived, so the observations to keep can be copied from it (pass \`type\` only to also change the memory's type)` });
         }
     }
     if (data.replace && data.name === undefined) {
@@ -134,6 +137,18 @@ export const ImportSchema = z.object({
     merge_strategy: z.enum(['skip', 'overwrite', 'append']),
     restore_archived: z.boolean().optional(),
 }).strict();
+const nonBlankBounded = (max) => z.string().trim().min(1).max(max);
+const agentScopeId = (field) => nonBlankBounded(AGENT_SCOPE_ID_MAX_LENGTH)
+    .transform(canonicalAgentScopeId)
+    .refine((value) => agentScopeIdRejection(field, value) === null, {
+    error: (issue) => agentScopeIdRejection(field, String(issue.input)) ?? `${field} is not a valid identifier.`,
+});
+const projectRules = (base) => base.superRefine((value, ctx) => {
+    const rejection = projectScopeRejection(value);
+    if (rejection !== null)
+        ctx.addIssue({ code: 'custom', message: rejection });
+});
+const projectName = projectRules(z.string());
 const learnShape = {
     error: z.string().min(1).max(5000),
     fix: z.string().min(1).max(5000),
@@ -142,22 +157,20 @@ const learnShape = {
     severity: z.enum(['critical', 'major', 'minor']).optional(),
 };
 export const LearnSchema = z.object(learnShape).strict();
-export const McpLearnSchema = z.object({ ...learnShape, project: mcpProjectField }).strict();
+export const McpLearnSchema = z.object({ ...learnShape, project: z.union([projectName, z.literal(false)]).optional() }).strict();
+export const HttpLearnSchema = z.object({
+    ...learnShape,
+    project: projectRules(z.string({ error: 'project is required: name the project this lesson belongs to' })),
+}).strict();
 export const TaskStateSchema = z.object({
-    project: z.string().min(1).max(200).optional(),
+    project: projectName.optional(),
     goal: z.string().max(1000).optional(),
     next: z.string().max(1000).optional(),
     blocked: z.string().max(1000).optional(),
     done: z.string().max(1000).optional(),
 }).strict();
-const nonBlankBounded = (max) => z.string().trim().min(1).max(max);
-const agentScopeId = (field) => nonBlankBounded(AGENT_SCOPE_ID_MAX_LENGTH)
-    .transform(canonicalAgentScopeId)
-    .refine((value) => agentScopeIdRejection(field, value) === null, {
-    error: (issue) => agentScopeIdRejection(field, String(issue.input)) ?? `${field} is not a valid identifier.`,
-});
 export const BriefingSchema = z.object({
-    project: agentScopeId('project').optional(),
+    project: projectName.optional(),
     recipient: agentScopeId('recipient').optional(),
 }).strict();
 export const WhySchema = z.object({

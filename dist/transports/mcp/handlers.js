@@ -32,7 +32,7 @@ function writeProject(arg, tags, context) {
         return { project: null };
     if (arg !== undefined)
         return { project: arg };
-    if ((tags ?? []).some((t) => t.startsWith('project:')))
+    if ((tags ?? []).some((t) => t.startsWith('project:') && t.slice('project:'.length).trim() !== ''))
         return { project: undefined };
     return projectFor(undefined, context, PROJECT_ACTION);
 }
@@ -67,9 +67,9 @@ export const TOOL_DEFINITIONS = [
     },
     {
         name: 'remember',
-        description: 'Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions, patterns, lessons learned, and important context. An omitted namespace keeps an existing memory in its current namespace; a "supersedes" relation archives its target, while "contradicts" marks a conflict. ' +
+        description: 'Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions (with `why`), patterns, lessons learned, and important context. An omitted namespace keeps an existing memory in its current namespace; a "supersedes" relation archives its target, while "contradicts" marks a conflict. ' +
             'Quickest form: pass only `note` (free text) and the server derives title, observations and name; the response echoes what it derived. ' +
-            'To correct a memory, call again with its `name` and `replace: true` — the memory keeps the `type` it has unless you pass a different one — and the old content moves to metadata.replaced_history instead of staying next to the fix.',
+            'To correct a memory, call again with its `name`, `replace: true` and the `observations` it should now hold (a replace without `observations` or `note` is refused, so re-send the ones to keep along with the fix) — the memory keeps the `type` it has unless you pass a different one — and the old content moves to metadata.replaced_history instead of staying next to the fix.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -87,7 +87,7 @@ export const TOOL_DEFINITIONS = [
                 },
                 replace: {
                     type: 'boolean',
-                    description: 'Rewrite the memory named by `name` instead of appending to it: its observations are replaced (and its tags when `tags` is given, its title when `title` or `note` is given). The previous version is kept in metadata.replaced_history with the time it was replaced. Default false (append).',
+                    description: 'Rewrite the memory named by `name` instead of appending to it: its observations are replaced by the `observations` (or `note`) you give — one of them is required, a replace with neither is refused — and its tags when `tags` is given, its title when `title` or `note` is given. The previous version is kept in metadata.replaced_history with the time it was replaced. Default false (append).',
                 },
                 title: {
                     type: 'string',
@@ -98,10 +98,14 @@ export const TOOL_DEFINITIONS = [
                     items: { type: 'string' },
                     description: 'Key facts or observations about this entity',
                 },
+                why: {
+                    type: 'string',
+                    description: 'For a decision: why it was made AND what would make it stop holding (e.g. "Postgres is too heavy to deploy for one user; revisit if we add a hosted tier"). Stored as the observation "Why: …" and shown next to the decision wherever it is recalled or briefed. Required to create or `replace` a memory of type decision, architecture_decision or design_decision, unless an observation already starts with "Why: ".',
+                },
                 tags: {
                     type: 'array',
                     items: { type: 'string' },
-                    description: 'Tags for filtering by subject (e.g. "topic:database"). A "project:<id>" tag is the same as passing `project` (<id> is the `project` field of the `briefing` result; CLI: `memesh briefing --json`); a plain repository name is a different project. At most one project.',
+                    description: 'Tags for filtering by subject (e.g. "topic:database"). A "project:<id>" tag is the same as passing `project` (<id> is the `project` field of the `briefing` result; CLI: `memesh briefing --json`); a plain repository name is a different project, except your own project\'s plain name, which is stored as the id and reported in `retagged` — unless a memory the call updates or supersedes is already filed under the plain tag, which then stays as written. At most one project.',
                 },
                 relations: {
                     type: 'array',
@@ -137,7 +141,7 @@ export const TOOL_DEFINITIONS = [
             anyOf: [
                 { required: ['note'] },
                 { required: ['name', 'type'] },
-                { required: ['name', 'replace'], properties: { replace: { const: true } } },
+                { required: ['name', 'replace', 'observations'], properties: { replace: { const: true }, observations: { minItems: 1 } } },
             ],
         },
     },
@@ -504,7 +508,11 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
             const resolved = writeProject(projectArg, input.tags, requestContext);
             if ('result' in resolved)
                 return resolved.result;
-            return ok(remember({ ...input, sourceHost, project: resolved.project }));
+            const binding = requestContext.projectBinding;
+            const currentProject = typeof projectArg === 'string'
+                ? projectArg
+                : projectArg === undefined && binding !== undefined && 'project' in binding ? binding.project : undefined;
+            return ok(remember({ ...input, sourceHost, project: resolved.project, currentProject }));
         }
         if (name === 'recall') {
             const r = parseOrFail(McpRecallSchema, args);

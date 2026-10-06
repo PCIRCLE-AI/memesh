@@ -17,6 +17,7 @@ import {
   exportMemories,
   importMemories,
   learn,
+  shownEntity,
 } from '../../core/operations.js';
 import { KnowledgeGraph } from '../../knowledge-graph.js';
 import {
@@ -24,8 +25,9 @@ import {
   updateConfig,
 } from '../../core/config.js';
 import { SESSION_LIMIT_MIN, SESSION_LIMIT_MAX } from '../../core/session-limit.js';
+import { AGENT_SCOPE_ID_MAX_LENGTH } from '../../core/agent-scope-id.js';
 import { BRIEFING_LEVELS } from '../../core/briefing-level.js';
-import { isDoctorFixPermissionError, removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
+import { isDoctorFixPermissionError, PluginRefreshBudgetError, removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
 import { computePatterns } from '../../core/patterns.js';
 import { computeAnalytics, computePmAnalytics } from '../../core/analytics.js';
 import { computeStats } from '../../core/stats.js';
@@ -38,14 +40,14 @@ import {
   RememberSchema as RememberBody, RecallSchema as RecallBody,
   ForgetSchema as ForgetBody,
   ExportSchema as ExportBody, ImportSchema as ImportBody,
-  LearnSchema as LearnBody,
+  HttpLearnSchema as LearnBody,
   WhySchema as WhyBody,
   MessageSchema as MessageBody,
 } from '../schemas.js';
 import { executeAgentMessageAction } from '../agent-messaging.js';
 import { checkForUpdate, getLastUpdateCheck, getUpdateCheck } from '../../core/version-check.js';
 import { getCurrentInstallChannel, getInstallChannelSupport } from '../../core/install-channel.js';
-import { getDbPath, getMemeshDirFromDbPath, redactSecrets, redactUserPaths } from '../../core/paths.js';
+import { getDbPath, getMemeshDirFromDbPath, redactTextValues, redactUserPaths } from '../../core/paths.js';
 import { removeGroupAndOtherAccess } from '../../core/file-mode.js';
 import { diagnoseDatabaseFailure } from '../../core/database-diagnosis.js';
 import { RETIRED_ROUTES } from './retired-routes.js';
@@ -90,6 +92,7 @@ type ErrorCode =
   | 'payload.too-large'     // 413 — body exceeds the 1 MB limit
   | 'operation.failed'      // 400 — valid request, but the operation itself rejected it
   | 'operation.permission-denied' // 500 — explicit local mutation lacked filesystem permission
+  | 'doctor.repair-incomplete' // 500 — a multi-step repair ran its first step and could not run the next; the body names it
   | 'rate.limited'          // 429 — too many requests in the window (non-loopback only)
   | 'server.internal';      // 500/503 — unexpected server-side failure
 
@@ -554,7 +557,14 @@ app.get('/v1/doctor', (_req, res) => handleGet(res, async () => {
   // Redacting server-side rather than in the widget covers every consumer of
   // the route at once, and the browser cannot do it: it does not know the
   // server's HOME.
-  return JSON.parse(redactUserPaths(redactSecrets(JSON.stringify(result))));
+  //
+  // Credentials are redacted in each decoded string value (#523): in the
+  // serialised form a line break inside a pasted key is the two characters
+  // `\r\n` or `\n\t`, which the key pattern did not see, and the key body
+  // was published whole. Only the string values: a pass over the whole
+  // serialised report would read it as one document, and one summary
+  // holding a lone END line would mask every id and status in it.
+  return JSON.parse(redactUserPaths(JSON.stringify(redactTextValues(result))));
 }));
 
 const DoctorFixBody = z.object({ id: z.string().min(1).max(100) }).strict();
@@ -586,6 +596,11 @@ app.post('/v1/doctor/fix', (req, res) => handlePost(DoctorFixBody, req, res, asy
     }
   } catch (error) {
     if (error instanceof HttpError) throw error;
+    // The first Codex command ran; the second had no time left. Not a generic
+    // 500: the dashboard would show "unexpected error" and hide the step left.
+    if (error instanceof PluginRefreshBudgetError) {
+      throw new HttpError(500, 'doctor.repair-incomplete', error.message);
+    }
     if (isDoctorFixPermissionError(error)) {
       throw new HttpError(
         500,
@@ -597,7 +612,7 @@ app.post('/v1/doctor/fix', (req, res) => handlePost(DoctorFixBody, req, res, asy
   }
 
   const after = await runDoctor({ packageRoot, packageVersion });
-  const safe = (value: unknown) => JSON.parse(redactUserPaths(redactSecrets(JSON.stringify(value))));
+  const safe = (value: unknown) => JSON.parse(redactUserPaths(JSON.stringify(redactTextValues(value))));
   return {
     action: safe(action),
     before: safe({ status: before.status, checks: [check] }),
@@ -930,7 +945,12 @@ app.get('/v1/update-status', (req, res) => handleGet(res, async () => {
 // What the owner STATED about a project with `memesh task` — goal / next /
 // blocked / done — read straight from the task-state entity. Absent fields are
 // returned absent: the dashboard renders "not stated", never a guess.
-const TaskStateQuerySchema = z.object({ project: z.string().trim().min(1).max(200) });
+// The key is used exactly as sent — no trimming, no path handling. Reads must
+// keep reaching a legacy project key already stored (even a path-shaped one);
+// only WRITES refuse a path (#527). Blank and over-long are still refused.
+const TaskStateQuerySchema = z.object({
+  project: z.string().max(AGENT_SCOPE_ID_MAX_LENGTH).refine((value) => value.trim().length > 0, 'project must not be empty'),
+});
 app.get('/v1/task-state', (req, res) => {
   const parsed = TaskStateQuerySchema.safeParse(req.query);
   if (!parsed.success) {
@@ -1120,7 +1140,16 @@ const EntitiesQuerySchema = z.object({
   // Cap at 5000 — Browse legitimately fetches the full set for client-side
   // filter / sort / search across the whole DB.
   limit: z.coerce.number().int().min(1).max(5000).default(20),
+  // Paging: skip this many of the newest matches. The Project page loads one
+  // project's memories a page at a time instead of the newest 2000 of the
+  // whole library.
+  offset: z.coerce.number().int().min(0).max(1_000_000).default(0),
+  // Only this project's memories (the rule `/v1/projects` counts with).
+  project: z.string().min(1).max(300).optional(),
   status: z.enum(['all', 'active']).optional(),
+}).refine((q) => !(q.type && q.project), {
+  message: 'type and project cannot be combined',
+  path: ['project'],
 });
 
 // --- List entities ---
@@ -1131,7 +1160,7 @@ app.get('/v1/entities', (req, res) => {
   const query = parseQuery(EntitiesQuerySchema, req, res);
   if (!query) return;
   handleGet(res, () => {
-    const { type: typeFilter, limit, status } = query;
+    const { type: typeFilter, limit, offset, project, status } = query;
     const includeArchived = status === 'all';
     const kg = new KnowledgeGraph(getDatabase());
     // Neither branch counts as a use.
@@ -1144,9 +1173,13 @@ app.get('/v1/entities', (req, res) => {
     // bumped `access_count` and stamped `last_accessed_at = now` on up to
     // five thousand memories, which is the export defect five times over and
     // triggered by looking rather than by taking a backup.
-    return typeFilter
-      ? kg.listByType(typeFilter, limit, includeArchived)
-      : kg.listRecent(limit, includeArchived, undefined, false);
+    // Shown like recall (#523): a credential stored before redaction is
+    // masked here, the stored row is not touched.
+    return (project
+      ? kg.listByProject(project, limit, includeArchived, undefined, offset)
+      : typeFilter
+        ? kg.listByType(typeFilter, limit, includeArchived, undefined, offset)
+        : kg.listRecent(limit, includeArchived, undefined, false, offset)).map(shownEntity);
   });
 });
 
@@ -1157,7 +1190,7 @@ app.get('/v1/entities/:name', (req, res) => handleGet(res, () => {
   if (!entity) {
     throw new HttpError(404, 'resource.not-found', `Entity "${String(req.params.name)}" not found`);
   }
-  return entity;
+  return shownEntity(entity);
 }));
 
 // --- Start server ---

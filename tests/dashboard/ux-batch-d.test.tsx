@@ -62,6 +62,34 @@ describe('TabNav is a real WAI-ARIA tablist', () => {
   });
 });
 
+describe('TabNav keyboard scope and overflow fade', () => {
+  it('leaves ArrowUp/ArrowDown alone: a horizontal tablist does not use them, and they scroll the page', () => {
+    const onSelect = vi.fn();
+    const { container } = render(<TabNav tabs={TABS} active="Search" onSelect={onSelect} />);
+    const active = container.querySelector('[aria-selected="true"]') as HTMLButtonElement;
+    for (const key of ['ArrowDown', 'ArrowUp']) {
+      const notCancelled = fireEvent.keyDown(active, { key });
+      expect(notCancelled, key).toBe(true);
+    }
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it('re-measures the overflow fade when the labels change but the tab count does not', () => {
+    // A language switch makes the same tabs wider; the fade used to follow only
+    // the COUNT, so it stayed stale until the next scroll or resize.
+    const { container, rerender } = render(<TabNav tabs={TABS} active="Search" onSelect={() => {}} />);
+    const strip = container.querySelector('[role="tablist"]') as HTMLElement;
+    let scrollWidth = 100;
+    Object.defineProperty(strip, 'clientWidth', { configurable: true, value: 100 });
+    Object.defineProperty(strip, 'scrollLeft', { configurable: true, value: 0 });
+    Object.defineProperty(strip, 'scrollWidth', { configurable: true, get: () => scrollWidth });
+
+    scrollWidth = 400; // the translated labels no longer fit
+    rerender(<TabNav tabs={TABS.map((t) => ({ ...t, label: `${t.label} (a much longer translated label)` }))} active="Search" onSelect={() => {}} />);
+    expect(container.querySelector('.nav-overflow-fade')).not.toBeNull();
+  });
+});
+
 describe('FeedbackWidget is a dialog that closes on Escape', () => {
   const health = { status: 'ok', version: 'test', entity_count: 0 } as const;
 

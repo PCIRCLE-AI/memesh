@@ -35,6 +35,7 @@ import {
   recordHookOutcome,
   openMemeshDb,
 } from './_shared.js';
+import { redactMemoryText } from './_generated/core-paths.js';
 import { pruneSessionState, recallListName, SESSION_ID_RE } from './_stop-notes.js';
 import { readSnippets, toTopologyEntity } from './_generated/briefing-pools.js';
 import { LESSON_TYPE_LIST } from './_generated/work-topology.js';
@@ -263,7 +264,10 @@ process.stdin.on('end', () => {
       // to land, which is what the mistake would be made OF.
       const toolName = data.tool_name === 'Write' ? 'Write' : 'Edit';
       const guardHaystack = `${filePath}\n${toolInput.new_string ?? toolInput.content ?? ''}`;
-      guardMatches = matchingGuards(loadActiveGuards(db, toolName), toolName, guardHaystack);
+      // A guard whose stored pattern no longer compiles is recorded, not
+      // skipped in silence — the same record guard-check.js leaves (#523).
+      guardMatches = matchingGuards(loadActiveGuards(db, toolName), toolName, guardHaystack, (guard, err) =>
+        record('error', `guard pattern does not compile: ${hookErrorReason(err)}`, `lesson:${guard.lessonId}`));
 
       // Recall pass — throttled, project-scoped.
       if (!throttled) {
@@ -503,10 +507,16 @@ process.stdin.on('end', () => {
                   continue;
                 }
                 const obs = getObs.get(r.id);
-                const snippet = obs ? obs.content.slice(0, 120) : '';
+                // #554: redact BEFORE the cut — a credential cut at 120
+                // characters no longer matches its pattern. Same treatment
+                // as every other injected memory line (#464).
+                const snippet = obs ? redactMemoryText(obs.content).slice(0, 120) : '';
+                // The name is stored as given (names are never rewritten), so
+                // it is redacted as it is printed (#523).
+                const name = redactMemoryText(r.name);
                 snippetLines.push(snippet
-                  ? `• ${r.name} (${r.type}): ${snippet}`
-                  : `• ${r.name} (${r.type})`
+                  ? `• ${name} (${r.type}): ${snippet}`
+                  : `• ${name} (${r.type})`
                 );
               }
               recallLines.push(...snippetLines);

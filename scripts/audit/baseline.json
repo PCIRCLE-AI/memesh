@@ -16,57 +16,62 @@
       "reason": "The doctor exit code is captured and rejected first; this grep independently checks the skills and hooks content.",
       "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-12 (the workflow_dispatch trigger added 23 lines above the unchanged statement); re-keyed 2026-10-01 (the coverage job and the lint step above the unchanged statement were folded away); re-keyed 2026-10-01 251→228 (the matrix comments and steps above reworked to shorten pull request feedback; statement byte-identical)"
     },
-    "C4 scripts/release-verify.sh:106": {
+    "C4 scripts/release-verify.sh:111": {
       "class": "SAFE-DIAGNOSTIC",
       "reason": "This tail-to-sed pipeline only formats diagnostics after the test command has already produced the failing return code.",
-      "triaged": "2026-09-06 provider-vector retirement audit"
+      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-10-05 106->111 (--skip-suite flag lines added above; statement byte-identical)"
     },
-    "C4 scripts/release-verify.sh:160": {
+    "C4 scripts/release-verify.sh:165": {
       "class": "SAFE-PIPEFAIL",
       "reason": "The script enables pipefail, so grep cannot hide a failed feedback draft command.",
-      "triaged": "2026-09-06 provider-vector retirement audit"
+      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-10-05 160->165 (--skip-suite flag lines added above; statement byte-identical)"
     },
     "C5 src/core/demo.ts:228": {
       "class": "SAFE-OPTIONAL-COLLECTION",
       "reason": "Demo tags are optional; an entity with no tags correctly contributes an empty added-tag list.",
       "triaged": "2026-09-06 provider-vector retirement audit"
     },
-    "C5 src/core/kg-backfill.ts:432": {
+    "C5 src/core/kg-backfill.ts:446": {
       "class": "SAFE-MAP-ABSENCE",
       "reason": "A missing tag bucket correctly means there are no peer candidates for that tag.",
       "triaged": "2026-09-06 provider-vector retirement audit"
     },
-    "C5 src/core/kg-backfill.ts:585": {
+    "C5 src/core/kg-backfill.ts:520": {
+      "class": "SAFE-OPTIONAL-COLLECTION",
+      "reason": "An unscoped orphan without project tags belongs to no project, so Rule 2 correctly anchors it nowhere (#529).",
+      "triaged": "2026-10-05 #529"
+    },
+    "C5 src/core/kg-backfill.ts:595": {
       "class": "SAFE-OPTIONAL-COLLECTION",
       "reason": "An orphan without session tags correctly has no session-derived candidates.",
       "triaged": "2026-09-06 provider-vector retirement audit"
     },
-    "C5 src/core/kg-backfill.ts:592": {
+    "C5 src/core/kg-backfill.ts:602": {
       "class": "SAFE-MAP-ABSENCE",
-      "reason": "A session tag with no eligible peer correctly contributes no candidates.",
+      "reason": "A session tag with no eligible peer (or none in the requested project) correctly contributes no candidates.",
       "triaged": "2026-09-06 provider-vector retirement audit"
     },
-    "C5 src/core/kg-backfill.ts:743": {
+    "C5 src/core/kg-backfill.ts:747": {
       "class": "SAFE-OPTIONAL-COLLECTION",
       "reason": "An entity without session tags intentionally starts with an empty set before optional enrichment.",
       "triaged": "2026-09-06 provider-vector retirement audit"
     },
-    "C5 src/core/kg-backfill.ts:757": {
+    "C5 src/core/kg-backfill.ts:761": {
       "class": "SAFE-OPTIONAL-COLLECTION",
       "reason": "Work without project tags correctly contributes to no project bucket.",
       "triaged": "2026-09-06 provider-vector retirement audit"
     },
-    "C5 src/core/kg-backfill.ts:807": {
+    "C5 src/core/kg-backfill.ts:811": {
       "class": "SAFE-MAP-ABSENCE",
       "reason": "A session with no work items correctly has no evidence candidates.",
       "triaged": "2026-09-06 provider-vector retirement audit"
     },
-    "C5 src/core/kg-backfill.ts:837": {
+    "C5 src/core/kg-backfill.ts:841": {
       "class": "SAFE-OPTIONAL-COLLECTION",
       "reason": "Evidence without project tags correctly has no temporal project fallback.",
       "triaged": "2026-09-06 provider-vector retirement audit"
     },
-    "C5 src/core/kg-backfill.ts:838": {
+    "C5 src/core/kg-backfill.ts:842": {
       "class": "SAFE-MAP-ABSENCE",
       "reason": "A project with no work items correctly has no anchor candidate.",
       "triaged": "2026-09-06 provider-vector retirement audit"
@@ -76,12 +81,12 @@
       "reason": "The detector's `.toBe(0)` matches the short SessionStart launcher's successful process exit status, not an empty collection. The same test separately waits for the detached lifecycle state and router socket, asserts a distinct companion PID, reads back exactly one registered session from SQLite, and performs authenticated exact-companion cleanup.",
       "triaged": "2026-09-08 Codex detached companion release audit"
     },
-    "C1 tests/cjk-recall.test.ts": {
-      "class": "SAFE",
-      "reason": "emptiness paired with positive assertions in the same test file (per-file detail in the 2026-08-04 triage)",
-      "triaged": "2026-08-04"
+    "C1 tests/node-shim.test.ts": {
+      "class": "SAFE-HEURISTIC-FALSE-POSITIVE",
+      "reason": "The detector's `.toBe(0)` matches the spawned shim's process exit status, not an empty collection. Each run test also requires empty stderr and the exact stdout the shim prints (`function`), and fails without the sibling package.json (break-tested: `require is not defined in ES module scope`).",
+      "triaged": "2026-10-05 #477"
     },
-    "C1 tests/cli/remember-quick.test.ts": {
+    "C1 tests/cjk-recall.test.ts": {
       "class": "SAFE",
       "reason": "emptiness paired with positive assertions in the same test file (per-file detail in the 2026-08-04 triage)",
       "triaged": "2026-08-04"
@@ -144,11 +149,6 @@
     "C5 src/storage/fts-index.ts:205": {
       "class": "SAFE-GUARDED",
       "reason": "empty tokens yield null match expression and hasSearchableTerms false",
-      "triaged": "2026-08-04"
-    },
-    "C5 dashboard/src/components/InsightsBanner.tsx:65": {
-      "class": "SAFE-DISPLAY",
-      "reason": "zero pending proposals legitimately hides the banner",
       "triaged": "2026-08-04"
     },
     "C6 tests/consolidate-retired.test.ts": {
@@ -231,30 +231,30 @@
       "reason": "the `toEqual([])` assertions on `actions` are each pinned by non-empty counterparts asserting exact action kinds and arg arrays; emptiness is the positive claim (nothing to prescribe on a wired host), not vacuity.",
       "triaged": "2026-08-16 (P1 memesh setup; re-applied after merge took main baseline)"
     },
-    "C5 dashboard/src/components/LessonCards.tsx:59": {
+    "C5 dashboard/src/components/LessonCards.tsx:71": {
       "class": "SAFE-DISPLAY",
       "reason": "display fallbacks; empty renders an explicit notice",
-      "triaged": "2026-08-16 (tab consolidation: statement moved verbatim from the retired LessonsTab/BrowseTab; original triage 2026-08-04)"
+      "triaged": "2026-08-16 (tab consolidation: statement moved verbatim from the retired LessonsTab/BrowseTab; original triage 2026-08-04); re-keyed 2026-10-05 59->71"
     },
-    "C5 dashboard/src/components/LessonCards.tsx:80": {
+    "C5 dashboard/src/components/LessonCards.tsx:101": {
       "class": "SAFE-DISPLAY",
       "reason": "display fallbacks; empty renders an explicit notice",
-      "triaged": "2026-08-16 (tab consolidation: statement moved verbatim from the retired LessonsTab/BrowseTab; original triage 2026-08-04)"
+      "triaged": "2026-08-16 (tab consolidation: statement moved verbatim from the retired LessonsTab/BrowseTab; original triage 2026-08-04); re-keyed 2026-10-05 80->101"
     },
-    "C5 dashboard/src/components/LessonCards.tsx:111": {
+    "C5 dashboard/src/components/LessonCards.tsx:132": {
       "class": "SAFE-DISPLAY",
       "reason": "display fallbacks; empty renders an explicit notice",
-      "triaged": "2026-08-16 (tab consolidation: statement moved verbatim from the retired LessonsTab/BrowseTab; original triage 2026-08-04)"
+      "triaged": "2026-08-16 (tab consolidation: statement moved verbatim from the retired LessonsTab/BrowseTab; original triage 2026-08-04); re-keyed 2026-10-05 111->132"
     },
-    "C5 dashboard/src/components/LessonCards.tsx:150": {
+    "C5 dashboard/src/components/LessonCards.tsx:172": {
       "class": "SAFE-DISPLAY",
       "reason": "display fallbacks; empty renders an explicit notice",
-      "triaged": "2026-08-16 (tab consolidation: statement moved verbatim from the retired LessonsTab/BrowseTab; original triage 2026-08-04)"
+      "triaged": "2026-08-16 (tab consolidation: statement moved verbatim from the retired LessonsTab/BrowseTab; original triage 2026-08-04); re-keyed 2026-10-05 150->172"
     },
-    "C5 src/core/work-topology.ts:641": {
+    "C5 src/core/work-topology.ts:734": {
       "class": "SAFE-BY-CONSTRUCTION",
       "reason": "`line.match(/`+/g) ?? []` in buildReferenceContext, moved verbatim from scripts/hooks/_shared.js (which the C5 scan does not cover) so the MCP briefing surface shares the hook's fence. match() returns null when a line contains no backtick run; the empty list truthfully means 'no backticks', and the fence floor Math.max(3, longestRun + 1) still applies. Pinned by tests/hooks/reference-context-fence.test.ts, which feeds lines WITH backtick runs and asserts the fence outruns them.",
-      "triaged": "2026-08-16 (A1c briefing); re-keyed 2026-09-20 386→468 (#360: assembleTopologyBlock/budget consts, citation-handle additions, issue-242 global-section additions, and hasBriefingContent all added above buildReferenceContext across several commits; statement byte-identical, classification unchanged); re-keyed 2026-09-24 468→473 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-24 473→598 (#434 step 3: decision/budget helpers added above; statement byte-identical); re-keyed 2026-09-25 598→604 (LESSON_TYPE_LIST export, #443); re-keyed 2026-09-26 604→626 (#451: canonicalEntityType added above LESSON_TYPE_LIST; statement byte-identical); re-keyed 2026-09-27 626→631 (#374: the control-character strip (stripControlChars) and its call sites added above longestRun; statement byte-identical); re-keyed 2026-09-27 631→633 (#409: the routing-hash strip added above in topologyLine; statement byte-identical); re-keyed 2026-10-04 633→641 (M2-a: the noProject entity flag, pool flag and section added above; statement byte-identical)"
+      "triaged": "2026-08-16 (A1c briefing); re-keyed 2026-09-20 386→468 (#360: assembleTopologyBlock/budget consts, citation-handle additions, issue-242 global-section additions, and hasBriefingContent all added above buildReferenceContext across several commits; statement byte-identical, classification unchanged); re-keyed 2026-09-24 468→473 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-24 473→598 (#434 step 3: decision/budget helpers added above; statement byte-identical); re-keyed 2026-09-25 598→604 (LESSON_TYPE_LIST export, #443); re-keyed 2026-09-26 604→626 (#451: canonicalEntityType added above LESSON_TYPE_LIST; statement byte-identical); re-keyed 2026-09-27 626→631 (#374: the control-character strip (stripControlChars) and its call sites added above longestRun; statement byte-identical); re-keyed 2026-09-27 631→633 (#409: the routing-hash strip added above in topologyLine; statement byte-identical); re-keyed 2026-10-04 633→641 (M2-a: the noProject entity flag, pool flag and section added above; statement byte-identical) Re-keyed 2026-10-06: decision `why` lines added above; statement byte-identical. Re-keyed 2026-10-06 679→734 (decision reason: utcEpoch, unconfirmedDaysSince, restatesWhy and the reason-first line budget added above; statement byte-identical)."
     },
     "C1 tests/dashboard/ProjectTab.select.test.ts": {
       "class": "SAFE",
@@ -296,11 +296,6 @@
       "reason": "the emptiness matches are `exitCode).toBe(0)` — a command that SUCCEEDED, not an empty result. The positive pins in the file are `entity_count).toBe(2)` and `.toBe(3)`, which the detector's pin pattern only recognises spelled `length).toBe(N)` or `toHaveLength(N)`. Every test here also asserts on actual stdout/stderr text.",
       "triaged": "2026-08-24"
     },
-    "C1 tests/cli/error-envelopes.test.ts": {
-      "class": "SAFE",
-      "reason": "the emptiness pattern matched `.toBe(0)` on a CLI exitCode assertion, not on a collection — this file has no emptiness assertions at all. Every test asserts specific stdout/stderr text and an exact exit code (0 or 1); the detector's heuristic cannot distinguish an exit-code literal from a size assertion.",
-      "triaged": "2026-08-24"
-    },
     "C5 src/core/why.ts:318": {
       "class": "SAFE-BY-CONSTRUCTION",
       "reason": "`input.abstentions ?? []` — pass-through of caller-declared git-side abstentions into the response verbatim; absence means the caller declared none, and nothing here can convert a failure into silence (the CLI always passes its resolveFileCommits abstention in).",
@@ -316,40 +311,40 @@
       "reason": "A host adapter may accept a delivery without optional transport metadata. The empty receipt is still validated and persisted as an explicit host_accept fact; accepted itself is required and no ACK, read, or workflow state is inferred from the missing receipt.",
       "triaged": "2026-08-27 host-native push release audit; re-keyed 2026-08-28 after bounded backlog drain and the Windows fail-closed guard moved the unchanged statement; re-keyed 2026-09-01 after live-directory code shifted the unchanged statement; re-keyed 2026-09-06 after router protocol constants shifted the unchanged statement; re-keyed 2026-09-26 843→848 after AGENT_ROUTER_SOCKET_PATH_MAX_BYTES was added above (#402/#404); re-keyed 2026-09-28 848→850 after the card model field gained a doc comment above; statement byte-identical, classification unchanged; re-keyed 2026-09-28 850→851 (#497: DeliveryRow gained intended_session above; statement byte-identical, classification unchanged); re-keyed 2026-09-30 851→899 (#518: memesh_version option, register step-aside and the superseded hold were added above; statement byte-identical, classification unchanged)"
     },
-    "C5 src/host-adapters/acp-client.ts:781": {
+    "C5 src/host-adapters/acp-client.ts:789": {
       "class": "SAFE-BY-CONSTRUCTION",
       "reason": "ACP child argv is optional by API contract; absence truthfully means launch the configured executable with zero arguments. Every supplied argument and the aggregate argv are independently bounded before spawn.",
-      "triaged": "2026-08-27 host-native push release audit"
+      "triaged": "2026-08-27 host-native push release audit; re-keyed 2026-10-06 after merging main (statement unchanged)"
     },
-    "C5 dashboard/src/components/MemoriesTab.tsx:250": {
+    "C5 dashboard/src/components/MemoriesTab.tsx:263": {
       "class": "SAFE-DISPLAY",
       "reason": "client-side search haystack only (absorbs the retired BrowseTab:169 and LessonsTab:298 hay statements) (re-keyed 244→242 on 2026-08-29; 242→243 on 2026-09-08 after ranked-search exit state moved above; 243→250 on 2026-09-28 after the #493 project-chip-label memo was added above; line shift only, classification unchanged)",
-      "triaged": "2026-08-16 (tab consolidation: statement moved verbatim from the retired LessonsTab/BrowseTab; original triage 2026-08-04); re-keyed 2026-08-16 (UX-3: local CLUSTER_DOT block removed above, statement unchanged — verified); re-keyed 2026-09-08 after ranked-search exit state moved above, statement unchanged — verified; re-keyed 2026-09-28 (#493: projectChipText memo added above, statement unchanged — verified)"
+      "triaged": "2026-08-16 (tab consolidation: statement moved verbatim from the retired LessonsTab/BrowseTab; original triage 2026-08-04); re-keyed 2026-08-16 (UX-3: local CLUSTER_DOT block removed above, statement unchanged — verified); re-keyed 2026-09-08 after ranked-search exit state moved above, statement unchanged — verified; re-keyed 2026-09-28 (#493: projectChipText memo added above, statement unchanged — verified); re-keyed 2026-10-05 250->263"
     },
-    "C5 dashboard/src/components/ProjectRoadmap.tsx:347": {
+    "C5 dashboard/src/components/ProjectRoadmap.tsx:363": {
       "class": "SAFE-DISPLAY",
       "reason": "`e.relations ?? []` while collecting lineage edges — relations are optional on the wire; absence draws no arc and the visible legend counts only DRAWN arcs, so missing input yields visible emptiness, not claimed success. (re-keyed 342→346 on 2026-08-29; line shift only, classification unchanged)",
-      "triaged": "2026-08-16 (UX-3 lineage overlay); re-keyed 2026-09-24 346→347 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-28 347→347 (#493: header span byte-identical; net-zero churn during review)"
+      "triaged": "2026-08-16 (UX-3 lineage overlay); re-keyed 2026-09-24 346→347 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-28 347→347 (#493: header span byte-identical; net-zero churn during review); re-keyed 2026-10-05 347->363"
     },
-    "C5 dashboard/src/components/ProjectRoadmap.tsx:1074": {
+    "C5 dashboard/src/components/ProjectRoadmap.tsx:1092": {
       "class": "SAFE-DISPLAY",
       "reason": "`e.relations ?? []` building the reverse supersession index in DecisionsView — no relations means no chain lines render; status falls back to active only when NO supersedes edge points at the entity anywhere in the set. (re-keyed 1065→1070 on 2026-08-29; line shift only, classification unchanged)",
-      "triaged": "2026-08-16 (UX-3 ADR view); re-keyed 2026-09-24 1070→1071 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-28 1071→1072 (#493: header span import above, comment dedup below; net +1; statement byte-identical)"
+      "triaged": "2026-08-16 (UX-3 ADR view); re-keyed 2026-09-24 1070→1071 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-28 1071→1072 (#493: header span import above, comment dedup below; net +1; statement byte-identical); re-keyed 2026-10-05 1074->1092"
     },
-    "C5 dashboard/src/components/ProjectRoadmap.tsx:1076": {
+    "C5 dashboard/src/components/ProjectRoadmap.tsx:1094": {
       "class": "SAFE-DISPLAY",
       "reason": "`m.get(r.to) ?? []` — standard multimap-append idiom inside the reverse index build; the default is the empty bucket being created, not a masked failure. (re-keyed 1067→1072 on 2026-08-29; line shift only, classification unchanged)",
-      "triaged": "2026-08-16 (UX-3 ADR view); re-keyed 2026-09-24 1068→1069 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-28 1069→1074 (#493: header span import above, comment dedup below; net +5; statement byte-identical)"
+      "triaged": "2026-08-16 (UX-3 ADR view); re-keyed 2026-09-24 1068→1069 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-28 1069→1074 (#493: header span import above, comment dedup below; net +5; statement byte-identical); re-keyed 2026-10-05 1076->1094"
     },
-    "C5 dashboard/src/components/ProjectRoadmap.tsx:1107": {
+    "C5 dashboard/src/components/ProjectRoadmap.tsx:1125": {
       "class": "SAFE-DISPLAY",
       "reason": "`supersededBy.get(e.name) ?? []` — a decision nothing points at is genuinely unreplaced; the empty default is the honest answer and renders as status \"active\", which is the documented two-state contract. (re-keyed 1098→1103 on 2026-08-29; line shift only, classification unchanged)",
-      "triaged": "2026-08-16 (UX-3 ADR view); re-keyed 2026-09-24 1101→1102 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-28 1102→1105 (#493: header span import + comment dedup above; net +3; statement byte-identical)"
+      "triaged": "2026-08-16 (UX-3 ADR view); re-keyed 2026-09-24 1101→1102 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-28 1102→1105 (#493: header span import + comment dedup above; net +3; statement byte-identical); re-keyed 2026-10-05 1107->1125"
     },
-    "C5 dashboard/src/components/ProjectRoadmap.tsx:1111": {
+    "C5 dashboard/src/components/ProjectRoadmap.tsx:1129": {
       "class": "SAFE-DISPLAY",
       "reason": "`(e.relations ?? []).filter` listing outgoing supersedes chain lines — absence renders no chain section at all rather than an empty claim. (re-keyed 1102→1107 on 2026-08-29; line shift only, classification unchanged)",
-      "triaged": "2026-08-16 (UX-3 ADR view); re-keyed 2026-09-24 1105→1106 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-28 1106→1109 (#493: header span import + comment dedup above; net +3; statement byte-identical)"
+      "triaged": "2026-08-16 (UX-3 ADR view); re-keyed 2026-09-24 1105→1106 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-28 1106→1109 (#493: header span import + comment dedup above; net +3; statement byte-identical); re-keyed 2026-10-05 1111->1129"
     },
     "C1 tests/cli/briefing-recipient.test.ts": {
       "class": "SAFE-HEURISTIC-FALSE-POSITIVE",
@@ -441,20 +436,25 @@
       "reason": "Every emptiness assertion is paired in the same test with a positive readback: the stale-marker test asserts UP_TO_DATE first and then that the marker file is gone; the claim test asserts the first claimant received {from,to} before the second gets null and the directory listing is empty; the corrupt-snooze test writes the bad bytes it expects to be rejected; the refresh-policy test asserts true and false on both sides of each TTL.",
       "triaged": "2026-09-10 #308 update-notice resolver"
     },
-    "C5 dashboard/src/lib/entity-display.ts:245": {
+    "C5 dashboard/src/lib/entity-display.ts:253": {
       "class": "SAFE-DISPLAY",
       "reason": "classification falls through to the freeform bucket",
-      "triaged": "2026-08-04; re-keyed 2026-08-14 (displayTitle helper added above; same statement — verified); re-keyed 2026-08-16 (UX-3: CLUSTER_DOT block added above; same statement — verified); re-keyed 2026-09-10 (#237: relationLabel removed above; same statement — verified); re-keyed 2026-09-24 191→192 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-28 192→245 (#493: projectChipLabels + shortProjectId added above, doc trimmed same day; net +53; statement byte-identical)"
+      "triaged": "2026-08-04; re-keyed 2026-08-14 (displayTitle helper added above; same statement — verified); re-keyed 2026-08-16 (UX-3: CLUSTER_DOT block added above; same statement — verified); re-keyed 2026-09-10 (#237: relationLabel removed above; same statement — verified); re-keyed 2026-09-24 191→192 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-28 192→245 (#493: projectChipLabels + shortProjectId added above, doc trimmed same day; net +53; statement byte-identical); re-keyed 2026-10-05 245->253"
     },
-    "C5 dashboard/src/lib/entity-display.ts:247": {
+    "C5 dashboard/src/lib/entity-display.ts:255": {
       "class": "SAFE-DISPLAY",
       "reason": "classification falls through to the freeform bucket",
-      "triaged": "2026-08-04; re-keyed 2026-08-14 (displayTitle helper added above; same statement — verified); re-keyed 2026-08-16 (UX-3: CLUSTER_DOT block added above; same statement — verified); re-keyed 2026-09-10 (#237: relationLabel removed above; same statement — verified); re-keyed 2026-09-24 193→194 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-28 194→247 (#493: projectChipLabels + shortProjectId added above, doc trimmed same day; net +53; statement byte-identical)"
+      "triaged": "2026-08-04; re-keyed 2026-08-14 (displayTitle helper added above; same statement — verified); re-keyed 2026-08-16 (UX-3: CLUSTER_DOT block added above; same statement — verified); re-keyed 2026-09-10 (#237: relationLabel removed above; same statement — verified); re-keyed 2026-09-24 193→194 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-28 194→247 (#493: projectChipLabels + shortProjectId added above, doc trimmed same day; net +53; statement byte-identical); re-keyed 2026-10-05 247->255"
     },
-    "C5 dashboard/src/components/ProjectTab.tsx:45": {
+    "C5 dashboard/src/components/ProjectTab.tsx:54": {
       "class": "SAFE-DISPLAY",
       "reason": "`e.relations ?? []` in selectProjectEntities — an entity without relations simply readmits nothing; the readmission rule is pinned by tests/dashboard/ProjectTab.select.test.ts including the no-relations path. (re-keyed 43→44 on 2026-08-29; line shift only, classification unchanged)",
-      "triaged": "2026-08-16 (UX-3 readmission rule); re-keyed 2026-09-10 (#237: Fragment import added above; same statement — verified)"
+      "triaged": "2026-08-16 (UX-3 readmission rule); re-keyed 2026-09-10 (#237: Fragment import added above; same statement — verified); re-keyed 2026-10-05 45->54"
+    },
+    "C1 tests/cli/remember-plain-project-tag.test.ts": {
+      "class": "SAFE",
+      "reason": "the only match is the exit-code assertion status toBe(0); every case also asserts the stored tags and the printed or JSON rewrite",
+      "triaged": "2026-10-05 (#511)"
     },
     "C1 tests/cli/task-corrupted-record.test.ts": {
       "class": "SAFE",
@@ -466,7 +466,7 @@
       "reason": "The detector's `.toBe(0)` is the CLI's successful exit status, not an empty collection. The same test asserts the notice text on stderr, that stdout still parses as JSON, that a second run prints no notice, and that `status` prints none.",
       "triaged": "2026-09-10 #308 PR-B entry-point notice"
     },
-    "C5 src/core/capture-liveness.ts:136": {
+    "C5 src/core/capture-liveness.ts:138": {
       "class": "SAFE-MAP-ABSENCE",
       "reason": "`NOT_TRIGGERED_SKIP_REASONS[hook] ?? []` in isTriggeredRecord: a hook with no not-triggered reasons counts every run as triggered — the stricter reading. Absence can only make a hook MORE eligible for the silent verdict, never read as success.",
       "triaged": "2026-09-12 #327 review fixes (C1); moved into isTriggeredRecord 2026-09-12 (#327 re-review P1); re-keyed 2026-09-12 (#324 src/core fix round shifted the unchanged statement)"
@@ -486,45 +486,15 @@
       "reason": "Read-only status of the verify receipt (fresh / stale / missing) for a person to run by hand. Before 2026-09-20 its automated caller was the maintainer's local git commit/push hook shims in .git/hooks/ (never tracked — .git/ itself is never version-controlled), installed by scripts/sdlc/install-git-hooks.mjs; those shims exec'd scripts/sdlc/git-gate.mjs, which WAS tracked here (one of this change's deletions) and read the receipt via receiptStatus() in-process rather than by spawning this file. Those hooks left with the rest of the SDLC loop, so nothing in this repository invokes it under either name now — the classification is unchanged.",
       "triaged": "2026-09-14 SDLC loop install (chore/sdlc-loop); re-triaged 2026-09-20 (SDLC loop removal: reason updated to name the caller as local-only, not in-repo); corrected 2026-09-20 (git-gate.mjs was tracked and just deleted, not never-tracked; the never-tracked part is the .git/hooks/ shim)"
     },
-    "C5 src/core/capture-liveness.ts:759": {
+    "C5 src/core/capture-liveness.ts:768": {
       "class": "SAFE-MAP-ABSENCE",
       "reason": "`file.hooks[hook] ?? []` in summarizeHookOutcomes: a hook with no recorded outcomes correctly summarises to an empty window (0 runs, 0 writes), the honest reading — absence of records is reported as no runs, not masked as success.",
       "triaged": "2026-09-11 #327 capture-liveness; re-keyed 2026-09-11 (dead-code cleanup shifted the unchanged statement); re-keyed 2026-09-12 (#327 review fixes shifted the unchanged statement); re-keyed 2026-09-12 (#327 re-review fixes shifted the unchanged statement); re-keyed 2026-09-12 (#327 round-3 doc comment shifted the unchanged statement); re-keyed 2026-09-12 (#324 src/core fix round shifted the unchanged statement); re-keyed 2026-09-12 (merge of origin/main into feat/324-on327 shifted the unchanged statement); re-keyed 2026-09-13 (#322 alreadyCaptured LEGACY comment shifted the unchanged statement, twice as the comment was revised); re-keyed 2026-09-13 (#322 noRuleMatched SKIP_REASON added above shifted the unchanged statement); re-keyed 2026-09-13 674→680 (#322 round-2 review fixes: noRuleMatched paragraph extension in the file header shifted the unchanged statement); re-keyed 2026-09-13 680→691 (#322 round-4 fix-verifier findings: allMatchedEntitiesArchived SKIP_REASON added above shifted the unchanged statement); re-keyed 2026-09-14 691→701 (#321 skip reasons shifted the unchanged statement); re-keyed 2026-09-20 701→712 (#358 round 3 item 2: candidateWindowTruncated SKIP_REASON doc comment added above shifted the unchanged statement); re-keyed 2026-09-24 712→724 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-24 724→729 (session-handoff review fixes: doc lines added above shifted the unchanged statement); re-keyed 2026-09-24 729→730 (session-handoff: a comment line added above shifted the unchanged statement); re-keyed 2026-09-27 730→747 (#468 stop-message-gate CAPTURE_HOOKS/UNCLASSIFIED_SKIP_HOOKS/SKIP_REASONS entries added above shifted the unchanged statement); re-keyed 2026-09-27 747→753 (#468 fallbackProjectMismatch SKIP_REASON and stop-message-gate CAPTURE_HOOKS comment added above shifted the unchanged statement); re-keyed 2026-09-27 753→747 (#474 fallbackProjectMismatch SKIP_REASON and its doc comment removed above shifted the unchanged statement back); re-keyed 2026-09-28 747→746 (#492 stopHookActive SKIP_REASON entry removed above; statement byte-identical); re-keyed 2026-09-28 746→753 (#497 /clear SKIP_REASONS entries added above; statement byte-identical); re-keyed 2026-09-28 753→754 (#497 /clear SKIP_REASONS reworked above; statement byte-identical); re-keyed 2026-09-29 754→755 (#497 sessionLauncherNoDatabase SKIP_REASON added above; statement byte-identical); re-keyed 2026-09-30 755→757 (#521 recallAlreadyShown SKIP_REASON added above; statement byte-identical)"
     },
-    "C5 src/core/capture-liveness.ts:899": {
+    "C5 src/core/capture-liveness.ts:966": {
       "class": "SAFE-OPTIONAL-COLLECTION",
       "reason": "`input.neverRanHooks ?? []` in captureLivenessVerdict: when the caller supplies no heartbeat-never-ran list there is no dead hook, so deadHooks is emptily computed — and the FAIL branch only fires when a FAIL-eligible hook is actually absent past the grace, never from the missing default itself.",
       "triaged": "2026-09-11 #327 capture-liveness; re-keyed 2026-09-11 (dead-code cleanup shifted the unchanged statement); re-keyed 2026-09-12 (#327 review fixes shifted the unchanged statement); re-keyed 2026-09-12 (#327 re-review fixes shifted the unchanged statement); re-keyed 2026-09-12 (#327 round-3 doc comment shifted the unchanged statement); re-keyed 2026-09-12 (#324 src/core fix round shifted the unchanged statement); re-keyed 2026-09-12 (merge of origin/main into feat/324-on327 shifted the unchanged statement); re-keyed 2026-09-13 (#322 alreadyCaptured LEGACY comment shifted the unchanged statement, twice as the comment was revised); re-keyed 2026-09-13 (#322 noRuleMatched SKIP_REASON added above shifted the unchanged statement); re-keyed 2026-09-13 814→820 (#322 round-2 review fixes: noRuleMatched paragraph extension in the file header shifted the unchanged statement); re-keyed 2026-09-13 820→831 (#322 round-4 fix-verifier findings: allMatchedEntitiesArchived SKIP_REASON added above shifted the unchanged statement); re-keyed 2026-09-14 831→841 (#321 skip reasons shifted the unchanged statement); re-keyed 2026-09-20 841→852 (#358 round 3 item 2: candidateWindowTruncated SKIP_REASON doc comment added above shifted the unchanged statement); re-keyed 2026-09-24 852→864 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-24 864→869 (session-handoff review fixes: doc lines added above shifted the unchanged statement); re-keyed 2026-09-24 869→870 (session-handoff: a comment line added above shifted the unchanged statement); re-keyed 2026-09-27 870→887 (#468 stop-message-gate CAPTURE_HOOKS/UNCLASSIFIED_SKIP_HOOKS/SKIP_REASONS entries added above shifted the unchanged statement); re-keyed 2026-09-27 887→893 (#468 fallbackProjectMismatch SKIP_REASON and stop-message-gate CAPTURE_HOOKS comment added above shifted the unchanged statement); re-keyed 2026-09-27 893→887 (#474 fallbackProjectMismatch SKIP_REASON and its doc comment removed above shifted the unchanged statement back); re-keyed 2026-09-28 887→886 (#492 stopHookActive SKIP_REASON entry removed above; statement byte-identical); re-keyed 2026-09-28 886→893 (#497 /clear SKIP_REASONS entries added above; statement byte-identical); re-keyed 2026-09-28 893→894 (#497 /clear SKIP_REASONS reworked above; statement byte-identical); re-keyed 2026-09-29 894→895 (#497 sessionLauncherNoDatabase SKIP_REASON added above; statement byte-identical); re-keyed 2026-09-30 895→897 (#521 recallAlreadyShown SKIP_REASON added above; statement byte-identical)"
-    },
-    "C5 src/core/serializer.ts:533": {
-      "class": "SAFE-ACCUMULATOR",
-      "reason": "metadata spread identity — an entity with no prior metadata reads as {}, the correct base for every field layered on afterward. Trust is no longer written unconditionally here: without `--trust` it is still always 'untrusted' (byte-for-byte the old behaviour), with `--trust` it is 'trusted' on create/overwrite, and on an append onto an entity that already existed it is not written by this return at all (`preserveTrust`, line ~538, leaves whatever this spread already carried in `existingMetadata`).",
-      "triaged": "2026-08-04; re-keyed 2026-08-24 (R3 export/import batch shifted lines; statements byte-identical, classification unchanged); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-20 47→513 (#359/#361: the import metadata allow-list and its validators were added above; statement byte-identical, classification unchanged); re-keyed 2026-09-26 513→532 (#407: the `--trust` option and its doc comment were added above; statement byte-identical, classification unchanged); reason corrected 2026-09-27 (#407 review round 2): 'trust written unconditionally' stopped being true once `--trust` and `preserveTrust` existed; re-keyed 2026-09-30 535→533 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged)"
-    },
-    "C5 src/core/serializer.ts:542": {
-      "class": "SAFE-ACCUMULATOR",
-      "reason": "provenance spread identity — an entity's prior provenance fields carry forward the same way. This nested spread is now reached ONLY on create/overwrite (with or without `--trust`); an append onto an entity that already existed with `--trust` takes the `preserveTrust` branch (line ~538) and never reaches this object at all, so nothing here needs to distinguish that path from any other.",
-      "triaged": "2026-08-04; re-keyed 2026-08-24 (R3 export/import batch shifted lines; statements byte-identical, classification unchanged); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-20 56→521 (#359/#361: the import metadata allow-list and its validators were added above; statement byte-identical, classification unchanged); re-keyed 2026-09-26 521→541 (#407: the line is now nested one level deeper inside a `preserveTrust ? {} : {...}` ternary that the `--trust` append case skips entirely — same `?? {}` spread, same reading, classification unchanged); reason corrected 2026-09-27 (#407 review round 2): 'trust written unconditionally' stopped being true once `--trust` and `preserveTrust` existed; re-keyed 2026-09-30 544→542 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged)"
-    },
-    "C5 src/core/serializer.ts:626": {
-      "class": "SAFE-ACCUMULATOR",
-      "reason": "`relations` is optional on Entity; empty means the entity has none, which is what the export should record. Newly visible after the C5 `||` regex fix.",
-      "triaged": "2026-08-17 (surfaced by the C5 || regex fix); re-keyed 2026-08-24 (dead toolPreferences/avgSessionMinutes fields removed; export gained countAsAccess — statements byte-identical, classification unchanged); re-keyed 2026-08-24 (R3 export/import batch shifted lines; statements byte-identical, classification unchanged); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-20 139→604 (#359/#361: the import metadata allow-list and its validators were added above; statement byte-identical, classification unchanged); re-keyed 2026-09-26 604→625 (#407: buildImportedMetadata's `trust` option, its doc comment, and the preserveTrust conditional were added above; statement byte-identical, classification unchanged); re-keyed 2026-09-30 628→626 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged)"
-    },
-    "C5 src/core/serializer.ts:459": {
-      "class": "SAFE-BY-CONSTRUCTION",
-      "reason": "`args.bundled ?? {}` in buildImportedMetadata: an absent `metadata` in the bundle genuinely means the bundle says nothing about it, and the empty object is the correct reading — the entity's own metadata (and the import's rebuilt trust/provenance) still apply. A bundle predating the field must not clear metadata the importer already had. Pinned by tests/core/export-import.test.ts 'carries metadata, but never a guard'.",
-      "triaged": "2026-08-24 (full-codebase review, R3-c); re-triaged 2026-08-24 — the destructure collapsed from three excluded keys to one (`guard`), so the line text changed while the `?? {}` and its reading did not. Same classification, same reason, same test.; re-keyed 2026-09-20 44→450 (#359/#361: the `guard` destructure was replaced by the import metadata allow-list, so the statement is now `const bundled = (args.bundled ?? {}) as Record<string, unknown>;` — different text, the same `?? {}` and the same reading; classification unchanged); re-keyed 2026-09-26 450→458 (#407: buildImportedMetadata's `trust` option and its doc comment were added above; statement byte-identical, classification unchanged); re-keyed 2026-09-30 461→459 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged)"
-    },
-    "C5 src/core/serializer.ts:996": {
-      "class": "SAFE-ACCUMULATOR",
-      "reason": "`relations` is optional on the imported bundle entry; empty means none to re-create. Newly visible after the C5 `||` regex fix.",
-      "triaged": "2026-08-17 (surfaced by the C5 || regex fix); re-keyed 2026-08-24 (dead toolPreferences/avgSessionMinutes fields removed; export gained countAsAccess — statements byte-identical, classification unchanged); re-keyed 2026-08-24 (R3 export/import batch shifted lines; statements byte-identical, classification unchanged); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-08-24 (M-05/M-06/M-18 batch: --obs validation, zero-hit retrieval-mode message, import overwritten-counter/dedupe added above; statements byte-identical, classification unchanged); re-keyed 2026-09-07 after per-entity transaction refactor shifted the unchanged statement; re-keyed 2026-09-20 392→884 (#359/#361: the import metadata allow-list and its validators were added above; statement byte-identical, classification unchanged); re-keyed 2026-09-21 884→872 (#363: the archived-import guard was added and a comment block above it shortened; statement byte-identical, classification unchanged); re-keyed 2026-09-21 872→884 (#363: the restore_archived-with-skip refusal was added above; statement byte-identical, classification unchanged); re-keyed 2026-09-21 884→894 (#363: the non-boolean restore_archived refusal was added above; statement byte-identical, classification unchanged); re-keyed 2026-09-26 894→926 (#407: buildImportedMetadata's `trust` option, its doc comment, and the preserveTrust conditional were added above; statement byte-identical, classification unchanged); re-keyed 2026-09-27 926→937 (#407 review round 2: the blocking trustOverride revert added an explanatory comment above; statement byte-identical, classification unchanged); re-keyed 2026-09-30 961→959 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged); re-keyed 2026-09-30 959→975 (#530 review follow-up: storedContentOf helper and the identical-version check added above; statement byte-identical, classification unchanged); re-keyed 2026-10-01 975→993 (#530: the duplicate-name preflight and the JSDoc move were added above; statement byte-identical, classification unchanged); re-keyed 2026-10-01 993→999 (#530: the lone-surrogate key in the duplicate preflight was added above; statement byte-identical, classification unchanged); re-keyed 2026-10-01 999→996 (#530: that key became a UTF-8 round trip and its regex constant was removed; statement byte-identical, classification unchanged)"
-    },
-    "C5 src/core/serializer.ts:884": {
-      "class": "SAFE-GUARDED",
-      "reason": "entity.observations can be genuinely undefined for a raw import bundle — describeInvalidEntity (this file) explicitly permits the field to be absent, only rejecting it if present-and-not-an-array. The ?? [] covers that documented-optional case, not a hidden failure.",
-      "triaged": "2026-08-24; re-keyed 2026-09-07 after per-entity transaction refactor shifted the unchanged statement; re-keyed 2026-09-20 318→784 (#359/#361: the import metadata allow-list and its validators were added above; statement byte-identical, classification unchanged); re-keyed 2026-09-21 784→796 (#363: the archived-import guard was added above it; statement byte-identical, classification unchanged); re-keyed 2026-09-21 796→808 (#363: the restore_archived-with-skip refusal was added above; statement byte-identical, classification unchanged); re-keyed 2026-09-21 808→818 (#363: the non-boolean restore_archived refusal was added above; statement byte-identical, classification unchanged); re-keyed 2026-09-26 818→848 (#407: buildImportedMetadata's `trust` option, its doc comment, and the preserveTrust conditional were added above; statement byte-identical, classification unchanged); re-keyed 2026-09-30 852→850 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged); re-keyed 2026-09-30 850→863 (#530 review follow-up: storedContentOf helper and the identical-version check added above; statement byte-identical, classification unchanged); re-keyed 2026-10-01 863→881 (#530: the duplicate-name preflight and the JSDoc move were added above; statement byte-identical, classification unchanged); re-keyed 2026-10-01 881→887 (#530: the lone-surrogate key in the duplicate preflight was added above; statement byte-identical, classification unchanged); re-keyed 2026-10-01 887→884 (#530: that key became a UTF-8 round trip and its regex constant was removed; statement byte-identical, classification unchanged)"
     },
     "C5 src/core/recall-agent-view.ts:162": {
       "class": "SAFE-OPTIONAL-OBJECT",
@@ -536,90 +506,140 @@
       "reason": "entity.observations is typed string[] (non-optional) on every Entity recallWithConflicts() returns; same defensive-only ?? [] as the tags line immediately above.",
       "triaged": "2026-09-28 #494 recall-response-size: recall-agent-view.ts introduced; re-keyed 2026-09-28 (bytesWith()/cutToFit added and packObservations' early return removed, all above, across several passes); currently :154, statement byte-identical to the pre-simplification-pass :155; re-keyed 2026-10-03 154→163 (M1 project binding added lines above; statement byte-identical)"
     },
-    "C5 src/core/operations.ts:45": {
-      "class": "SAFE-OPTIONAL-OBJECT",
-      "reason": "A new entity legitimately starts with empty metadata before local fields are applied.",
-      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-26 40→41 (#451: canonicalEntityType import added above; statement byte-identical); re-keyed 2026-09-28 41→42 (#494: one import line added above; statement byte-identical); re-keyed 2026-09-30 42→44 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged); re-keyed 2026-10-03 44→45 (M1 project binding added lines above; statement byte-identical)"
-    },
-    "C5 src/core/operations.ts:48": {
-      "class": "SAFE-OPTIONAL-OBJECT",
-      "reason": "Missing provenance legitimately starts an empty provenance object before local fields are applied.",
-      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-26 43→44 (#451: canonicalEntityType import added above; statement byte-identical); re-keyed 2026-09-28 44→45 (#494: one import line added above; statement byte-identical); re-keyed 2026-09-30 45→47 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged); re-keyed 2026-10-03 47→48 (M1 project binding added lines above; statement byte-identical)"
-    },
-    "C5 src/core/operations.ts:51": {
-      "class": "SAFE-OPTIONAL-OBJECT",
-      "reason": "Absent provenance overrides correctly add no fields to the generated provenance.",
-      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-26 46→47 (#451: canonicalEntityType import added above; statement byte-identical); re-keyed 2026-09-28 47→48 (#494: one import line added above; statement byte-identical); re-keyed 2026-09-30 48→50 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged); re-keyed 2026-10-03 50→51 (M1 project binding added lines above; statement byte-identical)"
-    },
-    "C5 src/core/operations.ts:332": {
-      "class": "SAFE-OPTIONAL-OBJECT",
-      "reason": "Absent caller provenance overrides correctly preserve generated provenance unchanged.",
-      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-07 after transaction-boundary refactor shifted the unchanged statement; re-keyed 2026-09-12 (#324 src/core fix round shifted the unchanged statement); re-keyed again 2026-09-12 (#324 T4 root-cause fix shifted the same statement from :299 to :327); re-keyed 2026-09-26 327→334 (#451: canonicalEntityType import plus the entityType canonicalization comment block added above; statement byte-identical); re-keyed 2026-09-28 334→335 (#494: one import line added above; statement byte-identical); re-keyed 2026-09-30 335→300 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged); re-keyed 2026-09-30 300→299 (#530 review follow-up: a stray blank line removed above; statement byte-identical); re-keyed 2026-10-03 299→332 (M1 project binding added lines above; statement byte-identical)"
-    },
-    "C5 src/core/operations.ts:191": {
-      "class": "SAFE-OPTIONAL-COLLECTION",
-      "reason": "Omitted tags are no tags, so no project tag: the write then declares a project only through its argument, or none. Two project tags, or one contradicting the argument, are refused right below.",
-      "triaged": "2026-10-03 (M1 binding separated; classification carried from C5 src/core/operations.ts:227 at tree 16cc446c, statement byte-identical)"
-    },
-    "C5 src/core/operations.ts:205": {
+    "C5 src/core/operations.ts:249": {
       "class": "SAFE-OPTIONAL-COLLECTION",
       "reason": "No relations means no supersedes target to check; the bound-project check then covers only the memory itself. Fails closed: each listed target is checked before any write.",
-      "triaged": "2026-10-03 (M1 binding separated; classification carried from C5 src/core/operations.ts:241 at tree 16cc446c, statement byte-identical)"
-    },
-    "C5 src/core/operations.ts:293": {
-      "class": "SAFE-OPTIONAL-COLLECTION",
-      "reason": "Omitted tags are no tags; this only decides whether the named project tag is already present before adding it. Nothing reads as success from it.",
-      "triaged": "2026-10-03 (M1 binding separated; classification carried from C5 src/core/operations.ts:329 at tree 16cc446c, statement byte-identical)"
-    },
-    "C5 src/core/operations.ts:294": {
-      "class": "SAFE-OPTIONAL-COLLECTION",
-      "reason": "Omitted tags are no tags; the bound project tag is appended to them.",
-      "triaged": "2026-10-03 (M1 binding separated; classification carried from C5 src/core/operations.ts:330 at tree 16cc446c, statement byte-identical)"
+      "triaged": "2026-10-03 (M1 binding separated; classification carried from C5 src/core/operations.ts:241 at tree 16cc446c, statement byte-identical) Re-keyed 2026-10-06: decision `why` lines added above; statement byte-identical. Re-keyed 2026-10-06 247→249 (decision reason round 2: the leading-label strip in resolveRememberInput added two lines above; statement byte-identical)."
     },
     "C5 src/core/recall-agent-view.ts:181": {
       "class": "SAFE-OPTIONAL-COLLECTION",
       "reason": "Omitted tags are no tags, so the memory belongs to no project: projects is [], which the response reports as exactly that. Nothing reads as success from it.",
       "triaged": "2026-10-03 (M1 binding separated; classification carried from C5 src/core/recall-agent-view.ts:181 at tree 16cc446c, statement byte-identical)"
     },
-    "C5 src/transports/mcp/handlers.ts:67": {
+    "C5 src/transports/mcp/handlers.ts:70": {
       "class": "SAFE-OPTIONAL-COLLECTION",
       "reason": "No tags means no project tag, which fails closed: the call then needs a bound project and is refused without one.",
-      "triaged": "2026-10-03 (M1 binding separated; classification carried from C5 src/transports/mcp/handlers.ts:67 at tree 16cc446c, statement byte-identical)"
+      "triaged": "2026-10-03 (M1 binding separated; classification carried from C5 src/transports/mcp/handlers.ts:67 at tree 16cc446c, statement byte-identical); re-keyed 2026-10-06 after merging main (statement unchanged)"
     },
-    "C5 src/knowledge-graph.ts:401": {
+    "C5 src/core/operations.ts:47": {
+      "class": "SAFE-OPTIONAL-OBJECT",
+      "reason": "A new entity legitimately starts with empty metadata before local fields are applied.",
+      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-26 40→41 (#451: canonicalEntityType import added above; statement byte-identical); re-keyed 2026-09-28 41→42 (#494: one import line added above; statement byte-identical); re-keyed 2026-09-30 42→44 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged); re-keyed 2026-10-03 44→45 (M1 project binding added lines above; statement byte-identical)"
+    },
+    "C5 src/core/operations.ts:50": {
+      "class": "SAFE-OPTIONAL-OBJECT",
+      "reason": "Missing provenance legitimately starts an empty provenance object before local fields are applied.",
+      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-26 43→44 (#451: canonicalEntityType import added above; statement byte-identical); re-keyed 2026-09-28 44→45 (#494: one import line added above; statement byte-identical); re-keyed 2026-09-30 45→47 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged); re-keyed 2026-10-03 47→48 (M1 project binding added lines above; statement byte-identical)"
+    },
+    "C5 src/core/operations.ts:53": {
+      "class": "SAFE-OPTIONAL-OBJECT",
+      "reason": "Absent provenance overrides correctly add no fields to the generated provenance.",
+      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-26 46→47 (#451: canonicalEntityType import added above; statement byte-identical); re-keyed 2026-09-28 47→48 (#494: one import line added above; statement byte-identical); re-keyed 2026-09-30 48→50 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged); re-keyed 2026-10-03 50→51 (M1 project binding added lines above; statement byte-identical)"
+    },
+    "C5 src/core/operations.ts:263": {
+      "class": "SAFE-OPTIONAL-COLLECTION",
+      "reason": "Omitted tags are no tags, so no project tag: the write then declares a project only through its argument, or none. Two project tags, or one contradicting the argument, are refused right below.",
+      "triaged": "2026-10-03 (M1 binding separated; classification carried from C5 src/core/operations.ts:227 at tree 16cc446c, statement byte-identical) Re-keyed 2026-10-06: decision `why` lines added above; statement byte-identical. Re-keyed 2026-10-06 261→263 (decision reason round 2: the leading-label strip in resolveRememberInput added two lines above; statement byte-identical)."
+    },
+    "C5 src/core/operations.ts:379": {
+      "class": "SAFE-OPTIONAL-COLLECTION",
+      "reason": "Omitted tags are no tags; this only decides whether the named project tag is already present before adding it. Nothing reads as success from it.",
+      "triaged": "2026-10-03 (M1 binding separated; classification carried from C5 src/core/operations.ts:329 at tree 16cc446c, statement byte-identical) Re-keyed 2026-10-06: decision `why` lines added above; statement byte-identical. Re-keyed 2026-10-06 374→376 (decision reason round 2: the leading-label strip in resolveRememberInput added two lines above; statement byte-identical).; re-keyed 2026-10-06 after merging main (statement unchanged)"
+    },
+    "C5 src/core/operations.ts:380": {
+      "class": "SAFE-OPTIONAL-COLLECTION",
+      "reason": "Omitted tags are no tags; the bound project tag is appended to them.",
+      "triaged": "2026-10-03 (M1 binding separated; classification carried from C5 src/core/operations.ts:330 at tree 16cc446c, statement byte-identical) Re-keyed 2026-10-06: decision `why` lines added above; statement byte-identical. Re-keyed 2026-10-06 375→377 (decision reason round 2: the leading-label strip in resolveRememberInput added two lines above; statement byte-identical).; re-keyed 2026-10-06 after merging main (statement unchanged)"
+    },
+    "C5 src/core/operations.ts:418": {
+      "class": "SAFE-OPTIONAL-OBJECT",
+      "reason": "Absent caller provenance overrides correctly preserve generated provenance unchanged.",
+      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-07 after transaction-boundary refactor shifted the unchanged statement; re-keyed 2026-09-12 (#324 src/core fix round shifted the unchanged statement); re-keyed again 2026-09-12 (#324 T4 root-cause fix shifted the same statement from :299 to :327); re-keyed 2026-09-26 327→334 (#451: canonicalEntityType import plus the entityType canonicalization comment block added above; statement byte-identical); re-keyed 2026-09-28 334→335 (#494: one import line added above; statement byte-identical); re-keyed 2026-09-30 335→300 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged); re-keyed 2026-09-30 300→299 (#530 review follow-up: a stray blank line removed above; statement byte-identical); re-keyed 2026-10-01 299→309 (#523 merge with main 37fbb687: lines moved; statement byte-identical, classification unchanged); re-keyed 2026-10-01 309→331 (#523 r21: lines added above; statement byte-identical, classification unchanged); re-keyed 331→335 (#523 review fixes added comment lines above; statement byte-identical) Re-keyed 2026-10-06: decision `why` lines added above; statement byte-identical. Re-keyed 2026-10-06 413→415 (decision reason round 2: the leading-label strip in resolveRememberInput added two lines above; statement byte-identical).; re-keyed 2026-10-06 after merging main (statement unchanged)"
+    },
+    "C5 src/core/serializer.ts:463": {
+      "class": "SAFE-BY-CONSTRUCTION",
+      "reason": "`args.bundled ?? {}` in buildImportedMetadata: an absent `metadata` in the bundle genuinely means the bundle says nothing about it, and the empty object is the correct reading — the entity's own metadata (and the import's rebuilt trust/provenance) still apply. A bundle predating the field must not clear metadata the importer already had. Pinned by tests/core/export-import.test.ts 'carries metadata, but never a guard'.",
+      "triaged": "2026-08-24 (full-codebase review, R3-c); re-triaged 2026-08-24 — the destructure collapsed from three excluded keys to one (`guard`), so the line text changed while the `?? {}` and its reading did not. Same classification, same reason, same test.; re-keyed 2026-09-20 44→450 (#359/#361: the `guard` destructure was replaced by the import metadata allow-list, so the statement is now `const bundled = (args.bundled ?? {}) as Record<string, unknown>;` — different text, the same `?? {}` and the same reading; classification unchanged); re-keyed 2026-09-26 450→458 (#407: buildImportedMetadata's `trust` option and its doc comment were added above; statement byte-identical, classification unchanged); re-keyed 2026-09-30 461→459 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged); re-keyed 2026-10-01 459→462 (#523 merge with main 37fbb687: lines moved; statement byte-identical, classification unchanged)"
+    },
+    "C5 src/core/serializer.ts:550": {
+      "class": "SAFE-ACCUMULATOR",
+      "reason": "metadata spread identity — an entity with no prior metadata reads as {}, the correct base for every field layered on afterward. Trust is no longer written unconditionally here: without `--trust` it is still always 'untrusted' (byte-for-byte the old behaviour), with `--trust` it is 'trusted' on create/overwrite, and on an append onto an entity that already existed it is not written by this return at all (`preserveTrust`, line ~538, leaves whatever this spread already carried in `existingMetadata`).",
+      "triaged": "2026-08-04; re-keyed 2026-08-24 (R3 export/import batch shifted lines; statements byte-identical, classification unchanged); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-20 47→513 (#359/#361: the import metadata allow-list and its validators were added above; statement byte-identical, classification unchanged); re-keyed 2026-09-26 513→532 (#407: the `--trust` option and its doc comment were added above; statement byte-identical, classification unchanged); reason corrected 2026-09-27 (#407 review round 2): 'trust written unconditionally' stopped being true once `--trust` and `preserveTrust` existed; re-keyed 2026-09-30 535→533 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged); re-keyed 2026-10-01 533→549 (#523 merge with main 37fbb687: lines moved; statement byte-identical, classification unchanged)"
+    },
+    "C5 src/core/serializer.ts:559": {
+      "class": "SAFE-ACCUMULATOR",
+      "reason": "provenance spread identity — an entity's prior provenance fields carry forward the same way. This nested spread is now reached ONLY on create/overwrite (with or without `--trust`); an append onto an entity that already existed with `--trust` takes the `preserveTrust` branch (line ~538) and never reaches this object at all, so nothing here needs to distinguish that path from any other.",
+      "triaged": "2026-08-04; re-keyed 2026-08-24 (R3 export/import batch shifted lines; statements byte-identical, classification unchanged); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-20 56→521 (#359/#361: the import metadata allow-list and its validators were added above; statement byte-identical, classification unchanged); re-keyed 2026-09-26 521→541 (#407: the line is now nested one level deeper inside a `preserveTrust ? {} : {...}` ternary that the `--trust` append case skips entirely — same `?? {}` spread, same reading, classification unchanged); reason corrected 2026-09-27 (#407 review round 2): 'trust written unconditionally' stopped being true once `--trust` and `preserveTrust` existed; re-keyed 2026-09-30 544→542 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged); re-keyed 2026-10-01 542→558 (#523 merge with main 37fbb687: lines moved; statement byte-identical, classification unchanged)"
+    },
+    "C5 src/core/serializer.ts:643": {
+      "class": "SAFE-ACCUMULATOR",
+      "reason": "`relations` is optional on Entity; empty means the entity has none, which is what the export should record. Newly visible after the C5 `||` regex fix.",
+      "triaged": "2026-08-17 (surfaced by the C5 || regex fix); re-keyed 2026-08-24 (dead toolPreferences/avgSessionMinutes fields removed; export gained countAsAccess — statements byte-identical, classification unchanged); re-keyed 2026-08-24 (R3 export/import batch shifted lines; statements byte-identical, classification unchanged); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-20 139→604 (#359/#361: the import metadata allow-list and its validators were added above; statement byte-identical, classification unchanged); re-keyed 2026-09-26 604→625 (#407: buildImportedMetadata's `trust` option, its doc comment, and the preserveTrust conditional were added above; statement byte-identical, classification unchanged); re-keyed 2026-09-30 628→626 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged); re-keyed 2026-10-01 626→642 (#523 merge with main 37fbb687: lines moved; statement byte-identical, classification unchanged)"
+    },
+    "C5 src/core/serializer.ts:882": {
+      "class": "SAFE-GUARDED",
+      "reason": "entity.observations can be genuinely undefined for a raw import bundle — describeInvalidEntity (this file) explicitly permits the field to be absent, only rejecting it if present-and-not-an-array. The ?? [] covers that documented-optional case, not a hidden failure.",
+      "triaged": "2026-08-24; re-keyed 2026-09-07 after per-entity transaction refactor shifted the unchanged statement; re-keyed 2026-09-20 318→784 (#359/#361: the import metadata allow-list and its validators were added above; statement byte-identical, classification unchanged); re-keyed 2026-09-21 784→796 (#363: the archived-import guard was added above it; statement byte-identical, classification unchanged); re-keyed 2026-09-21 796→808 (#363: the restore_archived-with-skip refusal was added above; statement byte-identical, classification unchanged); re-keyed 2026-09-21 808→818 (#363: the non-boolean restore_archived refusal was added above; statement byte-identical, classification unchanged); re-keyed 2026-09-26 818→848 (#407: buildImportedMetadata's `trust` option, its doc comment, and the preserveTrust conditional were added above; statement byte-identical, classification unchanged); re-keyed 2026-09-30 848→819 (the same `entity.observations ?? []` guard was moved above the merge-strategy branch and now feeds `.map(redactSecrets)`; not byte-identical, classification unchanged); re-keyed 2026-09-30 819→830 (lines added above; statement byte-identical); re-keyed 2026-09-30 830→855 (lines added above; statement byte-identical); re-keyed 2026-09-30 855→840 (lines removed above; statement byte-identical); re-keyed 2026-10-01 845→846 (#523 r15: the same `entity.observations ?? []` now feeds redactTitleAndObservations; classification unchanged); re-keyed 2026-10-01 846→881 (#523 merge with main 37fbb687: lines moved; statement byte-identical, classification unchanged)"
+    },
+    "C5 src/core/serializer.ts:885": {
+      "class": "SAFE-GUARDED",
+      "reason": "redactTitleAndObservations returns `observations` whenever it was given, and line 881 always passes an array, so the ?? [] only satisfies the optional type; it cannot hide a missing value.",
+      "triaged": "2026-10-01 (#523 r15: import redacts title and observations as one set); re-keyed 849→884 when origin/main was merged (statement byte-identical)"
+    },
+    "C5 src/core/serializer.ts:1056": {
+      "class": "SAFE-ACCUMULATOR",
+      "reason": "`relations` is optional on the imported bundle entry; empty means none to re-create. Newly visible after the C5 `||` regex fix.",
+      "triaged": "2026-08-17 (surfaced by the C5 || regex fix); re-keyed 2026-08-24 (dead toolPreferences/avgSessionMinutes fields removed; export gained countAsAccess — statements byte-identical, classification unchanged); re-keyed 2026-08-24 (R3 export/import batch shifted lines; statements byte-identical, classification unchanged); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-08-24 (M-05/M-06/M-18 batch: --obs validation, zero-hit retrieval-mode message, import overwritten-counter/dedupe added above; statements byte-identical, classification unchanged); re-keyed 2026-09-07 after per-entity transaction refactor shifted the unchanged statement; re-keyed 2026-09-20 392→884 (#359/#361: the import metadata allow-list and its validators were added above; statement byte-identical, classification unchanged); re-keyed 2026-09-21 884→872 (#363: the archived-import guard was added and a comment block above it shortened; statement byte-identical, classification unchanged); re-keyed 2026-09-21 872→884 (#363: the restore_archived-with-skip refusal was added above; statement byte-identical, classification unchanged); re-keyed 2026-09-21 884→894 (#363: the non-boolean restore_archived refusal was added above; statement byte-identical, classification unchanged); re-keyed 2026-09-26 894→926 (#407: buildImportedMetadata's `trust` option, its doc comment, and the preserveTrust conditional were added above; statement byte-identical, classification unchanged); re-keyed 2026-09-27 926→937 (#407 review round 2: the blocking trustOverride revert added an explanatory comment above; statement byte-identical, classification unchanged); re-keyed 2026-09-30 961→959 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged); re-keyed 2026-09-30 959→975 (#530 review follow-up: storedContentOf helper and the identical-version check added above; statement byte-identical, classification unchanged); re-keyed 2026-10-01 975→993 (#530: the duplicate-name preflight and the JSDoc move were added above; statement byte-identical, classification unchanged); re-keyed 2026-10-01 993→999 (#530: the lone-surrogate key in the duplicate preflight was added above; statement byte-identical, classification unchanged); re-keyed 2026-10-01 999→996 (#530: that key became a UTF-8 round trip and its regex constant was removed; statement byte-identical, classification unchanged); re-keyed 2026-10-01 996→1037 (#523 merge with main 37fbb687: lines moved; statement byte-identical, classification unchanged); re-keyed 2026-10-01 1037→1041 (#523 r21: lines added above; statement byte-identical, classification unchanged)"
+    },
+    "C5 src/knowledge-graph.ts:546": {
       "class": "SAFE-ACCUMULATOR",
       "reason": "write-time signal-score inputs; empty means the caller passed no observations/tags, which is the correct identity for scoring",
-      "triaged": "2026-08-09 (re-keyed: review fixes — busy_timeout, vector-index guards and the .mcp.json entry check — shifted these lines; same statements, same classification); re-keyed 2026-08-14 (UX-1 title column added lines above; same statement — verified against the line content); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-26 360→369 (#451: canonicalEntityType import plus the createEntityInner canonicalization comment block added above; statement byte-identical); re-keyed 2026-10-03 369→387 (M1 project binding added lines above; statement byte-identical); re-keyed 2026-10-03 387->402 (#571 stale-index fallback added lines above; statement byte-identical); re-keyed 2026-10-04 402->401 (shared entity write kernel replaced the inline insert/observation/tag/FTS code; statement byte-identical)"
+      "triaged": "2026-08-09 (re-keyed: review fixes — busy_timeout, vector-index guards and the .mcp.json entry check — shifted these lines; same statements, same classification); re-keyed 2026-08-14 (UX-1 title column added lines above; same statement — verified against the line content); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-26 360→369 (#451: canonicalEntityType import plus the createEntityInner canonicalization comment block added above; statement byte-identical); re-keyed 2026-09-30 369→387 (lines added above; statement byte-identical); re-keyed 2026-09-30 387→408 (lines added above; statement byte-identical); re-keyed 2026-09-30 408→418 (lines added above; statement byte-identical); re-keyed 2026-10-01 418→479 (lines added above; statement byte-identical); re-keyed 2026-10-01 479→446 (lines removed above; statement byte-identical); re-keyed 2026-10-01 446→449 (lines added above; statement byte-identical); re-keyed 2026-10-01 449→465 (#523 r15: lines added or removed above; statement unchanged, classification unchanged); re-keyed 2026-10-01 465→468 (#523 r17: lines added above; statement byte-identical, classification unchanged); re-keyed 2026-10-01 468→484→502 (#523 r18/r19: lines added above; statement byte-identical, classification unchanged); re-keyed 2026-10-05 544->546"
     },
-    "C5 src/knowledge-graph.ts:402": {
+    "C5 src/knowledge-graph.ts:547": {
       "class": "SAFE-ACCUMULATOR",
       "reason": "write-time signal-score inputs; empty means the caller passed no observations/tags, which is the correct identity for scoring",
-      "triaged": "2026-08-09 (re-keyed: review fixes — busy_timeout, vector-index guards and the .mcp.json entry check — shifted these lines; same statements, same classification); re-keyed 2026-08-14 (UX-1 title column added lines above; same statement — verified against the line content); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-26 361→370 (#451: canonicalEntityType import plus the createEntityInner canonicalization comment block added above; statement byte-identical); re-keyed 2026-10-03 370→388 (M1 project binding added lines above; statement byte-identical); re-keyed 2026-10-03 388->403 (#571 stale-index fallback added lines above; statement byte-identical); re-keyed 2026-10-04 403->402 (shared entity write kernel replaced the inline insert/observation/tag/FTS code; statement byte-identical)"
+      "triaged": "2026-08-09 (re-keyed: review fixes — busy_timeout, vector-index guards and the .mcp.json entry check — shifted these lines; same statements, same classification); re-keyed 2026-08-14 (UX-1 title column added lines above; same statement — verified against the line content); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-26 361→370 (#451: canonicalEntityType import plus the createEntityInner canonicalization comment block added above; statement byte-identical); re-keyed 2026-09-30 370→388 (lines added above; statement byte-identical); re-keyed 2026-09-30 388→409 (lines added above; statement byte-identical); re-keyed 2026-09-30 409→419 (lines added above; statement byte-identical); re-keyed 2026-10-01 419→480 (lines added above; statement byte-identical); re-keyed 2026-10-01 480→447 (lines removed above; statement byte-identical); re-keyed 2026-10-01 447→450 (lines added above; statement byte-identical); re-keyed 2026-10-01 450→466 (#523 r15: lines added or removed above; statement unchanged, classification unchanged); re-keyed 2026-10-01 466→469 (#523 r17: lines added above; statement byte-identical, classification unchanged); re-keyed 2026-10-01 469→485→503 (#523 r18/r19: lines added above; statement byte-identical, classification unchanged); re-keyed 2026-10-05 545->547"
     },
-    "C5 src/knowledge-graph.ts:537": {
+    "C5 src/knowledge-graph.ts:682": {
       "class": "SAFE-ACCUMULATOR",
       "reason": "missing observations means no new observation, so the confidence bump fails closed",
-      "triaged": "2026-08-09 (re-keyed: review fixes — busy_timeout, vector-index guards and the .mcp.json entry check — shifted these lines; same statements, same classification); re-keyed 2026-08-10 (review pass 2: redactUserPaths moved to core/paths, namespace breadcrumb, dreamer retirement); re-keyed 2026-08-14 (UX-1 title column added lines above; same statement — verified against the line content); re-keyed 2026-08-15 411→429 (merge main shifted lines +18; same statement — verified); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-26 497→506 (#451: canonicalEntityType import plus the createEntityInner canonicalization comment block added above; statement byte-identical); re-keyed 2026-10-03 506→524 (M1 project binding added lines above; statement byte-identical); re-keyed 2026-10-03 524->539 (#571 stale-index fallback added lines above; statement byte-identical); re-keyed 2026-10-04 539->537 (shared entity write kernel replaced the inline insert/observation/tag/FTS code; statement byte-identical)"
+      "triaged": "2026-08-09 (re-keyed: review fixes — busy_timeout, vector-index guards and the .mcp.json entry check — shifted these lines; same statements, same classification); re-keyed 2026-08-10 (review pass 2: redactUserPaths moved to core/paths, namespace breadcrumb, dreamer retirement); re-keyed 2026-08-14 (UX-1 title column added lines above; same statement — verified against the line content); re-keyed 2026-08-15 411→429 (merge main shifted lines +18; same statement — verified); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-26 497→506 (#451: canonicalEntityType import plus the createEntityInner canonicalization comment block added above; statement byte-identical); re-keyed 2026-09-30 506→524 (lines added above; statement byte-identical); re-keyed 2026-09-30 524→545 (lines added above; statement byte-identical); re-keyed 2026-09-30 545→555 (lines added above; statement byte-identical); re-keyed 2026-10-01 555→616 (lines added above; statement byte-identical); re-keyed 2026-10-01 616→583 (lines removed above; statement byte-identical); re-keyed 2026-10-01 583→586 (lines added above; statement byte-identical); re-keyed 2026-10-01 586→602 (#523 r15: lines added or removed above; statement unchanged, classification unchanged); re-keyed 2026-10-01 602→605 (#523 r17: lines added above; statement byte-identical, classification unchanged); re-keyed 2026-10-01 605→621→639 (#523 r18/r19: lines added above; statement byte-identical, classification unchanged); re-keyed 2026-10-05 680->682"
     },
-    "C5 src/knowledge-graph.ts:817": {
+    "C5 src/knowledge-graph.ts:962": {
       "class": "SAFE-ACCUMULATOR",
       "reason": "batch-hydrate lookups; confidence bump fails closed",
-      "triaged": "2026-08-09 (re-keyed: review fixes — busy_timeout, vector-index guards and the .mcp.json entry check — shifted these lines; same statements, same classification); re-keyed 2026-08-10 (review pass 2: redactUserPaths moved to core/paths, namespace breadcrumb, dreamer retirement); re-keyed 2026-08-14 (UX-1 title column added lines above; same statement — verified against the line content); re-keyed 2026-08-15 631→649 (merge main shifted lines +18; same statement — verified); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-04 683→754 (rebase onto main after createEntity dedup-guard scope widened to any entity; same statement — verified against actual C5 regex hit); re-keyed 2026-09-04 754→769 (fix/lesson-dedup-guard-trusts-stored-type added a comment block above explaining the security-review fix; same statement — verified against actual C5 regex hit); re-keyed 2026-09-26 805→814 (#451: canonicalEntityType import plus the createEntityInner canonicalization comment block added above; statement byte-identical); re-keyed 2026-10-03 814→832 (M1 project binding added lines above; statement byte-identical); re-keyed 2026-10-03 832->847 (#571 stale-index fallback added lines above; statement byte-identical); re-keyed 2026-10-04 847->817 (shared entity write kernel replaced the inline insert/observation/tag/FTS code; statement byte-identical)"
+      "triaged": "2026-08-09 (re-keyed: review fixes — busy_timeout, vector-index guards and the .mcp.json entry check — shifted these lines; same statements, same classification); re-keyed 2026-08-10 (review pass 2: redactUserPaths moved to core/paths, namespace breadcrumb, dreamer retirement); re-keyed 2026-08-14 (UX-1 title column added lines above; same statement — verified against the line content); re-keyed 2026-08-15 631→649 (merge main shifted lines +18; same statement — verified); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-04 683→754 (rebase onto main after createEntity dedup-guard scope widened to any entity; same statement — verified against actual C5 regex hit); re-keyed 2026-09-04 754→769 (fix/lesson-dedup-guard-trusts-stored-type added a comment block above explaining the security-review fix; same statement — verified against actual C5 regex hit); re-keyed 2026-09-26 805→814 (#451: canonicalEntityType import plus the createEntityInner canonicalization comment block added above; statement byte-identical); re-keyed 2026-09-30 814→832 (lines added above; statement byte-identical); re-keyed 2026-09-30 832→853 (lines added above; statement byte-identical); re-keyed 2026-09-30 853→863 (lines added above; statement byte-identical); re-keyed 2026-10-01 863→924 (lines added above; statement byte-identical); re-keyed 2026-10-01 924→891 (lines removed above; statement byte-identical); re-keyed 2026-10-01 891→894 (lines added above; statement byte-identical); re-keyed 2026-10-01 894→910 (#523 r15: lines added or removed above; statement unchanged, classification unchanged); re-keyed 2026-10-01 910→913 (#523 r17: lines added above; statement byte-identical, classification unchanged); re-keyed 2026-10-01 913→929→947 (#523 r18/r19: lines added above; statement byte-identical, classification unchanged); re-keyed 2026-10-05 960->962"
     },
-    "C5 src/knowledge-graph.ts:818": {
+    "C5 src/knowledge-graph.ts:963": {
       "class": "SAFE-ACCUMULATOR",
       "reason": "batch-hydrate lookups; confidence bump fails closed",
-      "triaged": "2026-08-09 (re-keyed: review fixes — busy_timeout, vector-index guards and the .mcp.json entry check — shifted these lines; same statements, same classification); re-keyed 2026-08-10 (review pass 2: redactUserPaths moved to core/paths, namespace breadcrumb, dreamer retirement); re-keyed 2026-08-14 (UX-1 title column added lines above; same statement — verified against the line content); re-keyed 2026-08-15 629→647 (merge main shifted lines +18; same statement — verified); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-04 684→755 (rebase onto main after createEntity dedup-guard scope widened to any entity; same statement — verified against actual C5 regex hit); re-keyed 2026-09-04 755→770 (fix/lesson-dedup-guard-trusts-stored-type added a comment block above explaining the security-review fix; same statement — verified against actual C5 regex hit); re-keyed 2026-09-26 806→815 (#451: canonicalEntityType import plus the createEntityInner canonicalization comment block added above; statement byte-identical); re-keyed 2026-10-03 815→833 (M1 project binding added lines above; statement byte-identical); re-keyed 2026-10-03 833->848 (#571 stale-index fallback added lines above; statement byte-identical); re-keyed 2026-10-04 848->818 (shared entity write kernel replaced the inline insert/observation/tag/FTS code; statement byte-identical)"
+      "triaged": "2026-08-09 (re-keyed: review fixes — busy_timeout, vector-index guards and the .mcp.json entry check — shifted these lines; same statements, same classification); re-keyed 2026-08-10 (review pass 2: redactUserPaths moved to core/paths, namespace breadcrumb, dreamer retirement); re-keyed 2026-08-14 (UX-1 title column added lines above; same statement — verified against the line content); re-keyed 2026-08-15 629→647 (merge main shifted lines +18; same statement — verified); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-04 684→755 (rebase onto main after createEntity dedup-guard scope widened to any entity; same statement — verified against actual C5 regex hit); re-keyed 2026-09-04 755→770 (fix/lesson-dedup-guard-trusts-stored-type added a comment block above explaining the security-review fix; same statement — verified against actual C5 regex hit); re-keyed 2026-09-26 806→815 (#451: canonicalEntityType import plus the createEntityInner canonicalization comment block added above; statement byte-identical); re-keyed 2026-09-30 815→833 (lines added above; statement byte-identical); re-keyed 2026-09-30 833→854 (lines added above; statement byte-identical); re-keyed 2026-09-30 854→864 (lines added above; statement byte-identical); re-keyed 2026-10-01 864→925 (lines added above; statement byte-identical); re-keyed 2026-10-01 925→892 (lines removed above; statement byte-identical); re-keyed 2026-10-01 892→895 (lines added above; statement byte-identical); re-keyed 2026-10-01 895→911 (#523 r15: lines added or removed above; statement unchanged, classification unchanged); re-keyed 2026-10-01 911→914 (#523 r17: lines added above; statement byte-identical, classification unchanged); re-keyed 2026-10-01 914→930→948 (#523 r18/r19: lines added above; statement byte-identical, classification unchanged); re-keyed 2026-10-05 961->963"
     },
-    "C5 src/knowledge-graph.ts:819": {
+    "C5 src/knowledge-graph.ts:964": {
       "class": "SAFE-ACCUMULATOR",
       "reason": "batch-hydrate lookups; confidence bump fails closed",
-      "triaged": "2026-08-09 (re-keyed: review fixes — busy_timeout, vector-index guards and the .mcp.json entry check — shifted these lines; same statements, same classification); re-keyed 2026-08-10 (review pass 2: redactUserPaths moved to core/paths, namespace breadcrumb, dreamer retirement); re-keyed 2026-08-14 (UX-1 title column added lines above; same statement — verified against the line content); re-keyed 2026-08-15 630→648 (merge main shifted lines +18; same statement — verified); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-04 685→756 (rebase onto main after createEntity dedup-guard scope widened to any entity; same statement — verified against actual C5 regex hit); re-keyed 2026-09-04 756→771 (fix/lesson-dedup-guard-trusts-stored-type added a comment block above explaining the security-review fix; same statement — verified against actual C5 regex hit); re-keyed 2026-09-26 807→816 (#451: canonicalEntityType import plus the createEntityInner canonicalization comment block added above; statement byte-identical); re-keyed 2026-10-03 816→834 (M1 project binding added lines above; statement byte-identical); re-keyed 2026-10-03 834->849 (#571 stale-index fallback added lines above; statement byte-identical); re-keyed 2026-10-04 849->819 (shared entity write kernel replaced the inline insert/observation/tag/FTS code; statement byte-identical)"
+      "triaged": "2026-08-09 (re-keyed: review fixes — busy_timeout, vector-index guards and the .mcp.json entry check — shifted these lines; same statements, same classification); re-keyed 2026-08-10 (review pass 2: redactUserPaths moved to core/paths, namespace breadcrumb, dreamer retirement); re-keyed 2026-08-14 (UX-1 title column added lines above; same statement — verified against the line content); re-keyed 2026-08-15 630→648 (merge main shifted lines +18; same statement — verified); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-04 685→756 (rebase onto main after createEntity dedup-guard scope widened to any entity; same statement — verified against actual C5 regex hit); re-keyed 2026-09-04 756→771 (fix/lesson-dedup-guard-trusts-stored-type added a comment block above explaining the security-review fix; same statement — verified against actual C5 regex hit); re-keyed 2026-09-26 807→816 (#451: canonicalEntityType import plus the createEntityInner canonicalization comment block added above; statement byte-identical); re-keyed 2026-09-30 816→834 (lines added above; statement byte-identical); re-keyed 2026-09-30 834→855 (lines added above; statement byte-identical); re-keyed 2026-09-30 855→865 (lines added above; statement byte-identical); re-keyed 2026-10-01 865→926 (lines added above; statement byte-identical); re-keyed 2026-10-01 926→893 (lines removed above; statement byte-identical); re-keyed 2026-10-01 893→896 (lines added above; statement byte-identical); re-keyed 2026-10-01 896→912 (#523 r15: lines added or removed above; statement unchanged, classification unchanged); re-keyed 2026-10-01 912→915 (#523 r17: lines added above; statement byte-identical, classification unchanged); re-keyed 2026-10-01 915→931→949 (#523 r18/r19: lines added above; statement byte-identical, classification unchanged); re-keyed 2026-10-05 962->964"
     },
-    "C5 src/knowledge-graph.ts:871": {
+    "C5 src/knowledge-graph.ts:1016": {
       "class": "SAFE-BY-CONSTRUCTION",
       "reason": "`opts?.countAsAccess ?? true` in search(): the default is the CONSERVATIVE direction, not the convenient one. Absent means 'this is an ordinary recall, count it' — the behaviour every caller had before the option existed. Only the one read that must NOT count (exportMemories: a backup is not a use) says so explicitly, and tests/core/reads-that-were-writes.test.ts pins both directions.",
-      "triaged": "2026-08-24 (full-codebase review, R9-a); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-04 732→803 (rebase onto main after createEntity dedup-guard scope widened to any entity; same statement — verified against actual C5 regex hit); re-keyed 2026-09-04 803→818 (fix/lesson-dedup-guard-trusts-stored-type added a comment block above explaining the security-review fix; same statement — verified against actual C5 regex hit); re-keyed 2026-09-26 854→863 (#451: canonicalEntityType import plus the createEntityInner canonicalization comment block added above; statement byte-identical); re-keyed 2026-10-03 863→881 (M1 project binding added lines above; statement byte-identical); re-keyed 2026-10-03 881->901 (#571 stale-index fallback added lines above; statement byte-identical); re-keyed 2026-10-04 901->871 (shared entity write kernel replaced the inline insert/observation/tag/FTS code; statement byte-identical)"
+      "triaged": "2026-08-24 (full-codebase review, R9-a); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-04 732→803 (rebase onto main after createEntity dedup-guard scope widened to any entity; same statement — verified against actual C5 regex hit); re-keyed 2026-09-04 803→818 (fix/lesson-dedup-guard-trusts-stored-type added a comment block above explaining the security-review fix; same statement — verified against actual C5 regex hit); re-keyed 2026-09-26 854→863 (#451: canonicalEntityType import plus the createEntityInner canonicalization comment block added above; statement byte-identical); re-keyed 2026-09-30 863→881 (lines added above; statement byte-identical); re-keyed 2026-09-30 881→902 (lines added above; statement byte-identical); re-keyed 2026-09-30 902→912 (lines added above; statement byte-identical); re-keyed 2026-10-01 912→973 (lines added above; statement byte-identical); re-keyed 2026-10-01 973→940 (lines removed above; statement byte-identical); re-keyed 2026-10-01 940→943 (lines added above; statement byte-identical); re-keyed 2026-10-01 943→959 (#523 r15: lines added or removed above; statement unchanged, classification unchanged); re-keyed 2026-10-01 959→962 (#523 r17: lines added above; statement byte-identical, classification unchanged); re-keyed 2026-10-01 962→978→996 (#523 r18/r19: lines added above; statement byte-identical, classification unchanged); re-keyed 2026-10-05 1014->1016"
+    },
+    "C1 tests/core/project-identity-split-doctor.test.ts": {
+      "class": "SAFE",
+      "reason": "the emptiness assertion is the no-split case; the same file pins the split exactly (toEqual with the one expected split and its count) and asserts the warn row, its count and its command",
+      "triaged": "2026-10-05 (#408)"
+    },
+    "C5 src/core/operations.ts:173": {
+      "class": "SAFE-OPTIONAL-COLLECTION",
+      "reason": "Omitted observations are none: a decision's `Why:` line is appended to them and redacted with them. Nothing reads as success from it.",
+      "triaged": "2026-10-06 (decision why) Re-keyed 2026-10-06 171→173 (decision reason round 2: the leading-label strip in resolveRememberInput added two lines above; statement byte-identical)."
+    },
+    "C5 src/core/operations.ts:318": {
+      "class": "SAFE-OPTIONAL-COLLECTION",
+      "reason": "Omitted observations hold no `Why:` line, so a new decision without `why` is refused. The default fails closed.",
+      "triaged": "2026-10-06 (decision why) Re-keyed 2026-10-06 313→315 (decision reason round 2: the leading-label strip in resolveRememberInput added two lines above; statement byte-identical).; re-keyed 2026-10-06 after merging main (statement unchanged)"
     }
   }
 }

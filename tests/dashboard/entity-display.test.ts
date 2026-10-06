@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { projectChipLabels, relativeDate, shortProjectId, timeBucket, timestampDate } from '../../dashboard/src/lib/entity-display';
+import { clusterOf, displayTitle, extractProject, projectChipLabels, relativeDate, shortProjectId, timeBucket, timestampDate } from '../../dashboard/src/lib/entity-display';
+import type { Entity } from '../../dashboard/src/lib/api';
+import { setLocale } from '../../dashboard/src/lib/i18n';
 
 describe('dashboard entity timestamp display', () => {
   const now = new Date('2026-09-08T10:17:01.618Z');
@@ -13,6 +15,19 @@ describe('dashboard entity timestamp display', () => {
   it('keeps explicitly zoned ISO timestamps on their declared instant', () => {
     expect(relativeDate('2026-09-08T10:10:25.000Z', now)).toBe('Just now');
     expect(relativeDate('2026-09-08T10:10:25+08:00', now)).toBe('8h ago');
+  });
+
+  it.each([
+    ['es', 'Hace 3 meses'],
+    ['pt', 'Há 3 meses'],
+    ['de', 'Vor 3 Monaten'],
+  ] as const)('says months, not "m" or "M" (read as minutes), in %s', (locale, expected) => {
+    setLocale(locale);
+    try {
+      expect(relativeDate('2026-06-08 10:00:00', now)).toBe(expected);
+    } finally {
+      setLocale('en');
+    }
   });
 
   it('preserves invalid-date fallbacks', () => {
@@ -80,5 +95,45 @@ describe('shortProjectId (one project shown alone, #493)', () => {
   it('leaves an id without a routing hash unchanged', () => {
     expect(shortProjectId('memesh')).toBe('memesh');
     expect(shortProjectId('my-app~v2')).toBe('my-app~v2');
+  });
+});
+
+const entity = (over: Partial<Entity>): Entity => ({
+  id: 1, name: 'n', type: 'note', created_at: '2026-09-01 00:00:00', observations: [], tags: [], ...over,
+});
+
+describe('entity type lookups answer for own keys only', () => {
+  it('a type named like an Object.prototype member is an unknown type, not a function', () => {
+    for (const type of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+      expect(clusterOf(type), type).toBe('reference');
+    }
+    expect(clusterOf('lesson_learned')).toBe('knowledge');
+  });
+});
+
+describe('displayTitle with an unreadable date', () => {
+  it('falls back to the type label, never the text "Invalid Date"', () => {
+    const title = displayTitle(entity({ created_at: 'garbage', title: null }));
+    expect(title).not.toContain('Invalid Date');
+    expect(title).toBe('Note');
+  });
+
+  it('adds the date after the type label when the date is readable', () => {
+    // Mid-day, so no time zone moves it to another year or month.
+    const title = displayTitle(entity({ created_at: '2026-09-15 12:00:00', title: null }));
+    expect(title).toMatch(/^Note · .*2026/);
+    expect(title).toContain(' · ');
+  });
+});
+
+describe('extractProject follows the rule /v1/projects counts with', () => {
+  it('reads the project: tag first', () => {
+    expect(extractProject(entity({ tags: ['project:memesh'], name: 'lesson-other-config-error' }))).toBe('memesh');
+  });
+
+  it('falls back to the lesson-<project>-<pattern> name, so a project chip and its list agree', () => {
+    // Server: {"project":"no-project","source":"heuristic"} for this name.
+    expect(extractProject(entity({ name: 'lesson-no-project-config-error' }))).toBe('no-project');
+    expect(extractProject(entity({ name: 'plan-memesh-roadmap' }))).toBeNull();
   });
 });

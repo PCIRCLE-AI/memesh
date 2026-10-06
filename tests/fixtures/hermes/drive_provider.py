@@ -26,6 +26,16 @@ out["remember"] = json.loads(p.handle_tool_call(
     "memesh_remember",
     {"name": "contract-fact", "type": "fact", "observations": ["The contract test wrote this via HTTP"]},
 ))
+# A decision with no `why` is refused by the server (HTTP 400); the provider
+# must hand the model the server's own sentence, not a bare status line.
+out["remember_refused"] = json.loads(p.handle_tool_call(
+    "memesh_remember",
+    {"name": "contract-choice", "type": "decision", "observations": ["Chose the plain option"]},
+))
+out["remember_decision"] = json.loads(p.handle_tool_call(
+    "memesh_remember",
+    {"name": "contract-choice", "type": "decision", "observations": ["Chose the plain option"], "why": "it is the least moving parts; revisit if it stops scaling"},
+))
 out["recall_tool"] = json.loads(p.handle_tool_call("memesh_recall", {"query": "contract test"}))
 out["prefetch"] = p.prefetch("BullMQ job queue")
 

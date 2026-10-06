@@ -188,6 +188,10 @@ export interface RememberInput {
    *  one heuristically; a deliberate `remember` call may supply its own. */
   title?: string;
   observations?: string[];
+  /** A decision's reason AND what would make it stop holding; stored as the
+   *  observation `Why: <text>`. Required to create (or `replace`) a memory of
+   *  a decision type, unless an observation already starts with `Why: `. */
+  why?: string;
   tags?: string[];
   relations?: Array<{ to: string; type: string }>;
   namespace?: string;  // 'personal' | 'team' | 'global' (default: 'personal')
@@ -206,6 +210,9 @@ export interface RememberInput {
   // memory is tagged with it, and a name that belongs to another project (or
   // to none) is refused rather than shared.
   project?: string | null;
+  // Transport-set (#511): the caller's own project id (`<name>~<hash>`). A
+  // `project:<name>` tag naming it by its plain name is stored as the id.
+  currentProject?: string;
 }
 
 export interface RecallInput {
@@ -248,6 +255,8 @@ export interface RememberResult {
   relations: number;
   superseded?: string[];
   relationErrors?: string[];
+  /** #511: a plain-name project tag for the caller's own project, stored as its id. */
+  retagged?: { from: string; to: string };
   /**
    * The relations that were actually created, not the ones that were asked for.
    *
@@ -279,8 +288,9 @@ export interface RememberResult {
   replaced?: boolean;
   /**
    * `note` only: the shape the server derived from the text, echoed so a
-   * caller can correct it in one more call (e.g. `replace: true` with a
-   * better `title`).
+   * caller can correct it in one more call (`replace: true` with a better
+   * `title` and the observations to keep: a replace carrying neither
+   * `observations` nor `note` is refused, because it would empty the memory).
    */
   derived?: { name: string; type: string; title: string; observations: string[] };
 }

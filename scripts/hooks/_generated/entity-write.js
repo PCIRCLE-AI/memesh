@@ -26,14 +26,18 @@ export function insertOrGetEntity(db, entity) {
         return null;
     return { ...row, isNew };
 }
+export function storedText(text) {
+    return text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '\uFFFD');
+}
 export function appendObservations(db, entityId, observations, options) {
     const seen = new Set(options.dedupe && options.readExisting
         ? db.prepare('SELECT content FROM observations WHERE entity_id = ?').all(entityId).map((o) => o.content)
         : []);
     const written = [];
-    for (const observation of observations) {
-        if (options.exclude?.(observation))
+    for (const given of observations) {
+        if (options.exclude?.(given))
             continue;
+        const observation = storedText(given);
         if (options.dedupe) {
             if (seen.has(observation))
                 continue;

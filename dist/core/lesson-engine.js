@@ -1,7 +1,16 @@
 import { remember } from './operations.js';
 import { getDatabase } from '../db.js';
 import { lessonSlug } from './lesson-slug.js';
-export function createExplicitLesson(error, fix, projectName, opts) {
+import { redactSecretList } from './paths.js';
+export function createExplicitLesson(rawError, rawFix, projectName, opts) {
+    const given = [rawError, rawFix, opts?.rootCause, opts?.prevention].filter((field) => field !== undefined);
+    const redacted = redactSecretList(given);
+    const [error, fix] = redacted;
+    const rootCause = opts?.rootCause === undefined ? undefined : redacted[2];
+    const prevention = opts?.prevention === undefined ? undefined : redacted[given.length - 1];
+    if (error.replace(/\*\*\*REDACTED\*\*\*/g, '').trim() === '') {
+        throw new Error('MeMesh did not store this lesson: its error text is only credentials once redacted (or part of a private key), so it cannot be told apart from other lessons. Describe the error without the secret.');
+    }
     const errorPattern = opts?.errorPattern || inferErrorPattern(error);
     const scope = projectName ?? 'no-project';
     const name = opts?.errorPattern
@@ -12,9 +21,9 @@ export function createExplicitLesson(error, fix, projectName, opts) {
         type: 'lesson_learned',
         observations: [
             `Error: ${error}`,
-            `Root cause: ${opts?.rootCause || 'Not specified'}`,
+            `Root cause: ${rootCause || 'Not specified'}`,
             `Fix: ${fix}`,
-            `Prevention: ${opts?.prevention || 'Review similar code paths'}`,
+            `Prevention: ${prevention || 'Review similar code paths'}`,
         ],
         tags: [
             ...(projectName === null ? [] : [`project:${projectName}`]),
@@ -30,15 +39,7 @@ export function createExplicitLesson(error, fix, projectName, opts) {
         .run(name);
     return { name };
 }
-export const KNOWN_ERROR_PATTERNS = [
-    'null-reference',
-    'type-error',
-    'import-missing',
-    'config-error',
-    'test-failure',
-    'build-error',
-    'other',
-];
+export { KNOWN_ERROR_PATTERNS } from './project-attribution.js';
 function inferErrorPattern(error) {
     const lower = error.toLowerCase();
     if (lower.includes('null') || lower.includes('undefined') || lower.includes('cannot read prop'))

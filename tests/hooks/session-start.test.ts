@@ -632,7 +632,7 @@ describe('Feature: Session Start Hook', () => {
     // The heading names the project by its label; the hashed id stays in the tag.
     const section = injected.split('Index of durable memories for "indexproj" (newest first):')[1];
     expect(section, 'index section present').toBeDefined();
-    expect(section).toContain(`- [decision] Keep the index capped at forty lines [mem:${d}]`);
+    expect(section).toContain(`- [decision] Keep the index capped at forty lines (no reason recorded) [mem:${d}]`);
     expect(section).not.toContain('bump the lockfile');
     expect(section).toMatch(/\(index cost: 1 line, \d+ bytes ≈ \d+ tokens; cap 40 lines \/ 3072 bytes\)/);
     const session = readLatestSessionFile();
@@ -694,7 +694,7 @@ describe('Feature: Session Start Hook', () => {
     const output = runHook({ cwd: '/tmp/scopeproj' }, STANDARD);
     const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
     const section = injected.split('Index of durable memories for')[1] ?? '';
-    expect(section).toContain(`Kept project decision [mem:${kept}]`);
+    expect(section).toContain(`Kept project decision (no reason recorded) [mem:${kept}]`);
     expect(section).not.toContain('Archived project decision');
     expect(section).not.toContain('Global tagged decision');
     expect(section).not.toContain('Other project decision');
@@ -1952,6 +1952,69 @@ syncBuiltinESMExports();
       });
     });
   });
+
+  // #506: the daily noise compression opened its own connection with the
+  // database's 30 s lock wait, so a session start that ran it while another
+  // process held the write lock was killed at the 10 s hook limit. It must give
+  // up within the hook's own wait, keep the briefing, and stay due for the next
+  // session.
+  it('#506 a held write lock does not hold the session start past its 10 s limit', async () => {
+    const { openDatabase, closeDatabase } = await import('../../src/db.js');
+    openDatabase(dbPath);
+    closeDatabase();
+    const db = new Database(dbPath);
+    expect(db.prepare("SELECT 1 FROM memesh_metadata WHERE key = 'last_noise_compress_at'").get()).toBeUndefined();
+    db.exec('BEGIN IMMEDIATE');
+    let run;
+    try {
+      run = spawnSync('node', [path.resolve('scripts/hooks/session-start.js')], {
+        input: JSON.stringify({ cwd: '/tmp/lock-506' }),
+        env: { ...process.env, MEMESH_DB_PATH: dbPath },
+        encoding: 'utf8',
+        timeout: 10_000,
+      });
+    } finally {
+      db.exec('ROLLBACK');
+    }
+    const due = db.prepare("SELECT 1 FROM memesh_metadata WHERE key = 'last_noise_compress_at'").get();
+    db.close();
+    expect(run.signal, `killed at the hook limit; stderr: ${run.stderr.slice(0, 300)}`).toBeNull();
+    expect(run.status).toBe(0);
+    expect(JSON.parse(run.stdout.trim()).systemMessage).toContain('MeMesh ready');
+    expect(run.stderr).toMatch(/noise-compression: .*locked/);
+    expect(due).toBeUndefined();
+  }, 30_000);
+
+  // Right after an upgrade the one-time migrations are still pending, and each
+  // runs as its own write: with a 2 s wait apiece, a dozen of them behind a
+  // held lock still ran past the 10 s limit. A bounded open gives up after one
+  // wait instead.
+  it('#506 pending migrations behind a held write lock do not hold the session start past its 10 s limit', async () => {
+    const { openDatabase, closeDatabase } = await import('../../src/db.js');
+    openDatabase(dbPath);
+    closeDatabase();
+    const db = new Database(dbPath);
+    const pending = ['archived_fts_rows', 'fts_segmentation_version', 'fused_lesson_shell_history_reset', 'fused_lesson_split',
+      'junk_file_tags', 'lesson_type_canonical', 'session_observation_dedupe', 'session_zero_edit_retract'];
+    db.prepare(`DELETE FROM memesh_metadata WHERE key IN (${pending.map(() => '?').join(',')})`).run(...pending);
+    db.exec('BEGIN IMMEDIATE');
+    let run;
+    try {
+      run = spawnSync('node', [path.resolve('scripts/hooks/session-start.js')], {
+        input: JSON.stringify({ cwd: '/tmp/lock-506' }),
+        env: { ...process.env, MEMESH_DB_PATH: dbPath },
+        encoding: 'utf8',
+        timeout: 10_000,
+      });
+    } finally {
+      db.exec('ROLLBACK');
+      db.close();
+    }
+    expect(run.signal, `killed at the hook limit; stderr: ${run.stderr.slice(0, 300)}`).toBeNull();
+    expect(run.status).toBe(0);
+    expect(run.stderr).toMatch(/noise-compression: .*locked/);
+    expect(run.stderr).not.toContain('deferred');
+  }, 30_000);
 });
 
 describe('SessionStart: the session handoff leads the injected context (#434 step 2)', () => {

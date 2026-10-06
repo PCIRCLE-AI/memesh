@@ -16,14 +16,14 @@ import { SESSION_LIMIT_MIN, SESSION_LIMIT_MAX, resolveSessionLimit } from '../..
 import { updateNoticeForEntryPoint } from '../../core/update-entrypoint.js';
 import { removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
 import { getAgentRouterSocketPath, getDbPath, getProjectName, homeDir, redactSecrets, redactUserPaths } from '../../core/paths.js';
-import { agentScopeIdRejection, canonicalAgentScopeId } from '../../core/agent-scope-id.js';
+import { agentScopeIdRejection, canonicalAgentScopeId, projectScopeRejection } from '../../core/agent-scope-id.js';
 import { NAMESPACES } from '../../core/types.js';
 import { deriveNote, splitObservations, NOTE_DEFAULT_TYPE, NOTE_MAX_OBSERVATIONS } from '../../core/note-derive.js';
 import { RememberSchema } from '../schemas.js';
 import { ingestNoteDirectory, summarizeNoteIngest } from '../../core/note-ingest.js';
 import { assembleBriefing, readBriefingIndex } from '../../core/briefing.js';
 import { BRIEFING_LEVELS, resolveBriefingLevel } from '../../core/briefing-level.js';
-import { buildReferenceContext, projectLabel } from '../../core/work-topology.js';
+import { DECISION_TYPES, buildReferenceContext, projectLabel } from '../../core/work-topology.js';
 import { captureChatSession } from '../../core/session-insight.js';
 import { captureChatTurn } from '../../core/turn-signal.js';
 import {
@@ -39,6 +39,7 @@ import { executeAgentMessageAction } from '../agent-messaging.js';
 import { hostSessionFromEnv } from '../../core/host-session.js';
 import {
   getAgentMessageStorageReport,
+  normalizeAgentMessageCutoff,
   pruneTerminalAgentMessagePayloads,
 } from '../../core/agent-message-storage.js';
 import {
@@ -75,6 +76,14 @@ async function withDatabase<T>(fn: () => T | Promise<T>): Promise<T> {
   } finally {
     closeDatabase();
   }
+}
+
+/** A refused write is one line (or `{"error"}` with --json) and exit 1, never a stack trace. */
+function printRefusal(err: unknown, json: boolean | undefined): void {
+  const error = err instanceof Error ? err.message : String(err);
+  if (json) console.log(JSON.stringify({ error }));
+  else console.error(`Error: ${error}`);
+  process.exitCode = 1;
 }
 
 /**
@@ -317,11 +326,6 @@ program
   .name('memesh')
   .description('MeMesh — Agentic memory for coding agents')
   .version(pkg.version)
-  // DX: silence Commander's default "too many arguments. Expected 0..."
-  // error so the root action below can inspect program.args and emit a
-  // clear "unknown command 'foo'" message instead. allowExcessArguments
-  // is the documented Commander 12+ escape hatch for this case.
-  .allowExcessArguments(true)
   .showSuggestionAfterError(true);
 
 // First-use update notice at the terminal (#308: any door). One stderr line,
@@ -348,7 +352,7 @@ program.hook('preAction', (_thisCommand, actionCommand) => {
 
 // --- remember ---
 // Two forms:
-//   1. Explicit:  memesh remember --name "auth-decision" --type "decision" --obs "OAuth 2.0"
+//   1. Explicit:  memesh remember --name "auth-decision" --type "decision" --obs "OAuth 2.0" --why "…"
 //   2. Quick:     memesh remember "OAuth 2.0 with PKCE"
 // The quick form is `remember({ note })` (#324): the server derives the title
 // (first line), observations (the remaining paragraphs) and a name from the
@@ -365,6 +369,7 @@ program
   .option('--type <type>', 'Entity type (omit it with --replace to keep the type the memory already has)')
   .option('--title <title>', 'Short human-readable label shown as the headline (name stays the stable machine key)')
   .option('--obs <observations...>', 'Observations (space-separated)')
+  .option('--why <text>', 'For a decision: why it was made and what would make it stop holding (stored as "Why: …"; required to create a decision)')
   .option('--tags <tags...>', 'Tags (space-separated)')
   .option('--replace', 'Rewrite the memory named by --name instead of appending; its previous version is kept in metadata.replaced_history')
   .option('--namespace <namespace>', 'Namespace: personal, team, or global. On a NEW memory this places it (default personal); on one that already exists it MOVES it out of the scope it is in — omit the flag to leave it alone.')
@@ -390,7 +395,7 @@ program
         // The same limits MCP and HTTP callers get from RememberSchema
         // (length, observation count, blank text) — the CLI calls remember()
         // directly, so it checks here rather than disagreeing with them.
-        const check = RememberSchema.safeParse({ note, ...(opts.type ? { type: opts.type } : {}) });
+        const check = RememberSchema.safeParse({ note, ...(opts.type ? { type: opts.type } : {}), ...(opts.why !== undefined ? { why: opts.why } : {}) });
         if (!check.success) {
           console.error(`Error: ${check.error.issues.map((i) => i.message).join('; ')}`);
           process.exit(1);
@@ -433,7 +438,7 @@ program
     if (note === undefined && (!opts.name || (!opts.type && opts.replace !== true))) {
       console.error(
         'Error: provide --name and --type, OR --name with --replace to correct a memory that exists, OR pass quick-capture text as a positional arg.\n' +
-        '  memesh remember --name "auth" --type "decision" --obs "Use OAuth 2.0"\n' +
+        '  memesh remember --name "auth" --type "decision" --obs "Use OAuth 2.0" --why "the IdP only speaks OAuth; revisit if we self-host auth"\n' +
         '  memesh remember --name "auth" --replace --obs "Use OAuth 2.0 with PKCE"\n' +
         '  memesh remember "Use OAuth 2.0 with PKCE"'
       );
@@ -475,6 +480,7 @@ program
         type: opts.type,
         ...(opts.title !== undefined ? { title: opts.title } : {}),
         ...(opts.obs?.length ? { observations: opts.obs } : {}),
+        ...(opts.why !== undefined ? { why: opts.why } : {}),
         ...(opts.tags?.length ? { tags: opts.tags } : {}),
         ...(opts.replace === true ? { replace: true } : {}),
         ...(relations.length > 0 ? { relations } : {}),
@@ -493,8 +499,11 @@ program
           name: opts.name,
           type: opts.type,
           tags: opts.tags,
+          // #511: this directory's project, resolved only when a project tag needs it.
+          ...(opts.tags?.some((tag: string) => tag.startsWith('project:')) ? { currentProject: getProjectName() } : {}),
           namespace: opts.namespace,
           relations: relations.length > 0 ? relations : undefined,
+          why: opts.why,
           sourceHost: 'cli',
           // `note` derives title and observations; passing either alongside it
           // — even an empty array — is what remember() refuses.
@@ -512,6 +521,7 @@ program
         console.log(JSON.stringify(result));
       } else {
         console.log(`✅ Stored "${result.name}" (${result.observations} observations, ${result.tags} tags)`);
+        if (result.retagged) console.log(`   tag ${result.retagged.from} names this project; stored as ${result.retagged.to}`);
         // The derived shape, so a wrong title is fixable in one more call.
         if (result.derived) {
           // `result.title` is the title the DATABASE holds — operations.ts
@@ -522,7 +532,12 @@ program
           // here because the result carried only the REQUESTED title; that
           // half of the fix has moved to core, where every caller gets it.
           if (result.title) console.log(`   title: ${result.title}`);
-          console.log(`   fix it with: memesh remember --name=${shellWord(result.name)} --type=${shellWord(result.derived.type)} --title "…" --obs "…" --replace`);
+          // Replacing a decision needs its reason too (a copied command that
+          // lacks it is refused): the one just given when there is one, else
+          // a placeholder that has to be filled in.
+          const whyFlag = !DECISION_TYPES.has(result.derived.type) ? ''
+            : opts.why !== undefined ? ` --why=${shellWord(opts.why)}` : ' --why "…"';
+          console.log(`   fix it with: memesh remember --name=${shellWord(result.name)} --type=${shellWord(result.derived.type)} --title "…" --obs "…"${whyFlag} --replace`);
         }
         if (result.replaced) console.log('   replaced: the previous version is kept in metadata.replaced_history');
         // A move drops the memory out of every scoped view it used to appear
@@ -668,10 +683,18 @@ program
   .option('--confirm', '[deprecated, no-op] forget is a soft archive — no confirmation needed')
   .action(async (opts) => {
     await withDatabase(() => {
-      const result = forget({
-        name: opts.name,
-        observation: opts.observation,
-      });
+      let result: ReturnType<typeof forget>;
+      try {
+        result = forget({
+          name: opts.name,
+          observation: opts.observation,
+        });
+      } catch (err) {
+        // A refusal (the selector only matches a redacted line, #523) is one
+        // line and exit 1, never a stack trace.
+        printRefusal(err, opts.json);
+        return;
+      }
       // D7: this used to set `process.exitCode = 1` inside the human-readable
       // branches only, so `--json` printed the identical "not found" result
       // and exited 0 — the one output shape a script actually parses was the
@@ -712,7 +735,15 @@ function registerPinCommand(name: string, description: string, pinned: boolean, 
     .option('--json', 'Output as JSON')
     .action(async (opts) => {
       await withDatabase(() => {
-        const result = setPinned(opts.name, pinned);
+        let result: ReturnType<typeof setPinned>;
+        try {
+          result = setPinned(opts.name, pinned);
+        } catch (err) {
+          // A refusal (#523: the memory holds part of a private key) is one
+          // line and exit 1, never a stack trace.
+          printRefusal(err, opts.json);
+          return;
+        }
         if (opts.json) console.log(JSON.stringify(result));
         else console.log(result.found ? onFound(opts.name) : `Entity "${opts.name}" not found`);
         // A pin that pinned nothing exiting 0 is invisible to scripts — the
@@ -802,10 +833,11 @@ program
         console.error(`Error: --notes does not take ${ignored.map((k) => `--${k.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`).join(' or ')}. Note files always go to the personal namespace and a changed file replaces its memory.`);
         process.exit(1);
       }
+      const notesProject = requireProjectFlag(opts.project);
       await withDatabase(() => {
         let result;
         try {
-          result = ingestNoteDirectory({ dir: String(opts.notes), project: opts.project ?? getProjectName() });
+          result = ingestNoteDirectory({ dir: String(opts.notes), project: notesProject ?? getProjectName() });
         } catch (err) {
           const code = (err as NodeJS.ErrnoException)?.code;
           console.error(code === 'ENOENT'
@@ -813,10 +845,19 @@ program
             : `Error: cannot read ${opts.notes}: ${err instanceof Error ? err.message : String(err)}`);
           process.exit(1);
         }
+        // #550: every note found was refused and none was taken in (new,
+        // replaced, unchanged, moved or restored): that is a failure for a
+        // script checking the exit code, not a quiet success. A partial import
+        // still succeeds and lists what it refused.
+        const accepted = result.created.length + result.replaced.length + result.unchanged
+          + result.repathed.length + result.restored.length;
+        const allRefused = result.skipped.length > 0 && accepted === 0;
+        if (allRefused) process.exitCode = 1;
         if (opts.json) {
           console.log(JSON.stringify(result));
           return;
         }
+        if (allRefused) console.error(`Error: every note file found was refused; nothing was imported.`);
         console.log(`Notes: ${summarizeNoteIngest(result)} (${result.discovered} note files found)`);
         for (const s of result.skipped) console.error(`  skipped ${s.path}: ${s.reason}`);
         if (result.markedMissing.length) console.log(`  file gone, memory kept and tagged source:note-file:missing: ${result.markedMissing.join(', ')}`);
@@ -1005,18 +1046,30 @@ program
   .option('--root-cause <text>', 'Why it happened')
   .option('--prevention <text>', 'How to prevent it next time')
   .option('--severity <level>', 'Severity: critical|major|minor', 'minor')
+  .option('--project <name>', 'Project name (default: the current directory’s project)')
   .option('--json', 'Output as JSON')
   .action(async (opts) => {
     requireOneOf(opts.severity, ['critical', 'major', 'minor'], '--severity');
+    const projectFlag = requireProjectFlag(opts.project);
     await withDatabase(() => {
-      const result = learn({
-        error: opts.error,
-        fix: opts.fix,
-        root_cause: opts.rootCause,
-        prevention: opts.prevention,
-        severity: opts.severity as LessonSeverity | undefined,
-        sourceHost: 'cli',
-      });
+      let result: ReturnType<typeof learn>;
+      try {
+        result = learn({
+          project: projectFlag,
+          error: opts.error,
+          fix: opts.fix,
+          root_cause: opts.rootCause,
+          prevention: opts.prevention,
+          severity: opts.severity as LessonSeverity | undefined,
+          sourceHost: 'cli',
+        });
+      } catch (err) {
+        // A refusal (#523: the lesson's memory holds part of a private key, or
+        // the error text is nothing but credentials) is one line and exit 1,
+        // never a stack trace.
+        printRefusal(err, opts.json);
+        return;
+      }
       if (opts.json) {
         console.log(JSON.stringify(result));
       } else {
@@ -1052,20 +1105,27 @@ function boundedCliDeclaration(value: string, option: string, maxCharacters: num
   return normalized;
 }
 
-async function readCliMessagePayloadFromStdin(contentType: string): Promise<unknown> {
-  let raw = '';
+/** `input` is stdin; a parameter only so a test can choose where the chunks end. */
+export async function readCliMessagePayloadFromStdin(
+  contentType: string,
+  input: AsyncIterable<string | Uint8Array> = process.stdin,
+): Promise<unknown> {
+  // Bytes are joined first and decoded once: a chunk boundary can fall inside a
+  // multi-byte character, and decoding each chunk alone would turn it into U+FFFD.
+  const chunks: Buffer[] = [];
   let bytes = 0;
-  for await (const chunk of process.stdin) {
-    const text = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
-    bytes += Buffer.byteLength(text, 'utf8');
+  for await (const chunk of input) {
+    const buffer = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : Buffer.from(chunk);
+    bytes += buffer.length;
     if (bytes > AGENT_MESSAGE_JSON_MAX_BYTES) {
       throw new Error(`stdin payload exceeds ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes.`);
     }
-    raw += text;
+    chunks.push(buffer);
   }
   if (bytes === 0) {
     throw new Error('stdin payload is empty.');
   }
+  const raw = Buffer.concat(chunks).toString('utf8');
   const payload = parseCliMessagePayload(raw, contentType);
   const encodedBytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
   if (encodedBytes > AGENT_MESSAGE_JSON_MAX_BYTES) {
@@ -1299,7 +1359,7 @@ messageStorageCmd
       });
       console.log(JSON.stringify({
         policy: {
-          cutoff: new Date(opts.cutoff).toISOString(),
+          cutoff: normalizeAgentMessageCutoff(opts.cutoff),
           quota_bytes: process.env.MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES ?? null,
           automatic_pruning: false,
         },
@@ -1439,6 +1499,7 @@ program
   .option('--index', 'Only the index of durable memories (decisions, lessons, patterns, references), newest first')
   .option('--json', 'Output as JSON')
   .action(async (opts) => {
+    const projectFlag = requireProjectFlag(opts.project);
     await withDatabase(() => {
       if (opts.index) {
         // The same section a `standard`/`full`-level briefing closes with
@@ -1446,7 +1507,7 @@ program
         // ranked sections. `minimal` never includes it in the assembled
         // block (#360), but this flag returns it regardless of the
         // configured level, same as `memesh briefing --json`'s `index` field.
-        const project = opts.project ?? getProjectName();
+        const project = projectFlag ?? getProjectName();
         const index = readBriefingIndex(getDatabase(), project);
         if (opts.json) {
           console.log(JSON.stringify({ project, ...index }));
@@ -1455,7 +1516,7 @@ program
         console.log(buildReferenceContext(index.lines));
         return;
       }
-      const result = assembleBriefing(opts.project, opts.recipient);
+      const result = assembleBriefing(projectFlag, opts.recipient);
       if (opts.json) {
         console.log(JSON.stringify(result));
         return;
@@ -1704,6 +1765,7 @@ program
   .option('--done <text>', 'What was just finished')
   .option('--json', 'Output as JSON')
   .action(async (opts) => {
+    const projectFlag = requireProjectFlag(opts.project);
     await withDatabase(async () => {
       // Which flags were PASSED, not which have text: `--blocked ""` is a
       // request to clear, and reading truthiness here would silently drop it.
@@ -1716,7 +1778,7 @@ program
         let project: string;
         let state: ReturnType<typeof getTaskState>['state'];
         try {
-          ({ project, state } = getTaskState(opts.project));
+          ({ project, state } = getTaskState(projectFlag));
         } catch (err) {
           // A corrupted record is a user-facing failure with a recovery
           // step, not a stack trace: the message already says what to do.
@@ -1741,7 +1803,15 @@ program
         return;
       }
 
-      const result = setTaskState({ project: opts.project, patch, sourceHost: 'cli' });
+      let result: ReturnType<typeof setTaskState>;
+      try {
+        result = setTaskState({ project: projectFlag, patch, sourceHost: 'cli' });
+      } catch (err) {
+        // A refusal (#523: the record holds part of a private key) is one
+        // line and exit 1, never a stack trace.
+        printRefusal(err, opts.json);
+        return;
+      }
       if (opts.json) {
         console.log(JSON.stringify(result));
         return;
@@ -2178,11 +2248,36 @@ const kgCmd = program
   .command('kg')
   .description('Knowledge graph maintenance');
 
+/**
+ * Back up the whole database beside it before a command rewrites it: not in
+ * the current directory (#519), and with VACUUM INTO rather than a file copy,
+ * because the database runs in WAL mode and a copy of the main file alone
+ * misses whatever the -wal file still holds. Throws when no backup was made.
+ */
+function backUpDatabase(label: string): { dbPath: string; backupPath: string } {
+  const dbPath = getDbPath();
+  const backupDir = path.join(path.dirname(dbPath), 'backups');
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backupPath = path.join(backupDir, `kg-before-${label}-${stamp}.db`);
+  fs.mkdirSync(backupDir, { recursive: true, mode: 0o700 });
+  // Owner-private like the database: opening it set the umask to 077.
+  getDatabase().prepare('VACUUM INTO ?').run(backupPath);
+  return { dbPath, backupPath };
+}
+
+function restoreCommand(dbPath: string, backupPath: string): string {
+  // sqlite3 reads the dot-command argument as a double-quoted string, then
+  // the shell reads the whole command: quote for both.
+  const dotQuoted = `"${backupPath.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  return `sqlite3 ${shellQuoteIfNeeded(dbPath)} ${shellQuoteIfNeeded(`.restore ${dotQuoted}`)}`;
+}
+
 kgCmd
   .command('backfill-relations')
-  .description('Propose / apply deterministic relations to connect orphan entities')
-  .option('--project <name>', 'Restrict to one project')
-  .option('--dry-run', 'Show proposals without writing (default off — use to preview)')
+  .description('Propose relations that connect orphan entities; writes them only with --apply, after a backup')
+  .option('--project <name>', 'Restrict to one project: both ends of every proposed relation carry it')
+  .option('--apply', 'Write the proposed relations. Backs up the database first. Without it, only a preview is shown.')
+  .option('--dry-run', 'Preview only (the default)')
   .option('--max-per-source <n>', 'Max edges per orphan (default 3)', wholeNumber('--max-per-source'), 3)
   .option('--min-shared-tags <n>', 'Min shared topical tags to gate co-occurrence rule (default 2)', wholeNumber('--min-shared-tags'), 2)
   .option('--include-archived', 'Also process archived entities')
@@ -2191,33 +2286,55 @@ kgCmd
   .option('--min-jaccard <n>', 'Jaccard threshold for name similarity (default 0.50)', unitFraction('--min-jaccard'))
   .option('--all-rules', 'Enable all heuristic rules (Rules 1–5)')
   .option('--no-evidence-links', 'Disable Rule 5: evidence → work-item links via shared session id (on by default — these edges feed the graph\'s evidence badges)')
-  .option('--reset-idempotency', 'Clear the persistent "already-attempted" orphan cache before running (use after schema changes or to reconsider every orphan)')
+  .option('--reset-idempotency', 'Reconsider every orphan, including those already attempted. With --apply it also clears the "already-attempted" cache.')
   .option('--json', 'Output as JSON')
   .action(async (opts) => {
-    await withDatabase(async () => {
-      const { backfillRelations, proposeBackfillCandidates } = await import('../../core/kg-backfill.js');
-      const allRules = !!opts.allRules;
-      const baseOpts = {
-        project: opts.project,
-        maxEdgesPerSource: opts.maxPerSource,
-        minSharedTags: opts.minSharedTags,
-        includeArchived: !!opts.includeArchived,
-        dryRun: !!opts.dryRun,
-        includeSessionCooccurrence: allRules || !!opts.sessionCooccurrence,
-        includeNameTokenSimilarity: allRules || !!opts.nameTokens,
-        // Commander's --no-evidence-links negation: opts.evidenceLinks is
-        // true unless the user passed the flag. Rule 5 is default-ON.
-        includeEvidenceLinks: opts.evidenceLinks !== false,
-        minNameJaccard: opts.minJaccard,
-        resetIdempotency: !!opts.resetIdempotency,
-      };
-      if (opts.dryRun) {
-        const { candidates, skippedOrphanIds } = proposeBackfillCandidates(baseOpts);
+    if (opts.apply && opts.dryRun) {
+      console.error('Error: --apply writes and --dry-run previews; pass one of them.');
+      process.exitCode = 1;
+      return;
+    }
+    const { backfillRelations, proposeBackfillCandidates } = await import('../../core/kg-backfill.js');
+    const allRules = !!opts.allRules;
+    const baseOpts = {
+      project: opts.project,
+      maxEdgesPerSource: opts.maxPerSource,
+      minSharedTags: opts.minSharedTags,
+      includeArchived: !!opts.includeArchived,
+      includeSessionCooccurrence: allRules || !!opts.sessionCooccurrence,
+      includeNameTokenSimilarity: allRules || !!opts.nameTokens,
+      // Commander's --no-evidence-links negation: opts.evidenceLinks is
+      // true unless the user passed the flag. Rule 5 is default-ON.
+      includeEvidenceLinks: opts.evidenceLinks !== false,
+      minNameJaccard: opts.minJaccard,
+    };
+
+    if (!opts.apply) {
+      // The preview writes nothing (#529). A normal open does write
+      // (auto-decay and the other one-time passes run on it), so it reads
+      // through the same read-only handle as the rename-project preview, and
+      // --reset-idempotency only ignores the cache instead of clearing it.
+      if (!fs.existsSync(getDbPath())) {
+        if (opts.json) console.log(JSON.stringify({ candidates: [], skippedOrphanIds: [] }, null, 2));
+        else console.log(`No MeMesh database yet (${getDbPath()}); nothing to connect.`);
+        return;
+      }
+      let readOnlyDb: MemeshDatabase;
+      try {
+        readOnlyDb = (await import('../../core/project-tags.js')).openReadOnlyForPreview(getDbPath());
+      } catch (err) {
+        console.error(`Error: memesh cannot open its database read-only (${err instanceof Error ? err.message : String(err)}). Run \`memesh doctor\`.`);
+        process.exitCode = 1;
+        return;
+      }
+      try {
+        const { candidates, skippedOrphanIds } = proposeBackfillCandidates(
+          { ...baseOpts, ignoreIdempotency: !!opts.resetIdempotency }, readOnlyDb);
         if (opts.json) {
           console.log(JSON.stringify({ candidates, skippedOrphanIds }, null, 2));
           return;
         }
-        console.log(`Proposed ${candidates.length} relation${candidates.length === 1 ? '' : 's'} (dry-run, nothing written).`);
+        console.log(`Proposed ${candidates.length} relation${candidates.length === 1 ? '' : 's'}.`);
         const sample = candidates.slice(0, 20);
         for (const c of sample) {
           console.log(`  ${c.fromName}  --[${c.relationType}]-->  ${c.toName}   (${c.reason})`);
@@ -2234,11 +2351,30 @@ kgCmd
           console.log('');
           console.log(`  idempotency: ${skippedOrphanIds.length} orphan${skippedOrphanIds.length === 1 ? '' : 's'} skipped (already attempted in a prior run; use --reset-idempotency to reconsider).`);
         }
+        console.log(`\nNothing written. Re-run with --apply to write ${candidates.length === 1 ? 'it' : 'them'} (the database is backed up first).`);
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      } finally {
+        readOnlyDb.close();
+      }
+      return;
+    }
+
+    await withDatabase(async () => {
+      // The backup comes before the proposal: with --reset-idempotency the
+      // proposal itself clears the cache.
+      let backup: { dbPath: string; backupPath: string };
+      try {
+        backup = backUpDatabase('backfill-relations');
+      } catch (err) {
+        console.error(`Error: could not back up the database before writing (${err instanceof Error ? err.message : String(err)}); nothing was changed.`);
+        process.exitCode = 1;
         return;
       }
-      const result = backfillRelations(baseOpts);
+      const result = backfillRelations({ ...baseOpts, dryRun: false, resetIdempotency: !!opts.resetIdempotency });
       if (opts.json) {
-        console.log(JSON.stringify(result, null, 2));
+        console.log(JSON.stringify({ ...result, backupPath: backup.backupPath }, null, 2));
         return;
       }
       console.log(`Proposed ${result.candidatesProposed} relations, wrote ${result.edgesWritten} new edges.`);
@@ -2256,8 +2392,26 @@ kgCmd
       if (result.orphansMarkedProcessed > 0) {
         console.log(`  idempotency: marked ${result.orphansMarkedProcessed} new orphan${result.orphansMarkedProcessed === 1 ? '' : 's'} as attempted.`);
       }
+      console.log(`  Backup: ${backup.backupPath}`);
+      console.log(`  Restore if needed (stop every memesh process first): ${restoreCommand(backup.dbPath, backup.backupPath)}`);
     });
   });
+
+/**
+ * A `--project` value, canonical, or exit 1 naming the flag when it is empty or
+ * spelled as a filesystem path (#527). `undefined` (flag not given) passes
+ * through so the command falls back to the current directory's project.
+ */
+function requireProjectFlag(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const rejection = projectScopeRejection(value);
+  if (rejection) {
+    console.error(`Error: --project: ${rejection}`);
+    process.exit(1);
+  }
+  // As given: a stored task-state key is matched byte for byte.
+  return value;
+}
 
 /**
  * A `memesh agent setup` identity argument, in the canonical form the message
@@ -2328,17 +2482,10 @@ kgCmd
       }
 
       // --apply: back up the whole database before any mutation (recoverable).
-      // Beside the database, not in the current directory (#519), and with
-      // VACUUM INTO rather than a file copy: the database runs in WAL mode, so
-      // a copy of the main file alone misses whatever the -wal file still holds.
-      const dbPath = getDbPath();
-      const backupDir = path.join(path.dirname(dbPath), 'backups');
-      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const backupPath = path.join(backupDir, `kg-before-rename-project-${stamp}.db`);
+      let dbPath: string;
+      let backupPath: string;
       try {
-        fs.mkdirSync(backupDir, { recursive: true, mode: 0o700 });
-        // Owner-private like the database: opening it set the umask to 077.
-        getDatabase().prepare('VACUUM INTO ?').run(backupPath);
+        ({ dbPath, backupPath } = backUpDatabase('rename-project'));
       } catch (err) {
         console.error(`❌ Could not back up the DB before applying (${err instanceof Error ? err.message : err}); aborting without changes.`);
         process.exitCode = 1;
@@ -2358,10 +2505,7 @@ kgCmd
       console.log(`  ${result.renamed} renamed, ${result.merged} merged (${result.affectedEntities} entities total)`);
       console.log(`  ${result.messageRows - result.messageRowsBlocked} agent-message row(s) moved${result.messageRowsBlocked > 0 ? `, ${result.messageRowsBlocked} left in place (${to} already holds an equivalent row)` : ''}`);
       console.log(`  Backup: ${backupPath}`);
-      // sqlite3 reads the dot-command argument as a double-quoted string, then
-      // the shell reads the whole command: quote for both.
-      const dotQuoted = `"${backupPath.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
-      console.log(`  Restore if needed (stop every memesh process first): sqlite3 ${shellQuoteIfNeeded(dbPath)} ${shellQuoteIfNeeded(`.restore ${dotQuoted}`)}`);
+      console.log(`  Restore if needed (stop every memesh process first): ${restoreCommand(dbPath, backupPath)}`);
     };
 
     // --to is a NEW routing identity — the same shape `agent setup` and the
@@ -3220,6 +3364,13 @@ program
 // a confusing internal arg into `--help`, and `.command('*')` is
 // deprecated in Commander 12+. Reading program.args is the documented
 // escape hatch when no subcommand matched.
+// DX: silence Commander's default "too many arguments. Expected 0..." error for the
+// root command only, so this action can inspect program.args and emit a clear
+// "unknown command 'foo'" message instead. Set here, after every subcommand is
+// registered: Commander copies this setting into each subcommand as it is created,
+// and a subcommand that inherited it would drop extra words silently
+// (`memesh remember Use OAuth with PKCE` stored only "Use" and exited 0).
+program.allowExcessArguments(true);
 program.action(async () => {
   const stray = program.args.filter((a) => !a.startsWith('-'));
   if (stray.length > 0) {

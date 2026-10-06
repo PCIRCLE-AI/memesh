@@ -31,7 +31,7 @@ afterAll(async () => {
 describe('GET /v1/briefing-index (#323: the Project tab shows what an agent is given)', () => {
   it('returns the rendered index and its counts for one project', async () => {
     remember({
-      name: 'route-decision', type: 'decision', title: 'Keep the index capped',
+      name: 'route-decision', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', title: 'Keep the index capped',
       observations: ['Forty lines, three kilobytes.'], tags: ['project:alpha'],
     });
     remember({
@@ -52,6 +52,8 @@ describe('GET /v1/briefing-index (#323: the Project tab shows what an agent is g
     expect(body.data.ids).toHaveLength(1);
     expect(body.data.lines.join('\n')).toContain('Keep the index capped');
     expect(body.data.lines.join('\n')).not.toContain('chore: bump');
+    // The decision's line carries its reason, as the briefing's does.
+    expect(body.data.lines.join('\n')).toMatch(/- \[decision\] Keep the index capped.* — Why: a fixed choice for this case; revisit if it changes \[mem:\d+\]/);
 
     const none = await (await fetch(`${base}/v1/briefing-index?project=never-used`)).json();
     expect(none.data.shown).toBe(0);

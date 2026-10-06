@@ -40,11 +40,12 @@ replays the same way. The single sanctioned idle animation is the heartbeat
 connected.
 
 **Canvas cannot read a token.** `ctx.fillStyle = 'var(--life)'` is invalid
-and silently draws black. The two `<canvas>` renderers resolve the tokens
-they need from the live stylesheet via `getComputedStyle` and draw with the
-resolved values — `MemoryTimeline` per draw (the Graph tab's canvas did the
-same once at mount until its removal) — so a palette change still reaches
-the canvas. Never hardcode a palette hex
+and silently draws black. The one `<canvas>` renderer, `MemoryTimeline`
+(the Graph tab's canvas was removed), resolves the tokens it needs from the
+live stylesheet via `getComputedStyle` on every draw and draws with the
+resolved values, so a palette change still reaches the canvas. A fill's
+transparency is a `globalAlpha` on the token, never a hand-rolled `rgba()`.
+Never hardcode a palette hex
 into a canvas draw call; if `getComputedStyle` returns empty (no
 stylesheet, e.g. a test), that is a visible signal, not a value to paper
 over with a literal fallback.
@@ -123,8 +124,9 @@ parses that block as the type vocabulary.
 
 The two types that coincide with a token are NOT in the palette file:
 `decision` = `--life` (decisions are this brain's main produce) and
-`session-insight` = `--text-2` (weak signal stays grey). Canvas renderers
-resolve those from the tokens at runtime, so a palette change reaches them.
+`session-insight` = `--text-2` (weak signal stays grey). No renderer colours
+those two types today (the graph that did was removed); one that returns must
+read them from the tokens, not add them to the palette file.
 
 **Hue encodes species; luminance encodes vitality. The two channels never
 compete.** **Amber is a state, not a species**: a pinned node keeps its

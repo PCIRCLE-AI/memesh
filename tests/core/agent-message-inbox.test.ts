@@ -131,6 +131,9 @@ describe('Feature: #514 a Codex host acceptance silences only the thread it was 
   }
 
   let generation = 0;
+  // The accepting Codex companion is still running (a live lease): an
+  // acceptance by a process that has since ended does not silence a reminder
+  // (#514, tests/hooks/message-recipient-reminder.test.ts).
   function accept(deliveryId: string, receipt: Record<string, unknown>) {
     const db = getDatabase();
     generation += 1;
@@ -138,7 +141,7 @@ describe('Feature: #514 a Codex host acceptance silences only the thread it was 
     db.prepare(`INSERT OR IGNORE INTO agent_principals (project, principal_id, activation_event_sequence) VALUES ('proj-a', 'p2-principal', 0)`).run();
     db.prepare(`INSERT OR IGNORE INTO agent_session_instances (project, session_instance_id, principal_id, adapter_kind) VALUES ('proj-a', ?, 'p2-principal', 'codex-cli-queue')`).run(T1);
     db.prepare(`INSERT INTO agent_session_connections (connection_id, project, principal_id, session_instance_id, generation, adapter_kind, router_instance_id, lease_expires_at_ms)
-      VALUES (?, 'proj-a', 'p2-principal', ?, ?, 'codex-cli-queue', 'test-router', ?)`).run(`c-${suffix}`, T1, generation, Date.now() - 1);
+      VALUES (?, 'proj-a', 'p2-principal', ?, ?, 'codex-cli-queue', 'test-router', ?)`).run(`c-${suffix}`, T1, generation, Date.now() + 60_000);
     db.prepare(`INSERT INTO agent_dispatch_attempts (attempt_id, delivery_id, project, principal_id, session_instance_id, connection_id, generation, router_instance_id, attempt_number, result, completed_at)
       VALUES (?, ?, 'proj-a', 'p2-principal', ?, ?, ?, 'test-router', 1, 'adapter_returned', CURRENT_TIMESTAMP)`).run(`a-${suffix}`, deliveryId, T1, `c-${suffix}`, generation);
     db.prepare(`INSERT INTO agent_host_accepts (host_accept_id, attempt_id, delivery_id, adapter_kind, receipt_json) VALUES (?, ?, ?, 'codex-cli-queue', ?)`)
@@ -153,6 +156,21 @@ describe('Feature: #514 a Codex host acceptance silences only the thread it was 
     accept(sent.delivery_id, { host: 'codex-cli', status: 'queued', thread_id: T1 });
     expect(refs(T1)).toEqual([]);
     expect(unreadInboxLinesFor(getDatabase(), 'p2-principal', T1, true)).toEqual([]);
+  });
+
+  it('#514 reminds again once the process that accepted it has ended, in the same thread and with no session', () => {
+    const sent = send('ended-accepter');
+    accept(sent.delivery_id, { host: 'codex-cli', status: 'queued', thread_id: T1 });
+    expect(refs(T1)).toEqual([]);
+    getDatabase().prepare("UPDATE agent_session_connections SET disconnected_at = CURRENT_TIMESTAMP WHERE connection_id LIKE ?").run(`c-${sent.delivery_id}%`);
+    expect(refs(T1)).toEqual([sent.message_id]);
+    expect(refs(undefined)).toEqual([sent.message_id]);
+  });
+
+  it('a notice-only acceptance does not silence the reminder, even while its accepter is live', () => {
+    const sent = send('notice-live');
+    accept(sent.delivery_id, { host: 'codex-cli', status: 'queued', thread_id: T1, content: 'notice' });
+    expect(refs(T1)).toEqual([sent.message_id]);
   });
 
   it('reminds the same principal in a different thread, which never got that copy', () => {
@@ -250,5 +268,35 @@ describe('the waiting line keeps a project with line separators on one line', ()
       expect(m, line).not.toBeNull();
       expect(JSON.parse(m![1])).toBe(project);
     }
+  });
+});
+
+describe('Feature: #566 an exact-session message reminds only the session it is for', () => {
+  useTestDatabase('memesh-inbox-exact-session-');
+
+  it('counts it for that session, and not for another live session of the same principal', () => {
+    const a = registerAgentSession('proj-a', 'claude-principal');
+    const b = registerAgentSession('proj-a', 'claude-principal');
+    const sent = sendSessionTargetedMessage('proj-a', a, 'k566-1');
+
+    expect(unreadMessageRefsFor(getDatabase(), 'claude-principal', a)).toEqual([{ project: 'proj-a', message_id: sent.message_id }]);
+    expect(unreadInboxLinesFor(getDatabase(), 'claude-principal', a)).toHaveLength(1);
+    expect(unreadMessageRefsFor(getDatabase(), 'claude-principal', b)).toEqual([]);
+    expect(unreadInboxLinesFor(getDatabase(), 'claude-principal', b)).toEqual([]);
+  });
+
+  it('still counts it for the session after /clear, through the alias chain', () => {
+    const a = registerAgentSession('proj-a', 'claude-principal');
+    const sent = sendSessionTargetedMessage('proj-a', a, 'k566-2');
+    const cleared = `cleared-${a}`;
+    getDatabase().prepare('INSERT INTO agent_session_aliases (session_id, previous_session_id, created_at_ms) VALUES (?, ?, ?)').run(cleared, a, Date.now());
+
+    expect(unreadMessageRefsFor(getDatabase(), 'claude-principal', cleared)).toEqual([{ project: 'proj-a', message_id: sent.message_id }]);
+  });
+
+  it('keeps the #490 behaviour when the caller cannot name its session', () => {
+    const a = registerAgentSession('proj-a', 'claude-principal');
+    const sent = sendSessionTargetedMessage('proj-a', a, 'k566-3');
+    expect(unreadMessageRefsFor(getDatabase(), 'claude-principal')).toEqual([{ project: 'proj-a', message_id: sent.message_id }]);
   });
 });

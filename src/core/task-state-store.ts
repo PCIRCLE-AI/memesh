@@ -14,11 +14,12 @@
 
 import { getDatabase } from '../db.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
-import { getProjectName } from './paths.js';
+import { getProjectName, redactSecretList } from './paths.js';
 import { remember } from './operations.js';
 import { jsonStringLiteral, projectLabel } from './work-topology.js';
 import {
   TASK_STATE_TYPE,
+  TASK_STATE_FIELDS,
   taskStateName,
   parseTaskState,
   mergeTaskState,
@@ -77,7 +78,25 @@ export function getTaskState(project?: string): { project: string; state: TaskSt
   // rendered it as "nothing stated" on every surface — indistinguishable
   // from a project nobody has described.
   if (corrupted) throw new TaskStateUnreadableError(resolved);
-  return { project: resolved, state };
+  return { project: resolved, state: redactedState(state) };
+}
+
+/**
+ * #523: the state as it is handed to a caller. The read surfaces (MCP
+ * `task_state` with no fields, `GET /v1/task-state`, `memesh task --json`)
+ * and the write's own answer (MCP `task_state` with fields, `memesh task
+ * --goal … --json`) show a state stored before the write-time redaction, so
+ * it is redacted here. The write path reads the stored record through
+ * `readState` directly, so a restatement still compares against — and
+ * overwrites — the raw row.
+ */
+function redactedState(state: TaskState): TaskState {
+  const shown: TaskState = { ...state };
+  // The fields are one set: a key split across them is masked as a whole.
+  const fields = TASK_STATE_FIELDS.filter((field) => typeof shown[field] === 'string');
+  const texts = redactSecretList(fields.map((field) => shown[field] as string));
+  fields.forEach((field, i) => { shown[field] = texts[i]; });
+  return shown;
 }
 
 /**
@@ -95,35 +114,49 @@ export function setTaskState(input: SetTaskStateInput): SetTaskStateResult {
   // one in-product way to recover, so a broken record merges as "nothing
   // stated before" and the write below overwrites it.
   const { state: previous } = readState(name);
+  // #523: redacted at the ONE entry point, so the title, the observations
+  // (via `remember`, which redacts again — harmless) and `metadata.task_state`
+  // below all hold the same redacted text. The metadata copy is what the
+  // briefing and the SessionStart hook inject, and it did not pass through
+  // `remember`'s redaction.
+  // The patch's text fields are one set: a key split across them is masked as a whole.
+  const textFields = Object.entries(input.patch).filter(([, value]) => typeof value === 'string');
+  const texts = redactSecretList(textFields.map(([, value]) => value as string));
+  const patch = { ...input.patch, ...Object.fromEntries(textFields.map(([field], i) => [field, texts[i]])) } as SetTaskStateInput['patch'];
   const { state, changed, observations } = mergeTaskState(
     previous,
-    input.patch,
+    patch,
     new Date().toISOString(),
   );
 
-  if (changed.length === 0) return { project, state, changed };
+  if (changed.length === 0) return { project, state: redactedState(state), changed };
 
   // The headline a human (or an injected block) sees. The goal is what the
   // work is FOR, so it leads; a state with no goal yet is still worth naming
   // by whatever it does have.
   const title = state.goal ?? state.next ?? state.blocked ?? state.done ?? `Task state for ${project}`;
 
-  remember({
-    name,
-    type: TASK_STATE_TYPE,
-    observations,
-    tags: [`project:${project}`],
-    title,
-    sourceHost: input.sourceHost,
-  });
+  // One transaction: when the metadata write below fails, the observations
+  // `remember()` added are rolled back with it.
+  const db = getDatabase();
+  db.transaction(() => {
+    remember({
+      name,
+      type: TASK_STATE_TYPE,
+      observations,
+      tags: [`project:${project}`],
+      title,
+      sourceHost: input.sourceHost,
+    });
 
-  // Metadata is the state's home; the observations above are its history.
-  // Written after `remember()` because `updateEntityMetadata` is a no-op on a
-  // row that does not exist yet, and on a first call it does not.
-  new KnowledgeGraph(getDatabase()).updateEntityMetadata(name, (current) => ({
-    ...current,
-    task_state: state,
-  }));
+    // Metadata is the state's home; the observations above are its history.
+    // Written after `remember()` because `updateEntityMetadata` is a no-op on a
+    // row that does not exist yet, and on a first call it does not.
+    new KnowledgeGraph(db).updateEntityMetadata(name, (current) => ({
+      ...current,
+      task_state: state,
+    }));
+  }).immediate();
 
-  return { project, state, changed };
+  return { project, state: redactedState(state), changed };
 }

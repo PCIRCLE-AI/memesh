@@ -16,7 +16,7 @@ useTestDatabase('memesh-projects-');
 
 describe('computeProjects', () => {
   it('does not turn a directory that only has a session handoff into a project', () => {
-    remember({ name: 'alpha-decision', type: 'decision', observations: ['We use SQLite.'], tags: ['project:alpha'] });
+    remember({ name: 'alpha-decision', type: 'decision', why: 'one file is easy to back up; revisit if we need many writers', observations: ['We use SQLite.'], tags: ['project:alpha'] });
     remember({ name: 'session-handoff:beta', type: 'session-handoff', observations: ['Stopped right before the release step.'], tags: ['project:beta'] });
     const names = computeProjects(getDatabase()).map((p) => p.name);
     expect(names, 'the control project is missing, so this test proves nothing').toContain('alpha');
@@ -64,5 +64,19 @@ describe('extractProjectFromName', () => {
     // Even though "x-other" technically matches the pattern, "x" is too
     // short to be a meaningful project label.
     expect(extractProjectFromName('lesson-x-other')).toBeNull();
+  });
+});
+
+import { extractProjectFromEntity, KNOWN_ERROR_PATTERNS as ATTRIBUTION_PATTERNS } from '../../src/core/project-attribution.js';
+
+describe('project-attribution (shared by the server and the dashboard bundle)', () => {
+  it('a project tag beats a lesson-<project>-<pattern> name', () => {
+    expect(extractProjectFromEntity(['project:memesh'], 'lesson-other-config-error')).toEqual({ project: 'memesh', source: 'tag' });
+    expect(extractProjectFromEntity([], 'lesson-other-config-error')).toEqual({ project: 'other', source: 'heuristic' });
+    expect(extractProjectFromEntity(null, 'note-1')).toEqual({ project: null, source: null });
+  });
+
+  it('is the same pattern list the lesson engine anchors on', () => {
+    expect(KNOWN_ERROR_PATTERNS).toBe(ATTRIBUTION_PATTERNS);
   });
 });

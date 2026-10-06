@@ -24,6 +24,7 @@ type Row = {
   id: number;
   name: string;
   type: string;
+  title: string | null;
   content: string;
   tag: string;
 };
@@ -94,6 +95,47 @@ describe('Feature: PreCompact Hook', () => {
     // The strongest possible form of "no entity": the database file was
     // never even created, because the hook skipped before touching it.
     expect(fs.existsSync(dbPath), 'no database may be created for a non-event').toBe(false);
+  });
+
+  function outcomes(): Array<Record<string, unknown>> {
+    const file = path.join(testDir, 'hook-outcomes.jsonl');
+    return fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  }
+
+  it('Scenario: #527 no cwd -> skipped and recorded, nothing written (never the hook process\'s own directory)', () => {
+    const result = runHook({ session_id: 'sess-nocwd', transcript_path: '', trigger: 'auto' });
+    expect(result.trim(), 'nothing was saved, nothing may claim to be').toBe('');
+    expect(fs.existsSync(dbPath), 'no database may be created').toBe(false);
+    expect(outcomes().at(-1)).toMatchObject({
+      hook: 'pre-compact', outcome: 'skipped', reason: 'cwd absent in payload — cannot resolve project',
+    });
+  });
+
+  it('Scenario: #527 no session_id (transcript present) -> skipped and recorded, no shared pre-compact-unknown memory', () => {
+    const transcript = path.join(testDir, 't.jsonl');
+    fs.writeFileSync(transcript, '');
+    const result = runHook({ transcript_path: transcript, cwd: '/tmp/myproject', trigger: 'auto' });
+    expect(result.trim()).toBe('');
+    expect(fs.existsSync(dbPath), 'no database may be created').toBe(false);
+    expect(outcomes().at(-1)).toMatchObject({
+      hook: 'pre-compact', outcome: 'skipped', reason: 'no usable session_id in the payload',
+    });
+  });
+
+  it.each([
+    ['empty session_id', { session_id: '', cwd: '/tmp/myproject' }, 'no usable session_id in the payload'],
+    ['blank session_id', { session_id: '   ', cwd: '/tmp/myproject' }, 'no usable session_id in the payload'],
+    ['object session_id', { session_id: { a: 1 }, cwd: '/tmp/myproject' }, 'no usable session_id in the payload'],
+    ['empty cwd', { session_id: 's1', cwd: '' }, 'cwd absent in payload — cannot resolve project'],
+    ['blank cwd', { session_id: 's1', cwd: '  \t' }, 'cwd absent in payload — cannot resolve project'],
+    ['object cwd', { session_id: 's1', cwd: { a: 1 } }, 'cwd absent in payload — cannot resolve project'],
+  ])('Scenario: #527 %s -> skipped and recorded, no memory written', (_label, payload, reason) => {
+    const transcript = path.join(testDir, 't2.jsonl');
+    fs.writeFileSync(transcript, '');
+    const result = runHook({ transcript_path: transcript, trigger: 'auto', ...payload });
+    expect(result.trim()).toBe('');
+    expect(fs.existsSync(dbPath), 'no database may be created').toBe(false);
+    expect(outcomes().at(-1)).toMatchObject({ hook: 'pre-compact', outcome: 'skipped', reason });
   });
 
   it('Scenario: a pre-compact memory captured by a Codex hook run names codex as its source host', () => {
@@ -532,5 +574,33 @@ describe('Feature: PreCompact Hook', () => {
     const second = JSON.parse(runHook(input).trim());
     expect(second.systemMessage).not.toMatch(/^Saved /);
     expect(second.systemMessage).toContain('already captured');
+  });
+
+  it('a legacy `reason` carrying a long credential is redacted before the title is cut (#523)', () => {
+    // The title is `<date> <project>: <reason> compaction (…)`, cut at 200
+    // characters. A password longer than the cut lost its `@` and stopped
+    // matching, so `postgres://reviewer:pppp…` was stored as the title.
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-precompact-redact-'));
+    try {
+      const credential = ['postgres://reviewer', `${'p'.repeat(400)}@db.example/memory`].join(':');
+      runHook({
+        session_id: 'redact-reason',
+        transcript_path: '',
+        cwd: projectDir,
+        hook_event_name: 'PreCompact',
+        reason: credential,
+      });
+      const db = openDb();
+      const entity = db.prepare('SELECT id, title FROM entities WHERE name = ?').get('pre-compact-redact-reason') as Row;
+      const observations = (db.prepare('SELECT content FROM observations WHERE entity_id = ? ORDER BY id').all(entity.id) as Row[]).map((r) => r.content);
+      db.close();
+      expect(entity.title).not.toContain('postgres://reviewer:');
+      expect(entity.title).not.toContain('pppp');
+      expect(entity.title).toContain('***REDACTED***');
+      expect(observations.join('\n')).not.toContain('pppp');
+      expect(observations.join('\n')).toContain('***REDACTED***');
+    } finally {
+      fs.rmSync(projectDir, { recursive: true, force: true });
+    }
   });
 });

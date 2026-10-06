@@ -21,17 +21,18 @@ import { ownerWriteCommand, runOrSay, shellQuote } from './file-mode.js';
 import { diagnoseDatabaseFailure } from './database-diagnosis.js';
 import { citationRulePath, citationRuleState, type CitationRuleScope } from './citation-rule.js';
 import { getAgentRouterSocketPath, getDbPath, getMemeshDirFromDbPath, homeDir, memeshDir } from './paths.js';
+import { findProjectIdentitySplits, type ProjectIdentitySplit } from './project-identity-split.js';
 import { AGENT_ROUTER_SOCKET_PATH_MAX_BYTES } from './agent-router.js';
 import { detectPluginRuntime, readInstallMarker } from './install-hooks.js';
 import { UNSPACED_SCRIPT_GLOB_RUN3 } from '../storage/fts-index.js';
 import { MemeshDatabase } from '../storage/sqlite.js';
 import { AUTO_CAPTURE_TAG } from './types.js';
 import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
-import { parseSqliteUtcMs } from './time-utils.js';
+import { parseSqliteUtcMs, sqliteUtcToIso } from './time-utils.js';
 import { autoCaptureDecision } from './capture-flag.js';
 import {
   captureLivenessVerdict, parseHookOutcomes, summarizeHookOutcomes, summarizeTypeTrends,
-  FAIL_ELIGIBLE_HOOKS, SKIP_REASONS, HOOK_OUTCOMES_FILENAME, NEVER_RAN_GRACE_HOURS, SILENT_HOOK_MIN_RUNS,
+  FAIL_ELIGIBLE_HOOKS, SKIP_REASONS, HOOK_OUTCOMES_FILENAME, NEVER_RAN_GRACE_HOURS, SILENT_HOOK_MIN_RUNS, RECENT_ERROR_RUNS,
   type CaptureLivenessStatus, type HookLivenessSummary, type TypeTrend,
 } from './capture-liveness.js';
 import { guardFromMetadata } from './guards.js';
@@ -529,7 +530,7 @@ function inspectCodexQueueDaemon(db: MemeshDatabase): DoctorCheck | undefined {
 
     // Every stuck thread is named: the fix below asks for a prompt in each.
     const named = stuck
-      .map((row) => `${row.recipient} in ${row.project} (${row.created_at.replace(' ', 'T')}Z)`)
+      .map((row) => `${row.recipient} in ${row.project} (${sqliteUtcToIso(row.created_at)})`)
       .join(', ');
     return createCheck(
       'codex-queue-daemon',
@@ -549,6 +550,47 @@ function inspectCodexQueueDaemon(db: MemeshDatabase): DoctorCheck | undefined {
       'Run `memesh doctor` again; if this persists, check the database rows above for the underlying error.',
     );
   }
+}
+
+/**
+ * #408: memories under a plain project name that shares its readable name
+ * with a project id in the same graph. Sessions resolve the id, so those
+ * memories never reach them. Absent when there is no split.
+ *
+ * The row names no project, in its summary or its fix: doctor rows are copied
+ * into the prefilled public issue of `memesh feedback` and the dashboard, and
+ * a project name can be an account or a private repository name. The fix
+ * points at `memesh kg rename-project`, which lists the names on the user's
+ * own machine. A shared name does not prove one project — an old plain name
+ * may have mixed several repositories — so the move is the user's call. A
+ * failure reading the tags is a warning of its own, never a failed database
+ * row.
+ */
+function inspectProjectIdentitySplit(db: MemeshDatabase): DoctorCheck | undefined {
+  let splits: ProjectIdentitySplit[];
+  try {
+    splits = findProjectIdentitySplits(db);
+  } catch (err) {
+    return createCheck(
+      'project-identity-split',
+      'Project tags',
+      'warn',
+      `The project tag check could not run (${err instanceof Error ? err.message : String(err)}), so a project split is not ruled out.`,
+      'Run `memesh kg rename-project` to list every project tag.',
+    );
+  }
+  if (splits.length === 0) return undefined;
+  const total = splits.reduce((sum, split) => sum + split.activeMemories, 0);
+  return createCheck(
+    'project-identity-split',
+    'Project tags',
+    'warn',
+    `${total} active ${total === 1 ? 'memory' : 'memories'} in ${splits.length} ${splits.length === 1 ? 'project is' : 'projects are'} `
+      + "filed under a plain project name (project:<name>) that the project's sessions never read; they use the full id (project:<name>~<hash>).",
+    'Run `memesh kg rename-project` to list every project tag with its count. For a plain name listed next to an id of the same name, '
+      + 'kg rename-project --from <name> --to <id> previews moving its memories to that id, and the same command with --apply moves them '
+      + '(it backs the database up first). A shared name does not prove one project: if a different repository used that name, leave it.',
+  );
 }
 
 /**
@@ -1726,6 +1768,26 @@ function inspectCaptureLiveness(
         `The ${hook} hook has left no record and no heartbeat in the ${Math.round(measuringHours ?? 0)} hours since tracking began — it has never run, so nothing it would capture is being saved.`,
         'Run `memesh install-hooks` and restart your agent, then end one work session and re-run `memesh doctor`.',
         { code: 'capture-liveness.never-ran', params: { hook, hours: Math.round(measuringHours ?? 0) } }),
+      report,
+    };
+  }
+
+  // #555: recorded errors reach the verdict, ahead of silence — a capture hook
+  // that fails on every run also writes nothing, and the error is the cause.
+  // Uncoded: a translated catalogue entry for a server-diagnostic sentence
+  // would be needed in every dashboard locale, and an uncoded row falls back to
+  // this English text there; `params.hook` keeps one hook's dismissal from
+  // hiding another's. Only the date of `at` is shown, and only when it is one:
+  // the ledger is a file, and this sentence is copied into feedback reports.
+  if (verdict.erroringHook) {
+    const h = verdict.erroringHook;
+    const day = h.lastErrorAt !== null && /^\d{4}-\d{2}-\d{2}/.test(h.lastErrorAt) ? ` on ${h.lastErrorAt.slice(0, 10)}` : '';
+    const newest = Math.min(RECENT_ERROR_RUNS, h.triggeredRuns);
+    return {
+      check: createCheck('capture-liveness', TITLE, 'warn',
+        `${h.hook}: ${h.recentErrors} of its ${newest} most recent runs ended in an error (${h.errors} in its recorded window); the latest was '${h.lastErrorReason}'${day}.`,
+        'The reason says what failed; `memesh doctor --json` has the per-hook figures. This row clears once the hook\'s most recent runs (those its trigger applied to) end without an error. If it keeps failing, run `memesh install-hooks` and restart your agent.',
+        { params: { hook: h.hook } }),
       report,
     };
   }
@@ -3220,6 +3282,9 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
 
     const codexQueueDaemon = inspectCodexQueueDaemon(db as unknown as MemeshDatabase);
     if (codexQueueDaemon) dbChecks.push(codexQueueDaemon);
+
+    const projectSplit = inspectProjectIdentitySplit(db as unknown as MemeshDatabase);
+    if (projectSplit) dbChecks.push(projectSplit);
 
     // The stale-keyword-index state, which two comments claimed doctor detected
     // and nothing checked.

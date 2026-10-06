@@ -144,7 +144,14 @@ interface InitializeResult {
   protocolVersion: number;
 }
 
-export class AcpHostAdapterError extends Error {}
+export class AcpHostAdapterError extends Error {
+  constructor(message: string) {
+    super(message);
+    // The router host client turns the error's name into the failure code it reports
+    // for a rejected delivery, so each subclass must carry its own instead of "Error".
+    this.name = new.target.name;
+  }
+}
 export class AcpProtocolError extends AcpHostAdapterError {}
 export class AcpUnsupportedCapabilityError extends AcpHostAdapterError {}
 export class AcpStaleGenerationError extends AcpHostAdapterError {}
@@ -189,7 +196,7 @@ export class AcpClientHostAdapter {
   private active: QueuedDelivery | null = null;
   private terminalError: Error | null = null;
   private unregister: (() => void | Promise<void>) | null = null;
-  private routerGeneration: AcpGeneration;
+  private routerConnection: AcpRouterConnection | null = null;
   private unregisterStarted = false;
   private closing = false;
   private exited = false;
@@ -206,7 +213,6 @@ export class AcpClientHostAdapter {
       generation: options.generation,
       workspace: options.workspace,
     });
-    this.routerGeneration = options.generation;
     this.child = child;
     this.router = options.router;
     this.onSessionUpdate = options.onSessionUpdate;
@@ -287,7 +293,9 @@ export class AcpClientHostAdapter {
     if (this.closing || this.exited) {
       return Promise.reject(new AcpProcessExitError('ACP adapter is not active.'));
     }
-    if (!sameGeneration(delivery.generation, this.routerGeneration)) {
+    // Read at delivery time, not copied at registration: a router connection that reconnects
+    // gets a new generation, and its deliveries carry that one.
+    if (!sameGeneration(delivery.generation, this.routerConnection?.generation ?? this.identity.generation)) {
       return Promise.reject(new AcpStaleGenerationError('ACP delivery generation is stale.'));
     }
     if (delivery.signal?.aborted) {
@@ -349,7 +357,7 @@ export class AcpClientHostAdapter {
     if (typeof unregister === 'function') {
       this.unregister = unregister;
     } else if (unregister) {
-      this.routerGeneration = unregister.generation;
+      this.routerConnection = unregister;
       this.unregister = unregister.unregister ?? null;
     }
   }

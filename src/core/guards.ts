@@ -121,7 +121,16 @@ export function validateGuardSpec(spec: unknown): string[] {
  * warning", never to a crashed hook (the hook's own contract: guard
  * failure can never block the user's work).
  */
-export function matchingGuards(guards: ActiveGuard[], tool: string, haystack: string): ActiveGuard[] {
+export function matchingGuards(
+  guards: ActiveGuard[],
+  tool: string,
+  haystack: string,
+  /** Called for a guard whose stored pattern no longer compiles. A guard
+   *  that is silently skipped is a guard that stopped protecting anyone
+   *  without a trace (#523: a pattern rewritten by an earlier metadata
+   *  pass); the hook records it as an outcome so `memesh doctor` can show it. */
+  onInvalid: (guard: ActiveGuard, error: unknown) => void = () => {},
+): ActiveGuard[] {
   const out: ActiveGuard[] = [];
   if (typeof haystack !== 'string' || haystack.length === 0) return out;
   for (const g of guards) {
@@ -130,7 +139,8 @@ export function matchingGuards(guards: ActiveGuard[], tool: string, haystack: st
     let re: RegExp;
     try {
       re = new RegExp(g.pattern, 'i');
-    } catch {
+    } catch (err) {
+      onInvalid(g, err);
       continue;
     }
     if (re.test(haystack)) out.push(g);

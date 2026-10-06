@@ -1,6 +1,6 @@
 import type { LessonSeverity } from './types.js';
 import { lessonSlug } from './lesson-slug.js';
-export declare function createExplicitLesson(error: string, fix: string, projectName: string | null, opts?: {
+export declare function createExplicitLesson(rawError: string, rawFix: string, projectName: string | null, opts?: {
     rootCause?: string;
     prevention?: string;
     severity?: LessonSeverity;
@@ -9,7 +9,7 @@ export declare function createExplicitLesson(error: string, fix: string, project
 }): {
     name: string;
 };
-export declare const KNOWN_ERROR_PATTERNS: readonly ["null-reference", "type-error", "import-missing", "config-error", "test-failure", "build-error", "other"];
+export { KNOWN_ERROR_PATTERNS } from './project-attribution.js';
 declare function inferErrorPattern(error: string): string;
 export { inferErrorPattern, lessonSlug };
 //# sourceMappingURL=lesson-engine.d.ts.map

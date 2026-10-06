@@ -8,7 +8,8 @@
 // read `Cannot read properties of undefined (reading 'clear')`, which points
 // at the component. It was the environment. One test that says so directly
 // costs nothing and saves that hunt next time.
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+import { getLocale, initLocale, setLocale } from '../../dashboard/src/lib/i18n';
 
 describe('DOM tests get a working localStorage on every supported Node', () => {
   it('stores, reads back, and clears', () => {
@@ -30,5 +31,49 @@ describe('DOM tests get a working localStorage on every supported Node', () => {
     // exercise everywhere else. A bespoke shim would let them pass against
     // behaviour that exists only in the test harness.
     expect(localStorage.constructor.name).toBe('Storage');
+  });
+});
+
+describe('the locale picker survives the storage and language edge cases', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    setLocale('en');
+    localStorage.clear(); // after setLocale, which stores its choice
+  });
+
+  // What a browser with site data blocked does: the property exists, and every
+  // call throws a SecurityError.
+  const blockedStorage = () => ({
+    getItem: () => { throw new Error('storage blocked'); },
+    setItem: () => { throw new Error('storage blocked'); },
+    removeItem: () => { throw new Error('storage blocked'); },
+    clear: () => {},
+  });
+
+  it('initLocale does not throw when storage is blocked (it runs inside the first render)', () => {
+    vi.stubGlobal('localStorage', blockedStorage());
+    expect(() => initLocale()).not.toThrow();
+  });
+
+  it('setLocale applies the choice for the session even when it cannot be stored', () => {
+    vi.stubGlobal('localStorage', blockedStorage());
+    expect(() => setLocale('ja')).not.toThrow();
+    expect(getLocale()).toBe('ja');
+  });
+
+  it('a stored value that is only an Object.prototype name is not a locale', () => {
+    localStorage.setItem('memesh-locale', 'constructor');
+    expect(initLocale()).toBe('en');
+  });
+
+  it('Hong Kong and Macau browsers get Traditional Chinese', () => {
+    for (const tag of ['zh-HK', 'zh-MO', 'zh-Hant-HK']) {
+      vi.spyOn(navigator, 'language', 'get').mockReturnValue(tag);
+      expect(initLocale(), tag).toBe('zh-TW');
+      vi.restoreAllMocks();
+    }
+    vi.spyOn(navigator, 'language', 'get').mockReturnValue('zh-CN');
+    expect(initLocale()).toBe('zh-CN');
   });
 });

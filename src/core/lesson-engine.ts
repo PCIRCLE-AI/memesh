@@ -2,14 +2,15 @@ import { remember } from './operations.js';
 import type { LessonSeverity } from './types.js';
 import { getDatabase } from '../db.js';
 import { lessonSlug } from './lesson-slug.js';
+import { redactSecretList } from './paths.js';
 
 /**
  * Create a lesson from explicit user input (for the learn tool).
  * Does not require LLM — user provides the structured fields.
  */
 export function createExplicitLesson(
-  error: string,
-  fix: string,
+  rawError: string,
+  rawFix: string,
   /** The lesson's project, or null for a lesson that intentionally has none. */
   projectName: string | null,
   opts?: {
@@ -20,6 +21,23 @@ export function createExplicitLesson(
     sourceHost?: string;
   }
 ): { name: string } {
+  // #523: redacted BEFORE the name is derived. `lessonSlug` takes the first
+  // words of the error text, so a connection string in the error put its
+  // password into the entity name — a column `remember`'s own redaction
+  // never touches. Redaction is the identity on text with no secret, so the
+  // slug of an ordinary lesson is unchanged.
+  // The four fields are one set: a key split across them is masked as a whole.
+  const given = [rawError, rawFix, opts?.rootCause, opts?.prevention].filter((field) => field !== undefined);
+  const redacted = redactSecretList(given);
+  const [error, fix] = redacted;
+  const rootCause = opts?.rootCause === undefined ? undefined : redacted[2];
+  const prevention = opts?.prevention === undefined ? undefined : redacted[given.length - 1];
+  // Nothing but the marker left to tell this lesson apart: its name would be
+  // the same as every other such lesson's and the two would merge. Refused
+  // before anything is written.
+  if (error.replace(/\*\*\*REDACTED\*\*\*/g, '').trim() === '') {
+    throw new Error('MeMesh did not store this lesson: its error text is only credentials once redacted (or part of a private key), so it cannot be told apart from other lessons. Describe the error without the secret.');
+  }
   const errorPattern = opts?.errorPattern || inferErrorPattern(error);
   // Keyed on the lesson's own content, not on the seven-value error enum.
   //
@@ -46,9 +64,9 @@ export function createExplicitLesson(
     type: 'lesson_learned',
     observations: [
       `Error: ${error}`,
-      `Root cause: ${opts?.rootCause || 'Not specified'}`,
+      `Root cause: ${rootCause || 'Not specified'}`,
       `Fix: ${fix}`,
-      `Prevention: ${opts?.prevention || 'Review similar code paths'}`,
+      `Prevention: ${prevention || 'Review similar code paths'}`,
     ],
     tags: [
       ...(projectName === null ? [] : [`project:${projectName}`]),
@@ -80,26 +98,14 @@ export function createExplicitLesson(
 // future drift between two separate lookup paths. Use the hook's
 // query directly if a similar lookup is needed elsewhere.
 
+// The fixed set of error patterns `inferErrorPattern` can return lives in
+// project-attribution.ts, which the name-based project heuristic anchors on.
+export { KNOWN_ERROR_PATTERNS } from './project-attribution.js';
+
 /**
  * Infer error pattern from error description text.
  * Simple heuristic — used when user doesn't specify pattern.
  */
-/**
- * The fixed set of error patterns `inferErrorPattern` can return.
- * Exported so other modules (notably `projects.ts`) can anchor on the
- * same set instead of duplicating the strings — preventing silent
- * drift if a new pattern is added here.
- */
-export const KNOWN_ERROR_PATTERNS = [
-  'null-reference',
-  'type-error',
-  'import-missing',
-  'config-error',
-  'test-failure',
-  'build-error',
-  'other',
-] as const;
-
 function inferErrorPattern(error: string): string {
   const lower = error.toLowerCase();
   if (lower.includes('null') || lower.includes('undefined') || lower.includes('cannot read prop')) return 'null-reference';

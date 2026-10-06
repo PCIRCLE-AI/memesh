@@ -20,7 +20,7 @@ beforeEach(async () => {
   closeDatabase = db.closeDatabase;
   db.openDatabase(path.join(dir, 'test.db'));
   ({ recallEnhanced, remember } = await import('../src/core/operations.js'));
-  remember({ name: 'auth-decision', type: 'decision', observations: ['Use OAuth PKCE for the auth flow'] });
+  remember({ name: 'auth-decision', type: 'decision', why: 'one login flow for every client; revisit if we add SSO', observations: ['Use OAuth PKCE for the auth flow'] });
   remember({ name: 'auth-lesson', type: 'lesson_learned', observations: ['Validate the OAuth state parameter'] });
   remember({ name: 'db-note', type: 'note', observations: ['SQLite WAL mode for concurrent auth reads'] });
   vi.stubGlobal('fetch', vi.fn(() => {

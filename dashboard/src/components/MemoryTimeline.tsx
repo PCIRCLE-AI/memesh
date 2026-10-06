@@ -2,7 +2,7 @@ import { useRef, useEffect } from 'preact/hooks';
 import { t } from '../lib/i18n';
 import { resolveTokens } from '../lib/tokens';
 
-export interface TimelineEntry {
+interface TimelineEntry {
   date: string;
   created: number;
   recalled: number;
@@ -20,21 +20,55 @@ const CANVAS_HEIGHT = 120;
 export const TIMELINE_AXIS_FONT_SIZE = 14;
 const AXIS_LABEL_GAP = 8;
 
-// Accent at 30% — a glow alpha (no 8% token fits), sanctioned by DESIGN.md and
-// shared by the bars and the DOM legend swatch so they stay identical.
-const BAR_FILL = 'rgba(143, 242, 92, 0.3)';
+// The bars are the `--life` token at 30% opacity — applied as an alpha on the
+// token, not as a hand-rolled rgba() fill (DESIGN.md: a fill uses a token, and
+// a canvas draw call never carries a palette literal). Shared by the bars and
+// the DOM legend swatch so they stay identical.
+const BAR_ALPHA = 0.3;
 const LINE_WIDTH = 1.5;
 // The line, label colour and font are palette tokens; canvas cannot read
 // var(), so they are resolved from the live stylesheet inside drawTimeline.
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** A span longer than this is not a "last 30 days" series any more; it is
+ *  drawn as received rather than expanded into hundreds of empty bars. */
+const MAX_DENSE_DAYS = 120;
+
+/**
+ * The server sends only the days that HAD activity, so consecutive entries can
+ * be weeks apart. Drawn by index, a gap vanished and the "every 7 bars" labels
+ * stopped meaning 7 days. Fill the missing days with zeros so one bar is one
+ * day. Data that cannot be read as consecutive dates is returned untouched.
+ */
+export function densifyByDay(data: TimelineEntry[]): TimelineEntry[] {
+  if (data.length < 2) return data;
+  const days = data.map((d) => Date.parse(`${d.date}T00:00:00Z`));
+  if (days.some((ms) => !Number.isFinite(ms))) return data;
+  const first = days[0];
+  const last = days[days.length - 1];
+  if (last <= first || (last - first) / DAY_MS > MAX_DENSE_DAYS) return data;
+  if (days.some((ms, i) => i > 0 && ms <= days[i - 1])) return data;
+  const byDay = new Map(days.map((ms, i) => [ms, data[i]]));
+  const out: TimelineEntry[] = [];
+  for (let ms = first; ms <= last; ms += DAY_MS) {
+    out.push(byDay.get(ms) ?? { date: new Date(ms).toISOString().slice(0, 10), created: 0, recalled: 0 });
+  }
+  return out;
+}
+
 export function drawTimeline(
   canvas: HTMLCanvasElement,
-  data: TimelineEntry[],
+  entries: TimelineEntry[],
 ): void {
-  // Clear inline width so CSS 'width:100%' can resolve correctly for measurement.
-  // Without this, a previous 0px write (from when the panel was display:none) would
-  // permanently suppress the layout width even after the tab becomes visible.
-  canvas.style.width = '';
+  // Put the stylesheet-driven width back before measuring, so the canvas can
+  // resolve 'width:100%' against its container. Without this, the px width
+  // pinned by a previous draw (or a 0px write from when the panel was
+  // display:none) would suppress the layout width even after the tab becomes
+  // visible. It must be '100%', NOT '': the 100% is an inline style (there is
+  // no canvas rule in the stylesheet), so clearing it left the canvas at its
+  // intrinsic 2:1 ratio — 240px wide at any container width.
+  canvas.style.width = '100%';
+  const data = densifyByDay(entries);
 
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
@@ -44,7 +78,13 @@ export function drawTimeline(
   const chartW = cssW - PAD_LEFT - PAD_RIGHT;
   const chartH = cssH - PAD_TOP - PAD_BOTTOM;
 
-  if (data.length === 0 || chartW <= 0 || chartH <= 0) return;
+  if (data.length === 0) {
+    // The data went away (a demo reset, an emptied library): wipe the old
+    // bars, or the legend says 0 above a chart still drawing the last data.
+    canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
+    return;
+  }
+  if (chartW <= 0 || chartH <= 0) return;
 
   canvas.width = cssW * dpr;
   canvas.height = cssH * dpr;
@@ -72,7 +112,8 @@ export function drawTimeline(
   const barW = Math.max(1, (chartW - gap * (barCount - 1)) / barCount);
 
   // -- Draw bars (created) --
-  ctx.fillStyle = BAR_FILL;
+  ctx.fillStyle = lineStroke;
+  ctx.globalAlpha = BAR_ALPHA;
   for (let i = 0; i < barCount; i++) {
     const entry = data[i];
     const barH = (entry.created / maxVal) * chartH;
@@ -80,6 +121,7 @@ export function drawTimeline(
     const y = PAD_TOP + chartH - barH;
     ctx.fillRect(x, y, barW, barH);
   }
+  ctx.globalAlpha = 1;
 
   // -- Draw line (recalled) --
   ctx.beginPath();
@@ -100,7 +142,8 @@ export function drawTimeline(
   }
   ctx.stroke();
 
-  // -- X-axis labels every 7 days --
+  // -- X-axis labels: one bar per day (see densifyByDay), so every 7th bar is
+  // a week apart --
   ctx.fillStyle = labelColor;
   ctx.font = labelFont;
   ctx.textAlign = 'center';
@@ -167,7 +210,8 @@ export function MemoryTimeline({ data }: MemoryTimelineProps) {
               width: 10,
               height: 10,
               borderRadius: 'var(--radius-hairline)',
-              background: BAR_FILL,
+              background: 'var(--life)',
+              opacity: BAR_ALPHA,
             }} />
             {t('timeline.created')}
             <span style={{

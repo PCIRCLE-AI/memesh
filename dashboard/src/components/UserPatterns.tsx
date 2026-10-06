@@ -51,6 +51,8 @@ export function UserPatterns({ data }: Props) {
             return (
               <div
                 key={hour}
+                role="img"
+                aria-label={`${hour.toString().padStart(2, '0')}:00 — ${count}`}
                 title={`${hour.toString().padStart(2, '0')}:00 — ${count}`}
                 style={{
                   width: 28,

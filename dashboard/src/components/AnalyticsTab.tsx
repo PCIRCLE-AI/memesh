@@ -10,6 +10,10 @@ import { PmAnalyticsPanel } from './PmAnalyticsPanel';
 import { t, getLocale } from '../lib/i18n';
 import { classifyLoadError, failureMessage, type LoadFailure } from '../lib/failure';
 
+/** Which failure to report when more than one endpoint failed: the worse
+ *  diagnosis wins (see `loadData`). */
+const FAILURE_RANK: Record<LoadFailure, number> = { unreadable: 1, ratelimited: 2, unreachable: 3 };
+
 /** The four bars `HealthScore` renders, each read as `factors[key].score`. */
 const FACTOR_KEYS = ['activity', 'quality', 'freshness', 'lessons'] as const;
 
@@ -59,11 +63,17 @@ export function isAnalyticsRenderable(a: AnalyticsData | null): a is AnalyticsDa
     | undefined;
   if (!factors) return false;
   for (const key of FACTOR_KEYS) {
-    if (typeof factors[key]?.score !== 'number' || typeof factors[key]?.weight !== 'number') {
+    // `HealthScore` divides score by weight: a weight of 0 renders `NaN%`.
+    const weight = factors[key]?.weight;
+    if (typeof factors[key]?.score !== 'number' || typeof weight !== 'number' || !(weight > 0)) {
       return false;
     }
   }
-  return Array.isArray(a.loopMetric?.trend) && Array.isArray(a.timeline);
+  // `reusedThisWeek` is the card's headline number: absent, it would render as
+  // "no memory was reused" — a conclusion drawn from nothing.
+  return Array.isArray(a.loopMetric?.trend)
+    && typeof a.loopMetric.reusedThisWeek === 'number'
+    && Array.isArray(a.timeline);
 }
 
 /**
@@ -101,15 +111,18 @@ export function AnalyticsTab({ dataRevision = 0 }: { dataRevision?: number }) {
     // that failed means "check the server", a payload the guards rejected
     // means "reload / memesh doctor" — the server is fine. `unreachable`
     // wins when both happened: no point second-guessing payload shapes
-    // while the server is down.
-    let sawUnreachable = false;
-    let sawUnreadable = false;
+    // while the server is down; a rate limit beats `unreadable` because
+    // "reload / run doctor" is the wrong instruction for a client that is
+    // simply asking too often.
+    let worst: LoadFailure | null = null;
+    const note = (kind: LoadFailure) => {
+      if (worst === null || FAILURE_RANK[kind] > FAILURE_RANK[worst]) worst = kind;
+    };
     const guard = (label: string) => (err: unknown) => {
       console.warn(`[memesh dashboard] ${label} failed to load:`, err);
       // An error STATUS is a server that answered — running, reachable, and
       // not something "check `memesh serve`" would help with.
-      if (classifyLoadError(err) === 'unreachable') sawUnreachable = true;
-      else sawUnreadable = true;
+      note(classifyLoadError(err));
       return null;
     };
     Promise.all([
@@ -133,21 +146,26 @@ export function AnalyticsTab({ dataRevision = 0 }: { dataRevision?: number }) {
       const analyticsOk = rejectShape('/v1/analytics', a, isAnalyticsRenderable(a));
       const patternsOk = rejectShape('/v1/patterns', p, isPatternsRenderable(p));
       if ((s !== null && !statsOk) || (a !== null && !analyticsOk) || (p !== null && !patternsOk)) {
-        sawUnreadable = true;
+        note('unreadable');
       }
       if (statsOk) setStats(s);
       if (analyticsOk) setAnalytics(a);
       if (patternsOk) setPatterns(p);
-      setFailure(sawUnreachable ? 'unreachable' : sawUnreadable ? 'unreadable' : null);
+      setFailure(worst);
     }).finally(() => { if (gen === loadGen.current) setLoading(false); });
   }, []);
 
   useEffect(() => { loadData(); }, [loadData, dataRevision]);
 
-  if (loading && !stats && !analytics) return <div class="empty"><div class="loading" /></div>;
+  // Nothing at all to show yet (patterns count: a reload must not replace a
+  // payload that is on screen with a spinner). A spinner announces nothing
+  // without a name, so it gets the same one as the in-page spinner below.
+  if (loading && !stats && !analytics && !patterns) return <div class="empty"><div class="loading" role="status" aria-label={t('common.loading')} /></div>;
   // role="alert" per DESIGN.md: an error box that replaces content must
   // announce itself to a screen reader, not just repaint silently.
-  if (!stats && !analytics) {
+  // Patterns alone is still something to show: the other two failing must not
+  // throw away a payload that loaded.
+  if (!stats && !analytics && !patterns) {
     return (
       <div class="error-box" role="alert">
         {failure ? failureMessage(failure) : `${t('common.error')}: ${t('analytics.loadFailed')}`}
@@ -157,7 +175,7 @@ export function AnalyticsTab({ dataRevision = 0 }: { dataRevision?: number }) {
 
   return (
     <div>
-      {loading && <div class="loading" role="status" />}
+      {loading && <div class="loading" role="status" aria-label={t('common.loading')} />}
       {failure && <div class="error-box" role="alert">{failureMessage(failure)}</div>}
       {/* Row 1: Stats overview */}
       {stats && (

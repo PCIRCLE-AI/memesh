@@ -2,14 +2,16 @@
 // Shared display helpers for entity rows / cards
 // =============================================================================
 //
-// Reused across BrowseTab, LessonsTab, and any future memory-listing surface
-// so that a single Entity renders consistently regardless of where it shows up.
+// Reused across MemoriesTab, ProjectRoadmap, the Insights cards and any future
+// memory-listing surface so that a single Entity renders consistently
+// regardless of where it shows up.
 
 import type { Entity } from './api';
 import { t, getLocale } from './i18n';
 import { isBoilerplateObservation } from '../../../src/core/title.js';
 import { parseSqliteUtcMs } from '../../../src/core/time-utils.js';
 import { projectLabel } from '../../../src/core/work-topology.js';
+import { extractProjectFromEntity } from '../../../src/core/project-attribution.js';
 import { CATEGORICAL_TYPE_COLORS } from './type-palette';
 
 /* ---------- type clustering ---------- */
@@ -25,7 +27,8 @@ const TYPE_CLUSTER: Record<string, TypeCluster> = {
   process: 'knowledge', architecture: 'knowledge', infrastructure: 'knowledge',
   feature: 'knowledge', release: 'knowledge', refactoring: 'knowledge',
 
-  // Activity: work logs (commits, sessions)
+  // Activity: commits and weekly summaries. (Session records are their own
+  // `session` cluster, below.)
   commit: 'activity',
   session_keypoint: 'session', session_identity: 'session',
   'session-insight': 'session', 'session-summary': 'session', 'session-identity': 'session',
@@ -38,7 +41,10 @@ const TYPE_CLUSTER: Record<string, TypeCluster> = {
 };
 
 export function clusterOf(type: string): TypeCluster {
-  return TYPE_CLUSTER[type] ?? 'reference';
+  // Own keys only: `type` is open-ended server data, and a plain object also
+  // answers `constructor` / `toString` from its prototype — with a function,
+  // not a cluster.
+  return Object.prototype.hasOwnProperty.call(TYPE_CLUSTER, type) ? TYPE_CLUSTER[type] : 'reference';
 }
 
 /** Cluster swatches: each cluster wears its representative species' colour
@@ -90,8 +96,8 @@ export function relativeDate(iso: string | null | undefined, now: Date = new Dat
   if (days === 0) {
     const hours = Math.floor(ms / 3600000);
     if (hours < 1) return t('time.justNow');
-    if (hours < 24) return t('time.hoursAgo', { count: hours });
-    return t('time.today');
+    // `days === 0` means under 24 h elapsed, so `hours` is at most 23.
+    return t('time.hoursAgo', { count: hours });
   }
   if (days === 1) return t('time.yesterday');
   if (days < 7) return t('time.daysAgo', { count: days });
@@ -118,18 +124,18 @@ export function timeBucket(iso: string | null | undefined, now: Date = new Date(
 
 /* ---------- project extraction ---------- */
 
-const PROJECT_TAG_PREFIX = 'project:';
-
+/** The entity's project, decided by the SAME rule the server's `/v1/projects`
+ *  counts with (project-attribution.ts): the `project:` tag, else the
+ *  `lesson-<project>-<pattern>` name. Reading only the tag left a project chip
+ *  counting memories that clicking it never listed. */
 export function extractProject(entity: Entity): string | null {
-  const tag = entity.tags?.find((t) => t.startsWith(PROJECT_TAG_PREFIX));
-  if (tag) return tag.slice(PROJECT_TAG_PREFIX.length);
-  return null;
+  return extractProjectFromEntity(entity.tags, entity.name).project;
 }
 
 /** The display text for one project chip (#493): a label plus an optional
  *  short hex disambiguator, kept apart so a caller can render the
  *  disambiguator in `--mono` (DESIGN.md: IDs are compared digit by digit). */
-export interface ProjectChipLabel {
+interface ProjectChipLabel {
   /** The human label — `projectLabel(id)`, the routing hash stripped. */
   base: string;
   /** First 6 hex characters of the id's routing hash — set only when the id
@@ -184,7 +190,7 @@ export function shortProjectId(id: string): string {
  *  `observations[0]` is often a structural marker (date, "Plan X completed").
  *  This skips short or obviously-non-content observations and prefers the
  *  longest meaningful one within the first few. */
-export function pickBestObservation(observations: string[] | undefined): string {
+function pickBestObservation(observations: string[] | undefined): string {
   if (!observations || observations.length === 0) return '';
   // Filter out short metadata-style observations. Boilerplate list from
   // core/title.ts — the same union the title backfill uses, so the two
@@ -211,15 +217,17 @@ export function displayTitle(entity: Entity): string {
   if (title) return title;
   const obs = pickBestObservation(entity.observations);
   if (obs) return obs;
-  const date = entity.created_at
-    ? timestampDate(entity.created_at).toLocaleDateString(getLocale(), { year: 'numeric', month: 'short', day: 'numeric' })
+  // An unreadable created_at is "no date", not the text "Invalid Date".
+  const created = entity.created_at ? timestampDate(entity.created_at) : null;
+  const date = created && !Number.isNaN(created.getTime())
+    ? created.toLocaleDateString(getLocale(), { year: 'numeric', month: 'short', day: 'numeric' })
     : '';
   return date ? `${typeLabel(entity.type)} · ${date}` : typeLabel(entity.type);
 }
 
 /* ---------- access count signal ---------- */
 
-export interface AccessSignal {
+interface AccessSignal {
   count: number;
   label: string;
   tone: 'high' | 'medium' | 'low' | 'none';
@@ -236,11 +244,11 @@ export function accessSignal(count: number | undefined): AccessSignal {
 
 /* ---------- lesson categorisation ---------- */
 
-export type LessonKind = 'failure' | 'plan-completion' | 'freeform';
+type LessonKind = 'failure' | 'plan-completion' | 'freeform';
 
 /** Classify a `lesson_learned` entity into the three real-world shapes:
  *  failure-driven (Error/Root/Fix/Prevention structure), plan-completion
- *  (auto-generated from gstack), or freeform note. */
+ *  (tagged `plan-completion` or `plan:…`), or freeform note. */
 export function classifyLesson(entity: Entity): LessonKind {
   const tags = entity.tags ?? [];
   if (tags.some((t) => t === 'plan-completion' || t.startsWith('plan:'))) return 'plan-completion';

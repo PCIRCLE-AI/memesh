@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { exportOpenAITools } from '../../src/core/schema-export.js';
-import { BriefingSchema, LearnSchema, McpLearnSchema, MessageSchema, RememberSchema, RecallSchema, WorkPackageSchema } from '../../src/transports/schemas.js';
+import { BriefingSchema, HttpLearnSchema, LearnSchema, McpLearnSchema, MessageSchema, RememberSchema, RecallSchema, WorkPackageSchema } from '../../src/transports/schemas.js';
 import { TOOL_DEFINITIONS } from '../../src/transports/mcp/handlers.js';
 import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../../src/core/agent-messaging.js';
 
@@ -82,13 +82,17 @@ describe('exportOpenAITools', () => {
     // exported schema saying every field is optional — so a model driven off
     // this export is told an empty call is well-formed, and learns otherwise
     // only from a runtime error. The rule is `note`, OR `name` + `type`, OR
-    // `name` + `replace: true` (the correction call, which inherits the
-    // stored type — #333 T4).
+    // `name` + `replace: true` + `observations` (the correction call, which
+    // inherits the stored type — #333 T4; without observations a replace
+    // would empty the memory and is refused).
     expect(tool.function.parameters.anyOf).toEqual([
       { required: ['note'] },
       { required: ['name', 'type'] },
-      { required: ['name', 'replace'], properties: { replace: { const: true } } },
+      { required: ['name', 'replace', 'observations'], properties: { replace: { const: true }, observations: { minItems: 1 } } },
     ]);
+    // The MCP tool definition an agent actually reads states the same branches.
+    const mcpRemember = TOOL_DEFINITIONS.find((t) => t.name === 'remember') as { inputSchema: { anyOf?: unknown } } | undefined;
+    expect(mcpRemember?.inputSchema.anyOf).toEqual(tool.function.parameters.anyOf);
     // `required` stays absent: a top-level list would be a THIRD claim, and
     // neither field is unconditionally required.
     expect(tool.function.parameters.required).toBeUndefined();
@@ -98,6 +102,8 @@ describe('exportOpenAITools', () => {
     expect(RememberSchema.safeParse({ note: 'a thought' }).success).toBe(true);
     expect(RememberSchema.safeParse({ name: 'n', type: 'decision', observations: ['x'] }).success).toBe(true);
     expect(RememberSchema.safeParse({ name: 'n', replace: true, observations: ['x'] }).success).toBe(true);
+    // The declared third form carries `observations`: `name` + `replace` alone is not a call the runtime accepts.
+    expect(RememberSchema.safeParse({ name: 'n', replace: true }).success).toBe(false);
     // `replace` is what makes the third form a form: without it the same
     // call is a new memory with no type, which the export does not declare.
     expect(RememberSchema.safeParse({ name: 'n', replace: false, observations: ['x'] }).success).toBe(false);
@@ -119,9 +125,14 @@ describe('exportOpenAITools', () => {
     expect(tool.function.parameters.required).toEqual(['name']);
   });
 
-  it('memesh_learn requires error and fix', () => {
+  // The export describes the HTTP API, and `POST /v1/learn` refuses a lesson
+  // without a project (#527): a client that followed an export without it
+  // would get a 400 on every call.
+  it('memesh_learn requires error, fix and project, as POST /v1/learn does', () => {
     const tool = tools.find((t: any) => t.function.name === 'memesh_learn') as any;
-    expect(tool.function.parameters.required).toEqual(['error', 'fix']);
+    expect(tool.function.parameters.required).toEqual(['error', 'fix', 'project']);
+    expect(HttpLearnSchema.safeParse({ error: 'e', fix: 'f' }).success).toBe(false);
+    expect(tool.function.parameters.properties.project.description).toContain('400');
   });
 
   it('memesh_learn exports the exact strict runtime field names', () => {
@@ -129,8 +140,9 @@ describe('exportOpenAITools', () => {
     const mcp = TOOL_DEFINITIONS.find((definition) => definition.name === 'learn') as any;
     const runtimeKeys = Object.keys(LearnSchema.shape);
 
-    expect(Object.keys(exported.function.parameters.properties)).toEqual(runtimeKeys);
-    // MCP adds `project` (an id, or false for no project); HTTP and the export do not.
+    // The export is the HTTP body; MCP's `project` also takes false (no project).
+    expect(Object.keys(exported.function.parameters.properties)).toEqual(Object.keys(HttpLearnSchema.shape));
+    expect(Object.keys(HttpLearnSchema.shape)).toEqual([...runtimeKeys, 'project']);
     expect(Object.keys(mcp.inputSchema.properties)).toEqual(Object.keys(McpLearnSchema.shape));
     expect(Object.keys(McpLearnSchema.shape)).toEqual([...runtimeKeys, 'project']);
     expect(exported.function.parameters.properties).toHaveProperty('root_cause');
@@ -263,5 +275,27 @@ describe('exportOpenAITools', () => {
       const field = schema.properties.namespace;
       expect(field.enum, `${definition.name}.namespace has no enum`).toEqual(['personal', 'team', 'global']);
     }
+  });
+});
+
+// #534: the export described `message` without target_kind, intended_session
+// and fallback_to_principal, so a client built from it could not send to a
+// session. Every exported tool now has to carry every field the live MCP tool
+// takes, except the ones listed here on purpose. Descriptions are not compared:
+// several differ deliberately, because the export is read by HTTP clients.
+describe('#534 the export matches the live MCP tools', () => {
+  /** MCP-only on purpose: the session-bound project; the export follows HTTP, which names project tags instead. */
+  // `learn`'s `project` is exported too: the export describes the HTTP API,
+  // and POST /v1/learn requires it (#558).
+  const MCP_ONLY: Record<string, string[]> = { remember: ['project'], recall: ['project'] };
+  const exported = new Map(exportOpenAITools().map((t: any) => [t.function.name.replace(/^memesh_/, ''), t.function.parameters?.properties ?? {}]));
+
+  it.each(TOOL_DEFINITIONS.map((d: any) => [d.name, d]))('%s', (name, definition: any) => {
+    const live = definition.inputSchema?.properties ?? {};
+    const out = exported.get(name);
+    expect(out, `${name} is not exported`).toBeDefined();
+    for (const key of MCP_ONLY[name] ?? []) expect(live, `${name}.${key} is listed as MCP-only`).toHaveProperty(key);
+    const expected = Object.keys(live).filter((k) => !(MCP_ONLY[name] ?? []).includes(k)).sort();
+    expect(Object.keys(out).sort()).toEqual(expected);
   });
 });

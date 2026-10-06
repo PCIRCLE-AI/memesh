@@ -53,12 +53,20 @@ message) ...`. `intake` or a `disposition` for such a delivery from a caller
 that is itself another registered session of the project
 (`CLAUDE_CODE_SESSION_ID` / `CODEX_THREAD_ID`) is refused with
 `intended_for_other_session` (#497). A caller with no session id, or with an
-id no session registered, still can — a Codex MCP process has none. Under
+id no session registered, still can — a Codex MCP process has none. The
+reminder and the Stop gate follow the same line (#566): a hook that knows its
+session id counts a session-targeted delivery only when it is addressed to
+that session (or to an id it had before `/clear`), so another live session of
+the same principal is neither reminded of it nor blocked on it. Under
 Codex, SessionStart and the prompt hook do not remind about a delivery the
-router already pushed into THIS thread (its host acceptance names this
-thread); a delivery pushed into a different thread of the same principal, for
-example one that ended without running it, is still reminded until the
-recipient records intake. Under Claude Code they still remind.
+router already pushed into THIS thread with its body (its host acceptance
+names this thread and is not a `content: "notice"` acceptance — see below)
+while the MeMesh host connection that accepted it is still live; a delivery
+pushed into a different thread of the same principal, or accepted by a host
+connection that has since ended — for example an acceptance recorded by an
+older release, before the queue carried only notices, whose `codex exec` run
+exited before running it — is still reminded until the recipient records
+intake (#514). Under Claude Code they still remind.
 
 Every Claude Code session in one project shares one principal, so a message
 sent to that principal reaches all of them. A message can instead name the
@@ -87,7 +95,10 @@ cannot be named.
 An unreachable router (`router_unreachable`) does not trigger the
 fallback. The refused session delivery is kept, so if that session comes back
 it can see the message twice — its own session copy and the principal copy —
-and should record intake for both. For a message like this:
+and should record intake for both. Retrying the same call (the same
+`idempotency_key`) returns the principal message made by the first one, even
+when the session has come back since or the retry leaves out
+`fallback_to_principal`; it does not deliver again. For a message like this:
 
 - only that session's hooks (SessionStart, the prompt hook, the Stop gate)
   count it as waiting, and so does `briefing` where it knows the session: the
@@ -311,7 +322,7 @@ in memory; an explicit custom socket remains exact and reports
 `router_version_mismatch` when it exposes the known legacy response shape.
 
 Within one protocol version, the router also reports the MeMesh version it
-runs, and each host sends its own when it registers (#518). A router that
+runs, and each host sends its own when it registers. A router that
 started before an upgrade is caught this way instead of silently routing with
 the old code:
 
@@ -410,6 +421,8 @@ The companion has no terminal of its own, so a reason it could not stop
 cleanly is appended to the owner-private `codex-companion.log` in the MeMesh
 data directory, and so is what a start or `SessionEnd` did with the record of
 a companion that had exited (its socket removed, or left in place and why).
+When a start fails, the reason is printed after `session registration failed.`
+and recorded in that log as well.
 
 For a registered session, MeMesh invokes `codex queue` with a short notice, never
 the message body: the project, recipient, target kind, message id and delivery
@@ -486,8 +499,9 @@ memesh-host-codex --config "$HOME/.memesh/hosts/codex.json"
 
 This is separate from `codex-session`: it starts a MeMesh-owned `codex
 app-server`, creates its own thread through the private Unix/WebSocket control
-path, and registers only after that thread is ready. It does not attach to an
-ordinary Codex session. Message content never appears in MeMesh or Codex
+path, and registers only after that thread is ready. If that Codex ends while
+the host is still connecting to the router, the start fails (exit 1) instead of
+leaving a registered host. It does not attach to an ordinary Codex session. Message content never appears in MeMesh or Codex
 process arguments.
 
 ### Claude channel runner
@@ -625,7 +639,7 @@ memesh kg rename-project --from <old> --to <new> --apply  # backs up first
 
 ## Identity and lifecycle
 
-A **principal** is the stable logical recipient. A **session** is one live host connection for that principal. A **generation** changes when that session is replaced. The replaced host is told so, and stops: it can no longer receive. `memesh-host-claude`, `memesh-host-codex` and `memesh-host-acp` print `replaced by a newer connection for this session; stopping.` on stderr, close and exit 0; the Codex session companion writes that line to `codex-companion.log` in the data directory and exits. A close that fails, or a failure that came first, still exits 1. Stopping the replaced host leaves the newer connection registered. An exact-session target never reroutes. A principal target can deliver only to an eligible active session after its activation checkpoint; it does not replay historical inbox contents into a first session.
+A **principal** is the stable logical recipient. A **session** is one live host connection for that principal. A **generation** changes when that session is replaced. A host that stalled past its lease (a laptop that slept, for example) is not replaced but expired: the router answers one of its requests (a heartbeat, for example) with `stale_generation`, and the host registers again under a new generation, waiting longer each time the router keeps doing so. The replaced host is told so, and stops: it can no longer receive. `memesh-host-claude`, `memesh-host-codex` and `memesh-host-acp` print `replaced by a newer connection for this session; stopping.` on stderr, close and exit 0; the Codex session companion writes that line to `codex-companion.log` in the data directory and exits. A close that fails, or a failure that came first, still exits 1. Stopping the replaced host leaves the newer connection registered. An exact-session target never reroutes. A principal target can deliver only to an eligible active session after its activation checkpoint; it does not replay historical inbox contents into a first session.
 
 Persistence, dispatch attempt, host acceptance, intake, acknowledgement,
 workflow disposition, retention, and presence are independent state axes. An

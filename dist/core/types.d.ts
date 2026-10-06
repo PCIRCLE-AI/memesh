@@ -59,6 +59,7 @@ export interface RememberInput {
     replace?: boolean;
     title?: string;
     observations?: string[];
+    why?: string;
     tags?: string[];
     relations?: Array<{
         to: string;
@@ -69,6 +70,7 @@ export interface RememberInput {
     provenanceOverride?: Record<string, unknown>;
     sourceHost?: string;
     project?: string | null;
+    currentProject?: string;
 }
 export interface RecallInput {
     query?: string;
@@ -94,6 +96,10 @@ export interface RememberResult {
     relations: number;
     superseded?: string[];
     relationErrors?: string[];
+    retagged?: {
+        from: string;
+        to: string;
+    };
     relationsCreated?: Array<{
         to: string;
         type: string;

@@ -41,11 +41,9 @@ MeMesh 讓代理在本機共用記憶與交換訊息。主要用途是跨 sessio
    +----------------------------------------+
 ```
 
-左邊是自動記錄（對話、commit、修掉的錯誤），右邊是適時提醒（開新對話時、改檔案之前），中間是存放決定、教訓與關聯的那個檔案。
-
 - **在適當時機記錄、提醒與防護。** MeMesh 的 Claude Code 與 Codex 整合共提供 **10 個 hook command**：其中 9 個 Claude Code hook 分別在開新對話、改檔案前、`git commit` 後、計畫核准或你回答問題後、Claude 停下來時（兩次：記錄這次對話內容，以及在還有訊息未讀時擋下結束）、對話被壓縮前、你說「記下來」時（聽得懂 5 種語言），以及執行可能重犯已接受教訓的危險指令前運作。計畫/問題與「記下來」hook 只會提醒 agent 呼叫 `remember`；第 10 個 command 同時處理 Codex SessionStart 與 SessionEnd，註冊並退場符合資格的一般 Codex CLI session。
 - **所有工具共用一份記憶。** 今天在 Claude Code 存的決定，明天 Codex 或 Cursor 也用得到。
-- **agent 之間可以留言。** 本機的耐久收件匣可跨重啟保存；在 macOS 或 Linux 上，確切且活動中的一般 Codex CLI session 裝有 MeMesh plugin 時，也能透過原生 queue 收到有界訊息。
+- **agent 之間可以留言。** 本機的耐久收件匣可跨重啟保存；在 macOS 或 Linux 上，裝有 MeMesh plugin 的一般 Codex CLI thread 可保留有界的回合後原生 queue 視窗，並在同一 thread 恢復時取用已被接受的訊息。
 - **留下工作交接。** Claude Code 可把最後一則有實質內容的回覆留給同一專案的下個 session。用 `task_state` 記錄已明確說出的目標、下一步、阻礙或完成項目，再用 `message` 將證據位置或待處理問題送給確切收件者。
 - **有儀表板** 可以瀏覽全部內容：4 個分頁、11 種語言，在 `http://localhost:3737/dashboard`。
 
@@ -58,7 +56,7 @@ MeMesh 讓代理在本機共用記憶與交換訊息。主要用途是跨 sessio
 | Claude Code | plugin：hook、MCP 工具、`/memesh` skill | 自動記錄與提醒都有 |
 | Codex CLI | Plugin，或 MCP server（`memesh-mcp`） | 零設定 plugin 安裝，或 `codex mcp add memesh -- memesh-mcp` |
 | Gemini CLI | MCP server（`memesh-mcp`） | `gemini mcp add -s user memesh memesh-mcp` |
-| Cursor、Cline 與其他 MCP 用戶端 | MCP server（`memesh-mcp`） | 把用戶端指向 `memesh-mcp` |
+| Cursor、Cline 與其他 MCP 用戶端 | MCP server（`memesh-mcp`） | 把用戶端指向 `memesh-mcp`；若用戶端不回報 workspace root，還要設 `MEMESH_PROJECT_ROOT` |
 | Hermes Agent | 原生記憶 plugin | [docs/platforms/hermes-agent.md](docs/platforms/hermes-agent.md) |
 | OpenClaw | 原生記憶 plugin | 只有原始碼，尚未發佈或完成真實環境測試：[docs/platforms/openclaw.md](docs/platforms/openclaw.md) |
 | 你自己的程式或腳本 | `memesh serve` 提供的 HTTP API | [docs/platforms/universal.md](docs/platforms/universal.md) |
@@ -108,7 +106,7 @@ memesh doctor          # 檢查本機安裝健康狀態並列出修復方式
 memesh install-hooks   # 沒裝 A 才需要：幫 Claude Code 接上 hook，不動你原本的設定
 ```
 
-Codex 零設定安裝：執行 `codex plugin marketplace add PCIRCLE-AI/memesh` 與 `codex plugin add memesh@pcircle-memesh`。手動替代方案是 `codex mcp add memesh -- memesh-mcp`。Cursor：把 `{ "mcpServers": { "memesh": { "command": "memesh-mcp" } } }` 加進 `~/.cursor/mcp.json`。Dashboard 的 doctor 提醒可執行它能驗證的兩種可復原本機修復；單純開啟頁面不會自動改檔案。
+Codex 零設定安裝：執行 `codex plugin marketplace add PCIRCLE-AI/memesh` 與 `codex plugin add memesh@pcircle-memesh`。手動替代方案是 `codex mcp add memesh -- memesh-mcp`。Cursor：把 `{ "mcpServers": { "memesh": { "command": "memesh-mcp" } } }` 加進 `~/.cursor/mcp.json`。若用戶端不回報 workspace root，要在 server 的環境變數設 `MEMESH_PROJECT_ROOT`（專案的絕對路徑），或每次呼叫都帶 `project` 參數。Dashboard 的 doctor 提醒可執行它能驗證的兩種可復原本機修復；單純開啟頁面不會自動改檔案。
 
 > **裝了 plugin 不等於有 `memesh` 指令。** `/plugin install` 之後，在終端機打 `memesh` 會出現 `command not found`，要再跑 `npm install -g @pcircle/memesh` 才會有。只在 Claude Code 對話裡用的話，裝 A 就夠了。
 
@@ -121,7 +119,7 @@ Codex 零設定安裝：執行 `codex plugin marketplace add PCIRCLE-AI/memesh` 
 ```bash
 memesh remember "登入功能用 OAuth 2.0 加 PKCE"
 memesh recall "登入"
-# -> 找到那筆 PKCE 的決定
+# -> 找到那則筆記
 
 memesh briefing        # agent 對這個專案知道多少
 memesh serve           # 啟動本機 server 並印出儀表板網址
@@ -147,7 +145,7 @@ memesh serve           # 啟動本機 server 並印出儀表板網址
 | 工具 | 做什麼 |
 |------|--------|
 | `work_package` | 準備一份有界限且不受信任的日曆摘要，或從唯一符合的 MCP workspace root 準備 Claude Code transcript 套件；提交一份嚴格結果等待人工審核，或延後而不產生耐久變更。Transcript 提交會保留有界且已遮蔽的來源輪次；不會暴露檔案路徑、隱藏推理、provider、embedding 或 vector 資料。 |
-| `remember` | 用觀察、關係和標籤儲存知識；也可以只給一段自由文字（`note`），標題、觀察和名稱會自動推導出來；`replace` 則是直接改掉既有的那一筆 |
+| `remember` | 用觀察、關係和標籤儲存知識；也可以只給一段自由文字（`note`），標題、觀察和名稱會自動推導出來；`replace` 則是直接改掉既有的那一筆；新的決策（`decision`）一定要附 `why`（為什麼這樣決定，以及什麼情況下就不成立了） |
 | `recall` | 本機 FTS5 搜尋，包含多因素評分（相關性、近期性、頻率、信心、回憶影響） |
 | `forget` | 軟歸檔（永不刪除）或移除特定觀察 |
 | `export` | 以 JSON 備份、搬遷記憶，或在相容代理之間轉移 |
@@ -171,6 +169,7 @@ memesh serve           # 啟動本機 server 並印出儀表板網址
 - 啟用 MeMesh Codex plugin 後，每個具有有效 thread identity 與現有工作目錄、並新啟動或恢復的一般 Codex CLI thread，都會自動以 thread-scoped identity 註冊，不需要手動執行 `agent setup`。SessionStart 會啟動 owner-private companion；SessionEnd 保留 45 秒的有限 idle queue 視窗，resume 會取代前一個 exact generation，逾時則移除 registration。在 idle 視窗內被 queue 接受的訊息，會在同一 thread resume 時以簡短通知出現，agent 再從 inbox 擷取正文；這不代表已停止的 UI 被自動喚醒。只有某個 workspace 需要穩定的命名 principal 時，才需選用 `memesh agent setup codex-session`。包含 routing metadata 與 payload 的完整 native envelope 另有 16,384 bytes（16 KiB）上限。exact-session send 只有在原生 queue 接受後才成功；完整 envelope 過大時回報 `native_message_too_large`，sender 無法連到本機 router 時回報 `router_unreachable`，其他無法使用或拒絕的 session 則回報 `recipient_unavailable`。不論 sender 或 recipient 失敗，scope 相符的 recovery data 仍會保留，Principal target 在無法原生傳遞時仍保有 durable store-and-forward。原生接受不代表 acknowledgement 或 workflow disposition，原生訊息不得包含 secrets。
 - 已停止、缺失或斷線的 Codex session 不會被喚醒，也不會被別的對話頂替；失敗的 exact-session 原生傳遞不會自動重播，sender 必須明確重試。scope 相符的 recovery data 仍會保留，`memesh message storage report` 可以看目前存了什麼。原生傳遞目前只支援 macOS 和 Linux。
 - 這條文件化的原生路徑涵蓋一般 Codex CLI。除非確切且正在執行的 session 出現在 `message discover`，否則不要假設 Codex Desktop 或未連接的 task 已註冊；這是證據邊界，不代表這些 host 一律不相容。
+- Claude Channel 與自動註冊的 Codex 配對時，不需要在兩邊之間複製 `--project` 值：各 host 從自己的工作目錄（Claude）或 `--workspace`（Codex）推得自己的 routing project，所以在同一個 repository 啟動兩者，就會自動落在同一個 project。
 
 ---
 

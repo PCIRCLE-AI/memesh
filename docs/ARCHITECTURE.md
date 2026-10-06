@@ -8,7 +8,7 @@
 
 ## Overview
 
-MeMesh is the local agentic-memory and governed-collaboration layer for individual AI coding agents, including Claude Code, Codex, Gemini, Cursor, and other MCP-compatible clients. It provides 12 MCP tools (`work_package`, `remember`, `recall`, `forget`, `export`, `import`, `learn`, `task_state`, `briefing`, `user_patterns`, `improvement`, `message`) backed by SQLite and FTS5 full-text search. Memory, bounded discovery of live project registrations, and durable exact-recipient messaging are available through CLI, HTTP REST, and MCP. `work_package` prepares either one bounded calendar-selected digest package or one bounded package from the newest Claude Code session associated with the client's single matching MCP workspace root. An already-running agent submits exactly one strict result or defers; submit stages the existing pending human-review proposal with bounded redacted source turns retained for comparison, and the MCP contract exposes no apply/reject action. The local Dashboard and CLI provide cooperative human review surfaces, not authenticated actor identity. Packages omit hidden reasoning, tool traffic, raw transcripts, and transcript file paths; recognized credential-shaped text is redacted, but this heuristic is not a guarantee that arbitrary secrets are absent. Missing or ambiguous MCP roots fail closed. No provider is called. The Dashboard only reviews proposals that are already staged; it cannot start or wake an agent. Package hashes identify freshness and workspace scope, not authentication. `improvement` stages proposals through MCP while the existing CLI/HTTP review surfaces retain human accept/reject authority. Generic briefing has no recipient identity and stays quiet; the SessionStart and prompt hooks do too, unless the session declares one with `MEMESH_RECIPIENT`, and then they report the deliveries waiting for exactly that recipient (per project, up to five). `briefing(project, recipient)` reports only that exact recipient's deliveries that have no intake receipt and directs the caller to poll, fetch and record `intake`.
+MeMesh is the local agentic-memory and governed-collaboration layer for individual AI coding agents, including Claude Code, Codex, Gemini, Cursor, and other MCP-compatible clients. It provides 12 MCP tools (`work_package`, `remember`, `recall`, `forget`, `export`, `import`, `learn`, `task_state`, `briefing`, `user_patterns`, `improvement`, `message`) backed by SQLite and FTS5 full-text search. Memory, bounded discovery of live project registrations, and durable exact-recipient messaging are available through CLI, HTTP REST, and MCP. `work_package` prepares either one bounded calendar-selected digest package or one bounded package from the newest Claude Code session associated with the client's single matching MCP workspace root. An already-running agent submits exactly one strict result or defers; submit stages the existing pending human-review proposal with bounded redacted source turns retained for comparison, and the MCP contract exposes no apply/reject action. The local Dashboard and CLI provide cooperative human review surfaces, not authenticated actor identity. Packages omit hidden reasoning, tool traffic, raw transcripts, and transcript file paths; recognized credential-shaped text is redacted, but this heuristic is not a guarantee that arbitrary secrets are absent. Missing or ambiguous MCP roots fail closed. No provider is called. The Dashboard only reviews proposals that are already staged; it cannot start or wake an agent. Package hashes identify freshness and workspace scope, not authentication. `improvement` stages proposals through MCP while the existing CLI/HTTP review surfaces retain human accept/reject authority. Generic briefing has no recipient identity and stays quiet; the SessionStart and prompt hooks do too, unless the session declares one with `MEMESH_RECIPIENT` or, when that is unset, the host's registered principal (`principal_id` in `hosts/claude.json` under Claude Code), and then they report the deliveries waiting for exactly that recipient (per project, up to five). `briefing(project, recipient)` reports only that exact recipient's deliveries that have no intake receipt and directs the caller to poll, fetch and record `intake`.
 
 The package is intentionally local-first and inspectable:
 - one SQLite database under the user's control
@@ -64,6 +64,8 @@ MeMesh separates concerns into two layers:
 - `scoring.ts` — multi-factor scoring engine: weights search relevance, recency, frequency, confidence, recall-impact; exports `rankEntities()` used by all recall paths
 - `dreamer.ts` — work-package preparation plus the shared proposal list/detail/accept/reject lifecycle. Digest candidates use deterministic calendar buckets; transcript packages expose only bounded visible turns from the newest Claude Code session under the host-provided MCP workspace root. Submission retains those redacted turns for review, stages one proposal, and never applies it.
 - `kg-backfill.ts` — deterministic relation backfill: 5 rules (tag co-occurrence, project clustering, session co-occurrence, name-token similarity, and evidence-to-work linking)
+- `project-identity-split.ts` — finds plain `project:<name>` tags that share their name with a project id in the same graph (#408); read by `memesh doctor`
+- `project-attribution.ts` — the one pure rule for which project a memory belongs to: its first `project:` tag, else a `lesson-<project>-<pattern>` name; shared by `/v1/projects`, the project filter on `/v1/entities` and the dashboard
 - `project-tags.ts` — list / merge / rename `project:<name>` tags AND the `project` scope column of the durable-message tables, in one transaction (heals tags mis-homed before git-based project identity, and the split inboxes that go with them); backs `memesh kg rename-project`
 - `agent-scope-id.ts` — the canonical form (Unicode NFC + trim) and fail-closed validation for durable-message scope identifiers (`project`, `recipient`, `actor`), plus the one list of columns that hold them; imported by the transport boundary and core write path, and mirrored by the read-only `scripts/audit/memory-invariants.mjs` detector. Also build-generated as `scripts/hooks/_generated/agent-scope-id.js` (`scripts/generate-hook-core.mjs`), so the Claude Code hooks refuse a path-shaped `MEMESH_RECIPIENT` by this exact same rule. Historical ambiguous identities are preserved until an owner supplies a mapping.
 - `version-check.ts` — npm registry version check for update notifications
@@ -72,7 +74,7 @@ MeMesh separates concerns into two layers:
 - `why.ts` — file attribution (`memesh why` / `POST /v1/why`): a git half (`resolveFileCommits`, CLI-only — the HTTP route never shells out) and a DB half (`explainCommits`) joining full SHAs to the abbreviated-hash `commit-*` entity names, walking `metadata.session_id` to session entities, and collecting `file:<basename>`-tagged memories; every gap is a typed abstention
 
 **Transports** (`src/transports/`) — thin adapters that expose core operations:
-- `cli/cli.ts` — Commander CLI (`memesh` command; `message`, `agent`, `config`, `kg`, and `dream` have subcommands)
+- `cli/cli.ts` — Commander CLI (`memesh` command; `message`, `agent`, `config`, `kg`, `dream`, `hermes`, and `delegation` have subcommands)
 - `http/server.ts` — Express server (`memesh serve`, default port 3737): 31 `/v1` endpoints including two retired 410 routes, plus `/dashboard` and `/favicon.ico`; bearer-auth gate when bound non-loopback
 - `agent-messaging.ts` — shared MCP/HTTP/CLI dispatcher that records cooperative transport provenance (not authenticated human/model identity) and never turns a read into a receipt
 - `src/mcp/server.ts` + `src/transports/mcp/handlers.ts` — stdio MCP server (`memesh-mcp`, 12 tools); `src/mcp/tools.ts` is a re-export shim
@@ -166,7 +168,7 @@ vector supplement, or model-powered query expansion to configure or diagnose.
 
 Manages the SQLite connection lifecycle and schema initialization.
 
-- `openDatabase(path?)` -- Opens (or reuses) a SQLite connection
+- `openDatabase(path?, { busyTimeoutMs? })` -- Opens (or reuses) a SQLite connection. `busyTimeoutMs` shortens the default 30 s lock wait and makes the open fail after that one wait when another process holds the write lock; the hooks pass their 2 s limit. It has no effect on a connection that is already open.
 - `closeDatabase()` -- Closes the connection
 - `getDatabase()` -- Returns the active connection (throws if not opened)
 - Schema: Creates tables (`entities`, `observations`, `relations`, `tags`) and FTS5 virtual table (`entities_fts`)
@@ -191,7 +193,7 @@ Both entity writers — `createEntity` here and the hooks' `captureEntity` in `s
 - `getRelations(entityName)` -- All outgoing relations for an entity
 
 **Search**:
-- `search(query?, opts?)` -- FTS5 MATCH query with optional tag filtering; tracks access on returned entities. `searchWithFacts` returns the same entities plus `fallback`: when the `fts_segmentation_version` marker says the index predates today's segmentation (a read-only file, or a rebuild in its retry back-off), active rows are found by a `LIKE` scan of name, title and observations for the same terms instead, and recall reports `retrieval: { mode: 'scan', degraded: true, reason: 'index_out_of_date' }` (#571). With `includeArchived`, archived rows are matched by `LIKE` because `archiveEntity()` removes them from FTS5. One- and two-term queries use OR matching; queries with three or more terms try strict all-term matching first and fall back to OR only when strict matching has no hits. Rows are ordered by BM25 rank before multi-factor scoring. Terms are bounded and ubiquitous terms are removed on larger corpora. Both indexed text and queries use the same NFC normalisation and unspaced-script segmentation, so CJK, kana, hangul, Thai, Lao and Khmer remain searchable without a second retrieval path.
+- `search(query?, opts?)` -- FTS5 MATCH query with optional tag filtering; tracks access on returned entities. `searchWithFacts` returns the same entities plus `fallback`: when the `fts_segmentation_version` marker says the index predates today's segmentation (a read-only file, or a rebuild in its retry back-off), active rows are found by a `LIKE` scan of name, title and observations for the same terms instead, and recall reports `retrieval: { mode: 'scan', degraded: true, reason: 'index_out_of_date' }` (#571). With `includeArchived`, archived rows are matched by `LIKE` because `archiveEntity()` removes them from FTS5. One- and two-term queries use OR matching; queries with three or more terms try strict all-term matching first and fall back to OR only when strict matching has no hits. Rows are ordered by BM25 rank before multi-factor scoring (the scan and the archived match, which have no rank, newest first), except that a row whose name or title is exactly the query — NFC, letter case and surrounding spaces ignored (`foldForExactMatch`, `memesh_fold` in SQL) — comes first in all three, so the result limit cannot cut it (#525). Terms are bounded and ubiquitous terms are removed on larger corpora. Both indexed text and queries use the same NFC normalisation and unspaced-script segmentation, so CJK, kana, hangul, Thai, Lao and Khmer remain searchable without a second retrieval path.
 - `listRecent(limit?)` -- Most recent entities by ID
 - `findConflicts(entityNames[])` -- Returns conflict descriptions for any `contradicts` relations among the given entity names; surfaced as warnings by all three transports
 
@@ -243,10 +245,10 @@ The primary dashboard is now the packaged Preact single-page app served by `GET 
 
 | Tab | Feature |
 |-----|---------|
-| Home | Local memory status plus staged work-package review; the analytics stack — health score, 30-day timeline, **MemoryAgeMatrix** (type × age heat map), **KnowledgeRadar** (6-axis SVG), work patterns — remains read-only |
-| Memories | The whole library behind one surface: instant client filter + Enter for server-ranked recall, work-layer / evidence / all / archived scope chips (`layerOf()` over the shared `WORK_LAYER_TYPES` whitelist), cluster composition bar, per-row expandable detail (structured lesson bodies via `LessonCards`), inline archive/restore |
-| Project | One project behind a project selector: the owner-stated task state (`memesh task` — goal / next / blocked / done, with its timestamp and a provenance line) above the retrospective **Project History** (capture-density phases, key lessons). Absent state renders as "not stated", never as a guess |
-| Settings | Package update preferences and browser-local interface locale |
+| Home | One recommended next step (from the library size and the review queue), a metrics row, local memory status plus staged work-package review; the analytics stack — health score, 30-day timeline, **MemoryAgeMatrix** (type × age heat map), **KnowledgeRadar** (6-axis SVG), work patterns — remains read-only |
+| Memories | The whole library behind one surface: instant client filter + Enter for server-ranked recall, work-layer / evidence / all / archived scope chips (`layerOf()` over the shared `WORK_LAYER_TYPES` whitelist), cluster composition bar, per-row expandable detail (structured lesson bodies via `LessonCards`), inline archive/restore; the header's Focused / All memories switch (default Focused) decides whether it opens on the work layer |
+| Project | One project behind a project selector (its memories load a page at a time from `GET /v1/entities?project=`): the owner-stated task state (`memesh task` — goal / next / blocked / done, with its timestamp and a provenance line) above the retrospective **Project History** (capture-density phases, key lessons). Absent state renders as "not stated", never as a guess |
+| Settings | Package update preferences, browser-local interface locale, and optional installation details (versions and paths) |
 
 The dashboard is a client of the ordinary HTTP API — no private endpoints — so the endpoint list lives in exactly one place: the route table in [API_REFERENCE.md](api/API_REFERENCE.md#http-rest-api), which `scripts/check-doc-claims.mjs` checks against `server.ts`'s registrations. A copy of it used to sit here and had already rotted: it named seven endpoints and missed two routes the dashboard called (one of them `/v1/projects`). A second list nothing gates is a list that goes quietly wrong. When the packaged build is unavailable, the HTTP server falls back to the legacy `cli/view-live.ts` HTML generator for compatibility.
 
@@ -257,18 +259,24 @@ The dashboard is a client of the ordinary HTTP API — no private endpoints — 
 ### Store knowledge (remember)
 
 ```
-Tool call: remember({name, type, observations, tags, relations})
+Tool call: remember({name, type, observations, why, tags, relations})
        or: remember({note})                      # free text, #324
   -> Zod validation (MCP: McpRememberSchema; HTTP/CLI: RememberSchema)
   -> resolveRememberInput()
      -> deriveNote() when `note` was given
         -> title from the first line, one observation per paragraph
         -> name from a slug of the title + a digest of the text
+  -> `why` becomes one more observation, `Why: <text>` (one leading `Why: ` label is not doubled)
+  -> a new or `replace`d decision, architecture_decision or design_decision with no `Why: ` observation is refused,
+     unless the writer is untrusted (note files); imports and dream accepts do not go through remember, so are not refused
   -> replace: true only:
      -> refuse when the memory was archived with forget
      -> snapshot the previous title/observations/tags FIRST
      -> KnowledgeGraph.clearEntityData(name)   # the snapshot must precede this
      -> stored type is kept unless a different `type` was passed
+  -> #511: a `project:<name>` tag naming the caller's own project (MCP: argument or binding; CLI: cwd) by its
+     plain name becomes `project:<id>` (reported as `retagged`), unless a memory this write updates or supersedes
+     already carries the plain tag
   -> declared project (MCP `project` argument, else one `project:` tag, else the bound project; `false` = none):
      refuse two project tags, or an argument that contradicts the tag;
      refuse a name or `supersedes` target another project, or no project, holds (no project: one a project holds);
@@ -321,6 +329,7 @@ Tool call: recall({query, tag, limit})
           -> recallEnhanced()
              -> KnowledgeGraph.search() — FTS5 keyword match
              -> rankEntities() applies multi-factor scoring (relevance, recency, frequency, confidence, impact)
+             -> an exact name or title match is moved first (#525; search() keeps it inside its result window)
           -> KnowledgeGraph.findConflicts() checks for contradicts relations among results
        -> capRecallForAgent() in core/recall-agent-view.ts (#494): omits file:* tags; caps each
           entity's observations+tags at 8 KB and the whole response at 32 KB, marking what was cut
@@ -417,6 +426,7 @@ Hook commands are defined in `hooks/hooks.json`: nine run at Claude Code lifecyc
 
 - **Trigger**: `PreToolUse` event on `Edit` and `Write` tools
 - **Matcher**: `Edit|Write`
+- **What is printed**: each memory's name, type and the first 120 characters of its first observation, with credential-shaped text and home-directory paths redacted in the name and in the observation before the cut (#554, #523) — the same treatment as every other injected memory line.
 - **Behavior**: A memory is injected for the edited file only if (a) it carries the exact tag `file:<full basename>`, or (b) its `entities.name` or one of its `observations.content` literally names the file — for every script, ASCII or not — and it is not an auto-captured session snapshot. A memory that refers to a file only by its stem ("the `auth` module …"), only loosely in prose ("the Claude MD file"), or by a DIFFERENT file's basename does NOT match; this is deliberately narrower than an earlier version of this hook (see CHANGELOG `[4.10.2]`).
   - An exact `file:<basename>` TAG match — the full basename with its extension, never the extension-less stem alone (a `file:<stem>` tag, also written by the capture producer, is not unique to one file: `file:auth` is on both `auth.ts` and `auth.py`).
   - An FTS5 search used only as a CANDIDATE GENERATOR — the ASCII basename's own words, extension included, adjacent and in order (not merely any one of them; a non-ASCII basename's candidate search is on its stem, bigram-OR'd, ranked by relevance) — over a bounded window of up to 50 candidates, followed by a LITERAL CONFIRMATION in JS over every fetched candidate: the FULL basename, extension included, must occur literally — for every script, never only the stem, even on the non-ASCII path — NFC-normalised, in the entity's name or one of its observations. Case folding is ASCII-only and applied PER CHARACTER (`A-Z`→`a-z`, everything else including every non-ASCII script passes through unchanged) — not gated on the whole basename being ASCII, so a mixed-script basename's own ASCII extension still folds (`設定配置.TS` confirms `設定配置.ts`). The candidate query alone is not sufficient: a token-adjacency hit is not proof the literal name appears (`05-CLAUDE-md.md` tokenizes to "claude" immediately followed by "md" too).
@@ -451,7 +461,7 @@ Hook commands are defined in `hooks/hooks.json`: nine run at Claude Code lifecyc
 
 - **Trigger**: `PostToolUse` event on `Bash` tool
 - **Matcher**: `Bash` (filters for git commit commands)
-- **Behavior**: Detects git commit messages from tool output, creates a `commit` entity with the commit message as an observation, tags with the project name; includes diff stats (files changed, insertions, deletions)
+- **Behavior**: Detects git commit messages from tool output, creates a `commit` entity with the commit subject as its title and first observation, tags with the project name; includes diff stats (files changed, insertions, deletions). Like every hook write (`captureEntity` in `_shared.js`), credential-shaped text in the title and observations is replaced with `***REDACTED***` before it is stored (#523)
 
 ### Decision Nudge (`scripts/hooks/decision-nudge.js`)
 
@@ -483,7 +493,7 @@ Hook commands are defined in `hooks/hooks.json`: nine run at Claude Code lifecyc
 
 - **Trigger**: `PreCompact` event (before context compaction)
 - **Matcher**: `*` (all sessions)
-- **Behavior**: Saves a snapshot of session knowledge before context is compacted, ensuring memories are not lost during long sessions; opt-out via `MEMESH_AUTO_CAPTURE=false`
+- **Behavior**: Saves a snapshot of session knowledge before context is compacted, ensuring memories are not lost during long sessions; opt-out via `MEMESH_AUTO_CAPTURE=false`. A payload whose `session_id` or `cwd` is missing, blank or not text is skipped and the reason recorded, rather than filed under a shared session or the hook's own directory. The compaction reason is redacted before it is cut into the title
 
 ### User Prompt Intent (`scripts/hooks/user-prompt-intent.js`)
 
@@ -530,7 +540,9 @@ adds the database side (auto-capture entities per type, week over week, and the
 `hook_runs` heartbeats); the banner reads only the JSONL. Only post-commit,
 session-summary and pre-compact can be "silent", because only their triggers
 imply a write is due; only session-summary can FAIL, because only its trigger
-(a session ending) is guaranteed. The `--json` shape is in
+(a session ending) is guaranteed. A hook with an `error` record among its 5
+most recent triggered runs makes the verdict PASS_WITH_CONCERNS; the one with
+the most is named in doctor and the banner, ahead of silence (#555). The `--json` shape is in
 [API_REFERENCE.md](api/API_REFERENCE.md#memesh-doctor--capture-liveness).
 
 Two gates keep this honest. `npm run audit:hook-outcomes`
@@ -616,6 +628,7 @@ For release safety, `npm run test:packaged` creates a real npm tarball, extracts
 - Entities not accessed in 30+ days: confidence *= 0.9
 - Floor: confidence never below 0.01
 - Never deletes — only affects search ranking
+- Decisions decay like everything else, but are never hidden by it: the briefing orders them by recency, shows each with its latest `Why:` observation (or "no reason recorded"), and marks one that nobody has recalled or added to for 30+ days "unconfirmed N days: re-check before relying" (`toTopologyEntity` in `briefing-pools.ts`, rendered by `topologyLine`). A recall stamps `last_accessed_at` and clears the mark. The age counts the newest observation of every decision type (`readSnippets`), not only the decision layer's `recency`, and the durable-memory index marks its decision lines the same way (`readIndexCandidates`, `indexLine` in `briefing-index.ts`; one `unconfirmedDaysSince` in the `work-topology.ts` leaf). When a decision line is cut to its budget, `topologyLine` gives the reason room before the title: the title is clipped first (down to 40 characters), then the reason; the markers and the handle are never cut. `remember` refuses to create, or `replace`, a decision without `why` (operations.ts); untrusted writers are exempt
 
 ### Agent-assisted digest and transcript review
 - `work_package` prepares one bounded calendar digest or visible-turn transcript package.
@@ -664,7 +677,7 @@ Over MCP, a `recall` with no `tag` and no `cross_project` is scoped to one proje
 
 ```bash
 # Export from the personal namespace
-memesh export --namespace personal --output memesh-backup.json
+memesh export --namespace personal --out memesh-backup.json
 
 # Import on another machine or through another compatible agent
 memesh import memesh-backup.json --merge skip

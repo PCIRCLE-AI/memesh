@@ -59,8 +59,10 @@ expressed as `maxWorkers: 1` + `fileParallelism: false`; the older
 `singleFork`/`maxForks`/`minForks` keys do not exist in Vitest 4 and were being
 silently ignored.
 
-`npm run typecheck` uses `tsconfig.check.json`, which covers `src/`, `tests/`
-and the root config files. `tsconfig.json` is narrower on purpose — it is the
+`npm run typecheck` runs two configs: `tsconfig.check.json` (`src/`, `.ts`
+tests outside `tests/dashboard/`, root `*.config.ts`) and
+`tsconfig.check-dashboard.json` (`dashboard/src/`, `.tsx` tests and the
+dashboard's `.ts` tests). `tsconfig.json` is narrower on purpose — it is the
 config that emits `dist/`.
 
 ### Coverage, and what a 0% file means

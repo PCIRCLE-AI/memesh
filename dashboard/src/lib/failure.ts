@@ -1,8 +1,8 @@
 import { t } from './i18n';
-import { AuthRequiredError, HttpError, NetworkError, RateLimitError } from './api';
+import { AuthRequiredError, HttpError, NetworkError, RateLimitError, UnreadableResponseError } from './api';
 
 /**
- * The two ways a data load fails, kept apart because they carry different
+ * The three ways a data load fails, kept apart because they carry different
  * next steps for the user:
  *
  *   - `unreachable` — the request itself failed. The server is down, the
@@ -58,7 +58,7 @@ export function failureMessage(kind: LoadFailure): string {
 /**
  * The user-facing sentence for a failed ACTION (save, seed, accept, run…), as
  * opposed to a failed data load. Loads route through failureMessage() because
- * "reload" is a sane next step there; for an action the errors split four ways:
+ * "reload" is a sane next step there; for an action the errors split five ways:
  *
  *   - NetworkError      → the browser's "Failed to fetch" / "NetworkError when
  *                         attempting…" prose, which names neither the process
@@ -69,6 +69,9 @@ export function failureMessage(kind: LoadFailure): string {
  *   - HttpError         → the server answered non-2xx with a body api() could
  *                         not read as an envelope. Status + "try again /
  *                         memesh doctor" is everything that is known.
+ *   - UnreadableResponseError → a 2xx whose body was not a readable reply
+ *                         (api() throws this instead of the JSON parser's
+ *                         own prose): the unreadable sentence, as for a load.
  *   - other Error       → api()'s envelope path: already the httpError.<code>
  *                         translation for a KNOWN code, the server's own prose
  *                         otherwise. Both are sentences meant for humans.
@@ -77,6 +80,7 @@ export function actionFailureMessage(err: unknown): string {
   if (err instanceof NetworkError) return failureMessage('unreachable');
   if (err instanceof AuthRequiredError) return t('auth.title');
   if (err instanceof HttpError) return t('common.serverError', { status: err.status });
+  if (err instanceof UnreadableResponseError) return failureMessage('unreadable');
   if (err instanceof Error && err.message) return err.message;
   return t('errors.unknown');
 }

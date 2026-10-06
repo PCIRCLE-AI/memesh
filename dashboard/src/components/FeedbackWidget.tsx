@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'preact/hooks';
 import { t } from '../lib/i18n';
 import { api, type HealthData } from '../lib/api';
-import { openExternalWindow } from '../lib/external-handoffs';
+import { githubIssueUrl, openExternalWindow } from '../lib/external-handoffs';
 import { GitHubDestination } from './ExternalHandoff';
 
 const TYPES = ['bug', 'feature', 'question'] as const;
@@ -95,6 +95,11 @@ export function FeedbackWidget({ health }: { health: HealthData | null }) {
     try {
       const labels = `feedback,from-dashboard,${fbType}`;
       let body = desc.trim();
+      if (includeSys && !health) {
+        // Said in the issue itself: the maintainer cannot tell "the user did
+        // not tick the box" from "the dashboard had nothing to attach".
+        body += '\n\n---\n**System Info**\n_Unavailable: the dashboard had no server health reading to attach._';
+      }
       if (includeSys && health) {
         body += `\n\n---\n**System Info**\n- Version: \`${health.version}\`\n- Entities: ${health.entity_count}\n- Platform: \`${navigator.platform}\`\n- User Agent: \`${navigator.userAgent}\``;
         // Best-effort doctor probe. If it 5xxs or times out we still
@@ -102,10 +107,14 @@ export function FeedbackWidget({ health }: { health: HealthData | null }) {
         try {
           const diag = await api<DoctorResult>('GET', '/v1/doctor');
           body += `\n\n${formatDoctor(diag)}`;
-        } catch { /* doctor unavailable — basic sys-info still useful */ }
+        } catch {
+          // Same wording as `memesh feedback`, so an issue from either door
+          // says the probe failed instead of silently lacking it.
+          body += '\n\n_Diagnostics unavailable: doctor probe failed._';
+        }
       }
       const typeLabel = t(TYPE_I18N_KEYS[fbType]);
-      const url = `https://github.com/PCIRCLE-AI/memesh/issues/new?title=${encodeURIComponent(`[${typeLabel}] `)}&body=${encodeURIComponent(body)}&labels=${encodeURIComponent(labels)}`;
+      const url = githubIssueUrl({ title: `[${typeLabel}] `, body, labels });
       if (!openExternalWindow(url)) {
         setHandoffUrl(url);
         setHandoffError(t('feedback.popupBlocked'));
@@ -185,7 +194,7 @@ export function FeedbackWidget({ health }: { health: HealthData | null }) {
             {t('feedback.includeSys')}
           </label>
           <GitHubDestination id="feedback-submit" />
-          <button class="btn btn-primary fb-submit" onClick={submit} disabled={submitting}>
+          <button class="btn btn-primary fb-submit" onClick={submit} disabled={submitting || !desc.trim()}>
             {submitting ? t('feedback.submitting') : t('feedback.submit')}
           </button>
           {handoffError && (

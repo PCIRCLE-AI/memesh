@@ -200,10 +200,38 @@ describe('memesh remember CLI: quick-capture form', () => {
 
   it('still accepts the explicit --name/--type form', () => {
     const { exitCode } = runCli(
-      ['remember', '--name=auth-decision', '--type=decision', '--obs=Use OAuth 2.0'],
+      ['remember', '--name=auth-decision', '--type=decision', '--obs=Use OAuth 2.0', '--why=the IdP only speaks OAuth; revisit if we self-host auth'],
       { HOME: tmpHome },
     );
     expect(exitCode).toBe(0);
+  }, 60_000);
+
+  it('refuses a decision with no --why (exit 1, the sentence on stderr, nothing stored) and stores it with --why', () => {
+    const refused = runCli(['remember', '--name=cli-no-why', '--type=decision', '--obs=Use TLS everywhere'], { HOME: tmpHome });
+    expect(refused.exitCode).toBe(1);
+    expect(refused.stderr).toMatch(/needs `why`.*reason for it and what would make it stop holding/);
+    expect(refused.stdout).not.toContain('Stored');
+
+    const stored = runCli(['remember', '--name=cli-no-why', '--type=decision', '--obs=Use TLS everywhere', '--why=the proxy terminates nothing; revisit if it does'], { HOME: tmpHome });
+    expect(stored.exitCode, `stderr: ${stored.stderr}`).toBe(0);
+    const db = new MemeshDatabase(path.join(tmpHome, '.memesh', 'knowledge-graph.db'));
+    const obs = db.prepare("SELECT o.content FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = 'cli-no-why' ORDER BY o.id").all() as { content: string }[];
+    db.close();
+    expect(obs.map((o) => o.content)).toEqual(['Use TLS everywhere', 'Why: the proxy terminates nothing; revisit if it does']);
+  }, 60_000);
+
+  // The quick form prints a command that fixes a wrong derivation. For a
+  // decision, replacing needs the reason too: a copy of the command without it
+  // would be refused.
+  it('the quick form\'s "fix it with" command for a decision carries --why; for any other type it does not', () => {
+    const decision = runCli(['remember', 'Use PKCE for the API', '--type=decision', '--why=public client; revisit if we add a server-side client'], { HOME: tmpHome });
+    expect(decision.exitCode, `stderr: ${decision.stderr}`).toBe(0);
+    expect(decision.stdout).toMatch(/fix it with: .* --type=decision --title "…" --obs "…" --why='public client; revisit if we add a server-side client' --replace/);
+
+    const note = runCli(['remember', 'Use PKCE for the docs'], { HOME: tmpHome });
+    expect(note.exitCode).toBe(0);
+    expect(note.stdout).toMatch(/fix it with: .* --type=note --title "…" --obs "…" --replace/);
+    expect(note.stdout).not.toContain('--why');
   }, 60_000);
 
   it('stamps source_host=cli on the stored entity', () => {
@@ -269,20 +297,56 @@ describe('memesh remember CLI: quick-capture form', () => {
     expect(noName.stderr).toContain('--replace needs --name');
   }, 60_000);
 
+  it('--replace keeps a previous version too large for replaced_history, cut to fit, and says it is kept', () => {
+    expect(runCli(['remember', '--name=r4', '--type=note', '--obs=old line'], { HOME: tmpHome }).exitCode).toBe(0);
+    const db = new MemeshDatabase(path.join(tmpHome, '.memesh', 'knowledge-graph.db'));
+    const row = db.prepare("SELECT id FROM entities WHERE name = 'r4'").get() as { id: number };
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, 'x'.repeat(70000));
+    db.close();
+    const r = runCli(['remember', '--name=r4', '--obs=new line', '--replace'], { HOME: tmpHome });
+    expect(r.exitCode, `stderr: ${r.stderr}`).toBe(0);
+    expect(r.stdout).toContain('replaced: the previous version is kept in metadata.replaced_history');
+    // The version is cut to fit: its observation stays, the tag that alone exceeds the cap goes.
+    const read = new MemeshDatabase(path.join(tmpHome, '.memesh', 'knowledge-graph.db'));
+    const meta = JSON.parse((read.prepare("SELECT metadata FROM entities WHERE name = 'r4'").get() as { metadata: string }).metadata);
+    read.close();
+    expect(meta.replaced_history).toHaveLength(1);
+    expect(meta.replaced_history[0]).toMatchObject({ observations: ['old line'], tags: [], truncated: true });
+    // A normal replace still says it is kept.
+    const again = runCli(['remember', '--name=r5', '--type=note', '--obs=old line'], { HOME: tmpHome });
+    expect(again.exitCode).toBe(0);
+    const normal = runCli(['remember', '--name=r5', '--obs=new line', '--replace'], { HOME: tmpHome });
+    expect(normal.stdout).toContain('replaced: the previous version is kept in metadata.replaced_history');
+  }, 60_000);
+
   // #333 T4. cli.ts holds its OWN copy of the "name + type or nothing" rule,
   // ahead of the RememberSchema check — so relaxing only the schema would
   // have left the terminal rejecting the correction call that MCP and HTTP
   // accept. Asserted on the stored row, not just the exit code.
   it('--replace without --type keeps the type the memory already has', () => {
-    expect(runCli(['remember', '--name=r2', '--type=decision', '--obs=wrong line'], { HOME: tmpHome }).exitCode).toBe(0);
-    const r = runCli(['remember', '--name=r2', '--obs=right line', '--replace'], { HOME: tmpHome });
+    expect(runCli(['remember', '--name=r2', '--type=decision', '--obs=wrong line', '--why=first reason; revisit if it changes'], { HOME: tmpHome }).exitCode).toBe(0);
+    const r = runCli(['remember', '--name=r2', '--obs=right line', '--why=corrected reason; revisit if it changes', '--replace'], { HOME: tmpHome });
     expect(r.exitCode, `stderr: ${r.stderr}`).toBe(0);
     const db = new MemeshDatabase(path.join(tmpHome, '.memesh', 'knowledge-graph.db'));
     const row = db.prepare("SELECT type FROM entities WHERE name = 'r2'").get() as { type: string };
     const obs = db.prepare("SELECT o.content FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = 'r2'").all() as { content: string }[];
     db.close();
     expect(row.type).toBe('decision');
-    expect(obs.map((o) => o.content)).toEqual(['right line']);
+    expect(obs.map((o) => o.content)).toEqual(['right line', 'Why: corrected reason; revisit if it changes']);
+  }, 60_000);
+
+  it('--replace without --obs is refused and the memory keeps its content', () => {
+    expect(runCli(['remember', '--name=r6', '--type=note', '--obs=first fact', 'second fact'], { HOME: tmpHome }).exitCode).toBe(0);
+    const r = runCli(['remember', '--name=r6', '--replace', '--title=Better title'], { HOME: tmpHome });
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain('send the observations the memory already has');
+    const db = new MemeshDatabase(path.join(tmpHome, '.memesh', 'knowledge-graph.db'));
+    const obs = db.prepare("SELECT o.content FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = 'r6' ORDER BY o.id").all() as { content: string }[];
+    db.close();
+    expect(obs.map((o) => o.content)).toEqual(['first fact', 'second fact']);
+    // With the observations the same correction goes through.
+    const fixed = runCli(['remember', '--name=r6', '--replace', '--title=Better title', '--obs=first fact', 'second fact'], { HOME: tmpHome });
+    expect(fixed.exitCode, `stderr: ${fixed.stderr}`).toBe(0);
   }, 60_000);
 
   it('--name without --replace still needs --type', () => {

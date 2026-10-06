@@ -82,6 +82,21 @@ describe('memesh import --notes', () => {
     expect(recalled.stdout).toContain('cli_note_a');
   }, 60_000);
 
+  // #550: a run that refuses every note it finds fails (exit 1) and still
+  // reports why; a partial import (above) and an unchanged re-run succeed.
+  it('#550 exits 1 when every note found is refused, keeping the refusal details', () => {
+    const bad = path.join(home, 'bad-notes');
+    fs.mkdirSync(bad);
+    fs.writeFileSync(path.join(bad, 'nameless.md'), '---\ndescription: no name\n---\nRejected note probe.\n');
+    const json = runCli(['import', '--notes', bad, '--project', 'p', '--json'], home);
+    expect(json.exitCode).toBe(1);
+    expect(JSON.parse(json.stdout)).toMatchObject({ created: [], refusedNow: 1, skipped: [{ path: 'nameless.md', reason: 'frontmatter has no name' }] });
+    const text = runCli(['import', '--notes', bad, '--project', 'p'], home);
+    expect(text.exitCode).toBe(1);
+    expect(text.stderr).toContain('every note file found was refused');
+    expect(text.stderr).toContain('skipped nameless.md');
+  }, 60_000);
+
   it('a missing directory is a one-line error, not a stack trace', () => {
     const r = runCli(['import', '--notes', path.join(home, 'nope')], home);
     expect(r.exitCode).not.toBe(0);

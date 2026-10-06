@@ -6,10 +6,15 @@ function hostAcceptedFilter(db, excludeHostAccepted, session) {
     if (!hasTable)
         return { sql: '', params: [] };
     const carriedBody = "COALESCE(json_extract(h.receipt_json, '$.content'), '') <> 'notice'";
+    const accepterLive = `EXISTS (
+        SELECT 1 FROM agent_dispatch_attempts a
+        JOIN agent_session_connections c ON c.connection_id = a.connection_id
+        WHERE a.attempt_id = h.attempt_id AND c.disconnected_at IS NULL AND c.lease_expires_at_ms > ?)`;
+    const now = Date.now();
     if (session === undefined) {
         return {
-            sql: `AND NOT EXISTS (SELECT 1 FROM agent_host_accepts h WHERE h.delivery_id = d.delivery_id AND ${carriedBody})`,
-            params: [],
+            sql: `AND NOT EXISTS (SELECT 1 FROM agent_host_accepts h WHERE h.delivery_id = d.delivery_id AND ${carriedBody} AND ${accepterLive})`,
+            params: [now],
         };
     }
     const ids = [...sessionAliasChain(db, session)];
@@ -20,8 +25,9 @@ function hostAcceptedFilter(db, excludeHostAccepted, session) {
         AND ${carriedBody}
         AND (json_extract(h.receipt_json, '$.thread_id') IS NULL
           OR json_extract(h.receipt_json, '$.thread_id') IN (${ids.map(() => '?').join(', ')}))
+        AND ${accepterLive}
     )`,
-        params: ids,
+        params: [...ids, now],
     };
 }
 function intendedSessionFilter(db, session) {
@@ -120,10 +126,14 @@ export function unknownRecipientHint(recipient) {
     return `MEMESH_RECIPIENT ${JSON.stringify(recipient)} has never been seen in any project — check it for a typo (or ignore this if it is a genuinely new recipient id).`;
 }
 export const UNREAD_MESSAGE_REFS_LIMIT = 500;
-const DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION = `(
+function deliveryMatches(db, recipient, session) {
+    const own = session === undefined ? null : [...sessionAliasChain(db, session)];
+    return {
+        sql: `(
   d.recipient = ?
   OR (
     d.target_kind = 'session'
+    ${own === null ? '' : `AND d.recipient IN (${own.map(() => '?').join(', ')})`}
     AND EXISTS (
       SELECT 1
       FROM agent_session_instances si
@@ -136,16 +146,20 @@ const DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION = `(
         AND c.lease_expires_at_ms > ?
     )
   )
-)`;
+)`,
+        params: own === null ? [recipient, recipient, Date.now()] : [recipient, ...own, recipient, Date.now()],
+    };
+}
 export function unreadMessageRefsFor(db, recipient, session, limit = UNREAD_MESSAGE_REFS_LIMIT, excludeHostAccepted = false) {
     if (!recipient)
         return [];
     try {
+        const match = deliveryMatches(db, recipient, session);
         const intended = intendedSessionFilter(db, session);
         const accepted = hostAcceptedFilter(db, excludeHostAccepted, session);
         const rows = db.prepare(`SELECT d.project AS project, d.message_id AS message_id
        FROM agent_message_deliveries d
-       WHERE ${DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION}
+       WHERE ${match.sql}
          ${intended.sql}
          ${accepted.sql}
          AND NOT EXISTS (
@@ -156,7 +170,7 @@ export function unreadMessageRefsFor(db, recipient, session, limit = UNREAD_MESS
              AND r.receipt_kind = 'intake'
          )
        ORDER BY d.project, d.message_id
-       LIMIT ?`).all(recipient, recipient, Date.now(), ...intended.params, ...accepted.params, limit);
+       LIMIT ?`).all(...match.params, ...intended.params, ...accepted.params, limit);
         return rows.filter((row) => typeof row.project === 'string' && typeof row.message_id === 'string');
     }
     catch (err) {
@@ -186,11 +200,12 @@ export function unreadInboxLinesFor(db, recipient, session, excludeHostAccepted 
     if (!recipient)
         return [];
     try {
+        const match = deliveryMatches(db, recipient, session);
         const intended = intendedSessionFilter(db, session);
         const accepted = hostAcceptedFilter(db, excludeHostAccepted, session);
         const rows = db.prepare(`SELECT d.project AS project, d.recipient AS recipient, d.target_kind AS target_kind, COUNT(*) AS n
        FROM agent_message_deliveries d
-       WHERE ${DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION}
+       WHERE ${match.sql}
          ${intended.sql}
          ${accepted.sql}
          AND NOT EXISTS (
@@ -202,7 +217,7 @@ export function unreadInboxLinesFor(db, recipient, session, excludeHostAccepted 
          )
        GROUP BY d.project, d.recipient, d.target_kind
        ORDER BY n DESC, d.project, d.recipient
-       LIMIT 5`).all(recipient, recipient, Date.now(), ...intended.params, ...accepted.params);
+       LIMIT 5`).all(...match.params, ...intended.params, ...accepted.params);
         return rows.flatMap((row) => typeof row.project === 'string' && typeof row.recipient === 'string' && typeof row.n === 'number' && row.n > 0
             ? unreadInboxLines(row.n, row.project, row.recipient, undefined, row.target_kind === 'session' ? 'session' : 'principal')
             : []);

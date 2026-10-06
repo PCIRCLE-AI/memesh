@@ -40,6 +40,39 @@ function failingDb(failOn: RegExp) {
 }
 
 describe('agent messaging durable core', () => {
+  // #403: every timestamp a message response carries is ISO 8601 UTC. The
+  // stored SQLite form ('2026-09-21 20:35:59', UTC without T or Z) is read as
+  // LOCAL time by `new Date()`, eight hours off at UTC+8.
+  it('#403 created_at is ISO 8601 UTC and parses back to the stored instant under a non-UTC TZ', () => {
+    // The zone is set BEFORE anything is produced: a converter that read the
+    // SQLite form as local time would only go wrong here, never under the UTC
+    // the CI runners use.
+    const previousTz = process.env.TZ;
+    process.env.TZ = 'Asia/Taipei';
+    try {
+      const sent = sendAgentMessage(getDatabase(), {
+        project: 'proj-a', sender: 'sender-1', recipient: 'receiver-1', idempotency_key: 'iso-1',
+        content_type: 'text/plain', payload: 'hello',
+      });
+      const event = pollAgentEvents(getDatabase(), { project: 'proj-a', recipient: 'receiver-1' }).events[0];
+      const fetched = fetchAgentMessage(getDatabase(), { project: 'proj-a', recipient: 'receiver-1', message_id: sent.message_id });
+      const receipt = recordAgentReceipt(getDatabase(), {
+        project: 'proj-a', recipient: 'receiver-1', message_id: sent.message_id, receipt_kind: 'intake',
+        intake_state: 'ingested', actor: 'receiver-1', idempotency_key: 'iso-intake-1',
+      });
+      const stored = (getDatabase().prepare('SELECT created_at FROM agent_messages WHERE message_id = ?')
+        .get(sent.message_id) as { created_at: string }).created_at;
+      const [, y, mo, d, h, mi, se] = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/.exec(stored)!.map(Number);
+      const instant = Date.UTC(y, mo - 1, d, h, mi, se);
+      for (const [where, value] of [['send', sent.created_at], ['poll', event.created_at], ['fetch', fetched.created_at], ['receipt', receipt.created_at]] as const) {
+        expect(value, where).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+        expect(new Date(value).getTime(), where).toBe(instant);
+      }
+    } finally {
+      if (previousTz === undefined) delete process.env.TZ; else process.env.TZ = previousTz;
+    }
+  });
+
   it('creates one message, one delivery, and one event, and exact retry returns the same canonical rows', () => {
     const sent = sendAgentMessage(getDatabase(), {
       project: 'proj-a',

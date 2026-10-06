@@ -12,11 +12,13 @@
 import { getDatabase } from '../db.js';
 import { projectOwnershipRefusal } from '../storage/memory-mutation.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
+import { foldForExactMatch } from '../storage/fts-index.js';
+import { withFullProjectTag } from './plain-project-tag.js';
 import { rankEntities } from './scoring.js';
-import { getProjectName } from './paths.js';
+import { getProjectName, redactSecrets, redactTextValues, redactTitleAndObservations, redactVersionText } from './paths.js';
 import { createExplicitLesson } from './lesson-engine.js';
 import { deriveNote, NOTE_DEFAULT_TYPE, type DerivedNote } from './note-derive.js';
-import { canonicalEntityType } from './work-topology.js';
+import { DECISION_TYPES, WHY_PREFIX, canonicalEntityType } from './work-topology.js';
 import { capRecallForAgent, type RecallForAgentResult, type RecallScope } from './recall-agent-view.js';
 import type {
   RememberInput,
@@ -93,7 +95,7 @@ export function remember(input: RememberInput): RememberResult {
  * Recall answers carry `replaced_history_count` instead of the history
  * itself: every hit's metadata is serialized to the caller, and the history
  * is the one field that can be large. The full history stays readable from
- * `export` and `GET /v1/entities/:name`.
+ * `GET /v1/entities/:name` (masked like recall) and `export` (as stored).
  */
 function summarizeReplacedHistory(entities: Entity[]): Entity[] {
   for (const e of entities) {
@@ -103,6 +105,32 @@ function summarizeReplacedHistory(entities: Entity[]): Entity[] {
     e.metadata = { ...rest, replaced_history_count: history.length };
   }
   return entities;
+}
+
+/**
+ * A memory as recall and the dashboard show it (#523): the title and
+ * observations redacted as one set, each replaced version as one set, and the
+ * other text in its metadata string by string, so a row stored before #523
+ * does not hand a stored credential to whoever reads it. Only this copy
+ * changes: the stored row, the keyword index, the name, tags, ids and scores
+ * stay as they are, and a guard's pattern is kept as given. `export` does not
+ * use it: a backup keeps the stored text.
+ */
+export function shownEntity(entity: Entity): Entity {
+  const shown = redactTitleAndObservations(typeof entity.title === 'string' ? entity.title : undefined, entity.observations);
+  const metadata = entity.metadata === undefined ? undefined : redactTextValues(entity.metadata) as Record<string, unknown>;
+  const guard = entity.metadata?.guard as { pattern?: unknown } | null | undefined;
+  if (metadata && guard && typeof guard.pattern === 'string') {
+    metadata.guard = { ...(metadata.guard as Record<string, unknown>), pattern: guard.pattern };
+  }
+  const history = entity.metadata?.replaced_history;
+  if (metadata && Array.isArray(history)) metadata.replaced_history = history.map(redactVersionText);
+  return {
+    ...entity,
+    ...(typeof entity.title === 'string' ? { title: shown.title } : {}),
+    observations: shown.observations as string[],
+    ...(metadata === undefined ? {} : { metadata }),
+  };
 }
 
 // `type` stays optional: `replace` on an existing name inherits the stored
@@ -119,6 +147,10 @@ type ResolvedRememberInput = RememberInput & { name: string };
 function resolveRememberInput(
   input: RememberInput,
 ): { args: ResolvedRememberInput; derived?: DerivedNote; typeGiven: boolean } {
+  // A decision's reason is one more observation, redacted with the rest. A
+  // reason typed with its own "Why: " label is not labelled twice.
+  const reason = input.why?.trim().replace(/^why:\s*/i, '') ?? '';
+  const why = reason !== '' ? [`${WHY_PREFIX}${reason}`] : [];
   if (input.note === undefined) {
     if (!input.name) throw new Error('remember needs `name` and `type`, or `note`');
     // ABSENT and BLANK are different inputs, and only the first one is a
@@ -129,7 +161,20 @@ function resolveRememberInput(
     // stops that before it arrives; this is the direct-caller copy.
     if (input.type === '') throw new Error('remember needs `name` and `type`, or `note`');
     if (input.type === undefined && !input.replace) throw new Error('remember needs `name` and `type`, or `note`');
-    return { args: input as ResolvedRememberInput, typeGiven: input.type !== undefined };
+    // #523: the structured form gets the same credential redaction the note
+    // form has always had (note-derive.ts), so which argument carried a
+    // connection string no longer decides whether it is stored. `name` and
+    // `tags` are dedup keys and are left alone.
+    return {
+      args: {
+        ...input,
+        ...redactTitleAndObservations(
+          typeof input.title === 'string' ? input.title : undefined,
+          why.length > 0 ? [...(input.observations ?? []), ...why] : input.observations,
+        ),
+      } as ResolvedRememberInput,
+      typeGiven: input.type !== undefined,
+    };
   }
   if (input.title !== undefined || input.observations !== undefined) {
     throw new Error('`note` derives title and observations; do not also pass `title` or `observations`');
@@ -144,8 +189,9 @@ function resolveRememberInput(
       ...input,
       name: input.name ?? derived.name,
       type: input.type ?? NOTE_DEFAULT_TYPE,
-      title: derived.title,
-      observations: derived.observations,
+      ...(why.length > 0
+        ? redactTitleAndObservations(derived.title, [...derived.observations, ...why])
+        : { title: derived.title, observations: derived.observations }),
     },
     derived,
     // The note form DEFAULTS the type, so `args.type` alone cannot tell a
@@ -188,7 +234,36 @@ function rememberInTransaction(
   // intentionally has none), else its one explicit project tag. A memory
   // belongs to one project, so two different project tags, or a tag that
   // contradicts the declared project, are refused before anything is written.
+  // #511: a `project:<name>` tag naming the caller's own project by its plain
+  // name would file the memory under a separate project no briefing for it
+  // reads, so it is stored as the id. When a memory this write touches (the
+  // one it updates, or one a `supersedes` relation archives) is already filed
+  // under the plain tag, the tag is kept — rewriting would move the write to
+  // another project, which the ownership check below refuses;
+  // `memesh kg rename-project` is how those are moved.
+  //
+  // The memory itself, and every memory a `supersedes` relation would
+  // archive: the names this write may change.
+  const touched = [
+    ...(existing ? [args.name] : []),
+    ...(args.relations ?? []).filter((rel) => rel.type === 'supersedes').map((rel) => rel.to),
+  ];
+  let retagged: RememberResult['retagged'];
+  const healed = withFullProjectTag(args.tags, args.currentProject);
+  if (healed.retagged) {
+    const plainTag = healed.retagged.from;
+    const keepsPlain = touched.some((name) => db
+      .prepare('SELECT 1 FROM tags t JOIN entities e ON e.id = t.entity_id WHERE e.name = ? AND t.tag = ?')
+      .get(name, plainTag) !== undefined);
+    if (!keepsPlain) {
+      args = { ...args, tags: healed.tags };
+      retagged = healed.retagged;
+    }
+  }
   const tagProjects = [...new Set((args.tags ?? []).filter((t) => t.startsWith('project:')).map((t) => t.slice('project:'.length)))];
+  if (tagProjects.some((p) => p.trim() === '')) {
+    throw new Error('MeMesh did not store this memory: its tag `project:` names no project; give the project after the colon, or leave the tag out.');
+  }
   if (tagProjects.length > 1) {
     throw new Error(`MeMesh did not store this memory: it has more than one project tag (${tagProjects.map((p) => `project:${p}`).join(', ')}); a memory belongs to one project.`);
   }
@@ -197,13 +272,8 @@ function rememberInTransaction(
   }
   const declaredProject = args.project !== undefined ? args.project : tagProjects[0];
   if (declaredProject !== undefined) {
-    // The memory itself, and every memory a `supersedes` relation would
-    // archive: a write that declares its project (or declares none) may
-    // change only memories of that same project (or of none).
-    const touched = [
-      ...(existing ? [args.name] : []),
-      ...(args.relations ?? []).filter((rel) => rel.type === 'supersedes').map((rel) => rel.to),
-    ];
+    // A write that declares its project (or declares none) may change only
+    // memories of that same project (or of none).
     for (const name of touched) {
       const refusal = projectOwnershipRefusal(db, name, declaredProject);
       if (refusal !== undefined) throw new Error(`MeMesh did not store this memory: ${refusal}.`);
@@ -234,6 +304,22 @@ function rememberInTransaction(
     throw new Error(
       `\`replace\` on "${args.name}": there is no memory named "${args.name}" to inherit a type from, `
       + 'so this call would create one with no type — pass `type` to create it.',
+    );
+  }
+
+  // A decision is stored with the reason it was made and what would make it
+  // stop holding. Without it the conclusion is all a later reader sees, and
+  // it reads as a rule that holds forever. Checked when the decision is
+  // created or rewritten, not on an append. An untrusted writer (a note
+  // file, an import, an accepted dream proposal) is never refused here — a
+  // memory must not be dropped for a missing field; its line in the briefing
+  // says "(no reason recorded)" instead.
+  if (DECISION_TYPES.has(entityType) && (!existing || args.replace) && args.trustOverride !== 'untrusted'
+    && !(args.observations ?? []).some((o) => o.startsWith(WHY_PREFIX))) {
+    throw new Error(
+      `MeMesh did not store this ${entityType}: ${/^[aeiou]/i.test(entityType) ? 'an' : 'a'} ${entityType} needs \`why\` — the reason for it and what would make it `
+      + 'stop holding (for example: "Postgres is too heavy to deploy for one user; revisit if we add a hosted tier"). '
+      + 'Pass `why`, or an observation that starts with "Why: ".',
     );
   }
 
@@ -334,7 +420,12 @@ function rememberInTransaction(
     }
   ));
   if (replacedVersion) {
-    const version = replacedVersion;
+    // The new version is a new history entry and is redacted like any other
+    // caller text; the entries the row already held are kept as stored
+    // (#523). Redacted BEFORE the bounds are applied: `***REDACTED***`
+    // can be longer than what it replaces, and a version bounded on its raw
+    // bytes was stored at 100 KB against the 64 KB cap.
+    const version = redactVersionText(replacedVersion) as ReplacedVersion;
     kg.updateEntityMetadata(args.name, (current) => {
       const history = Array.isArray(current.replaced_history) ? current.replaced_history as ReplacedVersion[] : [];
       return { ...current, replaced_history: boundReplacedHistory([...history, version]) };
@@ -410,6 +501,7 @@ function rememberInTransaction(
       : {}),
     ...(superseded.length > 0 ? { superseded } : {}),
     ...(relationErrors.length > 0 ? { relationErrors } : {}),
+    ...(retagged ? { retagged } : {}),
     ...(args.replace ? { replaced: replacedVersion !== undefined } : {}),
     ...(derived
       ? { derived: { name: args.name, type: retypedTo ?? existing?.type ?? entityType, title: derived.title, observations: derived.observations } }
@@ -426,12 +518,26 @@ function rememberInTransaction(
  * Empty query returns recent entities.
  *
  * Deliberately NOT run through `stripControlChars` (#374): an
- * explicit recall returns stored content as-is by design, so the caller who
- * asked for a memory sees exactly what is stored in it.
+ * explicit recall returns the stored text with its control characters, so
+ * the caller who asked for a memory sees what is stored in it; only
+ * credential-shaped text is masked (`shownEntity`, #523).
  */
 export function recall(args: RecallInput): Entity[] {
   const { entities, relevanceMap } = searchAndScore(args);
-  return rankEntities(entities, relevanceMap).slice(0, args.limit ?? 20);
+  return exactMatchesFirst(rankEntities(entities, relevanceMap), args.query).slice(0, args.limit ?? 20);
+}
+
+/**
+ * #525: a memory whose name or title is exactly the query (`foldForExactMatch`:
+ * NFC, letter case and surrounding spaces ignored) comes first, ahead of the
+ * combined score — and so before the limit, or a size cap that drops from the
+ * end, can cut it. The rest keep their ranked order.
+ */
+function exactMatchesFirst(ranked: Entity[], query: string | undefined): Entity[] {
+  const wanted = query === undefined ? '' : foldForExactMatch(query);
+  if (!wanted) return ranked;
+  const isExact = (e: Entity) => foldForExactMatch(e.name) === wanted || (e.title != null && foldForExactMatch(e.title) === wanted);
+  return [...ranked.filter(isExact), ...ranked.filter((e) => !isExact(e))];
 }
 
 /**
@@ -455,7 +561,7 @@ function searchAndScore(args: RecallInput): {
     includeArchived: args.include_archived,
     namespace: args.namespace,
   });
-  const entities = summarizeReplacedHistory(searched.entities);
+  const entities = summarizeReplacedHistory(searched.entities).map(shownEntity);
   return {
     entities,
     relevanceMap: args.query ? buildRelevanceMap(entities) : new Map<string, number>(),
@@ -498,7 +604,7 @@ export async function recallEnhanced(
     }
   }
   const limit = args.limit ?? 20;
-  const ranked = rankEntities(entities, relevanceMap).slice(0, limit);
+  const ranked = exactMatchesFirst(rankEntities(entities, relevanceMap), args.query).slice(0, limit);
   return {
     entities: ranked,
     retrieval: fallback
@@ -586,12 +692,30 @@ export function forget(args: ForgetInput): ForgetResult {
   // even mention the observation the caller targeted. The schema now rejects
   // an empty string outright (`.min(1)`), so this branch and that one are the
   // only two states left: a selector was given, or it was not.
+  //
+  // #523: the selector must match the stored observation EXACTLY. A row
+  // stored before #523 may still hold a credential as written, and its raw
+  // text finds it. The selector's redacted spelling is never used to remove:
+  // many different texts redact to one `***REDACTED***`, so it removed an
+  // unrelated redacted line and reported success (#523).
+  // When only that spelling is stored, the call is refused as ambiguous and
+  // nothing changes; a line stored redacted is removed by its stored text.
+  // recall shows a line stored before #523 masked, so that shown form selects
+  // only a line whose stored text is the marker itself, never the raw line;
+  // the raw line's selector is its stored text, which `export` returns. The
+  // response echoes the redacted spelling only.
   if (args.observation !== undefined) {
     const result = kg.removeObservation(args.name, args.observation);
+    const shown = redactSecrets(args.observation);
+    if (!result.removed && shown !== args.observation && db.prepare(
+      'SELECT 1 FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = ? AND o.content = ? LIMIT 1',
+    ).get(args.name, shown)) {
+      throw new Error('No exact stored-text match for that observation. recall shows credential-shaped text masked; a line is selected by its stored text, which export returns, or rewrite the memory with replace.');
+    }
     return {
       observation_removed: result.removed,
       name: args.name,
-      observation: args.observation,
+      observation: shown,
       remaining_observations: result.remainingObservations,
       entity_found: result.entityFound,
     };

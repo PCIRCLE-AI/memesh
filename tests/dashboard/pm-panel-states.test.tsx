@@ -13,6 +13,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, waitFor } from '@testing-library/preact';
 import { PmAnalyticsPanel } from '../../dashboard/src/components/PmAnalyticsPanel';
+import { UserPatterns } from '../../dashboard/src/components/UserPatterns';
 
 const GOOD = {
   velocity: { decisionsPerWeek: 1.5, releasesPerMonth: 2, windowDays: 30 },
@@ -82,5 +83,45 @@ describe('PmAnalyticsPanel tells its three states apart', () => {
       expect(alert?.textContent ?? '', 'the message does not mention reloading')
         .toMatch(/[Rr]eload|重新整理|刷新/);
     });
+  });
+});
+
+describe('PmAnalyticsPanel layout and labels', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('lets its four figures wrap on a narrow screen instead of a fixed four-column grid', async () => {
+    stubFetch(() => jsonReply(GOOD));
+    const { container } = render(<PmAnalyticsPanel />);
+    await waitFor(() => expect(container.textContent ?? '').toContain('1.5'));
+    const grid = [...container.querySelectorAll<HTMLElement>('div')].find((d) => d.style.display === 'grid')!;
+    expect(grid.style.gridTemplateColumns).toContain('auto-fit');
+  });
+
+  it('gives its refresh spinner an accessible name', async () => {
+    let call = 0;
+    stubFetch(() => (++call === 1 ? jsonReply(GOOD) : new Promise<Response>(() => { /* refetch pending */ })));
+    const view = render(<PmAnalyticsPanel dataRevision={0} />);
+    await waitFor(() => expect(view.container.textContent ?? '').toContain('1.5'));
+    view.rerender(<PmAnalyticsPanel dataRevision={1} />);
+    await waitFor(() => expect(view.container.querySelector('.loading[role="status"]')).not.toBeNull());
+    expect(view.container.querySelector('.loading[role="status"]')!.getAttribute('aria-label')).toBeTruthy();
+  });
+
+  it('says "not accessed" for stale plans — the server counts last access, not review', async () => {
+    stubFetch(() => jsonReply({ ...GOOD, staleness: { stalePlanCount: 2, openDecisionCount: 3 } }));
+    const { container } = render(<PmAnalyticsPanel />);
+    await waitFor(() => expect(container.textContent ?? '').toContain('2 plan(s) not accessed in 30+ days'));
+  });
+});
+
+describe('UserPatterns hour heat-map', () => {
+  it('gives each hour cell a name a screen reader can read, not only a hover title', () => {
+    const { container } = render(<UserPatterns data={{
+      workSchedule: { hourDistribution: [{ hour: 9, count: 5 }], dayDistribution: [] },
+      focusAreas: [], workflow: { commitsPerSession: 1, totalSessions: 1, totalCommits: 1 },
+      strengths: [], learningAreas: [],
+    }} />);
+    const cell = container.querySelector('[role="img"][aria-label="09:00 — 5"]');
+    expect(cell).not.toBeNull();
   });
 });

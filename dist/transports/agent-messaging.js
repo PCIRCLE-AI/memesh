@@ -5,6 +5,7 @@ import { AGENT_ROUTER_PROTOCOL_VERSION, AgentRouterError, createAgentRouterNotif
 import { getAgentRouterSocketPath } from '../core/paths.js';
 import { sessionAliasChain } from '../core/agent-message-inbox.js';
 import { jsonStringLiteral } from '../core/work-topology.js';
+import { sqliteUtcToIso } from '../core/time-utils.js';
 export class AgentRecipientUnavailableError extends AgentMessagingError {
     code = 'recipient_unavailable';
     constructor(detail) {
@@ -59,7 +60,7 @@ function nativeAcceptance(row) {
         delivery_id: row.delivery_id,
         adapter_kind: row.adapter_kind,
         receipt: parseStoredObject(row.receipt_json, 'agent_host_accepts.receipt_json'),
-        accepted_at: row.created_at,
+        accepted_at: sqliteUtcToIso(row.created_at),
     };
 }
 async function requireExactSessionNativeAcceptance(db, sent, dependencies) {
@@ -196,7 +197,7 @@ function readPublicReceiptsSnapshot(db, input) {
                 actor: row.actor,
                 idempotency_key: row.idempotency_key,
                 detail: parseStoredObject(row.detail_json, 'agent_ack_facts.detail_json'),
-                created_at: row.created_at,
+                created_at: sqliteUtcToIso(row.created_at),
             }),
             rank: 2,
             order: row.fact_order,
@@ -218,7 +219,7 @@ function readPublicReceiptsSnapshot(db, input) {
                 workflow_state: row.workflow_state,
                 idempotency_key: row.idempotency_key,
                 detail: parseStoredObject(row.detail_json, 'agent_workflow_facts.detail_json'),
-                created_at: row.created_at,
+                created_at: sqliteUtcToIso(row.created_at),
             }),
             rank: 3,
             order: row.fact_order,
@@ -279,7 +280,7 @@ function projectHostAccept(delivery, fact) {
         attempt_id: fact.attempt_id,
         adapter_kind: fact.adapter_kind,
         receipt: parseStoredObject(fact.receipt_json, 'agent_host_accepts.receipt_json'),
-        created_at: fact.created_at,
+        created_at: sqliteUtcToIso(fact.created_at),
     };
 }
 function projectAckFact(delivery, fact) {
@@ -331,6 +332,14 @@ function parseStoredObject(raw, label) {
     }
     throw new AgentMessagingError(`Invalid stored JSON object in ${label}.`);
 }
+function principalFallbackKey(idempotencyKey) {
+    return `principal-fallback:${createHash('sha256').update(idempotencyKey).digest('hex')}`;
+}
+function hasPrincipalFallback(db, sent, idempotencyKey) {
+    return db.prepare(`
+    SELECT 1 FROM agent_message_idempotency WHERE project = ? AND sender = ? AND idempotency_key = ?
+  `).get(sent.project, sent.sender, principalFallbackKey(idempotencyKey)) !== undefined;
+}
 function sendPrincipalFallback(db, message, refused) {
     const session = db.prepare(`
     SELECT principal_id FROM agent_session_instances WHERE project = ? AND session_instance_id = ?
@@ -347,7 +356,7 @@ function sendPrincipalFallback(db, message, refused) {
             recipient: session.principal_id,
             target_kind: 'principal',
             intended_session: refused.recipient,
-            idempotency_key: `principal-fallback:${createHash('sha256').update(message.idempotency_key).digest('hex')}`,
+            idempotency_key: principalFallbackKey(message.idempotency_key),
         }, {
             notifier: optionalRouterNotifier(),
             storage_quota_bytes: configuredAgentMessageStorageQuotaBytes(),
@@ -413,6 +422,9 @@ export async function executeAgentMessageAction(db, rawInput, context, dependenc
             });
             if (sent.target_kind !== 'session')
                 return sent;
+            if (hasPrincipalFallback(db, sent, input.idempotency_key)) {
+                return sendPrincipalFallback(db, message, sent);
+            }
             try {
                 return {
                     ...sent,

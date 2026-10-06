@@ -8,6 +8,8 @@ export interface SearchResult {
 export declare class KnowledgeGraph {
     private db;
     constructor(db: MemeshDatabase);
+    private storedMetadata;
+    private storedText;
     updateEntityMetadata(name: string, updater: (currentMetadata: Record<string, unknown>) => Record<string, unknown> | null | undefined): void;
     createEntity(name: string, type: string, opts?: {
         observations?: string[];
@@ -32,8 +34,9 @@ export declare class KnowledgeGraph {
     private scanActiveRows;
     trackAccess(entityIds: number[]): void;
     findConflicts(entityNames: string[]): string[];
-    listRecent(limit?: number, includeArchived?: boolean, namespace?: string, countAsAccess?: boolean): Entity[];
-    listByType(type: string, limit?: number, includeArchived?: boolean, namespace?: string): Entity[];
+    listRecent(limit?: number, includeArchived?: boolean, namespace?: string, countAsAccess?: boolean, offset?: number): Entity[];
+    listByType(type: string, limit?: number, includeArchived?: boolean, namespace?: string, offset?: number): Entity[];
+    listByProject(project: string, limit?: number, includeArchived?: boolean, namespace?: string, offset?: number): Entity[];
     private listRecentInScope;
     private listRecentByTag;
     clearEntityData(name: string): void;

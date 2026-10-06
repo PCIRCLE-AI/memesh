@@ -89,11 +89,11 @@ function newestFirst(a: number | null, b: number | null): number {
   return b - a;
 }
 
-/** `recencyMs` as an ISO instant, for `timeBucket()` — which reads its
- *  argument with `new Date()` and therefore takes a SQLite `created_at` as
- *  LOCAL time, ageing the row by the viewer's UTC offset and pushing it
- *  across the today/week boundary. (An unreadable timestamp still lands in
- *  'older' — that is timeBucket's own contract for a date it does not have.) */
+/** `recencyMs` as an ISO instant, for `timeBucket()`. Both sides read a SQLite
+ *  `created_at` as UTC (`timestampDate` in entity-display.ts); handing over an
+ *  unambiguous instant keeps that true if either side changes. (An unreadable
+ *  timestamp lands in 'older' — that is timeBucket's own contract for a date
+ *  it does not have.) */
 function recencyIso(e: Entity): string | null {
   const ms = recencyMs(e);
   return ms === null ? null : new Date(ms).toISOString();
@@ -102,6 +102,7 @@ function recencyIso(e: Entity): string | null {
 export function MemoriesTab({ health, dataRevision = 0 }: { health?: HealthData | null; dataRevision?: number }) {
   const [entities, setEntities] = useState<Entity[]>([]);
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
+  const [projectsError, setProjectsError] = useState('');
   const [filter, setFilter] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -149,7 +150,12 @@ export function MemoriesTab({ health, dataRevision = 0 }: { health?: HealthData 
     try {
       const [data, projs] = await Promise.all([
         api<Entity[]>('GET', `/v1/entities?limit=${FETCH_LIMIT}&status=all`),
-        fetchProjects().catch(() => []),
+        // Settled, not caught into `[]`: a failed projects request made the
+        // project filter row vanish with no sign that anything had gone wrong.
+        fetchProjects().then(
+          (list) => ({ ok: true as const, list }),
+          (e: unknown) => ({ ok: false as const, failure: classifyLoadError(e), cause: e }),
+        ),
       ]);
       // A payload that is NOT the array must not dress up as an empty
       // library: "0 memories" from a response nobody could read is a false
@@ -161,7 +167,14 @@ export function MemoriesTab({ health, dataRevision = 0 }: { health?: HealthData 
       } else {
         setEntities(data);
       }
-      setProjects(projs);
+      if (projs.ok) {
+        setProjects(projs.list);
+        setProjectsError('');
+      } else {
+        console.warn('[memesh dashboard] /v1/projects failed to load:', projs.cause);
+        setProjects([]);
+        setProjectsError(failureMessage(projs.failure));
+      }
       setPage(0);
     } catch (e) {
       if (gen !== loadGen.current) return;
@@ -306,10 +319,20 @@ export function MemoriesTab({ health, dataRevision = 0 }: { health?: HealthData 
     }
   }
 
+  // A ranked-search result list is a snapshot the reload does not touch, so
+  // the row has to learn about the change itself — otherwise Archive looked
+  // like it did nothing (the row stayed, still offering Archive).
+  function markInResults(name: string, status: 'active' | 'archived') {
+    setRecallResults((prev) => (prev
+      ? prev.map((e) => (e.name === name ? { ...e, status, archived: status === 'archived' } : e))
+      : prev));
+  }
+
   async function handleArchive(name: string) {
     if (!confirm(t('browse.confirmArchive'))) return;
     try {
       await api('POST', '/v1/forget', { name });
+      markInResults(name, 'archived');
       window.dispatchEvent(new Event('memesh:data-changed'));
     } catch (e) {
       setError(t('browse.archiveFailed', { message: actionFailureMessage(e) }));
@@ -319,6 +342,7 @@ export function MemoriesTab({ health, dataRevision = 0 }: { health?: HealthData 
   async function handleRestore(name: string) {
     try {
       await api('POST', '/v1/remember', { name, type: 'restored' });
+      markInResults(name, 'active');
       window.dispatchEvent(new Event('memesh:data-changed'));
     } catch (e) {
       setError(t('browse.restoreFailed', { message: actionFailureMessage(e) }));
@@ -353,7 +377,7 @@ export function MemoriesTab({ health, dataRevision = 0 }: { health?: HealthData 
                 onClick={() => toggleExpanded(e.id)}
               >
                 <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true" style={{ transform: isOpen ? 'rotate(90deg)' : 'none', transition: 'transform 150ms' }}>
-                  <path d="M6 4 L10 8 L6 12" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M6 4 L10 8 L6 12" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round" />
                 </svg>
               </button>
               {archived
@@ -493,6 +517,7 @@ export function MemoriesTab({ health, dataRevision = 0 }: { health?: HealthData 
           <Chip label={t('browse.valueNever')} active={value === 'never'} onClick={() => setValue(value === 'never' ? 'all' : 'never')} />
         </div>
 
+        {projectsError && <div role="status" style={{ fontSize: 14, color: 'var(--text-2)', marginBottom: 6 }}>{projectsError}</div>}
         {projects.length > 0 && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
             <span style={{ fontSize: 14, color: 'var(--text-3)', alignSelf: 'center', marginRight: 4 }}>{t('browse.filterProject')}</span>

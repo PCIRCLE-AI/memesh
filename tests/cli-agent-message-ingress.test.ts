@@ -4,10 +4,12 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import { DatabaseSync } from 'node:sqlite';
 import { closeDatabase, openDatabase } from '../src/db.js';
 import { AGENT_MESSAGE_PROJECT_TABLES } from '../src/core/agent-scope-id.js';
 import { pollAgentEvents, sendAgentMessage } from '../src/core/agent-messaging.js';
+import { readCliMessagePayloadFromStdin } from '../src/transports/cli/cli.js';
 
 const cliLoader = `
   import { createServer } from 'vite';
@@ -35,6 +37,20 @@ function readOwnerPrivateRegularFile(filePath: string): string {
     fs.closeSync(descriptor);
   }
 }
+
+describe('CLI message payload from stdin', () => {
+  it('keeps a multi-byte character that is split across two stdin writes intact', async () => {
+    const bytes = Buffer.from('hi 你好', 'utf8');
+    // 你 is three bytes starting at offset 3; cutting at 4 leaves it half in each chunk.
+    const stdin = Readable.from([bytes.subarray(0, 4), bytes.subarray(4)], { objectMode: true });
+    await expect(readCliMessagePayloadFromStdin('text/plain', stdin)).resolves.toBe('hi 你好');
+  });
+
+  it('counts the limit in bytes of what was written, whatever the chunking', async () => {
+    const stdin = Readable.from([Buffer.alloc(40_000, 'x'), Buffer.alloc(40_000, 'x')], { objectMode: true });
+    await expect(readCliMessagePayloadFromStdin('text/plain', stdin)).rejects.toThrow(/exceeds 65536 UTF-8 bytes/);
+  });
+});
 
 describe('CLI durable-message ingress', () => {
   it('documents the separate durable payload and complete native envelope limits', () => {
@@ -280,6 +296,25 @@ describe('CLI durable-message ingress', () => {
       expect(result.status).not.toBe(0);
       expect(result.stderr).toMatch(/unknown option '--payload'/);
       expect(`${result.stdout}${result.stderr}`).not.toContain('sentinel-must-not-be-logged');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  // #403: the policy the report prints is the cutoff it applied. A cutoff in
+  // SQLite's form is UTC; printing it through `new Date()` showed it eight
+  // hours off at UTC+8.
+  it('#403 report prints the cutoff it applied, for a cutoff in SQLite form under a non-UTC TZ', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-message-'));
+    try {
+      const report = spawnSync(process.execPath, cliArgs(
+        'message', 'storage', 'report', '--cutoff', '2026-08-27 00:00:00',
+      ), {
+        encoding: 'utf8',
+        env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false', TZ: 'Asia/Taipei' },
+      });
+      expect(report.status, report.stderr).toBe(0);
+      expect(JSON.parse(report.stdout).policy.cutoff).toBe('2026-08-27T00:00:00.000Z');
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }

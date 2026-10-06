@@ -12,6 +12,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, waitFor } from '@testing-library/preact';
 import { MetricsRow, buildTiles, isMetricsRenderable } from '../../dashboard/src/components/MetricsRow';
+import { HomeTab } from '../../dashboard/src/components/HomeTab';
 import { t } from '../../dashboard/src/lib/i18n';
 import type { AnalyticsData } from '../../dashboard/src/lib/api';
 
@@ -122,5 +123,54 @@ describe('MetricsRow — a failed fetch is not four zeroes', () => {
       expect(container.querySelector('[role="alert"]'), 'a dead analytics call rendered as data').not.toBeNull();
     });
     expect(container.querySelectorAll('.stat-val')).toHaveLength(0);
+  });
+});
+
+describe('MetricsRow — two more places an absence must not print as a number', () => {
+  it('an empty library is "not measured" for the health tile, not a health of 0', () => {
+    const empty = buildTiles(analytics({ healthScore: 0 }), 'en', true).find((x) => x.key === 'health')!;
+    expect(empty.value, 'a fresh install was told its memory scores 0').toBeNull();
+    // With memories the number is real, zero included.
+    expect(buildTiles(analytics({ healthScore: 0 }), 'en', false).find((x) => x.key === 'health')!.value).toBe('0');
+  });
+
+  it('a citation counter pair of 0 of 0 is not measured (it would print NaN%)', () => {
+    const t0 = tile(analytics({ citationCompliance: { cited: 0, total: 0 } }), 'citation');
+    expect(t0.value).toBeNull();
+    expect(t0.note).toBe(t('metrics.citationNotMeasured'));
+  });
+});
+
+// `buildTiles` above proves the rule; these prove it is wired — that the
+// component hands the flag down and Home computes it from the entity count.
+// Remove either and the row prints "health 0" on a fresh install.
+describe('MetricsRow — an empty library reaches the health tile', () => {
+  const stubAnalytics = (data: AnalyticsData) => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL) => {
+      const body = String(input).startsWith('/v1/analytics') ? data : {};
+      return new Response(JSON.stringify({ success: true, data: body }), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+  };
+  const healthTileValue = (container: Element) => {
+    const tile = [...container.querySelectorAll('.stat')].find((x) => x.querySelector('.stat-lbl')?.textContent === t('metrics.health'));
+    return tile?.querySelector('.stat-val')?.textContent;
+  };
+
+  it('<MetricsRow libraryEmpty> says "not measured" for health', async () => {
+    stubAnalytics(analytics({ healthScore: 0 }));
+    const { container } = render(<MetricsRow libraryEmpty />);
+    await waitFor(() => expect(container.querySelectorAll('.stat-val')).toHaveLength(4));
+    expect(healthTileValue(container)).toBe(t('metrics.notMeasured'));
+  });
+
+  it('Home passes the flag: entity_count 0 reads "not measured", a library with memories reads its 0', async () => {
+    stubAnalytics(analytics({ healthScore: 0 }));
+    const empty = render(<HomeTab health={{ status: 'ok', version: 't', entity_count: 0 }} />);
+    await waitFor(() => expect(healthTileValue(empty.container)).toBe(t('metrics.notMeasured')));
+    empty.unmount();
+
+    const filled = render(<HomeTab health={{ status: 'ok', version: 't', entity_count: 4 }} />);
+    await waitFor(() => expect(healthTileValue(filled.container)).toBe('0'));
   });
 });

@@ -46,6 +46,9 @@ require a bearer token when bound to `localhost`.
   automated jobs don't pollute long-term memory.
 - Tools: `memesh_remember`, `memesh_recall`, `memesh_forget` — exposed for
   explicit LLM-directed memory management on top of the automatic hooks.
+  `memesh_remember` takes `why` (the reason, and what would make it stop
+  holding), which a `decision`, `architecture_decision` or `design_decision`
+  needs; a refused write comes back as the server's own sentence.
 - `on_pre_compress()` / `on_session_end()`: pass the message list to
   `memesh hermes capture-session`, the same extractor the Claude Code Stop
   hook uses. It stores up to three `session-insight` entities —
@@ -62,9 +65,10 @@ require a bearer token when bound to `localhost`.
   the default when both run as the same user on the same machine. If
   `memesh serve` runs under systemd with `MEMESH_DB_PATH`/`MEMESH_DIR` in its
   unit file, give the Hermes process the same values.
-- Hermes writes have no `project:` tag, so they don't show up in
-  project-scoped views (for example the session-start briefing). Recall them
-  by query or by the `platform:hermes` tag.
+- Hermes writes have no `project:` tag, so MeMesh treats them as memories
+  that belong to no project: up to five of them can appear in every
+  project's session-start briefing. Recall them by query or by the
+  `platform:hermes` tag.
 - `sync_turn()` never waits: turns go to one background worker through a
   queue of 8; when it is full the turn is dropped with a warning in the log.
   At session end and shutdown the plugin waits up to 5 s in total (one

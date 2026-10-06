@@ -15,8 +15,9 @@ const TOKEN_STORAGE_KEY = 'memesh_token';
  * surfaces); it then persists across reloads on the same origin.
  *
  * On a loopback-only deployment (the default), the server requires no
- * token at all, so `getApiToken()` returns null, no header is sent,
- * and the existing zero-config local UX is preserved.
+ * token at all, so nothing ever stores one: `getApiToken()` returns null
+ * (until a token has been pasted), no header is sent, and the existing
+ * zero-config local UX is preserved.
  */
 export function getApiToken(): string | null {
   try {
@@ -84,6 +85,26 @@ export class RateLimitError extends Error {
 }
 
 /**
+ * The server answered 2xx, but the body is not something this bundle can read
+ * as a reply (not JSON, or JSON that is not an object). It is neither an
+ * outage (the server is up) nor an envelope with a message to relay, so it has
+ * its own type: callers say "reload / run doctor" instead of showing the
+ * browser's JSON-parser prose.
+ */
+export class UnreadableResponseError extends Error {
+  constructor() {
+    super('unreadable response');
+    this.name = 'UnreadableResponseError';
+  }
+}
+
+/** Codes whose message's PRIMARY action is a command to run in a Terminal.
+ *  `auth.cross-origin` also quotes a command, but what it asks for is to open
+ *  another address in the browser — labelling it "Requires Terminal" was false
+ *  (failure.ts states the rule: the primary action decides the label). */
+const TERMINAL_ERROR_CODES = new Set(['auth.not-configured', 'operation.permission-denied', 'doctor.repair-incomplete']);
+
+/**
  * The Error a `success: false` envelope becomes. Server envelopes carry a
  * stable machine `errorCode` next to the English `error` prose (see
  * API_REFERENCE → "Stable error codes"). Prefer the translated message for a
@@ -96,22 +117,38 @@ function envelopeError(json: { errorCode?: unknown; error?: unknown }): Error {
   if (typeof json.errorCode === 'string' && json.errorCode) {
     const key = `httpError.${json.errorCode}`;
     const translated = t(key);
-    if (translated !== key) return new Error(translated.includes('`memesh') ? `${t('handoff.terminal')}: ${translated}` : translated);
+    if (translated !== key) return new Error(TERMINAL_ERROR_CODES.has(json.errorCode) ? `${t('handoff.terminal')}: ${translated}` : translated);
   }
   const fallback = typeof json.error === 'string' && json.error ? json.error : t('errors.unknown');
-  return new Error(fallback.includes('`memesh') ? `${t('handoff.terminal')}: ${fallback}` : fallback);
+  const terminal = typeof json.errorCode === 'string' && TERMINAL_ERROR_CODES.has(json.errorCode);
+  return new Error(terminal ? `${t('handoff.terminal')}: ${fallback}` : fallback);
 }
 
-export async function api<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
+/**
+ * `timeoutMs` is for the one call that is slow by design: a repair the server
+ * runs synchronously (a plugin-cache refresh has a 120 s budget). With the
+ * default 10 s the browser gave up and reported "timed out" while the server
+ * was still working, and the user pressed the button again.
+ */
+export async function api<T = unknown>(method: string, path: string, body?: unknown, options?: { timeoutMs?: number }): Promise<T> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT);
+  const timer = setTimeout(() => controller.abort(), options?.timeoutMs ?? TIMEOUT);
   try {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     const token = getApiToken();
     if (token) headers['Authorization'] = `Bearer ${token}`;
     const opts: RequestInit = { method, headers, signal: controller.signal };
     if (body) opts.body = JSON.stringify(body);
-    const res = await fetch(path, opts);
+    // Only a failure of the fetch ITSELF is a network failure. A TypeError
+    // from anywhere else in this function is a reply this bundle cannot read
+    // (a 200 whose body is `null` threw one on `json.success`, and the user
+    // was told to check that the server is running).
+    let res: Response;
+    try {
+      res = await fetch(path, opts);
+    } catch (e) {
+      throw e instanceof TypeError ? new NetworkError(e.message) : e;
+    }
     if (res.status === 401) {
       // Distinct error type so the UI can switch into the
       // enter-your-token flow rather than treating this as a generic
@@ -138,7 +175,9 @@ export async function api<T = unknown>(method: string, path: string, body?: unkn
       let json: unknown = null;
       try {
         json = await res.json();
-      } catch {
+      } catch (e) {
+        // The timeout also lands here when it fires mid-body; it keeps its name.
+        if (e instanceof Error && e.name === 'AbortError') throw e;
         /* non-JSON body — fall through to the bare status */
       }
       if (json && typeof json === 'object' && (json as { success?: unknown }).success === false) {
@@ -146,15 +185,19 @@ export async function api<T = unknown>(method: string, path: string, body?: unkn
       }
       throw new HttpError(res.status);
     }
-    const json = await res.json();
+    let json: { success?: unknown; data?: unknown; errorCode?: unknown; error?: unknown };
+    try {
+      json = await res.json();
+    } catch (e) {
+      // The timeout also lands here when it fires mid-body; it keeps its name.
+      if (e instanceof Error && e.name === 'AbortError') throw e;
+      throw new UnreadableResponseError();
+    }
+    if (!json || typeof json !== 'object') throw new UnreadableResponseError();
     if (!json.success) throw envelopeError(json);
     return json.data as T;
   } catch (err) {
     if (err instanceof Error && err.name === 'AbortError') throw new NetworkError(t('errors.timeout'));
-    // fetch signals a network-level failure as a TypeError; rewrap so
-    // callers can tell "no response" from "the server answered badly"
-    // without string-matching messages.
-    if (err instanceof TypeError) throw new NetworkError(err.message);
     throw err;
   } finally {
     clearTimeout(timer);
@@ -293,7 +336,7 @@ export interface TaskStateData {
 
 export async function fetchTaskState(project: string): Promise<TaskStateData> {
   const data = await api<TaskStateData>('GET', `/v1/task-state?project=${encodeURIComponent(project)}`);
-  if (!data || typeof data !== 'object' || typeof (data as TaskStateData).project !== 'string' || typeof (data as TaskStateData).state !== 'object') {
+  if (!data || typeof data !== 'object' || typeof (data as TaskStateData).project !== 'string' || typeof (data as TaskStateData).state !== 'object' || (data as TaskStateData).state === null) {
     console.warn('[memesh dashboard] /v1/task-state answered with a shape this bundle cannot read:', data);
     throw new Error('unreadable task-state payload');
   }

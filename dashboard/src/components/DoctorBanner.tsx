@@ -1,10 +1,19 @@
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { api } from '../lib/api';
+import { actionFailureMessage } from '../lib/failure';
 import { t } from '../lib/i18n';
-import { openExternalWindow, terminalCommands } from '../lib/external-handoffs';
+import { githubIssueUrl, openExternalWindow, terminalCommands } from '../lib/external-handoffs';
 import { GitHubDestination, TerminalHandoff } from './ExternalHandoff';
 
 const DISMISS_KEY = 'memesh.doctorBanner.dismissedSig';
+
+/** The repair POST is answered only when the server is done: it runs doctor
+ *  first (to re-check the row it was asked to repair), then the repair, whose
+ *  slowest case (a plugin-cache refresh) has a 120 s budget in total — see
+ *  doctor-fixes.ts — and then doctor again for the after-state. The page waits
+ *  30 s more than that budget: the extra 30 s covers both doctor runs, before
+ *  and after the repair. It is a margin, not a figure measured on a real install. */
+const REPAIR_TIMEOUT_MS = 150_000;
 
 interface DoctorCheck {
   id: string;
@@ -27,7 +36,7 @@ interface DoctorResult { status: string; checks: DoctorCheck[] }
  * codes are per-VARIANT and params carry the dynamic parts, so nothing is
  * erased — an untranslated variant simply shows the server's English.
  */
-export function trField(key: string, fallback: string, params?: Record<string, string | number>): string {
+function trField(key: string, fallback: string, params?: Record<string, string | number>): string {
   const translated = t(key, params);
   return translated === key ? fallback : translated;
 }
@@ -53,7 +62,7 @@ export function trLabel(c: DoctorCheck): string {
  * action-needed things (update available, version withdrawn, search
  * degraded). FAIL status always banners regardless of this list.
  */
-export const QUIET_WARN_CODES = new Set([
+const QUIET_WARN_CODES = new Set([
   'update-status.no-cache',        // has not checked yet — not a problem
   'update-status.stale',           // version is current, cache merely old
   'update-status.deprecation-unknown', // lookup failed; retried silently
@@ -107,14 +116,15 @@ export function isBannerWorthy(c: DoctorCheck): boolean {
  * missing, database unreadable) actually see it instead of silently wondering
  * why memesh "doesn't work properly". This is the user-visible
  * tip of the "ship-前-verify" gate: doctor finds it → user sees it
- * → one-click "Get help" routes to the existing FeedbackWidget
- * with that diagnostic pre-attached.
+ * → one-click "Get help" opens a GitHub issue pre-filled with those
+ * diagnostics (it builds the link itself; it does not go through
+ * FeedbackWidget).
  *
  * Dismiss semantics: remember the SIGNATURE of dismissed checks
- * (a join of their IDs + statuses), not just "dismissed = true".
- * If a new check starts failing, the banner reappears. If the same
- * checks continue failing the user already chose to ignore, it
- * stays dismissed.
+ * (a join of their IDs, statuses and codes), not just "dismissed = true".
+ * The banner stays dismissed only while the set of checks is EXACTLY the one
+ * the user dismissed: a new check, or one of the dismissed ones clearing, makes
+ * the signature differ and brings the banner back.
  */
 export function DoctorBanner() {
   const [doctor, setDoctor] = useState<DoctorResult | null>(null);
@@ -123,18 +133,41 @@ export function DoctorBanner() {
   });
   const [helpUrl, setHelpUrl] = useState('');
   const [helpCopied, setHelpCopied] = useState(false);
+  const [helpCopyFailed, setHelpCopyFailed] = useState(false);
   const [repairingId, setRepairingId] = useState<string | null>(null);
   const [repairedId, setRepairedId] = useState<string | null>(null);
   const [repairError, setRepairError] = useState<string | null>(null);
+  const fetchGen = useRef(0);
 
   useEffect(() => {
     let mounted = true;
     const fetch = () => {
+      const gen = ++fetchGen.current;
       api<DoctorResult>('GET', '/v1/doctor')
-        // A response without `checks` is not a doctor result. Storing it
-        // anyway made `doctor.checks.filter(...)` throw on the next render.
-        .then((d) => { if (mounted) setDoctor(Array.isArray(d?.checks) ? d : null); })
-        .catch(() => { /* doctor unavailable — banner stays hidden */ });
+        .then((d) => {
+          // A newer fetch was started meanwhile (a data-changed event fired
+          // while this one was in flight): its answer wins, not whichever
+          // lands last.
+          if (!mounted || gen !== fetchGen.current) return;
+          // A response without `checks` is not a doctor result. Storing it
+          // anyway made `doctor.checks.filter(...)` throw on the next render.
+          // It is treated exactly like a failed request: the result we
+          // already hold stays, and the skip is logged.
+          if (!Array.isArray(d?.checks)) {
+            console.warn('[memesh dashboard] /v1/doctor answered, but with a shape this bundle cannot render — keeping the previous result:', d);
+            return;
+          }
+          setDoctor(d);
+          // A repair that reported "Fixed" while the next doctor run still lists
+          // the same check did not fix it: the button must say so again.
+          setRepairedId((cur) => (cur !== null && d.checks.some((c) => c.id === cur && isBannerWorthy(c)) ? null : cur));
+        })
+        .catch((e: unknown) => {
+          // Doctor unavailable. The result we already hold (if any) stays —
+          // a transient failure must not make a broken install look fixed —
+          // and with none held the banner simply has nothing to show.
+          if (mounted && gen === fetchGen.current) console.warn('[memesh dashboard] /v1/doctor failed to load:', e);
+        });
     };
     fetch();
     const handler = () => fetch();
@@ -156,6 +189,11 @@ export function DoctorBanner() {
   // banner for ones the user can't (or shouldn't) act on.
   const concerns = doctor.checks.filter(isBannerWorthy);
   if (concerns.length === 0) return null;
+  // The list shows the first three. Failures come first: the title says the
+  // setup is incomplete, and the check that FAILED must not be the one folded
+  // into "…and N more" behind three warnings (the sort is stable, so each tier
+  // keeps doctor's own order).
+  const listed = [...concerns].sort((a, b) => Number(b.status === 'fail') - Number(a.status === 'fail'));
 
   // Signature is stable for the same set of failing checks. Sort
   // before joining so check order doesn't change the signature. The code
@@ -186,10 +224,15 @@ export function DoctorBanner() {
     });
     const body = `${t('doctorBanner.preambleForIssue')}\n\n${lines.join('\n')}`;
     const labels = 'feedback,from-dashboard,bug,doctor-warning';
-    const url = `https://github.com/PCIRCLE-AI/memesh/issues/new?title=${encodeURIComponent('[Bug] memesh doctor reported issues')}&body=${encodeURIComponent(body)}&labels=${encodeURIComponent(labels)}`;
+    const url = githubIssueUrl({ title: '[Bug] memesh doctor reported issues', body, labels });
     if (!openExternalWindow(url)) {
       setHelpUrl(url);
       setHelpCopied(false);
+      setHelpCopyFailed(false);
+    } else {
+      // GitHub opened this time: the blocked-popup block from an earlier
+      // attempt no longer applies.
+      setHelpUrl('');
     }
   }
 
@@ -199,14 +242,14 @@ export function DoctorBanner() {
     setRepairedId(null);
     setRepairError(null);
     try {
-      const result = await api<{ restartRequired?: boolean }>('POST', '/v1/doctor/fix', { id: c.id });
+      const result = await api<{ restartRequired?: boolean }>('POST', '/v1/doctor/fix', { id: c.id }, { timeoutMs: REPAIR_TIMEOUT_MS });
       setRepairedId(c.id);
       if (result?.restartRequired) {
         setRepairError(t('doctorBanner.restartRequired'));
       }
       window.dispatchEvent(new Event('memesh:data-changed'));
     } catch (err) {
-      setRepairError(err instanceof Error ? err.message : String(err));
+      setRepairError(actionFailureMessage(err));
     } finally {
       setRepairingId(null);
     }
@@ -214,14 +257,13 @@ export function DoctorBanner() {
 
   async function copyHelpLink() {
     if (!helpUrl) return;
-    try { await navigator.clipboard.writeText(helpUrl); setHelpCopied(true); }
-    catch { setHelpCopied(false); }
+    try { await navigator.clipboard.writeText(helpUrl); setHelpCopied(true); setHelpCopyFailed(false); }
+    catch { setHelpCopied(false); setHelpCopyFailed(true); }
   }
 
   const isFail = doctor.status === 'FAIL';
   const tone = isFail ? 'var(--danger)' : 'var(--warning)';
   const toneBg = isFail ? 'var(--danger-soft)' : 'var(--warning-soft)';
-  const toneBorder = tone;
 
   return (
     <div
@@ -236,7 +278,7 @@ export function DoctorBanner() {
         margin: '12px auto 0',
         maxWidth: 920,
         padding: '12px 16px',
-        border: `1px solid ${toneBorder}`,
+        border: `1px solid ${tone}`,
         borderRadius: 'var(--radius)',
         background: toneBg,
         color: 'var(--text-1)',
@@ -267,7 +309,7 @@ export function DoctorBanner() {
         {isFail ? t('doctorBanner.failTitle') : t('doctorBanner.warnTitleSoft')}
       </div>
       <ul style={{ margin: '6px 0 10px', paddingLeft: 18, fontSize: 14, lineHeight: 1.5, color: 'var(--text-2)' }}>
-        {concerns.slice(0, 3).map(c => {
+        {listed.slice(0, 3).map(c => {
           const fix = trFix(c);
           const autoRepairable = c.fixId === 'config-retired-settings' || c.fixId === 'plugin-cache-refresh';
           return (
@@ -331,6 +373,7 @@ export function DoctorBanner() {
           <button type="button" class="btn btn-sm" onClick={() => { void copyHelpLink(); }}>
             {helpCopied ? t('feedback.linkCopied') : t('feedback.copyLink')}
           </button>
+          {helpCopyFailed && <div role="status" style={{ color: 'var(--danger)' }}>{t('feedback.copyFailed')}</div>}
         </div>
       )}
     </div>

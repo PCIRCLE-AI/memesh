@@ -31,6 +31,7 @@ import {
 import { getAgentRouterSocketPath } from '../core/paths.js';
 import { sessionAliasChain } from '../core/agent-message-inbox.js';
 import { jsonStringLiteral } from '../core/work-topology.js';
+import { sqliteUtcToIso } from '../core/time-utils.js';
 
 export type AgentMessageActionInput = z.infer<typeof MessageSchema>;
 
@@ -172,7 +173,7 @@ function nativeAcceptance(row: HostAcceptRow): AgentJsonObject {
     delivery_id: row.delivery_id,
     adapter_kind: row.adapter_kind,
     receipt: parseStoredObject(row.receipt_json, 'agent_host_accepts.receipt_json'),
-    accepted_at: row.created_at,
+    accepted_at: sqliteUtcToIso(row.created_at),
   };
 }
 
@@ -358,7 +359,7 @@ function readPublicReceiptsSnapshot(
         actor: row.actor,
         idempotency_key: row.idempotency_key,
         detail: parseStoredObject(row.detail_json, 'agent_ack_facts.detail_json'),
-        created_at: row.created_at,
+        created_at: sqliteUtcToIso(row.created_at),
       }),
       rank: 2,
       order: row.fact_order,
@@ -381,7 +382,7 @@ function readPublicReceiptsSnapshot(
         workflow_state: row.workflow_state,
         idempotency_key: row.idempotency_key,
         detail: parseStoredObject(row.detail_json, 'agent_workflow_facts.detail_json'),
-        created_at: row.created_at,
+        created_at: sqliteUtcToIso(row.created_at),
       }),
       rank: 3,
       order: row.fact_order,
@@ -448,7 +449,7 @@ function projectHostAccept(delivery: CanonicalDeliveryScope, fact: HostAcceptRow
     attempt_id: fact.attempt_id,
     adapter_kind: fact.adapter_kind,
     receipt: parseStoredObject(fact.receipt_json, 'agent_host_accepts.receipt_json'),
-    created_at: fact.created_at,
+    created_at: sqliteUtcToIso(fact.created_at),
   };
 }
 
@@ -504,6 +505,21 @@ function parseStoredObject(raw: string, label: string): AgentJsonObject {
   throw new AgentMessagingError(`Invalid stored JSON object in ${label}.`);
 }
 
+function principalFallbackKey(idempotencyKey: string): string {
+  return `principal-fallback:${createHash('sha256').update(idempotencyKey).digest('hex')}`;
+}
+
+/** Whether a send with this idempotency key already fell back to its principal. */
+function hasPrincipalFallback(
+  db: MemeshDatabase,
+  sent: { project: string; sender: string },
+  idempotencyKey: string,
+): boolean {
+  return db.prepare(`
+    SELECT 1 FROM agent_message_idempotency WHERE project = ? AND sender = ? AND idempotency_key = ?
+  `).get(sent.project, sent.sender, principalFallbackKey(idempotencyKey)) !== undefined;
+}
+
 /**
  * #497 `fallback_to_principal`: the exact session refused a session send, so
  * send the same message to that session's principal, meant for that session
@@ -544,7 +560,7 @@ function sendPrincipalFallback(
       recipient: session.principal_id,
       target_kind: 'principal',
       intended_session: refused.recipient,
-      idempotency_key: `principal-fallback:${createHash('sha256').update(message.idempotency_key).digest('hex')}`,
+      idempotency_key: principalFallbackKey(message.idempotency_key),
     }, {
       notifier: optionalRouterNotifier(),
       storage_quota_bytes: configuredAgentMessageStorageQuotaBytes(),
@@ -626,6 +642,12 @@ export async function executeAgentMessageAction(
         storage_quota_bytes: configuredAgentMessageStorageQuotaBytes(),
       });
       if (sent.target_kind !== 'session') return sent;
+      // A retry of a send that already fell back returns that principal message, with or
+      // without the flag, even when the session is back by now; trying the session again
+      // would deliver a second copy.
+      if (hasPrincipalFallback(db, sent, input.idempotency_key)) {
+        return sendPrincipalFallback(db, message, sent);
+      }
       try {
         return {
           ...sent,

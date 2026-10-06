@@ -115,7 +115,7 @@ host is recallable from all of them. Not installed yet? Follow
 | Tool | Purpose |
 |---|---|
 | `work_package` | Prepare one bounded untrusted digest (calendar-selected) or transcript package from the newest Claude Code session under the client's single matching MCP workspace root; submit one strictly validated result for pending human review or defer without durable change. Submission retains bounded redacted source turns for comparison; agents cannot apply or reject, and hashes identify freshness and workspace scope rather than authentication. |
-| `remember` | Store knowledge as an entity with observations, tags, and relations; or pass only `note` (free text) and the title, observations and name are derived; `replace: true` rewrites a named memory, keeping the old version as history |
+| `remember` | Store knowledge as an entity with observations, tags, and relations; or pass only `note` (free text) and the title, observations and name are derived; `replace: true` rewrites a named memory, keeping the old version as history; a new decision, or a `replace` of one, needs `why` (its reason and what would make it stop holding) |
 | `recall` | Search stored knowledge: one or two words match any of them; three or more must all match, falling back to any-word matching only when nothing matches all; ranked by relevance. Empty query lists recent |
 | `forget` | Archive an entity (soft-delete), or remove one observation via the `observation` parameter |
 | `export` | Export memories as portable JSON for sharing or backup |
@@ -140,18 +140,32 @@ host is recallable from all of them. Not installed yet? Follow
   general lesson). `recall` searches the bound project (or `project`), memories
   with no project and global ones, and says which in `scope`. When you tag by hand (the CLI, or another
   project), use `project:<id>`, where `<id>` is the `project` field of the
-  `briefing` result (CLI: `memesh briefing --json`). The injected block shows
-  only the readable name; a tag with the plain repository name is a different
+  `briefing` result (CLI: `memesh briefing --json`). The first line of the
+  injected block gives this session's exact project id (readable name plus a
+  short hash); the memories below it show only the readable name. `remember` stores a plain-name tag for the call's
+  own project as the id (and says so in `retagged`), but a plain name for any
+  other project, or on a memory already filed under it, stays a different
   scope that this project's sessions never see.
 - **A mistake with a known cause and fix is a `learn` call** (it creates a
   `lesson_learned`, which later sessions show as a lesson). A choice between
-  options is a `remember` with type `decision`.
+  options is a `remember` with type `decision` and a `why`: the reason for it
+  AND what would make it stop holding ("too heavy to deploy for one user;
+  revisit if we add a hosted tier"). A new decision, or a `replace` of one,
+  without one is refused.
+  Briefings, session start and the durable-memory index show each decision with
+  its reason (or "no reason recorded"), and one nobody has read or added to for
+  30 days as "unconfirmed N days: re-check before relying" — recall it to check
+  it still holds before you follow it.
 - **Reuse a stable `name` to append.** Calling `remember` with an existing
   name appends observations and dedupes tags. A fresh name for every update
   creates duplicates that recall must wade through. A name another project
   already holds is refused over MCP rather than shared: pick a different one.
-- **Correct a memory in one call**: `remember` it again with its `name` and
-  `replace: true`. `type` is not needed — the memory keeps the one it has.
+- **Correct a memory in one call**: `remember` it again with its `name`,
+  `replace: true` and the `observations` it should now hold (a replace with
+  neither `observations` nor `note` is refused, because it would empty the
+  memory; to fix only a title, send the current observations with it).
+  `type` is not needed — the memory keeps the one it has. Replacing a
+  decision needs its `why` again.
   Pass a `type` only to reclassify: one that differs from what is stored
   rewrites it. (`type` is still required on a call with no `note` that is
   not a `replace`, and on a `replace` whose `name` does not exist yet.) Observations are rewritten (tags too
@@ -159,8 +173,8 @@ host is recallable from all of them. Not installed yet? Follow
   there moves to `metadata.replaced_history` with the time it was replaced,
   so the wrong line stops showing up in recall but is not lost (recall shows
   only `replaced_history_count`; `export` has the versions).
-- **Replacing a decision**: `remember` the new one with a relation of type
-  `supersedes` pointing at the old — the old entity is archived (recoverable),
+- **Replacing a decision**: `remember` the new one, with its own `why`, and a
+  relation of type `supersedes` pointing at the old — the old entity is archived (recoverable),
   not left active to contradict the new one.
 - **Two memories that cannot both be true**: relation type `contradicts` —
   both then surface as a conflict every time either is recalled.
@@ -195,7 +209,7 @@ Under Claude Code with the MeMesh plugin, hooks capture automatically:
 - **SessionStart** injects the work topology (the same memory block
   `briefing` returns, with an eligible exact-project handoff ahead of ranked memories after optional repository facts, plus a work-package notice at `full` that `briefing`
   never includes) at the top of the session, whenever the configured level
-  has something to show; an empty project at `minimal` injects nothing.
+  has something to show; an empty project at `minimal` injects only the project line.
 - **PreToolUse (Edit|Write)** surfaces memories related to the file being
   edited.
 - **PostToolUse (Bash)** records git commits with diff stats.

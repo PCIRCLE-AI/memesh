@@ -1,6 +1,7 @@
 import { getDatabase } from '../db.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { removeFromFts, insertFtsRow, indexedObservationText } from '../storage/fts-index.js';
+import { redactSecretList, redactSecrets, redactTitleAndObservations } from './paths.js';
 export const MEMORY_ROOT = '/memories';
 const NAMESPACES = ['personal', 'team', 'global'];
 const FILE_SUFFIX = '.md';
@@ -67,6 +68,10 @@ function entityPath(namespace, name) {
 function renderBody(entity) {
     return entity.observations.join('\n');
 }
+function renderShownBody(entity) {
+    const shown = redactTitleAndObservations(typeof entity.title === 'string' ? entity.title : undefined, entity.observations);
+    return shown.observations.join('\n');
+}
 function lineOwners(observations) {
     const owners = [];
     observations.forEach((observation, index) => {
@@ -114,17 +119,22 @@ function tagsOf(name) {
         .prepare('SELECT tag FROM tags WHERE entity_id = (SELECT id FROM entities WHERE name = ?)')
         .all(name).map((t) => t.tag);
 }
-function findEntity(kg, namespace, name) {
+function findEntity(kg, namespace, name, includeArchived = false) {
     const entity = kg.getEntity(name);
     if (!entity || entity.namespace !== namespace)
+        return null;
+    if (entity.archived && !includeArchived)
         return null;
     return entity;
 }
 function rewriteObservations(kg, entity, observations) {
+    const next = redactSecretList(observations);
+    if (!entity.archived && next.join('\n') === entity.observations.join('\n'))
+        return;
     getDatabase().transaction(() => {
         kg.clearEntityData(entity.name);
         kg.createEntity(entity.name, entity.type, {
-            observations,
+            observations: next,
             tags: entity.tags,
             namespace: entity.namespace,
         });
@@ -160,7 +170,7 @@ function viewEntity(namespace, name, range, path) {
     if (!entity) {
         return err(`The path ${path} does not exist. Please provide a valid path.`);
     }
-    const body = renderBody(entity);
+    const body = renderShownBody(entity);
     const lines = body === '' ? [] : body.split('\n');
     if (range === undefined) {
         if (body.length > MAX_VIEW_CHARS) {
@@ -195,11 +205,12 @@ function createEntityFile(namespace, name, fileText, path) {
         return err('Error: `file_text` must be a string.');
     }
     const kg = graph();
-    const existing = findEntity(kg, namespace, name);
-    const oversize = tooLarge(fileText, path);
+    const existing = findEntity(kg, namespace, name, true);
+    const text = redactSecrets(fileText);
+    const oversize = tooLarge(text, path);
     if (oversize)
         return oversize;
-    const observations = fileText === '' ? [] : fileText.split('\n');
+    const observations = text === '' ? [] : text.split('\n');
     if (existing) {
         rewriteObservations(kg, existing, observations);
         return ok(`File created successfully at: ${path}`);
@@ -208,7 +219,7 @@ function createEntityFile(namespace, name, fileText, path) {
         return err(`Error: ${path} cannot be created because that memory name already exists in another namespace. ` +
             `Memory names are unique across namespaces.`);
     }
-    kg.createEntity(name, 'note', { observations, namespace });
+    kg.createEntity(name, 'note', { observations: redactSecretList(observations), namespace });
     return ok(`File created successfully at: ${path}`);
 }
 function strReplace(namespace, name, oldStr, newStr, path) {
@@ -224,9 +235,13 @@ function strReplace(namespace, name, oldStr, newStr, path) {
         return err(`Error: The path ${path} does not exist. Please provide a valid path.`);
     }
     const body = renderBody(entity);
+    const shown = redactSecrets(oldStr);
     const first = body.indexOf(oldStr);
+    if (first === -1 && shown !== oldStr && body.includes(shown)) {
+        return err(`No replacement was performed: no exact stored-text match for old_str in ${path}. view shows credential-shaped text masked; old_str must match the stored text, which export returns.`);
+    }
     if (first === -1) {
-        return err(`No replacement was performed, old_str \`${oldStr}\` did not appear verbatim in ${path}.`);
+        return err(`No replacement was performed, old_str \`${shown}\` did not appear verbatim in ${path}.`);
     }
     if (body.indexOf(oldStr, first + 1) !== -1) {
         const lines = [];
@@ -235,16 +250,16 @@ function strReplace(namespace, name, oldStr, newStr, path) {
             lines.push(body.slice(0, at).split('\n').length);
             at = body.indexOf(oldStr, at + 1);
         }
-        return err(`No replacement was performed. Multiple occurrences of old_str \`${oldStr}\` ` +
+        return err(`No replacement was performed. Multiple occurrences of old_str \`${shown}\` ` +
             `in lines: ${lines.join(', ')}. Please ensure it is unique`);
     }
-    const replaced = body.slice(0, first) + (newStr ?? '') + body.slice(first + oldStr.length);
+    const replaced = redactSecrets(body.slice(0, first) + (newStr ?? '') + body.slice(first + oldStr.length));
     const oversize = tooLarge(replaced, path);
     if (oversize)
         return oversize;
     const observations = replaced === '' ? [] : replaced.split('\n');
     rewriteObservations(kg, entity, observations);
-    const at = replaced.slice(0, first).split('\n').length;
+    const at = redactSecrets(body.slice(0, first)).split('\n').length;
     const from = Math.max(1, at - 2);
     const snippet = replaced.split('\n').slice(from - 1, at + 2).join('\n');
     return ok(`The memory file has been edited. Here's a snippet of ${path} with line numbers:\n` +
@@ -261,7 +276,8 @@ function insertLine(namespace, name, atLine, text, path) {
     const entity = findEntity(kg, namespace, name);
     if (!entity)
         return err(`Error: The path ${path} does not exist`);
-    const owners = lineOwners(entity.observations);
+    const shownObservations = redactTitleAndObservations(typeof entity.title === 'string' ? entity.title : undefined, entity.observations).observations;
+    const owners = lineOwners(shownObservations);
     const line = atLine;
     if (line < 0 || line > owners.length) {
         return err(`Error: Invalid \`insert_line\` parameter: ${line}. ` +
@@ -270,10 +286,13 @@ function insertLine(namespace, name, atLine, text, path) {
     const insertAfter = line === 0 ? -1 : owners[line - 1];
     const observations = [...entity.observations];
     observations.splice(insertAfter + 1, 0, text.replace(/\n$/, ''));
-    const oversize = tooLarge(observations.join('\n'), path);
+    const joined = observations.join('\n');
+    const redacted = redactSecrets(joined);
+    const stored = redacted === joined ? observations : redacted.split('\n');
+    const oversize = tooLarge(redacted, path);
     if (oversize)
         return oversize;
-    rewriteObservations(kg, entity, observations);
+    rewriteObservations(kg, entity, stored);
     return ok(`The file ${path} has been edited.`);
 }
 function deletePath(parsed, path) {
@@ -304,10 +323,10 @@ function renamePath(oldRaw, newRaw) {
     const db = getDatabase();
     const kg = graph();
     return db.transaction(() => {
-        const source = findEntity(kg, from.namespace, from.name);
+        const source = findEntity(kg, from.namespace, from.name, true);
         if (!source)
             return err(`Error: The path ${String(oldRaw)} does not exist`);
-        if (findEntity(kg, to.namespace, to.name)) {
+        if (findEntity(kg, to.namespace, to.name, true)) {
             return err(`Error: The destination ${String(newRaw)} already exists`);
         }
         if (kg.getEntity(to.name)) {

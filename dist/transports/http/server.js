@@ -4,12 +4,13 @@ import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
 import { randomBytes, timingSafeEqual } from 'crypto';
 import { openDatabase, closeDatabase, getDatabase, } from '../../db.js';
-import { remember, recallWithConflicts, forget, exportMemories, importMemories, learn, } from '../../core/operations.js';
+import { remember, recallWithConflicts, forget, exportMemories, importMemories, learn, shownEntity, } from '../../core/operations.js';
 import { KnowledgeGraph } from '../../knowledge-graph.js';
 import { readConfig, updateConfig, } from '../../core/config.js';
 import { SESSION_LIMIT_MIN, SESSION_LIMIT_MAX } from '../../core/session-limit.js';
+import { AGENT_SCOPE_ID_MAX_LENGTH } from '../../core/agent-scope-id.js';
 import { BRIEFING_LEVELS } from '../../core/briefing-level.js';
-import { isDoctorFixPermissionError, removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
+import { isDoctorFixPermissionError, PluginRefreshBudgetError, removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
 import { computePatterns } from '../../core/patterns.js';
 import { computeAnalytics, computePmAnalytics } from '../../core/analytics.js';
 import { computeStats } from '../../core/stats.js';
@@ -17,11 +18,11 @@ import { computeProjects } from '../../core/projects.js';
 import { getTaskState } from '../../core/task-state-store.js';
 import { readBriefingIndex } from '../../core/briefing.js';
 import { INDEX_STALE_DAYS } from '../../core/briefing-index.js';
-import { RememberSchema as RememberBody, RecallSchema as RecallBody, ForgetSchema as ForgetBody, ExportSchema as ExportBody, ImportSchema as ImportBody, LearnSchema as LearnBody, WhySchema as WhyBody, MessageSchema as MessageBody, } from '../schemas.js';
+import { RememberSchema as RememberBody, RecallSchema as RecallBody, ForgetSchema as ForgetBody, ExportSchema as ExportBody, ImportSchema as ImportBody, HttpLearnSchema as LearnBody, WhySchema as WhyBody, MessageSchema as MessageBody, } from '../schemas.js';
 import { executeAgentMessageAction } from '../agent-messaging.js';
 import { checkForUpdate, getLastUpdateCheck, getUpdateCheck } from '../../core/version-check.js';
 import { getCurrentInstallChannel, getInstallChannelSupport } from '../../core/install-channel.js';
-import { getDbPath, getMemeshDirFromDbPath, redactSecrets, redactUserPaths } from '../../core/paths.js';
+import { getDbPath, getMemeshDirFromDbPath, redactTextValues, redactUserPaths } from '../../core/paths.js';
 import { removeGroupAndOtherAccess } from '../../core/file-mode.js';
 import { diagnoseDatabaseFailure } from '../../core/database-diagnosis.js';
 import { RETIRED_ROUTES } from './retired-routes.js';
@@ -278,7 +279,7 @@ app.get('/v1/doctor', (_req, res) => handleGet(res, async () => {
         packageRoot,
         packageVersion,
     });
-    return JSON.parse(redactUserPaths(redactSecrets(JSON.stringify(result))));
+    return JSON.parse(redactUserPaths(JSON.stringify(redactTextValues(result))));
 }));
 const DoctorFixBody = z.object({ id: z.string().min(1).max(100) }).strict();
 app.post('/v1/doctor/fix', (req, res) => handlePost(DoctorFixBody, req, res, async ({ id }) => {
@@ -304,13 +305,16 @@ app.post('/v1/doctor/fix', (req, res) => handlePost(DoctorFixBody, req, res, asy
     catch (error) {
         if (error instanceof HttpError)
             throw error;
+        if (error instanceof PluginRefreshBudgetError) {
+            throw new HttpError(500, 'doctor.repair-incomplete', error.message);
+        }
         if (isDoctorFixPermissionError(error)) {
             throw new HttpError(500, 'operation.permission-denied', 'MeMesh cannot modify the local files required for this repair. Close this dashboard, start `memesh serve` from your own Terminal, and retry. If it still fails, run `memesh doctor`.');
         }
         throw error;
     }
     const after = await runDoctor({ packageRoot, packageVersion });
-    const safe = (value) => JSON.parse(redactUserPaths(redactSecrets(JSON.stringify(value))));
+    const safe = (value) => JSON.parse(redactUserPaths(JSON.stringify(redactTextValues(value))));
     return {
         action: safe(action),
         before: safe({ status: before.status, checks: [check] }),
@@ -486,7 +490,9 @@ app.get('/v1/update-status', (req, res) => handleGet(res, async () => {
         deprecationMessage: update?.deprecationMessage ?? null,
     };
 }));
-const TaskStateQuerySchema = z.object({ project: z.string().trim().min(1).max(200) });
+const TaskStateQuerySchema = z.object({
+    project: z.string().max(AGENT_SCOPE_ID_MAX_LENGTH).refine((value) => value.trim().length > 0, 'project must not be empty'),
+});
 app.get('/v1/task-state', (req, res) => {
     const parsed = TaskStateQuerySchema.safeParse(req.query);
     if (!parsed.success) {
@@ -617,19 +623,26 @@ app.post('/v1/dream/proposals/:id/reject', (req, res) => {
 const EntitiesQuerySchema = z.object({
     type: z.string().min(1).max(100).optional(),
     limit: z.coerce.number().int().min(1).max(5000).default(20),
+    offset: z.coerce.number().int().min(0).max(1_000_000).default(0),
+    project: z.string().min(1).max(300).optional(),
     status: z.enum(['all', 'active']).optional(),
+}).refine((q) => !(q.type && q.project), {
+    message: 'type and project cannot be combined',
+    path: ['project'],
 });
 app.get('/v1/entities', (req, res) => {
     const query = parseQuery(EntitiesQuerySchema, req, res);
     if (!query)
         return;
     handleGet(res, () => {
-        const { type: typeFilter, limit, status } = query;
+        const { type: typeFilter, limit, offset, project, status } = query;
         const includeArchived = status === 'all';
         const kg = new KnowledgeGraph(getDatabase());
-        return typeFilter
-            ? kg.listByType(typeFilter, limit, includeArchived)
-            : kg.listRecent(limit, includeArchived, undefined, false);
+        return (project
+            ? kg.listByProject(project, limit, includeArchived, undefined, offset)
+            : typeFilter
+                ? kg.listByType(typeFilter, limit, includeArchived, undefined, offset)
+                : kg.listRecent(limit, includeArchived, undefined, false, offset)).map(shownEntity);
     });
 });
 app.get('/v1/entities/:name', (req, res) => handleGet(res, () => {
@@ -638,7 +651,7 @@ app.get('/v1/entities/:name', (req, res) => handleGet(res, () => {
     if (!entity) {
         throw new HttpError(404, 'resource.not-found', `Entity "${String(req.params.name)}" not found`);
     }
-    return entity;
+    return shownEntity(entity);
 }));
 const HOST = process.env.MEMESH_HTTP_HOST || '127.0.0.1';
 const PORT = parseInt(process.env.MEMESH_HTTP_PORT || '3737');

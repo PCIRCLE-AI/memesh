@@ -214,4 +214,45 @@ describe('Feature: the dashboard design system is actually followed', () => {
     }
     expect(offenders).toEqual([]);
   });
+  /**
+   * Preact copies a prop onto the element under the name it was written with,
+   * and an SVG attribute name is case-sensitive: `strokeWidth` is not
+   * `stroke-width`, so the browser ignores it (1.5 became 1, rounded joins
+   * went square) while happy-dom, which computes no style, reports nothing.
+   * 41 places wrote it the wrong way before this rule existed.
+   */
+  it('writes SVG presentation attributes in their kebab-case names', () => {
+    const camel = /\b(strokeWidth|strokeLinecap|strokeLinejoin|strokeDasharray|strokeDashoffset|strokeOpacity|strokeMiterlimit|fillOpacity|fillRule|clipRule|stopColor|stopOpacity|textAnchor|dominantBaseline|markerStart|markerMid|markerEnd)\s*=/;
+    const offenders: string[] = [];
+    for (const file of walk(srcDir, ['.tsx'])) {
+      fs.readFileSync(file, 'utf8').split('\n').forEach((line, i) => {
+        if (camel.test(line)) offenders.push(`${path.relative(repoRoot, file)}:${i + 1}`);
+      });
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  /**
+   * `global.css` is outside the numeric-literal scan above (it DEFINES the
+   * palette), which left its own hard-coded corner radii and a hand-rolled life
+   * fill unchecked. DESIGN.md: "Write the token, never the number", and a fill
+   * uses the `-soft` pair.
+   */
+  it('global.css writes radii as tokens and fills as -soft pairs', () => {
+    const css = fs.readFileSync(path.join(srcDir, 'styles', 'global.css'), 'utf8');
+    const radii = [...css.matchAll(/border-radius:\s*(\d+)px/g)].map((m) => m[1]).filter((px) => px !== '9999');
+    expect(radii, 'numeric border-radius — use --radius / --radius-sm / --radius-xs / --radius-hairline').toEqual([]);
+    expect(css).not.toMatch(/background:\s*rgba\(\s*143,\s*242,\s*92/);
+    // A static stat card is not interactive: it does not glow on hover.
+    expect(css).not.toMatch(/\.stat:hover/);
+  });
+
+  it('the roadmap grid collapses to one column on a phone instead of an inline 280px rail', () => {
+    const css = fs.readFileSync(path.join(srcDir, 'styles', 'global.css'), 'utf8');
+    expect(css).toMatch(/\.roadmap-grid\s*\{[^}]*280px/);
+    expect(css).toMatch(/@media \(max-width: 768px\)\s*\{[^@]*\.roadmap-grid\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+    const components = walk(path.join(srcDir, 'components'), ['.tsx']).map((file) => fs.readFileSync(file, 'utf8')).join('\n');
+    expect(components).not.toMatch(/gridTemplateColumns:\s*'minmax\(0, 1fr\) 280px'/);
+    expect(components).toContain('class="roadmap-grid"');
+  });
 });

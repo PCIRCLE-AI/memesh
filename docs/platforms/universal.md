@@ -50,6 +50,7 @@ curl -X POST http://localhost:3737/v1/remember \
     "name": "project-decision-2026",
     "type": "decision",
     "observations": ["We chose PostgreSQL"],
+    "why": "Orders and invoices need transactions; revisit if write volume outgrows one primary",
     "tags": ["project:myapp", "topic:database"]
   }'
 ```
@@ -71,7 +72,8 @@ curl -X POST http://localhost:3737/v1/learn \
     "error": "API timeout",
     "fix": "Increased connection pool",
     "root_cause": "Pool exhaustion",
-    "severity": "major"
+    "severity": "major",
+    "project": "my-project"
   }'
 ```
 
@@ -103,6 +105,8 @@ memesh-mcp
 
 Add that command to your MCP client's server configuration.
 
+MeMesh binds a session to the project of the client's workspace root. For a client that reports no workspace root, set `MEMESH_PROJECT_ROOT` to the project's absolute directory in the server's environment, or pass `project` on each `remember`, `learn` and `recall` call.
+
 ## Prompt Template For Custom Integrations
 
 ```markdown
@@ -110,8 +114,9 @@ You have access to MeMesh persistent memory through the host application.
 
 Use recall before project-specific work where prior decisions, bug fixes, or conventions may matter.
 Use remember for durable decisions, architecture choices, project conventions, and recurring patterns.
+Send `why` with every decision: the reason, and what would make it stop holding.
 Use learn for mistakes, root causes, fixes, and prevention notes.
-Keep memories concise. Include tags such as project:<name>, topic:<area>, and tech:<tool>.
+Keep memories concise. Include tags such as project:<id> (the `project` field of `memesh briefing --json`), topic:<area>, and tech:<tool>.
 Do not claim memory was checked or written unless the tool/API call succeeded.
 ```
 

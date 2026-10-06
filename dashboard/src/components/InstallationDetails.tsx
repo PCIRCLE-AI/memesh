@@ -12,7 +12,11 @@ interface VersionDetails {
 /** Optional installation metadata stays out of the homepage alert channel. */
 export function InstallationDetails() {
   const [open, setOpen] = useState(false);
-  const [loading, setLoading] = useState(false);
+  // True from the first render and again each time the panel opens (see the
+  // button): the effect that starts the request runs after the first paint,
+  // and a `false` left over from the last load showed "unavailable" for that
+  // frame — in a live region, so a screen reader announced it.
+  const [loading, setLoading] = useState(true);
   const [details, setDetails] = useState<VersionDetails | null>(null);
 
   useEffect(() => {
@@ -33,7 +37,7 @@ export function InstallationDetails() {
   }, [open]);
 
   return <section class="card">
-    <button type="button" class="btn" aria-expanded={open} aria-controls="installation-details" onClick={() => setOpen(!open)}>
+    <button type="button" class="btn" aria-expanded={open} aria-controls="installation-details" onClick={() => { if (!open) setLoading(true); setOpen(!open); }}>
       {t('settings.installationDetails')}
     </button>
     {open && <div id="installation-details" style={{ marginTop: 12 }}>

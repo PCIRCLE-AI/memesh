@@ -174,7 +174,7 @@ describe('/v1/analytics computation', () => {
 
   it('type distribution reflects entity types', () => {
     remember({ name: 'e1', type: 'concept', observations: ['a'] });
-    remember({ name: 'e2', type: 'decision', observations: ['b'] });
+    remember({ name: 'e2', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['b'] });
     remember({ name: 'e3', type: 'concept', observations: ['c'] });
     const types = db
       .prepare(
@@ -190,7 +190,7 @@ describe('/v1/analytics computation', () => {
 
 describe('recall effectiveness tracking', () => {
   it('recall_hits and recall_misses default to 0 for new entities', () => {
-    remember({ name: 'eff-test', type: 'decision', observations: ['test'] });
+    remember({ name: 'eff-test', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['test'] });
     const row = db.prepare(
       'SELECT recall_hits, recall_misses FROM entities WHERE name = ?'
     ).get('eff-test') as { recall_hits: number; recall_misses: number };
@@ -199,7 +199,7 @@ describe('recall effectiveness tracking', () => {
   });
 
   it('recall_hits increments correctly', () => {
-    remember({ name: 'hit-entity', type: 'decision', observations: ['test'] });
+    remember({ name: 'hit-entity', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['test'] });
     db.prepare('UPDATE entities SET recall_hits = recall_hits + 1 WHERE name = ?').run('hit-entity');
     db.prepare('UPDATE entities SET recall_hits = recall_hits + 1 WHERE name = ?').run('hit-entity');
     const row = db.prepare(
@@ -209,7 +209,7 @@ describe('recall effectiveness tracking', () => {
   });
 
   it('recall_misses increments correctly', () => {
-    remember({ name: 'miss-entity', type: 'decision', observations: ['test'] });
+    remember({ name: 'miss-entity', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['test'] });
     db.prepare('UPDATE entities SET recall_misses = recall_misses + 1 WHERE name = ?').run('miss-entity');
     const row = db.prepare(
       'SELECT recall_misses FROM entities WHERE name = ?'
@@ -218,7 +218,7 @@ describe('recall effectiveness tracking', () => {
   });
 
   it('hit rate calculation is correct', () => {
-    remember({ name: 'rate-entity', type: 'decision', observations: ['test'] });
+    remember({ name: 'rate-entity', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['test'] });
     db.prepare('UPDATE entities SET recall_hits = 7, recall_misses = 3 WHERE name = ?').run('rate-entity');
     const row = db.prepare(
       `SELECT CAST(recall_hits AS REAL) / (recall_hits + recall_misses) as hitRate
@@ -348,7 +348,7 @@ describe('computePmAnalytics — response shape', () => {
   });
 
   it('decisionsPerWeek and releasesPerMonth reflect seeded activity (not a constant 0)', () => {
-    remember({ name: 'dec-a', type: 'decision', observations: ['decided x'] });
+    remember({ name: 'dec-a', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['decided x'] });
     remember({ name: 'rel-a', type: 'release', observations: ['shipped v1'] });
     const result = computePmAnalytics(db, 30);
     // Was `toBeGreaterThanOrEqual(0)`, which cannot fail — a broken date filter

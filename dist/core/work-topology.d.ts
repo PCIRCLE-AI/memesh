@@ -1,6 +1,12 @@
 export declare const LESSON_TYPE_LIST: readonly string[];
 export declare function canonicalEntityType(type: string): string;
 export declare const WORK_LAYER_TYPES: ReadonlySet<string>;
+export declare const DECISION_TYPES: ReadonlySet<string>;
+export declare const WHY_PREFIX = "Why: ";
+export declare const UNCONFIRMED_DECISION_DAYS = 30;
+export declare function utcEpoch(at: string | null | undefined): number;
+export declare function unconfirmedDaysSince(seenAt: ReadonlyArray<string | null | undefined>, now: number): number | null;
+export declare function isWhyText(text: string): boolean;
 export declare const DECISION_LAYER_TYPES: readonly string[];
 export declare const EVIDENCE_LAYER_TYPES: ReadonlySet<string>;
 export declare function isAutoInjectable(metadata: unknown): boolean;
@@ -17,6 +23,8 @@ export interface TopologyEntity {
     global?: boolean;
     foreign?: boolean;
     noProject?: boolean;
+    why?: string | null;
+    unconfirmedDays?: number | null;
 }
 export declare function topologyLine(entity: TopologyEntity, maxChars: number): string;
 export declare function extractCitedMemoryIds(text: string): Set<number>;

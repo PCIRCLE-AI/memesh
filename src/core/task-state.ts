@@ -36,6 +36,7 @@
 // anyway.
 
 import { jsonStringLiteral, projectLabel } from './work-topology.js';
+import { redactShownTogether } from './paths.js';
 
 /** The entity type. Already listed in work-topology's WORK_LAYER_TYPES. */
 export const TASK_STATE_TYPE = 'task-state';
@@ -205,10 +206,16 @@ export function taskStateLines(
   const days = ageInDays(state.updated_at, now);
   const age = days === null ? 'at some point' : days === 0 ? 'today' : days === 1 ? 'yesterday' : `${days} days ago`;
   const lines = [`Stated about ${jsonStringLiteral(projectLabel(project))} ${age}, and not revisited since:`];
-  for (const field of TASK_STATE_FIELDS) {
-    const value = state[field];
-    if (value) lines.push(`- ${FIELD_LABELS[field]}: ${value}`);
-  }
+  // #523: redacted on DISPLAY as well as on write. `setTaskState` stores
+  // the fields redacted now, but a task state written before that keeps the
+  // text it was stored with, and this is the one builder every surface
+  // (briefing, SessionStart, `memesh task`) renders it through — before
+  // `boundTaskStateLines` clips the line, so a cut cannot expose a fragment.
+  // The fields are one set, as on write: a key split across them is masked
+  // as a whole.
+  const present = TASK_STATE_FIELDS.filter((field) => state[field]);
+  const shown = redactShownTogether(present.map((field) => state[field] as string));
+  present.forEach((field, i) => lines.push(`- ${FIELD_LABELS[field]}: ${shown[i]}`));
   return lines;
 }
 

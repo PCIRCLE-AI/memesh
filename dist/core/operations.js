@@ -1,11 +1,13 @@
 import { getDatabase } from '../db.js';
 import { projectOwnershipRefusal } from '../storage/memory-mutation.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
+import { foldForExactMatch } from '../storage/fts-index.js';
+import { withFullProjectTag } from './plain-project-tag.js';
 import { rankEntities } from './scoring.js';
-import { getProjectName } from './paths.js';
+import { getProjectName, redactSecrets, redactTextValues, redactTitleAndObservations, redactVersionText } from './paths.js';
 import { createExplicitLesson } from './lesson-engine.js';
 import { deriveNote, NOTE_DEFAULT_TYPE } from './note-derive.js';
-import { canonicalEntityType } from './work-topology.js';
+import { DECISION_TYPES, WHY_PREFIX, canonicalEntityType } from './work-topology.js';
 import { capRecallForAgent } from './recall-agent-view.js';
 import { boundReplacedHistory } from './replaced-history.js';
 export { REPLACED_HISTORY_MAX, REPLACED_HISTORY_MAX_BYTES } from './replaced-history.js';
@@ -43,7 +45,26 @@ function summarizeReplacedHistory(entities) {
     }
     return entities;
 }
+export function shownEntity(entity) {
+    const shown = redactTitleAndObservations(typeof entity.title === 'string' ? entity.title : undefined, entity.observations);
+    const metadata = entity.metadata === undefined ? undefined : redactTextValues(entity.metadata);
+    const guard = entity.metadata?.guard;
+    if (metadata && guard && typeof guard.pattern === 'string') {
+        metadata.guard = { ...metadata.guard, pattern: guard.pattern };
+    }
+    const history = entity.metadata?.replaced_history;
+    if (metadata && Array.isArray(history))
+        metadata.replaced_history = history.map(redactVersionText);
+    return {
+        ...entity,
+        ...(typeof entity.title === 'string' ? { title: shown.title } : {}),
+        observations: shown.observations,
+        ...(metadata === undefined ? {} : { metadata }),
+    };
+}
 function resolveRememberInput(input) {
+    const reason = input.why?.trim().replace(/^why:\s*/i, '') ?? '';
+    const why = reason !== '' ? [`${WHY_PREFIX}${reason}`] : [];
     if (input.note === undefined) {
         if (!input.name)
             throw new Error('remember needs `name` and `type`, or `note`');
@@ -51,7 +72,13 @@ function resolveRememberInput(input) {
             throw new Error('remember needs `name` and `type`, or `note`');
         if (input.type === undefined && !input.replace)
             throw new Error('remember needs `name` and `type`, or `note`');
-        return { args: input, typeGiven: input.type !== undefined };
+        return {
+            args: {
+                ...input,
+                ...redactTitleAndObservations(typeof input.title === 'string' ? input.title : undefined, why.length > 0 ? [...(input.observations ?? []), ...why] : input.observations),
+            },
+            typeGiven: input.type !== undefined,
+        };
     }
     if (input.title !== undefined || input.observations !== undefined) {
         throw new Error('`note` derives title and observations; do not also pass `title` or `observations`');
@@ -67,8 +94,9 @@ function resolveRememberInput(input) {
             ...input,
             name: input.name ?? derived.name,
             type: input.type ?? NOTE_DEFAULT_TYPE,
-            title: derived.title,
-            observations: derived.observations,
+            ...(why.length > 0
+                ? redactTitleAndObservations(derived.title, [...derived.observations, ...why])
+                : { title: derived.title, observations: derived.observations }),
         },
         derived,
         typeGiven: input.type !== undefined,
@@ -78,7 +106,26 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
     const existing = db
         .prepare('SELECT id, namespace, type, title, status FROM entities WHERE name = ?')
         .get(args.name);
+    const touched = [
+        ...(existing ? [args.name] : []),
+        ...(args.relations ?? []).filter((rel) => rel.type === 'supersedes').map((rel) => rel.to),
+    ];
+    let retagged;
+    const healed = withFullProjectTag(args.tags, args.currentProject);
+    if (healed.retagged) {
+        const plainTag = healed.retagged.from;
+        const keepsPlain = touched.some((name) => db
+            .prepare('SELECT 1 FROM tags t JOIN entities e ON e.id = t.entity_id WHERE e.name = ? AND t.tag = ?')
+            .get(name, plainTag) !== undefined);
+        if (!keepsPlain) {
+            args = { ...args, tags: healed.tags };
+            retagged = healed.retagged;
+        }
+    }
     const tagProjects = [...new Set((args.tags ?? []).filter((t) => t.startsWith('project:')).map((t) => t.slice('project:'.length)))];
+    if (tagProjects.some((p) => p.trim() === '')) {
+        throw new Error('MeMesh did not store this memory: its tag `project:` names no project; give the project after the colon, or leave the tag out.');
+    }
     if (tagProjects.length > 1) {
         throw new Error(`MeMesh did not store this memory: it has more than one project tag (${tagProjects.map((p) => `project:${p}`).join(', ')}); a memory belongs to one project.`);
     }
@@ -87,10 +134,6 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
     }
     const declaredProject = args.project !== undefined ? args.project : tagProjects[0];
     if (declaredProject !== undefined) {
-        const touched = [
-            ...(existing ? [args.name] : []),
-            ...(args.relations ?? []).filter((rel) => rel.type === 'supersedes').map((rel) => rel.to),
-        ];
         for (const name of touched) {
             const refusal = projectOwnershipRefusal(db, name, declaredProject);
             if (refusal !== undefined)
@@ -105,6 +148,12 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
     if (entityType === undefined) {
         throw new Error(`\`replace\` on "${args.name}": there is no memory named "${args.name}" to inherit a type from, `
             + 'so this call would create one with no type — pass `type` to create it.');
+    }
+    if (DECISION_TYPES.has(entityType) && (!existing || args.replace) && args.trustOverride !== 'untrusted'
+        && !(args.observations ?? []).some((o) => o.startsWith(WHY_PREFIX))) {
+        throw new Error(`MeMesh did not store this ${entityType}: ${/^[aeiou]/i.test(entityType) ? 'an' : 'a'} ${entityType} needs \`why\` — the reason for it and what would make it `
+            + 'stop holding (for example: "Postgres is too heavy to deploy for one user; revisit if we add a hosted tier"). '
+            + 'Pass `why`, or an observation that starts with "Why: ".');
     }
     let replacedVersion;
     let retypedTo;
@@ -153,7 +202,7 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
         },
     }));
     if (replacedVersion) {
-        const version = replacedVersion;
+        const version = redactVersionText(replacedVersion);
         kg.updateEntityMetadata(args.name, (current) => {
             const history = Array.isArray(current.replaced_history) ? current.replaced_history : [];
             return { ...current, replaced_history: boundReplacedHistory([...history, version]) };
@@ -201,6 +250,7 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
             : {}),
         ...(superseded.length > 0 ? { superseded } : {}),
         ...(relationErrors.length > 0 ? { relationErrors } : {}),
+        ...(retagged ? { retagged } : {}),
         ...(args.replace ? { replaced: replacedVersion !== undefined } : {}),
         ...(derived
             ? { derived: { name: args.name, type: retypedTo ?? existing?.type ?? entityType, title: derived.title, observations: derived.observations } }
@@ -209,7 +259,14 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
 }
 export function recall(args) {
     const { entities, relevanceMap } = searchAndScore(args);
-    return rankEntities(entities, relevanceMap).slice(0, args.limit ?? 20);
+    return exactMatchesFirst(rankEntities(entities, relevanceMap), args.query).slice(0, args.limit ?? 20);
+}
+function exactMatchesFirst(ranked, query) {
+    const wanted = query === undefined ? '' : foldForExactMatch(query);
+    if (!wanted)
+        return ranked;
+    const isExact = (e) => foldForExactMatch(e.name) === wanted || (e.title != null && foldForExactMatch(e.title) === wanted);
+    return [...ranked.filter(isExact), ...ranked.filter((e) => !isExact(e))];
 }
 function searchAndScore(args) {
     const kg = new KnowledgeGraph(getDatabase());
@@ -220,7 +277,7 @@ function searchAndScore(args) {
         includeArchived: args.include_archived,
         namespace: args.namespace,
     });
-    const entities = summarizeReplacedHistory(searched.entities);
+    const entities = summarizeReplacedHistory(searched.entities).map(shownEntity);
     return {
         entities,
         relevanceMap: args.query ? buildRelevanceMap(entities) : new Map(),
@@ -235,7 +292,7 @@ export async function recallEnhanced(args) {
         }
     }
     const limit = args.limit ?? 20;
-    const ranked = rankEntities(entities, relevanceMap).slice(0, limit);
+    const ranked = exactMatchesFirst(rankEntities(entities, relevanceMap), args.query).slice(0, limit);
     return {
         entities: ranked,
         retrieval: fallback
@@ -272,10 +329,14 @@ export function forget(args) {
     const kg = new KnowledgeGraph(db);
     if (args.observation !== undefined) {
         const result = kg.removeObservation(args.name, args.observation);
+        const shown = redactSecrets(args.observation);
+        if (!result.removed && shown !== args.observation && db.prepare('SELECT 1 FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = ? AND o.content = ? LIMIT 1').get(args.name, shown)) {
+            throw new Error('No exact stored-text match for that observation. recall shows credential-shaped text masked; a line is selected by its stored text, which export returns, or rewrite the memory with replace.');
+        }
         return {
             observation_removed: result.removed,
             name: args.name,
-            observation: args.observation,
+            observation: shown,
             remaining_observations: result.remainingObservations,
             entity_found: result.entityFound,
         };

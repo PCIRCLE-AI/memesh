@@ -28,8 +28,10 @@ export interface TranscriptSession {
     modifiedAtNanoseconds: string;
     changedAtNanoseconds: string;
 }
+export type TranscriptSkipReason = 'too_many_candidates' | 'scan_too_large' | 'too_large' | 'unreadable' | 'no_recorded_cwd' | 'other_project';
 export interface ScanOptions {
     cwd: string;
+    onSkip?: (reason: TranscriptSkipReason, count: number) => void;
     windowDays?: number;
     now?: Date;
 }

@@ -21,6 +21,7 @@
  * never happened.
  */
 
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -537,13 +538,27 @@ describe('isDistStale', () => {
     expect(REQUIRED_BUILD_ARTIFACTS).not.toContain('scripts/qa/core-live-journeys.mjs');
   });
 
-  it('is stale when any dist artefact predates the newest source file', () => {
-    expect(isDistStale({ newestSrcMs: 2_000, oldestDistMs: 1_000 })).toBe(true);
+  // #477: after `git switch`, src/ is newer than an unchanged dist/ although a
+  // clean tree runs exactly the committed, mirror-checked build.
+  it('is fresh in a clean tree whatever the file times say', () => {
+    expect(isDistStale({ dirty: false, newestSrcMs: 2_000, oldestDistMs: 1_000 })).toBe(false);
   });
 
-  it('is fresh when every dist artefact is at least as new as the newest source', () => {
-    expect(isDistStale({ newestSrcMs: 1_000, oldestDistMs: 1_000 })).toBe(false);
-    expect(isDistStale({ newestSrcMs: 1_000, oldestDistMs: 2_000 })).toBe(false);
+  it('a clean tree runs committed artefacts: every required one is tracked by git', () => {
+    const tracked = spawnSync('git', ['ls-files', '--error-unmatch', '--', ...REQUIRED_BUILD_ARTIFACTS], {
+      cwd: path.join(__dirname, '..', '..'), encoding: 'utf8',
+    });
+    expect(tracked.stderr).toBe('');
+    expect(tracked.status).toBe(0);
+  });
+
+  it('in a dirty tree, is stale when any dist artefact predates the newest source file', () => {
+    expect(isDistStale({ dirty: true, newestSrcMs: 2_000, oldestDistMs: 1_000 })).toBe(true);
+  });
+
+  it('in a dirty tree, is fresh when every dist artefact is at least as new as the newest source', () => {
+    expect(isDistStale({ dirty: true, newestSrcMs: 1_000, oldestDistMs: 1_000 })).toBe(false);
+    expect(isDistStale({ dirty: true, newestSrcMs: 1_000, oldestDistMs: 2_000 })).toBe(false);
   });
 });
 

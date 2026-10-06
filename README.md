@@ -56,7 +56,7 @@ MeMesh lets agents share memory and exchange messages locally. Its main uses are
 | Claude Code | Plugin: hooks, MCP tools, `/memesh` skill | Full automatic capture and recall |
 | Codex CLI | Plugin, or MCP server (`memesh-mcp`) | Zero-config plugin install, or `codex mcp add memesh -- memesh-mcp` |
 | Gemini CLI | MCP server (`memesh-mcp`) | `gemini mcp add -s user memesh memesh-mcp` |
-| Cursor, Cline and other MCP clients | MCP server (`memesh-mcp`) | Point the client at `memesh-mcp` |
+| Cursor, Cline and other MCP clients | MCP server (`memesh-mcp`) | Point the client at `memesh-mcp`; a client that reports no workspace root also needs `MEMESH_PROJECT_ROOT` |
 | Hermes Agent | Native memory-provider plugin | [docs/platforms/hermes-agent.md](docs/platforms/hermes-agent.md) |
 | OpenClaw | Native memory plugin | Source only; not published or live-tested: [docs/platforms/openclaw.md](docs/platforms/openclaw.md) |
 | Your own scripts and apps | HTTP API from `memesh serve` | [docs/platforms/universal.md](docs/platforms/universal.md) |
@@ -106,7 +106,7 @@ memesh doctor          # checks local install health and prints fixes
 memesh install-hooks   # only if you skipped A: wires Claude Code, keeps your own hooks
 ```
 
-For a zero-config Codex install, run `codex plugin marketplace add PCIRCLE-AI/memesh` and `codex plugin add memesh@pcircle-memesh`. The manual alternative is `codex mcp add memesh -- memesh-mcp`. For Cursor, add `{ "mcpServers": { "memesh": { "command": "memesh-mcp" } } }` to `~/.cursor/mcp.json`. The Dashboard's doctor banner can apply the two recoverable local repairs it knows how to verify; it never changes files just because the page was opened.
+For a zero-config Codex install, run `codex plugin marketplace add PCIRCLE-AI/memesh` and `codex plugin add memesh@pcircle-memesh`. The manual alternative is `codex mcp add memesh -- memesh-mcp`. For Cursor, add `{ "mcpServers": { "memesh": { "command": "memesh-mcp" } } }` to `~/.cursor/mcp.json`. A client that reports no workspace root needs `MEMESH_PROJECT_ROOT` (the project's absolute directory) in the server's environment, or a `project` argument on each call. The Dashboard's doctor banner can apply the two recoverable local repairs it knows how to verify; it never changes files just because the page was opened.
 
 > **The plugin does not install the CLI.** After `/plugin install`, typing `memesh` in a terminal says `command not found` until you also run `npm install -g @pcircle/memesh`. If you only use Claude Code chat, A alone is enough.
 
@@ -119,7 +119,7 @@ For a zero-config Codex install, run `codex plugin marketplace add PCIRCLE-AI/me
 ```bash
 memesh remember "Login uses OAuth 2.0 with PKCE"
 memesh recall "login"
-# -> finds the PKCE decision
+# -> finds the note
 
 memesh briefing        # what the agent knows about this project
 memesh serve           # starts the local server and prints the dashboard URL
@@ -145,7 +145,7 @@ Full command and tool reference: [docs/api/API_REFERENCE.md](docs/api/API_REFERE
 | Tool | What it does |
 |------|-------------|
 | `work_package` | Prepare one bounded untrusted calendar digest or Claude Code transcript package under one matching MCP workspace root; submit one strict result for pending human review, or defer without durable change. Transcript submission retains bounded redacted source turns; no file path, hidden reasoning, provider, embedding, or vector data is exposed. |
-| `remember` | Store knowledge as observations, relations and tags — or pass free text as `note` and the title, observations and name are derived; `replace` corrects a memory in place |
+| `remember` | Store knowledge as observations, relations and tags — or pass free text as `note` and the title, observations and name are derived; `replace` corrects a memory in place; a new decision needs `why` (its reason, and what would make it stop holding) |
 | `recall` | Local FTS5 search with multi-factor scoring (relevance, recency, frequency, confidence, recall impact) |
 | `forget` | Soft-archive (never deletes) or remove specific observations |
 | `export` | Back up, migrate, or move memories as JSON between compatible agents |
@@ -169,7 +169,7 @@ Full command and tool reference: [docs/api/API_REFERENCE.md](docs/api/API_REFERE
 - With the MeMesh Codex plugin enabled, each startup or resumed ordinary Codex CLI thread with a valid thread identity and existing working directory registers automatically under a thread-scoped identity; no manual `agent setup` is required. SessionStart launches an owner-private companion. SessionEnd keeps a bounded 45-second idle queue window, resume replaces the prior exact generation, and expiry removes the registration. A message accepted during that idle window reaches the thread as a short notice when the same thread resumes, and the agent then fetches the body from the inbox; it is not a claim that a stopped UI was awakened. `memesh agent setup codex-session` remains available only when one workspace needs a stable named principal. The complete native envelope, including routing metadata and payload, is capped separately at 16,384 bytes (16 KiB). An exact-session send returns success only after that native queue accepts it; an oversized full envelope reports `native_message_too_large`, an unreachable local router reports `router_unreachable`, and other unavailable or rejected sessions report `recipient_unavailable`. Scoped recovery data remains durable for all sender-side and recipient-side failures. Principal targets retain durable store-and-forward behavior. Native acceptance is not acknowledgement or disposition, and native messages must contain no secrets.
 - A stopped, missing, or disconnected Codex session is not woken up or replaced, and a failed exact-session native delivery is not replayed automatically; the sender must retry deliberately. Its scoped recovery data stays available; `memesh message storage report` shows what is stored. Native delivery works on macOS and Linux only.
 - This documented native path covers ordinary Codex CLI. Do not assume Codex Desktop or an unattached task registers unless that exact running session appears in `message discover`; this is an evidence boundary, not a claim that those hosts are universally incompatible.
-- Pairing Claude Channel with automatic Codex registration needs no `--project` value copied between the two: each host derives its own routing project from its own working directory (Claude) or `--workspace` (Codex), so starting both in the same repository lands them in the same project automatically (#474).
+- Pairing Claude Channel with automatic Codex registration needs no `--project` value copied between the two: each host derives its own routing project from its own working directory (Claude) or `--workspace` (Codex), so starting both in the same repository lands them in the same project automatically.
 
 ---
 

@@ -146,7 +146,7 @@ export declare const TOOL_DEFINITIONS: readonly [{
             };
             readonly replace: {
                 readonly type: "boolean";
-                readonly description: "Rewrite the memory named by `name` instead of appending to it: its observations are replaced (and its tags when `tags` is given, its title when `title` or `note` is given). The previous version is kept in metadata.replaced_history with the time it was replaced. Default false (append).";
+                readonly description: "Rewrite the memory named by `name` instead of appending to it: its observations are replaced by the `observations` (or `note`) you give — one of them is required, a replace with neither is refused — and its tags when `tags` is given, its title when `title` or `note` is given. The previous version is kept in metadata.replaced_history with the time it was replaced. Default false (append).";
             };
             readonly title: {
                 readonly type: "string";
@@ -159,12 +159,16 @@ export declare const TOOL_DEFINITIONS: readonly [{
                 };
                 readonly description: "Key facts or observations about this entity";
             };
+            readonly why: {
+                readonly type: "string";
+                readonly description: "For a decision: why it was made AND what would make it stop holding (e.g. \"Postgres is too heavy to deploy for one user; revisit if we add a hosted tier\"). Stored as the observation \"Why: …\" and shown next to the decision wherever it is recalled or briefed. Required to create or `replace` a memory of type decision, architecture_decision or design_decision, unless an observation already starts with \"Why: \".";
+            };
             readonly tags: {
                 readonly type: "array";
                 readonly items: {
                     readonly type: "string";
                 };
-                readonly description: "Tags for filtering by subject (e.g. \"topic:database\"). A \"project:<id>\" tag is the same as passing `project` (<id> is the `project` field of the `briefing` result; CLI: `memesh briefing --json`); a plain repository name is a different project. At most one project.";
+                readonly description: "Tags for filtering by subject (e.g. \"topic:database\"). A \"project:<id>\" tag is the same as passing `project` (<id> is the `project` field of the `briefing` result; CLI: `memesh briefing --json`); a plain repository name is a different project, except your own project's plain name, which is stored as the id and reported in `retagged` — unless a memory the call updates or supersedes is already filed under the plain tag, which then stays as written. At most one project.";
             };
             readonly relations: {
                 readonly type: "array";
@@ -206,10 +210,13 @@ export declare const TOOL_DEFINITIONS: readonly [{
         }, {
             readonly required: readonly ["name", "type"];
         }, {
-            readonly required: readonly ["name", "replace"];
+            readonly required: readonly ["name", "replace", "observations"];
             readonly properties: {
                 readonly replace: {
                     readonly const: true;
+                };
+                readonly observations: {
+                    readonly minItems: 1;
                 };
             };
         }];

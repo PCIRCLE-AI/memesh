@@ -90,6 +90,52 @@ describe('Feature: lesson guards at the PreToolUse hooks', () => {
     expect(typeof meta.guard.last_fired_at).toBe('string');
   });
 
+  it('a guard whose stored pattern no longer compiles is recorded as an error outcome naming the lesson, not skipped in silence (#523)', () => {
+    const lessonId = seedGuardedLesson({ ...bashGuard, pattern: '***REDACTED***' });
+    const { stdout } = runHook('guard-check.js', { tool_name: 'Bash', tool_input: { command: 'git checkout -- .' } });
+    expect(stdout).toBe('');
+    const lines = fs.readFileSync(path.join(tmpHome, 'hook-outcomes.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const invalid = lines.find((l) => l.outcome === 'error' && String(l.reason).includes('guard pattern does not compile'));
+    expect(invalid, 'the skipped guard leaves a record').toBeTruthy();
+    expect(invalid.entity).toBe(`lesson:${lessonId}`);
+  });
+
+  it('an Edit/Write guard whose stored pattern no longer compiles is recorded by pre-edit-recall too (#523)', () => {
+    const lessonId = seedGuardedLesson({ ...bashGuard, tool: 'Edit', pattern: '***REDACTED***' });
+    runHook('pre-edit-recall.js', { tool_name: 'Edit', tool_input: { file_path: '/repo/src/a.ts', new_string: 'x' } });
+    const lines = fs.readFileSync(path.join(tmpHome, 'hook-outcomes.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const invalid = lines.find((l) => l.hook === 'pre-edit-recall' && l.outcome === 'error' && String(l.reason).includes('guard pattern does not compile'));
+    expect(invalid, 'the skipped guard leaves a record').toBeTruthy();
+    expect(invalid.entity).toBe(`lesson:${lessonId}`);
+  });
+
+  it('a guard message never carries a credential into the agent context: redacted when stored, and when an old raw one is injected (#523)', () => {
+    // Assembled at runtime so no line in the repository looks like a credential.
+    const tokenValue = 'MGUARDabc123abc123abc';
+    const token = ['token', tokenValue].join('=');
+    const stored = seedGuardedLesson({ ...bashGuard, message: `careful with ${token}` }, 'g-stored');
+    expect(JSON.parse(db.prepare('SELECT metadata FROM entities WHERE id = ?').get(stored).metadata).guard.message).toBe('careful with ***REDACTED***');
+    // A guard written before the write-time redaction, straight into the row.
+    const legacy = seedGuardedLesson({ ...bashGuard, message: 'placeholder' }, 'g-legacy');
+    db.prepare('UPDATE entities SET metadata = ? WHERE id = ?').run(JSON.stringify({ guard: { ...bashGuard, message: `legacy ${token}` } }), legacy);
+    const { stdout } = runHook('guard-check.js', { tool_name: 'Bash', tool_input: { command: 'git checkout -- src/' } });
+    const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext as string;
+    expect(ctx).toContain(`[mem:${stored}]`);
+    expect(ctx).toContain(`[mem:${legacy}]`);
+    expect(ctx).not.toContain(tokenValue);
+    expect(ctx).toContain('***REDACTED***');
+  });
+
+  it('a guard message has its home-directory path replaced with ~ when it is injected, like every other memory line (#464)', () => {
+    const home = os.homedir();
+    const id = seedGuardedLesson({ ...bashGuard, message: `read ${home}/runbook.md first` }, 'g-home');
+    const { stdout } = runHook('guard-check.js', { tool_name: 'Bash', tool_input: { command: 'git checkout -- src/' } });
+    const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext as string;
+    expect(ctx).toContain(`[mem:${id}]`);
+    expect(ctx).toContain('read ~/runbook.md first');
+    expect(ctx).not.toContain(`${home}/`);
+  });
+
   it('a non-matching command, a disabled guard, and a wrong-tool guard are all silence', () => {
     seedGuardedLesson(bashGuard, 'g-armed');
     seedGuardedLesson({ ...bashGuard, enabled: false, pattern: 'rm\\s+-rf\\s' }, 'g-disabled');
@@ -99,6 +145,25 @@ describe('Feature: lesson guards at the PreToolUse hooks', () => {
     expect(runHook('guard-check.js', { tool_name: 'Bash', tool_input: { command: 'rm -rf /tmp/x' } }).stdout).toBe('');
     // 'checkout' appears in the command, but that guard is Edit-scoped.
     expect(runHook('guard-check.js', { tool_name: 'Bash', tool_input: { command: 'echo checkout' } }).stdout).toBe('');
+  });
+
+  // #560: an unreadable guard store used to be recorded as "no active guard
+  // matched", so every guard stopped and the record looked like a command no
+  // guard applies to. It is now an error, said on stderr.
+  it('#560 a guard store it cannot read is an error with a stderr line, not "no guard matched"', async () => {
+    seedGuardedLesson(bashGuard);
+    const { closeDatabase } = await import('../../src/db.js');
+    closeDatabase();
+    for (const suffix of ['', '-wal', '-shm']) fs.rmSync(dbPath + suffix, { force: true });
+    fs.writeFileSync(dbPath, 'this is not a sqlite database, '.repeat(200));
+
+    const { stdout, stderr } = runHook('guard-check.js', { tool_name: 'Bash', tool_input: { command: 'git checkout -- src/a.ts' } });
+    expect(stdout).toBe('');
+    expect(stderr).toContain('[memesh guard-check] guards could not be read');
+    const lines = fs.readFileSync(path.join(tmpHome, 'hook-outcomes.jsonl'), 'utf8').trim().split('\n');
+    const last = JSON.parse(lines[lines.length - 1]);
+    expect(last).toMatchObject({ hook: 'guard-check', outcome: 'error' });
+    expect(last.reason).toMatch(/^guards unreadable: /);
   });
 
   it('no database, no command, garbage input — all silent passes', async () => {

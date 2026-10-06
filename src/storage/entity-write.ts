@@ -76,6 +76,16 @@ export function insertOrGetEntity(
 }
 
 /**
+ * #561: the text as the database stores it. SQLite stores text as UTF-8, so a
+ * lone UTF-16 surrogate (half of a pair) comes back as U+FFFD. A dedupe that
+ * compares incoming text with stored text has to compare this form, or the
+ * same observation never matches and is written again on every run.
+ */
+export function storedText(text: string): string {
+  return text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '\uFFFD');
+}
+
+/**
  * Append observations to an entity, in the order given, and return the ones
  * actually stored.
  *
@@ -98,8 +108,9 @@ export function appendObservations(
       : [],
   );
   const written: string[] = [];
-  for (const observation of observations) {
-    if (options.exclude?.(observation)) continue;
+  for (const given of observations) {
+    if (options.exclude?.(given)) continue;
+    const observation = storedText(given);
     if (options.dedupe) {
       if (seen.has(observation)) continue;
       seen.add(observation);

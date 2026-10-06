@@ -230,7 +230,7 @@ export async function startManagedAcpHost(config, dependencies) {
             router: {
                 async register(registration) {
                     assertExactManagedIdentity(registration, launch);
-                    routerConnection = await dependencies.connect_router_host({
+                    const connected = routerConnection = await dependencies.connect_router_host({
                         socket_path: socketPath,
                         auth_token: authToken,
                         identity: {
@@ -256,7 +256,7 @@ export async function startManagedAcpHost(config, dependencies) {
                         on_superseded: reportSuperseded,
                     });
                     return {
-                        generation: routerConnection.generation,
+                        get generation() { return connected.generation; },
                         unregister: closeRouterConnection,
                     };
                 },

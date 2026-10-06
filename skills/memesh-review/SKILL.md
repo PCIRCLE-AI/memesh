@@ -86,7 +86,7 @@ Present the report first. Ask which actions to execute. Then run the commands:
 ```bash
 memesh forget --name "outdated-entity"
 # MCP work_package submits one proposal; then use dream show / accept / reject
-memesh remember --name "missing-knowledge" --type decision --obs "..."
+memesh remember --name "missing-knowledge" --type decision --obs "..." --why "the reason, and what would make it stop holding"
 ```
 
 ### Step 4: Verify

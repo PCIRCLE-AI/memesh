@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { MemeshDatabase } from '../storage/sqlite.js';
+import { redactSecretList } from './paths.js';
 
 export const PRODUCT_IMPROVEMENT_KIND = 'product_improvement' as const;
 
@@ -112,6 +113,13 @@ function parsePayload(raw: string): ProductImprovementPayload {
   }
   const candidate = payload as Partial<ProductImprovementPayload>;
   const improvement = candidate.improvement;
+  // The stored text was redacted AFTER its input cap was checked, and
+  // `***REDACTED***` can be longer than what it replaced (#523): a
+  // 198-character title of short keys is stored at 331. Re-checking
+  // a cap on the stored form refused every such proposal at read time. Each
+  // marker is counted as ONE character — a lower bound on the text it stood
+  // for — so a payload that passed its cap on the way in still passes.
+  const withoutMarkers = (value: string) => value.replace(/\*\*\*REDACTED\*\*\*/g, 'x');
   if (
     candidate.type !== PRODUCT_IMPROVEMENT_KIND
     || typeof candidate.name !== 'string'
@@ -127,7 +135,7 @@ function parsePayload(raw: string): ProductImprovementPayload {
     || typeof improvement.verification_scenario !== 'string'
     || !Array.isArray(improvement.success_criteria)
     || improvement.success_criteria.length === 0
-    || improvement.success_criteria.some((value) => typeof value !== 'string' || !value.trim() || value.length > 1000)
+    || improvement.success_criteria.some((value) => typeof value !== 'string' || !value.trim() || withoutMarkers(value).length > 1000)
     || !Array.isArray(improvement.source_names)
     || improvement.source_names.length === 0
     || improvement.source_names.some((value) => typeof value !== 'string' || !value.trim() || value.length > 255)
@@ -137,10 +145,10 @@ function parsePayload(raw: string): ProductImprovementPayload {
     throw new Error('product-improvement proposal carries malformed content');
   }
   clean('proposal name', candidate.name, 255);
-  clean('title', candidate.title, 200);
-  clean('problem', improvement.problem, 5000);
-  clean('proposed change', improvement.proposed_change, 5000);
-  clean('verification scenario', improvement.verification_scenario, 5000);
+  clean('title', withoutMarkers(candidate.title), 200);
+  clean('problem', withoutMarkers(improvement.problem), 5000);
+  clean('proposed change', withoutMarkers(improvement.proposed_change), 5000);
+  clean('verification scenario', withoutMarkers(improvement.verification_scenario), 5000);
   if (improvement.source_host !== undefined) clean('source host', improvement.source_host, 64);
   return candidate as ProductImprovementPayload;
 }
@@ -180,11 +188,24 @@ export function stageProductImprovement(
   input: StageProductImprovementInput,
 ): ProductImprovementProposalResult {
   const project = clean('project', input.project, 200);
-  const title = clean('title', input.title, 200);
-  const problem = clean('problem', input.problem, 5000);
-  const proposedChange = clean('proposed change', input.proposed_change, 5000);
-  const verificationScenario = clean('verification scenario', input.verification_scenario, 5000);
-  const successCriteria = canonicalCriteria(input.success_criteria);
+  // #523: the staged proposal is itself a stored record — `memesh dream show`
+  // and the dashboard print `proposed_digest` — so the free text is redacted
+  // HERE, before it is cleaned and stored, not only when the proposal is
+  // accepted into the graph. Redaction is the identity on ordinary text.
+  // The length caps are INPUT caps, checked on the text as sent (like
+  // `remember`'s): redaction runs after them, because `***REDACTED***` can be
+  // longer than what it replaces and a title under the cap must not be
+  // refused for growing past it (#523). Redaction is the identity on
+  // ordinary text and adds no whitespace, so `clean`'s result stays clean.
+  // The fields are one set: a key split across them is masked as a whole.
+  const criteria = canonicalCriteria(input.success_criteria);
+  const [title, problem, proposedChange, verificationScenario, ...successCriteria] = redactSecretList([
+    clean('title', input.title, 200),
+    clean('problem', input.problem, 5000),
+    clean('proposed change', input.proposed_change, 5000),
+    clean('verification scenario', input.verification_scenario, 5000),
+    ...criteria,
+  ]);
   const priority = input.priority ?? 'p1';
 
   const sourceNames = [...new Set(input.source_names.map((name) => clean('source name', name, 255)))]

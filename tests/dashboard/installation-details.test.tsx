@@ -61,3 +61,32 @@ describe('optional installation version details', () => {
     await waitFor(() => expect(container.textContent).toContain('4.9.0'));
   });
 });
+
+describe('installation details loading frame', () => {
+  it('says "Loading" from the first render after opening, never a momentary "unavailable"', async () => {
+    respond({ status: 'PASS', checks: [versions] });
+    const { container, getByRole } = render(<InstallationDetails />);
+    // A native click outside act(): the re-render lands in a microtask, the
+    // effect that starts the request only after the next paint.
+    (getByRole('button', { name: t('settings.installationDetails') }) as HTMLButtonElement).click();
+    await Promise.resolve();
+    expect(container.textContent).toContain(t('common.loading'));
+    expect(container.textContent).not.toContain(t('settings.installationDetailsUnavailable'));
+    await waitFor(() => expect(container.textContent).toContain('4.9.0'));
+  });
+
+  it('says "Loading" again on reopening after a load that finished, not a momentary "unavailable"', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('offline'));
+    const { container, getByRole } = render(<InstallationDetails />);
+    const button = getByRole('button', { name: t('settings.installationDetails') }) as HTMLButtonElement;
+    fireEvent.click(button);
+    await waitFor(() => expect(container.textContent).toContain(t('settings.installationDetailsUnavailable')));
+    fireEvent.click(button); // close
+
+    button.click(); // reopen, outside act(): only the first frame has rendered
+    await Promise.resolve();
+    expect(container.textContent).toContain(t('common.loading'));
+    expect(container.textContent).not.toContain(t('settings.installationDetailsUnavailable'));
+    await waitFor(() => expect(container.textContent).toContain(t('settings.installationDetailsUnavailable')));
+  });
+});
