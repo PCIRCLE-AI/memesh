@@ -67,6 +67,8 @@ memesh-mcp
 # Add this command to your MCP client's server config.
 ```
 
+MeMesh binds a session to the project of the client's workspace root. For a client that reports no workspace root, set `MEMESH_PROJECT_ROOT` to the project's absolute directory in the server's environment, or pass `project` on each `remember`, `learn` and `recall` call.
+
 ---
 
 ### 🔴 CLI Mode (Advanced)

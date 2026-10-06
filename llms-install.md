@@ -41,8 +41,9 @@ the top of the next session.
 | No `◉ MeMesh` line after restart | Run `/plugin` inside Claude Code and confirm the `memesh` plugin is installed and enabled, then restart again. |
 
 The plugin does **not** put a `memesh` command on the shell PATH. For terminal
-use — and as a prerequisite for sections 3 and 4 — also do section 2. The two
-installs coexist and share the database.
+use — and as a prerequisite for section 4 and for section 3's manual
+npm-global alternative — also do section 2. The two installs coexist and share
+the database.
 
 ## 2. Terminal / CLI (npm global)
 
@@ -60,6 +61,10 @@ continuing.
 ```
 npm install -g @pcircle/memesh
 ```
+
+Expected: exits without error; `memesh`, `memesh-mcp` and `memesh-http` are
+now in `$(npm prefix -g)/bin/`. No compiler is involved and no install script
+runs.
 
 After installation, run `memesh doctor`. To probe the **installed** message MCP plus its bundled host-adapter imports (rather than only checking a manifest hash), opt in explicitly:
 
@@ -110,8 +115,17 @@ MeMesh database (normally `~/.memesh/`) with owner-private permissions. After
 an upgrade, an older router may remain on its legacy socket until its old
 sessions exit or the machine restarts. Current clients do not attach to it,
 and MeMesh does not kill or unlink a live process without durable ownership
-proof. Check
-the installed adapter imports and the live socket as distinct facts:
+proof.
+
+A router that started before an upgrade is caught when a host connects: each
+host reports its MeMesh version, and a router that finds the installed version
+newer steps aside so the installed one starts. A router from 4.10.11 or
+earlier cannot step aside; a host refuses it with `router_outdated` and the
+command to stop it (`pkill -f dist/host-runtime/router.js`), and the next
+MeMesh session starts the installed router. The exact rules are in the
+[agent messaging guide](docs/platforms/agent-messaging.md#one-time-owner-private-local-host-setup).
+
+Check the installed adapter imports and the live socket as distinct facts:
 
 ```bash
 MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY=1 memesh doctor
@@ -123,7 +137,7 @@ session. Generate reusable `0600` configs; session identities are not copied
 from an active ordinary session.
 
 For an ordinary active local Codex session, install and enable the MeMesh
-Codex plugin (Option A), which supplies the packaged SessionStart hook. On the
+Codex plugin (section 3), which supplies the packaged SessionStart hook. On the
 next startup or resume, that thread registers automatically under the current
 project with a thread-scoped principal. First read the exact automatic project
 value, then copy its `project` field into the discover command:
@@ -192,10 +206,6 @@ registration exists, the message remains durable with no false dispatch or
 host acceptance. The package also contains the experimental
 `memesh-host-acp` binary for protocol development, but no ACP provider is a
 documented native-wakeup integration here.
-
-Expected: exits without error; `memesh`, `memesh-mcp` and `memesh-http` are
-now in `$(npm prefix -g)/bin/`. No compiler is involved and no install script
-runs.
 
 **Verify**:
 
@@ -293,6 +303,8 @@ For one project only, use the same entry in that project's `.cursor/mcp.json`.
 Restart Cursor, then open Cursor's MCP settings and confirm that `memesh` is
 connected. If the Cursor Agent CLI is installed, `cursor-agent mcp list` also
 shows the configured server.
+
+A client that reports no workspace root needs `MEMESH_PROJECT_ROOT` set to the project's absolute directory in the server's `env`, or pass `project` on each `remember`, `learn` and `recall` call.
 
 | Failure | Remedy |
 |---|---|

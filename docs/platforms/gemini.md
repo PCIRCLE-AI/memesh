@@ -67,7 +67,8 @@ You have access to MeMesh persistent memory through application-provided tools.
 
 Recall relevant memories before making project-specific recommendations.
 Store durable decisions, bug lessons, architectural constraints, and coding patterns.
-Keep memories concise and tagged by project, topic, and technology.
+Send `why` with every decision: the reason, and what would make it stop holding.
+Keep memories concise. Tag each one project:<id> (the `project` field of `memesh briefing --json`), plus topic and technology.
 If the memory connector is unavailable, do not pretend memory was checked.
 ```
 
@@ -76,6 +77,6 @@ If the memory connector is unavailable, do not pretend memory was checked.
 1. User asks a project question.
 2. Your app calls `POST /v1/recall` with the user's query.
 3. Your app includes the returned memories in the Gemini request.
-4. After Gemini identifies a durable decision or lesson, your app calls `POST /v1/remember` or `POST /v1/learn`.
+4. After Gemini identifies a durable decision or lesson, your app calls `POST /v1/remember`, or `POST /v1/learn` with a `project` (the request is refused with 400 without one).
 
 See [Universal Integration Guide](./universal.md) and [API Reference](../api/API_REFERENCE.md).

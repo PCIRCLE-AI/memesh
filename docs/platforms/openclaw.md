@@ -71,6 +71,7 @@ The plugin is not available from npm. For a source compatibility test, use the i
 - `autoCapture` has no effect. Store deliberately with `memory_store`; its pattern-based prompt-injection guard is a baseline, not a guarantee that content is safe.
 - `memory_forget` performs agent-scoped query recall and archives up to 20 returned entities immediately. It has no preview or confirmation. Inspect the intended targets first and test with disposable data.
 - The agent ID tag is cooperative isolation inside one MeMesh instance, not cryptographic tenant isolation. Separate server instances are needed for hard isolation.
+- Writes carry an `agent:<id>` tag and no `project:` tag, so MeMesh treats them as memories that belong to no project: up to five of them can appear in every project's session-start briefing.
 - Recall times out and uses a temporary per-agent cooldown on timeout; a failed recall must not be treated as proof that no memory exists.
 
 ## Reference

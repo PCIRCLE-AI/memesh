@@ -140,8 +140,9 @@ host is recallable from all of them. Not installed yet? Follow
   general lesson). `recall` searches the bound project (or `project`), memories
   with no project and global ones, and says which in `scope`. When you tag by hand (the CLI, or another
   project), use `project:<id>`, where `<id>` is the `project` field of the
-  `briefing` result (CLI: `memesh briefing --json`). The injected block shows
-  only the readable name. `remember` stores a plain-name tag for the call's
+  `briefing` result (CLI: `memesh briefing --json`). The first line of the
+  injected block gives this session's exact project id (readable name plus a
+  short hash); the memories below it show only the readable name. `remember` stores a plain-name tag for the call's
   own project as the id (and says so in `retagged`), but a plain name for any
   other project, or on a memory already filed under it, stays a different
   scope that this project's sessions never see.
@@ -208,7 +209,7 @@ Under Claude Code with the MeMesh plugin, hooks capture automatically:
 - **SessionStart** injects the work topology (the same memory block
   `briefing` returns, with an eligible exact-project handoff ahead of ranked memories after optional repository facts, plus a work-package notice at `full` that `briefing`
   never includes) at the top of the session, whenever the configured level
-  has something to show; an empty project at `minimal` injects nothing.
+  has something to show; an empty project at `minimal` injects only the project line.
 - **PreToolUse (Edit|Write)** surfaces memories related to the file being
   edited.
 - **PostToolUse (Bash)** records git commits with diff stats.
