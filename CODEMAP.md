@@ -104,7 +104,7 @@ docs/                # ARCHITECTURE.md, api/API_REFERENCE.md
 ### Hook commands (`hooks/hooks.json`)
 | Command | Fires on | Does |
 |---|---|---|
-| `session-start.js` | SessionStart | inject top-N memories (additionalContext), banner, lesson warnings, update notice / consent prompt (no spawn) |
+| `session-start.js` | SessionStart | inject top-N memories (additionalContext), banner, lesson warnings, update notice / consent prompt (does not spawn the auto-update) |
 | `pre-edit-recall.js` | PreToolUse Edit/Write | inject file-relevant memories; also evaluates accepted lesson guards on the content being written |
 | `guard-check.js` | PreToolUse Bash | enforce accepted lesson guards before risky repeats |
 | `src/host-runtime/codex-session.ts` | SessionStart / SessionEnd | launch, supersede, and retire the detached exact-thread companion; apply a matching optional identity override |
