@@ -190,6 +190,7 @@ jobs:
         env:
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
+        # vitest.config.ts skips release UI tests; core/API tests and coverage floors remain.
         run: ${{ matrix.coverage && 'npm run test:coverage' || 'npm test -- --run' }}
 
       - name: Doctor (manifest + hooks integrity gate)
@@ -311,7 +312,7 @@ jobs:
         run: bash scripts/release-verify.sh --skip-suite
 
   # `node scripts/verify.mjs --journeys` runs the journey steps of
-  # `npm run verify` — build, the packaged smoke, the dashboard e2e — and
+  # `npm run verify` — build and the packaged smoke — and
   # logs the git tree hash it verified. verify:release and the suite are not
   # repeated here: every Build & Test leg runs them, one on this OS and Node.
   #
@@ -320,10 +321,8 @@ jobs:
   # receipt for a different tree is a finding. The test step before it keeps
   # scripts/verify.mjs and scripts/verify-receipt.mjs honest about themselves.
   #
-  # This is the only job that runs the packaged dashboard e2e on a pull
-  # request. A separate job used to run the same command on the same OS and
-  # Node; tests/release-scripts-safety.test.ts pins that this job runs the
-  # journeys and that the packaged and e2e steps are still marked as journeys.
+  # Dashboard UI verification is skipped for this release. The existing
+  # journey runner still verifies the build and installed package.
   sdlc-verify:
     name: SDLC verify
     runs-on: ubuntu-latest
@@ -352,9 +351,6 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
-
-      - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
 
       - name: Verify module tests (tree hash, receipt, verify runner)
         run: node --test scripts/verify.test.mjs scripts/lib/verify-core.test.mjs

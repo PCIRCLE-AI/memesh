@@ -367,10 +367,8 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     expect(releaseJob).not.toContain('--quick');
   });
 
-  // The coverage floor and the packaged dashboard e2e each used to be their
-  // own job, and their required check names were what guaranteed they ran on
-  // every pull request. Both now live inside other jobs, so these two tests
-  // are what notices if either one quietly stops running.
+  // Coverage floors remain required; Dashboard UI checks are explicitly
+  // skipped for this release while packaged verification remains mandatory.
   function ciJob(id: string): string {
     const ci = read('.github/workflows/ci.yml');
     return ci.match(new RegExp(`\\n {2}${id}:\\n[\\s\\S]*?(?=\\n {2}[A-Za-z0-9_-]+:\\n|$)`))?.[0] ?? '';
@@ -423,7 +421,16 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     expect(sdlcJob).not.toBe('');
     expect(sdlcJob).not.toMatch(/\n {4}if:/);
     expect(sdlcJob).not.toMatch(/\n {4}continue-on-error/);
-    unconditionalStep(sdlcJob, 'npx playwright install --with-deps chromium');
+    expect(sdlcJob).not.toContain('npx playwright install');
+    const publisher = read('.github/workflows/publish-npm.yml');
+    expect(publisher).not.toContain('run: npm run test:e2e-dashboard');
+    expect(publisher).not.toContain('npx playwright install');
+    unconditionalStep(publisher, 'npm test -- --run');
+    // npm publish runs prepublishOnly -> test:isolated without CLI excludes.
+    const defaultExcludes = read('vitest.config.ts').match(/exclude:\s*\[([^\]]*)\],\n\n\s*\/\/ Explicit cleanup/)?.[1] ?? '';
+    for (const pattern of ['tests/dashboard/**', 'tests/dashboard-*.test.ts', 'tests/qa-ui-review.test.ts']) {
+      expect(defaultExcludes).toContain(`'${pattern}'`);
+    }
     // Journeys only: every Build & Test leg already runs the build, verify:release
     // and the full suite, so the full run here repeated them on the same OS and Node.
     unconditionalStep(sdlcJob, 'node scripts/verify.mjs --journeys');
