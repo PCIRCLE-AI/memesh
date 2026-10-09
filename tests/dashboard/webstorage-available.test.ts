@@ -60,7 +60,20 @@ describe('the locale picker survives the storage and language edge cases', () =>
     vi.stubGlobal('localStorage', blockedStorage());
     expect(() => setLocale('ja')).not.toThrow();
     expect(getLocale()).toBe('ja');
+    expect(document.documentElement.lang).toBe('ja');
   });
+
+  it.each(['en', 'zh-TW', 'zh-CN', 'ja', 'ko', 'pt', 'fr', 'de', 'vi', 'es', 'th'] as const)(
+    'marks the page language on startup and selection in %s', (locale) => {
+      document.documentElement.lang = 'stale';
+      localStorage.setItem('memesh-locale', locale);
+      expect(initLocale()).toBe(locale);
+      expect(document.documentElement.lang).toBe(locale);
+      document.documentElement.lang = 'stale';
+      setLocale(locale);
+      expect(document.documentElement.lang).toBe(locale);
+    },
+  );
 
   it('a stored value that is only an Object.prototype name is not a locale', () => {
     localStorage.setItem('memesh-locale', 'constructor');

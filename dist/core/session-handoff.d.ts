@@ -12,6 +12,7 @@ export interface HandoffRecord {
     id: number;
     text: string;
     observedAt: string | null | undefined;
+    metadata?: string | null;
 }
 export type HandoffStatus = 'shown' | 'stale' | 'expired' | 'undatable' | 'future' | 'empty';
 export declare function handoffView(record: HandoffRecord | null | undefined, now?: Date): {

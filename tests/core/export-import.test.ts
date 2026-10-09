@@ -7,6 +7,34 @@ import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 
 useTestDatabase('memesh-export-');
 
+describe('malformed imported relation entries', () => {
+  const invalidRelations = [null, 7, [], {}, { type: 'related_to' }, { to: 7, type: 'related_to' }, { to: {}, type: 'related_to' }, { to: 'target' }, { to: '', type: 'related_to' }, { to: 'target', type: '' }];
+  it.each(invalidRelations.map(relation => ({ relation })))('reports the bad field before writing its memory (%j)', ({ relation }) => {
+    const data = { version: '4.10.12', exported_at: '2026-10-08T00:00:00.000Z', entities: [
+      { name: 'good-import', type: 'note', observations: ['valid owned row'], tags: [], relations: [] },
+      { name: 'bad-import', type: 'note', observations: ['invalid owned row'], tags: [], relations: [relation] },
+    ] } as unknown as Parameters<typeof importMemories>[0]['data'];
+    const result = importMemories({ data, merge_strategy: 'skip' });
+    expect(result.imported).toBe(1);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toContain('entities[1].relations[0]');
+    expect(new KnowledgeGraph(getDatabase()).getEntity('bad-import')).toBeNull();
+    expect(new KnowledgeGraph(getDatabase()).getEntity('good-import')?.observations).toEqual(['valid owned row']);
+  });
+
+  it.each(['append', 'overwrite'] as const)('leaves an existing memory intact on invalid %s relations', (merge_strategy) => {
+    remember({ name: 'existing-import', type: 'note', observations: ['keep this'], tags: ['owned'] });
+    const before = exportMemories({});
+    const data = { version: '4.10.12', exported_at: '2026-10-08T00:00:00.000Z', entities: [
+      { name: 'existing-import', type: 'note', observations: ['must not replace'], tags: [], relations: [{ type: 'related_to' }] },
+    ] } as unknown as Parameters<typeof importMemories>[0]['data'];
+    const result = importMemories({ data, merge_strategy });
+    expect(result.errors[0]).toContain('relations[0].to');
+    expect(result.imported + result.appended + result.overwritten).toBe(0);
+    expect(exportMemories({}).entities).toEqual(before.entities);
+  });
+});
+
 it.each(['append', 'overwrite'] as const)('#346 %s imports preserve local forgotten observations against bundled metadata', (merge_strategy) => {
   const name = 'session-import-exclusion-files';
   const removed = 'Session edited 1 file(s): removed.ts';
@@ -1315,6 +1343,41 @@ describe('importMemories', () => {
     });
   });
 
+  it.each([false, true])('append restores existing-source relations with new text=%s and remains idempotent', (withText) => {
+    remember({ name: 'append-source', type: 'note', observations: ['local fact'], tags: ['local-tag'] });
+    const data = makeExport([
+      { name: 'append-source', observations: withText ? ['local fact', 'bundle fact'] : ['local fact'],
+        relations: [{ to: 'later-target', type: 'depends-on' }] },
+      { name: 'later-target', observations: ['target fact'] },
+    ]);
+    const first = importMemories({ data, merge_strategy: 'append' });
+    expect(first.errors).toEqual([]);
+    expect(first.skipped_relations).toEqual([]);
+    expect(first.appended).toBe(1);
+    const kg = new KnowledgeGraph(getDatabase());
+    expect(kg.getRelations('append-source')).toEqual([
+      { from: 'append-source', to: 'later-target', type: 'depends-on' },
+    ]);
+    expect(kg.getEntity('append-source')?.observations).toEqual(withText ? ['local fact', 'bundle fact'] : ['local fact']);
+    expect(kg.getEntity('append-source')?.tags).toEqual(['local-tag']);
+    const before = exportMemories({}).entities;
+    const repeated = importMemories({ data, merge_strategy: 'append' });
+    expect(repeated.appended).toBe(0);
+    expect(repeated.skipped).toBe(2);
+    expect(repeated.errors).toEqual([]);
+    expect(exportMemories({}).entities).toEqual(before);
+  });
+
+  it('append reports a missing relation target even when the source text is unchanged', () => {
+    remember({ name: 'append-source', type: 'note', observations: ['local fact'] });
+    const result = importMemories({ data: makeExport([
+      { name: 'append-source', observations: ['local fact'], relations: [{ to: 'missing-target', type: 'depends-on' }] },
+    ]), merge_strategy: 'append' });
+    expect(result.errors).toEqual([]);
+    expect(result.skipped_relations).toEqual(['append-source -depends-on-> missing-target']);
+    expect(new KnowledgeGraph(getDatabase()).getRelations('append-source')).toEqual([]);
+  });
+
   it('overwrites existing entity with overwrite strategy', () => {
     remember({ name: 'existing', type: 'note', observations: ['old'] });
     const data = makeExport([{ name: 'existing', observations: ['fresh'] }]);
@@ -1581,6 +1644,49 @@ describe('importMemories', () => {
   });
 
   describe('namespace: whose choice moves an existing entity', () => {
+    it.each(['append', 'overwrite'] as const)('%s keeps the latest move rather than an older breadcrumb', (merge_strategy) => {
+      const name = 'twice-moved';
+      remember({ name, type: 'note', observations: ['original'], namespace: 'personal' });
+      const kg = new KnowledgeGraph(getDatabase());
+      const data = bundleFor(name);
+      try {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date('2026-10-08T01:00:00.000Z'));
+        expect(importMemories({ data, merge_strategy, namespace: 'team' }).errors).toEqual([]);
+        const first = kg.getEntity(name)!;
+        expect(first.metadata?.previous_namespace).toBe('personal');
+        vi.setSystemTime(new Date('2026-10-08T02:00:00.000Z'));
+        expect(importMemories({ data, merge_strategy, namespace: 'global' }).errors).toEqual([]);
+        const second = kg.getEntity(name)!;
+        expect(second.namespace).toBe('global');
+        expect(second.metadata?.previous_namespace).toBe('team');
+        expect(second.metadata?.namespace_moved_at).toBe('2026-10-08T02:00:00.000Z');
+        // A later import that changes text, but not scope, retains the move.
+        data.entities[0].observations = ['changed text'];
+        vi.setSystemTime(new Date('2026-10-08T03:00:00.000Z'));
+        expect(importMemories({ data, merge_strategy, namespace: 'global' }).errors).toEqual([]);
+        const sameScope = kg.getEntity(name)!;
+        expect(sameScope.metadata?.previous_namespace).toBe('team');
+        expect(sameScope.metadata?.namespace_moved_at).toBe(second.metadata?.namespace_moved_at);
+        expect(sameScope.metadata?.trust).toBe('untrusted');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it.each(['append', 'overwrite'] as const)('%s refuses invalid relations without changing a prior move', (merge_strategy) => {
+      const name = 'rejected-move';
+      remember({ name, type: 'note', observations: ['original'], namespace: 'personal' });
+      remember({ name, type: 'note', observations: ['team text'], namespace: 'team' });
+      const before = exportMemories({}).entities;
+      const data = bundleFor(name);
+      data.entities[0].relations = [{ type: 'related_to' }] as typeof data.entities[0]['relations'];
+      const result = importMemories({ data, merge_strategy, namespace: 'global' });
+      expect(result.errors[0]).toContain('relations[0].to');
+      expect(result.imported + result.appended + result.overwritten).toBe(0);
+      expect(exportMemories({}).entities).toEqual(before);
+    });
+
     /** A bundle that claims one entity, in `personal`. */
     function bundleFor(name: string) {
       return {

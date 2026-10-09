@@ -20,7 +20,7 @@
 // All network is stubbed — nothing here touches ~/.memesh or any config.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, fireEvent, waitFor, cleanup } from '@testing-library/preact';
+import { render, fireEvent, waitFor, cleanup, within } from '@testing-library/preact';
 import { api, HttpError, NetworkError, type Entity } from '../../dashboard/src/lib/api';
 import { actionFailureMessage } from '../../dashboard/src/lib/failure';
 import { t } from '../../dashboard/src/lib/i18n';
@@ -308,6 +308,60 @@ describe('ProjectTab empty states', () => {
 /* ── InsightsTab: action failures are sentences, not exceptions ──────────── */
 
 describe('InsightsTab action failure routing', () => {
+  it.each(['resolved-rejection', 'unreachable'] as const)(
+    'reconciles a failed accept without losing its error or cached proposal (%s)',
+    async (outcome) => {
+      let listReads = 0;
+      let accepts = 0;
+      const proposal = {
+        id: 1, project: 'p', cluster_key: 'k', source_count: 2,
+        digest_name: 'overlap-digest', digest_observations_preview: 'review body',
+        status: 'pending', created_at: '2026-08-05 00:00:00', kind: 'digest',
+      };
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        const url = String(input);
+        const method = (init?.method ?? 'GET').toUpperCase();
+        if (method === 'POST') {
+          accepts++;
+          if (outcome === 'unreachable') throw new TypeError('Failed to fetch');
+          return jsonResponse({ success: false, errorCode: 'operation.failed', error: 'sources already compacted' }, 400);
+        }
+        if (/\/v1\/dream\/proposals\/1$/.test(url)) {
+          return jsonResponse({ success: true, data: {
+            ...proposal, reason: null, reviewed_at: null, source_ids: [1, 2],
+            proposed_digest: { name: proposal.digest_name, type: 'digest', observations: ['review body'], tags: [] },
+          } });
+        }
+        listReads++;
+        if (listReads > 1 && outcome === 'unreachable') throw new TypeError('Failed to fetch');
+        return jsonResponse({ success: true, data: [{ ...proposal,
+          status: accepts && outcome === 'resolved-rejection' ? 'rejected' : 'pending',
+        }] });
+      });
+      const { container } = render(<InsightsTab />);
+      if (!(container instanceof HTMLElement)) throw new Error('Expected an HTML render container');
+      const { getByRole } = within(container);
+      fireEvent.click(await waitFor(() => getByRole('button', { name: t('insights.viewDetail'), exact: true })));
+      fireEvent.click(await waitFor(() => getByRole('button', { name: t('insights.accept'), exact: true })));
+      await waitFor(() => {
+        expect(listReads).toBe(2);
+        expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+          outcome === 'unreachable' ? unreachableSentence : t('httpError.operation.failed'),
+        );
+      });
+      expect(accepts).toBe(1);
+      fireEvent.click(getByRole('button', { name: t('insights.filter.all'), exact: true }));
+      await waitFor(() => {
+        expect(container.textContent).toContain(proposal.digest_name);
+        const acceptButton = [...container.querySelectorAll('button')]
+          .find(b => b.textContent === t('insights.accept'));
+        if (outcome === 'resolved-rejection') expect(acceptButton).toBeUndefined();
+        else expect(acceptButton?.disabled).toBe(false);
+      });
+      expect(container.textContent).not.toContain(t('insights.emptyOther'));
+    },
+  );
+
   it('a dead server during accept shows the unreachable sentence', async () => {
     let dead = false;
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {

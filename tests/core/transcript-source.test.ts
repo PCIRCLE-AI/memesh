@@ -76,6 +76,23 @@ describe('work-package source boundary', () => {
     closeDatabase();
   });
 
+  it('prepares visible work across a null line without changing transcript bytes or staging a proposal', () => {
+    const file = writeSession(cwd, 'visible before');
+    fs.appendFileSync(file, '\nnull\n' + JSON.stringify({ type: 'assistant', message: {
+      content: [{ type: 'text', text: 'visible after' }],
+    } }));
+    const before = fs.readFileSync(file);
+    const response = prepare();
+    expect(response.status).toBe('available');
+    expect(response.package).toMatchObject({
+      ref: { source_hash: createHash('sha256').update(before).digest('hex') },
+      sources: [{ role: 'user', text: 'visible before' }, { role: 'assistant', text: 'visible after' }],
+      coverage: { total_turns: 2, included_turns: 2, truncated: false },
+    });
+    expect(fs.readFileSync(file)).toEqual(before);
+    expect(db.prepare('SELECT count(*) AS n FROM dream_proposals').get()).toEqual({ n: 0 });
+  });
+
   it('accepts equivalent project paths and redacts transcript text without changing raw-byte identity', () => {
     const alias = path.join(root, 'alias');
     fs.symlinkSync(cwd, alias, 'dir');

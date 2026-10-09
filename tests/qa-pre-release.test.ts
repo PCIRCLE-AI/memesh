@@ -18,6 +18,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { NOT_CHECKED, STEPS, formatVerdict, unknownSteps, cacheableReceiptPath } from '../scripts/qa/pre-release.mjs';
 import { LIVE_JOURNEY_SCHEMA_VERSION } from '../scripts/lib/live-journey-contract.mjs';
 
@@ -80,7 +81,7 @@ const CACHING_ON = { MEMESH_FINISH_RELEASE_TAGGING: '1' };
  * forwards its `extraEnv` (and this repo's whole environment) down through
  * `npm run <script>`, so the child script reads it the same way on every OS.
  */
-function gitFixtureRepo() {
+function gitFixtureRepo(scriptOverrides: Record<string, string> = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-pre-release-git-fixture-'));
   fixtureDirs.push(dir);
   const runsLog = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-pre-release-runs-')) + '/runs.log';
@@ -96,6 +97,9 @@ function gitFixtureRepo() {
       ? `node -e "require('fs').appendFileSync(process.env.MEMESH_TEST_RUNS_LOG, 'ran\\n')"`
       : 'node -e "0"';
   }
+  scripts['verify:release'] = 'node -e "0"';
+  scripts['test:packaged'] = 'node -e "0"';
+  Object.assign(scripts, scriptOverrides);
   fs.writeFileSync(path.join(dir, 'package.json'),
     JSON.stringify({ name: 'fixture', version: '0.0.0', scripts }, null, 2));
   // `.qa/` is gitignored in the real repo (`.gitignore:129`), so `treeHash`'s
@@ -108,6 +112,80 @@ function gitFixtureRepo() {
   run(['commit', '--quiet', '-m', 'init']);
   return { dir, runsLog, env: { ...CACHING_ON, MEMESH_TEST_RUNS_LOG: runsLog } };
 }
+
+function reuseFixture(scriptOverrides: Record<string, string> = {}) {
+  const fixture = gitFixtureRepo(scriptOverrides);
+  const { dir } = fixture;
+  const gitRead = (args: string[]) => spawnSync('git', args, { cwd: dir, encoding: 'utf8' }).stdout.trim();
+  fs.mkdirSync(path.join(dir, '.qa'), { recursive: true });
+  const source = path.join(dir, '.qa', 'original-failed-receipt.json');
+  fs.writeFileSync(source, JSON.stringify({ exit: 1, reason: 'old UI assertion; corrected by separately reviewed delta' }));
+  const report = {
+    revision: gitRead(['rev-parse', 'HEAD']), tree: gitRead(['rev-parse', 'HEAD^{tree}']), version: '0.0.0',
+    authority: { decidedBy: 'release owner', decision: 'UI SKIP and baseline plus affected delta reuse' },
+    uiSkip: true, g6: 'baseline plus reviewed delta',
+    hosts: { codex: 'native reminder unchanged; installed delta', claude: 'native reminder unchanged; installed delta' },
+    concerns: ['UI SKIP is not PASS', 'original exit1 retained'],
+    evidence: ['g6', 'codex', 'claude'].map(scope => ({
+      scope, path: source, sha256: createHash('sha256').update(fs.readFileSync(source)).digest('hex'),
+      mapping: 'source plus separately reviewed affected delta; original failure retained',
+    })),
+  };
+  const reportPath = path.join(dir, '.qa', 'release-evidence-reuse.json');
+  fs.writeFileSync(reportPath, JSON.stringify(report));
+  return { ...fixture, source, report, reportPath };
+}
+
+describe('approved UI waiver and evidence reuse through the actual gate', () => {
+  it('skips only approved UI and suite replay, keeps original failure, and labels reuse honestly', () => {
+    const fixture = reuseFixture({ 'qa:ui-review': 'node -e "process.exit(3)"', 'verify:artifact': 'node -e "process.exit(3)"' });
+    const run = runGate(fixture.dir, fixture.env);
+    expect(run.status, run.stdout + run.stderr).toBe(0);
+    expect(run.stdout).toContain('SKIP  qa:ui-review');
+    expect(run.stdout).toContain('REUSED_WITH_CONCERNS  verify:artifact');
+    expect(run.stdout).toContain('PASS_WITH_CONCERNS — pre-release gate');
+    expect(run.stdout).not.toContain('PASS  qa:ui-review');
+    expect(run.stdout).toContain('verify:release');
+    expect(run.stdout).toContain('test:packaged');
+    expect(run.stdout).toContain('PASS  audit:memory');
+    expect(JSON.parse(fs.readFileSync(fixture.source, 'utf8')).exit).toBe(1);
+    expect(fs.existsSync(cacheableReceiptPath(fixture.dir, 'verify:artifact'))).toBe(false);
+  });
+
+  it('refuses a changed source receipt instead of falling through to a fresh suite', () => {
+    const fixture = reuseFixture();
+    fs.appendFileSync(fixture.source, ' ');
+    const run = runGate(fixture.dir, fixture.env);
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain('source changed');
+    expect(run.stdout).not.toContain('--- build');
+  });
+
+  it.each(['package.json', '.qa/original-failed-receipt.json'])('refuses reuse when build mutates %s', (file) => {
+    const fixture = reuseFixture({ build: `node -e "require('fs').appendFileSync('${file}', ' ')"` });
+    const run = runGate(fixture.dir, fixture.env);
+    expect(run.status, run.stdout + run.stderr).toBe(1);
+    expect(run.stdout).not.toContain('REUSED_WITH_CONCERNS  verify:artifact');
+  });
+
+  it.each(['tree', 'hosts', 'evidence'])('refuses incomplete or differently bound %s', (field) => {
+    const fixture = reuseFixture();
+    const report: Record<string, unknown> = { ...fixture.report };
+    delete report[field];
+    fs.writeFileSync(fixture.reportPath, JSON.stringify(report));
+    const run = runGate(fixture.dir, fixture.env);
+    expect(run.status).toBe(1);
+    expect(run.stdout).not.toContain('--- build');
+  });
+
+  it.each(['verify:release', 'test:packaged', 'audit:memory'])('still stops on %s failure with reuse', (id) => {
+    const fixture = reuseFixture({ [id]: 'node -e "process.exit(3)"' });
+    const run = runGate(fixture.dir, fixture.env);
+    expect(run.status).toBe(1);
+    expect(run.stdout).toContain(`FAIL  ${id} (exit=3)`);
+    expect(run.stdout).not.toContain('PASS_WITH_CONCERNS — pre-release gate');
+  });
+});
 
 function countRuns(runsLog: string): number {
   return fs.readFileSync(runsLog, 'utf8').split('\n').filter((line) => line === 'ran').length;
@@ -164,7 +242,8 @@ describe('the plan', () => {
     // so the negative assertion matters as much as the positive ones.
     const text = NOT_CHECKED.join('\n');
     expect(text).toMatch(/live-journey/);
-    expect(text).toContain('Both --host codex and --host claude receipts are required');
+    expect(text).toContain('Both hosts need');
+    expect(text).toContain('explicitly approved, candidate-bound evidence reuse');
     expect(text).toContain(LIVE_JOURNEY_SCHEMA_VERSION);
     expect(text).not.toContain('--host codex or --host claude');
     expect(text).toMatch(/qa:post-release/);

@@ -1,7 +1,7 @@
 # MeMesh Plugin -- API Reference
 
 **Protocol**: Model Context Protocol (MCP) over stdio
-**Version**: 4.10.11
+**Version**: 4.10.12
 **Compatibility**: Works with Claude Code plugins, Claude Managed Agents (via MCP connector), and any MCP-compatible client.
 
 **Native Integrations**: Beyond MCP, MeMesh integrates as a native memory provider for Hermes Agent (Python `MemoryProvider` plugin). A source-only OpenClaw TypeScript memory-capability plugin is also included, but it is not published or live-tested. Neither path is an HTTP bridge. See [docs/platforms/](../platforms/) for platform-specific guides.
@@ -128,7 +128,7 @@ With `note`, the response also carries `derived: { name, type, title, observatio
 
 Five more fields are conditional. `retagged` appears when a `project:<name>` tag named the call's own project by its plain name (MCP: the `project` argument or the bound project; CLI: the current directory's project) while that project's id is `<name>~<hash>`: the tag was stored as the full id, and `retagged` is `{ from, to }`, each a whole tag (`"project:<name>"`, `"project:<name>~<hash>"`). It is absent when a memory the call updates or supersedes already carries the plain tag, which then stays as written (#511). `relationsCreated` lists the relations actually created — report from it rather than subtracting errors from what you asked for. `superseded` lists the names archived because a `supersedes` relation pointed at them. `relationErrors` is included when a relation target does not exist; the entity is still stored. `movedFromNamespace` appears only when the call MOVED a memory that already existed, naming the scope it came from, and pairs with `metadata.previous_namespace` so the move can be reversed.
 
-**Write provenance.** Every entity created through `remember` or `learn` carries `metadata.provenance.source_host` — which surface wrote it. It is **not an input parameter** on any transport (a provenance field the caller's model could fill in is not provenance); the transport sets it: the MCP server stamps the client's self-declared `initialize` name (`claude-code`, `codex`, `gemini-cli`, …; `mcp` when the client declares none), the CLI stamps `cli`, and the HTTP API stamps `http`. The stamp lands on first insert only — appending to an existing entity from another host does not rewrite it. Memories the hooks capture on their own (commits, session summaries, the session handoff) are stamped with the host that ran the hook, `claude-code` or `codex` — the same host the hook's outcome record names — and carry no host when the hook cannot tell. The field is returned wherever entity `metadata` is returned (e.g. `recall` results).
+**Write provenance.** Every entity created through `remember` or `learn` carries `metadata.provenance.source_host` — which surface wrote it. It is **not an input parameter** on any transport (a provenance field the caller's model could fill in is not provenance); the transport sets it: the MCP server stamps the client's self-declared `initialize` name (`claude-code`, `codex`, `gemini-cli`, …; `mcp` when the client declares none), the CLI stamps `cli`, and the HTTP API stamps `http`. The stamp lands on first insert only — appending to an existing entity from another host does not rewrite it. Memories the hooks capture on their own (commits, session summaries, the session handoff) are stamped with the host that ran the hook, `claude-code` or `codex` — the same host the hook's outcome record names — and carry no host when the hook cannot tell. A locally replaced session handoff is the exception: its source follows the latest writer, and briefing/SessionStart name a known Claude Code or Codex source in the handoff heading. Legacy handoffs without a known source retain their original heading. The field is returned wherever entity `metadata` is returned (e.g. `recall` results).
 
 **Supersedes behavior:** When a relation has type `"supersedes"`, the target entity is automatically archived. This enables knowledge evolution — new designs replace old ones without losing history.
 
@@ -356,19 +356,10 @@ For Stop-generated `session-<id>-files`, `session-<id>-fixes`, and
 text. Other newly derived observations can still update the snapshot. Explicitly
 adding the removed text with `remember` clears its exclusion and restores it.
 
-Among the CLI, MCP and HTTP transport entrypoints, only CLI JSON import
-(`memesh import <file>`) retains bundle metadata at all. The MCP `import`
-tool and `POST /v1/import` both validate the bundle against
-`ExportResultSchema`, which does not declare a `metadata` field on each
-entity — Zod strips unknown keys by default, so no bundle metadata
-(exclusions, `guard`, `demo`, `task_state`, or anything else) ever reaches
-`buildImportedMetadata` through those two transports; the CLI reads the raw
-file with `JSON.parse` and passes it straight through. (The underlying
-`importMemories()` function itself has no such restriction — called directly,
-not through a transport, as `tests/core/export-import.test.ts` does, it
-accepts whatever metadata it is given, same as the CLI path.)
-
-Within a path that reaches it, a bundle's metadata is filtered by an
+CLI JSON import (`memesh import <file>`), the MCP `import` tool and
+`POST /v1/import` all retain a bundle's metadata and pass it to the core.
+Metadata must be an object; malformed field shapes are refused before the
+entity is written. A bundle's metadata is filtered by an
 ALLOW-list (`IMPORTABLE_METADATA_KEYS` in `serializer.ts`): a key on it purely
 describes the memory — display or provenance — and nothing IN
 `IMPORTABLE_METADATA_KEYS` is ever read back to change what MeMesh does.
@@ -505,12 +496,12 @@ Export memories to a portable JSON bundle. Use for personal backup, migrating be
 
 | field | on export | on import |
 |---|---|---|
-| `created_at` | always | restored for entities the import CREATES, and only when `parseSqliteUtcMs` can read the value — **only through the CLI (`memesh import <file>`)**. The MCP `import` tool and `POST /v1/import` strip it (the bundle schema does not declare it), so entities they create get the time of the import. An entity you already had keeps its own creation time. |
-| `status` | present only for archived entities | the entity is archived after it is created — for an entity the import CREATES, **only through the CLI**. The MCP `import` tool and `POST /v1/import` strip `status`, so a memory that was archived in the bundle comes back active. An existing entity keeps its own status: an archived one stays archived under `append` and `overwrite` unless `restore_archived` is set (see **Archived memories** under `import`). `export` includes archived memories, but only the CLI import restores them as archived. |
-| `metadata` | present when the entity has any | **among the CLI, MCP and HTTP entrypoints, only CLI JSON import retains bundle metadata at all** — `ExportResultSchema` does not declare `metadata`, so the MCP `import` tool and `POST /v1/import` have Zod strip it before it exists to merge (the bare `importMemories()` function has no such restriction). Filtered by an ALLOW-list: only a purely descriptive key (display/provenance) is ever taken from the bundle. `trust` and `provenance` are always rebuilt by the import, never read from the bundle. Every behaviour-changing key is refused by default — `guard` (installs a Bash-command warning), `demo` (`demo --reset` HARD-DELETES every entity carrying it, #361), `task_state` (injected verbatim into SessionStart/`memesh briefing` context — a bundle must not be able to put text in front of the agent), `evidence_for` (a `dream accept` idempotency gate — refused and rebuilt by the real `dream accept` path instead), `consolidation_depth`, `compacted_into`, `proposal_id`, `session_id` — for an entity you already have AND for one the import creates, no exception. Four keys get a narrow FRESH-entity-only, VALIDATED exception: `forgotten_observation_hashes` (64-hex SHA-256, de-duplicated, capped at 1000, or the whole list is dropped), `pin` (only the literal boolean `true`; anything else is refused), `signal_score` (only a finite number with `0 <= x <= 1` — `computeSignalScore`'s own documented range; anything else is dropped and the entity gets its own content-derived score), and `replaced_history` (only an array of at most 50 entries shaped exactly like `--replace`'s own history entries — `replaced_at`/`title`/`observations`/`tags`, optional `truncated` (a boolean), no other key, the WHOLE array's own serialized JSON at most 256 KiB — a budget over the entire array together, not per entry — or the whole list is dropped). An EXISTING entity's own value for any of these four always wins regardless of what the bundle says, same as every other authority key. |
+| `created_at` | always | restored for entities the import CREATES when `parseSqliteUtcMs` can read it, through CLI, MCP and HTTP alike; an absent or unreadable timestamp uses the import time. Existing entities keep their local creation time. |
+| `status` | present only for archived entities | `archived` archives an entity the import CREATES, through CLI, MCP and HTTP alike. Absent means active; an existing entity keeps its local state unless `restore_archived` explicitly restores it. |
+| `metadata` | present when the entity has any | CLI, MCP and HTTP pass it to the same core filter. Filtered by an ALLOW-list: only a purely descriptive key (display/provenance) is ever taken from the bundle. `trust` and `provenance` are always rebuilt by the import, never read from the bundle. Every behaviour-changing key is refused by default — `guard` (installs a Bash-command warning), `demo` (`demo --reset` HARD-DELETES every entity carrying it, #361), `task_state` (injected verbatim into SessionStart/`memesh briefing` context — a bundle must not be able to put text in front of the agent), `evidence_for` (a `dream accept` idempotency gate — refused and rebuilt by the real `dream accept` path instead), `consolidation_depth`, `compacted_into`, `proposal_id`, `session_id` — for an entity you already have AND for one the import creates, no exception. Four keys get a narrow FRESH-entity-only, VALIDATED exception: `forgotten_observation_hashes` (64-hex SHA-256, de-duplicated, capped at 1000, or the whole list is dropped), `pin` (only the literal boolean `true`; anything else is refused), `signal_score` (only a finite number with `0 <= x <= 1` — `computeSignalScore`'s own documented range; anything else is dropped and the entity gets its own content-derived score), and `replaced_history` (only an array of at most 50 entries shaped exactly like `--replace`'s own history entries — `replaced_at`/`title`/`observations`/`tags`, optional `truncated` (a boolean), no other key, the WHOLE array's own serialized JSON at most 256 KiB — a budget over the entire array together, not per entry — or the whole list is dropped). An EXISTING entity's own value for any of these four always wins regardless of what the bundle says, same as every other authority key. |
 | `relations` | always | created in a SECOND pass, after every entity in the bundle exists. A relation that still cannot be created points outside the bundle, and is named in `skipped_relations` rather than dropped — reported, but not an error, because every narrowed bundle has them. |
 
-Bundles written by earlier versions (`3.0.0`) import unchanged — every added field is optional.
+Bundles written by earlier versions (`3.0.0`) import unchanged — every added field is optional. When present, `created_at` and `status` must be strings, and `metadata` must be an object; malformed values are refused before that entry is written. Import still rebuilds trust and provenance rather than trusting the bundle.
 
 **Examples**:
 
@@ -571,8 +562,8 @@ still reactivates an archived memory that is stated again.
 A bundle entry that is left untouched this way contributes none of its own
 relations, as with `skip`; a relation from another entry in the bundle *to* it
 is still created. A bundle entry's own `status: "archived"` applies only to
-entities the import creates, and only through the CLI: the MCP `import` tool
-and `POST /v1/import` strip it.
+entities the import creates, through CLI, MCP and HTTP alike. Existing
+entities keep their local status unless `restore_archived` is explicitly set.
 
 A bundle's `title` is applied to the entities the import creates, and replaces
 the title of one it updates (`overwrite`, `append`). A bundle entry with no
@@ -698,6 +689,8 @@ Call it with **no arguments** to read. Any field present is a write. Each writte
 | `blocked` | string | No | What is standing in the way |
 | `done` | string | No | What was just finished |
 
+Each field has its own date in `state.stated_at`. Changing `goal` does not refresh an untouched `done`, `next`, or `blocked`; clearing a field also removes its date. The CLI's complete text and the Dashboard show each field's date. At `standard`/`full`, briefing and SessionStart show only fields with a known date no older than 72 hours (allowing five minutes of clock skew), and flag omitted old or unknown-age fields at every level. Legacy records without `stated_at` retain their original shared `updated_at`; the first changed write preserves a valid original shared timestamp as `legacy_updated_at` provenance. Untouched legacy fields keep their values but their individual dates remain unknown: a shared timestamp cannot prove when each field was stated. Only explicitly changed fields receive a new individual date. Subsequent changes do not refresh the preserved legacy provenance.
+
 Passing an **empty string** clears a field — that is how a blocker is removed once it is resolved. Omitting a field leaves it untouched, which is a different thing.
 
 **Response**:
@@ -708,13 +701,17 @@ Passing an **empty string** clears a field — that is how a blocker is removed 
   "state": {
     "goal": "Ship the work-topology injection",
     "next": "Open the PR once Windows CI is green",
-    "updated_at": "2026-08-16T02:41:00.000Z"
+    "updated_at": "2026-08-16T02:41:00.000Z",
+    "stated_at": {
+      "goal": "2026-08-15T02:41:00.000Z",
+      "next": "2026-08-16T02:41:00.000Z"
+    }
   },
   "changed": ["next"]
 }
 ```
 
-`changed` lists the fields that actually differed. Re-stating a value that is already recorded returns `"changed": []` and writes nothing — which is what keeps `updated_at` an honest answer to "how old is this thinking". A read (no arguments) returns `project` and `state` only.
+`changed` lists the fields that actually differed. Re-stating a value that is already recorded returns `"changed": []` and writes nothing — so neither its per-field date nor `updated_at` is refreshed. `updated_at` records the latest field change, rather than the age of every field. A read (no arguments) returns `project` and `state` only.
 
 **Examples**:
 
@@ -758,7 +755,7 @@ The saved-memory lines inside the fence share one 4000 UTF-16 code-unit limit ac
 
 Claude Code's Stop hook replaces one `session-handoff` memory for the exact project with its latest assistant reply, after credential-shaped redaction and removal of fenced code. Capture needs at least 80 cleaned characters and obeys `autoCapture`; a skipped capture leaves the previous handoff untouched. Display uses only an active, trusted exact-project handoff's newest observation, limited to 800 characters even if the memory was written manually. Up to 72 hours old it appears normally; after 72 hours through 14 days it carries a stale warning; older than 14 days, undatable, or more than five minutes future-dated it is omitted. Imported handoffs are not injected merely because they have the right name. The handoff is background context, not an inferred task list or a guarantee that work resumes.
 
-Task state older than 72 hours, missing or unreadable timestamps, and timestamps more than five minutes in the future are not shown as current. Instead, every level shows a one-line stale or unknown-age flag and points to `memesh task` for the stored record. `minimal` can return `text: ""` and `empty: true` when it has no content; `standard` and `full` still show the index's empty-state line.
+Task-state fields older than 72 hours, missing or unreadable timestamps, and timestamps more than five minutes in the future are not shown as current. Per-field dates keep an updated goal from refreshing an untouched old done/next/blocked field. Instead, every level shows a one-line stale or unknown-age flag and points to `memesh task` for the stored record. `minimal` can return `text: ""` and `empty: true` when it has no content; `standard` and `full` still show the index's empty-state line.
 
 **Input Schema**:
 
@@ -1513,7 +1510,7 @@ carried no `commits` field at all) and the git-side codes (`not_a_git_repo`,
 `line_out_of_range`, `line_uncommitted`) appear in the top-level
 `abstentions` — the git-side ones only from the CLI, which resolves commits
 locally and passes its own abstention through. `history_unreadable` means
-`git log` did not answer (its output outgrew the read buffer, it exceeded the
+`git log` or `git blame` did not answer (its output outgrew the read buffer, it exceeded the
 5-second timeout, or the repository has no commits yet): the empty commit
 list under that code means *unknown*, never *none*. The `file_memories` block is
 labelled `basis: "file-tag"` because it is associated by basename tag —
@@ -1528,7 +1525,7 @@ Returns the full interactive MeMesh Dashboard as a self-contained HTML page. Ser
 
 Request/response bodies for `POST /v1/remember`, `/v1/recall`, `/v1/forget`, and `/v1/message` mirror the MCP tool schemas above (same field names, same types). HTTP responses wrap results as `{ "success": true, "data": ... }`.
 
-When `POST /v1/forget` names a memory that does not exist, the response is still HTTP 200 with `"archived": false` in `data`. Check that field; the MCP `forget` tool returns an error result for the same call, and the CLI exits 1.
+When `POST /v1/forget` names a memory that does not exist (with or without an observation selector), it returns HTTP 404 with `"success": false` and `errorCode: "resource.not-found"`. A present memory with no matching observation returns HTTP 400 with `"success": false` and `errorCode: "operation.failed"`, leaving the stored memory unchanged. The MCP `forget` tool returns an error result for these calls, and the CLI exits 1. Successful archives (including repeated archives) and matching observation removals still return HTTP 200 with `"success": true` and `data`.
 
 `POST /v1/message` supports every `message` action above. A waiting `poll` request ends when a targeted event arrives, the bounded timeout expires, or the HTTP request is cancelled. The server removes the wait listener when the request closes.
 
@@ -2239,20 +2236,25 @@ Text the model writes through `create`, `str_replace` and `insert` gets the same
 The tool is client-side: Claude only *requests* file operations, and your loop performs them.
 
 ```ts
-import { handleMemoryCommand, MEMORY_TOOL_DEFINITION } from '@pcircle/memesh';
+import { openDatabase, closeDatabase, handleMemoryCommand, MEMORY_TOOL_DEFINITION } from '@pcircle/memesh';
 
-const message = await anthropic.messages.create({
-  model: 'claude-opus-5',
-  max_tokens: 2048,
-  messages,
-  tools: [MEMORY_TOOL_DEFINITION],   // { type: 'memory_20250818', name: 'memory' }
-});
+openDatabase();
+try {
+  const message = await anthropic.messages.create({
+    model: 'claude-opus-5',
+    max_tokens: 2048,
+    messages,
+    tools: [MEMORY_TOOL_DEFINITION],   // { type: 'memory_20250818', name: 'memory' }
+  });
 
-for (const block of message.content) {
-  if (block.type === 'tool_use' && block.name === 'memory') {
-    const { content, isError } = handleMemoryCommand(block.input);
-    toolResults.push({ type: 'tool_result', tool_use_id: block.id, content, is_error: isError });
+  for (const block of message.content) {
+    if (block.type === 'tool_use' && block.name === 'memory') {
+      const { content, isError } = handleMemoryCommand(block.input);
+      toolResults.push({ type: 'tool_result', tool_use_id: block.id, content, is_error: isError });
+    }
   }
+} finally {
+  closeDatabase();
 }
 ```
 

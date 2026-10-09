@@ -6,6 +6,18 @@ export interface ParsedSemVer {
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const NUMERIC_IDENTIFIER = /^\d+$/;
 
+/** npm prints its scalar version as plain text or a JSON string. */
+export function normalizeRegistryVersion(raw: string): string | null {
+  let version = raw.trim();
+  if (version.startsWith('"')) {
+    try {
+      const decoded: unknown = JSON.parse(version);
+      if (typeof decoded === 'string') version = decoded;
+    } catch { /* The strict SemVer check below rejects malformed JSON. */ }
+  }
+  return parseSemVer(version) ? version : null;
+}
+
 export function parseSemVer(version: string): ParsedSemVer | null {
   const match = SEMVER.exec(version);
   if (!match) return null;

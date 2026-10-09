@@ -26,8 +26,9 @@ export function renameProjectTag(from, to, opts) {
     if (!opts?.apply)
         return previewOnCopy(conn, from, to);
     const { affected, plan, merged, renamed, messagePlan, messageRows } = planRename(conn, from, to);
+    const proposalIds = proposalRowsForProject(conn, from);
     let messageRowsBlocked = 0;
-    if (affected.length > 0 || messageRows > 0) {
+    if (affected.length > 0 || messageRows > 0 || proposalIds.length > 0) {
         const del = conn.prepare('DELETE FROM tags WHERE entity_id = ? AND tag = ?');
         const upd = conn.prepare('UPDATE tags SET tag = ? WHERE entity_id = ? AND tag = ?');
         const movedRows = [];
@@ -55,6 +56,11 @@ export function renameProjectTag(from, to, opts) {
                     }
                 }
             }
+            if (proposalIds.length > 0) {
+                const move = conn.prepare('UPDATE dream_proposals SET project = ? WHERE id = ?');
+                for (const id of proposalIds)
+                    move.run(to, id);
+            }
             const hasTag = conn.prepare('SELECT 1 FROM tags WHERE entity_id = ? AND tag = ?');
             for (const p of plan) {
                 if (hasTag.get(p.id, fromTag) || !hasTag.get(p.id, toTag)) {
@@ -65,6 +71,14 @@ export function renameProjectTag(from, to, opts) {
                 const row = conn.prepare(`SELECT project FROM ${table} WHERE rowid = ?`).get(rid);
                 if (row?.project !== to) {
                     throw new Error(`${table} row ${rid} is not scoped to ${to} after the rename (a trigger or constraint changed the result)`);
+                }
+            }
+            if (proposalIds.length > 0) {
+                const read = conn.prepare('SELECT project FROM dream_proposals WHERE id = ?');
+                for (const id of proposalIds) {
+                    if (read.get(id)?.project !== to) {
+                        throw new Error(`proposal ${id} is not scoped to ${to} after the rename (a trigger or constraint changed the result)`);
+                    }
                 }
             }
         });
@@ -80,7 +94,18 @@ export function renameProjectTag(from, to, opts) {
         affectedNames: affected.map((e) => e.name),
         messageRows,
         messageRowsBlocked,
+        proposalRows: proposalIds.length,
     };
+}
+function proposalRowsForProject(conn, project) {
+    try {
+        return conn.prepare('SELECT id FROM dream_proposals WHERE project = ?').all(project).map(row => row.id);
+    }
+    catch (err) {
+        if (/^no such table: (?:main\.)?dream_proposals$/i.test(err instanceof Error ? err.message : String(err)))
+            return [];
+        throw err;
+    }
 }
 function planRename(conn, from, to) {
     const fromTag = `project:${from}`;
@@ -110,7 +135,7 @@ function planRename(conn, from, to) {
 }
 export function hasRenameWork(from, db) {
     const { affected, messageRows } = planRename(db ?? getDatabase(), from, from);
-    return affected.length > 0 || messageRows > 0;
+    return affected.length > 0 || messageRows > 0 || proposalRowsForProject(db ?? getDatabase(), from).length > 0;
 }
 function destinationHolds(conn, table, rid, to) {
     const quote = (name) => `"${name.replace(/"/g, '""')}"`;

@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { execFile } from 'child_process';
 import { memeshDir } from './paths.js';
-import { compareSemVerPrecedence, parseSemVer } from './semver.js';
+import { compareSemVerPrecedence, normalizeRegistryVersion, parseSemVer } from './semver.js';
 
 const DEFAULT_TIMEOUT_MS = 5000;
 const STALE_AFTER_MS = 24 * 60 * 60 * 1000;
@@ -51,6 +51,7 @@ export function isAheadOfLatest(update: UpdateCheck | null): boolean {
  */
 export function showsPreReleaseNotice(update: UpdateCheck | null): boolean {
   return update !== null
+    && update.checkSucceeded
     && isAheadOfLatest(update)
     && !update.currentVersionDeprecated
     && update.freshness !== 'unavailable'
@@ -210,7 +211,8 @@ function parseStoredUpdateCheck(raw: unknown): StoredUpdateCheck | null {
   if ('currentVersion' in candidate && candidate.currentVersion !== null && typeof candidate.currentVersion !== 'string') return null;
   if ('currentVersionDeprecation' in candidate && candidate.currentVersionDeprecation !== null && typeof candidate.currentVersionDeprecation !== 'string') return null;
 
-  const normalizedLatestVersion = latestVersion ?? null;
+  const normalizedLatestVersion = typeof latestVersion === 'string' ? normalizeRegistryVersion(latestVersion) : null;
+  const invalidLatestVersion = typeof latestVersion === 'string' && normalizedLatestVersion === null;
   const normalizedLastAttemptAt = lastAttemptAt ?? null;
   const normalizedLastSuccessfulCheckAt = lastSuccessfulCheckAt ?? null;
   const checkSucceeded = typeof candidate.checkSucceeded === 'boolean'
@@ -221,9 +223,9 @@ function parseStoredUpdateCheck(raw: unknown): StoredUpdateCheck | null {
     currentVersion: typeof candidate.currentVersion === 'string' ? candidate.currentVersion : null,
     latestVersion: normalizedLatestVersion,
     lastAttemptAt: normalizedLastAttemptAt,
-    lastSuccessfulCheckAt: normalizedLastSuccessfulCheckAt,
-    lastError: typeof candidate.lastError === 'string' ? candidate.lastError : null,
-    checkSucceeded,
+    lastSuccessfulCheckAt: invalidLatestVersion ? null : normalizedLastSuccessfulCheckAt,
+    lastError: invalidLatestVersion ? 'registry returned an invalid version' : typeof candidate.lastError === 'string' ? candidate.lastError : null,
+    checkSucceeded: invalidLatestVersion ? false : checkSucceeded,
     currentVersionDeprecation: typeof candidate.currentVersionDeprecation === 'string'
       ? candidate.currentVersionDeprecation
       : null,
@@ -424,8 +426,14 @@ export async function checkForUpdate(
           ['show', '@pcircle/memesh', 'version'],
           { timeout: timeoutMs },
           (err, stdout) => {
-            if (err) resolve({ outcome: 'failed', error: err });
-            else resolve({ outcome: 'ok', latest: stdout.trim() });
+            if (err) {
+              resolve({ outcome: 'failed', error: err });
+              return;
+            }
+            const latest = normalizeRegistryVersion(stdout);
+            resolve(latest !== null
+              ? { outcome: 'ok', latest }
+              : { outcome: 'failed', error: new Error('registry returned an invalid version') });
           },
         );
       }),
@@ -651,6 +659,8 @@ export function formatUpdateCheckStatus(update: UpdateCheck | null): string[] {
     lines.push('Update check: unavailable');
   } else if (update.updateAvailable && update.latestVersion) {
     lines.push(`🔄 Update available: ${update.latestVersion} (${formatFreshness(update)}; run: memesh update)`);
+  } else if (!update.checkSucceeded) {
+    lines.push(`Update check: failed (${formatFreshness(update)}; last known latest ${update.latestVersion ?? 'unknown'})`);
   } else if (update.checkSucceeded && update.lastError) {
     // Partial-failure case (codex round 28): the version lookup
     // answered but the deprecation sub-call did not. We don't know

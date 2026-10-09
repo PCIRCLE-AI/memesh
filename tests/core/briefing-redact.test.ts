@@ -11,7 +11,7 @@
 // write (#523), so a fixture written through it would have nothing to leak
 // and this test would pass with the display-side redaction removed.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { execFileSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -156,6 +156,43 @@ function expectRedactedEverywhere(text: string): void {
 }
 
 describe('briefing redaction (#464)', () => {
+  it('#406 a real CLI goal update keeps old done out of CLI briefing and SessionStart', () => {
+    const old = new Date(Date.now() - 8 * 86_400_000).toISOString();
+    // This legacy raw-SQL fixture must have the project tag a real task write
+    // creates; otherwise the CLI correctly refuses the ownership collision.
+    getDatabase().prepare('INSERT INTO tags (entity_id, tag) SELECT id, ? FROM entities WHERE name = ?')
+      .run(`project:${project}`, taskStateName(project));
+    getDatabase().prepare('UPDATE entities SET metadata = ? WHERE name = ?').run(
+      JSON.stringify({ task_state: { goal: 'Previous goal', done: 'Ancient done fixture', updated_at: old } }), taskStateName(project));
+    closeDatabase();
+    const env = { HOME: tmpDir, USERPROFILE: tmpDir, PATH: path.dirname(process.execPath),
+      MEMESH_DIR: tmpDir, MEMESH_DB_PATH: dbPath, MEMESH_BRIEFING: 'standard', MEMESH_AUTO_UPDATE: '0', MEMESH_UPDATE_CHECK: '0' };
+    const cli = path.resolve('dist/transports/cli/cli.js');
+    const runCli = (args: string[]) => {
+      const result = spawnSync(process.execPath, [cli, ...args], { cwd, env, encoding: 'utf8', timeout: 15000 });
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      return result.stdout;
+    };
+    const written = JSON.parse(runCli(['task', '--project', project, '--goal', 'Fresh goal fixture', '--json']));
+    expect(written.state.done).toBe('Ancient done fixture');
+    expect(written.state.stated_at.done).toBeUndefined();
+    expect(written.state.legacy_updated_at).toBe(old);
+    expect(written.state.stated_at.goal).toBe(written.state.updated_at);
+    const full = runCli(['task', '--project', project]);
+    expect(full).toContain('Ancient done fixture');
+    expect(full).toContain('Had just finished: (unknown date) Ancient done fixture');
+    const brief = JSON.parse(runCli(['briefing', '--project', project, '--json'])).text;
+    const hookOut = execFileSync(process.execPath, [path.resolve('scripts/hooks/session-start.js')], {
+      input: JSON.stringify({ cwd }), cwd, env, encoding: 'utf8', timeout: 15000,
+    });
+    const hook = JSON.parse(hookOut.trim().split('\n').filter(Boolean).at(-1)!).hookSpecificOutput.additionalContext;
+    for (const text of [brief, hook]) {
+      expect(text).toContain('Fresh goal fixture');
+      expect(text).not.toContain('Ancient done fixture');
+      expect(text).toContain('not shown as current');
+    }
+    openDatabase(dbPath);
+  });
   it('assembleBriefing redacts the ranked sections the same way as the index', () => {
     const previous = process.env.MEMESH_BRIEFING;
     process.env.MEMESH_BRIEFING = 'standard';

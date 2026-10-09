@@ -7,6 +7,8 @@ import { ProjectTab } from '../../dashboard/src/components/ProjectTab';
 import { MetricsRow } from '../../dashboard/src/components/MetricsRow';
 import { InsightsTab } from '../../dashboard/src/components/InsightsTab';
 import { App } from '../../dashboard/src/App';
+import { Header } from '../../dashboard/src/components/Header';
+import { setLocale, t } from '../../dashboard/src/lib/i18n';
 import type { AnalyticsData, Entity, PatternsData, StatsData } from '../../dashboard/src/lib/api';
 
 function response(data: unknown): Response {
@@ -98,6 +100,66 @@ afterEach(() => {
 });
 
 describe('issue #224 — one data revision refreshes mounted surfaces', () => {
+  it.each(['Memories', 'Home'])('App %s manual refresh checks health once and recovers without broadcasting a body revision', async (tab) => {
+    setLocale('en');
+    window.history.replaceState({}, '', `/?tab=${tab}`);
+    let failed = false;
+    const counts = new Map<string, number>();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), 'http://dashboard.local');
+      const path = url.pathname;
+      const key = path + url.search;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+      if (failed) throw new TypeError('Failed to fetch');
+      if (path === '/v1/health') return response({ status: 'ok', version: '4.10.12', entity_count: 41 });
+      if (path === '/v1/entities') return response([entity(1, 'kept memory')]);
+      if (path === '/v1/analytics') return response(analytics(70));
+      if (path === '/v1/projects') return response([]);
+      if (path === '/v1/dream/proposals') return response([proposal(1, 'kept proposal')]);
+      if (path === '/v1/doctor') return response({ status: 'PASS', checks: [] });
+      if (path === '/v1/config') return response({ config: {} });
+      if (path === '/v1/improvements') return response([]);
+      return response({});
+    });
+    const view = render(<App />);
+    const bodyPath = tab === 'Memories' ? '/v1/entities?limit=2000&status=all' : '/v1/dream/proposals?status=all';
+    await waitFor(() => expect(view.container.textContent).toContain(tab === 'Memories' ? 'kept memory' : 'kept proposal'));
+    await waitFor(() => expect(view.container.querySelector('.header .dot-ok')).not.toBeNull());
+    const panel = view.container.querySelector(`#panel-${tab}`)!;
+    const refresh = Array.from(panel.querySelectorAll('button')).find((b) => b.textContent === (tab === 'Memories' ? '↻' : t('insights.refresh')))!;
+    expect(refresh).toBeDefined();
+    const before = counts.get(bodyPath)!;
+    failed = true;
+    fireEvent.click(refresh);
+    await waitFor(() => expect(counts.get('/v1/health')).toBe(2));
+    await waitFor(() => expect(view.container.querySelector('.header .dot-err')).not.toBeNull());
+    expect(view.container.querySelector('.header .dot-ok')).toBeNull();
+    expect(view.container.querySelector('.badge-version')?.textContent).toContain('41');
+    expect(counts.get(bodyPath)).toBe(before + 1);
+    expect(view.container.textContent).toContain(tab === 'Memories' ? 'kept memory' : 'kept proposal');
+    failed = false;
+    fireEvent.click(refresh);
+    await waitFor(() => expect(counts.get('/v1/health')).toBe(3));
+    await waitFor(() => expect(view.container.querySelector('.header .dot-ok')).not.toBeNull());
+    expect(view.container.querySelector('.header .dot-err')).toBeNull();
+    expect(counts.get(bodyPath)).toBe(before + 2);
+  });
+
+  it('does not claim connected after a health refresh fails with cached successful health', () => {
+    setLocale('en');
+    const health = { status: 'ok', version: '4.10.12', entity_count: 41 };
+    const view = render(<Header health={health} error="" />);
+    expect(view.container.textContent).toContain(t('header.connected'));
+
+    view.rerender(<Header health={health} error="The server is unreachable" />);
+    expect(view.container.querySelector('.dot-ok')).toBeNull();
+    expect(view.container.textContent).toContain(t('header.disconnected'));
+
+    view.rerender(<Header health={health} error="" />);
+    expect(view.container.querySelector('.dot-ok')).not.toBeNull();
+    expect(view.container.textContent).toContain(t('header.connected'));
+  });
+
   it('Memories reloads without recursively broadcasting, and a failed refresh preserves valid rows', async () => {
     let round = 0;
     let fail = false;

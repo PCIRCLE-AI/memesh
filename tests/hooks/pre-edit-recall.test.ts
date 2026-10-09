@@ -136,6 +136,34 @@ describe('Feature: Pre-Edit Recall Hook', () => {
     return db;
   }
 
+  it('recalls before the normal Codex apply_patch command without file_path', () => {
+    const db = createTestDb();
+    addEntity(db, 'owned-preedit-a', 'a.txt: OWNED_PREEDIT_REMINDER');
+    db.close();
+    const result = runHook({ tool_name: 'apply_patch', tool_input: { command:
+      '*** Begin Patch\n*** Update File: a.txt\n@@\n-OWNED_NONEXISTENT_LINE\n+OWNED_NONEXISTENT_LINE\n*** End Patch' } });
+    expect(result).toContain('OWNED_PREEDIT_REMINDER');
+    expect(JSON.parse(result).hookSpecificOutput.hookEventName).toBe('PreToolUse');
+  });
+
+  it('covers all Codex patch targets in one hook response, including a move destination', () => {
+    const db = createTestDb();
+    for (const file of ['a.txt', 'b.txt', 'c.txt', 'd.txt']) addEntity(db, `note-${file}`, `${file}: keep this file safe`);
+    db.close();
+    const result = runHook({ tool_name: 'apply_patch', tool_input: { command:
+      '*** Begin Patch\n*** Update File: a.txt\n*** Move to: b.txt\n@@\n-old\n+new\n*** Add File: c.txt\n+new\n*** Delete File: d.txt\n*** End Patch' } });
+    const context = JSON.parse(result).hookSpecificOutput.additionalContext;
+    for (const file of ['a.txt', 'b.txt', 'c.txt', 'd.txt']) expect(context).toContain(`note-${file}`);
+  });
+
+  it('does not interpret an unrelated tool command as an apply_patch target', () => {
+    const db = createTestDb();
+    addEntity(db, 'owned-preedit-a', 'a.txt: OWNED_PREEDIT_REMINDER');
+    db.close();
+    expect(runHook({ tool_name: 'Bash', tool_input: { command:
+      '*** Begin Patch\n*** Update File: a.txt\n*** End Patch' } })).toBe('');
+  });
+
   it('reaches a CJK filename through the shared match expression', () => {
     // Strategy 2 builds its MATCH with `hookMatchExpression`, which segments.
     // Quoting the raw basename instead emits one exact token, and the index
@@ -306,6 +334,23 @@ describe('Feature: Pre-Edit Recall Hook', () => {
 
     const context = JSON.parse(runHook({ tool_input: { file_path: '/src/auth.ts' } })).hookSpecificOutput.additionalContext;
     expect(context).toContain('rotate it quarterly');
+    expect(context).not.toContain(tokenValue);
+    expect(context).toContain('deploy ***REDACTED***');
+  });
+
+  it('redacts a credential in a lesson name too', () => {
+    const tokenValue = 'abc123abc123abc123';
+    const name = `deploy ${['token', tokenValue].join('=')}`;
+    const db = createTestDb();
+    db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run(name, 'lesson');
+    const row = db.prepare('SELECT id FROM entities WHERE name = ?').get(name) as any;
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(row.id, 'rotate it quarterly');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, 'file:auth.ts');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, projectTag());
+    db.close();
+
+    const context = JSON.parse(runHook({ tool_input: { file_path: '/src/auth.ts' } })).hookSpecificOutput.additionalContext;
+    expect(context).toContain('(lesson)');
     expect(context).not.toContain(tokenValue);
     expect(context).toContain('deploy ***REDACTED***');
   });
@@ -2139,6 +2184,102 @@ syncBuiltinESMExports();
         expect(result).toContain('real-mention-note');
         expect(result).not.toContain('cjk-backup-note');
       });
+    });
+  });
+
+  describe('a lesson recalled at edit time says what to do, with its handle', () => {
+    // The lesson shape `learn` stores: Error, Root cause, Fix, Prevention, in
+    // that order, and learning the same error again appends a newer Fix. The
+    // reminder used to show only the FIRST observation — what went wrong —
+    // with no fix and no handle to cite it by. Every lesson line now ends
+    // with its [mem:N], appended after the cut text.
+    function addLesson(db: any, name: string, type: string, observations: string[], extraTags: string[] = []): number {
+      db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run(name, type);
+      const id = (db.prepare('SELECT id FROM entities WHERE name = ?').get(name) as any).id;
+      for (const content of observations) {
+        db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(id, content);
+      }
+      for (const tag of [projectTag(), ...extraTags]) {
+        db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, tag);
+      }
+      indexFts(db, id, name, observations.join(' '));
+      return id;
+    }
+
+    it('shows the newest Fix first, then the error, with [mem:N]', () => {
+      const db = createTestDb();
+      const id = addLesson(db, 'lesson-retry-backoff', 'lesson_learned', [
+        'Error: retry.ts doubled the backoff on every retry and hit the 10-minute cap',
+        'Root cause: no upper bound',
+        'Fix: cap backoff at 30s in retry.ts',
+        'Prevention: Review similar code paths',
+        'Fix: cap backoff at 20s in retry.ts',
+      ]);
+      db.close();
+
+      const result = runHook({ tool_input: { file_path: '/src/retry.ts' } });
+      const ctx = JSON.parse(result).hookSpecificOutput.additionalContext as string;
+      const line = ctx.split('\n').find((l: string) => l.includes('lesson-retry-backoff'));
+      expect(line).toBe(`• lesson-retry-backoff (lesson_learned): ${
+        'Fix: cap backoff at 20s in retry.ts — Error: retry.ts doubled the backoff on every retry and hit the 10-minute cap'.slice(0, 120)
+      } [mem:${id}]`);
+      expect(ctx).not.toContain('cap backoff at 30s');
+    });
+
+    it('keeps the handle when the text is cut to its budget', () => {
+      const db = createTestDb();
+      const id = addLesson(db, 'lesson-long-fix', 'lesson', [
+        'Error: queue.ts dropped jobs',
+        `Fix: ${'drain the queue before shutdown '.repeat(8)}in queue.ts`,
+      ]);
+      db.close();
+
+      const ctx = JSON.parse(runHook({ tool_input: { file_path: '/src/queue.ts' } })).hookSpecificOutput.additionalContext as string;
+      const line = ctx.split('\n').find((l: string) => l.includes('lesson-long-fix'))!;
+      expect(line.startsWith('• lesson-long-fix (lesson): Fix: drain the queue')).toBe(true);
+      expect(line.endsWith(` [mem:${id}]`)).toBe(true);
+      expect(line.length).toBe('• lesson-long-fix (lesson): '.length + 120 + ` [mem:${id}]`.length);
+    });
+
+    it('a lesson with no Fix still shows its first observation, with [mem:N]', () => {
+      const db = createTestDb();
+      const id = addLesson(db, 'lesson-no-fix', 'mistake', ['parser.ts swallowed the error', 'second note']);
+      db.close();
+
+      const ctx = JSON.parse(runHook({ tool_input: { file_path: '/src/parser.ts' } })).hookSpecificOutput.additionalContext as string;
+      expect(ctx).toContain(`• lesson-no-fix (mistake): parser.ts swallowed the error [mem:${id}]`);
+    });
+
+    it('a lesson whose only observation is its Fix shows it once', () => {
+      const db = createTestDb();
+      const id = addLesson(db, 'lesson-fix-only', 'lesson_learned', ['Fix: pin the timeout in timer.ts to 5s']);
+      db.close();
+
+      const ctx = JSON.parse(runHook({ tool_input: { file_path: '/src/timer.ts' } })).hookSpecificOutput.additionalContext as string;
+      expect(ctx).toContain(`• lesson-fix-only (lesson_learned): Fix: pin the timeout in timer.ts to 5s [mem:${id}]`);
+      expect(ctx).not.toContain(' — Fix:');
+    });
+
+    it('a lesson with no observation at all still prints its handle, next to an ordinary memory', () => {
+      const db = createTestDb();
+      const id = addLesson(db, 'lesson-empty', 'lesson', [], ['file:zero.ts']);
+      addLesson(db, 'note-zero', 'note', ['zero.ts holds the defaults'], ['file:zero.ts']);
+      db.close();
+
+      const ctx = JSON.parse(runHook({ tool_input: { file_path: '/src/zero.ts' } })).hookSpecificOutput.additionalContext as string;
+      expect(ctx).toContain(`• lesson-empty (lesson) [mem:${id}]`);
+      expect(ctx).toContain('• note-zero (note): zero.ts holds the defaults');
+    });
+
+    it('a memory that is not a lesson reads exactly as before, even with a Fix line', () => {
+      const db = createTestDb();
+      addLesson(db, 'note-with-fix', 'note', ['config.ts holds the ports', 'Fix: not a lesson, never shown first']);
+      db.close();
+
+      const ctx = JSON.parse(runHook({ tool_input: { file_path: '/src/config.ts' } })).hookSpecificOutput.additionalContext as string;
+      expect(ctx).toContain('• note-with-fix (note): config.ts holds the ports');
+      expect(ctx).not.toContain('[mem:');
+      expect(ctx).not.toContain('never shown first');
     });
   });
 });

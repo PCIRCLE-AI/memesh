@@ -27,6 +27,49 @@ const EVEN_NEWER_VERSION = bumpMinor(2);
 const NEWEST_VERSION = bumpMinor(3);
 
 describe('Feature: per-session update consent', () => {
+  it.each([
+    { name: 'short turn', tools: 0, capture: 'true' },
+    { name: 'capture disabled', tools: 3, capture: 'false' },
+    { name: 'ordinary turn', tools: 3, capture: 'true' },
+  ])('honours explicit approval with default-off policy: $name', ({ tools, capture }) => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'memesh-explicit-stop-'));
+    const cachePath = path.join(dir, 'cache.json');
+    const transcriptPath = path.join(dir, 'transcript.jsonl');
+    const configPath = path.join(dir, 'config.json');
+    const session = 'explicit-stop-session';
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: dir, MEMESH_DIR: dir, MEMESH_DB_PATH: path.join(dir, 'memesh.db'), MEMESH_UPDATE_CHECK_PATH: cachePath, MEMESH_AUTO_CAPTURE: capture };
+    delete env.MEMESH_AUTO_UPDATE;
+    writeFileSync(configPath, JSON.stringify({ autoUpdate: 'off' }));
+    const configBefore = readFileSync(configPath);
+    const cache = { currentVersion: CURRENT_VERSION, latestVersion: NEWER_VERSION, checkSucceeded: true, lastSuccessfulCheckAt: new Date().toISOString(), lastAttemptAt: new Date().toISOString() };
+    writeFileSync(cachePath, JSON.stringify(cache));
+    writeFileSync(transcriptPath, Array.from({ length: tools }, (_, i) => JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Read', input: { file_path: `/tmp/owned-${i}.ts` } }] } })).join('\n'));
+    const stop = () => spawnSync(process.execPath, [path.resolve('scripts/hooks/session-summary.js')], { input: JSON.stringify({ session_id: session, cwd: dir, transcript_path: transcriptPath, was_in_agentic_loop: true }), env, encoding: 'utf8', timeout: 10000 });
+    const approve = () => {
+      const result = spawnSync(process.execPath, ['--input-type=module', '-e', `import {writeAutoUpdateConsent} from ${JSON.stringify(pathToFileURL(path.resolve('scripts/hooks/_shared.js')).href)}; writeAutoUpdateConsent(${JSON.stringify(session)},${JSON.stringify(CURRENT_VERSION)},${JSON.stringify(NEWER_VERSION)},'source-checkout','approved');`], { env, encoding: 'utf8' });
+      expect(result.status, result.stderr).toBe(0);
+    };
+    try {
+      const unapproved = stop();
+      expect(unapproved.status, unapproved.stderr).toBe(0);
+      expect(existsSync(path.join(dir, 'auto-update.log'))).toBe(false);
+      approve();
+      // Approval does not override the existing fresh-cache requirement.
+      writeFileSync(cachePath, JSON.stringify({ ...cache, lastSuccessfulCheckAt: '2000-01-01T00:00:00.000Z' }));
+      const stale = stop();
+      expect(stale.status, stale.stderr).toBe(0);
+      expect(existsSync(path.join(dir, 'auto-update.log'))).toBe(false);
+      writeFileSync(cachePath, JSON.stringify(cache));
+      const approved = stop();
+      expect(approved.status, approved.stderr).toBe(0);
+      expect(readFileSync(path.join(dir, 'auto-update.log'), 'utf8')).toContain("auto-update SKIPPED: install channel 'source-checkout'");
+      expect(existsSync(path.join(dir, 'auto-update.lock'))).toBe(false);
+      expect(readFileSync(configPath)).toEqual(configBefore);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('gives a channel-accurate first-use action for a source checkout', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'memesh-update-consent-'));
     const dbPath = path.join(dir, 'memesh.db');
@@ -311,4 +354,3 @@ describe('Feature: escalating snooze, never-ask, upgrade receipt, loud unknown (
     expect(String(h.start('f2').systemMessage)).not.toContain('could not confirm');
   });
 });
-

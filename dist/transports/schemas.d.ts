@@ -137,6 +137,9 @@ export declare const ExportResultSchema: z.ZodObject<{
         type: z.ZodString;
         title: z.ZodOptional<z.ZodNullable<z.ZodString>>;
         namespace: z.ZodString;
+        created_at: z.ZodOptional<z.ZodString>;
+        status: z.ZodOptional<z.ZodString>;
+        metadata: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
         observations: z.ZodArray<z.ZodString>;
         tags: z.ZodArray<z.ZodString>;
         relations: z.ZodArray<z.ZodObject<{
@@ -155,6 +158,9 @@ export declare const ImportSchema: z.ZodObject<{
             type: z.ZodString;
             title: z.ZodOptional<z.ZodNullable<z.ZodString>>;
             namespace: z.ZodString;
+            created_at: z.ZodOptional<z.ZodString>;
+            status: z.ZodOptional<z.ZodString>;
+            metadata: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
             observations: z.ZodArray<z.ZodString>;
             tags: z.ZodArray<z.ZodString>;
             relations: z.ZodArray<z.ZodObject<{

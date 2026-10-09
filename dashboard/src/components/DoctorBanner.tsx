@@ -126,7 +126,9 @@ export function isBannerWorthy(c: DoctorCheck): boolean {
  * the user dismissed: a new check, or one of the dismissed ones clearing, makes
  * the signature differ and brings the banner back.
  */
-export function DoctorBanner() {
+export type SetupState = 'loading' | 'ready' | 'attention' | 'unavailable';
+
+export function DoctorBanner({ onStateChange }: { onStateChange?: (state: SetupState) => void } = {}) {
   const [doctor, setDoctor] = useState<DoctorResult | null>(null);
   const [dismissedSig, setDismissedSig] = useState<string>(() => {
     try { return localStorage.getItem(DISMISS_KEY) ?? ''; } catch { return ''; }
@@ -138,11 +140,13 @@ export function DoctorBanner() {
   const [repairedId, setRepairedId] = useState<string | null>(null);
   const [repairError, setRepairError] = useState<string | null>(null);
   const fetchGen = useRef(0);
+  const lastSetupState = useRef<SetupState>('loading');
 
   useEffect(() => {
     let mounted = true;
     const fetch = () => {
       const gen = ++fetchGen.current;
+      onStateChange?.('loading');
       api<DoctorResult>('GET', '/v1/doctor')
         .then((d) => {
           // A newer fetch was started meanwhile (a data-changed event fired
@@ -153,11 +157,19 @@ export function DoctorBanner() {
           // anyway made `doctor.checks.filter(...)` throw on the next render.
           // It is treated exactly like a failed request: the result we
           // already hold stays, and the skip is logged.
-          if (!Array.isArray(d?.checks)) {
-            console.warn('[memesh dashboard] /v1/doctor answered, but with a shape this bundle cannot render — keeping the previous result:', d);
-            return;
+          if (!['PASS', 'PASS_WITH_CONCERNS', 'FAIL'].includes(d?.status)
+            || !Array.isArray(d?.checks)
+            || !d.checks.every(c => c && typeof c.id === 'string'
+              && typeof c.label === 'string' && typeof c.summary === 'string'
+              && ['pass', 'warn', 'fail'].includes(c.status)
+              && (c.fix === undefined || typeof c.fix === 'string')
+              && (c.code === undefined || typeof c.code === 'string'))) {
+            throw new Error('Doctor response has an invalid status or checks');
           }
           setDoctor(d);
+          const state: SetupState = d.status !== 'PASS' && d.checks.some(isBannerWorthy) ? 'attention' : 'ready';
+          lastSetupState.current = state;
+          onStateChange?.(state);
           // A repair that reported "Fixed" while the next doctor run still lists
           // the same check did not fix it: the button must say so again.
           setRepairedId((cur) => (cur !== null && d.checks.some((c) => c.id === cur && isBannerWorthy(c)) ? null : cur));
@@ -166,14 +178,17 @@ export function DoctorBanner() {
           // Doctor unavailable. The result we already hold (if any) stays —
           // a transient failure must not make a broken install look fixed —
           // and with none held the banner simply has nothing to show.
-          if (mounted && gen === fetchGen.current) console.warn('[memesh dashboard] /v1/doctor failed to load:', e);
+          if (mounted && gen === fetchGen.current) {
+            onStateChange?.(lastSetupState.current === 'attention' ? 'attention' : 'unavailable');
+            console.warn('[memesh dashboard] /v1/doctor failed to load:', e);
+          }
         });
     };
     fetch();
     const handler = () => fetch();
     window.addEventListener('memesh:data-changed', handler);
     return () => { mounted = false; window.removeEventListener('memesh:data-changed', handler); };
-  }, []);
+  }, [onStateChange]);
 
   if (!doctor) return null;
   if (doctor.status === 'PASS') return null;

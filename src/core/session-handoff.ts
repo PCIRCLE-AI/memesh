@@ -139,6 +139,8 @@ export interface HandoffRecord {
    *  `created_at` is the FIRST Stop's and never moves, so it cannot say how
    *  old the text is. */
   observedAt: string | null | undefined;
+  /** Source metadata, when available; legacy records may have none. */
+  metadata?: string | null;
 }
 
 function ageText(hours: number): string {
@@ -192,8 +194,13 @@ export function handoffView(
   const when = stale
     ? `${ageText(age)} — may be out of date; check it against the repository`
     : ageText(age);
+  let source = '';
+  try {
+    const host = JSON.parse(record.metadata ?? 'null')?.provenance?.source_host;
+    if (host === 'codex' || host === 'claude-code') source = `; source: ${host}`;
+  } catch { /* Legacy or malformed metadata gives no reliable source. */ }
   return {
-    lines: [`Where the last session left off (${when}): [mem:${record.id}]`, ...text.split('\n')],
+    lines: [`Where the last session left off (${when}${source}): [mem:${record.id}]`, ...text.split('\n')],
     status: stale ? 'stale' : 'shown',
   };
 }

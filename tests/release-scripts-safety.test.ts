@@ -418,7 +418,7 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     expect(step).toMatch(/\n\s+TMP: \$\{\{ runner\.temp \}\}\n/);
   });
 
-  it('runs the packaged dashboard e2e on every pull request, inside SDLC verify', () => {
+  it('retains packaged verification and explicitly skips UI under the KT release waiver', () => {
     const sdlcJob = ciJob('sdlc-verify');
     expect(sdlcJob).not.toBe('');
     expect(sdlcJob).not.toMatch(/\n {4}if:/);
@@ -430,18 +430,25 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     const config = JSON.parse(read('scripts/verify.config.json')) as {
       verify: { steps: Array<{ id: string; command: string; args?: string[]; journeys?: boolean }> };
     };
-    // --journeys runs only the steps marked as journeys, so these two must stay marked.
-    for (const id of ['build', 'packaged', 'dashboard-e2e']) {
+    // KT explicitly waived UI functional verification for this release.
+    // Build and installed-artifact verification remain mandatory journeys.
+    for (const id of ['build', 'packaged']) {
       expect(config.verify.steps.find((step) => step.id === id)?.journeys, id).toBe(true);
     }
+    expect(config.verify.steps.map((step) => step.id)).toEqual(['build', 'release-gates', 'unit', 'packaged']);
+    expect(config.verify.steps.find((step) => step.id === 'unit')?.args).toEqual([
+      'scripts/run-tests-isolated.mjs',
+      '--exclude', 'tests/dashboard/**',
+      '--exclude', 'tests/dashboard-*.test.ts',
+      '--exclude', 'tests/qa-ui-review.test.ts',
+    ]);
     const commands = config.verify.steps.map((step) => [step.command, ...(step.args ?? [])].join(' '));
     expect(commands).toEqual(
       expect.arrayContaining([
         'npm run build',
         'npm run verify:release',
-        'node scripts/run-tests-isolated.mjs',
+        'node scripts/run-tests-isolated.mjs --exclude tests/dashboard/** --exclude tests/dashboard-*.test.ts --exclude tests/qa-ui-review.test.ts',
         'npm run test:packaged',
-        'npm run test:e2e-dashboard',
       ]),
     );
   });

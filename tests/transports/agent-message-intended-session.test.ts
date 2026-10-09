@@ -72,6 +72,57 @@ type FallbackResult = {
 };
 
 describe('Feature: #497 send can fall back to the principal and keep the intended session', () => {
+  it('follows a same-project successor alias for principal fallback and connection state', async () => {
+    const old = 'old-before-clear';
+    registerAgentSession(PROJECT, PRINCIPAL, { sessionId: SESSION_A, adapterKind: 'claude-channel' });
+    getDatabase().prepare('INSERT INTO agent_session_aliases (session_id, previous_session_id, created_at_ms) VALUES (?, ?, ?)')
+      .run(SESSION_A, old, Date.now());
+    const sent = await executeAgentMessageAction(getDatabase(), sessionSend({ recipient: old }), {
+      transport: 'mcp', sourceHost: 'codex',
+    }, refused) as FallbackResult & { fallback: { intended_session_connected: boolean } };
+    expect(sent.recipient).toBe(PRINCIPAL);
+    expect(sent.intended_session).toBe(old);
+    expect(sent.fallback.intended_session_connected).toBe(true);
+  });
+
+  it('does not use a successor registered only in another project for fallback', async () => {
+    const old = 'old-before-clear';
+    registerAgentSession('another-project', PRINCIPAL, { sessionId: SESSION_A, adapterKind: 'claude-channel' });
+    getDatabase().prepare('INSERT INTO agent_session_aliases (session_id, previous_session_id, created_at_ms) VALUES (?, ?, ?)')
+      .run(SESSION_A, old, Date.now());
+    await expect(executeAgentMessageAction(getDatabase(), sessionSend({ recipient: old }), {
+      transport: 'mcp', sourceHost: 'codex',
+    }, refused)).rejects.toMatchObject({ code: 'recipient_unavailable', message: expect.stringContaining('no principal fallback') });
+    expect(getDatabase().prepare("SELECT COUNT(*) AS n FROM agent_message_deliveries WHERE target_kind = 'principal'").get())
+      .toEqual({ n: 0 });
+  });
+
+  it('does not bypass the unsupported-host guard through a successor alias', async () => {
+    const old = 'old-before-clear';
+    registerAgentSession(PROJECT, PRINCIPAL, { sessionId: SESSION_A, adapterKind: 'acp' });
+    getDatabase().prepare('INSERT INTO agent_session_aliases (session_id, previous_session_id, created_at_ms) VALUES (?, ?, ?)')
+      .run(SESSION_A, old, Date.now());
+    await expect(executeAgentMessageAction(getDatabase(), sessionSend({ recipient: old }), {
+      transport: 'mcp', sourceHost: 'codex',
+    }, refused)).rejects.toMatchObject({ code: 'recipient_unavailable', message: expect.stringContaining('no principal fallback') });
+    expect(getDatabase().prepare("SELECT COUNT(*) AS n FROM agent_message_deliveries WHERE target_kind = 'principal'").get())
+      .toEqual({ n: 0 });
+  });
+
+  it('refuses ambiguous successor principals instead of choosing one', async () => {
+    const old = 'old-before-clear';
+    registerAgentSession(PROJECT, PRINCIPAL, { sessionId: SESSION_A, adapterKind: 'claude-channel' });
+    registerAgentSession(PROJECT, 'another-principal', { sessionId: SESSION_B, adapterKind: 'claude-channel' });
+    const alias = getDatabase().prepare('INSERT INTO agent_session_aliases (session_id, previous_session_id, created_at_ms) VALUES (?, ?, ?)');
+    alias.run(SESSION_A, old, Date.now());
+    alias.run(SESSION_B, SESSION_A, Date.now());
+    await expect(executeAgentMessageAction(getDatabase(), sessionSend({ recipient: old }), {
+      transport: 'mcp', sourceHost: 'codex',
+    }, refused)).rejects.toMatchObject({ code: 'recipient_unavailable', message: expect.stringContaining('different principals') });
+    expect(getDatabase().prepare("SELECT COUNT(*) AS n FROM agent_message_deliveries WHERE target_kind = 'principal'").get())
+      .toEqual({ n: 0 });
+  });
+
   it('step 2: a refused session send with fallback_to_principal lands on the principal, meant for A only', async () => {
     // A's registration exists (so its principal is known) but it is not live.
     registerAgentSession(PROJECT, PRINCIPAL, { sessionId: SESSION_A, disconnected: true, adapterKind: 'claude-channel' });

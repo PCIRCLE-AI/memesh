@@ -2,11 +2,11 @@ import { getDatabase } from '../db.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { getProjectName, redactSecretList } from './paths.js';
 import { remember } from './operations.js';
-import { jsonStringLiteral, projectLabel } from './work-topology.js';
-import { TASK_STATE_TYPE, TASK_STATE_FIELDS, taskStateName, parseTaskState, mergeTaskState, } from './task-state.js';
+import { truncateTitle } from './title.js';
+import { TASK_STATE_TYPE, TASK_STATE_FIELDS, taskStateName, taskStateUnreadableMessage, parseTaskState, mergeTaskState, } from './task-state.js';
 function readState(name) {
     const row = getDatabase()
-        .prepare('SELECT metadata FROM entities WHERE name = ?')
+        .prepare("SELECT metadata FROM entities WHERE name = ? AND status = 'active'")
         .get(name);
     if (!row?.metadata)
         return { state: {}, corrupted: false };
@@ -22,7 +22,7 @@ function readState(name) {
 export class TaskStateUnreadableError extends Error {
     project;
     constructor(project) {
-        super(`task state for project ${jsonStringLiteral(projectLabel(project))} is not readable: the stored record is not valid JSON. Re-state it with \`memesh task --goal …\` (any write replaces the broken record).`);
+        super(taskStateUnreadableMessage(project));
         this.project = project;
         this.name = 'TaskStateUnreadableError';
     }
@@ -44,16 +44,19 @@ function redactedState(state) {
 export function setTaskState(input) {
     const project = input.project ?? getProjectName();
     const name = taskStateName(project);
-    const { state: previous } = readState(name);
     const textFields = Object.entries(input.patch).filter(([, value]) => typeof value === 'string');
     const texts = redactSecretList(textFields.map(([, value]) => value));
     const patch = { ...input.patch, ...Object.fromEntries(textFields.map(([field], i) => [field, texts[i]])) };
-    const { state, changed, observations } = mergeTaskState(previous, patch, new Date().toISOString());
-    if (changed.length === 0)
-        return { project, state: redactedState(state), changed };
-    const title = state.goal ?? state.next ?? state.blocked ?? state.done ?? `Task state for ${project}`;
     const db = getDatabase();
-    db.transaction(() => {
+    const write = db.transaction(() => {
+        const { state: previous, corrupted } = readState(name);
+        const { state, changed, observations } = mergeTaskState(previous, patch, new Date().toISOString());
+        if (changed.length === 0) {
+            if (corrupted)
+                throw new TaskStateUnreadableError(project);
+            return { project, state: redactedState(state), changed };
+        }
+        const title = truncateTitle(state.goal ?? state.next ?? state.blocked ?? state.done ?? `Task state for ${project}`);
         remember({
             name,
             type: TASK_STATE_TYPE,
@@ -66,7 +69,24 @@ export function setTaskState(input) {
             ...current,
             task_state: state,
         }));
-    }).immediate();
-    return { project, state: redactedState(state), changed };
+        return { project, state: redactedState(state), changed };
+    });
+    try {
+        return write.immediate();
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!/readonly database|SQLITE_READONLY/i.test(message))
+            throw error;
+        return db.transaction(() => {
+            const { state: previous, corrupted } = readState(name);
+            const { state, changed } = mergeTaskState(previous, patch, new Date().toISOString());
+            if (changed.length !== 0)
+                throw error;
+            if (corrupted)
+                throw new TaskStateUnreadableError(project);
+            return { project, state: redactedState(state), changed };
+        })();
+    }
 }
 //# sourceMappingURL=task-state-store.js.map

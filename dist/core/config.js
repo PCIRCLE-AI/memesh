@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { randomBytes } from 'crypto';
 import { memeshDir } from './paths.js';
 import { removeGroupAndOtherAccess } from './file-mode.js';
 export { SESSION_LIMIT_MIN, SESSION_LIMIT_MAX, isSessionLimitInRange } from './session-limit.js';
@@ -85,8 +86,32 @@ function writeRawConfig(raw) {
     const p = configFilePath();
     fs.mkdirSync(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
     removeGroupAndOtherAccess(dir);
-    fs.writeFileSync(p, JSON.stringify(raw, null, 2), { mode: PRIVATE_FILE_MODE });
-    removeGroupAndOtherAccess(p);
+    let target = p;
+    let mode = PRIVATE_FILE_MODE;
+    let existing;
+    try {
+        existing = fs.lstatSync(p);
+    }
+    catch (error) {
+        if (error.code !== 'ENOENT')
+            throw error;
+    }
+    if (existing) {
+        if (existing.isSymbolicLink())
+            target = fs.realpathSync(p);
+        fs.accessSync(target, fs.constants.W_OK);
+        mode = fs.statSync(target).mode & 0o700;
+        removeGroupAndOtherAccess(p);
+    }
+    const temp = `${target}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`;
+    try {
+        fs.writeFileSync(temp, JSON.stringify(raw, null, 2), { flag: 'wx', mode });
+        fs.renameSync(temp, target);
+    }
+    finally {
+        if (fs.existsSync(temp))
+            fs.unlinkSync(temp);
+    }
 }
 export class ConfigUnreadableError extends Error {
     constructor(p) {

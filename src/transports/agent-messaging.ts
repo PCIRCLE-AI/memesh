@@ -543,10 +543,18 @@ function sendPrincipalFallback(
   message: Omit<SendAgentMessageInput, 'recipient' | 'target_kind' | 'intended_session'>,
   refused: { message_id: string; delivery_id: string; project: string; recipient: string },
 ) {
-  const session = db.prepare(`
-    SELECT principal_id FROM agent_session_instances WHERE project = ? AND session_instance_id = ?
-  `).get(refused.project, refused.recipient) as { principal_id: string } | undefined;
+  const ids = [...sessionAliasChain(db, refused.recipient)];
+  const marks = ids.map(() => '?').join(', ');
+  const registrations = db.prepare(`
+    SELECT session_instance_id, principal_id FROM agent_session_instances
+    WHERE project = ? AND session_instance_id IN (${marks})
+  `).all(refused.project, ...ids) as Array<{ session_instance_id: string; principal_id: string }>;
+  const session = registrations.find((row) => row.session_instance_id === refused.recipient)
+    ?? (new Set(registrations.map((row) => row.principal_id)).size === 1 ? registrations[0] : undefined);
   if (!session) {
+    if (registrations.length > 0) {
+      throw new AgentRecipientUnavailableError('There is no principal fallback: the session aliases name different principals in this project.');
+    }
     throw new AgentRecipientUnavailableError(
       `There is no principal fallback: session ${JSON.stringify(refused.recipient)} has never registered in project `
       + `${jsonStringLiteral(refused.project)}, so its principal is unknown. Send to the principal yourself with `
@@ -575,9 +583,10 @@ function sendPrincipalFallback(
   }
   const connected = db.prepare(`
     SELECT 1 FROM agent_session_connections
-    WHERE project = ? AND session_instance_id = ? AND disconnected_at IS NULL AND lease_expires_at_ms > ?
+    WHERE project = ? AND principal_id = ? AND session_instance_id IN (${marks})
+      AND disconnected_at IS NULL AND lease_expires_at_ms > ?
     LIMIT 1
-  `).get(refused.project, refused.recipient, Date.now()) !== undefined;
+  `).get(refused.project, session.principal_id, ...ids, Date.now()) !== undefined;
   return {
     ...fallback,
     fallback: {

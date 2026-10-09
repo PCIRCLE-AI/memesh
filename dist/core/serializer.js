@@ -177,6 +177,14 @@ function describeInvalidEntity(entity, index) {
             return `${where} has no usable "${field}" (found ${e[field] === undefined ? 'nothing' : JSON.stringify(e[field])}).`;
         }
     }
+    for (const field of ['created_at', 'status']) {
+        if (e[field] !== undefined && typeof e[field] !== 'string') {
+            return `${where}.${field} is ${typeof e[field]}, not a string.`;
+        }
+    }
+    if (e.metadata !== undefined && !isPlainObject(e.metadata)) {
+        return `${where}.metadata is not an object.`;
+    }
     for (const field of ['observations', 'tags', 'relations']) {
         if (e[field] !== undefined && !Array.isArray(e[field])) {
             return `${where}.${field} is ${typeof e[field]}, not an array.`;
@@ -189,6 +197,19 @@ function describeInvalidEntity(entity, index) {
         const bad = list.findIndex((item) => typeof item !== 'string');
         if (bad !== -1) {
             return `${where}.${field}[${bad}] is ${typeof list[bad]}, not a string.`;
+        }
+    }
+    if (Array.isArray(e.relations)) {
+        for (let i = 0; i < e.relations.length; i++) {
+            const relation = e.relations[i];
+            const relationWhere = `${where}.relations[${i}]`;
+            if (!isPlainObject(relation))
+                return `${relationWhere} is not an object with "to" and "type".`;
+            for (const field of ['to', 'type']) {
+                if (typeof relation[field] !== 'string' || relation[field] === '') {
+                    return `${relationWhere}.${field} is not a non-empty string.`;
+                }
+            }
         }
     }
     if (e.namespace !== undefined && !NAMESPACES.includes(e.namespace)) {
@@ -268,6 +289,11 @@ export function importMemories(args, options) {
                 const title = redactedText.title === undefined ? undefined : truncateTitle(redactedText.title);
                 const observations = redactedText.observations ?? [];
                 const namespace = args.namespace ?? (existing ? undefined : (entity.namespace || 'personal'));
+                const relations = (entity.relations || []).map((rel) => ({
+                    from: entity.name,
+                    to: rel.to,
+                    type: rel.type,
+                }));
                 const importedMetadata = buildImportedMetadata(existing?.metadata, {
                     bundled: entity.metadata,
                     exportedAt: args.data.exported_at,
@@ -277,6 +303,10 @@ export function importMemories(args, options) {
                     trust,
                     onHistoryDropped: () => errors.push(`${entity.name}: imported without its replaced_history, which no longer fits its size limits once credentials in it are redacted`),
                 });
+                if (existing) {
+                    delete importedMetadata.previous_namespace;
+                    delete importedMetadata.namespace_moved_at;
+                }
                 let replacedVersion;
                 if (existing) {
                     if (args.merge_strategy === 'skip')
@@ -291,7 +321,8 @@ export function importMemories(args, options) {
                             && newObservations.length === 0
                             && (entity.tags === undefined || entity.tags.every((tag) => existingTags.has(storedText(tag))))
                             && (title === undefined || storedText(title) === existing.title)
-                            && (namespace === undefined || namespace === (existing.namespace ?? 'personal'));
+                            && (namespace === undefined || namespace === (existing.namespace ?? 'personal'))
+                            && relations.every((rel) => (existing.relations ?? []).some((held) => held.to === storedText(rel.to) && held.type === storedText(rel.type)));
                         if (addsNothing)
                             return { kind: 'skipped' };
                         kg.createEntity(entity.name, entity.type, {
@@ -302,7 +333,7 @@ export function importMemories(args, options) {
                             trustOverride: 'untrusted',
                         });
                         kg.updateEntityMetadata(entity.name, (current) => ({ ...current, ...importedMetadata }));
-                        return { kind: 'appended' };
+                        return { kind: 'appended', relations };
                     }
                     replacedVersion = {
                         replaced_at: new Date().toISOString(),
@@ -348,19 +379,17 @@ export function importMemories(args, options) {
                 return {
                     kind: 'imported',
                     overwritten: Boolean(existing),
-                    relations: (entity.relations || []).map((rel) => ({
-                        from: entity.name,
-                        to: rel.to,
-                        type: rel.type,
-                    })),
+                    relations,
                 };
             }).immediate();
             if (outcome.kind === 'skipped')
                 skipped++;
             else if (outcome.kind === 'keptArchived')
                 keptArchived++;
-            else if (outcome.kind === 'appended')
+            else if (outcome.kind === 'appended') {
+                pendingRelations.push(...outcome.relations);
                 appended++;
+            }
             else {
                 pendingRelations.push(...outcome.relations);
                 imported++;

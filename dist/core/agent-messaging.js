@@ -62,11 +62,14 @@ export function serializeNativeAgentMessage(envelope, deliveryId) {
 export function sendAgentMessage(db, input, options = {}) {
     const normalized = normalizeSendInput(input);
     if (normalized.intended_session !== null) {
+        const ids = [...sessionAliasChain(db, normalized.intended_session)];
         const registered = db.prepare(`
-      SELECT adapter_kind FROM agent_session_instances WHERE project = ? AND session_instance_id = ?
-    `).get(normalized.project, normalized.intended_session);
-        if (registered && !INTENDED_SESSION_ADAPTERS.has(registered.adapter_kind)) {
-            throw new AgentIntendedSessionUnsupportedError(normalized.intended_session, registered.adapter_kind);
+      SELECT adapter_kind FROM agent_session_instances
+      WHERE project = ? AND session_instance_id IN (${ids.map(() => '?').join(', ')})
+    `).all(normalized.project, ...ids);
+        const unsupported = registered.find((row) => !INTENDED_SESSION_ADAPTERS.has(row.adapter_kind));
+        if (unsupported) {
+            throw new AgentIntendedSessionUnsupportedError(normalized.intended_session, unsupported.adapter_kind);
         }
     }
     const requestHash = hashCanonical({

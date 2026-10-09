@@ -57,6 +57,7 @@ function parseConversationContent(content: string): ConversationTurn[] {
     } catch {
       continue; // one bad line must not abort the transcript
     }
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
     if (entry.type === 'assistant') {
       for (const text of textFromAssistantBlocks(entry.message?.content)) {
         turns.push({ role: 'assistant', text });

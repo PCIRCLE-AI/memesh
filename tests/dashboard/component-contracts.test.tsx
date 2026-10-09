@@ -92,11 +92,12 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../
 const COMPONENT_DIR = 'dashboard/src/components';
 
 describe('dashboard branding placement', () => {
-  it('keeps the powered-by attribution in the app footer, not the header', () => {
+  it('keeps the fixed English slogan in the app footer, not the header', () => {
     const header = fs.readFileSync(path.join(repoRoot, 'dashboard/src/components/Header.tsx'), 'utf8');
     const app = fs.readFileSync(path.join(repoRoot, 'dashboard/src/App.tsx'), 'utf8');
     expect(header).not.toContain("t('brand.subtitle')");
-    expect(app).toContain('<footer class="app-footer">{t(\'brand.subtitle\')}</footer>');
+    expect(header).not.toContain('Remember what you learn. Keep moving forward.');
+    expect(app).toContain('<footer class="app-footer">Remember what you learn. Keep moving forward.</footer>');
   });
 });
 

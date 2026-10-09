@@ -40,7 +40,7 @@ export function recentHookNoticeExists(dir, currentVersion, latestVersion, now =
             if (now.getTime() - stat.mtimeMs > RECENT_HOOK_NOTICE_MS)
                 continue;
             const value = JSON.parse(fs.readFileSync(fd, 'utf8'));
-            if (value.currentVersion === currentVersion && (latestVersion === null || value.latestVersion === latestVersion))
+            if (value.decision === 'emitted' && value.currentVersion === currentVersion && (latestVersion === null || value.latestVersion === latestVersion))
                 return true;
         }
         catch {
@@ -112,12 +112,28 @@ function cliThrottled(dir, currentVersion, now) {
     }
 }
 function spawnCacheRefresh(dir, currentVersion, now) {
+    let marker;
+    const claim = `${process.pid}-${now.getTime()}`;
+    const failed = (error) => {
+        try {
+            if (marker && fs.readFileSync(marker, 'utf8') === claim)
+                fs.unlinkSync(marker);
+        }
+        catch { }
+        const code = error?.code;
+        const reason = typeof code === 'string' && /^[A-Z0-9_]+$/.test(code) ? code : 'UNKNOWN';
+        console.error(`[memesh update] Could not start update cache refresh (${reason}). Status remains unknown; a later call can retry.`);
+    };
     try {
-        const cliPath = fileURLToPath(new URL('../transports/cli/cli.js', import.meta.url));
-        if (!fs.existsSync(cliPath))
+        const modulePath = fileURLToPath(import.meta.url);
+        const bundledCli = path.basename(modulePath) === 'cli.js'
+            && path.basename(path.dirname(modulePath)) === 'cli'
+            && path.basename(path.dirname(path.dirname(modulePath))) === 'transports';
+        const helperUrl = new URL(bundledCli ? '../../core/version-check.js' : '../core/version-check.js', import.meta.url);
+        if (!fs.existsSync(fileURLToPath(helperUrl)))
             return false;
         const tag = /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : 'unknown';
-        const marker = path.join(dir, `last-fresh-refresh.${tag}.lock`);
+        marker = path.join(dir, `last-fresh-refresh.${tag}.lock`);
         try {
             if (now.getTime() - fs.statSync(marker).mtimeMs < FRESH_CHECK_THROTTLE_MS)
                 return false;
@@ -128,7 +144,7 @@ function spawnCacheRefresh(dir, currentVersion, now) {
         try {
             const fd = fs.openSync(marker, 'wx', 0o600);
             try {
-                fs.writeSync(fd, `${process.pid}-${now.getTime()}`);
+                fs.writeSync(fd, claim);
             }
             finally {
                 fs.closeSync(fd);
@@ -137,13 +153,16 @@ function spawnCacheRefresh(dir, currentVersion, now) {
         catch {
             return false;
         }
-        const child = spawn(process.execPath, [cliPath, 'status'], {
+        const refresh = 'const { getUpdateCheck } = await import(process.argv[1]); await getUpdateCheck(process.argv[2], { preferFresh: true });';
+        const child = spawn(process.execPath, ['--input-type=module', '--eval', refresh, helperUrl.href, currentVersion], {
             detached: true, stdio: 'ignore', env: { ...process.env }, windowsHide: true,
         });
+        child.once('error', failed);
         child.unref();
         return true;
     }
-    catch {
+    catch (error) {
+        failed(error);
         return false;
     }
 }

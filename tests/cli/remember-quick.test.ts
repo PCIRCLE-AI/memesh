@@ -94,6 +94,12 @@ describe('memesh remember CLI: quick-capture form', () => {
     expect(stdout).toContain('title: OAuth 2.0 with PKCE for the API');
   }, 60_000);
 
+  it.each(['project:/Users/example/repo', 'project:./repo'])('refuses an unreachable project tag in quick capture: %s', (tag) => {
+    const result = runCli(['remember', 'owned quick note', '--tags', tag, '--json'], { HOME: tmpHome });
+    expect(result.exitCode, result.stdout).toBe(1);
+    expect(result.stderr).toContain('project must be');
+  });
+
   it('quick-capture with --obs keeps BOTH the positional text and the flag observations', () => {
     // Reviewer-caught variant of the P7 text-drop bug: with --obs but no
     // --name/--type, the quick-capture branch used to discard the positional

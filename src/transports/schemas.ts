@@ -15,6 +15,13 @@ import {
   projectScopeRejection,
 } from '../core/agent-scope-id.js';
 
+/** Validate project spelling without rewriting its stored key (#527). */
+const projectRules = (base: z.ZodString) => base.superRefine((value, ctx) => {
+  const rejection = projectScopeRejection(value);
+  if (rejection !== null) ctx.addIssue({ code: 'custom', message: rejection });
+});
+const projectName = projectRules(z.string());
+
 const sanitizeName = (s: string) => s.replace(/[\r\n\t]+/g, ' ').trim();
 const nameField = z.string().min(1).max(255).transform(sanitizeName).refine(s => s.length > 0, {
   message: 'Name must not be blank after sanitization',
@@ -113,6 +120,15 @@ const rememberShape = {
 };
 
 function refineRemember(data: z.infer<z.ZodObject<typeof rememberShape>>, ctx: z.RefinementCtx): void {
+  for (const [index, tag] of (data.tags ?? []).entries()) {
+    if (!tag.startsWith('project:')) continue;
+    const project = tag.slice('project:'.length);
+    // Empty tags retain the existing binding/core refusal. A non-empty tag
+    // must obey the same scope rules as an explicit project argument.
+    if (project.trim() === '') continue;
+    const rejection = projectScopeRejection(project);
+    if (rejection !== null) ctx.addIssue({ code: 'custom', path: ['tags', index], message: rejection });
+  }
   if (data.note === undefined) {
     if (data.name === undefined) ctx.addIssue({ code: 'custom', path: ['name'], message: 'name is required (or pass `note` to have it derived)' });
     // `replace` on a named memory inherits the type it already has —
@@ -160,7 +176,7 @@ export const RememberSchema = z.object(rememberShape).strict().superRefine(refin
  * means the same as omitting it. MCP only; HTTP and the CLI keep their own
  * project rules.
  */
-const mcpProjectField = z.union([z.string().min(1).max(200), z.literal(false)]).optional();
+const mcpProjectField = z.union([projectName, z.literal(false)]).optional();
 
 export const McpRememberSchema = z.object({ ...rememberShape, project: mcpProjectField }).strict().superRefine(refineRemember);
 
@@ -230,6 +246,11 @@ export const ExportResultSchema = z.object({
     // because the export writes `title: null` for an untitled entity.
     title: z.string().max(TITLE_MAX_LENGTH).nullable().optional(),
     namespace: z.string(),
+    // Backup fields must reach the core on MCP/HTTP as they do on CLI.
+    // The core owns timestamp restoration and the metadata allow-list.
+    created_at: z.string().optional(),
+    status: z.string().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
     observations: z.array(z.string().max(10000)),
     tags: z.array(z.string().max(255)),
     relations: z.array(z.object({ to: z.string().min(1).max(255), type: z.string().min(1).max(100) })),
@@ -278,17 +299,6 @@ const agentScopeId = (field: string) =>
       error: (issue) =>
         agentScopeIdRejection(field, String(issue.input)) ?? `${field} is not a valid identifier.`,
     });
-
-/**
- * A project name as the caller spelled it: validated, never rewritten (a
- * stored task-state key is matched byte for byte). Empty, absolute-path and
- * relative-path values are refused (#527).
- */
-const projectRules = (base: z.ZodString) => base.superRefine((value, ctx) => {
-  const rejection = projectScopeRejection(value);
-  if (rejection !== null) ctx.addIssue({ code: 'custom', message: rejection });
-});
-const projectName = projectRules(z.string());
 
 const learnShape = {
   error: z.string().min(1).max(5000),

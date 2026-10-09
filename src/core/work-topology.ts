@@ -468,18 +468,20 @@ export function buildTopologyLines(
   let used = 0;
 
   for (const section of groupTopology(entities, projectName)) {
+    const headingCost = section.heading.length + 2;
+    if (used + headingCost > budget.maxChars) continue;
     const candidate = section.entities.slice(0, maxPerSection);
     const rendered: string[] = [];
+    let sectionUsed = headingCost;
     for (const e of candidate) {
       const line = topologyLine(e, maxLineChars);
-      if (used + line.length + 1 > budget.maxChars) break;
+      if (used + sectionUsed + line.length + 1 > budget.maxChars) break;
       rendered.push(line);
-      used += line.length + 1;
+      sectionUsed += line.length + 1;
     }
     if (rendered.length === 0) continue;
-    // Charge the heading only once it has something under it.
-    if (used + section.heading.length + 2 > budget.maxChars) break;
-    used += section.heading.length + 2;
+    // Reserve the heading before selecting rows; commit only a populated section.
+    used += sectionUsed;
     lines.push(section.heading, ...rendered, '');
   }
 

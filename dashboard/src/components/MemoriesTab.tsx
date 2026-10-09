@@ -99,7 +99,7 @@ function recencyIso(e: Entity): string | null {
   return ms === null ? null : new Date(ms).toISOString();
 }
 
-export function MemoriesTab({ health, dataRevision = 0 }: { health?: HealthData | null; dataRevision?: number }) {
+export function MemoriesTab({ health, dataRevision = 0, onRefreshHealth }: { health?: HealthData | null; dataRevision?: number; onRefreshHealth?: () => void }) {
   const [entities, setEntities] = useState<Entity[]>([]);
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [projectsError, setProjectsError] = useState('');
@@ -434,7 +434,7 @@ export function MemoriesTab({ health, dataRevision = 0 }: { health?: HealthData 
               </div>
             )}
           </div>
-          <button class="btn btn-sm" onClick={load} title={t('browse.refresh')}>↻</button>
+          <button class="btn btn-sm" onClick={() => { load(); onRefreshHealth?.(); }} title={t('browse.refresh')}>↻</button>
         </div>
 
         <div

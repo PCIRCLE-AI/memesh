@@ -171,7 +171,10 @@ describe('the title backfill fills gaps and nothing else', () => {
     const db = openDatabase(dbPath);
     const markers = db.prepare("SELECT key FROM memesh_metadata WHERE key LIKE 'title_backfill%'").all() as Array<{ key: string }>;
     closeDatabase();
-    expect(markers.length).toBe(1);
+    expect(markers).toHaveLength(2);
+    expect(markers.map(marker => marker.key).sort()).toEqual([
+      'title_backfill_v1', 'title_backfill_v1_migration',
+    ]);
 
     // Forced re-run (as a marker bump would do): fill-only means the
     // already-titled row comes out byte-identical.

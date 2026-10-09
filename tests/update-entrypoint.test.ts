@@ -39,6 +39,24 @@ describe('formatUpdateNoticeLine', () => {
 });
 
 describe('recentHookNoticeExists', () => {
+  it.each(['pending', 'failed', undefined, null, 7])('does not treat an unannounced claim (%s) as a delivered MCP notice', decision => {
+    const dir = tmp();
+    try {
+      cache(dir, '4.10.0');
+      const claims = path.join(dir, 'update-prompt-claims');
+      fs.mkdirSync(claims);
+      const file = path.join(claims, 'unannounced.json');
+      fs.writeFileSync(file, JSON.stringify({ currentVersion: '4.9.4', latestVersion: '4.10.0', decision }));
+      fs.utimesSync(file, NOW, NOW);
+      const before = fs.readFileSync(file);
+      expect(recentHookNoticeExists(dir, '4.9.4', '4.10.0', NOW)).toBe(false);
+      const opts = { dir, currentVersion: '4.9.4', now: NOW, entryPoint: 'mcp' as const, processOnce: new Set<string>(), refresh: () => false };
+      expect(updateNoticeForEntryPoint(opts)).toContain('4.10.0 is available');
+      expect(updateNoticeForEntryPoint(opts)).toBeNull();
+      expect(fs.readFileSync(file)).toEqual(before);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('sees a fresh SessionStart claim for the same versions and ignores old or other-version claims', () => {
     const dir = tmp();
     const claims = path.join(dir, 'update-prompt-claims');

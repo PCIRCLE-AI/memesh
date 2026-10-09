@@ -19,6 +19,10 @@
 // locally without cutting a real release, so the only way both directions get
 // pinned is to hand the decision its inputs.
 
+import fs from 'node:fs';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
+
 import {
   LIVE_JOURNEY_SCHEMA_VERSION,
   LIVE_JOURNEY_MAX_AGE_MS,
@@ -60,6 +64,7 @@ export function checkReleasePreconditions({
   shippedFilesChangedSinceBump,
   qaPreReleaseStatus,
   liveJourneyCandidates,
+  approvedReuse = null,
 }) {
   const blockers = [];
   const tag = `v${pkgVersion}`;
@@ -172,7 +177,7 @@ export function checkReleasePreconditions({
   }
 
   for (const required of LIVE_JOURNEY_RECEIPT_PATHS) {
-    const liveJourney = findUsableLiveJourneyReceipt(liveJourneyCandidates, headSha, required.host);
+    const liveJourney = findUsableLiveJourneyReceipt(liveJourneyCandidates, headSha, required.host, approvedReuse?.version === pkgVersion ? approvedReuse : null);
     if (!liveJourney.ok) {
       const action = required.host === 'claude'
         ? `run \`npm run qa:live-journey -- --host claude --out ${required.relativePath}\``
@@ -219,8 +224,16 @@ export const LIVE_JOURNEY_RECEIPT_PATHS = [
  * @param {'codex'|'claude'|null} requiredHost
  * @returns {{ok: boolean, usable: LiveJourneyCandidate|null, reasons: string[]}}
  */
-export function findUsableLiveJourneyReceipt(candidates, headSha, requiredHost = null) {
+export function findUsableLiveJourneyReceipt(candidates, headSha, requiredHost = null, approvedReuse = null) {
   const reasons = [];
+  if (approvedReuse?.validated === true && approvedReuse.revision === headSha
+      && requiredHost && approvedReuse.hosts?.[requiredHost]) {
+    if (Array.isArray(candidates) && candidates.some(candidate => candidate.host === requiredHost
+        && candidate.report?.revision === headSha && candidate.report?.verdict === 'FAIL')) {
+      return { ok: false, usable: null, reasons: ['current candidate has a failed native report; reuse cannot override it'] };
+    }
+    return { ok: true, usable: { path: approvedReuse.path }, reasons, reused: true };
+  }
   if (!Array.isArray(candidates) || candidates.length === 0) return { ok: false, usable: null, reasons };
   if (!headSha) {
     return { ok: false, usable: null, reasons: ['HEAD sha is unknown, so no receipt could be matched to it'] };
@@ -372,4 +385,35 @@ export function shippedPathsFromPackageJson(pkg) {
   const files = Array.isArray(pkg?.files) ? pkg.files.filter(f => typeof f === 'string' && f.length > 0) : [];
   if (files.length === 0) return null;
   return [...new Set([...files.map(f => f.replace(/\/+$/, '')), 'package.json', 'package-lock.json'])];
+}
+
+
+// Operator-owned, gitignored evidence mapping. This accepts an explicit release
+// disposition, not a fabricated fresh native/full PASS. Ordinary callers with
+// no mapping retain every original requirement.
+export function readApprovedReleaseReuse(repoRoot, revision, tree) {
+  const receiptPath = path.join(repoRoot, '.qa', 'release-evidence-reuse.json');
+  if (!fs.existsSync(receiptPath)) return null;
+  const report = JSON.parse(fs.readFileSync(receiptPath, 'utf8'));
+  const version = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8')).version;
+  const text = value => typeof value === 'string' && value.trim().length > 0;
+  if (!revision || !tree || report.revision !== revision || report.tree !== tree || report.version !== version
+      || !text(report.authority?.decidedBy) || !text(report.authority?.decision)
+      || report.uiSkip !== true || !text(report.g6)
+      || !text(report.hosts?.codex) || !text(report.hosts?.claude)
+      || !Array.isArray(report.concerns) || report.concerns.length === 0
+      || !Array.isArray(report.evidence) || report.evidence.length === 0) {
+    throw new Error('release evidence reuse is incomplete or belongs to a different candidate');
+  }
+  for (const scope of ['g6', 'codex', 'claude']) {
+    if (!report.evidence.some(item => item.scope === scope)) throw new Error(`release evidence reuse has no ${scope} source`);
+  }
+  for (const item of report.evidence) {
+    if (!text(item.path) || !text(item.mapping) || !/^[a-f0-9]{64}$/.test(item.sha256 ?? '')) {
+      throw new Error('release evidence reuse has an incomplete source mapping');
+    }
+    const digest = createHash('sha256').update(fs.readFileSync(path.resolve(repoRoot, item.path))).digest('hex');
+    if (digest !== item.sha256) throw new Error(`release evidence source changed: ${item.path}`);
+  }
+  return { ...report, path: receiptPath, validated: true };
 }

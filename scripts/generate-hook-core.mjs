@@ -68,6 +68,7 @@ const SOURCES = [
   // the Stop-hook updater and `memesh status` must agree on what "an update
   // is available", "snoozed", "just upgraded" and "check failed" mean.
   { from: 'dist/core/update-notice.js', to: 'update-notice.js', src: 'src/core/update-notice.ts' },
+  { from: 'dist/core/semver.js', to: 'semver.js', src: 'src/core/semver.ts' },
   // The citation contract. Mirrored because a PLUGIN install never runs
   // `install-hooks` — the npm-only path — so the hooks are the only place
   // that can put the rule on disk for those users, and they are the majority.

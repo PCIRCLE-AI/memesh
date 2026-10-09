@@ -16,11 +16,12 @@ import { getDatabase } from '../db.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { getProjectName, redactSecretList } from './paths.js';
 import { remember } from './operations.js';
-import { jsonStringLiteral, projectLabel } from './work-topology.js';
+import { truncateTitle } from './title.js';
 import {
   TASK_STATE_TYPE,
   TASK_STATE_FIELDS,
   taskStateName,
+  taskStateUnreadableMessage,
   parseTaskState,
   mergeTaskState,
   type TaskState,
@@ -48,7 +49,7 @@ export interface SetTaskStateResult {
  */
 function readState(name: string): { state: TaskState; corrupted: boolean } {
   const row = getDatabase()
-    .prepare('SELECT metadata FROM entities WHERE name = ?')
+    .prepare("SELECT metadata FROM entities WHERE name = ? AND status = 'active'")
     .get(name) as { metadata: string | null } | undefined;
   if (!row?.metadata) return { state: {}, corrupted: false };
   let parsed: unknown;
@@ -62,10 +63,10 @@ function readState(name: string): { state: TaskState; corrupted: boolean } {
   return { state: parseTaskState(parsed), corrupted: false };
 }
 
-/** Thrown by the READ surfaces when the stored record is not JSON. */
+/** Thrown when unreadable metadata cannot be read or verified as a no-op. */
 export class TaskStateUnreadableError extends Error {
   constructor(public readonly project: string) {
-    super(`task state for project ${jsonStringLiteral(projectLabel(project))} is not readable: the stored record is not valid JSON. Re-state it with \`memesh task --goal …\` (any write replaces the broken record).`);
+    super(taskStateUnreadableMessage(project));
     this.name = 'TaskStateUnreadableError';
   }
 }
@@ -110,10 +111,6 @@ function redactedState(state: TaskState): TaskState {
 export function setTaskState(input: SetTaskStateInput): SetTaskStateResult {
   const project = input.project ?? getProjectName();
   const name = taskStateName(project);
-  // The WRITE path does not throw on a corrupted record: replacing it is the
-  // one in-product way to recover, so a broken record merges as "nothing
-  // stated before" and the write below overwrites it.
-  const { state: previous } = readState(name);
   // #523: redacted at the ONE entry point, so the title, the observations
   // (via `remember`, which redacts again — harmless) and `metadata.task_state`
   // below all hold the same redacted text. The metadata copy is what the
@@ -123,23 +120,25 @@ export function setTaskState(input: SetTaskStateInput): SetTaskStateResult {
   const textFields = Object.entries(input.patch).filter(([, value]) => typeof value === 'string');
   const texts = redactSecretList(textFields.map(([, value]) => value as string));
   const patch = { ...input.patch, ...Object.fromEntries(textFields.map(([field], i) => [field, texts[i]])) } as SetTaskStateInput['patch'];
-  const { state, changed, observations } = mergeTaskState(
-    previous,
-    patch,
-    new Date().toISOString(),
-  );
-
-  if (changed.length === 0) return { project, state: redactedState(state), changed };
-
-  // The headline a human (or an injected block) sees. The goal is what the
-  // work is FOR, so it leads; a state with no goal yet is still worth naming
-  // by whatever it does have.
-  const title = state.goal ?? state.next ?? state.blocked ?? state.done ?? `Task state for ${project}`;
-
-  // One transaction: when the metadata write below fails, the observations
-  // `remember()` added are rolled back with it.
   const db = getDatabase();
-  db.transaction(() => {
+  // Read and merge under the write lock so a peer's committed fields cannot
+  // be replaced by a snapshot taken before this transaction began.
+  // Observations and metadata roll back together if the final write fails.
+  const write = db.transaction(() => {
+    // A corrupted record still merges as "nothing stated before": a changed
+    // write is the existing in-product recovery path.
+    const { state: previous, corrupted } = readState(name);
+    const { state, changed, observations } = mergeTaskState(
+      previous,
+      patch,
+      new Date().toISOString(),
+    );
+    if (changed.length === 0) {
+      if (corrupted) throw new TaskStateUnreadableError(project);
+      return { project, state: redactedState(state), changed };
+    }
+
+    const title = truncateTitle(state.goal ?? state.next ?? state.blocked ?? state.done ?? `Task state for ${project}`);
     remember({
       name,
       type: TASK_STATE_TYPE,
@@ -156,7 +155,22 @@ export function setTaskState(input: SetTaskStateInput): SetTaskStateResult {
       ...current,
       task_state: state,
     }));
-  }).immediate();
-
-  return { project, state: redactedState(state), changed };
+    return { project, state: redactedState(state), changed };
+  });
+  try {
+    return write.immediate();
+  } catch (error) {
+    // A read-only connection can reject BEGIN IMMEDIATE even when the patch
+    // changes nothing. Preserve that read-only operation, but never bypass
+    // the write lock for a normal writer or disguise a rejected change.
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/readonly database|SQLITE_READONLY/i.test(message)) throw error;
+    return db.transaction(() => {
+      const { state: previous, corrupted } = readState(name);
+      const { state, changed } = mergeTaskState(previous, patch, new Date().toISOString());
+      if (changed.length !== 0) throw error;
+      if (corrupted) throw new TaskStateUnreadableError(project);
+      return { project, state: redactedState(state), changed };
+    })();
+  }
 }

@@ -14,13 +14,18 @@
  * repository, a missing tag, a version with no tag. Each has to answer "I
  * don't know" distinguishably from "the answer is zero".
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { execFileSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { readRepoState, repoStateLines } from '../../src/core/repo-state.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
+
+vi.mock('child_process', async importOriginal => {
+  const actual = await importOriginal<typeof import('child_process')>();
+  return { ...actual, execFileSync: vi.fn(actual.execFileSync) };
+});
 
 let repo: string;
 
@@ -74,6 +79,29 @@ describe('readRepoState', () => {
     commit('first');
 
     expect(readRepoState(repo)!.uncommitted).toBe(0);
+  });
+
+  it('does not report a clean tree when only git status fails', () => {
+    commit('first');
+    const exec = vi.mocked(execFileSync);
+    const realExec = exec.getMockImplementation()!;
+    try {
+      exec.mockImplementation((...args) => {
+        if (args[0] === 'git' && Array.isArray(args[1]) && args[1][2] === 'status') {
+          throw new Error('Owned fixture: git status unavailable');
+        }
+        return realExec(...args);
+      });
+      const state = readRepoState(repo);
+      expect(state).not.toBeNull();
+      expect(state!.branch).toBe(git('rev-parse', '--abbrev-ref', 'HEAD'));
+      expect(state!.uncommitted).toBeNull();
+      expect(repoStateLines(state).join('\n')).toContain('working tree status unavailable');
+      expect(repoStateLines(state).join('\n')).not.toContain('working tree clean');
+      expect(repoStateLines(state).join('\n')).not.toContain('0 uncommitted');
+    } finally {
+      exec.mockImplementation(realExec);
+    }
   });
 
   it('counts commits since the last tag', () => {

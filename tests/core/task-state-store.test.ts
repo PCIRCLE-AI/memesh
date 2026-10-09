@@ -13,6 +13,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { spawnSync } from 'node:child_process';
 import { openDatabase, closeDatabase, getDatabase } from '../../src/db.js';
 import { handleTool } from '../../src/mcp/tools.js';
 import { getTaskState, setTaskState } from '../../src/core/task-state-store.js';
@@ -33,6 +34,84 @@ afterEach(() => {
 const payload = (result: { content: Array<{ text: string }> }) => JSON.parse(result.content[0].text);
 
 describe('task-state store', () => {
+  it('does not read or revive archived fields when a project starts a fresh state', async () => {
+    setTaskState({ project: 'alpha', patch: { goal: 'forgotten goal', done: 'forgotten done' } });
+    expect(payload(await handleTool('forget', { name: taskStateName('alpha') })).archived).toBe(true);
+    expect(getTaskState('alpha').state).toEqual({});
+    expect(payload(await handleTool('task_state', { project: 'alpha' })).state).toEqual({});
+    expect(setTaskState({ project: 'alpha', patch: { blocked: '' } }).changed).toEqual([]);
+    expect(getDatabase().prepare('SELECT status FROM entities WHERE name = ?').get(taskStateName('alpha')))
+      .toEqual({ status: 'archived' });
+    const fresh = setTaskState({ project: 'alpha', patch: { next: 'fresh next' } });
+    expect(fresh.changed).toEqual(['next']);
+    expect(fresh.state.goal).toBeUndefined();
+    expect(fresh.state.done).toBeUndefined();
+    expect(fresh.state.stated_at).toEqual({ next: fresh.state.updated_at });
+    expect(getTaskState('alpha').state).toEqual(fresh.state);
+    expect(getDatabase().prepare('SELECT status FROM entities WHERE name = ?').get(taskStateName('alpha')))
+      .toEqual({ status: 'active' });
+  });
+
+  it.each(['next', 'goal'] as const)('merges a real peer %s commit made before acquiring the write lock', peerField => {
+    setTaskState({ project: 'alpha', patch: { goal: 'old goal', next: 'old next' } });
+    const db = getDatabase();
+    const transaction = db.transaction.bind(db);
+    const home = path.join(tmpDir, 'peer-home'); fs.mkdirSync(home);
+    fs.writeFileSync(path.join(tmpDir, 'config.json'), JSON.stringify({ updateCheck: false }));
+    let injected = false;
+    let peerState: ReturnType<typeof getTaskState>['state'];
+    db.transaction = fn => {
+      if (!injected) {
+        injected = true;
+        const peer = spawnSync(process.execPath, [path.resolve('dist/transports/cli/cli.js'), 'task', '--project', 'alpha', `--${peerField}`, 'peer value', '--json'], {
+          env: { PATH: process.env.PATH, HOME: home, USERPROFILE: home, MEMESH_DIR: tmpDir, MEMESH_DB_PATH: path.join(tmpDir, 'test.db'), MEMESH_AUTO_CAPTURE: 'false', MEMESH_UPDATE_CHECK: '0', MEMESH_AUTO_UPDATE: '0' },
+          cwd: tmpDir, encoding: 'utf8', timeout: 20000,
+        });
+        expect(peer.signal).toBeNull(); expect(peer.status, peer.stderr).toBe(0);
+        peerState = JSON.parse(peer.stdout).state;
+        expect(peerState[peerField]).toBe('peer value');
+      }
+      return transaction(fn);
+    };
+    try {
+      const written = setTaskState({ project: 'alpha', patch: { goal: 'parent goal' } });
+      expect(injected).toBe(true);
+      expect(written.changed).toEqual(['goal']);
+      expect(written.state.goal).toBe('parent goal');
+      expect(written.state.next).toBe(peerField === 'next' ? 'peer value' : 'old next');
+      expect(written.state.stated_at?.next).toBe(peerState!.stated_at?.next);
+      expect(written.state.stated_at?.goal).toBe(written.state.updated_at);
+      expect(getTaskState('alpha').state).toEqual(written.state);
+    } finally { db.transaction = transaction; }
+  });
+
+  it('rolls back observations and metadata when the final state write fails', () => {
+    setTaskState({ project: 'alpha', patch: { goal: 'old goal' } });
+    const db = getDatabase();
+    const snapshot = () => ['entities', 'observations', 'tags'].map(table => db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all());
+    const before = snapshot();
+    db.exec("CREATE TRIGGER owned_state_failure BEFORE UPDATE OF metadata ON entities WHEN json_extract(NEW.metadata, '$.task_state.goal') = 'must roll back' BEGIN SELECT RAISE(ABORT, 'owned state failure'); END");
+    expect(() => setTaskState({ project: 'alpha', patch: { goal: 'must roll back' } })).toThrow('owned state failure');
+    expect(snapshot()).toEqual(before);
+    expect(getTaskState('alpha').state.goal).toBe('old goal');
+  });
+
+  it('#406 preserves old field dates through a legacy SQL row, update, and readback', () => {
+    setTaskState({ project: 'alpha', patch: { goal: 'old goal', done: 'old release', next: 'old next' } });
+    const old = '2026-09-01T08:00:00.000Z';
+    getDatabase().prepare('UPDATE entities SET metadata = ? WHERE name = ?').run(
+      JSON.stringify({ task_state: { goal: 'old goal', done: 'old release', next: 'old next', updated_at: old } }), taskStateName('alpha'));
+    const written = setTaskState({ project: 'alpha', patch: { goal: 'new goal' } });
+    expect(written.changed).toEqual(['goal']);
+    expect(written.state).toMatchObject({ goal: 'new goal', done: 'old release', next: 'old next',
+      legacy_updated_at: old, stated_at: { goal: written.state.updated_at } });
+    expect(written.state.stated_at).toEqual({ goal: written.state.updated_at });
+    expect(written.state.updated_at).not.toBe(old);
+    expect(getTaskState('alpha').state).toEqual(written.state);
+    expect(getTaskState('beta').state).toEqual({});
+    const row = getDatabase().prepare('SELECT metadata FROM entities WHERE name = ?').get(taskStateName('alpha')) as { metadata: string };
+    expect(JSON.parse(row.metadata).task_state).toEqual(written.state);
+  });
   it('reports corrupted metadata as a failure instead of an empty state (#237)', () => {
     setTaskState({ project: 'alpha', patch: { goal: 'ship alpha' } });
     getDatabase().prepare('UPDATE entities SET metadata = ? WHERE name = ?').run('{not json', taskStateName('alpha'));
@@ -50,6 +129,29 @@ describe('task-state store', () => {
     // A well-formed value of an unusable shape is still "nothing usable".
     getDatabase().prepare('UPDATE entities SET metadata = ? WHERE name = ?').run('[1,2,3]', taskStateName('alpha'));
     expect(getTaskState('alpha').state).toEqual({});
+  });
+
+  it.each([false, true])('refuses an empty clear on unreadable state without writing (query-only=%s)', queryOnly => {
+    setTaskState({ project: 'alpha', patch: { goal: 'old goal' } });
+    const db = getDatabase();
+    db.prepare('UPDATE entities SET metadata = ? WHERE name = ?').run('{not json', taskStateName('alpha'));
+    const snapshot = () => ({
+      entities: db.prepare('SELECT * FROM entities ORDER BY id').all(),
+      observations: db.prepare('SELECT * FROM observations ORDER BY id').all(),
+      tags: db.prepare('SELECT * FROM tags ORDER BY id').all(),
+    });
+    const before = snapshot();
+    if (queryOnly) db.pragma('query_only = ON');
+    try {
+      expect(() => setTaskState({ project: 'alpha', patch: { blocked: '' } })).toThrow(/not valid JSON/);
+      if (queryOnly) {
+        expect(() => setTaskState({ project: 'alpha', patch: { goal: 'recovered' } })).toThrow(/readonly/i);
+      }
+      expect(snapshot()).toEqual(before);
+      expect(() => getTaskState('alpha')).toThrow(/not valid JSON/);
+    } finally {
+      if (queryOnly) db.pragma('query_only = OFF');
+    }
   });
 
   it('keeps each project’s state separate', () => {
@@ -100,6 +202,29 @@ describe('task-state store', () => {
     expect(count.n).toBe(1);
   });
 
+  it('preserves same-value no-ops on a query-only database while rejecting changes', () => {
+    setTaskState({ project: 'alpha', patch: { goal: 'ship alpha' } });
+    const db = getDatabase();
+    const snapshot = () => ({
+      entities: db.prepare('SELECT * FROM entities ORDER BY id').all(),
+      observations: db.prepare('SELECT * FROM observations ORDER BY id').all(),
+      tags: db.prepare('SELECT * FROM tags ORDER BY id').all(),
+    });
+    const before = snapshot();
+    const state = getTaskState('alpha').state;
+    db.pragma('query_only = ON');
+    try {
+      expect(setTaskState({ project: 'alpha', patch: { goal: 'ship alpha' } }))
+        .toEqual({ project: 'alpha', state, changed: [] });
+      expect(setTaskState({ project: 'ghost', patch: { blocked: '' } }).changed).toEqual([]);
+      expect(() => setTaskState({ project: 'alpha', patch: { goal: 'changed goal' } }))
+        .toThrow(/readonly/i);
+      expect(snapshot()).toEqual(before);
+    } finally {
+      db.pragma('query_only = OFF');
+    }
+  });
+
   it('creates nothing at all when the write turns out to be a no-op', () => {
     // Clearing a field that was never set changes nothing, so nothing should
     // exist afterwards. Without the early return this still reaches
@@ -134,9 +259,27 @@ describe('task-state store', () => {
       .get(taskStateName('alpha')) as { title: string | null };
     expect(row.title).toBe('ship the topology injection');
   });
+
+  it.each(['goal', 'next', 'blocked', 'done'] as const)('caps the generated %s title without shortening its task field', field => {
+    const text = 'a'.repeat(198) + '😀' + 'b'.repeat(80);
+    const written = setTaskState({ project: 'alpha', patch: { [field]: text } });
+    const row = getDatabase().prepare('SELECT title FROM entities WHERE name = ?')
+      .get(taskStateName('alpha')) as { title: string };
+    expect(row.title).toBe('a'.repeat(198) + '…');
+    expect(written.state[field]).toBe(text);
+    expect(getTaskState('alpha').state).toEqual(written.state);
+  });
 });
 
 describe('task_state MCP tool', () => {
+  it('#406 returns and persists per-field dates when a field is cleared', async () => {
+    const initial = payload(await handleTool('task_state', { project: 'alpha', goal: 'goal', done: 'done' }));
+    expect(initial.state.stated_at).toEqual({ goal: initial.state.updated_at, done: initial.state.updated_at });
+    const cleared = payload(await handleTool('task_state', { project: 'alpha', done: '' }));
+    expect(cleared.state.done).toBeUndefined();
+    expect(cleared.state.stated_at).toEqual({ goal: initial.state.stated_at.goal });
+    expect(payload(await handleTool('task_state', { project: 'alpha' })).state).toEqual(cleared.state);
+  });
   it('reads with no arguments instead of writing an empty state', async () => {
     const read = payload(await handleTool('task_state', { project: 'alpha' }));
     expect(read.state).toEqual({});

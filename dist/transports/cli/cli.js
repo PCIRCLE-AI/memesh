@@ -3596,12 +3596,6 @@ function toIndexForm(text) {
 function tokenizeQuery(text) {
   return toIndexForm(String(text ?? "")).match(/[\p{L}\p{N}][\p{L}\p{N}\p{M}]*/gu) ?? [];
 }
-function registerNfcFunction(db2) {
-  if (nfcRegistered.has(db2))
-    return;
-  db2.function(SQL_NFC_FUNCTION, { deterministic: true }, (value) => typeof value === "string" ? value.normalize("NFC") : value);
-  nfcRegistered.add(db2);
-}
 function foldForExactMatch(value) {
   return value.normalize("NFC").trim().toLowerCase();
 }
@@ -3647,7 +3641,7 @@ function indexedObservationText(db2, entityId) {
 function insertFtsRow(db2, entityId, name, observationsText, title) {
   db2.prepare("INSERT INTO entities_fts (rowid, name, observations) VALUES (?, ?, ?)").run(entityId, toIndexForm(name), toIndexForm(foldTitleIntoObservations(title, observationsText)));
 }
-var UNSPACED_SCRIPT_RANGES, UNSPACED_SCRIPT_CLASS, UNSPACED_SCRIPT_GLOB_RUN3, UNSPACED_SCRIPT, SQL_NFC_FUNCTION, nfcRegistered, SQL_FOLD_FUNCTION, foldRegistered, LONE_UNSPACED_CHAR;
+var UNSPACED_SCRIPT_RANGES, UNSPACED_SCRIPT_CLASS, UNSPACED_SCRIPT_GLOB_RUN3, UNSPACED_SCRIPT, SQL_FOLD_FUNCTION, foldRegistered, LONE_UNSPACED_CHAR;
 var init_fts_index = __esm({
   "dist/storage/fts-index.js"() {
     "use strict";
@@ -3666,8 +3660,6 @@ var init_fts_index = __esm({
     UNSPACED_SCRIPT_CLASS = UNSPACED_SCRIPT_RANGES.map(([lo, hi]) => `${String.fromCodePoint(lo)}-${String.fromCodePoint(hi)}`).join("");
     UNSPACED_SCRIPT_GLOB_RUN3 = `*[${UNSPACED_SCRIPT_CLASS}][${UNSPACED_SCRIPT_CLASS}][${UNSPACED_SCRIPT_CLASS}]*`;
     UNSPACED_SCRIPT = new RegExp(`[${UNSPACED_SCRIPT_CLASS}]+`, "gu");
-    SQL_NFC_FUNCTION = "memesh_nfc";
-    nfcRegistered = /* @__PURE__ */ new WeakSet();
     SQL_FOLD_FUNCTION = "memesh_fold";
     foldRegistered = /* @__PURE__ */ new WeakSet();
     LONE_UNSPACED_CHAR = new RegExp(`[${UNSPACED_SCRIPT_CLASS}]`, "u");
@@ -3932,8 +3924,9 @@ function runOnceMigration(db2, opts) {
       db2.prepare("INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)").run(attemptKey, String(Date.now()));
     } catch {
     }
-    process.stderr.write(`MeMesh: ${describe3} failed (${err instanceof Error ? err.message : String(err)}). Your memories are unaffected \u2014 this rebuilds a derived index. It will retry in 24h, or run 'memesh reindex --fts' to retry now.
-`);
+    process.stderr.write(`MeMesh: ${describe3} failed (${err instanceof Error ? err.message : String(err)}). Changes from this migration were rolled back; completion is still pending. It will retry after 24h on the next start` + (opts.retryCommand ? `, or run '${opts.retryCommand}' to retry now.
+` : `.
+`));
     return false;
   }
 }
@@ -3963,6 +3956,7 @@ function ensureFtsSegmentation(db2) {
     key: "fts_segmentation_version",
     version: FTS_SEGMENTATION_VERSION,
     describe: "search index rebuild",
+    retryCommand: "memesh reindex --fts",
     migrate: rebuildFtsIndex
   });
 }
@@ -4538,20 +4532,22 @@ function buildTopologyLines(entities, projectName2, budget) {
   const lines = [];
   let used = 0;
   for (const section of groupTopology(entities, projectName2)) {
+    const headingCost = section.heading.length + 2;
+    if (used + headingCost > budget.maxChars)
+      continue;
     const candidate = section.entities.slice(0, maxPerSection);
     const rendered = [];
+    let sectionUsed = headingCost;
     for (const e of candidate) {
       const line = topologyLine(e, maxLineChars);
-      if (used + line.length + 1 > budget.maxChars)
+      if (used + sectionUsed + line.length + 1 > budget.maxChars)
         break;
       rendered.push(line);
-      used += line.length + 1;
+      sectionUsed += line.length + 1;
     }
     if (rendered.length === 0)
       continue;
-    if (used + section.heading.length + 2 > budget.maxChars)
-      break;
-    used += section.heading.length + 2;
+    used += sectionUsed;
     lines.push(section.heading, ...rendered, "");
   }
   if (lines[lines.length - 1] === "")
@@ -5414,8 +5410,15 @@ function handoffView(record2, now = /* @__PURE__ */ new Date()) {
     return { lines: [], status: "expired" };
   const stale = age > HANDOFF_STALE_HOURS;
   const when = stale ? `${ageText(age)} \u2014 may be out of date; check it against the repository` : ageText(age);
+  let source = "";
+  try {
+    const host = JSON.parse(record2.metadata ?? "null")?.provenance?.source_host;
+    if (host === "codex" || host === "claude-code")
+      source = `; source: ${host}`;
+  } catch {
+  }
   return {
-    lines: [`Where the last session left off (${when}): [mem:${record2.id}]`, ...text.split("\n")],
+    lines: [`Where the last session left off (${when}${source}): [mem:${record2.id}]`, ...text.split("\n")],
     status: stale ? "stale" : "shown"
   };
 }
@@ -5550,8 +5553,8 @@ function archivedLikeTerms(db2, query) {
   const terms = tokenizeQuery(query);
   const kept = (terms.length > 1 ? dropUbiquitousTerms(db2, terms) : terms).slice(0, MAX_QUERY_TERMS);
   if (kept.length === 0)
-    return [likeTerm(query)];
-  return kept.map(likeTerm);
+    return [likeTerm(foldScanText(query))];
+  return kept.map((term) => likeTerm(foldScanText(term)));
 }
 function activeEntityCount(db2) {
   return db2.prepare("SELECT count(*) AS c FROM entities WHERE status = 'active'").get().c;
@@ -5561,6 +5564,18 @@ function fold(term) {
   if (!LATIN_FOLDABLE.test(lower))
     return lower;
   return lower.normalize("NFD").replace(new RegExp("\\p{M}", "gu"), "");
+}
+function foldScanText(text) {
+  return text.normalize("NFC").toLowerCase().replace(new RegExp("\\p{Script=Latin}", "gu"), (letter) => {
+    const decomposed = letter.normalize("NFD");
+    return new RegExp("^[a-z]\\p{M}$", "u").test(decomposed) ? decomposed[0] : letter;
+  });
+}
+function registerScanFold(db2) {
+  if (scanFoldRegistered.has(db2))
+    return;
+  db2.function(SQL_SCAN_FOLD, { deterministic: true }, (value) => typeof value === "string" ? foldScanText(value) : value);
+  scanFoldRegistered.add(db2);
 }
 function dropUbiquitousTerms(db2, terms) {
   if (terms.length < 2)
@@ -5589,7 +5604,7 @@ function projectScopeFilter(scope) {
     params: [scope]
   };
 }
-var EXACT_MATCH_FIRST, isGuardWithPattern, withoutGuardPattern, MAX_QUERY_TERMS, UBIQUITOUS_TERM_FRACTION, MIN_ROWS_FOR_DF_GUARD, MAX_DF_LOOKUP_TERMS, LATIN_FOLDABLE, NO_PROJECT_TAG, KnowledgeGraph;
+var EXACT_MATCH_FIRST, isGuardWithPattern, withoutGuardPattern, MAX_QUERY_TERMS, UBIQUITOUS_TERM_FRACTION, MIN_ROWS_FOR_DF_GUARD, MAX_DF_LOOKUP_TERMS, LATIN_FOLDABLE, SQL_SCAN_FOLD, scanFoldRegistered, NO_PROJECT_TAG, KnowledgeGraph;
 var init_knowledge_graph = __esm({
   "dist/knowledge-graph.js"() {
     "use strict";
@@ -5611,6 +5626,8 @@ var init_knowledge_graph = __esm({
     MIN_ROWS_FOR_DF_GUARD = 25;
     MAX_DF_LOOKUP_TERMS = 256;
     LATIN_FOLDABLE = /^[\p{Script=Latin}\p{M}\p{N}]+$/u;
+    SQL_SCAN_FOLD = "memesh_scan_fold";
+    scanFoldRegistered = /* @__PURE__ */ new WeakSet();
     NO_PROJECT_TAG = "NOT EXISTS (SELECT 1 FROM tags sp WHERE sp.entity_id = e.id AND sp.tag LIKE 'project:%')";
     KnowledgeGraph = class {
       db;
@@ -5960,8 +5977,8 @@ var init_knowledge_graph = __esm({
           const tagFilter2 = opts?.tag ? "AND t.tag = ?" : scoped ? scoped.sql : "";
           const archivedNamespaceFilter = opts?.namespace ? "AND e.namespace = ?" : "";
           const likeTerms = archivedLikeTerms(this.db, query);
-          registerNfcFunction(this.db);
-          const termClause = likeTerms.map(() => `(${SQL_NFC_FUNCTION}(e.name) LIKE ? ESCAPE '\\' OR ${SQL_NFC_FUNCTION}(COALESCE(e.title, '')) LIKE ? ESCAPE '\\' OR ${SQL_NFC_FUNCTION}(o.content) LIKE ? ESCAPE '\\')`).join(strictSelected ? " AND " : " OR ");
+          registerScanFold(this.db);
+          const termClause = likeTerms.map(() => `(${SQL_SCAN_FOLD}(e.name) LIKE ? ESCAPE '\\' OR ${SQL_SCAN_FOLD}(COALESCE(e.title, '')) LIKE ? ESCAPE '\\' OR ${SQL_SCAN_FOLD}(o.content) LIKE ? ESCAPE '\\')`).join(strictSelected ? " AND " : " OR ");
           const archivedParams = likeTerms.flatMap((t) => [t, t, t]);
           if (opts?.tag)
             archivedParams.push(opts.tag);
@@ -5992,9 +6009,9 @@ var init_knowledge_graph = __esm({
       }
       scanActiveRows(query, tagFilter, namespaceFilter, filterParams) {
         const allTerms = tokenizeQuery(query);
-        const terms = allTerms.slice(0, MAX_QUERY_TERMS).map(likeTerm);
-        registerNfcFunction(this.db);
-        const termArm = `(${SQL_NFC_FUNCTION}(e.name) LIKE ? ESCAPE '\\' OR ${SQL_NFC_FUNCTION}(COALESCE(e.title, '')) LIKE ? ESCAPE '\\' OR EXISTS (SELECT 1 FROM observations o WHERE o.entity_id = e.id AND ${SQL_NFC_FUNCTION}(o.content) LIKE ? ESCAPE '\\'))`;
+        const terms = allTerms.slice(0, MAX_QUERY_TERMS).map((term) => likeTerm(foldScanText(term)));
+        registerScanFold(this.db);
+        const termArm = `(${SQL_SCAN_FOLD}(e.name) LIKE ? ESCAPE '\\' OR ${SQL_SCAN_FOLD}(COALESCE(e.title, '')) LIKE ? ESCAPE '\\' OR EXISTS (SELECT 1 FROM observations o WHERE o.entity_id = e.id AND ${SQL_SCAN_FOLD}(o.content) LIKE ? ESCAPE '\\'))`;
         const run = (joiner) => this.db.prepare(`SELECT e.id FROM entities e
            WHERE (${terms.map(() => termArm).join(joiner)})
              ${tagFilter}
@@ -6655,7 +6672,7 @@ function repairFusedLessonShellHistory(db2) {
              AND NOT EXISTS (SELECT 1 FROM observations o WHERE o.entity_id = e.id)
              AND EXISTS (
                SELECT 1 FROM entities s
-               WHERE json_extract(s.metadata, '$.split_from') = e.name
+               WHERE json_extract(CASE WHEN json_valid(s.metadata) THEN s.metadata ELSE '{}' END, '$.split_from') = e.name
              )`).all();
       retired = 0;
       for (const shell of shells) {
@@ -6763,7 +6780,13 @@ function truncateTitle(text) {
   if (!text)
     return text;
   const trimmed = text.trim();
-  return trimmed.length > TITLE_MAX_LENGTH ? trimmed.slice(0, TITLE_MAX_LENGTH - 1).trimEnd() + "\u2026" : trimmed;
+  if (trimmed.length <= TITLE_MAX_LENGTH)
+    return trimmed;
+  let end = TITLE_MAX_LENGTH - 1;
+  const last = trimmed.charCodeAt(end - 1);
+  if (last >= 55296 && last <= 56319)
+    end--;
+  return trimmed.slice(0, end).trimEnd() + "\u2026";
 }
 function isBoilerplateObservation(text) {
   return BOILERPLATE_OBSERVATION_PATTERN.test(text.trim());
@@ -6860,7 +6883,12 @@ function isReadonlyDbError(err) {
   return /readonly database|SQLITE_READONLY/i.test(msg);
 }
 function initialiseDatabase(db2) {
-  db2.pragma("journal_mode = WAL");
+  try {
+    db2.pragma("journal_mode = WAL");
+  } catch (err) {
+    if (!isReadonlyDbError(err))
+      throw err;
+  }
   db2.pragma("foreign_keys = ON");
   try {
     migrateToCurrentSchema(db2);
@@ -6944,7 +6972,7 @@ function backfillSignalScores(db2) {
   const obsStmt = db2.prepare("SELECT content FROM observations WHERE entity_id = ?");
   const tagStmt = db2.prepare("SELECT tag FROM tags WHERE entity_id = ?");
   const updateStmt = db2.prepare("UPDATE entities SET metadata = ? WHERE id = ?");
-  const tx = db2.transaction(() => {
+  runOnceMigration(db2, { key: `${MARKER}_migration`, version: 1, describe: "signal-score backfill", migrate: () => {
     if (db2.prepare("SELECT value FROM memesh_metadata WHERE key = ?").get(MARKER))
       return;
     const rows = db2.prepare("SELECT id, name, type, metadata FROM entities").all();
@@ -6982,8 +7010,7 @@ function backfillSignalScores(db2) {
       scored++;
     }
     db2.prepare("INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)").run(MARKER, JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), scored, skipped }));
-  });
-  tx();
+  } });
 }
 function deriveHeuristicTitle(type, observations) {
   if (observations.length === 0)
@@ -7013,19 +7040,14 @@ function backfillAcceptedProposalTrust(db2) {
     return;
   const stamp = (cleared, skipped) => db2.prepare("INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)").run(MARKER, JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), cleared, skipped }));
   const updateStmt = db2.prepare("UPDATE entities SET metadata = ? WHERE id = ?");
-  const tx = db2.transaction(() => {
+  runOnceMigration(db2, { key: `${MARKER}_migration`, version: 1, describe: "accepted-proposal trust backfill", migrate: () => {
     if (db2.prepare("SELECT value FROM memesh_metadata WHERE key = ?").get(MARKER))
       return;
-    let rows;
-    try {
-      rows = db2.prepare(`SELECT id, metadata FROM entities
+    const rows = db2.prepare(`SELECT id, metadata FROM entities
           WHERE metadata IS NOT NULL
             AND json_valid(metadata)
             AND json_extract(metadata, '$.trust') = 'untrusted'
             AND json_extract(metadata, '$.proposal_id') IS NOT NULL`).all();
-    } catch {
-      return;
-    }
     let cleared = 0;
     let skipped = 0;
     for (const row of rows) {
@@ -7046,8 +7068,7 @@ function backfillAcceptedProposalTrust(db2) {
       cleared++;
     }
     stamp(cleared, skipped);
-  });
-  tx();
+  } });
 }
 function backfillTitles(db2) {
   const MARKER = "title_backfill_v1";
@@ -7056,7 +7077,7 @@ function backfillTitles(db2) {
     return;
   const obsStmt = db2.prepare("SELECT content FROM observations WHERE entity_id = ? ORDER BY id");
   const updateStmt = db2.prepare("UPDATE entities SET title = ?, metadata = ? WHERE id = ?");
-  const tx = db2.transaction(() => {
+  runOnceMigration(db2, { key: `${MARKER}_migration`, version: 1, describe: "title backfill", migrate: () => {
     if (db2.prepare("SELECT value FROM memesh_metadata WHERE key = ?").get(MARKER))
       return;
     const rows = db2.prepare("SELECT id, name, type, status, metadata FROM entities WHERE title IS NULL").all();
@@ -7094,8 +7115,7 @@ function backfillTitles(db2) {
       titled++;
     }
     db2.prepare("INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)").run(MARKER, JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), titled, skipped }));
-  });
-  tx();
+  } });
 }
 function closeDatabase() {
   if (db) {
@@ -7646,6 +7666,14 @@ function describeInvalidEntity(entity, index) {
       return `${where} has no usable "${field}" (found ${e[field] === void 0 ? "nothing" : JSON.stringify(e[field])}).`;
     }
   }
+  for (const field of ["created_at", "status"]) {
+    if (e[field] !== void 0 && typeof e[field] !== "string") {
+      return `${where}.${field} is ${typeof e[field]}, not a string.`;
+    }
+  }
+  if (e.metadata !== void 0 && !isPlainObject(e.metadata)) {
+    return `${where}.metadata is not an object.`;
+  }
   for (const field of ["observations", "tags", "relations"]) {
     if (e[field] !== void 0 && !Array.isArray(e[field])) {
       return `${where}.${field} is ${typeof e[field]}, not an array.`;
@@ -7658,6 +7686,19 @@ function describeInvalidEntity(entity, index) {
     const bad = list.findIndex((item) => typeof item !== "string");
     if (bad !== -1) {
       return `${where}.${field}[${bad}] is ${typeof list[bad]}, not a string.`;
+    }
+  }
+  if (Array.isArray(e.relations)) {
+    for (let i = 0; i < e.relations.length; i++) {
+      const relation = e.relations[i];
+      const relationWhere = `${where}.relations[${i}]`;
+      if (!isPlainObject(relation))
+        return `${relationWhere} is not an object with "to" and "type".`;
+      for (const field of ["to", "type"]) {
+        if (typeof relation[field] !== "string" || relation[field] === "") {
+          return `${relationWhere}.${field} is not a non-empty string.`;
+        }
+      }
     }
   }
   if (e.namespace !== void 0 && !NAMESPACES.includes(e.namespace)) {
@@ -7729,6 +7770,11 @@ function importMemories(args, options) {
         const title = redactedText.title === void 0 ? void 0 : truncateTitle(redactedText.title);
         const observations = redactedText.observations ?? [];
         const namespace = args.namespace ?? (existing ? void 0 : entity.namespace || "personal");
+        const relations = (entity.relations || []).map((rel) => ({
+          from: entity.name,
+          to: rel.to,
+          type: rel.type
+        }));
         const importedMetadata = buildImportedMetadata(existing?.metadata, {
           bundled: entity.metadata,
           exportedAt: args.data.exported_at,
@@ -7738,6 +7784,10 @@ function importMemories(args, options) {
           trust,
           onHistoryDropped: () => errors.push(`${entity.name}: imported without its replaced_history, which no longer fits its size limits once credentials in it are redacted`)
         });
+        if (existing) {
+          delete importedMetadata.previous_namespace;
+          delete importedMetadata.namespace_moved_at;
+        }
         let replacedVersion;
         if (existing) {
           if (args.merge_strategy === "skip")
@@ -7748,7 +7798,7 @@ function importMemories(args, options) {
             const existingText = new Set(existing.observations);
             const newObservations = observations.map(storedText).filter((o) => !existingText.has(o));
             const existingTags = new Set(existing.tags);
-            const addsNothing = !existing.archived && newObservations.length === 0 && (entity.tags === void 0 || entity.tags.every((tag) => existingTags.has(storedText(tag)))) && (title === void 0 || storedText(title) === existing.title) && (namespace === void 0 || namespace === (existing.namespace ?? "personal"));
+            const addsNothing = !existing.archived && newObservations.length === 0 && (entity.tags === void 0 || entity.tags.every((tag) => existingTags.has(storedText(tag)))) && (title === void 0 || storedText(title) === existing.title) && (namespace === void 0 || namespace === (existing.namespace ?? "personal")) && relations.every((rel) => (existing.relations ?? []).some((held) => held.to === storedText(rel.to) && held.type === storedText(rel.type)));
             if (addsNothing)
               return { kind: "skipped" };
             kg.createEntity(entity.name, entity.type, {
@@ -7759,7 +7809,7 @@ function importMemories(args, options) {
               trustOverride: "untrusted"
             });
             kg.updateEntityMetadata(entity.name, (current) => ({ ...current, ...importedMetadata }));
-            return { kind: "appended" };
+            return { kind: "appended", relations };
           }
           replacedVersion = {
             replaced_at: (/* @__PURE__ */ new Date()).toISOString(),
@@ -7801,20 +7851,17 @@ function importMemories(args, options) {
         return {
           kind: "imported",
           overwritten: Boolean(existing),
-          relations: (entity.relations || []).map((rel) => ({
-            from: entity.name,
-            to: rel.to,
-            type: rel.type
-          }))
+          relations
         };
       }).immediate();
       if (outcome.kind === "skipped")
         skipped++;
       else if (outcome.kind === "keptArchived")
         keptArchived++;
-      else if (outcome.kind === "appended")
+      else if (outcome.kind === "appended") {
+        pendingRelations.push(...outcome.relations);
         appended++;
-      else {
+      } else {
         pendingRelations.push(...outcome.relations);
         imported++;
         if (outcome.overwritten)
@@ -8303,6 +8350,7 @@ var init_session_limit = __esm({
 // dist/core/config.js
 import fs4 from "fs";
 import path3 from "path";
+import { randomBytes } from "crypto";
 function configDir() {
   return memeshDir();
 }
@@ -8369,8 +8417,30 @@ function writeRawConfig(raw) {
   const p = configFilePath();
   fs4.mkdirSync(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
   removeGroupAndOtherAccess(dir);
-  fs4.writeFileSync(p, JSON.stringify(raw, null, 2), { mode: PRIVATE_FILE_MODE });
-  removeGroupAndOtherAccess(p);
+  let target = p;
+  let mode = PRIVATE_FILE_MODE;
+  let existing;
+  try {
+    existing = fs4.lstatSync(p);
+  } catch (error51) {
+    if (error51.code !== "ENOENT")
+      throw error51;
+  }
+  if (existing) {
+    if (existing.isSymbolicLink())
+      target = fs4.realpathSync(p);
+    fs4.accessSync(target, fs4.constants.W_OK);
+    mode = fs4.statSync(target).mode & 448;
+    removeGroupAndOtherAccess(p);
+  }
+  const temp = `${target}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
+  try {
+    fs4.writeFileSync(temp, JSON.stringify(raw, null, 2), { flag: "wx", mode });
+    fs4.renameSync(temp, target);
+  } finally {
+    if (fs4.existsSync(temp))
+      fs4.unlinkSync(temp);
+  }
 }
 function updateConfig(partial2) {
   const result = readRawConfigResult();
@@ -8420,6 +8490,18 @@ var init_config = __esm({
 });
 
 // dist/core/semver.js
+function normalizeRegistryVersion(raw) {
+  let version2 = raw.trim();
+  if (version2.startsWith('"')) {
+    try {
+      const decoded = JSON.parse(version2);
+      if (typeof decoded === "string")
+        version2 = decoded;
+    } catch {
+    }
+  }
+  return parseSemVer(version2) ? version2 : null;
+}
 function parseSemVer(version2) {
   const match = SEMVER.exec(version2);
   if (!match)
@@ -8508,7 +8590,7 @@ function isAheadOfLatest(update) {
   return compareSemVerPrecedence(current, latest) > 0;
 }
 function showsPreReleaseNotice(update) {
-  return update !== null && isAheadOfLatest(update) && !update.currentVersionDeprecated && update.freshness !== "unavailable" && !update.updateAvailable && !(update.checkSucceeded && update.lastError);
+  return update !== null && update.checkSucceeded && isAheadOfLatest(update) && !update.currentVersionDeprecated && update.freshness !== "unavailable" && !update.updateAvailable && !(update.checkSucceeded && update.lastError);
 }
 function getUpdateCheckPath(updateCheckPath, currentVersion) {
   if (updateCheckPath)
@@ -8578,7 +8660,8 @@ function parseStoredUpdateCheck(raw) {
     return null;
   if ("currentVersionDeprecation" in candidate && candidate.currentVersionDeprecation !== null && typeof candidate.currentVersionDeprecation !== "string")
     return null;
-  const normalizedLatestVersion = latestVersion ?? null;
+  const normalizedLatestVersion = typeof latestVersion === "string" ? normalizeRegistryVersion(latestVersion) : null;
+  const invalidLatestVersion = typeof latestVersion === "string" && normalizedLatestVersion === null;
   const normalizedLastAttemptAt = lastAttemptAt ?? null;
   const normalizedLastSuccessfulCheckAt = lastSuccessfulCheckAt ?? null;
   const checkSucceeded = typeof candidate.checkSucceeded === "boolean" ? candidate.checkSucceeded : normalizedLatestVersion !== null;
@@ -8586,9 +8669,9 @@ function parseStoredUpdateCheck(raw) {
     currentVersion: typeof candidate.currentVersion === "string" ? candidate.currentVersion : null,
     latestVersion: normalizedLatestVersion,
     lastAttemptAt: normalizedLastAttemptAt,
-    lastSuccessfulCheckAt: normalizedLastSuccessfulCheckAt,
-    lastError: typeof candidate.lastError === "string" ? candidate.lastError : null,
-    checkSucceeded,
+    lastSuccessfulCheckAt: invalidLatestVersion ? null : normalizedLastSuccessfulCheckAt,
+    lastError: invalidLatestVersion ? "registry returned an invalid version" : typeof candidate.lastError === "string" ? candidate.lastError : null,
+    checkSucceeded: invalidLatestVersion ? false : checkSucceeded,
     currentVersionDeprecation: typeof candidate.currentVersionDeprecation === "string" ? candidate.currentVersionDeprecation : null
   };
 }
@@ -8680,10 +8763,12 @@ async function checkForUpdate(currentVersion, options = {}) {
     const [latestOutcome, deprecationOutcome] = await Promise.all([
       new Promise((resolve2) => {
         execFileImpl("npm", ["show", "@pcircle/memesh", "version"], { timeout: timeoutMs }, (err, stdout) => {
-          if (err)
+          if (err) {
             resolve2({ outcome: "failed", error: err });
-          else
-            resolve2({ outcome: "ok", latest: stdout.trim() });
+            return;
+          }
+          const latest = normalizeRegistryVersion(stdout);
+          resolve2(latest !== null ? { outcome: "ok", latest } : { outcome: "failed", error: new Error("registry returned an invalid version") });
         });
       }),
       new Promise((resolve2) => {
@@ -8799,6 +8884,8 @@ function formatUpdateCheckStatus(update) {
     lines.push("Update check: unavailable");
   } else if (update.updateAvailable && update.latestVersion) {
     lines.push(`\u{1F504} Update available: ${update.latestVersion} (${formatFreshness(update)}; run: memesh update)`);
+  } else if (!update.checkSucceeded) {
+    lines.push(`Update check: failed (${formatFreshness(update)}; last known latest ${update.latestVersion ?? "unknown"})`);
   } else if (update.checkSucceeded && update.lastError) {
     lines.push(`Update check: partial \u2014 deprecation status unknown (${formatFreshness(update)})`);
   } else if (showsPreReleaseNotice(update)) {
@@ -9021,7 +9108,7 @@ var init_install_channel = __esm({
 import fs9 from "node:fs";
 import path8 from "node:path";
 import { execFileSync as execFileSync3 } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { randomBytes as randomBytes2 } from "node:crypto";
 function removeRetiredConfigKeys() {
   const configPath = getConfigPath();
   if (!fs9.existsSync(configPath)) {
@@ -9044,7 +9131,7 @@ function removeRetiredConfigKeys() {
   }
   const dir = path8.dirname(configPath);
   const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-  const backupPath = path8.join(dir, `config.json.bak-${stamp}-${process.pid}-${randomBytes(3).toString("hex")}`);
+  const backupPath = path8.join(dir, `config.json.bak-${stamp}-${process.pid}-${randomBytes2(3).toString("hex")}`);
   fs9.writeFileSync(backupPath, original, { flag: "wx", mode: 384 });
   try {
     fs9.chmodSync(backupPath, 384);
@@ -9055,7 +9142,7 @@ function removeRetiredConfigKeys() {
   }
   for (const key of removed)
     delete parsed[key];
-  const tempPath = `${configPath}.tmp-${process.pid}-${randomBytes(3).toString("hex")}`;
+  const tempPath = `${configPath}.tmp-${process.pid}-${randomBytes2(3).toString("hex")}`;
   try {
     fs9.writeFileSync(tempPath, `${JSON.stringify(parsed, null, 2)}
 `, { flag: "wx", mode: 384 });
@@ -24777,15 +24864,18 @@ var init_agent_message_inbox = __esm({
 });
 
 // dist/core/agent-messaging.js
-import { createHash as createHash6, randomBytes as randomBytes2, randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash6, randomBytes as randomBytes3, randomUUID as randomUUID2 } from "node:crypto";
 function sendAgentMessage(db2, input, options = {}) {
   const normalized = normalizeSendInput(input);
   if (normalized.intended_session !== null) {
+    const ids = [...sessionAliasChain(db2, normalized.intended_session)];
     const registered = db2.prepare(`
-      SELECT adapter_kind FROM agent_session_instances WHERE project = ? AND session_instance_id = ?
-    `).get(normalized.project, normalized.intended_session);
-    if (registered && !INTENDED_SESSION_ADAPTERS.has(registered.adapter_kind)) {
-      throw new AgentIntendedSessionUnsupportedError(normalized.intended_session, registered.adapter_kind);
+      SELECT adapter_kind FROM agent_session_instances
+      WHERE project = ? AND session_instance_id IN (${ids.map(() => "?").join(", ")})
+    `).all(normalized.project, ...ids);
+    const unsupported = registered.find((row) => !INTENDED_SESSION_ADAPTERS.has(row.adapter_kind));
+    if (unsupported) {
+      throw new AgentIntendedSessionUnsupportedError(normalized.intended_session, unsupported.adapter_kind);
     }
   }
   const requestHash = hashCanonical({
@@ -25163,7 +25253,7 @@ function createCursor(db2, project, recipient, eventSequence) {
   `).get(project, recipient, eventSequence);
   if (existing)
     return existing.cursor_token;
-  const cursorToken = randomBytes2(18).toString("base64url");
+  const cursorToken = randomBytes3(18).toString("base64url");
   try {
     db2.prepare(`
       INSERT INTO agent_message_cursors (cursor_token, project, recipient, event_sequence)
@@ -25532,6 +25622,16 @@ var init_agent_messaging = __esm({
 
 // dist/transports/schemas.js
 function refineRemember(data, ctx) {
+  for (const [index, tag] of (data.tags ?? []).entries()) {
+    if (!tag.startsWith("project:"))
+      continue;
+    const project = tag.slice("project:".length);
+    if (project.trim() === "")
+      continue;
+    const rejection = projectScopeRejection(project);
+    if (rejection !== null)
+      ctx.addIssue({ code: "custom", path: ["tags", index], message: rejection });
+  }
   if (data.note === void 0) {
     if (data.name === void 0)
       ctx.addIssue({ code: "custom", path: ["name"], message: "name is required (or pass `note` to have it derived)" });
@@ -25556,7 +25656,7 @@ function refineRemember(data, ctx) {
     ctx.addIssue({ code: "custom", path: ["note"], message: `note yields ${derived.observations.length} observations; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory` });
   }
 }
-var sanitizeName, nameField, titleField, observationField, workPackageText, digestWorkPackageRef, transcriptWorkPackageRef, workPackageIdentity, WORK_PACKAGE_RESULT_MAX_BYTES, WorkPackageSchema, rememberShape, RememberSchema, mcpProjectField, McpRememberSchema, recallShape, RecallSchema, McpRecallSchema, ForgetSchema, ExportSchema, ExportResultSchema, ImportSchema, nonBlankBounded, agentScopeId, projectRules, projectName, learnShape, LearnSchema, McpLearnSchema, HttpLearnSchema, TaskStateSchema, BriefingSchema, WhySchema, UserPatternsSchema, ImprovementSchema, messageProject, messageRecipient, messageSender, messageId, messageCursor, messageIdempotencyKey, messageReceiptBase, MessageSchema;
+var projectRules, projectName, sanitizeName, nameField, titleField, observationField, workPackageText, digestWorkPackageRef, transcriptWorkPackageRef, workPackageIdentity, WORK_PACKAGE_RESULT_MAX_BYTES, WorkPackageSchema, rememberShape, RememberSchema, mcpProjectField, McpRememberSchema, recallShape, RecallSchema, McpRecallSchema, ForgetSchema, ExportSchema, ExportResultSchema, ImportSchema, nonBlankBounded, agentScopeId, learnShape, LearnSchema, McpLearnSchema, HttpLearnSchema, TaskStateSchema, BriefingSchema, WhySchema, UserPatternsSchema, ImprovementSchema, messageProject, messageRecipient, messageSender, messageId, messageCursor, messageIdempotencyKey, messageReceiptBase, MessageSchema;
 var init_schemas3 = __esm({
   "dist/transports/schemas.js"() {
     "use strict";
@@ -25566,6 +25666,12 @@ var init_schemas3 = __esm({
     init_note_derive();
     init_agent_messaging();
     init_agent_scope_id();
+    projectRules = (base) => base.superRefine((value, ctx) => {
+      const rejection = projectScopeRejection(value);
+      if (rejection !== null)
+        ctx.addIssue({ code: "custom", message: rejection });
+    });
+    projectName = projectRules(external_exports.string());
     sanitizeName = (s) => s.replace(/[\r\n\t]+/g, " ").trim();
     nameField = external_exports.string().min(1).max(255).transform(sanitizeName).refine((s) => s.length > 0, {
       message: "Name must not be blank after sanitization"
@@ -25623,7 +25729,7 @@ var init_schemas3 = __esm({
       namespace: external_exports.enum(NAMESPACES).optional()
     };
     RememberSchema = external_exports.object(rememberShape).strict().superRefine(refineRemember);
-    mcpProjectField = external_exports.union([external_exports.string().min(1).max(200), external_exports.literal(false)]).optional();
+    mcpProjectField = external_exports.union([projectName, external_exports.literal(false)]).optional();
     McpRememberSchema = external_exports.object({ ...rememberShape, project: mcpProjectField }).strict().superRefine(refineRemember);
     recallShape = {
       query: external_exports.string().max(1e3).optional(),
@@ -25653,6 +25759,9 @@ var init_schemas3 = __esm({
         type: external_exports.string().min(1).max(100),
         title: external_exports.string().max(TITLE_MAX_LENGTH).nullable().optional(),
         namespace: external_exports.string(),
+        created_at: external_exports.string().optional(),
+        status: external_exports.string().optional(),
+        metadata: external_exports.record(external_exports.string(), external_exports.unknown()).optional(),
         observations: external_exports.array(external_exports.string().max(1e4)),
         tags: external_exports.array(external_exports.string().max(255)),
         relations: external_exports.array(external_exports.object({ to: external_exports.string().min(1).max(255), type: external_exports.string().min(1).max(100) }))
@@ -25668,12 +25777,6 @@ var init_schemas3 = __esm({
     agentScopeId = (field) => nonBlankBounded(AGENT_SCOPE_ID_MAX_LENGTH).transform(canonicalAgentScopeId).refine((value) => agentScopeIdRejection(field, value) === null, {
       error: (issue2) => agentScopeIdRejection(field, String(issue2.input)) ?? `${field} is not a valid identifier.`
     });
-    projectRules = (base) => base.superRefine((value, ctx) => {
-      const rejection = projectScopeRejection(value);
-      if (rejection !== null)
-        ctx.addIssue({ code: "custom", message: rejection });
-    });
-    projectName = projectRules(external_exports.string());
     learnShape = {
       error: external_exports.string().min(1).max(5e3),
       fix: external_exports.string().min(1).max(5e3),
@@ -25850,7 +25953,7 @@ function readRepoState(cwdInput) {
   const branchRaw = tryGit2(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
   const branch = branchRaw && branchRaw !== "HEAD" ? branchRaw : null;
   const statusOut = tryGit2(cwd, ["status", "--porcelain"]);
-  const uncommitted = statusOut ? statusOut.split("\n").filter((l) => l.trim() !== "").length : 0;
+  const uncommitted = statusOut === null ? null : statusOut.split("\n").filter((l) => l.trim() !== "").length;
   const lastTag = tryGit2(cwd, ["describe", "--tags", "--abbrev=0"]);
   let commitsSinceTag = null;
   if (lastTag) {
@@ -25872,7 +25975,7 @@ function repoStateLines(state) {
   const first = [];
   if (state.branch)
     first.push(`branch ${state.branch}`);
-  first.push(state.uncommitted === 0 ? "working tree clean" : `${state.uncommitted} uncommitted`);
+  first.push(state.uncommitted === null ? "working tree status unavailable" : state.uncommitted === 0 ? "working tree clean" : `${state.uncommitted} uncommitted`);
   const lines = ["Where the repository actually stands (read just now):", `- ${first.join(" \xB7 ")}`];
   if (state.lastTag) {
     const since = state.commitsSinceTag;
@@ -25895,6 +25998,9 @@ var init_repo_state = __esm({
 function taskStateName(project) {
   return `${TASK_STATE_TYPE}:${project}`;
 }
+function taskStateUnreadableMessage(project) {
+  return `task state for project ${jsonStringLiteral(projectLabel(project))} is not readable: the stored record is not valid JSON. Set a non-empty field with \`memesh task --goal \u2026\` to replace the broken record.`;
+}
 function parseTaskState(metadata) {
   const state = {};
   if (!metadata || typeof metadata !== "object")
@@ -25914,13 +26020,38 @@ function parseTaskState(metadata) {
   const updated = bag.updated_at;
   if (typeof updated === "string" && updated.trim())
     state.updated_at = updated.trim();
+  const legacy = bag.legacy_updated_at;
+  if (typeof legacy === "string") {
+    const trimmed = legacy.trim();
+    const match = ZONED_INSTANT.exec(trimmed);
+    if (match?.groups && isRealInstant(match.groups))
+      state.legacy_updated_at = trimmed;
+  }
+  if (bag.stated_at !== void 0) {
+    state.stated_at = {};
+    const dates = bag.stated_at;
+    if (dates && typeof dates === "object" && !Array.isArray(dates)) {
+      for (const field of TASK_STATE_FIELDS) {
+        const date5 = dates[field];
+        if (!state[field] || typeof date5 !== "string")
+          continue;
+        const trimmed = date5.trim();
+        const match = ZONED_INSTANT.exec(trimmed);
+        if (match?.groups && isRealInstant(match.groups))
+          state.stated_at[field] = trimmed;
+      }
+    }
+  }
   return state;
+}
+function fieldStatedAt(state, field) {
+  return state.stated_at === void 0 ? state.updated_at : state.stated_at[field];
 }
 function normalizeFieldValue(value) {
   const flat2 = value.replace(/\s+/g, " ").trim();
   if (!flat2)
     return null;
-  return flat2.length > MAX_FIELD_CHARS ? `${flat2.slice(0, MAX_FIELD_CHARS - 1).trimEnd()}\u2026` : flat2;
+  return flat2.length > MAX_FIELD_CHARS ? `${sliceWholeChars(flat2, MAX_FIELD_CHARS - 1).trimEnd()}\u2026` : flat2;
 }
 function mergeTaskState(previous, patch, now) {
   const state = { ...previous };
@@ -25943,31 +26074,50 @@ function mergeTaskState(previous, patch, now) {
       observations.push(`${field}: ${normalized}`);
     }
   }
-  if (changed.length > 0)
+  if (changed.length > 0) {
+    if (previous.stated_at === void 0 && previous.updated_at !== void 0) {
+      const match = ZONED_INSTANT.exec(previous.updated_at);
+      if (match?.groups && isRealInstant(match.groups))
+        state.legacy_updated_at = previous.updated_at;
+    }
+    state.stated_at = {};
+    for (const field of TASK_STATE_FIELDS) {
+      if (!state[field])
+        continue;
+      const date5 = changed.includes(field) ? now : previous.stated_at?.[field];
+      if (date5 !== void 0)
+        state.stated_at[field] = date5;
+    }
     state.updated_at = now;
+  }
   return { state, changed, observations };
 }
 function isEmptyTaskState(state) {
   return TASK_STATE_FIELDS.every((field) => !state[field]);
 }
 function ageInDays(updatedAt, now) {
-  if (!updatedAt)
-    return null;
-  const then = Date.parse(updatedAt);
-  if (Number.isNaN(then))
-    return null;
-  const days = Math.floor((now.getTime() - then) / 864e5);
-  return days >= 0 ? days : null;
+  const age = resolveTaskStateAge(updatedAt, now);
+  return age.known ? Math.floor(age.hours / 24) : null;
 }
 function taskStateLines(state, project, now = /* @__PURE__ */ new Date()) {
   if (isEmptyTaskState(state))
     return [];
   const days = ageInDays(state.updated_at, now);
   const age = days === null ? "at some point" : days === 0 ? "today" : days === 1 ? "yesterday" : `${days} days ago`;
-  const lines = [`Stated about ${jsonStringLiteral(projectLabel(project))} ${age}, and not revisited since:`];
+  const lines = [state.stated_at === void 0 ? `Stated about ${jsonStringLiteral(projectLabel(project))} ${age}, and not revisited since:` : `Stated about ${jsonStringLiteral(projectLabel(project))} (each field has its own date):`];
   const present = TASK_STATE_FIELDS.filter((field) => state[field]);
   const shown = redactShownTogether(present.map((field) => state[field]));
-  present.forEach((field, i) => lines.push(`- ${FIELD_LABELS[field]}: ${shown[i]}`));
+  present.forEach((field, i) => {
+    let dateLabel = "";
+    if (state.stated_at !== void 0) {
+      const date5 = fieldStatedAt(state, field);
+      const fieldAge = resolveTaskStateAge(date5, now);
+      const days2 = fieldAge.known ? Math.floor(fieldAge.hours / 24) : null;
+      const ageLabel = days2 === null ? "unknown date" : days2 === 0 ? "today" : days2 === 1 ? "yesterday" : `${days2} days ago`;
+      dateLabel = fieldAge.known ? ` (stated ${date5}; ${ageLabel})` : ` (${ageLabel})`;
+    }
+    lines.push(`- ${FIELD_LABELS[field]}:${dateLabel} ${shown[i]}`);
+  });
   return lines;
 }
 function isLeapYear(year) {
@@ -26028,6 +26178,28 @@ function taskStateAgeUnknownLine(project) {
 function briefingTaskStateLines(state, project, now = /* @__PURE__ */ new Date(), { includeFresh = true } = {}) {
   if (isEmptyTaskState(state))
     return [];
+  if (state.stated_at !== void 0) {
+    const present = TASK_STATE_FIELDS.filter((field) => state[field]);
+    const ages = present.map((field) => resolveTaskStateAge(fieldStatedAt(state, field), now));
+    const fresh = present.filter((_, index) => ages[index].known && ages[index].hours <= STALE_TASK_STATE_HOURS);
+    if (fresh.length === 0) {
+      if (ages.some((age2) => !age2.known))
+        return [taskStateAgeUnknownLine(project)];
+      return [staleTaskStateLine(project, Math.min(...ages.map((age2) => age2.known ? age2.hours : Infinity)))];
+    }
+    const shown = { updated_at: state.updated_at, stated_at: state.stated_at };
+    const redacted = redactShownTogether(present.map((field) => state[field]));
+    present.forEach((field, index) => {
+      if (fresh.includes(field))
+        shown[field] = redacted[index];
+    });
+    const lines = includeFresh ? taskStateLines(shown, project, now) : [];
+    const omitted = present.filter((field) => !fresh.includes(field));
+    if (omitted.length > 0) {
+      lines.push(`Task state for ${jsonStringLiteral(projectLabel(project))} has older or unknown-age fields (${omitted.join(", ")}) not shown as current. Run \`memesh task\` to see or update them.`);
+    }
+    return lines;
+  }
   const age = resolveTaskStateAge(state.updated_at, now);
   if (!age.known)
     return [taskStateAgeUnknownLine(project)];
@@ -26060,7 +26232,7 @@ var init_task_state = __esm({
 
 // dist/core/task-state-store.js
 function readState(name) {
-  const row = getDatabase().prepare("SELECT metadata FROM entities WHERE name = ?").get(name);
+  const row = getDatabase().prepare("SELECT metadata FROM entities WHERE name = ? AND status = 'active'").get(name);
   if (!row?.metadata)
     return { state: {}, corrupted: false };
   let parsed;
@@ -26090,16 +26262,19 @@ function redactedState(state) {
 function setTaskState(input) {
   const project = input.project ?? getProjectName();
   const name = taskStateName(project);
-  const { state: previous } = readState(name);
   const textFields = Object.entries(input.patch).filter(([, value]) => typeof value === "string");
   const texts = redactSecretList(textFields.map(([, value]) => value));
   const patch = { ...input.patch, ...Object.fromEntries(textFields.map(([field], i) => [field, texts[i]])) };
-  const { state, changed, observations } = mergeTaskState(previous, patch, (/* @__PURE__ */ new Date()).toISOString());
-  if (changed.length === 0)
-    return { project, state: redactedState(state), changed };
-  const title = state.goal ?? state.next ?? state.blocked ?? state.done ?? `Task state for ${project}`;
   const db2 = getDatabase();
-  db2.transaction(() => {
+  const write = db2.transaction(() => {
+    const { state: previous, corrupted } = readState(name);
+    const { state, changed, observations } = mergeTaskState(previous, patch, (/* @__PURE__ */ new Date()).toISOString());
+    if (changed.length === 0) {
+      if (corrupted)
+        throw new TaskStateUnreadableError(project);
+      return { project, state: redactedState(state), changed };
+    }
+    const title = truncateTitle(state.goal ?? state.next ?? state.blocked ?? state.done ?? `Task state for ${project}`);
     remember({
       name,
       type: TASK_STATE_TYPE,
@@ -26112,8 +26287,24 @@ function setTaskState(input) {
       ...current,
       task_state: state
     }));
-  }).immediate();
-  return { project, state: redactedState(state), changed };
+    return { project, state: redactedState(state), changed };
+  });
+  try {
+    return write.immediate();
+  } catch (error51) {
+    const message = error51 instanceof Error ? error51.message : String(error51);
+    if (!/readonly database|SQLITE_READONLY/i.test(message))
+      throw error51;
+    return db2.transaction(() => {
+      const { state: previous, corrupted } = readState(name);
+      const { state, changed } = mergeTaskState(previous, patch, (/* @__PURE__ */ new Date()).toISOString());
+      if (changed.length !== 0)
+        throw error51;
+      if (corrupted)
+        throw new TaskStateUnreadableError(project);
+      return { project, state: redactedState(state), changed };
+    })();
+  }
 }
 var TaskStateUnreadableError;
 var init_task_state_store = __esm({
@@ -26123,12 +26314,12 @@ var init_task_state_store = __esm({
     init_knowledge_graph();
     init_paths();
     init_operations();
-    init_work_topology();
+    init_title();
     init_task_state();
     TaskStateUnreadableError = class extends Error {
       project;
       constructor(project) {
-        super(`task state for project ${jsonStringLiteral(projectLabel(project))} is not readable: the stored record is not valid JSON. Re-state it with \`memesh task --goal \u2026\` (any write replaces the broken record).`);
+        super(taskStateUnreadableMessage(project));
         this.project = project;
         this.name = "TaskStateUnreadableError";
       }
@@ -27556,10 +27747,17 @@ function hasPrincipalFallback(db2, sent, idempotencyKey) {
   `).get(sent.project, sent.sender, principalFallbackKey(idempotencyKey)) !== void 0;
 }
 function sendPrincipalFallback(db2, message, refused) {
-  const session = db2.prepare(`
-    SELECT principal_id FROM agent_session_instances WHERE project = ? AND session_instance_id = ?
-  `).get(refused.project, refused.recipient);
+  const ids = [...sessionAliasChain(db2, refused.recipient)];
+  const marks = ids.map(() => "?").join(", ");
+  const registrations = db2.prepare(`
+    SELECT session_instance_id, principal_id FROM agent_session_instances
+    WHERE project = ? AND session_instance_id IN (${marks})
+  `).all(refused.project, ...ids);
+  const session = registrations.find((row) => row.session_instance_id === refused.recipient) ?? (new Set(registrations.map((row) => row.principal_id)).size === 1 ? registrations[0] : void 0);
   if (!session) {
+    if (registrations.length > 0) {
+      throw new AgentRecipientUnavailableError("There is no principal fallback: the session aliases name different principals in this project.");
+    }
     throw new AgentRecipientUnavailableError(`There is no principal fallback: session ${JSON.stringify(refused.recipient)} has never registered in project ${jsonStringLiteral(refused.project)}, so its principal is unknown. Send to the principal yourself with intended_session ${JSON.stringify(refused.recipient)}.`);
   }
   let fallback;
@@ -27582,9 +27780,10 @@ function sendPrincipalFallback(db2, message, refused) {
   }
   const connected = db2.prepare(`
     SELECT 1 FROM agent_session_connections
-    WHERE project = ? AND session_instance_id = ? AND disconnected_at IS NULL AND lease_expires_at_ms > ?
+    WHERE project = ? AND principal_id = ? AND session_instance_id IN (${marks})
+      AND disconnected_at IS NULL AND lease_expires_at_ms > ?
     LIMIT 1
-  `).get(refused.project, refused.recipient, Date.now()) !== void 0;
+  `).get(refused.project, session.principal_id, ...ids, Date.now()) !== void 0;
   return {
     ...fallback,
     fallback: {
@@ -27742,7 +27941,7 @@ var init_agent_messaging2 = __esm({
 });
 
 // dist/host-runtime/config.js
-import { randomBytes as randomBytes3 } from "node:crypto";
+import { randomBytes as randomBytes4 } from "node:crypto";
 import fs17 from "node:fs";
 function assertSecureLocalHostRuntimeSupported() {
   if (process.platform === "win32") {
@@ -27762,7 +27961,7 @@ function readTokenFile(tokenFile) {
 function ensureRouterTokenFile(tokenFile) {
   assertSecureLocalHostRuntimeSupported();
   try {
-    fs17.writeFileSync(tokenFile, `${randomBytes3(32).toString("hex")}
+    fs17.writeFileSync(tokenFile, `${randomBytes4(32).toString("hex")}
 `, { mode: 384, flag: "wx" });
   } catch (error51) {
     if (error51.code !== "EEXIST")
@@ -27862,12 +28061,15 @@ function resolveFileCommits(repoDir, file2, opts = {}) {
     let out2;
     try {
       out2 = runGit(repoDir, ["blame", "-L", `${opts.line},${opts.line}`, "--porcelain", "--", file2]);
-    } catch {
-      return { commits: [], abstention: "line_out_of_range" };
+    } catch (error51) {
+      const failure = error51;
+      const range = String(failure.stderr ?? "").match(/^fatal: file .+ has only (\d+) lines?\s*$/m);
+      const beyondEnd = failure.status === 128 && range !== null && opts.line > Number(range[1]);
+      return { commits: [], abstention: beyondEnd ? "line_out_of_range" : "history_unreadable" };
     }
     const hash2 = out2.split("\n")[0]?.split(" ")[0] ?? "";
     if (!/^[a-f0-9]{7,40}$/.test(hash2))
-      return { commits: [], abstention: "line_out_of_range" };
+      return { commits: [], abstention: "history_unreadable" };
     if (UNCOMMITTED_HASH.test(hash2))
       return { commits: [], abstention: "line_uncommitted" };
     const summary = out2.split("\n").find((l) => l.startsWith("summary "));
@@ -27913,7 +28115,7 @@ function parseMetadata2(raw) {
 }
 function findCommitEntity(db2, hash2) {
   const rows = db2.prepare(`SELECT id, name, type, title, created_at, metadata FROM entities
-     WHERE type = 'commit' AND name LIKE 'commit-%'
+     WHERE type = 'commit' AND status != 'archived' AND name LIKE 'commit-%'
        AND length(substr(name, 8)) >= 7
        AND substr(name, 8) GLOB '[0-9a-fA-F]*'
        AND (
@@ -59758,6 +59960,8 @@ function parseConversationContent(content) {
     } catch {
       continue;
     }
+    if (!entry || typeof entry !== "object" || Array.isArray(entry))
+      continue;
     if (entry.type === "assistant") {
       for (const text of textFromAssistantBlocks(entry.message?.content)) {
         turns.push({ role: "assistant", text });
@@ -60666,7 +60870,7 @@ __export(server_exports, {
   isLoopbackRequest: () => isLoopbackRequest,
   startServer: () => startServer
 });
-import { randomBytes as randomBytes4, timingSafeEqual } from "crypto";
+import { randomBytes as randomBytes5, timingSafeEqual } from "crypto";
 import fs22 from "fs";
 import path19 from "path";
 import { fileURLToPath as fileURLToPath2 } from "url";
@@ -60686,7 +60890,7 @@ function loadOrCreateRemoteToken() {
   const tokenPath = path19.join(dir, "remote-token");
   fs22.mkdirSync(dir, { recursive: true });
   removeGroupAndOtherAccess(dir);
-  const generated = randomBytes4(32).toString("hex");
+  const generated = randomBytes5(32).toString("hex");
   try {
     const fd = fs22.openSync(tokenPath, fs22.constants.O_WRONLY | fs22.constants.O_CREAT | fs22.constants.O_EXCL, 384);
     try {
@@ -61149,7 +61353,16 @@ var init_server = __esm({
       const { entities, conflicts, retrieval } = await recallWithConflicts(data);
       return conflicts.length > 0 ? { entities, retrieval, conflicts } : { entities, retrieval };
     }));
-    app.post("/v1/forget", (req, res) => handlePost(ForgetSchema, req, res, forget));
+    app.post("/v1/forget", (req, res) => handlePost(ForgetSchema, req, res, (data) => {
+      const result = forget(data);
+      if (result.archived === false || result.observation_removed === false && !result.entity_found) {
+        throw new HttpError(404, "resource.not-found", result.message ?? `Entity "${data.name}" not found`);
+      }
+      if (result.observation_removed === false) {
+        throw new HttpError(400, "operation.failed", `Entity "${data.name}" has no observation matching that text (${result.remaining_observations} observation(s) present).`);
+      }
+      return result;
+    }));
     for (const [retiredRoute, error51] of Object.entries(RETIRED_ROUTES)) {
       app.post(retiredRoute, (_req, res) => {
         res.status(410).json({ success: false, errorCode: "route.retired", error: error51 });
@@ -62102,8 +62315,9 @@ function renameProjectTag(from, to, opts) {
   if (!opts?.apply)
     return previewOnCopy(conn, from, to);
   const { affected, plan, merged, renamed, messagePlan, messageRows } = planRename(conn, from, to);
+  const proposalIds = proposalRowsForProject(conn, from);
   let messageRowsBlocked = 0;
-  if (affected.length > 0 || messageRows > 0) {
+  if (affected.length > 0 || messageRows > 0 || proposalIds.length > 0) {
     const del = conn.prepare("DELETE FROM tags WHERE entity_id = ? AND tag = ?");
     const upd = conn.prepare("UPDATE tags SET tag = ? WHERE entity_id = ? AND tag = ?");
     const movedRows = [];
@@ -62130,6 +62344,11 @@ function renameProjectTag(from, to, opts) {
           }
         }
       }
+      if (proposalIds.length > 0) {
+        const move = conn.prepare("UPDATE dream_proposals SET project = ? WHERE id = ?");
+        for (const id of proposalIds)
+          move.run(to, id);
+      }
       const hasTag = conn.prepare("SELECT 1 FROM tags WHERE entity_id = ? AND tag = ?");
       for (const p of plan) {
         if (hasTag.get(p.id, fromTag) || !hasTag.get(p.id, toTag)) {
@@ -62140,6 +62359,14 @@ function renameProjectTag(from, to, opts) {
         const row = conn.prepare(`SELECT project FROM ${table} WHERE rowid = ?`).get(rid);
         if (row?.project !== to) {
           throw new Error(`${table} row ${rid} is not scoped to ${to} after the rename (a trigger or constraint changed the result)`);
+        }
+      }
+      if (proposalIds.length > 0) {
+        const read = conn.prepare("SELECT project FROM dream_proposals WHERE id = ?");
+        for (const id of proposalIds) {
+          if (read.get(id)?.project !== to) {
+            throw new Error(`proposal ${id} is not scoped to ${to} after the rename (a trigger or constraint changed the result)`);
+          }
         }
       }
     });
@@ -62154,8 +62381,18 @@ function renameProjectTag(from, to, opts) {
     applied: !!opts?.apply,
     affectedNames: affected.map((e) => e.name),
     messageRows,
-    messageRowsBlocked
+    messageRowsBlocked,
+    proposalRows: proposalIds.length
   };
+}
+function proposalRowsForProject(conn, project) {
+  try {
+    return conn.prepare("SELECT id FROM dream_proposals WHERE project = ?").all(project).map((row) => row.id);
+  } catch (err) {
+    if (/^no such table: (?:main\.)?dream_proposals$/i.test(err instanceof Error ? err.message : String(err)))
+      return [];
+    throw err;
+  }
 }
 function planRename(conn, from, to) {
   const fromTag = `project:${from}`;
@@ -62183,7 +62420,7 @@ function planRename(conn, from, to) {
 }
 function hasRenameWork(from, db2) {
   const { affected, messageRows } = planRename(db2 ?? getDatabase(), from, from);
-  return affected.length > 0 || messageRows > 0;
+  return affected.length > 0 || messageRows > 0 || proposalRowsForProject(db2 ?? getDatabase(), from).length > 0;
 }
 function destinationHolds(conn, table, rid, to) {
   const quote = (name) => `"${name.replace(/"/g, '""')}"`;
@@ -62296,6 +62533,7 @@ import { fileURLToPath } from "url";
 
 // dist/core/update-notice.js
 init_paths();
+init_semver();
 import fs6 from "fs";
 import path5 from "path";
 var UP_TO_DATE_REFRESH_MS = 60 * 60 * 1e3;
@@ -62401,7 +62639,12 @@ function boundedReason(raw) {
 function answerIsCurrent(currentVersion, cache, now) {
   if (!cache || cache.currentVersion !== currentVersion)
     return false;
-  if (typeof cache.latestVersion !== "string" || !cache.latestVersion)
+  if (typeof cache.latestVersion !== "string")
+    return false;
+  const latest = normalizeRegistryVersion(cache.latestVersion);
+  if (latest === null)
+    return false;
+  if (cache.checkSucceeded === false && !isStrictlyOlder(currentVersion, latest))
     return false;
   const successAt = parseIso(cache.lastSuccessfulCheckAt);
   if (successAt === null)
@@ -62413,7 +62656,7 @@ function shouldRefreshUpdateCache(currentVersion, cache, now = /* @__PURE__ */ n
     return true;
   const successAt = parseIso(cache.lastSuccessfulCheckAt);
   const age = now.getTime() - successAt;
-  const upgrade = isStrictlyOlder(currentVersion, cache.latestVersion);
+  const upgrade = isStrictlyOlder(currentVersion, normalizeRegistryVersion(cache.latestVersion));
   return age > (upgrade ? UPGRADE_AVAILABLE_REFRESH_MS : UP_TO_DATE_REFRESH_MS);
 }
 function resolveUpdateNotice(input) {
@@ -62435,12 +62678,16 @@ function resolveUpdateNotice(input) {
       attempted = parseIso(cache.lastSuccessfulCheckAt) !== null || typeof cache.lastError === "string" && cache.lastError.length > 0;
       if (typeof cache.lastError === "string" && cache.lastError)
         reason = boundedReason(cache.lastError);
+      else if (typeof cache.latestVersion === "string" && normalizeRegistryVersion(cache.latestVersion) === null)
+        reason = "registry returned an invalid version";
+      else if (attempted && cache.checkSucceeded === false)
+        reason = "the last update check failed";
       else if (parseIso(cache.lastSuccessfulCheckAt) !== null)
         reason = "the last successful check is more than a day old";
     }
     return { kind: "CHECK_FAILED", currentVersion, reason, attempted };
   }
-  const latestVersion = cache.latestVersion;
+  const latestVersion = normalizeRegistryVersion(cache.latestVersion);
   if (!isStrictlyOlder(currentVersion, latestVersion)) {
     return { kind: "UP_TO_DATE", currentVersion, latestVersion };
   }
@@ -62489,7 +62736,7 @@ function recentHookNoticeExists(dir, currentVersion, latestVersion, now = /* @__
       if (now.getTime() - stat.mtimeMs > RECENT_HOOK_NOTICE_MS)
         continue;
       const value = JSON.parse(fs7.readFileSync(fd, "utf8"));
-      if (value.currentVersion === currentVersion && (latestVersion === null || value.latestVersion === latestVersion))
+      if (value.decision === "emitted" && value.currentVersion === currentVersion && (latestVersion === null || value.latestVersion === latestVersion))
         return true;
     } catch {
     } finally {
@@ -62554,12 +62801,26 @@ function cliThrottled(dir, currentVersion, now) {
   }
 }
 function spawnCacheRefresh(dir, currentVersion, now) {
+  let marker;
+  const claim = `${process.pid}-${now.getTime()}`;
+  const failed = (error51) => {
+    try {
+      if (marker && fs7.readFileSync(marker, "utf8") === claim)
+        fs7.unlinkSync(marker);
+    } catch {
+    }
+    const code = error51?.code;
+    const reason = typeof code === "string" && /^[A-Z0-9_]+$/.test(code) ? code : "UNKNOWN";
+    console.error(`[memesh update] Could not start update cache refresh (${reason}). Status remains unknown; a later call can retry.`);
+  };
   try {
-    const cliPath = fileURLToPath(new URL("../transports/cli/cli.js", import.meta.url));
-    if (!fs7.existsSync(cliPath))
+    const modulePath = fileURLToPath(import.meta.url);
+    const bundledCli = path6.basename(modulePath) === "cli.js" && path6.basename(path6.dirname(modulePath)) === "cli" && path6.basename(path6.dirname(path6.dirname(modulePath))) === "transports";
+    const helperUrl = new URL(bundledCli ? "../../core/version-check.js" : "../core/version-check.js", import.meta.url);
+    if (!fs7.existsSync(fileURLToPath(helperUrl)))
       return false;
     const tag = /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : "unknown";
-    const marker = path6.join(dir, `last-fresh-refresh.${tag}.lock`);
+    marker = path6.join(dir, `last-fresh-refresh.${tag}.lock`);
     try {
       if (now.getTime() - fs7.statSync(marker).mtimeMs < FRESH_CHECK_THROTTLE_MS)
         return false;
@@ -62570,22 +62831,25 @@ function spawnCacheRefresh(dir, currentVersion, now) {
     try {
       const fd = fs7.openSync(marker, "wx", 384);
       try {
-        fs7.writeSync(fd, `${process.pid}-${now.getTime()}`);
+        fs7.writeSync(fd, claim);
       } finally {
         fs7.closeSync(fd);
       }
     } catch {
       return false;
     }
-    const child = spawn(process.execPath, [cliPath, "status"], {
+    const refresh = "const { getUpdateCheck } = await import(process.argv[1]); await getUpdateCheck(process.argv[2], { preferFresh: true });";
+    const child = spawn(process.execPath, ["--input-type=module", "--eval", refresh, helperUrl.href, currentVersion], {
       detached: true,
       stdio: "ignore",
       env: { ...process.env },
       windowsHide: true
     });
+    child.once("error", failed);
     child.unref();
     return true;
-  } catch {
+  } catch (error51) {
+    failed(error51);
     return false;
   }
 }
@@ -63719,6 +63983,7 @@ init_agent_message_storage();
 init_config2();
 init_install_channel();
 init_file_mode();
+init_zod();
 async function withDatabase(fn) {
   try {
     openDatabase();
@@ -63881,7 +64146,7 @@ program2.command("remember").argument("[text]", "Quick-capture text \u2014 title
   if (text && !opts.name) {
     if (!opts.obs?.length && opts.title === void 0) {
       note2 = String(text);
-      const check2 = RememberSchema.safeParse({ note: note2, ...opts.type ? { type: opts.type } : {}, ...opts.why !== void 0 ? { why: opts.why } : {} });
+      const check2 = RememberSchema.safeParse({ note: note2, ...opts.type ? { type: opts.type } : {}, ...opts.why !== void 0 ? { why: opts.why } : {}, ...opts.tags?.length ? { tags: opts.tags } : {} });
       if (!check2.success) {
         console.error(`Error: ${check2.error.issues.map((i) => i.message).join("; ")}`);
         process.exit(1);
@@ -64356,6 +64621,12 @@ async function readCliMessagePayloadFromStdin(contentType, input = process.stdin
   }
   return payload;
 }
+function cliErrorText(error51) {
+  if (error51 instanceof ZodError) {
+    return error51.issues.map((issue2) => `${issue2.path.length ? `${issue2.path.join(".")}: ` : ""}${issue2.message}`).join("; ");
+  }
+  return error51 instanceof Error ? error51.message : String(error51);
+}
 async function runCliMessage(input) {
   await withDatabase(async () => {
     try {
@@ -64366,7 +64637,7 @@ async function runCliMessage(input) {
       });
       console.log(JSON.stringify(result));
     } catch (error51) {
-      console.error(`Error: ${error51 instanceof Error ? error51.message : String(error51)}`);
+      console.error(`Error: ${cliErrorText(error51)}`);
       process.exitCode = 1;
     }
   });
@@ -64437,7 +64708,7 @@ messageCmd.command("watch").description("Wait once for an exact-recipient event 
     } catch (error51) {
       console.error(JSON.stringify({
         type: "error",
-        error: error51 instanceof Error ? error51.message : String(error51)
+        error: cliErrorText(error51)
       }));
       process.exitCode = 1;
     }
@@ -64555,7 +64826,17 @@ agentCmd.command("setup").description("Write this host's local config (a stable 
     ...opts.project === void 0 ? {} : { project: requireAgentScopeArg(opts.project, "project", "--project") },
     ...opts.workSummary === void 0 ? {} : { work_summary: boundedCliDeclaration(opts.workSummary, "--work-summary", 200) }
   };
-  const config2 = host === "codex-session" ? { ...common, workspace: fs24.realpathSync(path21.resolve(opts.workspace)) } : host === "codex" ? { ...common, control_socket: path21.join(hostsDir, "codex-app-server.sock"), workspace: path21.resolve(opts.workspace) } : host === "claude" ? { ...common, server_name: "memesh-channel" } : { ...common, workspace: path21.resolve(opts.workspace), command: "gemini", args: [] };
+  let sessionWorkspace;
+  if (host === "codex-session") {
+    try {
+      sessionWorkspace = fs24.realpathSync(path21.resolve(opts.workspace));
+    } catch (error51) {
+      if (error51 instanceof Error)
+        error51.message = `--workspace: ${error51.message}`;
+      throw error51;
+    }
+  }
+  const config2 = host === "codex-session" ? { ...common, workspace: sessionWorkspace } : host === "codex" ? { ...common, control_socket: path21.join(hostsDir, "codex-app-server.sock"), workspace: path21.resolve(opts.workspace) } : host === "claude" ? { ...common, server_name: "memesh-channel" } : { ...common, workspace: path21.resolve(opts.workspace), command: "gemini", args: [] };
   createHostConfigAtomically(host, configPath, config2);
   const launchCommand = host === "codex-session" ? null : host === "codex" ? `memesh-host-codex --config ${shellQuote(configPath)}` : host === "claude" ? "claude --dangerously-load-development-channels server:memesh-channel" : `memesh-host-acp --config ${shellQuote(configPath)}`;
   const registrationCommand = host === "claude" ? `claude mcp add --transport stdio --scope user memesh-channel -- memesh-host-claude --config ${shellQuote(configPath)}` : null;
@@ -65229,6 +65510,7 @@ Rewrite one with:  memesh kg rename-project --from <old> --to <new>   (add --app
       console.log(`  ${preview.affectedEntities} entit${preview.affectedEntities === 1 ? "y" : "ies"} carry project:${opts.from}`);
       console.log(`  ${preview.renamed} would be renamed, ${preview.merged} already have project:${to2} (their project:${opts.from} row would be removed)`);
       console.log(`  ${preview.messageRows - preview.messageRowsBlocked} durable agent-message row(s) scoped to ${opts.from} would move to ${to2}${preview.messageRowsBlocked > 0 ? `, ${preview.messageRowsBlocked} would be left in place (${to2} already holds an equivalent row)` : ""}`);
+      console.log(`  ${preview.proposalRows} proposal row(s) would move to ${to2}`);
       console.log(`
 Nothing written. Re-run with --apply to commit (the DB is backed up first).`);
       return;
@@ -65269,6 +65551,7 @@ Nothing written. Re-run with --apply to commit (the DB is backed up first).`);
     console.log(`\u2705 project:${opts.from} \u2192 project:${to2}`);
     console.log(`  ${result.renamed} renamed, ${result.merged} merged (${result.affectedEntities} entities total)`);
     console.log(`  ${result.messageRows - result.messageRowsBlocked} agent-message row(s) moved${result.messageRowsBlocked > 0 ? `, ${result.messageRowsBlocked} left in place (${to2} already holds an equivalent row)` : ""}`);
+    console.log(`  ${result.proposalRows} proposal row(s) moved`);
     console.log(`  Backup: ${backupPath}`);
     console.log(`  Restore if needed (stop every memesh process first): ${restoreCommand(dbPath, backupPath)}`);
   };
@@ -65541,6 +65824,7 @@ dreamCmd.command("reject <id>").description("Reject a pending proposal \u2014 so
   });
 });
 program2.command("install-hooks").description("Wire memesh's session hooks into Claude Code user settings").option("--scope <scope>", "user (default) or project \u2014 project writes to ./.claude/settings.json", "user").option("--dry-run", "Show what would change without modifying any file").option("--force-over-plugin", "Write user-level hooks even when Claude Code's plugin runtime already wires them. Causes double-firing \u2014 only use if you genuinely want both surfaces.").action(async (opts) => {
+  requireOneOf(opts.scope, ["user", "project"], "--scope");
   const { installHooks: installHooks2 } = await Promise.resolve().then(() => (init_install_hooks(), install_hooks_exports));
   const scope = opts.scope === "project" ? "project" : "user";
   try {
@@ -65604,6 +65888,7 @@ program2.command("install-hooks").description("Wire memesh's session hooks into 
   }
 });
 program2.command("uninstall-hooks").description("Remove memesh's session hooks from Claude Code settings").option("--scope <scope>", "user (default) or project", "user").option("--dry-run", "Show what would change without modifying any file").action(async (opts) => {
+  requireOneOf(opts.scope, ["user", "project"], "--scope");
   const { uninstallHooks: uninstallHooks2 } = await Promise.resolve().then(() => (init_install_hooks(), install_hooks_exports));
   const scope = opts.scope === "project" ? "project" : "user";
   try {
@@ -65895,7 +66180,12 @@ async function runCli(argv = process.argv) {
 }
 var cliEntryPath = process.argv[1];
 if (cliEntryPath && isExecutedModule(cliEntryPath, import.meta.url)) {
-  await runCli();
+  try {
+    await runCli();
+  } catch (error51) {
+    console.error(`Error: ${cliErrorText(error51)}`);
+    process.exitCode = 1;
+  }
 }
 function isExecutedModule(entryPath, moduleUrl) {
   try {

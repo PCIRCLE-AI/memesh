@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 // #323 — the Project tab shows the durable-memory index an agent receives.
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import { cleanup, render, waitFor } from '@testing-library/preact';
 import { BriefingIndexCard, ProjectTab } from '../../dashboard/src/components/ProjectTab';
 import { getLocales, setLocale, t } from '../../dashboard/src/lib/i18n';
@@ -164,22 +165,41 @@ describe('Project tab: the durable-memory index (#323)', () => {
     const { container } = render(<BriefingIndexCard error="" data={index({ more: 12 })} />);
     expect(container.textContent).not.toContain('`');
     const codes = [...container.querySelectorAll('code')].map((el) => el.textContent);
-    expect(codes).toContain('memesh recall --tag "project:…"');
+    expect(codes).toContain("memesh recall --tag 'project:alpha'");
   });
 
-  // The project name is a directory name or a git remote's basename, and
-  // nothing constrains its characters. This line is rendered as `code`, which
-  // invites copying it into a shell, so it carries a placeholder rather than
-  // the name — the same choice `moreLine()` makes inside the injected block.
-  // The card's own heading already says which project the reader is looking at.
-  it('never puts the project name inside the copyable recall command', () => {
-    const hostile = 'x"; touch /tmp/pwned; echo "';
+  it('#538 provides the exact project tag in a complete shell-quoted recall command', () => {
+    const { container } = render(<BriefingIndexCard error="" data={index({ more: 12, project: 'alpha' })} />);
+    const codes = [...container.querySelectorAll('code')].map((el) => el.textContent);
+    expect(codes).toContain("memesh recall --tag 'project:alpha'");
+  });
+
+  it('keeps the exact recall command separate from translated prose in every locale', () => {
+    for (const { code } of getLocales()) {
+      setLocale(code);
+      const view = render(<BriefingIndexCard error="" data={index({ more: 12 })} />);
+      expect([...view.container.querySelectorAll('code')].map(el => el.textContent), code)
+        .toContain("memesh recall --tag 'project:alpha'");
+      expect(view.container.textContent, code).not.toContain('project:…');
+      view.unmount();
+    }
+  });
+
+  // #538 replaces the placeholder with an exact argument while preserving
+  // the original safety requirement. Exercise the shell, not a quote regex.
+  it.runIf(process.platform !== 'win32').each([
+    'name with spaces', "owner's project", 'x"; printf INJECTED; echo "',
+    '$(printf INJECTED)`printf INJECTED`', 'line one\nline two',
+  ])('keeps the rendered project tag literal in a POSIX shell: %s', (hostile) => {
     const { container } = render(
       <BriefingIndexCard error="" data={index({ more: 12, project: hostile })} />,
     );
     const codes = [...container.querySelectorAll('code')].map((el) => el.textContent ?? '');
-    expect(codes.some((code) => code.includes(hostile))).toBe(false);
-    expect(container.textContent).not.toContain('touch /tmp/pwned');
+    const command = codes.find((code) => code.startsWith('memesh recall --tag '))!;
+    const argv = execFileSync('/bin/sh', ['-c', `memesh() { printf '%s\\000' "$@"; }\n${command}`], {
+      encoding: 'utf8', timeout: 2000, env: { PATH: '/usr/bin:/bin' },
+    }).split('\0');
+    expect(argv).toEqual(['recall', '--tag', `project:${hostile}`, '']);
   });
 
   // F6 — a pure CSS spinner announces nothing.

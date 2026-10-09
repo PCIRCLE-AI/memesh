@@ -34,7 +34,7 @@ vi.mock('../../src/core/task-state-store.js', async (importOriginal) => {
   };
 });
 import { taskStateName } from '../../src/core/task-state.js';
-import { learn, remember } from '../../src/core/operations.js';
+import { forget, learn, remember } from '../../src/core/operations.js';
 import { executeAgentMessageAction } from '../../src/transports/agent-messaging.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import { DEFAULT_TOPOLOGY_BUDGET, SNIPPET_FETCH_CHARS, TOPOLOGY_CANDIDATE_CAP, groupTopology, projectLabel } from '../../src/core/work-topology.js';
@@ -80,6 +80,73 @@ afterEach(() => {
 // default; a test about the default clears the variable on purpose.
 const atStandard = () => vi.stubEnv('MEMESH_BRIEFING', 'standard');
 const withNoLevelSetting = () => vi.stubEnv('MEMESH_BRIEFING', undefined);
+
+it('excludes forgotten task state from briefing and the real startup hook at every level', () => {
+  const cwd = path.join(tmpDir, 'archived-task-project');
+  fs.mkdirSync(cwd);
+  const project = getProjectName(cwd);
+  setTaskState({ project, patch: { goal: 'forgotten task goal' } });
+  const hookContext = (level: string) => {
+    closeDatabase();
+    const child = spawnSync(process.execPath, [path.resolve('scripts/hooks/session-start.js')], {
+      input: JSON.stringify({ cwd }),
+      env: { ...process.env, MEMESH_DB_PATH: dbPath, MEMESH_BRIEFING: level,
+        MEMESH_AUTO_CAPTURE: 'false', MEMESH_UPDATE_CHECK: '0', MEMESH_AUTO_UPDATE: '0' },
+      encoding: 'utf8', timeout: 15000,
+    });
+    expect(child.status, child.stderr).toBe(0);
+    const output = JSON.parse(child.stdout.trim().split('\n').filter(Boolean).at(-1)!);
+    openDatabase(dbPath);
+    return output.hookSpecificOutput?.additionalContext ?? '';
+  };
+  vi.stubEnv('MEMESH_BRIEFING', 'standard');
+  expect(assembleBriefing(project).text).toContain('forgotten task goal');
+  expect(hookContext('standard')).toContain('forgotten task goal');
+  expect(forget({ name: taskStateName(project) }).archived).toBe(true);
+  const outputs = ['minimal', 'standard', 'full'].map(level => {
+    vi.stubEnv('MEMESH_BRIEFING', level);
+    return { level, briefing: assembleBriefing(project).text, hook: hookContext(level) };
+  });
+  for (const { level, briefing, hook } of outputs) {
+    expect(hook, `hook ${level}`).not.toContain('forgotten task goal');
+    expect(briefing, `briefing ${level}`).not.toContain('forgotten task goal');
+  }
+});
+
+it('shows the unreadable-task recovery line in the real hook without losing other memories', () => {
+  const cwd = path.join(tmpDir, 'corrupt-task-project');
+  fs.mkdirSync(cwd);
+  const project = getProjectName(cwd);
+  remember({ name: 'valid-context', type: 'note', title: 'Keep valid context',
+    observations: ['Keep valid context'], tags: [`project:${project}`] });
+  setTaskState({ project, patch: { goal: 'unreadable old goal' } });
+  getDatabase().prepare('UPDATE entities SET metadata = ? WHERE name = ?')
+    .run('{not json', taskStateName(project));
+  const snapshot = () => getDatabase().prepare('SELECT * FROM entities ORDER BY id').all();
+  const before = snapshot();
+  for (const level of ['minimal', 'standard', 'full']) {
+    vi.stubEnv('MEMESH_BRIEFING', level);
+    const briefing = assembleBriefing(project);
+    expect(briefing.hasTaskState).toBe(true);
+    const diagnostic = briefing.text.split('\n').find(line => line.includes('not valid JSON'))!;
+    expect(diagnostic).toContain('memesh task --goal');
+    closeDatabase();
+    const child = spawnSync(process.execPath, [path.resolve('scripts/hooks/session-start.js')], {
+      input: JSON.stringify({ cwd }),
+      env: { ...process.env, MEMESH_DB_PATH: dbPath, MEMESH_BRIEFING: level,
+        MEMESH_AUTO_CAPTURE: 'false', MEMESH_UPDATE_CHECK: '0', MEMESH_AUTO_UPDATE: '0' },
+      encoding: 'utf8', timeout: 15000,
+    });
+    expect(child.status, child.stderr).toBe(0);
+    const output = JSON.parse(child.stdout.trim().split('\n').filter(Boolean).at(-1)!);
+    const context = output.hookSpecificOutput?.additionalContext ?? '';
+    openDatabase(dbPath);
+    expect(context, `hook ${level}`).toContain(diagnostic);
+    expect(context).toContain('Keep valid context');
+    expect(context).not.toContain('unreadable old goal');
+    expect(snapshot()).toEqual(before);
+  }
+});
 
 // The assembler resolves the current project from cwd when none is given;
 // tests always pass one explicitly so they cannot be polluted by (or pollute)
@@ -351,6 +418,7 @@ describe('assembleBriefing', () => {
         task_state: {
           ...(meta.task_state as Record<string, unknown>),
           updated_at: new Date(Date.now() - hours * 3_600_000).toISOString(),
+          stated_at: { goal: new Date(Date.now() - hours * 3_600_000).toISOString() },
         },
       }));
 
@@ -446,7 +514,7 @@ describe('assembleBriefing', () => {
       const result = assembleBriefing(id);
       expect(result.project, 'the id identifies the project and is not shortened').toBe(id);
       for (const heading of [
-        `Stated about "${label}" today, and not revisited since:`,
+        `Stated about "${label}" (each field has its own date):`,
         `Decisions and direction for "${label}":`,
         `Lessons from "${label}" — do not repeat these:`,
         `What is known about "${label}":`,
@@ -471,7 +539,7 @@ describe('assembleBriefing', () => {
       setTaskState({ project: id, patch: { goal: 'Ship it' } });
       new KnowledgeGraph(getDatabase()).updateEntityMetadata(taskStateName(id), (meta) => ({
         ...meta,
-        task_state: { ...(meta.task_state as Record<string, unknown>), updated_at: new Date(Date.now() - 100 * 3_600_000).toISOString() },
+        task_state: { ...(meta.task_state as Record<string, unknown>), updated_at: new Date(Date.now() - 100 * 3_600_000).toISOString(), stated_at: { goal: new Date(Date.now() - 100 * 3_600_000).toISOString() } },
       }));
       const stale = assembleBriefing(id);
       expect(stale.text).toContain(`Task state for "${label}" was last stated`);
@@ -519,7 +587,7 @@ describe('assembleBriefing', () => {
       const result = assembleBriefing(id);
       expect(result.project).toBe(id);
       for (const [prefix, suffix] of [
-        ['Stated about ', ' today, and not revisited since:'],
+        ['Stated about ', ' (each field has its own date):'],
         ['Decisions and direction for ', ':'],
         ['Lessons from ', ' — do not repeat these:'],
         ['What is known about ', ':'],
@@ -543,7 +611,7 @@ describe('assembleBriefing', () => {
       setTaskState({ project: id, patch: { goal: 'Ship it' } });
       const setUpdatedAt = (updatedAt: unknown) => new KnowledgeGraph(getDatabase()).updateEntityMetadata(taskStateName(id), (meta) => ({
         ...meta,
-        task_state: { ...(meta.task_state as Record<string, unknown>), updated_at: updatedAt },
+        task_state: { ...(meta.task_state as Record<string, unknown>), updated_at: updatedAt, stated_at: { goal: updatedAt } },
       }));
       setUpdatedAt(new Date(Date.now() - 100 * 3_600_000).toISOString());
       expect(literalIn(assembleBriefing(id).text, 'Task state for ', ' was last stated')).toBe(label);
@@ -2187,8 +2255,8 @@ describe('decisions first, one budget — both readers (#434 step 3)', () => {
     const recipient = `r"q\\${'r'.repeat(190)}`;
     const db = getDatabase();
     for (const field of ['next', 'blocked', 'done']) {
-      db.prepare(`UPDATE entities SET metadata = json_set(metadata, '$.task_state.${field}', ?) WHERE name = ?`)
-        .run(`${field} ${'狀態😀 '.repeat(200)}`, taskStateName(project));
+      db.prepare(`UPDATE entities SET metadata = json_set(metadata, '$.task_state.${field}', ?, '$.task_state.stated_at.${field}', ?) WHERE name = ?`)
+        .run(`${field} ${'狀態😀 '.repeat(200)}`, new Date().toISOString(), taskStateName(project));
     }
     db.prepare("INSERT INTO agent_messages (message_id, project, sender, recipient, content_type, privacy, payload_json, provenance_json) VALUES ('m1', ?, 'sender', ?, 'text', 'private', '{}', '{}')")
       .run(project, recipient);

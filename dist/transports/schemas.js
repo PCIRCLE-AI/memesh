@@ -4,6 +4,12 @@ import { TITLE_MAX_LENGTH } from '../core/title.js';
 import { deriveNote, NOTE_MAX_CHARS, NOTE_MAX_OBSERVATIONS } from '../core/note-derive.js';
 import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../core/agent-messaging.js';
 import { AGENT_SCOPE_ID_MAX_LENGTH, agentScopeIdRejection, canonicalAgentScopeId, projectScopeRejection, } from '../core/agent-scope-id.js';
+const projectRules = (base) => base.superRefine((value, ctx) => {
+    const rejection = projectScopeRejection(value);
+    if (rejection !== null)
+        ctx.addIssue({ code: 'custom', message: rejection });
+});
+const projectName = projectRules(z.string());
 const sanitizeName = (s) => s.replace(/[\r\n\t]+/g, ' ').trim();
 const nameField = z.string().min(1).max(255).transform(sanitizeName).refine(s => s.length > 0, {
     message: 'Name must not be blank after sanitization',
@@ -70,6 +76,16 @@ const rememberShape = {
     namespace: z.enum(NAMESPACES).optional(),
 };
 function refineRemember(data, ctx) {
+    for (const [index, tag] of (data.tags ?? []).entries()) {
+        if (!tag.startsWith('project:'))
+            continue;
+        const project = tag.slice('project:'.length);
+        if (project.trim() === '')
+            continue;
+        const rejection = projectScopeRejection(project);
+        if (rejection !== null)
+            ctx.addIssue({ code: 'custom', path: ['tags', index], message: rejection });
+    }
     if (data.note === undefined) {
         if (data.name === undefined)
             ctx.addIssue({ code: 'custom', path: ['name'], message: 'name is required (or pass `note` to have it derived)' });
@@ -96,7 +112,7 @@ function refineRemember(data, ctx) {
     }
 }
 export const RememberSchema = z.object(rememberShape).strict().superRefine(refineRemember);
-const mcpProjectField = z.union([z.string().min(1).max(200), z.literal(false)]).optional();
+const mcpProjectField = z.union([projectName, z.literal(false)]).optional();
 export const McpRememberSchema = z.object({ ...rememberShape, project: mcpProjectField }).strict().superRefine(refineRemember);
 const recallShape = {
     query: z.string().max(1000).optional(),
@@ -126,6 +142,9 @@ export const ExportResultSchema = z.object({
         type: z.string().min(1).max(100),
         title: z.string().max(TITLE_MAX_LENGTH).nullable().optional(),
         namespace: z.string(),
+        created_at: z.string().optional(),
+        status: z.string().optional(),
+        metadata: z.record(z.string(), z.unknown()).optional(),
         observations: z.array(z.string().max(10000)),
         tags: z.array(z.string().max(255)),
         relations: z.array(z.object({ to: z.string().min(1).max(255), type: z.string().min(1).max(100) })),
@@ -143,12 +162,6 @@ const agentScopeId = (field) => nonBlankBounded(AGENT_SCOPE_ID_MAX_LENGTH)
     .refine((value) => agentScopeIdRejection(field, value) === null, {
     error: (issue) => agentScopeIdRejection(field, String(issue.input)) ?? `${field} is not a valid identifier.`,
 });
-const projectRules = (base) => base.superRefine((value, ctx) => {
-    const rejection = projectScopeRejection(value);
-    if (rejection !== null)
-        ctx.addIssue({ code: 'custom', message: rejection });
-});
-const projectName = projectRules(z.string());
 const learnShape = {
     error: z.string().min(1).max(5000),
     fix: z.string().min(1).max(5000),

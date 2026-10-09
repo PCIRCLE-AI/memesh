@@ -189,7 +189,13 @@ function isReadonlyDbError(err: unknown): boolean {
 }
 
 function initialiseDatabase(db: MemeshDatabase): MemeshDatabase {
-  db.pragma('journal_mode = WAL');
+  // VACUUM backups use DELETE mode; changing their mode is itself a write.
+  // Keep a read-only backup readable without hiding other open failures.
+  try {
+    db.pragma('journal_mode = WAL');
+  } catch (err) {
+    if (!isReadonlyDbError(err)) throw err;
+  }
   db.pragma('foreign_keys = ON');
   // Bringing the schema current is a WRITE, and "cannot migrate" must not
   // mean "cannot open": a database file that is read-only (a backup, a
@@ -478,7 +484,8 @@ function backfillSignalScores(db: MemeshDatabase): void {
   // done, forever, for a row it never saw. `runOnceMigration` exists for
   // exactly this: read the work list and commit the result under the same
   // lock, so nothing can be inserted into the gap between them.
-  const tx = db.transaction(() => {
+  // Keep the historical JSON receipt; the migration key owns retry/backoff.
+  runOnceMigration(db, { key: `${MARKER}_migration`, version: 1, describe: 'signal-score backfill', migrate: () => {
     // Re-check under the write lock — another process may have completed
     // this same backfill (and set MARKER) between the pre-check above and
     // this transaction acquiring the lock.
@@ -521,8 +528,7 @@ function backfillSignalScores(db: MemeshDatabase): void {
     db.prepare(
       "INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)"
     ).run(MARKER, JSON.stringify({ at: new Date().toISOString(), scored, skipped }));
-  });
-  tx();
+  }});
 }
 
 // Title cap + truncation come from core/title.ts — the single owner all
@@ -623,29 +629,19 @@ function backfillAcceptedProposalTrust(db: MemeshDatabase): void {
   // the lock, and a concurrent process's `dream accept` between the read
   // and this transaction's write lock inserts a row this pass would never
   // see, permanently, once the marker below is set.
-  const tx = db.transaction(() => {
+  runOnceMigration(db, { key: `${MARKER}_migration`, version: 1, describe: 'accepted-proposal trust backfill', migrate: () => {
     if (db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(MARKER)) return;
 
     // json_extract rather than a LIKE scan: the two markers are structural,
     // and a substring match would also hit an observation that merely
     // quotes them.
-    let rows: Array<{ id: number; metadata: string | null }>;
-    try {
-      rows = db.prepare(
+    const rows = db.prepare(
         `SELECT id, metadata FROM entities
           WHERE metadata IS NOT NULL
             AND json_valid(metadata)
             AND json_extract(metadata, '$.trust') = 'untrusted'
             AND json_extract(metadata, '$.proposal_id') IS NOT NULL`,
       ).all() as Array<{ id: number; metadata: string | null }>;
-    } catch {
-      // A SQLite build without JSON1 cannot run the predicate. Leaving the
-      // marker unset means a later open on a JSON1-capable build still does
-      // the work — the honest outcome, versus stamping "done" over a pass
-      // that never ran. Returning here commits an empty transaction: a
-      // no-op, not a rollback, which is what "nothing happened" should be.
-      return;
-    }
 
     let cleared = 0;
     let skipped = 0;
@@ -661,8 +657,7 @@ function backfillAcceptedProposalTrust(db: MemeshDatabase): void {
       cleared++;
     }
     stamp(cleared, skipped);
-  });
-  tx();
+  }});
 }
 
 function backfillTitles(db: MemeshDatabase): void {
@@ -680,7 +675,7 @@ function backfillTitles(db: MemeshDatabase): void {
   // the lock, and a concurrent process's `remember` between the read and
   // this transaction's write lock inserts a title-less row this pass would
   // never see, permanently, once the marker below is set.
-  const tx = db.transaction(() => {
+  runOnceMigration(db, { key: `${MARKER}_migration`, version: 1, describe: 'title backfill', migrate: () => {
     if (db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(MARKER)) return;
 
     const rows = db.prepare(
@@ -726,8 +721,7 @@ function backfillTitles(db: MemeshDatabase): void {
     db.prepare(
       'INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)'
     ).run(MARKER, JSON.stringify({ at: new Date().toISOString(), titled, skipped }));
-  });
-  tx();
+  }});
 }
 
 export function closeDatabase(): void {

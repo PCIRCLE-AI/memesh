@@ -152,9 +152,11 @@ function statusLabel(status: string): string {
 export function InsightsTab({
   dataRevision = 0,
   onStateChange,
+  onRefreshHealth,
 }: {
   dataRevision?: number;
   onStateChange?: (state: { pendingCount: number; loading: boolean; failed: boolean }) => void;
+  onRefreshHealth?: () => void;
 }) {
   // Fetch ALL proposals once and filter client-side. The hero stat
   // row needs cross-status counts, so a server-side filter would
@@ -265,11 +267,15 @@ export function InsightsTab({
       ].filter(Boolean).join(' '));
       window.dispatchEvent(new Event('memesh:data-changed'));
     } catch (e) {
+      // A refused accept can still resolve the proposal to rejected. Reload
+      // its state before reporting the action error; a failed reload retains
+      // the last readable list rather than pretending there are no proposals.
+      await refresh();
       setError(actionFailureMessage(e));
     } finally {
       clearBusy(id);
     }
-  }, []);
+  }, [refresh]);
 
   // Rejection is one click and permanent, so it remains confirmed. Acceptance
   // is exposed only once the proposal's content has loaded below and can be
@@ -320,13 +326,13 @@ export function InsightsTab({
         {(['pending', 'applied', 'rejected', 'all'] as const).map(f => (
           <Chip key={f} label={t(`insights.filter.${f}`)} active={filter === f} onClick={() => setFilter(f)} />
         ))}
-        <button class="btn btn-ghost" onClick={() => { setAcceptNotice(''); refresh(); }} style={{ marginLeft: 'auto' }}>{t('insights.refresh')}</button>
+        <button class="btn btn-ghost" onClick={() => { setAcceptNotice(''); refresh(); onRefreshHealth?.(); }} style={{ marginLeft: 'auto' }}>{t('insights.refresh')}</button>
       </div>
 
       {error && <div class="card" role="alert" style={{ padding: 12, color: 'var(--danger)' }}>{error}</div>}
       {acceptNotice && <div class="card" role="status" style={{ padding: 12, color: 'var(--text-2)' }}>{acceptNotice}</div>}
       {loading && <div style={{ color: 'var(--text-3)', fontSize: 14 }}>{t('insights.loading')}</div>}
-      {!loading && proposals.length === 0 && (
+      {!loading && !proposalLoadFailed && proposals.length === 0 && (
         <div class="card" style={{ padding: 16, textAlign: 'center', color: 'var(--text-2)' }}>
           {filter !== 'pending' ? t('insights.emptyOther') : t('insights.emptyPending')}
         </div>

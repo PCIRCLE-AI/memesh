@@ -66,7 +66,8 @@ export function recentHookNoticeExists(dir: string, currentVersion: string, late
       const stat = fs.fstatSync(fd);
       if (now.getTime() - stat.mtimeMs > RECENT_HOOK_NOTICE_MS) continue;
       const value = JSON.parse(fs.readFileSync(fd, 'utf8')) as Record<string, unknown>;
-      if (value.currentVersion === currentVersion && (latestVersion === null || value.latestVersion === latestVersion)) return true;
+      // A reservation can outlive a hook that failed before printing its notice.
+      if (value.decision === 'emitted' && value.currentVersion === currentVersion && (latestVersion === null || value.latestVersion === latestVersion)) return true;
     } catch {
       /* one unreadable claim is not evidence either way */
     } finally {
@@ -133,18 +134,36 @@ function cliThrottled(dir: string, currentVersion: string, now: Date): boolean {
 /**
  * Entry points only READ the cache; the SessionStart hook is what used to
  * refresh it, and a host that wires only the MCP server never runs that
- * hook. So the same detached `memesh status` refresh the hook spawns runs
+ * hook. A detached invocation of the existing version-check helper runs
  * from here when the answer is missing or stale — throttled through the
  * hook's own marker so the two never race. Nothing is awaited: the notice
  * for THIS call comes from the cache as it is; the next call reads the
  * refreshed answer.
  */
 function spawnCacheRefresh(dir: string, currentVersion: string, now: Date): boolean {
+  let marker: string | undefined;
+  const claim = `${process.pid}-${now.getTime()}`;
+  const failed = (error: unknown): void => {
+    // Only release this process's claim; a newer owner must keep its throttle.
+    try {
+      if (marker && fs.readFileSync(marker, 'utf8') === claim) fs.unlinkSync(marker);
+    } catch { /* absent or no longer ours */ }
+    const code = (error as NodeJS.ErrnoException)?.code;
+    const reason = typeof code === 'string' && /^[A-Z0-9_]+$/.test(code) ? code : 'UNKNOWN';
+    console.error(`[memesh update] Could not start update cache refresh (${reason}). Status remains unknown; a later call can retry.`);
+  };
   try {
-    const cliPath = fileURLToPath(new URL('../transports/cli/cli.js', import.meta.url));
-    if (!fs.existsSync(cliPath)) return false;
+    const modulePath = fileURLToPath(import.meta.url);
+    // Resolve the existing compiled helper from every shipped layout. Do not
+    // invoke `status`: its graph health check would migrate/lock the caller's
+    // database even when the calling command was refused before opening it.
+    const bundledCli = path.basename(modulePath) === 'cli.js'
+      && path.basename(path.dirname(modulePath)) === 'cli'
+      && path.basename(path.dirname(path.dirname(modulePath))) === 'transports';
+    const helperUrl = new URL(bundledCli ? '../../core/version-check.js' : '../core/version-check.js', import.meta.url);
+    if (!fs.existsSync(fileURLToPath(helperUrl))) return false;
     const tag = /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : 'unknown';
-    const marker = path.join(dir, `last-fresh-refresh.${tag}.lock`);
+    marker = path.join(dir, `last-fresh-refresh.${tag}.lock`);
     try {
       if (now.getTime() - fs.statSync(marker).mtimeMs < FRESH_CHECK_THROTTLE_MS) return false;
       fs.unlinkSync(marker);
@@ -152,16 +171,19 @@ function spawnCacheRefresh(dir: string, currentVersion: string, now: Date): bool
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     try {
       const fd = fs.openSync(marker, 'wx', 0o600);
-      try { fs.writeSync(fd, `${process.pid}-${now.getTime()}`); } finally { fs.closeSync(fd); }
+      try { fs.writeSync(fd, claim); } finally { fs.closeSync(fd); }
     } catch {
       return false; // a sibling won the claim
     }
-    const child = spawn(process.execPath, [cliPath, 'status'], {
+    const refresh = 'const { getUpdateCheck } = await import(process.argv[1]); await getUpdateCheck(process.argv[2], { preferFresh: true });';
+    const child = spawn(process.execPath, ['--input-type=module', '--eval', refresh, helperUrl.href, currentVersion], {
       detached: true, stdio: 'ignore', env: { ...process.env }, windowsHide: true,
     });
+    child.once('error', failed);
     child.unref();
     return true;
-  } catch {
+  } catch (error) {
+    failed(error);
     return false;
   }
 }

@@ -80,6 +80,11 @@ describe('task-state', () => {
     expect(clipped.endsWith('…')).toBe(true);
   });
 
+  it('does not split an emoji at the field truncation boundary', () => {
+    const prefix = 'a'.repeat(MAX_FIELD_CHARS - 2);
+    expect(normalizeFieldValue(prefix + '😀' + 'b'.repeat(20))).toBe(prefix + '…');
+  });
+
   it('drops stored values it cannot use instead of showing them', () => {
     // metadata is free-form JSON that older versions and other writers touch.
     // A half-parsed goal presented to an agent as fact is worse than no goal.
@@ -395,13 +400,21 @@ describe('task-state', () => {
       const lines = briefingTaskStateLines({ goal: 'g', updated_at: future }, 'memesh', now);
       expect(lines.length).toBeGreaterThan(1);
       expect(lines[0]).not.toContain('could not be established');
-      // taskStateLines' OWN age-in-days (unchanged, see its header comment)
-      // floors a same-instant/near-future delta to a negative day count and
-      // falls back to "at some point" — a cosmetic quirk of the untouched
-      // fresh-heading renderer, not a gating defect: this line still proves
-      // the record was classified as FRESH (not stale, not unknown).
-      expect(lines[0]).toMatch(/today|at some point/);
+      expect(lines[0]).toContain('today');
     });
+
+    it.each(['2026-08-16T12:00:00', '2026-02-30T12:00:00Z', '2026-08-16T12:00:00-00:00'])(
+      'the legacy heading does not assign a known age to invalid date %s', updatedAt => {
+        const now = new Date('2026-08-16T12:00:00.000Z');
+        const state = { goal: 'keep stored goal', done: 'keep stored done', updated_at: updatedAt };
+        const lines = taskStateLines(state, 'memesh', now);
+        expect(lines[0]).toContain('at some point');
+        expect(lines.join('\n')).toContain('keep stored goal');
+        expect(lines.join('\n')).toContain('keep stored done');
+        expect(briefingTaskStateLines(state, 'memesh', now)[0]).toContain('could not be established');
+        expect(state.updated_at).toBe(updatedAt);
+      },
+    );
 
     // Codex review round 1, item 3's exact fixed-clock table.
     describe('exact boundary table (fixed clock, no wall-clock dependence)', () => {

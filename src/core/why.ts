@@ -33,7 +33,7 @@ export type WhyAbstention =
   | 'not_a_git_repo'
   | 'file_not_found'
   | 'file_not_tracked'
-  /** `git log` did not answer — see the catch in resolveFileCommits. An empty
+  /** `git log` or `git blame` did not answer — see resolveFileCommits. An empty
    *  commit list under this code means "unknown", never "none". */
   | 'history_unreadable'
   | 'line_out_of_range'
@@ -140,15 +140,19 @@ export function resolveFileCommits(
     let out: string;
     try {
       out = runGit(repoDir, ['blame', '-L', `${opts.line},${opts.line}`, '--porcelain', '--', file]);
-    } catch {
-      // The file is tracked (checked above), so a blame failure here is the
-      // line number, not the file.
-      return { commits: [], abstention: 'line_out_of_range' };
+    } catch (error) {
+      // A tracked file can still have unreadable history (an unborn HEAD,
+      // timeout, or missing object). Claim a range error only when blame
+      // actually reports a shorter file; every other failure is unknown.
+      const failure = error as { status?: number; stderr?: string | Buffer };
+      const range = String(failure.stderr ?? '').match(/^fatal: file .+ has only (\d+) lines?\s*$/m);
+      const beyondEnd = failure.status === 128 && range !== null && opts.line > Number(range[1]);
+      return { commits: [], abstention: beyondEnd ? 'line_out_of_range' : 'history_unreadable' };
     }
     // Porcelain: first line is `<hash> <orig-line> <final-line> ...`; a
     // `summary <subject>` header line follows for the commit.
     const hash = out.split('\n')[0]?.split(' ')[0] ?? '';
-    if (!/^[a-f0-9]{7,40}$/.test(hash)) return { commits: [], abstention: 'line_out_of_range' };
+    if (!/^[a-f0-9]{7,40}$/.test(hash)) return { commits: [], abstention: 'history_unreadable' };
     if (UNCOMMITTED_HASH.test(hash)) return { commits: [], abstention: 'line_uncommitted' };
     const summary = out.split('\n').find((l) => l.startsWith('summary '));
     return { commits: [{ hash, subject: summary?.slice('summary '.length) }], abstention: null };
@@ -233,7 +237,7 @@ function findCommitEntity(
   // candidate set entirely.
   const rows = db.prepare(
     `SELECT id, name, type, title, created_at, metadata FROM entities
-     WHERE type = 'commit' AND name LIKE 'commit-%'
+     WHERE type = 'commit' AND status != 'archived' AND name LIKE 'commit-%'
        AND length(substr(name, 8)) >= 7
        AND substr(name, 8) GLOB '[0-9a-fA-F]*'
        AND (

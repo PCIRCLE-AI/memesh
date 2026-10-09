@@ -107,10 +107,10 @@ describe('secrets do not enter the graph', () => {
   it('does not store a bearer token echoed back by a failed tool result', () => {
     writeTranscript([
       { type: 'user', message: { role: 'user', content: 'call the api' } },
-      ...['a.ts', 'b.ts', 'c.ts'].map((f) => ({
-        type: 'assistant',
-        message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/repo/src/' + f } }] },
-      })),
+      ...['a.ts', 'b.ts', 'c.ts'].flatMap((f) => [
+        { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: `edit-${f}`, name: 'Edit', input: { file_path: '/repo/src/' + f } }] } },
+        { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `edit-${f}`, is_error: false, content: 'File updated' }] } },
+      ]),
       {
         type: 'user',
         message: {

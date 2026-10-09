@@ -112,6 +112,23 @@ afterEach(() => {
 });
 
 describe('auto-update runner lock ownership', () => {
+  it.each(['', 'orphan-owner\n', `orphan-owner\n${process.pid}\n`, `orphan-owner\n${process.pid}\n123\n`])('reports an invalid lock without claiming an update is running (%j)', async (contents) => {
+    const fake = makeFakeNpm();
+    const lockPath = path.join(tempDir, 'auto-update.lock');
+    fs.writeFileSync(lockPath, contents, { mode: 0o600 });
+    const old = new Date(Date.now() - AUTO_UPDATE_LOCK_TTL_MS - 1000);
+    fs.utimesSync(lockPath, old, old);
+
+    const result = await runRunner('4.8.0', lockPath, fake.env);
+
+    expect(result.code).toBe(1);
+    expect(result.stdout).not.toContain('IN_PROGRESS');
+    expect(result.stderr).toContain('FAILED target=4.8.0 stage=lock');
+    expect(result.stderr).toContain('invalid or unreadable');
+    expect(fs.readFileSync(lockPath, 'utf8')).toBe(contents);
+    expect(fs.existsSync(fake.callsPath)).toBe(false);
+  });
+
   it('only lets the recorded owner token release the lock', () => {
     const lockPath = path.join(tempDir, 'auto-update.lock');
     const lock = tryAcquireAutoUpdateLock(lockPath, '4.8.0');

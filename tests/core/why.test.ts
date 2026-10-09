@@ -121,6 +121,14 @@ describe('Feature: resolveFileCommits (the git half — CLI only)', () => {
     expect(r).toEqual({ commits: [], abstention: 'history_unreadable' });
   });
 
+  it('Scenario: blame cannot read unborn history -> history_unreadable, not a false line-range claim', () => {
+    fs.writeFileSync(path.join(repoDir, 'staged.ts'), 'a real first line\n');
+    git(['add', '--', 'staged.ts']);
+    expect(resolveFileCommits(repoDir, 'staged.ts', { line: 1 })).toEqual({
+      commits: [], abstention: 'history_unreadable',
+    });
+  });
+
   it('Scenario: line beyond EOF -> line_out_of_range, uncommitted line -> line_uncommitted', () => {
     commitFile('short.ts', 'only line\n', 'feat: one line');
     expect(resolveFileCommits(repoDir, 'short.ts', { line: 99 }).abstention).toBe('line_out_of_range');
@@ -186,6 +194,27 @@ describe('Feature: explainCommits (the DB half — CLI and HTTP)', () => {
     expect(result.commits[0].entity).toBeNull();
     expect(result.commits[0].session).toBeNull();
     expect(result.commits[0].abstentions).toEqual(['no_commit_entity']);
+  });
+
+  it('Scenario: an archived commit is not returned or preferred over an active shorter abbreviation', () => {
+    const hash = 'a'.repeat(40);
+    const archived = `commit-${hash}`;
+    kg.createEntity(archived, 'commit', {
+      observations: ['retired commit explanation'], metadata: { session_id: 'retired-session' },
+    });
+    expect(kg.archiveEntity(archived).archived).toBe(true);
+    const absent = explainCommits(db, { file: 'auth.ts', commits: [{ hash }] }).commits[0];
+    expect(absent.entity).toBeNull();
+    expect(absent.session).toBeNull();
+    expect(absent.abstentions).toEqual(['no_commit_entity']);
+
+    const active = `commit-${hash.slice(0, 7)}`;
+    kg.createEntity(active, 'commit', { observations: ['current commit explanation'] });
+    const found = explainCommits(db, { file: 'auth.ts', commits: [{ hash }] }).commits[0];
+    expect(found.entity?.name).toBe(active);
+    expect(JSON.stringify(found)).not.toContain('retired commit explanation');
+    expect(db.prepare('SELECT status FROM entities WHERE name = ?').get(archived))
+      .toEqual({ status: 'archived' });
   });
 
   it('Scenario: metadata.session_id walks to the session entities', () => {

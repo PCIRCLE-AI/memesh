@@ -33,7 +33,20 @@ describe('Feature: Session Summary (Stop Hook)', () => {
   });
 
   function writeTranscript(entries: object[]): void {
-    fs.writeFileSync(transcriptPath, entries.map(e => JSON.stringify(e)).join('\n'));
+    // Older successful-work fixtures omitted both tool IDs and results.
+    // Give only those legacy calls explicit successful results. Calls with
+    // IDs are kept verbatim, including the failed/missing-result regressions.
+    const completed = structuredClone(entries).flatMap((entry, index) => {
+      const content = (entry as { message?: { content?: Array<{ type?: string; id?: string }> } }).message?.content;
+      if (!Array.isArray(content)) return [entry];
+      const results = content.flatMap((block, i) => {
+        if (block.type !== 'tool_use' || block.id !== undefined) return [];
+        block.id = `legacy-fixture-${index}-${i}`;
+        return [{ type: 'tool_result', tool_use_id: block.id, is_error: false, content: 'ok' }];
+      });
+      return results.length ? [entry, { type: 'user', message: { content: results } }] : [entry];
+    });
+    fs.writeFileSync(transcriptPath, completed.map(e => JSON.stringify(e)).join('\n'));
   }
 
   function runHook(input: object, env: Record<string, string> = {}): string {
@@ -80,6 +93,48 @@ describe('Feature: Session Summary (Stop Hook)', () => {
       ...edits(['parser.ts', 'lexer.ts', 'ast.ts', 'tokens.ts']),
     ]);
   }
+
+  it.each(['failed', 'missing'] as const)('Stop success claims: three %s Edit results do not create completed-work memories', (result) => {
+    const ids = ['toolu_01EFFrshKEk5B9Rbr1bTvQRu', 'toolu_01P2NnH3J6E6yPjE2qahpiUk', 'toolu_01H7nZs2TxiDTeMv6zTWKZHp'];
+    const entries = ids.flatMap((id) => [
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id, name: 'Edit', input: { file_path: '/repo/a.txt' } }] } },
+      ...(result === 'failed' ? [{ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, is_error: true, content: 'Permission denied; file unchanged' }] } }] : []),
+    ]);
+    writeTranscript(entries);
+    const run = spawnSync(process.execPath, [path.resolve('scripts/hooks/session-summary.js')], {
+      input: JSON.stringify({ session_id: 'failed-edit-proof', transcript_path: transcriptPath, cwd: testDir }),
+      env: { ...withoutHostIdentity(process.env), MEMESH_DB_PATH: dbPath, MEMESH_AUTO_CAPTURE: 'true' }, encoding: 'utf8', timeout: 20_000,
+    });
+    expect(run.status, run.stderr).toBe(0);
+    const db = new Database(dbPath, { readOnly: true });
+    try {
+      expect(db.prepare("SELECT name FROM entities WHERE name IN ('session-failed-edit-proof-files', 'session-failed-edit-proof-fixes')").all()).toEqual([]);
+    } finally { db.close(); }
+  });
+
+  it('Stop success claims: matched successful edits are observations, not proof of error resolution', () => {
+    writeTranscript([
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'error-read', name: 'Read', input: { file_path: '/repo/missing.txt' } }] } },
+      { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'error-read', is_error: true, content: 'Missing file' }] } },
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'successful-edit', name: 'Edit', input: { file_path: '/repo/a.txt' } }] } },
+      { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'successful-edit', is_error: false, content: 'File updated' }] } },
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'other-read', name: 'Read', input: { file_path: '/repo/a.txt' } }] } },
+      { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'other-read', content: 'file content' }] } },
+    ]);
+    const run = spawnSync(process.execPath, [path.resolve('scripts/hooks/session-summary.js')], {
+      input: JSON.stringify({ session_id: 'successful-edit-proof', transcript_path: transcriptPath, cwd: testDir }),
+      env: { ...withoutHostIdentity(process.env), MEMESH_DB_PATH: dbPath, MEMESH_AUTO_CAPTURE: 'true' }, encoding: 'utf8', timeout: 20_000,
+    });
+    expect(run.status, run.stderr).toBe(0);
+    const db = new Database(dbPath, { readOnly: true });
+    try {
+      expect(db.prepare("SELECT name FROM entities WHERE name = 'session-successful-edit-proof-files'").get()).toBeTruthy();
+      const observations = db.prepare('SELECT content FROM observations').all() as Array<{ content: string }>;
+      expect(observations.some((row) => row.content.includes('a.txt'))).toBe(true);
+      expect(observations.some((row) => /\bFixed\b|\berrors? resolved\b/i.test(row.content))).toBe(false);
+      expect(db.prepare("SELECT tag FROM tags WHERE tag = 'type:bugfix'").all()).toEqual([]);
+    } finally { db.close(); }
+  });
 
   it('Scenario: citation accounting end to end — cited earns a hit, silence earns NOTHING', () => {
     // The whole loop against a real spawned hook: an injected-set record, a
@@ -362,7 +417,7 @@ describe('Feature: Session Summary (Stop Hook)', () => {
 
     // UX-1 title: date + project + what happened, marked heuristic — the
     // dashboard shows this instead of the session-<id> machine key.
-    expect(entity.title).toMatch(/^\d{4}-\d{2}-\d{2} .+: edited 2 file\(s\)$/);
+    expect(entity.title).toMatch(/^\d{4}-\d{2}-\d{2} .+: successful edit tool results for 2 file\(s\)$/);
     expect(JSON.parse(entity.metadata).title_source).toBe('heuristic');
     db.close();
   });
@@ -523,7 +578,7 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     db.close();
   });
 
-  it('Scenario: Session with errors creates bugfix entity', () => {
+  it('Scenario: Session with errors stores neutral observations without a bugfix claim', () => {
     writeTranscript([
       { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/tmp/proj/src/auth.ts' } }] } },
       { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test -- --run' } }] } },
@@ -549,7 +604,10 @@ describe('Feature: Session Summary (Stop Hook)', () => {
 
     const tags = db.prepare('SELECT tag FROM tags WHERE entity_id = ?').all(fixEntity.id) as any[];
     const hasBugfixTag = tags.some((t: any) => t.tag === 'type:bugfix');
-    expect(hasBugfixTag).toBe(true);
+    expect(hasBugfixTag).toBe(false);
+    const observations = db.prepare('SELECT content FROM observations WHERE entity_id = ?').all(fixEntity.id) as Array<{ content: string }>;
+    expect(observations[0].content).toMatch(/^Observed .*error\(s\) and successful edit tool results/);
+    expect(observations.some((row) => /\bFixed\b/i.test(row.content))).toBe(false);
     db.close();
   });
 
@@ -594,8 +652,8 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     const headObs = obs.find((o) => o.content.startsWith('Significant session'));
     expect(headObs, 'the summary observation exists').toBeTruthy();
     const head = headObs!.content;
-    expect(head).toMatch(/3 files edited/);
-    expect(head).not.toMatch(/0 files edited/);
+    expect(head).toMatch(/successful edit tool results for 3 file\(s\)/);
+    expect(head).not.toMatch(/successful edit tool results for 0 file\(s\)/);
     db.close();
   });
 

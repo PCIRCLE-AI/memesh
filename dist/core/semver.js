@@ -1,5 +1,17 @@
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const NUMERIC_IDENTIFIER = /^\d+$/;
+export function normalizeRegistryVersion(raw) {
+    let version = raw.trim();
+    if (version.startsWith('"')) {
+        try {
+            const decoded = JSON.parse(version);
+            if (typeof decoded === 'string')
+                version = decoded;
+        }
+        catch { }
+    }
+    return parseSemVer(version) ? version : null;
+}
 export function parseSemVer(version) {
     const match = SEMVER.exec(version);
     if (!match)

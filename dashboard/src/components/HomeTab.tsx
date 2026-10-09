@@ -3,10 +3,11 @@ import { InsightsTab } from './InsightsTab';
 import { AnalyticsTab } from './AnalyticsTab';
 import { MetricsRow } from './MetricsRow';
 import { type HealthData } from '../lib/api';
+import { type SetupState } from './DoctorBanner';
 import { t } from '../lib/i18n';
 
 type HomeDestination = 'Memories';
-type NextActionKind = 'loading' | 'empty' | 'insights' | 'healthy' | 'unavailable';
+type NextActionKind = 'loading' | 'empty' | 'insights' | 'healthy' | 'unavailable' | 'setup';
 
 interface InsightState {
   pendingCount: number;
@@ -18,7 +19,11 @@ export function chooseNextAction(
   entityCount: number | null,
   insights: InsightState,
   healthFailed = false,
+  setupState: SetupState = 'ready',
 ): NextActionKind {
+  if (setupState === 'attention') return 'setup';
+  if (setupState === 'unavailable') return 'unavailable';
+  if (setupState === 'loading') return 'loading';
   if (entityCount === 0) return 'empty';
   // The library size never arrived and the request failed: that is a status
   // check that could not be read, not one that is still loading.
@@ -75,15 +80,19 @@ function NextBestAction({
  */
 export function HomeTab({
   health = null,
+  setupState = 'ready',
   healthFailed = false,
   dataRevision = 0,
   onNavigate = () => {},
+  onRefreshHealth,
 }: {
   health?: HealthData | null;
+  setupState?: SetupState;
   /** The health request failed and no reading has ever arrived. */
   healthFailed?: boolean;
   dataRevision?: number;
   onNavigate?: (destination: HomeDestination) => void;
+  onRefreshHealth?: () => void;
 }) {
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
   const [analyticsVisited, setAnalyticsVisited] = useState(false);
@@ -95,7 +104,7 @@ export function HomeTab({
     target?.focus({ preventScroll: true });
   }, []);
 
-  const nextAction = chooseNextAction(health?.entity_count ?? null, insights, healthFailed);
+  const nextAction = chooseNextAction(health?.entity_count ?? null, insights, healthFailed, setupState);
 
   function toggleAnalytics() {
     const next = !analyticsOpen;
@@ -110,7 +119,7 @@ export function HomeTab({
           row still degrades per tile: one unmeasured metric says so and the
           others continue to show. */}
       <MetricsRow dataRevision={dataRevision} libraryEmpty={health?.entity_count === 0} />
-      <InsightsTab dataRevision={dataRevision} onStateChange={setInsights} />
+      <InsightsTab dataRevision={dataRevision} onStateChange={setInsights} onRefreshHealth={onRefreshHealth} />
       <div class="card" style={{ marginTop: 8 }}>
         <button
           onClick={toggleAnalytics}

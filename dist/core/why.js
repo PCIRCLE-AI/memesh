@@ -33,12 +33,15 @@ export function resolveFileCommits(repoDir, file, opts = {}) {
         try {
             out = runGit(repoDir, ['blame', '-L', `${opts.line},${opts.line}`, '--porcelain', '--', file]);
         }
-        catch {
-            return { commits: [], abstention: 'line_out_of_range' };
+        catch (error) {
+            const failure = error;
+            const range = String(failure.stderr ?? '').match(/^fatal: file .+ has only (\d+) lines?\s*$/m);
+            const beyondEnd = failure.status === 128 && range !== null && opts.line > Number(range[1]);
+            return { commits: [], abstention: beyondEnd ? 'line_out_of_range' : 'history_unreadable' };
         }
         const hash = out.split('\n')[0]?.split(' ')[0] ?? '';
         if (!/^[a-f0-9]{7,40}$/.test(hash))
-            return { commits: [], abstention: 'line_out_of_range' };
+            return { commits: [], abstention: 'history_unreadable' };
         if (UNCOMMITTED_HASH.test(hash))
             return { commits: [], abstention: 'line_uncommitted' };
         const summary = out.split('\n').find((l) => l.startsWith('summary '));
@@ -81,7 +84,7 @@ function parseMetadata(raw) {
 }
 function findCommitEntity(db, hash) {
     const rows = db.prepare(`SELECT id, name, type, title, created_at, metadata FROM entities
-     WHERE type = 'commit' AND name LIKE 'commit-%'
+     WHERE type = 'commit' AND status != 'archived' AND name LIKE 'commit-%'
        AND length(substr(name, 8)) >= 7
        AND substr(name, 8) GLOB '[0-9a-fA-F]*'
        AND (

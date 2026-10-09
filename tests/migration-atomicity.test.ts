@@ -16,7 +16,7 @@
  * the write lock, a failure backs off instead of re-scanning the corpus on
  * every process start, and the marker is not advanced by a failed run.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -172,7 +172,17 @@ describe('Feature: index migration atomicity', () => {
 
     breakFtsIndex();
 
-    openDatabase(dbPath);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    let message: string;
+    try {
+      openDatabase(dbPath);
+      message = stderr.mock.calls.map(([text]) => String(text)).join('');
+    } finally {
+      stderr.mockRestore();
+    }
+    expect(message).toContain('search index rebuild failed');
+    expect(message).toContain('rolled back');
+    expect(message).toContain('memesh reindex --fts');
     const attempt = getDatabase()
       .prepare("SELECT value FROM memesh_metadata WHERE key = 'fts_segmentation_version_last_attempt'")
       .get() as { value: string } | undefined;
@@ -298,6 +308,35 @@ describe('Feature: index migration atomicity', () => {
         .prepare("SELECT value FROM memesh_metadata WHERE key = 'test_classify_permanent_last_attempt'")
         .get()
     ).toBeDefined();
+  });
+
+  it('reports a failed data repair truthfully without prescribing an unrelated FTS rebuild', () => {
+    const db = openDatabase(dbPath);
+    db.prepare("INSERT INTO entities (name, type) VALUES ('pending-repair', 'note')").run();
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      expect(runOnceMigration(db, {
+        key: 'test_data_repair', version: 1, describe: 'lesson data repair',
+        migrate: (conn) => {
+          conn.prepare("UPDATE entities SET status = 'archived' WHERE name = 'pending-repair'").run();
+          throw new Error('repair fixture failure');
+        },
+      })).toBe(false);
+      expect(db.prepare("SELECT status FROM entities WHERE name = 'pending-repair'").get())
+        .toEqual({ status: 'active' });
+      expect(db.prepare("SELECT value FROM memesh_metadata WHERE key = 'test_data_repair'").get())
+        .toBeUndefined();
+      expect(db.prepare("SELECT value FROM memesh_metadata WHERE key = 'test_data_repair_last_attempt'").get())
+        .toBeDefined();
+      const message = stderr.mock.calls.map(([text]) => String(text)).join('');
+      expect(message).toContain('lesson data repair failed');
+      expect(message).toContain('rolled back');
+      expect(message).toContain('24h');
+      expect(message).not.toContain('derived index');
+      expect(message).not.toContain('reindex --fts');
+    } finally {
+      stderr.mockRestore();
+    }
   });
 
   it('reindexFts rebuilds even when the marker says there is nothing to do', () => {

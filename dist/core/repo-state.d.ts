@@ -1,6 +1,6 @@
 export interface RepoState {
     branch: string | null;
-    uncommitted: number;
+    uncommitted: number | null;
     lastTag: string | null;
     commitsSinceTag: number | null;
     declaredVersion: string | null;

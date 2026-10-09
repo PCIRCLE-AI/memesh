@@ -8,7 +8,7 @@ import { SettingsTab } from './components/SettingsTab';
 import { FeedbackWidget } from './components/FeedbackWidget';
 import { AuthPrompt } from './components/AuthPrompt';
 import { OnboardingBanner } from './components/OnboardingBanner';
-import { DoctorBanner } from './components/DoctorBanner';
+import { DoctorBanner, type SetupState } from './components/DoctorBanner';
 import { InsightsBanner } from './components/InsightsBanner';
 import { api, AuthRequiredError, getApiToken, setApiToken, type HealthData } from './lib/api';
 import { classifyLoadError, failureMessage } from './lib/failure';
@@ -76,6 +76,7 @@ function initialTab(): Tab {
 export function App() {
   const [locale, setLocale] = useState<Locale>(() => initLocale());
   const [tab, setTab] = useState<Tab>(initialTab);
+  const [setupState, setSetupState] = useState<SetupState>('loading');
   const selectTab = useCallback((next: Tab) => {
     setTab(next);
   }, []);
@@ -220,7 +221,7 @@ export function App() {
           (dismissal or the condition resolving). Three banners could
           previously stack into a wall above the nav. */}
       <div class="notice-slot">
-        <DoctorBanner />
+        <DoctorBanner onStateChange={setSetupState} />
         {(health?.demo_entity_count ?? 0) === 0 && <OnboardingBanner health={health} />}
         <InsightsBanner currentTab={tab} onNavigateToInsights={() => selectTab('Home')} />
       </div>
@@ -228,15 +229,15 @@ export function App() {
       {/* Each panel is the tabpanel for its TabNav tab: id + role +
           aria-labelledby wire the roving-tablist relationship (see TabNav). */}
       <div class="main">
-        <div id="panel-Home" role="tabpanel" aria-labelledby="tab-Home" class={`panel ${tab === 'Home' ? 'active' : ''}`}>{tab === 'Home' && <HomeTab health={health} healthFailed={health === null && error !== ''} dataRevision={dataRevision} onNavigate={selectTab} />}</div>
-        <div id="panel-Memories" role="tabpanel" aria-labelledby="tab-Memories" class={`panel ${tab === 'Memories' ? 'active' : ''}`}>{keepMounted('Memories') && <MemoriesTab health={health} dataRevision={dataRevision} />}</div>
+        <div id="panel-Home" role="tabpanel" aria-labelledby="tab-Home" class={`panel ${tab === 'Home' ? 'active' : ''}`}>{tab === 'Home' && <HomeTab setupState={setupState} health={health} healthFailed={health === null && error !== ''} dataRevision={dataRevision} onNavigate={selectTab} onRefreshHealth={refetchHealth} />}</div>
+        <div id="panel-Memories" role="tabpanel" aria-labelledby="tab-Memories" class={`panel ${tab === 'Memories' ? 'active' : ''}`}>{keepMounted('Memories') && <MemoriesTab health={health} dataRevision={dataRevision} onRefreshHealth={refetchHealth} />}</div>
         <div id="panel-Project" role="tabpanel" aria-labelledby="tab-Project" class={`panel ${tab === 'Project' ? 'active' : ''}`}>{keepMounted('Project') && <ProjectTab health={health} dataRevision={dataRevision} />}</div>
         <div id="panel-Settings" role="tabpanel" aria-labelledby="tab-Settings" class={`panel ${tab === 'Settings' ? 'active' : ''}`}>
           {tab === 'Settings' && <SettingsTab locale={locale} onLocaleChange={setLocale} />}
         </div>
       </div>
       <FeedbackWidget health={health} />
-      <footer class="app-footer">{t('brand.subtitle')}</footer>
+      <footer class="app-footer">Remember what you learn. Keep moving forward.</footer>
     </div>
   );
 }

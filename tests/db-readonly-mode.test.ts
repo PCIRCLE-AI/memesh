@@ -9,11 +9,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { createRequire } from 'node:module';
 import { closeDatabase, openDatabase } from '../src/db.js';
 import { MemeshDatabase } from '../src/storage/sqlite.js';
 import { belongsToAnotherUser, ownerWriteCommand, SIDECAR_PERMISSIONS_CODE } from '../src/core/file-mode.js';
 
 const posix = process.platform !== 'win32';
+const { openHookDb } = createRequire(import.meta.url)('../scripts/hooks/_shared.js');
 
 /** A root-owned file without the owner write bit, if this system has one. */
 const rootOwnedReadOnly = ['/etc/sudoers', '/usr/share/firmlinks'].find((file) => {
@@ -83,6 +85,35 @@ describe('Feature: #520 a read-only database stays read-only', () => {
     closeDatabase();
     expect(fs.statSync(dbPath).mode & 0o777).toBe(0o600);
   });
+
+  for (const entry of ['core', 'hook'] as const) {
+    it.skipIf(!posix || process.getuid?.() === 0)(`${entry} reads a chmod 400 VACUUM backup without changing it or allowing writes`, () => {
+      const backup = path.join(dir, 'backup.db');
+      const seed = openDatabase(dbPath);
+      seed.prepare("INSERT INTO entities (name, type) VALUES ('backup-row', 'note')").run();
+      seed.exec(`VACUUM INTO '${backup.replace(/'/g, "''")}'`);
+      closeDatabase();
+      expect([...fs.readFileSync(backup).subarray(18, 20)]).toEqual([1, 1]);
+      fs.chmodSync(backup, 0o400);
+      const hash = () => crypto.createHash('sha256').update(fs.readFileSync(backup)).digest('hex');
+      const before = hash();
+      const opened = entry === 'core'
+        ? openDatabase(backup)
+        : openHookDb({ MEMESH_DB_PATH: backup }).db;
+      try {
+        expect(opened.prepare("SELECT name FROM entities WHERE name = 'backup-row'").get())
+          .toEqual({ name: 'backup-row' });
+        expect(() => opened.prepare("INSERT INTO entities (name, type) VALUES ('must-not-land', 'note')").run())
+          .toThrow(/readonly/i);
+      } finally {
+        if (entry === 'core') closeDatabase(); else opened.close();
+      }
+      expect(hash()).toBe(before);
+      expect(fs.statSync(backup).mode & 0o777).toBe(0o400);
+      expect(fs.existsSync(`${backup}-wal`)).toBe(false);
+      expect(fs.existsSync(`${backup}-shm`)).toBe(false);
+    });
+  }
 });
 
 describe('Feature: #520 a read-only snapshot folder is read, never made writable', () => {

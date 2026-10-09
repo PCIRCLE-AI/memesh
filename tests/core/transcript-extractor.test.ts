@@ -18,6 +18,22 @@ describe('transcript-extractor: parsing', () => {
   beforeEach(() => { tmp = mkdtempSync(join(tmpdir(), 'memesh-tx-parse-')); });
   afterEach(() => { rmSync(tmp, { recursive: true, force: true }); });
 
+  it('skips non-record JSON lines without losing visible turns on either side', () => {
+    const lines = [
+      JSON.stringify({ type: 'user', message: { content: 'visible before' } }),
+      'null', 'false', '5', '"not a record"', '[]', '{}', 'not JSON',
+      JSON.stringify({ type: 'assistant', message: { content: [
+        { type: 'thinking', thinking: 'private thinking' },
+        { type: 'text', text: 'visible after' },
+        { type: 'tool_use', name: 'hidden tool' },
+      ] } }),
+    ];
+    expect(parseVisibleConversation(Buffer.from(lines.join('\n')))).toEqual([
+      { role: 'user', text: 'visible before' },
+      { role: 'assistant', text: 'visible after' },
+    ]);
+  });
+
   it('returns only visible UTF-8 user and assistant text in order when explicitly requested', () => {
     const path = writeTranscript(tmp, 'visible', [
       { type: 'user', content: '使用者的第一句：你好' },

@@ -13,7 +13,7 @@
  *      raw storage, so a memory stored decomposed was findable while active and
  *      unfindable the moment it was archived.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -33,6 +33,7 @@ describe('Feature: a failed open does not poison the process', () => {
 
   afterEach(() => {
     try { closeDatabase(); } catch { /* already closed */ }
+    vi.restoreAllMocks();
     fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
@@ -50,18 +51,18 @@ describe('Feature: a failed open does not poison the process', () => {
     // migrated — the contentless-FTS delete mismatch this release exists to
     // remove.
     //
-    // A read-only file rather than that held lock: it fails in ~2ms at exactly
-    // the same stage — `new Database()` SUCCEEDS and `db.exec(SCHEMA_SQL)`
-    // throws — where waiting out SQLite's 5s busy timeout costs five seconds
-    // per case for the same coverage.
+    // A conflicting view fails during SCHEMA_SQL after opening the handle,
+    // without a busy timeout. Read-only backups now legitimately open for
+    // reads, so lack of write access is no longer an open-failure fixture.
     const seed = new Database(dbPath);
-    seed.exec('CREATE TABLE IF NOT EXISTS placeholder (x)');
+    seed.exec("CREATE VIEW entities AS SELECT 'placeholder' AS id");
     seed.close();
-    fs.chmodSync(dbPath, 0o444);
 
-    expect(() => openDatabase(dbPath)).toThrow(/readonly|read-only/i);
+    expect(() => openDatabase(dbPath)).toThrow(/view.*index|index.*view/i);
 
-    fs.chmodSync(dbPath, 0o644);
+    const repair = new Database(dbPath);
+    repair.exec('DROP VIEW entities');
+    repair.close();
 
     // The retry gets a REAL database, not the wreck of the first attempt.
     const db = openDatabase(dbPath);
@@ -80,11 +81,14 @@ describe('Feature: a failed open does not poison the process', () => {
     // Otherwise a process that retries in a loop leaks a file descriptor and a
     // WAL reader per attempt.
     const seed = new Database(dbPath);
-    seed.exec('CREATE TABLE IF NOT EXISTS placeholder (x)');
+    seed.exec("CREATE VIEW entities AS SELECT 'placeholder' AS id");
     seed.close();
-    fs.chmodSync(dbPath, 0o444);
-    expect(() => openDatabase(dbPath)).toThrow();
-    fs.chmodSync(dbPath, 0o644);
+    const closed = vi.spyOn(Database.prototype, 'close');
+    expect(() => openDatabase(dbPath)).toThrow(/view.*index|index.*view/i);
+    expect(closed).toHaveBeenCalledTimes(1);
+    const abandoned = closed.mock.contexts[0] as Database;
+    expect(() => abandoned.prepare('SELECT 1')).toThrow(/not open|closed/i);
+    closed.mockRestore();
 
     // If the abandoned handle were still open, this exclusive lock would be
     // refused.

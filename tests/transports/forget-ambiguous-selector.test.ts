@@ -141,8 +141,10 @@ describe('a selector matching neither spelling keeps the not-found answer', () =
     expect(mcp.isError).toBe(true);
     expect(JSON.stringify(mcp)).toContain('has no observation matching that text');
     const http = await httpForget('absent', 'never stored');
-    expect(http.status).toBe(200);
-    expect(JSON.parse(http.text).data.observation_removed).toBe(false);
+    expect(http.status).toBe(400);
+    expect(JSON.parse(http.text).success).toBe(false);
+    expect(JSON.parse(http.text).errorCode).toBe('operation.failed');
+    expect(JSON.parse(http.text).error).toContain('has no observation matching that text');
     const cli = cliForget('absent', 'never stored');
     expect(cli.status).toBe(1);
     expect(cli.out).toContain('has no observation matching that text');
