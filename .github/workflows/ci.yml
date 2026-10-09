@@ -190,7 +190,6 @@ jobs:
         env:
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
-        # vitest.config.ts skips release UI tests; core/API tests and coverage floors remain.
         run: ${{ matrix.coverage && 'npm run test:coverage' || 'npm test -- --run' }}
 
       - name: Doctor (manifest + hooks integrity gate)
