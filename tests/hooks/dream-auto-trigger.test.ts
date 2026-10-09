@@ -19,9 +19,14 @@ it('Stop captures and indexes rules without provider requests, dream spawn, or s
       autoUpdate: 'off', llm: { provider: 'ollama' }, transcriptMining: true,
     }));
     fs.writeFileSync(transcript, [
-      ...Array.from({ length: 4 }, (_, i) => ({ type: 'assistant', message: { content: [
-        { type: 'tool_use', id: 'edit-' + i, name: 'Edit', input: { file_path: path.join(dir, 'file-' + i + '.ts') } },
-      ] } })),
+      ...Array.from({ length: 4 }, (_, i) => [
+        { type: 'assistant', message: { content: [
+          { type: 'tool_use', id: 'edit-' + i, name: 'Edit', input: { file_path: path.join(dir, 'file-' + i + '.ts') } },
+        ] } },
+        { type: 'user', message: { content: [
+          { type: 'tool_result', tool_use_id: 'edit-' + i, is_error: false, content: 'File updated successfully' },
+        ] } },
+      ]).flat(),
       { type: 'user', message: { content: [{ type: 'tool_result', is_error: true, content: 'Synthetic test failed before edit' }] } },
     ].map(entry => JSON.stringify(entry)).join('\n'));
     fs.writeFileSync(preload, `
