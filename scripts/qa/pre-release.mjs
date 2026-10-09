@@ -20,7 +20,8 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { isMain, treeHash, readJson, writeJson } from '../lib/verify-core.mjs';
+import { isMain, treeHash, readJson, writeJson, git } from '../lib/verify-core.mjs';
+import { readApprovedReleaseReuse } from '../lib/release-preconditions.mjs';
 
 /** The steps, in order. Each `id` must be an npm script in package.json. */
 export const STEPS = [
@@ -121,7 +122,7 @@ export function currentTreeHash(repoRoot) {
 export const NOT_CHECKED = [
   'UI review evidence is checked for completeness and candidate binding, not semantic truth. The release owner must verify reviewer independence and replay the retained browser observations; a JSON report cannot prove usability.',
   'Real-host qa:live-journey checks need a caller-prepared authenticated --codex-home for Codex and an interactive Claude Code session for Claude. ' +
-    'Both --host codex and --host claude receipts are required by `release:finish`, using memesh-live-journey/v4 with all core journeys (see release-preconditions.mjs).',
+    'Both hosts need memesh-live-journey/v4 receipts or explicitly approved, candidate-bound evidence reuse (see release-preconditions.mjs).',
   'npm run qa:post-release — only meaningful after the release is published; run it next.',
 ];
 
@@ -131,7 +132,7 @@ export const NOT_CHECKED = [
  */
 export function formatVerdict(results) {
   const lines = results.map((result) => {
-    const outcome = result.status === 0 ? 'PASS' : 'FAIL';
+    const outcome = result.disposition ?? (result.status === 0 ? 'PASS' : 'FAIL');
     const detail = result.signal
       ? `killed by ${result.signal}`
       : result.reused
@@ -163,12 +164,54 @@ function main() {
     process.exit(1);
   }
 
+  let approvedReuse = null;
+  try {
+    if (fs.existsSync(path.join(repoRoot, '.qa', 'release-evidence-reuse.json'))) {
+      approvedReuse = readApprovedReleaseReuse(repoRoot, git(['rev-parse', 'HEAD'], { cwd: repoRoot }), currentTreeHash(repoRoot));
+    }
+  } catch (error) {
+    console.error(`pre-release gate: ${error.message}`);
+    process.exit(1);
+  }
   console.log(`pre-release gate: ${STEPS.length} steps, in order\n`);
   // Only the finish-release.mjs dry-run/real pair sets this (see
   // CACHE_ENV_VAR); every other caller runs every step fresh, always.
   const cachingAllowed = process.env[CACHE_ENV_VAR] === '1';
   const results = [];
   for (const step of STEPS) {
+    if (approvedReuse) {
+      try {
+        if (git(['status', '--porcelain'], { cwd: repoRoot }) !== '') {
+          throw new Error('release candidate changed before evidence reuse');
+        }
+        approvedReuse = readApprovedReleaseReuse(repoRoot, git(['rev-parse', 'HEAD'], { cwd: repoRoot }), approvedReuse.tree);
+        if (!approvedReuse) throw new Error('release evidence reuse mapping disappeared');
+      } catch (error) {
+        console.error(`pre-release gate: ${error.message}`);
+        process.exit(1);
+      }
+    }
+    if (approvedReuse && step.id === 'qa:ui-review') {
+      console.log(`--- ${step.id}\n    SKIP by explicit release disposition: ${approvedReuse.authority.decision}`);
+      results.push({ id: step.id, status: 0, signal: null, disposition: 'SKIP', reused: approvedReuse.path });
+      continue;
+    }
+    if (approvedReuse && step.id === 'verify:artifact') {
+      // Keep security/version/artifact gates fresh. Only the suite and unchanged
+      // upgrade evidence are reused; the newly packed candidate is still smoked.
+      let failed = false;
+      for (const id of ['verify:release', 'test:packaged']) {
+        const child = spawnSync('npm', ['run', id], { cwd: repoRoot, stdio: 'inherit', shell: process.platform === 'win32' });
+        if (child.status !== 0) {
+          results.push({ id, status: child.status, signal: child.signal });
+          failed = true;
+          break;
+        }
+      }
+      if (failed) break;
+      results.push({ id: step.id, status: 0, signal: null, disposition: 'REUSED_WITH_CONCERNS', reused: approvedReuse.path });
+      continue;
+    }
     // Hashed fresh at each cacheable step, not once before the loop: `build`
     // (not cacheable) runs first and rewrites the version-controlled dist/,
     // so the tree `verify:artifact` actually measures only exists after it.
@@ -197,8 +240,9 @@ function main() {
 
   console.log('\nnot checked here:');
   for (const item of NOT_CHECKED) console.log(`  - ${item}`);
+  if (approvedReuse) for (const concern of approvedReuse.concerns) console.log(`  - retained concern: ${concern}`);
 
-  console.log(`\n${verdict.ok ? 'PASS' : 'FAIL'} — pre-release gate`);
+  console.log(`\n${verdict.ok ? (approvedReuse ? 'PASS_WITH_CONCERNS' : 'PASS') : 'FAIL'} — pre-release gate`);
   process.exit(verdict.ok ? 0 : 1);
 }
 

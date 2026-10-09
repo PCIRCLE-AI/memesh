@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { redactUserPaths } from './paths.js';
+import { normalizeRegistryVersion } from './semver.js';
 export const UP_TO_DATE_REFRESH_MS = 60 * 60 * 1000;
 export const UPGRADE_AVAILABLE_REFRESH_MS = 12 * 60 * 60 * 1000;
 export const ANSWER_VALID_MS = 24 * 60 * 60 * 1000;
@@ -145,7 +146,12 @@ function boundedReason(raw) {
 function answerIsCurrent(currentVersion, cache, now) {
     if (!cache || cache.currentVersion !== currentVersion)
         return false;
-    if (typeof cache.latestVersion !== 'string' || !cache.latestVersion)
+    if (typeof cache.latestVersion !== 'string')
+        return false;
+    const latest = normalizeRegistryVersion(cache.latestVersion);
+    if (latest === null)
+        return false;
+    if (cache.checkSucceeded === false && !isStrictlyOlder(currentVersion, latest))
         return false;
     const successAt = parseIso(cache.lastSuccessfulCheckAt);
     if (successAt === null)
@@ -157,7 +163,7 @@ export function shouldRefreshUpdateCache(currentVersion, cache, now = new Date()
         return true;
     const successAt = parseIso(cache.lastSuccessfulCheckAt);
     const age = now.getTime() - successAt;
-    const upgrade = isStrictlyOlder(currentVersion, cache.latestVersion);
+    const upgrade = isStrictlyOlder(currentVersion, normalizeRegistryVersion(cache.latestVersion));
     return age > (upgrade ? UPGRADE_AVAILABLE_REFRESH_MS : UP_TO_DATE_REFRESH_MS);
 }
 export function resolveUpdateNotice(input) {
@@ -180,12 +186,16 @@ export function resolveUpdateNotice(input) {
                 || (typeof cache.lastError === 'string' && cache.lastError.length > 0);
             if (typeof cache.lastError === 'string' && cache.lastError)
                 reason = boundedReason(cache.lastError);
+            else if (typeof cache.latestVersion === 'string' && normalizeRegistryVersion(cache.latestVersion) === null)
+                reason = 'registry returned an invalid version';
+            else if (attempted && cache.checkSucceeded === false)
+                reason = 'the last update check failed';
             else if (parseIso(cache.lastSuccessfulCheckAt) !== null)
                 reason = 'the last successful check is more than a day old';
         }
         return { kind: 'CHECK_FAILED', currentVersion, reason, attempted };
     }
-    const latestVersion = cache.latestVersion;
+    const latestVersion = normalizeRegistryVersion(cache.latestVersion);
     if (!isStrictlyOlder(currentVersion, latestVersion)) {
         return { kind: 'UP_TO_DATE', currentVersion, latestVersion };
     }

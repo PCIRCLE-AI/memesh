@@ -5,12 +5,73 @@ import path from 'node:path';
 import { remember } from '../../src/core/operations.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import { getDatabase } from '../../src/db.js';
-import { listProjectTags, openReadOnlyForPreview, renameProjectTag } from '../../src/core/project-tags.js';
+import { hasRenameWork, listProjectTags, openReadOnlyForPreview, renameProjectTag } from '../../src/core/project-tags.js';
 import { sendAgentMessage, pollAgentEvents } from '../../src/core/agent-messaging.js';
 import { MemeshDatabase } from '../../src/storage/sqlite.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
 
 const fixture = useTestDatabase('memesh-projtags-');
+
+describe('project rename preserves proposal scope', () => {
+  function proposal(project: string) {
+    const db = getDatabase();
+    const kg = new KnowledgeGraph(db);
+    const source = kg.createEntity('proposal-source', 'note', { observations: ['owned source'], tags: [`project:${project}`] });
+    return Number(db.prepare(`INSERT INTO dream_proposals(project, cluster_key, source_ids, proposed_digest, prompt_version)
+      VALUES (?, 'owned', ?, ?, 'v1')`).run(project, JSON.stringify([source]), JSON.stringify({ name: 'proposal-result', type: 'digest', observations: ['owned digest'], tags: [] })).lastInsertRowid);
+  }
+
+  it('previews without writing, moves proposals and accepts into the renamed project', async () => {
+    const id = proposal('alpha');
+    const db = getDatabase();
+    expect(renameProjectTag('alpha', 'beta', { apply: false })).toMatchObject({ proposalRows: 1, applied: false });
+    expect(db.prepare('SELECT project FROM dream_proposals WHERE id = ?').get(id)).toMatchObject({ project: 'alpha' });
+    expect(renameProjectTag('alpha', 'beta', { apply: true })).toMatchObject({ proposalRows: 1 });
+    const { applyProposal } = await import('../../src/core/dreamer.js');
+    applyProposal(db, id, new KnowledgeGraph(db));
+    expect(projectTagsOf('proposal-result')).toEqual(['project:beta']);
+  });
+
+  it('recognizes work when only a proposal carries the old project', () => {
+    proposal('alpha');
+    getDatabase().prepare("UPDATE tags SET tag='project:other' WHERE tag='project:alpha'").run();
+    expect(hasRenameWork('alpha')).toBe(true);
+    expect(renameProjectTag('alpha', 'beta', { apply: true })).toMatchObject({ affectedEntities: 0, proposalRows: 1 });
+    expect(hasRenameWork('alpha')).toBe(false);
+  });
+
+  it('rolls tags back if a trigger silently refuses the proposal move', () => {
+    proposal('alpha');
+    getDatabase().exec("CREATE TRIGGER refuse_proposal BEFORE UPDATE OF project ON dream_proposals BEGIN SELECT RAISE(IGNORE); END");
+    expect(() => renameProjectTag('alpha', 'beta', { apply: true })).toThrow(/proposal.*not scoped/);
+    expect(projectTagsOf('proposal-source')).toEqual(['project:alpha']);
+    expect(getDatabase().prepare('SELECT project FROM dream_proposals').get()).toMatchObject({ project: 'alpha' });
+  });
+
+  it('rolls tags back when the proposal update fails', () => {
+    proposal('alpha');
+    getDatabase().exec("CREATE TRIGGER fail_proposal BEFORE UPDATE OF project ON dream_proposals BEGIN SELECT RAISE(ABORT, 'owned proposal failure'); END");
+    expect(() => renameProjectTag('alpha', 'beta', { apply: true })).toThrow(/owned proposal failure/);
+    expect(projectTagsOf('proposal-source')).toEqual(['project:alpha']);
+    expect(getDatabase().prepare('SELECT project FROM dream_proposals').get()).toMatchObject({ project: 'alpha' });
+  });
+
+  it('still renames tags in a legacy database without the proposals table', () => {
+    const db = getDatabase();
+    new KnowledgeGraph(db).createEntity('legacy-note', 'note', { observations: ['owned'], tags: ['project:alpha'] });
+    db.exec('DROP TABLE dream_proposals');
+    expect(renameProjectTag('alpha', 'beta', { apply: true })).toMatchObject({ renamed: 1, proposalRows: 0 });
+    expect(projectTagsOf('legacy-note')).toEqual(['project:beta']);
+  });
+
+  it('does not mistake a broken proposal source for an absent legacy table', () => {
+    const db = getDatabase();
+    new KnowledgeGraph(db).createEntity('broken-note', 'note', { observations: ['owned'], tags: ['project:alpha'] });
+    db.exec('DROP TABLE dream_proposals; CREATE VIEW dream_proposals AS SELECT id, project FROM missing_proposal_source');
+    expect(() => renameProjectTag('alpha', 'beta', { apply: true })).toThrow(/missing_proposal_source/);
+    expect(projectTagsOf('broken-note')).toEqual(['project:alpha']);
+  });
+});
 
 function projectTagsOf(name: string): string[] {
   const row = getDatabase().prepare('SELECT id FROM entities WHERE name = ?').get(name) as { id: number } | undefined;

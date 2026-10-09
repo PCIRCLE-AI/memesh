@@ -400,7 +400,16 @@ app.post('/v1/recall', (req, res) => handlePost(RecallBody, req, res, async (dat
     const { entities, conflicts, retrieval } = await recallWithConflicts(data);
     return conflicts.length > 0 ? { entities, retrieval, conflicts } : { entities, retrieval };
 }));
-app.post('/v1/forget', (req, res) => handlePost(ForgetBody, req, res, forget));
+app.post('/v1/forget', (req, res) => handlePost(ForgetBody, req, res, (data) => {
+    const result = forget(data);
+    if (result.archived === false || (result.observation_removed === false && !result.entity_found)) {
+        throw new HttpError(404, 'resource.not-found', result.message ?? `Entity "${data.name}" not found`);
+    }
+    if (result.observation_removed === false) {
+        throw new HttpError(400, 'operation.failed', `Entity "${data.name}" has no observation matching that text (${result.remaining_observations} observation(s) present).`);
+    }
+    return result;
+}));
 for (const [retiredRoute, error] of Object.entries(RETIRED_ROUTES)) {
     app.post(retiredRoute, (_req, res) => {
         res.status(410).json({ success: false, errorCode: 'route.retired', error });

@@ -95,12 +95,19 @@ export function TaskStateCard({ data, error }: { data: TaskStateData | null; err
               {present.map((f) => (
                 <Fragment key={f}>
                   <dt style={{ color: f === 'blocked' ? 'var(--amber)' : 'var(--text-3)', fontSize: 14 }}>{t(`project.taskState.${f}`)}</dt>
-                  <dd style={{ margin: 0, color: 'var(--text-1)' }}>{data.state[f]}</dd>
+                  <dd style={{ margin: 0, color: 'var(--text-1)' }}>
+                    {data.state[f]}
+                    {data.state.stated_at?.[f] && (
+                      <small style={{ display: 'block', color: 'var(--text-3)', fontSize: 14 }}>
+                        <time dateTime={data.state.stated_at[f]}>{t('project.taskState.updated', { when: data.state.stated_at[f]! })}</time>
+                      </small>
+                    )}
+                  </dd>
                 </Fragment>
               ))}
             </dl>
             <p style={{ margin: '10px 0 0', fontSize: 14, color: 'var(--text-3)' }}>
-              {data.state.updated_at ? `${t('project.taskState.updated', { when: relativeDate(data.state.updated_at) })} · ` : ''}
+              {data.state.stated_at === undefined && data.state.updated_at ? `${t('project.taskState.updated', { when: relativeDate(data.state.updated_at) })} · ` : ''}
               {t('project.taskState.provenance')}
             </p>
           </>
@@ -188,7 +195,12 @@ export function BriefingIndexCard({ data, error }: { data: BriefingIndexData | n
             ))}
           </ul>
         )}
-      {data.more > 0 && <p style={{ margin: '8px 0 0', fontSize: 14, color: 'var(--text-3)' }}>{monoMarked(t('project.index.more', { n: `\`${data.more}${plus}\`` }))}</p>}
+      {data.more > 0 && <p style={{ margin: '8px 0 0', fontSize: 14, color: 'var(--text-3)' }}>
+        {monoMarked(t('project.index.more', { n: `\`${data.more}${plus}\`` }))}{' — '}
+        {/* Keep project text out of the backtick markup parser. POSIX single
+            quoting preserves it as one literal argument, including quotes. */}
+        <code style={{ fontFamily: 'var(--mono)', overflowWrap: 'anywhere' }}>{`memesh recall --tag '${(`project:${data.project}`).replace(/'/g, "'\\''")}'`}</code>
+      </p>}
       {data.older > 0 && <p style={{ margin: '8px 0 0', fontSize: 14, color: 'var(--text-3)' }}>{monoMarked(t('project.index.older', { n: `\`${data.older}${plus}\``, days: `\`${data.staleDays}\`` }))}</p>}
       <p style={{ margin: '10px 0 0', fontSize: 14, color: 'var(--text-3)' }}>{monoMarked(t('project.index.cost', { tokens: `\`${data.tokens}\``, bytes: `\`${data.bytes}\`` }))}</p>
     </section>

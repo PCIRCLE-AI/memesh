@@ -331,7 +331,8 @@ export interface ProjectInfo {
  *  optional: absent means "never stated", never "nothing to do". */
 export interface TaskStateData {
   project: string;
-  state: { goal?: string; next?: string; blocked?: string; done?: string; updated_at?: string };
+  state: { goal?: string; next?: string; blocked?: string; done?: string; updated_at?: string;
+    stated_at?: Partial<Record<'goal' | 'next' | 'blocked' | 'done', string>> };
 }
 
 export async function fetchTaskState(project: string): Promise<TaskStateData> {
@@ -408,4 +409,3 @@ export async function fetchProjects(): Promise<ProjectInfo[]> {
   }
   return data;
 }
-

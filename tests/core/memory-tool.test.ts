@@ -141,6 +141,45 @@ describe('Feature: memory_20250818 over the knowledge graph', () => {
   // --- 2. The line-order invariant ------------------------------------------
 
   describe('line numbers address the same content on the next turn', () => {
+    it.each(['str_replace', 'insert'] as const)('%s keeps observations and tags committed by a peer before the edit locks', (command) => {
+      seed('peer-edit', ['alpha', 'omega']);
+      const db = getDatabase();
+      const originalTransaction = db.transaction.bind(db);
+      let injected = false;
+      const transaction = vi.spyOn(db, 'transaction').mockImplementation((body) => {
+        if (!injected) {
+          injected = true;
+          const other = new Database(path.join(dir, 'test.db'));
+          try {
+            other.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+            new KnowledgeGraph(other).createEntity('peer-edit', 'note', {
+              observations: ['peer line'], tags: ['peer-tag'], namespace: 'personal',
+            });
+          } finally {
+            other.close();
+          }
+        }
+        return originalTransaction(body);
+      });
+
+      let result;
+      try {
+        result = handleMemoryCommand(command === 'str_replace'
+          ? { command, path: file('peer-edit'), old_str: 'alpha', new_str: 'ALPHA' }
+          : { command, path: file('peer-edit'), insert_line: 1, insert_text: 'inserted' });
+      } finally {
+        transaction.mockRestore();
+      }
+
+      expect(injected).toBe(true);
+      expect(result!.isError).toBe(false);
+      const entity = new KnowledgeGraph(db).getEntity('peer-edit')!;
+      expect(entity.observations).toEqual(command === 'str_replace'
+        ? ['ALPHA', 'omega', 'peer line']
+        : ['alpha', 'inserted', 'omega', 'peer line']);
+      expect(entity.tags).toContain('peer-tag');
+    });
+
     it('orders by insertion, so a write between view and edit cannot move a line', () => {
       // The scenario, exactly: the model views the file, something else writes
       // to the same entity, and only THEN does the model's edit arrive. This

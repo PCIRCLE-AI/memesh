@@ -499,10 +499,55 @@ describe('HTTP Transport: POST /v1/forget', () => {
     expect(res.body.data.archived).toBe(true);
   });
 
-  it('returns archived=false for non-existent entity', async () => {
+  it('reports a missing entity as a failed request (#596)', async () => {
     const res = await req('POST', '/v1/forget', { name: 'ghost-entity-xyz' });
+    expect(res.status).toBe(404);
+    expect(res.body.success).toBe(false);
+    expect(res.body.errorCode).toBe('resource.not-found');
+    expect(res.body.error).toContain('ghost-entity-xyz');
+    expect(getDatabase().prepare('SELECT id FROM entities WHERE name = ?').get('ghost-entity-xyz')).toBeUndefined();
+  });
+
+  it('keeps the existing repeat-archive success contract', async () => {
+    const res = await req('POST', '/v1/forget', { name: 'http-forget-me' });
     expect(res.status).toBe(200);
-    expect(res.body.data.archived).toBe(false);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.archived).toBe(true);
+    expect((getDatabase().prepare('SELECT status FROM entities WHERE name = ?').get('http-forget-me') as { status: string }).status).toBe('archived');
+  });
+
+  it('refuses a missing observation and leaves the stored entity unchanged', async () => {
+    const name = 'http-forget-observation-absent';
+    await req('POST', '/v1/remember', { name, type: 'note', observations: ['keep this fact'] });
+    const snapshot = () => JSON.stringify({ row: getDatabase().prepare('SELECT * FROM entities WHERE name = ?').get(name), entity: new KnowledgeGraph(getDatabase()).getEntity(name) });
+    const before = snapshot();
+    const res = await req('POST', '/v1/forget', { name, observation: 'not stored' });
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+    expect(res.body.errorCode).toBe('operation.failed');
+    expect(res.body.error).toContain('has no observation matching that text');
+    expect(snapshot()).toBe(before);
+  });
+
+  it('reports a missing entity for observation removal without creating it', async () => {
+    const name = 'http-forget-observation-no-entity';
+    const res = await req('POST', '/v1/forget', { name, observation: 'not stored' });
+    expect(res.status).toBe(404);
+    expect(res.body.success).toBe(false);
+    expect(res.body.errorCode).toBe('resource.not-found');
+    expect(getDatabase().prepare('SELECT id FROM entities WHERE name = ?').get(name)).toBeUndefined();
+  });
+
+  it('removes the matching observation while retaining the active entity and other text', async () => {
+    const name = 'http-forget-observation-present';
+    await req('POST', '/v1/remember', { name, type: 'note', observations: ['remove this fact', 'keep this fact'] });
+    const res = await req('POST', '/v1/forget', { name, observation: 'remove this fact' });
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.observation_removed).toBe(true);
+    const entity = new KnowledgeGraph(getDatabase()).getEntity(name)!;
+    expect((getDatabase().prepare('SELECT status FROM entities WHERE name = ?').get(name) as { status: string }).status).toBe('active');
+    expect(entity.observations).toEqual(['keep this fact']);
   });
 });
 

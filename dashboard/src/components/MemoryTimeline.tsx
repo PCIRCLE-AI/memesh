@@ -180,6 +180,8 @@ export function MemoryTimeline({ data }: MemoryTimelineProps) {
     // unlike window.resize which misses the tab reveal case.
     const observer = new ResizeObserver(() => drawTimeline(canvas, data));
     observer.observe(canvas);
+    // A drawn canvas has a px width; its container can shrink without it resizing.
+    if (canvas.parentElement) observer.observe(canvas.parentElement);
     return () => observer.disconnect();
   }, [data]);
 

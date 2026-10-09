@@ -35,7 +35,7 @@
 // times has a few hundred lines here, which is the history a human wants
 // anyway.
 
-import { jsonStringLiteral, projectLabel } from './work-topology.js';
+import { jsonStringLiteral, projectLabel, sliceWholeChars } from './work-topology.js';
 import { redactShownTogether } from './paths.js';
 
 /** The entity type. Already listed in work-topology's WORK_LAYER_TYPES. */
@@ -53,6 +53,10 @@ export type TaskStateField = (typeof TASK_STATE_FIELDS)[number];
 export type TaskState = Partial<Record<TaskStateField, string>> & {
   /** ISO timestamp of the last field CHANGE (not the last write attempt). */
   updated_at?: string;
+  /** Original shared timestamp, retained as provenance rather than a field date. */
+  legacy_updated_at?: string;
+  /** Per-field change dates. Absent only on legacy records with one date. */
+  stated_at?: Partial<Record<TaskStateField, string>>;
 };
 
 /** Longest a single field may be. Past this it is a memory, not a state. */
@@ -65,6 +69,11 @@ export const MAX_FIELD_CHARS = 300;
  */
 export function taskStateName(project: string): string {
   return `${TASK_STATE_TYPE}:${project}`;
+}
+
+/** Shared recovery text for core errors and the startup hook's context. */
+export function taskStateUnreadableMessage(project: string): string {
+  return `task state for project ${jsonStringLiteral(projectLabel(project))} is not readable: the stored record is not valid JSON. Set a non-empty field with \`memesh task --goal …\` to replace the broken record.`;
 }
 
 /**
@@ -89,7 +98,34 @@ export function parseTaskState(metadata: unknown): TaskState {
   }
   const updated = bag.updated_at;
   if (typeof updated === 'string' && updated.trim()) state.updated_at = updated.trim();
+  const legacy = bag.legacy_updated_at;
+  if (typeof legacy === 'string') {
+    const trimmed = legacy.trim();
+    const match = ZONED_INSTANT.exec(trimmed);
+    if (match?.groups && isRealInstant(match.groups)) state.legacy_updated_at = trimmed;
+  }
+  if (bag.stated_at !== undefined) {
+    // Once per-field dates exist, a missing or malformed date is unknown;
+    // falling back to updated_at would refresh untouched fields again.
+    state.stated_at = {};
+    const dates = bag.stated_at;
+    if (dates && typeof dates === 'object' && !Array.isArray(dates)) {
+      for (const field of TASK_STATE_FIELDS) {
+        const date = (dates as Record<string, unknown>)[field];
+        if (!state[field] || typeof date !== 'string') continue;
+        const trimmed = date.trim();
+        const match = ZONED_INSTANT.exec(trimmed);
+        // Do not echo arbitrary free-form metadata through JSON read surfaces.
+        // Valid future instants remain stored, but the age resolver refuses them.
+        if (match?.groups && isRealInstant(match.groups)) state.stated_at[field] = trimmed;
+      }
+    }
+  }
   return state;
+}
+
+function fieldStatedAt(state: TaskState, field: TaskStateField): string | undefined {
+  return state.stated_at === undefined ? state.updated_at : state.stated_at[field];
 }
 
 /**
@@ -103,7 +139,7 @@ export function parseTaskState(metadata: unknown): TaskState {
 export function normalizeFieldValue(value: string): string | null {
   const flat = value.replace(/\s+/g, ' ').trim();
   if (!flat) return null;
-  return flat.length > MAX_FIELD_CHARS ? `${flat.slice(0, MAX_FIELD_CHARS - 1).trimEnd()}…` : flat;
+  return flat.length > MAX_FIELD_CHARS ? `${sliceWholeChars(flat, MAX_FIELD_CHARS - 1).trimEnd()}…` : flat;
 }
 
 export interface TaskStateMerge {
@@ -148,7 +184,21 @@ export function mergeTaskState(
     }
   }
 
-  if (changed.length > 0) state.updated_at = now;
+  if (changed.length > 0) {
+    // A shared timestamp proves only that SOME field changed. It cannot
+    // establish an untouched field's individual date.
+    if (previous.stated_at === undefined && previous.updated_at !== undefined) {
+      const match = ZONED_INSTANT.exec(previous.updated_at);
+      if (match?.groups && isRealInstant(match.groups)) state.legacy_updated_at = previous.updated_at;
+    }
+    state.stated_at = {};
+    for (const field of TASK_STATE_FIELDS) {
+      if (!state[field]) continue;
+      const date = changed.includes(field) ? now : previous.stated_at?.[field];
+      if (date !== undefined) state.stated_at[field] = date;
+    }
+    state.updated_at = now;
+  }
   return { state, changed, observations };
 }
 
@@ -171,11 +221,8 @@ const FIELD_LABELS: Record<TaskStateField, string> = {
 
 /** Whole days between two instants, floored; null when the stamp is unusable. */
 function ageInDays(updatedAt: string | undefined, now: Date): number | null {
-  if (!updatedAt) return null;
-  const then = Date.parse(updatedAt);
-  if (Number.isNaN(then)) return null;
-  const days = Math.floor((now.getTime() - then) / 86_400_000);
-  return days >= 0 ? days : null;
+  const age = resolveTaskStateAge(updatedAt, now);
+  return age.known ? Math.floor(age.hours / 24) : null;
 }
 
 /**
@@ -205,7 +252,9 @@ export function taskStateLines(
   if (isEmptyTaskState(state)) return [];
   const days = ageInDays(state.updated_at, now);
   const age = days === null ? 'at some point' : days === 0 ? 'today' : days === 1 ? 'yesterday' : `${days} days ago`;
-  const lines = [`Stated about ${jsonStringLiteral(projectLabel(project))} ${age}, and not revisited since:`];
+  const lines = [state.stated_at === undefined
+    ? `Stated about ${jsonStringLiteral(projectLabel(project))} ${age}, and not revisited since:`
+    : `Stated about ${jsonStringLiteral(projectLabel(project))} (each field has its own date):`];
   // #523: redacted on DISPLAY as well as on write. `setTaskState` stores
   // the fields redacted now, but a task state written before that keeps the
   // text it was stored with, and this is the one builder every surface
@@ -215,7 +264,19 @@ export function taskStateLines(
   // as a whole.
   const present = TASK_STATE_FIELDS.filter((field) => state[field]);
   const shown = redactShownTogether(present.map((field) => state[field] as string));
-  present.forEach((field, i) => lines.push(`- ${FIELD_LABELS[field]}: ${shown[i]}`));
+  present.forEach((field, i) => {
+    let dateLabel = '';
+    if (state.stated_at !== undefined) {
+      const date = fieldStatedAt(state, field);
+      const fieldAge = resolveTaskStateAge(date, now);
+      const days = fieldAge.known ? Math.floor(fieldAge.hours / 24) : null;
+      const ageLabel = days === null ? 'unknown date' : days === 0 ? 'today' : days === 1 ? 'yesterday' : `${days} days ago`;
+      // Do not display an unvalidated date string from free-form metadata.
+      dateLabel = fieldAge.known ? ` (stated ${date}; ${ageLabel})` : ` (${ageLabel})`;
+    }
+    // Date first: briefing bounds the line, so a long value must not hide it.
+    lines.push(`- ${FIELD_LABELS[field]}:${dateLabel} ${shown[i]}`);
+  });
   return lines;
 }
 
@@ -419,6 +480,9 @@ function taskStateAgeUnknownLine(project: string): string {
  * `includeFresh` is the ONLY lever a briefing level has over task state
  * (`briefing-level.ts`'s `BriefingLevelPolicy.taskState`): neither flag line
  * is gated by it, for the same reason in both cases.
+ * With per-field dates, these rules apply to each field independently. A
+ * mixed record injects its fresh fields plus a notice about omitted fields;
+ * the full CLI read still shows all fields with their own dates (#406).
  */
 export function briefingTaskStateLines(
   state: TaskState,
@@ -427,6 +491,26 @@ export function briefingTaskStateLines(
   { includeFresh = true }: { includeFresh?: boolean } = {},
 ): string[] {
   if (isEmptyTaskState(state)) return [];
+  if (state.stated_at !== undefined) {
+    const present = TASK_STATE_FIELDS.filter((field) => state[field]);
+    const ages = present.map((field) => resolveTaskStateAge(fieldStatedAt(state, field), now));
+    const fresh = present.filter((_, index) => ages[index].known && ages[index].hours <= STALE_TASK_STATE_HOURS);
+    if (fresh.length === 0) {
+      if (ages.some((age) => !age.known)) return [taskStateAgeUnknownLine(project)];
+      return [staleTaskStateLine(project, Math.min(...ages.map((age) => age.known ? age.hours : Infinity)))];
+    }
+    const shown: TaskState = { updated_at: state.updated_at, stated_at: state.stated_at };
+    // Redact the entire field set before omitting stale fields; a credential
+    // can straddle a fresh and an old field in a legacy stored record.
+    const redacted = redactShownTogether(present.map((field) => state[field] as string));
+    present.forEach((field, index) => { if (fresh.includes(field)) shown[field] = redacted[index] as string; });
+    const lines = includeFresh ? taskStateLines(shown, project, now) : [];
+    const omitted = present.filter((field) => !fresh.includes(field));
+    if (omitted.length > 0) {
+      lines.push(`Task state for ${jsonStringLiteral(projectLabel(project))} has older or unknown-age fields (${omitted.join(', ')}) not shown as current. Run \`memesh task\` to see or update them.`);
+    }
+    return lines;
+  }
   const age = resolveTaskStateAge(state.updated_at, now);
   if (!age.known) return [taskStateAgeUnknownLine(project)];
   if (age.hours > STALE_TASK_STATE_HOURS) {

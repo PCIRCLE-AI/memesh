@@ -367,10 +367,8 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     expect(releaseJob).not.toContain('--quick');
   });
 
-  // The coverage floor and the packaged dashboard e2e each used to be their
-  // own job, and their required check names were what guaranteed they ran on
-  // every pull request. Both now live inside other jobs, so these two tests
-  // are what notices if either one quietly stops running.
+  // Coverage floors remain required; Dashboard UI checks are explicitly
+  // skipped for this release while packaged verification remains mandatory.
   function ciJob(id: string): string {
     const ci = read('.github/workflows/ci.yml');
     return ci.match(new RegExp(`\\n {2}${id}:\\n[\\s\\S]*?(?=\\n {2}[A-Za-z0-9_-]+:\\n|$)`))?.[0] ?? '';
@@ -418,30 +416,46 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     expect(step).toMatch(/\n\s+TMP: \$\{\{ runner\.temp \}\}\n/);
   });
 
-  it('runs the packaged dashboard e2e on every pull request, inside SDLC verify', () => {
+  it('retains packaged verification and explicitly skips UI under the KT release waiver', () => {
     const sdlcJob = ciJob('sdlc-verify');
     expect(sdlcJob).not.toBe('');
     expect(sdlcJob).not.toMatch(/\n {4}if:/);
     expect(sdlcJob).not.toMatch(/\n {4}continue-on-error/);
-    unconditionalStep(sdlcJob, 'npx playwright install --with-deps chromium');
+    expect(sdlcJob).not.toContain('npx playwright install');
+    const publisher = read('.github/workflows/publish-npm.yml');
+    expect(publisher).not.toContain('run: npm run test:e2e-dashboard');
+    expect(publisher).not.toContain('npx playwright install');
+    unconditionalStep(publisher, 'npm test -- --run');
+    // npm publish runs prepublishOnly -> test:isolated without CLI excludes.
+    const defaultExcludes = read('vitest.config.ts').match(/exclude:\s*\[([^\]]*)\],\n\n\s*\/\/ Explicit cleanup/)?.[1] ?? '';
+    for (const pattern of ['tests/dashboard/**', 'tests/dashboard-*.test.ts', 'tests/qa-ui-review.test.ts']) {
+      expect(defaultExcludes).toContain(`'${pattern}'`);
+    }
     // Journeys only: every Build & Test leg already runs the build, verify:release
     // and the full suite, so the full run here repeated them on the same OS and Node.
     unconditionalStep(sdlcJob, 'node scripts/verify.mjs --journeys');
     const config = JSON.parse(read('scripts/verify.config.json')) as {
       verify: { steps: Array<{ id: string; command: string; args?: string[]; journeys?: boolean }> };
     };
-    // --journeys runs only the steps marked as journeys, so these two must stay marked.
-    for (const id of ['build', 'packaged', 'dashboard-e2e']) {
+    // KT explicitly waived UI functional verification for this release.
+    // Build and installed-artifact verification remain mandatory journeys.
+    for (const id of ['build', 'packaged']) {
       expect(config.verify.steps.find((step) => step.id === id)?.journeys, id).toBe(true);
     }
+    expect(config.verify.steps.map((step) => step.id)).toEqual(['build', 'release-gates', 'unit', 'packaged']);
+    expect(config.verify.steps.find((step) => step.id === 'unit')?.args).toEqual([
+      'scripts/run-tests-isolated.mjs',
+      '--exclude', 'tests/dashboard/**',
+      '--exclude', 'tests/dashboard-*.test.ts',
+      '--exclude', 'tests/qa-ui-review.test.ts',
+    ]);
     const commands = config.verify.steps.map((step) => [step.command, ...(step.args ?? [])].join(' '));
     expect(commands).toEqual(
       expect.arrayContaining([
         'npm run build',
         'npm run verify:release',
-        'node scripts/run-tests-isolated.mjs',
+        'node scripts/run-tests-isolated.mjs --exclude tests/dashboard/** --exclude tests/dashboard-*.test.ts --exclude tests/qa-ui-review.test.ts',
         'npm run test:packaged',
-        'npm run test:e2e-dashboard',
       ]),
     );
   });

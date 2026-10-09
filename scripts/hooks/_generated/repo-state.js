@@ -40,7 +40,7 @@ export function readRepoState(cwdInput) {
     const branchRaw = tryGit(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']);
     const branch = branchRaw && branchRaw !== 'HEAD' ? branchRaw : null;
     const statusOut = tryGit(cwd, ['status', '--porcelain']);
-    const uncommitted = statusOut ? statusOut.split('\n').filter(l => l.trim() !== '').length : 0;
+    const uncommitted = statusOut === null ? null : statusOut.split('\n').filter(l => l.trim() !== '').length;
     const lastTag = tryGit(cwd, ['describe', '--tags', '--abbrev=0']);
     let commitsSinceTag = null;
     if (lastTag) {
@@ -62,7 +62,8 @@ export function repoStateLines(state) {
     const first = [];
     if (state.branch)
         first.push(`branch ${state.branch}`);
-    first.push(state.uncommitted === 0 ? 'working tree clean' : `${state.uncommitted} uncommitted`);
+    first.push(state.uncommitted === null ? 'working tree status unavailable'
+        : state.uncommitted === 0 ? 'working tree clean' : `${state.uncommitted} uncommitted`);
     const lines = ['Where the repository actually stands (read just now):', `- ${first.join(' · ')}`];
     if (state.lastTag) {
         const since = state.commitsSinceTag;

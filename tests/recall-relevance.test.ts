@@ -33,6 +33,42 @@ describe('Feature: recall relevance', () => {
     kg = new KnowledgeGraph(db);
   });
 
+  describe('archived and stale-index text matching', () => {
+    it('preserves the index distinction for multiply accented Latin letters', () => {
+      kg.createEntity('abc', 'note', { observations: ['tỗ'] });
+      kg.archiveEntity('abc');
+      expect(kg.search('to', { includeArchived: true })).toEqual([]);
+      db.prepare('DELETE FROM memesh_metadata WHERE key = ?').run('fts_segmentation_version');
+      expect(kg.search('to', { includeArchived: true })).toEqual([]);
+    });
+    it.each([
+      ['café résumé', 'cafe'],
+      ['plain cafe text', 'café'],
+      ['ÄPFEL inventory', 'äpfel'],
+      ['中文 café notes', 'cafe'],
+    ])('finds %s using %s in both scan paths', (stored, query) => {
+      kg.createEntity('active-note', 'note', { observations: [stored] });
+      kg.createEntity('archived-note', 'note', { observations: [stored] });
+      kg.archiveEntity('archived-note');
+      expect(kg.search(query, { includeArchived: true }).map(e => e.name))
+        .toEqual(expect.arrayContaining(['active-note', 'archived-note']));
+      db.prepare('DELETE FROM memesh_metadata WHERE key = ?').run('fts_segmentation_version');
+      expect(kg.search(query, { includeArchived: true }).map(e => e.name))
+        .toEqual(expect.arrayContaining(['active-note', 'archived-note']));
+    });
+
+    it('does not turn a non-Latin marked word into a different word', () => {
+      kg.createEntity('marked-note', 'note', { observations: ['काम'] });
+      kg.createEntity('plain-note', 'note', { observations: ['कम'] });
+      kg.archiveEntity('marked-note');
+      kg.archiveEntity('plain-note');
+      const names = () => kg.search('कम', { includeArchived: true }).map(e => e.name);
+      expect(names()).toEqual(['plain-note']);
+      db.prepare('DELETE FROM memesh_metadata WHERE key = ?').run('fts_segmentation_version');
+      expect(names()).toEqual(['plain-note']);
+    });
+  });
+
   describe('a natural-language question finds the memory', () => {
     beforeEach(() => {
       kg.createEntity('grad-record', 'note', {

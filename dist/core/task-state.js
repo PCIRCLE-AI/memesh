@@ -1,10 +1,13 @@
-import { jsonStringLiteral, projectLabel } from './work-topology.js';
+import { jsonStringLiteral, projectLabel, sliceWholeChars } from './work-topology.js';
 import { redactShownTogether } from './paths.js';
 export const TASK_STATE_TYPE = 'task-state';
 export const TASK_STATE_FIELDS = ['goal', 'next', 'blocked', 'done'];
 export const MAX_FIELD_CHARS = 300;
 export function taskStateName(project) {
     return `${TASK_STATE_TYPE}:${project}`;
+}
+export function taskStateUnreadableMessage(project) {
+    return `task state for project ${jsonStringLiteral(projectLabel(project))} is not readable: the stored record is not valid JSON. Set a non-empty field with \`memesh task --goal …\` to replace the broken record.`;
 }
 export function parseTaskState(metadata) {
     const state = {};
@@ -25,13 +28,38 @@ export function parseTaskState(metadata) {
     const updated = bag.updated_at;
     if (typeof updated === 'string' && updated.trim())
         state.updated_at = updated.trim();
+    const legacy = bag.legacy_updated_at;
+    if (typeof legacy === 'string') {
+        const trimmed = legacy.trim();
+        const match = ZONED_INSTANT.exec(trimmed);
+        if (match?.groups && isRealInstant(match.groups))
+            state.legacy_updated_at = trimmed;
+    }
+    if (bag.stated_at !== undefined) {
+        state.stated_at = {};
+        const dates = bag.stated_at;
+        if (dates && typeof dates === 'object' && !Array.isArray(dates)) {
+            for (const field of TASK_STATE_FIELDS) {
+                const date = dates[field];
+                if (!state[field] || typeof date !== 'string')
+                    continue;
+                const trimmed = date.trim();
+                const match = ZONED_INSTANT.exec(trimmed);
+                if (match?.groups && isRealInstant(match.groups))
+                    state.stated_at[field] = trimmed;
+            }
+        }
+    }
     return state;
+}
+function fieldStatedAt(state, field) {
+    return state.stated_at === undefined ? state.updated_at : state.stated_at[field];
 }
 export function normalizeFieldValue(value) {
     const flat = value.replace(/\s+/g, ' ').trim();
     if (!flat)
         return null;
-    return flat.length > MAX_FIELD_CHARS ? `${flat.slice(0, MAX_FIELD_CHARS - 1).trimEnd()}…` : flat;
+    return flat.length > MAX_FIELD_CHARS ? `${sliceWholeChars(flat, MAX_FIELD_CHARS - 1).trimEnd()}…` : flat;
 }
 export function mergeTaskState(previous, patch, now) {
     const state = { ...previous };
@@ -55,8 +83,22 @@ export function mergeTaskState(previous, patch, now) {
             observations.push(`${field}: ${normalized}`);
         }
     }
-    if (changed.length > 0)
+    if (changed.length > 0) {
+        if (previous.stated_at === undefined && previous.updated_at !== undefined) {
+            const match = ZONED_INSTANT.exec(previous.updated_at);
+            if (match?.groups && isRealInstant(match.groups))
+                state.legacy_updated_at = previous.updated_at;
+        }
+        state.stated_at = {};
+        for (const field of TASK_STATE_FIELDS) {
+            if (!state[field])
+                continue;
+            const date = changed.includes(field) ? now : previous.stated_at?.[field];
+            if (date !== undefined)
+                state.stated_at[field] = date;
+        }
         state.updated_at = now;
+    }
     return { state, changed, observations };
 }
 export function isEmptyTaskState(state) {
@@ -69,23 +111,30 @@ const FIELD_LABELS = {
     done: 'Had just finished',
 };
 function ageInDays(updatedAt, now) {
-    if (!updatedAt)
-        return null;
-    const then = Date.parse(updatedAt);
-    if (Number.isNaN(then))
-        return null;
-    const days = Math.floor((now.getTime() - then) / 86_400_000);
-    return days >= 0 ? days : null;
+    const age = resolveTaskStateAge(updatedAt, now);
+    return age.known ? Math.floor(age.hours / 24) : null;
 }
 export function taskStateLines(state, project, now = new Date()) {
     if (isEmptyTaskState(state))
         return [];
     const days = ageInDays(state.updated_at, now);
     const age = days === null ? 'at some point' : days === 0 ? 'today' : days === 1 ? 'yesterday' : `${days} days ago`;
-    const lines = [`Stated about ${jsonStringLiteral(projectLabel(project))} ${age}, and not revisited since:`];
+    const lines = [state.stated_at === undefined
+            ? `Stated about ${jsonStringLiteral(projectLabel(project))} ${age}, and not revisited since:`
+            : `Stated about ${jsonStringLiteral(projectLabel(project))} (each field has its own date):`];
     const present = TASK_STATE_FIELDS.filter((field) => state[field]);
     const shown = redactShownTogether(present.map((field) => state[field]));
-    present.forEach((field, i) => lines.push(`- ${FIELD_LABELS[field]}: ${shown[i]}`));
+    present.forEach((field, i) => {
+        let dateLabel = '';
+        if (state.stated_at !== undefined) {
+            const date = fieldStatedAt(state, field);
+            const fieldAge = resolveTaskStateAge(date, now);
+            const days = fieldAge.known ? Math.floor(fieldAge.hours / 24) : null;
+            const ageLabel = days === null ? 'unknown date' : days === 0 ? 'today' : days === 1 ? 'yesterday' : `${days} days ago`;
+            dateLabel = fieldAge.known ? ` (stated ${date}; ${ageLabel})` : ` (${ageLabel})`;
+        }
+        lines.push(`- ${FIELD_LABELS[field]}:${dateLabel} ${shown[i]}`);
+    });
     return lines;
 }
 export const STALE_TASK_STATE_HOURS = 72;
@@ -150,6 +199,26 @@ function taskStateAgeUnknownLine(project) {
 export function briefingTaskStateLines(state, project, now = new Date(), { includeFresh = true } = {}) {
     if (isEmptyTaskState(state))
         return [];
+    if (state.stated_at !== undefined) {
+        const present = TASK_STATE_FIELDS.filter((field) => state[field]);
+        const ages = present.map((field) => resolveTaskStateAge(fieldStatedAt(state, field), now));
+        const fresh = present.filter((_, index) => ages[index].known && ages[index].hours <= STALE_TASK_STATE_HOURS);
+        if (fresh.length === 0) {
+            if (ages.some((age) => !age.known))
+                return [taskStateAgeUnknownLine(project)];
+            return [staleTaskStateLine(project, Math.min(...ages.map((age) => age.known ? age.hours : Infinity)))];
+        }
+        const shown = { updated_at: state.updated_at, stated_at: state.stated_at };
+        const redacted = redactShownTogether(present.map((field) => state[field]));
+        present.forEach((field, index) => { if (fresh.includes(field))
+            shown[field] = redacted[index]; });
+        const lines = includeFresh ? taskStateLines(shown, project, now) : [];
+        const omitted = present.filter((field) => !fresh.includes(field));
+        if (omitted.length > 0) {
+            lines.push(`Task state for ${jsonStringLiteral(projectLabel(project))} has older or unknown-age fields (${omitted.join(', ')}) not shown as current. Run \`memesh task\` to see or update them.`);
+        }
+        return lines;
+    }
     const age = resolveTaskStateAge(state.updated_at, now);
     if (!age.known)
         return [taskStateAgeUnknownLine(project)];

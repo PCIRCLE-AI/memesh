@@ -61,6 +61,16 @@ describe('resolveUpdateNotice — one resolver, five answers', () => {
       .toMatchObject({ kind: 'CHECK_FAILED', reason: 'timeout' });
   });
 
+  it.each(['not-a-version', '4.9.4\nextra', '["4.9.4"]'])('rejects an invalid legacy cache version %j rather than saying up to date', (latestVersion) => {
+    const cache = { currentVersion: '4.9.4', latestVersion, checkSucceeded: true, lastSuccessfulCheckAt: iso(-HOUR) };
+    expect(resolveUpdateNotice({ dir: tmp(), currentVersion: '4.9.4', cache, now: NOW })).toMatchObject({ kind: 'CHECK_FAILED', reason: 'registry returned an invalid version' });
+    expect(shouldRefreshUpdateCache('4.9.4', cache, NOW)).toBe(true);
+  });
+
+  it('normalises a JSON-string legacy cache for the hook resolver', () => {
+    expect(resolveUpdateNotice({ dir: tmp(), currentVersion: '4.9.4', cache: { currentVersion: '4.9.4', latestVersion: '"4.10.0"', checkSucceeded: true, lastSuccessfulCheckAt: iso(-HOUR) }, now: NOW })).toMatchObject({ kind: 'UPGRADE_AVAILABLE', latestVersion: '4.10.0' });
+  });
+
   it('SNOOZED hides an available upgrade for the snoozed target only', () => {
     const dir = tmp();
     writeSnooze(dir, '4.10.0', NOW);

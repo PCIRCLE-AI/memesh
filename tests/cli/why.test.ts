@@ -88,6 +88,24 @@ describe('CLI: memesh why', () => {
     expect(parsed.commits[0].abstentions).toEqual(['no_session_link']);
   });
 
+  it('Scenario: unreadable blame history stays unknown in JSON and prose; a confirmed range error stays distinct', () => {
+    fs.writeFileSync(path.join(repoDir, 'staged.ts'), 'real first line\n');
+    git(['add', '--', 'staged.ts']);
+    const json = runCli(['why', 'staged.ts', '--line', '1', '--json'], repoDir);
+    expect(json.exitCode, json.stderr).toBe(0);
+    expect(JSON.parse(json.stdout).abstentions).toEqual(['history_unreadable']);
+    const prose = runCli(['why', 'staged.ts', '--line', '1'], repoDir);
+    expect(prose.exitCode, prose.stderr).toBe(0);
+    expect(prose.stdout).toContain('git could not read');
+    expect(prose.stdout).not.toContain('That line does not exist');
+    expect(prose.stdout + prose.stderr).not.toMatch(/^\s+at /m);
+
+    git(['commit', '-q', '-m', 'owned fixture', '--no-verify']);
+    const range = runCli(['why', 'staged.ts', '--line', '99', '--json'], repoDir);
+    expect(range.exitCode, range.stderr).toBe(0);
+    expect(JSON.parse(range.stdout).abstentions).toEqual(['line_out_of_range']);
+  });
+
   it('Scenario: an untracked file renders the typed abstention as a sentence, exit 0', () => {
     fs.writeFileSync(path.join(repoDir, 'notes.md'), 'scratch\n');
     const res = runCli(['why', 'notes.md'], repoDir);

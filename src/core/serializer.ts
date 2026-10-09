@@ -685,6 +685,16 @@ function describeInvalidEntity(entity: unknown, index: number): string | null {
       return `${where} has no usable "${field}" (found ${e[field] === undefined ? 'nothing' : JSON.stringify(e[field])}).`;
     }
   }
+  // CLI imports a portable file directly, without the transport schema.
+  // Refuse malformed restore fields before an entry can be written.
+  for (const field of ['created_at', 'status'] as const) {
+    if (e[field] !== undefined && typeof e[field] !== 'string') {
+      return `${where}.${field} is ${typeof e[field]}, not a string.`;
+    }
+  }
+  if (e.metadata !== undefined && !isPlainObject(e.metadata)) {
+    return `${where}.metadata is not an object.`;
+  }
   for (const field of ['observations', 'tags', 'relations'] as const) {
     if (e[field] !== undefined && !Array.isArray(e[field])) {
       return `${where}.${field} is ${typeof e[field]}, not an array.`;
@@ -699,6 +709,21 @@ function describeInvalidEntity(entity: unknown, index: number): string | null {
     const bad = list.findIndex((item) => typeof item !== 'string');
     if (bad !== -1) {
       return `${where}.${field}[${bad}] is ${typeof list[bad]}, not a string.`;
+    }
+  }
+  // Raw CLI files do not pass through ExportResultSchema. A malformed link
+  // used to reach the deferred second pass after its entity had committed,
+  // throwing a SQLite binding error without the import counts or row error.
+  if (Array.isArray(e.relations)) {
+    for (let i = 0; i < e.relations.length; i++) {
+      const relation = e.relations[i];
+      const relationWhere = `${where}.relations[${i}]`;
+      if (!isPlainObject(relation)) return `${relationWhere} is not an object with "to" and "type".`;
+      for (const field of ['to', 'type'] as const) {
+        if (typeof relation[field] !== 'string' || relation[field] === '') {
+          return `${relationWhere}.${field} is not a non-empty string.`;
+        }
+      }
     }
   }
   // The namespace a bundle carries per entity places the entities an import
@@ -890,6 +915,11 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean })
         // memory you already had, which for `append` would silently move it out
         // of the scope you keep it in.
         const namespace = args.namespace ?? (existing ? undefined : (entity.namespace || 'personal'));
+        const relations = (entity.relations || []).map((rel) => ({
+          from: entity.name,
+          to: rel.to,
+          type: rel.type,
+        }));
         const importedMetadata = buildImportedMetadata(existing?.metadata as EntityMetadata | undefined, {
           bundled: (entity as { metadata?: Record<string, unknown> }).metadata,
           exportedAt: args.data.exported_at,
@@ -901,6 +931,12 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean })
             `${entity.name}: imported without its replaced_history, which no longer fits its size limits once credentials in it are redacted`,
           ),
         });
+        if (existing) {
+          // createEntity owns the local move record. Do not merge its older
+          // pre-import snapshot over the breadcrumb it is about to update.
+          delete importedMetadata.previous_namespace;
+          delete importedMetadata.namespace_moved_at;
+        }
 
         let replacedVersion: ReplacedVersion | undefined;
         if (existing) {
@@ -936,7 +972,9 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean })
               && newObservations.length === 0
               && (entity.tags === undefined || entity.tags.every((tag) => existingTags.has(storedText(tag))))
               && (title === undefined || storedText(title) === existing.title)
-              && (namespace === undefined || namespace === (existing.namespace ?? 'personal'));
+              && (namespace === undefined || namespace === (existing.namespace ?? 'personal'))
+              && relations.every((rel) => (existing.relations ?? []).some((held) =>
+                held.to === storedText(rel.to) && held.type === storedText(rel.type)));
             if (addsNothing) return { kind: 'skipped' } as const;
             // Pass trustOverride directly so the createEntity confidence-
             // bump gate denies the lift on untrusted imports. Codex
@@ -958,7 +996,7 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean })
             // matters most: it moves entities in bulk, so a user cannot possibly
             // remember where each one came from.
             kg.updateEntityMetadata(entity.name, (current) => ({ ...current, ...importedMetadata }));
-            return { kind: 'appended' } as const;
+            return { kind: 'appended', relations } as const;
           }
           // overwrite: file what is there into `replaced_history` (same shape
           // `remember` with `replace: true` writes), clear it, then
@@ -1053,17 +1091,16 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean })
           // Relations are DEFERRED to a second pass. Return them only after
           // this transaction commits; queuing them in the transaction body
           // would leave JS state behind after SQLite rolls back.
-          relations: (entity.relations || []).map((rel) => ({
-            from: entity.name,
-            to: rel.to,
-            type: rel.type,
-          })),
+          relations,
         } as const;
       }).immediate();
 
       if (outcome.kind === 'skipped') skipped++;
       else if (outcome.kind === 'keptArchived') keptArchived++;
-      else if (outcome.kind === 'appended') appended++;
+      else if (outcome.kind === 'appended') {
+        pendingRelations.push(...outcome.relations);
+        appended++;
+      }
       else {
         pendingRelations.push(...outcome.relations);
         imported++;

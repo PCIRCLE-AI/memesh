@@ -18,7 +18,6 @@ import {
   assembleTopologyBlock,
   projectLabel,
   DEFAULT_TOPOLOGY_BUDGET,
-  parseEntityMetadata,
   // Aliased: this file already has a local `const memeshDir` (a resolved
   // db-path-derived directory string) — the helper here is the MEMESH_DIR/
   // home resolver the update-check cache itself uses.
@@ -80,6 +79,7 @@ import { handoffView } from './_generated/session-handoff.js';
 import { recipientEverSeenAnywhere, unknownRecipientHint } from './_generated/agent-message-inbox.js';
 import { boundTaskStateLines, joinedLength } from './_generated/work-topology.js';
 import { readIndexCandidates, readSnippets, selectBriefingPools, toTopologyEntity } from './_generated/briefing-pools.js';
+import { taskStateUnreadableMessage } from './_generated/task-state.js';
 
 const require = createRequire(import.meta.url);
 
@@ -1294,8 +1294,11 @@ process.stdin.on('end', async () => {
         // Read from metadata, not from the observation trail: observations
         // are the CHANGE history, and picking "the current goal" out of them
         // means guessing which line is newest. Metadata holds one answer.
+        // Legacy read-only schemas predate status; keep those readable.
+        const taskStatusFilter = db.prepare('PRAGMA table_info(entities)').all().some(column => column.name === 'status')
+          ? "AND status = 'active'" : '';
         const taskRow = db
-          .prepare('SELECT metadata FROM entities WHERE name = ?')
+          .prepare(`SELECT metadata FROM entities WHERE name = ? ${taskStatusFilter}`)
           .get(taskStateName(projectName));
         // Who this session is comes from `MEMESH_RECIPIENT` (`recipient`,
         // resolved above). Without it there is no exact recipient and the
@@ -1345,14 +1348,24 @@ process.stdin.on('end', async () => {
         // means no recipient, so no address to state). Added last so it
         // never affects the "nothing waiting yet" check above.
         if (addressLine) inboxLines.unshift(addressLine);
-        const stateLines = [
-          ...handoffBlock,
-          ...boundTaskStateLines(briefingTaskStateLines(
-            parseTaskState(parseEntityMetadata(taskRow?.metadata)),
+        let taskMetadata = null;
+        let taskCorrupted = false;
+        if (taskRow?.metadata) {
+          try { taskMetadata = JSON.parse(taskRow.metadata); }
+          catch { taskCorrupted = true; }
+        }
+        if (taskCorrupted) record({ outcome: 'error', reason: 'task-state: stored record is not valid JSON' });
+        const taskContextLines = taskCorrupted
+          ? [`task state for ${jsonStringLiteral(projectLabel(projectName))}: ${taskStateUnreadableMessage(projectName)}`]
+          : boundTaskStateLines(briefingTaskStateLines(
+            parseTaskState(taskMetadata),
             projectName,
             new Date(),
             { includeFresh: briefingPolicy.taskState },
-          )),
+          ));
+        const stateLines = [
+          ...handoffBlock,
+          ...taskContextLines,
           ...inboxLines,
         ];
 

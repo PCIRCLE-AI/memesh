@@ -31,6 +31,7 @@ import {
   canonicalizeLessonTypes,
   dropArchivedIndexRows,
   removeJunkFileTags,
+  repairFusedLessonShellHistory,
 } from '../../src/storage/graph-repairs.js';
 import { lessonSlug } from '../../src/core/lesson-slug.js';
 import { computeSignalScore } from '../../src/core/signal-scorer.js';
@@ -959,6 +960,20 @@ describe('D15 — a split shell does not keep recall history that belongs to no 
 });
 
 describe('D15 — repairFusedLessonShellHistory: shells split before this fix existed', () => {
+  it('repairs a real split shell despite unrelated malformed legacy metadata', () => {
+    const db = openDatabase(dbPath);
+    const corrupt = insertEntity(db, 'legacy-invalid-metadata', 'note');
+    db.prepare('UPDATE entities SET metadata = ? WHERE id = ?').run('{invalid', corrupt);
+    seedAlreadySplitShell(db, 3, 61);
+    db.prepare('DELETE FROM memesh_metadata WHERE key LIKE ?').run(`${FUSED_LESSON_SHELL_HISTORY_RESET_KEY}%`);
+
+    expect(repairFusedLessonShellHistory(db)).toBe(1);
+    expect(recallOf(db, 'lesson-proj-other')).toEqual({ hits: 0, misses: 0 });
+    expect(metadataOf(db, 'lesson-proj-other').retired_recall).toEqual({ hits: 3, misses: 61 });
+    expect(db.prepare('SELECT metadata FROM entities WHERE id = ?').get(corrupt)).toEqual({ metadata: '{invalid' });
+    expect(repairFusedLessonShellHistory(db)).toBe(-1);
+  });
+
   /**
    * The state 4.8.2-and-later already produced on the maintainer's own
    * graph: `splitFusedLessons` has already run to completion (the bucket is

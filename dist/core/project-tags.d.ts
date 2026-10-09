@@ -13,6 +13,7 @@ export interface RenameProjectResult {
     affectedNames: string[];
     messageRows: number;
     messageRowsBlocked: number;
+    proposalRows: number;
 }
 export declare function listProjectTags(db?: MemeshDatabase): ProjectTagCount[];
 export declare function sameProjectRefusal(from: string, to: string): string | null;

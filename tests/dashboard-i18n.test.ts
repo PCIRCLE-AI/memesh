@@ -319,7 +319,7 @@ describe('dashboard i18n', () => {
       const union = homeSource.match(/type NextActionKind = ([^;]+);/);
       expect(union, 'HomeTab stopped declaring its finite NextActionKind set').not.toBeNull();
       const kinds = [...union![1].matchAll(/'([^']+)'/g)].map((match) => match[1]);
-      expect(kinds.sort()).toEqual(['empty', 'healthy', 'insights', 'loading', 'unavailable']);
+      expect(kinds.sort()).toEqual(['empty', 'healthy', 'insights', 'loading', 'setup', 'unavailable']);
       expectAllPresent(kinds.flatMap((kind) => [
         `home.nextAction.${kind}.title`,
         `home.nextAction.${kind}.why`,

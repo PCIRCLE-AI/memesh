@@ -70,6 +70,30 @@ describe('Feature: lesson guards at the PreToolUse hooks', () => {
     fires: 0,
   };
 
+  it('a multi-target Codex patch keeps one response and both guard fires when recall observations are unreadable', () => {
+    const lessonId = seedGuardedLesson({
+      ...bashGuard,
+      tool: 'Edit',
+      pattern: '\\.txt',
+      message: 'Keep owned test files unchanged.',
+    }, 'owned-patch-warning');
+    db.exec('ALTER TABLE observations RENAME TO observations_gone');
+
+    const { stdout, stderr } = runHook('pre-edit-recall.js', {
+      tool_name: 'apply_patch',
+      tool_input: { command: '*** Begin Patch\n*** Update File: a.txt\n@@\n-old\n+new\n*** Update File: b.txt\n@@\n-old\n+new\n*** End Patch' },
+    });
+    const output = JSON.parse(stdout);
+    expect(output.hookSpecificOutput.hookEventName).toBe('PreToolUse');
+    const context = output.hookSpecificOutput.additionalContext;
+    expect(context.match(/Keep owned test files unchanged\./g)).toHaveLength(2);
+    expect(stderr).toContain('observations');
+    const metadata = JSON.parse(db.prepare('SELECT metadata FROM entities WHERE id = ?').get(lessonId).metadata);
+    expect(metadata.guard.fires).toBe(2);
+    const outcomes = fs.readFileSync(path.join(tmpHome, 'hook-outcomes.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    expect(outcomes.filter((outcome) => outcome.hook === 'pre-edit-recall' && outcome.outcome === 'error')).toHaveLength(2);
+  });
+
   it('a matching Bash command gets the fenced warning with the citation handle, and the fire is counted', () => {
     const lessonId = seedGuardedLesson(bashGuard);
 

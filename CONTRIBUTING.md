@@ -43,6 +43,23 @@ Documentation is part of the change, not follow-up work. CI's version, generated
 
 ## Cutting a Release
 
+An explicit release-owner decision may reuse valid baseline evidence plus
+affected deltas, or mark Dashboard review `SKIP`. Record that decision privately
+in `.qa/release-evidence-reuse.json`; never commit it or rewrite an old failed
+receipt as a passing run. The mapping names `version`, the clean candidate's
+`revision` and `tree`, `authority.decidedBy` and `authority.decision`, `uiSkip`,
+the `g6` applicability rationale, separate `hosts.codex` and `hosts.claude`
+rationales, and retained `concerns`. Its `evidence` entries each carry `scope`
+(`g6`, `codex`, or `claude`), `path`, `sha256`, and the source-to-candidate
+`mapping`. Both hosts and G6 require source entries; changed or missing sources
+are rejected. Without this explicit mapping, the normal checks below apply.
+
+Approved reuse is printed as `REUSED_WITH_CONCERNS`, never as a fresh native or
+full-suite PASS. Build, source/security/version checks, packed-candidate smoke,
+memory audit, main/clean-tree/remote/tag checks and publication channels remain
+required. A failed native report for the same candidate cannot be hidden by
+reuse. UI omission is printed as `SKIP`, not PASS.
+
 A release is one operation, not three commands:
 
 ```bash

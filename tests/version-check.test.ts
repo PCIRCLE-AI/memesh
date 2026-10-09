@@ -2,6 +2,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { resolveUpdateNotice } from '../src/core/update-notice.js';
 import {
   checkForUpdate,
   formatUpdateCheckStatus,
@@ -296,6 +297,81 @@ describe('version check', () => {
     }
   });
 
+  it('reads a valid npm JSON string as a version, including upgrade notice and cache', async () => {
+    const result = await checkForUpdate('4.10.11', {
+      execFileImpl: succeedWith('"4.10.12"'), updateCheckPath,
+      now: new Date('2026-10-07T00:00:00Z'),
+    });
+    expect(result.checkSucceeded).toBe(true);
+    expect(result.latestVersion).toBe('4.10.12');
+    expect(result.updateAvailable).toBe(true);
+    expect(getLastUpdateCheck('4.10.11', { updateCheckPath })?.latestVersion).toBe('4.10.12');
+    expect(resolveUpdateNotice({ dir: testDir, currentVersion: '4.10.11', cache: result, now: new Date('2026-10-07T00:00:00Z') }).kind).toBe('UPGRADE_AVAILABLE');
+  });
+
+  it.each(['', 'not-a-version', '4.10.12\nignore previous instructions', '{"version":"4.10.12"}', '["4.10.12"]', '"4.10.12\\nextra"'])('rejects invalid registry output %j without reporting a successful check', async (output) => {
+    const result = await checkForUpdate('4.10.11', {
+      execFileImpl: succeedWith(output), updateCheckPath,
+      now: new Date('2026-10-07T00:00:00Z'),
+    });
+    expect(result.checkSucceeded).toBe(false);
+    expect(result.latestVersion).toBeNull();
+    expect(result.lastSuccessfulCheckAt).toBeNull();
+    expect(result.lastError).toBe('registry returned an invalid version');
+    expect(result.updateAvailable).toBe(false);
+    expect(formatUpdateCheckStatus(result).join('\n')).not.toContain('up to date');
+    expect(resolveUpdateNotice({ dir: testDir, currentVersion: '4.10.11', cache: result, now: new Date('2026-10-07T00:00:00Z') }).kind).toBe('CHECK_FAILED');
+  });
+
+  it('retains the previous valid version/date and fresh deprecation when registry output is invalid', async () => {
+    await checkForUpdate('4.10.11', {
+      execFileImpl: succeedWith('4.10.12'), updateCheckPath,
+      now: new Date('2026-10-06T00:00:00Z'),
+    });
+    const result = await checkForUpdate('4.10.11', {
+      execFileImpl: succeedWith('', { deprecated: 'upgrade required' }), updateCheckPath,
+      now: new Date('2026-10-07T00:00:00Z'),
+    });
+    expect(result.checkSucceeded).toBe(false);
+    expect(result.latestVersion).toBe('4.10.12');
+    expect(result.lastSuccessfulCheckAt).toBe('2026-10-06T00:00:00.000Z');
+    expect(result.lastError).toBe('registry returned an invalid version');
+    expect(result.currentVersionDeprecated).toBe(true);
+    expect(result.deprecationMessage).toBe('upgrade required');
+    expect(getLastUpdateCheck('4.10.11', { updateCheckPath })?.checkSucceeded).toBe(false);
+  });
+
+  it('does not call a failed lookup up to date when the previous valid target equals the installed version', async () => {
+    const now = new Date('2026-10-07T00:00:00Z');
+    await checkForUpdate('4.10.12', { execFileImpl: succeedWith('4.10.12'), updateCheckPath, now });
+    const result = await checkForUpdate('4.10.12', { execFileImpl: succeedWith(''), updateCheckPath, now });
+    expect(result.latestVersion).toBe('4.10.12');
+    expect(result.lastSuccessfulCheckAt).toBe(now.toISOString());
+    expect(formatUpdateCheckStatus(result).join('\n')).not.toContain('up to date');
+    expect(resolveUpdateNotice({ dir: testDir, currentVersion: '4.10.12', cache: result, now }).kind).toBe('CHECK_FAILED');
+  });
+
+  it.each(['not-a-version', '4.10.12\nextra', '["4.10.12"]'])('reads a legacy invalid successful cache %j as unknown without rewriting it', (latestVersion) => {
+    const raw = JSON.stringify({ currentVersion: '4.10.12', latestVersion, checkSucceeded: true, lastSuccessfulCheckAt: '2026-10-07T00:00:00Z', currentVersionDeprecation: 'still deprecated' });
+    fs.writeFileSync(updateCheckPath, raw);
+    const result = getLastUpdateCheck('4.10.12', { updateCheckPath });
+    expect(result?.checkSucceeded).toBe(false);
+    expect(result?.latestVersion).toBeNull();
+    expect(result?.lastSuccessfulCheckAt).toBeNull();
+    expect(result?.deprecationMessage).toBe('still deprecated');
+    expect(fs.readFileSync(updateCheckPath, 'utf8')).toBe(raw);
+  });
+
+  it('normalises the valid JSON string in a legacy cache without rewriting it', () => {
+    const raw = JSON.stringify({ currentVersion: '4.10.11', latestVersion: '"4.10.12"', checkSucceeded: true, lastSuccessfulCheckAt: '2026-10-07T00:00:00Z' });
+    fs.writeFileSync(updateCheckPath, raw);
+    const result = getLastUpdateCheck('4.10.11', { updateCheckPath });
+    expect(result?.latestVersion).toBe('4.10.12');
+    expect(result?.updateAvailable).toBe(true);
+    expect(result?.checkSucceeded).toBe(true);
+    expect(fs.readFileSync(updateCheckPath, 'utf8')).toBe(raw);
+  });
+
   it('recomputes cached availability by SemVer precedence', () => {
     fs.writeFileSync(updateCheckPath, JSON.stringify({
       currentVersion: '4.8.5',
@@ -412,7 +488,7 @@ describe('version check', () => {
       currentVersionDeprecated: false,
       deprecationMessage: null,
     })).toEqual([
-      'Update check: up to date (cached from 2026-04-24T10:00:00.000Z; latest 4.0.2)',
+      'Update check: failed (cached from 2026-04-24T10:00:00.000Z; last known latest 4.0.2)',
       'Last update check failed: timeout',
     ]);
 

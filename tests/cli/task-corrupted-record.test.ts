@@ -79,6 +79,23 @@ describe('memesh task on a corrupted record', () => {
     expect(r.status).toBe(0);
     expect(JSON.parse(r.stdout).state.goal).toBe('recovered');
   });
+
+  it('an empty clear refuses corrupted metadata instead of reporting a successful no-change', () => {
+    expect(run(['task', '--project', 'alpha', '--goal', 'ship it']).status).toBe(0);
+    corrupt();
+    const r = run(['task', '--project', 'alpha', '--blocked', '']);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('not valid JSON');
+    expect(r.stderr).toContain('memesh task --goal');
+    expect(r.stdout).not.toContain('already said exactly that');
+    expect(r.stderr).not.toMatch(/^\s+at /m);
+    const j = run(['task', '--project', 'alpha', '--blocked', '', '--json']);
+    expect(j.status).toBe(1);
+    expect(JSON.parse(j.stdout)).toEqual({ error: expect.stringContaining('not valid JSON') });
+    expect(run(['task', '--project', 'alpha', '--json']).status).toBe(1);
+    expect(run(['task', '--project', 'alpha', '--goal', 'recovered']).status).toBe(0);
+    expect(JSON.parse(run(['task', '--project', 'alpha', '--json']).stdout).state.goal).toBe('recovered');
+  });
 });
 
 // The project id ends in a 32-hex routing hash. The lines `memesh task` prints
@@ -107,7 +124,8 @@ describe('memesh task names the project by its label, not its hashed id', () => 
     const wrote = run(['task', '--project', ID, '--goal', 'ship it']);
     expect(wrote.status, wrote.stderr).toBe(0);
     expect(wrote.stdout).toContain('Updated goal for "memesh".');
-    expect(wrote.stdout).toContain('Stated about "memesh" today');
+    expect(wrote.stdout).toContain('Stated about "memesh" (each field has its own date):');
+    expect(wrote.stdout).toContain('; today) ship it');
     expect(wrote.stdout).not.toContain(HASH);
 
     const same = run(['task', '--project', ID, '--goal', 'ship it']);
@@ -115,7 +133,7 @@ describe('memesh task names the project by its label, not its hashed id', () => 
     expect(same.stdout).not.toContain(HASH);
 
     const read = run(['task', '--project', ID]);
-    expect(read.stdout).toContain('Stated about "memesh" today');
+    expect(read.stdout).toContain('Stated about "memesh" (each field has its own date):');
     expect(read.stdout).not.toContain(HASH);
   });
 

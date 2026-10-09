@@ -780,3 +780,43 @@ describe('shipped paths come from package.json, not a hand-kept list', () => {
     expect(shippedPathsFromPackageJson({ files: [] })).toBeNull();
   });
 });
+
+
+describe('approved release evidence reuse', () => {
+  const approvedReuse = {
+    validated: true, path: '.qa/release-evidence-reuse.json',
+    revision: HEAD, version: '4.7.0',
+    authority: { decidedBy: 'release owner', decision: 'Reuse baseline plus affected deltas; UI skipped' },
+    uiSkip: true, g6: 'baseline plus delta; original failed run retained',
+    hosts: { codex: 'unchanged native reminder plus installed delta', claude: 'unchanged native reminder plus installed delta' },
+    concerns: ['UI SKIP, not PASS', 'original failed full run retained'],
+  };
+
+  it('accepts explicitly validated native reuse without pretending reports were newly run', () => {
+    const r = checkReleasePreconditions(ready({ liveJourneyCandidates: [], approvedReuse }));
+    expect(r.blockers).toEqual([]);
+    expect(r.ok).toBe(true);
+  });
+
+  it.each([
+    { ...approvedReuse, revision: 'b'.repeat(40) },
+    { ...approvedReuse, version: '4.6.0' },
+    { ...approvedReuse, validated: false },
+    { ...approvedReuse, hosts: { codex: approvedReuse.hosts.codex } },
+  ])('refuses mismatched or incomplete reuse %#', (reuse) => {
+    expect(checkReleasePreconditions(ready({ liveJourneyCandidates: [], approvedReuse: reuse })).ok).toBe(false);
+  });
+
+  it('does not use reuse to hide a failed native report for the same candidate', () => {
+    const candidates = readyLiveJourney();
+    candidates[0].report.verdict = 'FAIL';
+    expect(checkReleasePreconditions(ready({ liveJourneyCandidates: candidates, approvedReuse })).ok).toBe(false);
+  });
+
+  it.each([
+    { branch: 'release' }, { isClean: false }, { remoteHeadSha: 'b'.repeat(40) },
+    { qaPreReleaseStatus: 1 }, { shippedFilesChangedSinceBump: ['src/db.ts'] },
+  ])('keeps every other release refusal with valid reuse %#', (other) => {
+    expect(checkReleasePreconditions(ready({ ...other, liveJourneyCandidates: [], approvedReuse })).ok).toBe(false);
+  });
+});

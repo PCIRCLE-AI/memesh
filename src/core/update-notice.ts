@@ -12,13 +12,14 @@
  * host still executes the old version until it restarts, and nothing said
  * so — issue #308 acceptance check 3).
  *
- * Runtime LEAF on purpose: imports only node builtins and `./paths.js`, so
+ * Runtime LEAF on purpose: imports only node builtins and copied leaf modules, so
  * `scripts/generate-hook-core.mjs` can copy the compiled module beside the
  * plugin hooks and the hooks call the same code the CLI does.
  */
 import fs from 'fs';
 import path from 'path';
 import { redactUserPaths } from './paths.js';
+import { normalizeRegistryVersion } from './semver.js';
 
 /** Re-check an "up to date" answer after this long. */
 export const UP_TO_DATE_REFRESH_MS = 60 * 60 * 1000;
@@ -228,7 +229,12 @@ function boundedReason(raw: string): string {
 
 function answerIsCurrent(currentVersion: string, cache: UpdateCheckCacheLike | null | undefined, now: Date): boolean {
   if (!cache || cache.currentVersion !== currentVersion) return false;
-  if (typeof cache.latestVersion !== 'string' || !cache.latestVersion) return false;
+  if (typeof cache.latestVersion !== 'string') return false;
+  const latest = normalizeRegistryVersion(cache.latestVersion);
+  if (latest === null) return false;
+  // A prior upgrade target remains useful, but a failed lookup cannot
+  // establish that the currently installed version is still current.
+  if (cache.checkSucceeded === false && !isStrictlyOlder(currentVersion, latest)) return false;
   const successAt = parseIso(cache.lastSuccessfulCheckAt);
   if (successAt === null) return false;
   return now.getTime() - successAt <= ANSWER_VALID_MS;
@@ -248,7 +254,7 @@ export function shouldRefreshUpdateCache(
   if (!answerIsCurrent(currentVersion, cache, now)) return true;
   const successAt = parseIso(cache!.lastSuccessfulCheckAt) as number;
   const age = now.getTime() - successAt;
-  const upgrade = isStrictlyOlder(currentVersion, cache!.latestVersion as string);
+  const upgrade = isStrictlyOlder(currentVersion, normalizeRegistryVersion(cache!.latestVersion as string)!);
   return age > (upgrade ? UPGRADE_AVAILABLE_REFRESH_MS : UP_TO_DATE_REFRESH_MS);
 }
 
@@ -294,12 +300,14 @@ export function resolveUpdateNotice(input: ResolveUpdateNoticeInput): UpdateNoti
       attempted = parseIso(cache.lastSuccessfulCheckAt) !== null
         || (typeof cache.lastError === 'string' && cache.lastError.length > 0);
       if (typeof cache.lastError === 'string' && cache.lastError) reason = boundedReason(cache.lastError);
+      else if (typeof cache.latestVersion === 'string' && normalizeRegistryVersion(cache.latestVersion) === null) reason = 'registry returned an invalid version';
+      else if (attempted && cache.checkSucceeded === false) reason = 'the last update check failed';
       else if (parseIso(cache.lastSuccessfulCheckAt) !== null) reason = 'the last successful check is more than a day old';
     }
     return { kind: 'CHECK_FAILED', currentVersion, reason, attempted };
   }
 
-  const latestVersion = cache!.latestVersion as string;
+  const latestVersion = normalizeRegistryVersion(cache!.latestVersion as string)!;
   if (!isStrictlyOlder(currentVersion, latestVersion)) {
     return { kind: 'UP_TO_DATE', currentVersion, latestVersion };
   }

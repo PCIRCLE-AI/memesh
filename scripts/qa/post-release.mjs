@@ -574,14 +574,18 @@ export function captureReceipt(install, spawnHook = spawnSync) {
   const commitFailure = hookFailure('post-commit', commitHook);
   if (commitFailure) return commitFailure;
 
-  // One Stop, with a transcript naming edits so session-summary files them.
+  // One Stop, with paired successful edit results so capture has completion evidence.
   const transcript = path.join(repoDir, 'session.jsonl');
-  const toolUse = (name, input) => JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name, input }] } });
+  const toolUse = (id, name, input) => JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input }] } });
   fs.writeFileSync(transcript, [
-    toolUse('Edit', { file_path: path.join(repoDir, 'a.ts') }),
-    toolUse('Edit', { file_path: path.join(repoDir, 'b.ts') }),
-    toolUse('Bash', { command: 'npm test' }),
-    toolUse('Bash', { command: 'npm run build' }),
+    toolUse('edit-a', 'Edit', { file_path: path.join(repoDir, 'a.ts') }),
+    toolUse('edit-b', 'Edit', { file_path: path.join(repoDir, 'b.ts') }),
+    toolUse('test', 'Bash', { command: 'npm test' }),
+    toolUse('build', 'Bash', { command: 'npm run build' }),
+    JSON.stringify({ type: 'user', message: { content: [
+      { type: 'tool_result', tool_use_id: 'edit-a', is_error: false, content: 'File updated successfully' },
+      { type: 'tool_result', tool_use_id: 'edit-b', is_error: false, content: 'File updated successfully' },
+    ] } }),
   ].join('\n'));
   const sessionHook = runHook('session-summary', {
     session_id: 'capture-1', cwd: repoDir, transcript_path: transcript, was_in_agentic_loop: true,

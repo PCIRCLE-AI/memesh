@@ -230,40 +230,42 @@ function strReplace(namespace, name, oldStr, newStr, path) {
         return err('Error: `new_str` must be a string when present.');
     }
     const kg = graph();
-    const entity = findEntity(kg, namespace, name);
-    if (!entity) {
-        return err(`Error: The path ${path} does not exist. Please provide a valid path.`);
-    }
-    const body = renderBody(entity);
-    const shown = redactSecrets(oldStr);
-    const first = body.indexOf(oldStr);
-    if (first === -1 && shown !== oldStr && body.includes(shown)) {
-        return err(`No replacement was performed: no exact stored-text match for old_str in ${path}. view shows credential-shaped text masked; old_str must match the stored text, which export returns.`);
-    }
-    if (first === -1) {
-        return err(`No replacement was performed, old_str \`${shown}\` did not appear verbatim in ${path}.`);
-    }
-    if (body.indexOf(oldStr, first + 1) !== -1) {
-        const lines = [];
-        let at = first;
-        while (at !== -1) {
-            lines.push(body.slice(0, at).split('\n').length);
-            at = body.indexOf(oldStr, at + 1);
+    return getDatabase().transaction(() => {
+        const entity = findEntity(kg, namespace, name);
+        if (!entity) {
+            return err(`Error: The path ${path} does not exist. Please provide a valid path.`);
         }
-        return err(`No replacement was performed. Multiple occurrences of old_str \`${shown}\` ` +
-            `in lines: ${lines.join(', ')}. Please ensure it is unique`);
-    }
-    const replaced = redactSecrets(body.slice(0, first) + (newStr ?? '') + body.slice(first + oldStr.length));
-    const oversize = tooLarge(replaced, path);
-    if (oversize)
-        return oversize;
-    const observations = replaced === '' ? [] : replaced.split('\n');
-    rewriteObservations(kg, entity, observations);
-    const at = redactSecrets(body.slice(0, first)).split('\n').length;
-    const from = Math.max(1, at - 2);
-    const snippet = replaced.split('\n').slice(from - 1, at + 2).join('\n');
-    return ok(`The memory file has been edited. Here's a snippet of ${path} with line numbers:\n` +
-        withLineNumbers(snippet, from));
+        const body = renderBody(entity);
+        const shown = redactSecrets(oldStr);
+        const first = body.indexOf(oldStr);
+        if (first === -1 && shown !== oldStr && body.includes(shown)) {
+            return err(`No replacement was performed: no exact stored-text match for old_str in ${path}. view shows credential-shaped text masked; old_str must match the stored text, which export returns.`);
+        }
+        if (first === -1) {
+            return err(`No replacement was performed, old_str \`${shown}\` did not appear verbatim in ${path}.`);
+        }
+        if (body.indexOf(oldStr, first + 1) !== -1) {
+            const lines = [];
+            let at = first;
+            while (at !== -1) {
+                lines.push(body.slice(0, at).split('\n').length);
+                at = body.indexOf(oldStr, at + 1);
+            }
+            return err(`No replacement was performed. Multiple occurrences of old_str \`${shown}\` ` +
+                `in lines: ${lines.join(', ')}. Please ensure it is unique`);
+        }
+        const replaced = redactSecrets(body.slice(0, first) + (newStr ?? '') + body.slice(first + oldStr.length));
+        const oversize = tooLarge(replaced, path);
+        if (oversize)
+            return oversize;
+        const observations = replaced === '' ? [] : replaced.split('\n');
+        rewriteObservations(kg, entity, observations);
+        const at = redactSecrets(body.slice(0, first)).split('\n').length;
+        const from = Math.max(1, at - 2);
+        const snippet = replaced.split('\n').slice(from - 1, at + 2).join('\n');
+        return ok(`The memory file has been edited. Here's a snippet of ${path} with line numbers:\n` +
+            withLineNumbers(snippet, from));
+    }).immediate();
 }
 function insertLine(namespace, name, atLine, text, path) {
     if (!Number.isInteger(atLine)) {
@@ -273,27 +275,29 @@ function insertLine(namespace, name, atLine, text, path) {
         return err('Error: `insert_text` must be a string.');
     }
     const kg = graph();
-    const entity = findEntity(kg, namespace, name);
-    if (!entity)
-        return err(`Error: The path ${path} does not exist`);
-    const shownObservations = redactTitleAndObservations(typeof entity.title === 'string' ? entity.title : undefined, entity.observations).observations;
-    const owners = lineOwners(shownObservations);
-    const line = atLine;
-    if (line < 0 || line > owners.length) {
-        return err(`Error: Invalid \`insert_line\` parameter: ${line}. ` +
-            `It should be within the range of lines of the file: [0, ${owners.length}]`);
-    }
-    const insertAfter = line === 0 ? -1 : owners[line - 1];
-    const observations = [...entity.observations];
-    observations.splice(insertAfter + 1, 0, text.replace(/\n$/, ''));
-    const joined = observations.join('\n');
-    const redacted = redactSecrets(joined);
-    const stored = redacted === joined ? observations : redacted.split('\n');
-    const oversize = tooLarge(redacted, path);
-    if (oversize)
-        return oversize;
-    rewriteObservations(kg, entity, stored);
-    return ok(`The file ${path} has been edited.`);
+    return getDatabase().transaction(() => {
+        const entity = findEntity(kg, namespace, name);
+        if (!entity)
+            return err(`Error: The path ${path} does not exist`);
+        const shownObservations = redactTitleAndObservations(typeof entity.title === 'string' ? entity.title : undefined, entity.observations).observations;
+        const owners = lineOwners(shownObservations);
+        const line = atLine;
+        if (line < 0 || line > owners.length) {
+            return err(`Error: Invalid \`insert_line\` parameter: ${line}. ` +
+                `It should be within the range of lines of the file: [0, ${owners.length}]`);
+        }
+        const insertAfter = line === 0 ? -1 : owners[line - 1];
+        const observations = [...entity.observations];
+        observations.splice(insertAfter + 1, 0, text.replace(/\n$/, ''));
+        const joined = observations.join('\n');
+        const redacted = redactSecrets(joined);
+        const stored = redacted === joined ? observations : redacted.split('\n');
+        const oversize = tooLarge(redacted, path);
+        if (oversize)
+            return oversize;
+        rewriteObservations(kg, entity, stored);
+        return ok(`The file ${path} has been edited.`);
+    }).immediate();
 }
 function deletePath(parsed, path) {
     if (parsed.kind === 'root') {

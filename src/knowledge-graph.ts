@@ -8,8 +8,6 @@ import {
   joinIndexedObservations,
   tokenizeQuery,
   renderMatchExpression,
-  registerNfcFunction,
-  SQL_NFC_FUNCTION,
   foldForExactMatch,
   registerFoldFunction,
   SQL_FOLD_FUNCTION,
@@ -215,8 +213,8 @@ function archivedLikeTerms(db: MemeshDatabase, query: string): string[] {
     0,
     MAX_QUERY_TERMS
   );
-  if (kept.length === 0) return [likeTerm(query)];
-  return kept.map(likeTerm);
+  if (kept.length === 0) return [likeTerm(foldScanText(query))];
+  return kept.map(term => likeTerm(foldScanText(term)));
 }
 
 /**
@@ -336,6 +334,26 @@ function fold(term: string): string {
   const lower = term.toLowerCase();
   if (!LATIN_FOLDABLE.test(lower)) return lower;
   return lower.normalize('NFD').replace(/\p{M}/gu, '');
+}
+
+// unicode61 remove_diacritics=1 folds single-accent Latin letters but keeps
+// multiply accented ones (e.g. ỗ). Do not erase marks in other scripts or
+// change the separate, accent-sensitive exact-name ranking contract.
+function foldScanText(text: string): string {
+  return text.normalize('NFC').toLowerCase().replace(/\p{Script=Latin}/gu, letter => {
+    const decomposed = letter.normalize('NFD');
+    return /^[a-z]\p{M}$/u.test(decomposed) ? decomposed[0] : letter;
+  });
+}
+
+const SQL_SCAN_FOLD = 'memesh_scan_fold';
+const scanFoldRegistered = new WeakSet<object>();
+function registerScanFold(db: MemeshDatabase): void {
+  if (scanFoldRegistered.has(db)) return;
+  db.function(SQL_SCAN_FOLD, { deterministic: true }, value =>
+    typeof value === 'string' ? foldScanText(value) : value
+  );
+  scanFoldRegistered.add(db);
 }
 
 function dropUbiquitousTerms(db: MemeshDatabase, terms: string[]): string[] {
@@ -1150,23 +1168,21 @@ export class KnowledgeGraph {
       const tagFilter = opts?.tag ? 'AND t.tag = ?' : scoped ? scoped.sql : '';
       const archivedNamespaceFilter = opts?.namespace ? 'AND e.namespace = ?' : '';
       const likeTerms = archivedLikeTerms(this.db, query);
-      // `memesh_nfc(...)` on the STORED side. The terms are already NFC —
-      // `tokenizeQuery` normalises — so without it this compared normalised
-      // terms against raw storage, and a memory stored decomposed was findable
-      // while active and unfindable once archived.
-      registerNfcFunction(this.db);
+      // Fold both stored text and query terms: NFC alone left accented Latin
+      // text and Unicode case variants findable only through the healthy index.
+      registerScanFold(this.db);
       // `e.title` is in the clause for the same reason the whole branch
       // exists: the active side folds title into the FTS feed, so a memory
       // matched by its human title would otherwise be findable while active
       // and unfindable once archived. COALESCE because title is nullable —
-      // memesh_nfc passes NULL through and NULL LIKE is three-valued NULL;
+      // the folding function passes NULL through and NULL LIKE is three-valued NULL;
       // functionally falsy, but coalescing keeps the arm a plain boolean.
       const termClause = likeTerms
         .map(
           () =>
-            `(${SQL_NFC_FUNCTION}(e.name) LIKE ? ESCAPE '\\' ` +
-            `OR ${SQL_NFC_FUNCTION}(COALESCE(e.title, '')) LIKE ? ESCAPE '\\' ` +
-            `OR ${SQL_NFC_FUNCTION}(o.content) LIKE ? ESCAPE '\\')`
+            `(${SQL_SCAN_FOLD}(e.name) LIKE ? ESCAPE '\\' ` +
+            `OR ${SQL_SCAN_FOLD}(COALESCE(e.title, '')) LIKE ? ESCAPE '\\' ` +
+            `OR ${SQL_SCAN_FOLD}(o.content) LIKE ? ESCAPE '\\')`
         )
         .join(strictSelected ? ' AND ' : ' OR ');
       const archivedParams: (string | number)[] = likeTerms.flatMap((t) => [t, t, t]);
@@ -1225,12 +1241,12 @@ export class KnowledgeGraph {
     filterParams: (string | number)[],
   ): { rows: Array<{ id: number }>; strictSelected: boolean } {
     const allTerms = tokenizeQuery(query);
-    const terms = allTerms.slice(0, MAX_QUERY_TERMS).map(likeTerm);
-    registerNfcFunction(this.db);
+    const terms = allTerms.slice(0, MAX_QUERY_TERMS).map(term => likeTerm(foldScanText(term)));
+    registerScanFold(this.db);
     const termArm =
-      `(${SQL_NFC_FUNCTION}(e.name) LIKE ? ESCAPE '\\' ` +
-      `OR ${SQL_NFC_FUNCTION}(COALESCE(e.title, '')) LIKE ? ESCAPE '\\' ` +
-      `OR EXISTS (SELECT 1 FROM observations o WHERE o.entity_id = e.id AND ${SQL_NFC_FUNCTION}(o.content) LIKE ? ESCAPE '\\'))`;
+      `(${SQL_SCAN_FOLD}(e.name) LIKE ? ESCAPE '\\' ` +
+      `OR ${SQL_SCAN_FOLD}(COALESCE(e.title, '')) LIKE ? ESCAPE '\\' ` +
+      `OR EXISTS (SELECT 1 FROM observations o WHERE o.entity_id = e.id AND ${SQL_SCAN_FOLD}(o.content) LIKE ? ESCAPE '\\'))`;
     const run = (joiner: ' AND ' | ' OR '): Array<{ id: number }> =>
       this.db
         .prepare(

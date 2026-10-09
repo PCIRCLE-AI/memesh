@@ -57,6 +57,7 @@ import {
   extractChangelogSection,
   findUsableLiveJourneyReceipt,
   LIVE_JOURNEY_RECEIPT_PATHS,
+  readApprovedReleaseReuse,
 } from './lib/release-preconditions.mjs';
 import { runPostPublishFlow } from './lib/publish-flow.mjs';
 
@@ -188,6 +189,17 @@ const repoSlug = capture('gh', ['repo', 'view', '--json', 'nameWithOwner', '-q',
 // exact spawn's MEMESH_FINISH_RELEASE_TAGGING=1 (below) matches what wrote
 // it — see scripts/qa/pre-release.mjs CACHE_ENV_VAR — so a `--dry-run`
 // immediately followed by this real run does not pay for that step twice.
+let approvedReuse;
+try {
+  approvedReuse = readApprovedReleaseReuse(repoRoot, headSha, capture('git', ['rev-parse', 'HEAD^{tree}']));
+} catch (error) {
+  console.error(`✗ ${error.message}`);
+  process.exit(1);
+}
+if (approvedReuse) {
+  console.log(`REUSED_WITH_CONCERNS — ${approvedReuse.path}`);
+  for (const concern of approvedReuse.concerns) console.log(`  concern: ${concern}`);
+}
 console.log(`\n--- npm run qa:pre-release (build + verify:artifact + audit:memory; several minutes)`);
 // MEMESH_FINISH_RELEASE_TAGGING=1 tells check-version-coherence.mjs's
 // main-declares-published-version check that THIS run is the one about to
@@ -202,6 +214,21 @@ const qaPreReleaseResult = spawnSync('npm', ['run', 'qa:pre-release'], {
   env: { ...process.env, MEMESH_FINISH_RELEASE_TAGGING: '1' },
 });
 const qaPreReleaseStatus = qaPreReleaseResult.status;
+
+// QA may rebuild tracked files. Never carry a pre-build evidence decision into
+// publication after its candidate or source receipts changed.
+if (approvedReuse) {
+  try {
+    if (capture('git', ['status', '--porcelain']) !== '' || capture('git', ['rev-parse', 'HEAD']) !== headSha) {
+      throw new Error('release candidate changed during qa:pre-release');
+    }
+    approvedReuse = readApprovedReleaseReuse(repoRoot, headSha, capture('git', ['rev-parse', 'HEAD^{tree}']));
+    if (!approvedReuse) throw new Error('release evidence reuse mapping disappeared');
+  } catch (error) {
+    console.error(`✗ ${error.message}`);
+    process.exit(1);
+  }
+}
 
 // `qa:live-journey` needs a Codex login or a person at an interactive Claude
 // Code session — nothing this script can open itself, so this stays
@@ -246,6 +273,7 @@ const { ok, blockers } = checkReleasePreconditions({
   shippedFilesChangedSinceBump,
   qaPreReleaseStatus,
   liveJourneyCandidates,
+  approvedReuse,
 });
 
 console.log(`\nfinish-release: ${tag}`);
@@ -256,9 +284,9 @@ console.log(`  notes:       ${notesFile ?? `CHANGELOG.md [${pkgVersion}]`} (${no
 console.log(`  qa:pre-release: ${qaPreReleaseStatus === 0 ? 'PASS' : `FAIL (exit ${qaPreReleaseStatus ?? '(could not run)'})`}`);
 {
   for (const required of LIVE_JOURNEY_RECEIPT_PATHS) {
-    const liveJourney = findUsableLiveJourneyReceipt(liveJourneyCandidates, headSha, required.host);
+    const liveJourney = findUsableLiveJourneyReceipt(liveJourneyCandidates, headSha, required.host, approvedReuse);
     console.log(
-      `  live-journey (${required.host}): ${liveJourney.ok ? `PASS (${liveJourney.usable.path})` : 'no usable receipt — see blockers below if any'}`
+      `  live-journey (${required.host}): ${liveJourney.ok ? `${liveJourney.reused ? 'REUSED_WITH_CONCERNS' : 'PASS'} (${liveJourney.usable.path})` : 'no usable receipt — see blockers below if any'}`
     );
   }
 }

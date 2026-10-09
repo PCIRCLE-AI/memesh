@@ -8,6 +8,7 @@ import { createRequire } from 'module';
 import { join } from 'path';
 import { existsSync, readFileSync, writeSync } from 'fs';
 import { pathToFileURL } from 'url';
+import { setImmediate } from 'node:timers';
 import {
   AUTO_CAPTURE_TAG,
   captureEntity,
@@ -25,7 +26,6 @@ import {
   recordHookOutcome,
   recordHookRun,
   stampHookRunOnly,
-  resolveAutoUpdatePolicy,
   resolvePluginRoot,
   SKIP_REASONS,
   spawnAutoUpdate,
@@ -58,8 +58,10 @@ async function runAutoUpdateAtStop(sessionId) {
     if (!installedVersion) return;
 
     const cache = readUpdateCheckCache(installedVersion);
-    const policy = resolveAutoUpdatePolicy(process.env);
-    const decision = decideAutoUpdateHook(installedVersion, cache, policy);
+    // Validate the target and cache freshness independently of the unattended
+    // policy. Only exact session/version/channel approval below permits action;
+    // this does not opt the owner into future automatic updates.
+    const decision = decideAutoUpdateHook(installedVersion, cache, 'major');
     let channel = 'unknown';
     try { channel = installChannel?.getCurrentInstallChannel({ packageRoot: pluginRoot }) ?? 'unknown'; } catch { /* best-effort */ }
     const consent = decision.run
@@ -79,6 +81,7 @@ async function runAutoUpdateAtStop(sessionId) {
 // Defensive: never throws — malformed lines are silently skipped.
 function parseTranscript(transcriptPath) {
   const filesEdited = new Set();
+  const pendingFileEdits = new Map();
   const bashCommands = [];
   const errorsEncountered = [];
   let toolCallCount = 0;
@@ -105,7 +108,7 @@ function parseTranscript(transcriptPath) {
             if (block.name === 'Write' || block.name === 'Edit') {
               const fp = block.input?.file_path ?? block.input?.path;
               const name = editedFileName(fp);
-              if (name) filesEdited.add(name);
+              if (name && typeof block.id === 'string') pendingFileEdits.set(block.id, [name]);
             }
             if (block.name === 'Bash') {
               const cmd = block.input?.command ?? '';
@@ -120,7 +123,7 @@ function parseTranscript(transcriptPath) {
               // bashEditedFileNames also rejects a captured token that is
               // not path-shaped — a shell variable, a flag, a sed/regex
               // fragment (#495) — before it can ever become a `file:` tag.
-              for (const f of bashEditedFileNames(cmd)) filesEdited.add(f);
+              if (typeof block.id === 'string') pendingFileEdits.set(block.id, bashEditedFileNames(cmd));
               if (typeof cmd === 'string' && cmd.length > 10 && !cmd.startsWith('ls') && !cmd.startsWith('cd')) {
                 // Redact BEFORE truncating. A bash command line is the single
                 // most likely place a credential appears in a transcript
@@ -149,6 +152,16 @@ function parseTranscript(transcriptPath) {
         if (entry.type === 'user' && Array.isArray(entry.message?.content)) {
           for (const block of entry.message.content) {
             if (block.type !== 'tool_result') continue;
+            // A request is an attempt. Only its matching successful result
+            // supports a completed edit-tool observation; missing/failed
+            // results must not become permanent success memories.
+            const files = pendingFileEdits.get(block.tool_use_id);
+            if (files) {
+              pendingFileEdits.delete(block.tool_use_id);
+              if (block.is_error === false || block.is_error === undefined) {
+                for (const file of files) filesEdited.add(file);
+              }
+            }
             if (block.is_error !== true) continue;
             const text = typeof block.content === 'string'
               ? block.content
@@ -210,7 +223,7 @@ function record(outcome, reason, entity) {
 }
 
 process.stdin.on('end', async () => {
-  let sessionId = 'unknown';
+  let sessionId;
   try {
     if (!input.trim()) {
       record('skipped', SKIP_REASONS.emptyStdin);
@@ -472,25 +485,25 @@ process.stdin.on('end', async () => {
           `session-${sessionId}-files`,
           'session-insight',
           [
-            `Session edited ${filesEdited.length} file(s): ${filesEdited.join(', ')}`,
+            `Successful file-edit tool results for ${filesEdited.length} file(s): ${filesEdited.join(', ')}`,
             `Total tool calls: ${toolCallCount}`,
           ],
           [...baseTags, ...fileTagsFor(filesEdited)],
-          truncateTitle(`${titlePrefix}: edited ${filesEdited.length} file(s)`)
+          truncateTitle(`${titlePrefix}: successful edit tool results for ${filesEdited.length} file(s)`)
         );
       }
 
-      // Rule 2: Error -> Fix pattern detection
+      // Co-occurrence is an observation, not proof that an edit fixed an error.
       if (errorsEncountered.length > 0 && filesEdited.length > 0) {
         storeMemory(
           `session-${sessionId}-fixes`,
           'session-insight',
           [
-            `Fixed ${errorsEncountered.length} error(s) by editing ${filesEdited.join(', ')}`,
+            `Observed ${errorsEncountered.length} error(s) and successful edit tool results for ${filesEdited.join(', ')}`,
             ...errorsEncountered.slice(0, 3).map(e => `Error: ${e.slice(0, 100)}`),
           ],
-          [...baseTags, 'type:bugfix', ...fileTagsFor(filesEdited)],
-          truncateTitle(`${titlePrefix}: fixed ${errorsEncountered.length} error(s)`)
+          [...baseTags, ...fileTagsFor(filesEdited)],
+          truncateTitle(`${titlePrefix}: observed ${errorsEncountered.length} error(s) alongside edit tool results`)
         );
       }
 
@@ -508,7 +521,7 @@ process.stdin.on('end', async () => {
           `session-${sessionId}-summary`,
           'session-insight',
           [
-            `Significant session: ${toolCallCount} tool calls, ${filesEdited.length} files edited`,
+            `Significant session: ${toolCallCount} tool calls, successful edit tool results for ${filesEdited.length} file(s)`,
             ...bashCommands.slice(0, 3).map(c => `Command: ${c}`),
           ],
           [...baseTags, 'type:heavy-session'],
@@ -745,10 +758,6 @@ process.stdin.on('end', async () => {
     record('error', hookErrorReason(err));
   }
 
-  // Update only after all session work so installed files cannot change while
-  // this hook is still reading them.
-  await runAutoUpdateAtStop(sessionId);
-
   // Emit NOTHING on success — not `{"suppressOutput": true}`.
   //
   // That field is valid Claude Code hook output, and it was doing no work:
@@ -765,7 +774,12 @@ process.stdin.on('end', async () => {
   exit0();
 });
 
-function exit0() {
+async function exit0() {
+  // All valid Stop paths, including short turns and capture opt-out, settle
+  // explicit update consent. Yield so enclosing capture finally blocks close
+  // their resources before installed files could change.
+  await new Promise(resolve => setImmediate(resolve));
+  if (payload) await runAutoUpdateAtStop(payload.session_id || 'unknown');
   // The one thing this hook may print (#324): the nudge. `systemMessage` is
   // the only Stop output Claude Code shows the user (Stop has no
   // hookSpecificOutput variant — tests/helpers/hook-output-contract.ts).

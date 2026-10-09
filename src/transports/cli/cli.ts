@@ -48,6 +48,7 @@ import {
 } from '../../host-runtime/config.js';
 import { pluginHostConfigRoot, versionedPluginCacheRoots } from '../../core/install-channel.js';
 import { shellQuote } from '../../core/file-mode.js';
+import { ZodError } from 'zod';
 
 // DX: every CLI command that touches the DB used to repeat
 //   openDatabase(); try { ...body... } finally { closeDatabase(); }
@@ -395,7 +396,7 @@ program
         // The same limits MCP and HTTP callers get from RememberSchema
         // (length, observation count, blank text) — the CLI calls remember()
         // directly, so it checks here rather than disagreeing with them.
-        const check = RememberSchema.safeParse({ note, ...(opts.type ? { type: opts.type } : {}), ...(opts.why !== undefined ? { why: opts.why } : {}) });
+        const check = RememberSchema.safeParse({ note, ...(opts.type ? { type: opts.type } : {}), ...(opts.why !== undefined ? { why: opts.why } : {}), ...(opts.tags?.length ? { tags: opts.tags } : {}) });
         if (!check.success) {
           console.error(`Error: ${check.error.issues.map((i) => i.message).join('; ')}`);
           process.exit(1);
@@ -1134,6 +1135,13 @@ export async function readCliMessagePayloadFromStdin(
   return payload;
 }
 
+function cliErrorText(error: unknown): string {
+  if (error instanceof ZodError) {
+    return error.issues.map(issue => `${issue.path.length ? `${issue.path.join('.')}: ` : ''}${issue.message}`).join('; ');
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
 async function runCliMessage(input: unknown): Promise<void> {
   await withDatabase(async () => {
     try {
@@ -1144,7 +1152,7 @@ async function runCliMessage(input: unknown): Promise<void> {
       });
       console.log(JSON.stringify(result));
     } catch (error) {
-      console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
+      console.error(`Error: ${cliErrorText(error)}`);
       process.exitCode = 1;
     }
   });
@@ -1247,7 +1255,7 @@ messageCmd
       } catch (error) {
         console.error(JSON.stringify({
           type: 'error',
-          error: error instanceof Error ? error.message : String(error),
+          error: cliErrorText(error),
         }));
         process.exitCode = 1;
       }
@@ -1444,8 +1452,17 @@ agentCmd
       ...(opts.project === undefined ? {} : { project: requireAgentScopeArg(opts.project, 'project', '--project') }),
       ...(opts.workSummary === undefined ? {} : { work_summary: boundedCliDeclaration(opts.workSummary, '--work-summary', 200) }),
     };
+    let sessionWorkspace: string | undefined;
+    if (host === 'codex-session') {
+      try {
+        sessionWorkspace = fs.realpathSync(path.resolve(opts.workspace));
+      } catch (error) {
+        if (error instanceof Error) error.message = `--workspace: ${error.message}`;
+        throw error;
+      }
+    }
     const config = host === 'codex-session'
-      ? { ...common, workspace: fs.realpathSync(path.resolve(opts.workspace)) }
+      ? { ...common, workspace: sessionWorkspace }
       : host === 'codex'
         ? { ...common, control_socket: path.join(hostsDir, 'codex-app-server.sock'), workspace: path.resolve(opts.workspace) }
         : host === 'claude'
@@ -2464,6 +2481,7 @@ kgCmd
         // rename that moved only the tags left the messages in a scope nobody
         // polls. Reported separately because it is a different kind of row.
         console.log(`  ${preview.messageRows - preview.messageRowsBlocked} durable agent-message row(s) scoped to ${opts.from} would move to ${to}${preview.messageRowsBlocked > 0 ? `, ${preview.messageRowsBlocked} would be left in place (${to} already holds an equivalent row)` : ''}`);
+        console.log(`  ${preview.proposalRows} proposal row(s) would move to ${to}`);
         console.log(`\nNothing written. Re-run with --apply to commit (the DB is backed up first).`);
         return;
       }
@@ -2504,6 +2522,7 @@ kgCmd
       console.log(`✅ project:${opts.from} → project:${to}`);
       console.log(`  ${result.renamed} renamed, ${result.merged} merged (${result.affectedEntities} entities total)`);
       console.log(`  ${result.messageRows - result.messageRowsBlocked} agent-message row(s) moved${result.messageRowsBlocked > 0 ? `, ${result.messageRowsBlocked} left in place (${to} already holds an equivalent row)` : ''}`);
+      console.log(`  ${result.proposalRows} proposal row(s) moved`);
       console.log(`  Backup: ${backupPath}`);
       console.log(`  Restore if needed (stop every memesh process first): ${restoreCommand(dbPath, backupPath)}`);
     };
@@ -2884,6 +2903,7 @@ program
   .option('--dry-run', 'Show what would change without modifying any file')
   .option('--force-over-plugin', 'Write user-level hooks even when Claude Code\'s plugin runtime already wires them. Causes double-firing — only use if you genuinely want both surfaces.')
   .action(async (opts) => {
+    requireOneOf(opts.scope, ['user', 'project'], '--scope');
     const { installHooks } = await import('../../core/install-hooks.js');
     const scope = opts.scope === 'project' ? 'project' : 'user';
     try {
@@ -2974,6 +2994,7 @@ program
   .option('--scope <scope>', 'user (default) or project', 'user')
   .option('--dry-run', 'Show what would change without modifying any file')
   .action(async (opts) => {
+    requireOneOf(opts.scope, ['user', 'project'], '--scope');
     const { uninstallHooks } = await import('../../core/install-hooks.js');
     const scope = opts.scope === 'project' ? 'project' : 'user';
     try {
@@ -3392,7 +3413,12 @@ export async function runCli(argv: readonly string[] = process.argv): Promise<vo
 
 const cliEntryPath = process.argv[1];
 if (cliEntryPath && isExecutedModule(cliEntryPath, import.meta.url)) {
-  await runCli();
+  try {
+    await runCli();
+  } catch (error) {
+    console.error(`Error: ${cliErrorText(error)}`);
+    process.exitCode = 1;
+  }
 }
 
 function isExecutedModule(entryPath: string, moduleUrl: string): boolean {

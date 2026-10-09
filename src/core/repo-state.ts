@@ -46,8 +46,8 @@ const GIT_TIMEOUT_MS = 5000;
 export interface RepoState {
   /** Current branch, or null on a detached HEAD. */
   branch: string | null;
-  /** Files with uncommitted changes, staged or not, including untracked. */
-  uncommitted: number;
+  /** Files with uncommitted changes, including untracked; null when status is unavailable. */
+  uncommitted: number | null;
   /** Most recent reachable tag, or null when the repository has none. */
   lastTag: string | null;
   /** Commits between `lastTag` and HEAD. Null when there is no tag. */
@@ -109,7 +109,7 @@ export function readRepoState(cwdInput?: string | null): RepoState | null {
   const branch = branchRaw && branchRaw !== 'HEAD' ? branchRaw : null;
 
   const statusOut = tryGit(cwd, ['status', '--porcelain']);
-  const uncommitted = statusOut ? statusOut.split('\n').filter(l => l.trim() !== '').length : 0;
+  const uncommitted = statusOut === null ? null : statusOut.split('\n').filter(l => l.trim() !== '').length;
 
   // `describe --tags --abbrev=0` fails rather than answering when no tag is
   // reachable, which is why the null is meaningful and not an error to report.
@@ -146,7 +146,8 @@ export function repoStateLines(state: RepoState | null): string[] {
 
   const first: string[] = [];
   if (state.branch) first.push(`branch ${state.branch}`);
-  first.push(state.uncommitted === 0 ? 'working tree clean' : `${state.uncommitted} uncommitted`);
+  first.push(state.uncommitted === null ? 'working tree status unavailable'
+    : state.uncommitted === 0 ? 'working tree clean' : `${state.uncommitted} uncommitted`);
 
   const lines = ['Where the repository actually stands (read just now):', `- ${first.join(' · ')}`];
 

@@ -4,13 +4,51 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+## [4.10.12] — 2026-10-09
+
 ### Changed
+
+- HTTP `forget` now returns 404 for a missing memory and 400 for a non-matching observation instead of a successful 200 no-op. Clients that relied on the old response must handle the error path; successful removals, archives and repeat archives remain successful (#596).
 
 - A decision now keeps the reason it was made. `remember` takes `why` (CLI `--why`): the reason for the decision and what would make it stop holding. It is stored as the observation `Why: …`; a reason typed with its own `Why: ` label is stored with one label. Creating a memory of type `decision`, `architecture_decision` or `design_decision` without it — or rewriting one with `replace` — is refused, with a message that names both halves; adding to an existing decision does not need it, and a note file or an `import` is still stored (untrusted, so it appears in the briefing only once trusted), as is an accepted dream proposal. Before, a decision could be stored as a bare conclusion, and the briefing showed only its title, so a later session could not tell whether the reason behind it still applied. The CLI's `fix it with:` command after a quick-form decision now carries `--why`, so copying it is not refused.
 - The briefing, the session-start block and the durable-memory index (`briefing --index`, `GET /v1/briefing-index`) show each decision with its latest `Why:` after the title, or `(no reason recorded)` when it has none, and a decision that nobody has recalled or added to for 30 days with `(unconfirmed N days: re-check before relying)`. Recalling it clears that note. The age counts the newest observation of every decision type, not only `decision`, so `architecture_decision` and `design_decision` are marked too. When a decision line is cut to its budget, the title is clipped first (down to 40 characters), then the reason, and the notes and the `[mem:id]` handle are never cut; a decision whose first observation is a reason shows only its latest reason, once. A read or observation dated in the future is ignored, and a decision with no observation is aged from its creation in the ranked block as in the index.
 - The Hermes and OpenClaw extensions pass `why` through. Hermes returns the server's own sentence when a write is refused, as OpenClaw's `memory_store` does, instead of a bare status line; both say `why` is required for `decision`, `architecture_decision` and `design_decision`. The decision-nudge and "remember this" hooks tell the agent a decision needs `why`, and the documentation's `remember` examples for a decision carry one.
 
 ### Fixed
+
+- Stop capture no longer records failed or unanswered file-edit requests as completed work. Successful edit results are stored as neutral observations rather than claims that errors were fixed; normal session handoffs remain available.
+
+- A session handoff replaced by another local host records its latest writer instead of retaining the first host's label. Briefing and SessionStart name a known Claude Code or Codex source; legacy handoffs with no reliable source retain their existing heading (#515).
+
+- CLI command failures keep exit code 1 and the error message without a Node stack trace. Message validation failures name the invalid field instead of dumping schema JSON; `message watch` keeps its JSONL error shape.
+- `install-hooks` and `uninstall-hooks` reject an invalid `--scope` before touching settings instead of treating it as `user`.
+
+- Task-state updates read and merge while holding the database write lock, so concurrent updates to different fields preserve both values and their stated dates. Unchanged fields and no-op writes keep their existing dates and history.
+
+- MCP update notices are suppressed only after a hook actually emitted its notice. Pending, failed or invalid prompt claims no longer hide an available update when a hook stops before announcing it.
+
+- Signal-score, accepted-proposal trust and title backfills take the write lock before reading their work list. Failed passes roll back, report pending completion and defer retry for 24 hours while startup continues; lock contention retries on the next start. Existing JSON completion records and populated fields remain intact.
+
+- Update checks and legacy caches accept npm's JSON-string version output and reject empty or invalid versions. A failed check keeps its previous valid result and deprecation signal, but does not claim the installed version is current; CLI and hook notices use the same version validation.
+
+- File attribution reports unreadable Git blame history as unknown, rather than claiming a valid line is out of range. Confirmed range errors and uncommitted lines keep their existing reasons.
+- Explicit per-session Upgrade approval is checked at Stop even on short turns or when memory capture is disabled. Fresh target and exact session/version/channel checks remain required; unattended update settings are unchanged.
+- The bundled CLI can refresh a missing or stale update cache without a SessionStart hook. A failed background start reports unknown status, releases its refresh claim and leaves the calling CLI or MCP process usable.
+- Background CLI/MCP cache refresh checks registry versions without opening or migrating the memory database, so it cannot contend with the caller's graph operation.
+- Legacy malformed metadata no longer aborts fused-lesson shell repair or the read-only invariant audit; malformed rows remain intact.
+- Briefing reserves section headings before selecting complete rows, and commit explanations exclude archived commit entities.
+- A failed data repair reports that its transaction rolled back and the repair remains pending, without prescribing an unrelated search-index rebuild. Search-index failures retain the `memesh reindex --fts` retry instruction.
+- A lesson recalled before editing now shows its newest fix and its memory handle; lesson names and text remain redacted. Ordinary memory selection and project isolation remain unchanged (#602).
+- A read-only `VACUUM INTO` backup opens for reads through both the CLI/core and hooks without changing the file or granting write access. Switching its journal mode no longer prevents opening the backup; other database errors still propagate.
+- Task state keeps a separate stated date for each field: a new goal no longer makes old done, next or blocked text look fresh in briefing or SessionStart. The CLI and Dashboard show each field date; untouched values stay stored and an empty string still clears a field (#406).
+- Forgotten task state is hidden from reads and startup briefings. Stating a new field starts fresh instead of reviving archived goal or completion fields.
+- A non-record JSON line such as `null` no longer aborts transcript work-package preparation; visible conversation before and after the line remains eligible.
+- Generated task-state titles respect the shared 200-character limit without shortening the stored field. Title and task-field truncation no longer split an emoji at the boundary.
+- Clearing an empty field on unreadable task-state metadata reports a failure instead of claiming a successful no-change. The recovery message directs callers to set a non-empty field; rejected clears leave the original record intact.
+- SessionStart reports unreadable task-state metadata with the same recovery hint as briefing, while retaining the project's other memories. Archived state remains excluded.
+- Legacy task-state headings use the same strict timestamp and clock-skew rules as briefing: invalid dates remain unknown, and an accepted near-future timestamp reads as today. Stored fields and the 72-hour freshness threshold remain unchanged.
+
+- Restoring a backup through MCP or HTTP keeps archived memories archived, retains creation times and restores permitted metadata, as the CLI does. Malformed restore fields are refused before the entry is written (#594).
 
 - The dashboard's Project page loads the selected project's memories a page at a time ("Load older memories") instead of the newest 2000 of the whole library, so a project whose memories are older than that no longer reads as empty while its chip counts them. `GET /v1/entities` takes `project` — decided by the rule `GET /v1/projects` counts with (the `project:` tag, else a `lesson-<project>-<pattern>` name of a project at least two characters long; the project's session handoff is not one of its memories) — and `offset`; the Memories filter chips use the same rule. Switching project no longer shows the previous project's memories if the new project's first page fails to load, "Load older memories" keeps keyboard focus while it loads, and the notice beside it counts the memories the list shows.
 - Dashboard Home: a rate-limited server no longer tells you to reload and run `memesh doctor`; the next-step card no longer claims to have checked the search index, and shows "unavailable" instead of "checking" forever when the server's health request fails; the memory-loop percentage compares the last seven days with the seven days before them (it compared the last seven days that had activity); the timeline chart fills its card, clears when the data is removed and spaces its bars by day; an empty library no longer scores a health of 0; and accepting a compaction proposal says how many source memories it archived.

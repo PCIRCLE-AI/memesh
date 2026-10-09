@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { findConflicts, trackAccess } from './storage/conflicts.js';
-import { indexedObservationText, joinIndexedObservations, tokenizeQuery, renderMatchExpression, registerNfcFunction, SQL_NFC_FUNCTION, foldForExactMatch, registerFoldFunction, SQL_FOLD_FUNCTION, } from './storage/fts-index.js';
+import { indexedObservationText, joinIndexedObservations, tokenizeQuery, renderMatchExpression, foldForExactMatch, registerFoldFunction, SQL_FOLD_FUNCTION, } from './storage/fts-index.js';
 const EXACT_MATCH_FIRST = `(${SQL_FOLD_FUNCTION}(e.name) = ? OR ${SQL_FOLD_FUNCTION}(COALESCE(e.title, '')) = ?) DESC`;
 import { computeSignalScore } from './core/signal-scorer.js';
 import { dropEntityFromIndexes } from './storage/entity-index.js';
@@ -71,8 +71,8 @@ function archivedLikeTerms(db, query) {
     const terms = tokenizeQuery(query);
     const kept = (terms.length > 1 ? dropUbiquitousTerms(db, terms) : terms).slice(0, MAX_QUERY_TERMS);
     if (kept.length === 0)
-        return [likeTerm(query)];
-    return kept.map(likeTerm);
+        return [likeTerm(foldScanText(query))];
+    return kept.map(term => likeTerm(foldScanText(term)));
 }
 const UBIQUITOUS_TERM_FRACTION = 0.5;
 const MIN_ROWS_FOR_DF_GUARD = 25;
@@ -86,6 +86,20 @@ function fold(term) {
     if (!LATIN_FOLDABLE.test(lower))
         return lower;
     return lower.normalize('NFD').replace(/\p{M}/gu, '');
+}
+function foldScanText(text) {
+    return text.normalize('NFC').toLowerCase().replace(/\p{Script=Latin}/gu, letter => {
+        const decomposed = letter.normalize('NFD');
+        return /^[a-z]\p{M}$/u.test(decomposed) ? decomposed[0] : letter;
+    });
+}
+const SQL_SCAN_FOLD = 'memesh_scan_fold';
+const scanFoldRegistered = new WeakSet();
+function registerScanFold(db) {
+    if (scanFoldRegistered.has(db))
+        return;
+    db.function(SQL_SCAN_FOLD, { deterministic: true }, value => typeof value === 'string' ? foldScanText(value) : value);
+    scanFoldRegistered.add(db);
 }
 function dropUbiquitousTerms(db, terms) {
     if (terms.length < 2)
@@ -526,11 +540,11 @@ export class KnowledgeGraph {
             const tagFilter = opts?.tag ? 'AND t.tag = ?' : scoped ? scoped.sql : '';
             const archivedNamespaceFilter = opts?.namespace ? 'AND e.namespace = ?' : '';
             const likeTerms = archivedLikeTerms(this.db, query);
-            registerNfcFunction(this.db);
+            registerScanFold(this.db);
             const termClause = likeTerms
-                .map(() => `(${SQL_NFC_FUNCTION}(e.name) LIKE ? ESCAPE '\\' ` +
-                `OR ${SQL_NFC_FUNCTION}(COALESCE(e.title, '')) LIKE ? ESCAPE '\\' ` +
-                `OR ${SQL_NFC_FUNCTION}(o.content) LIKE ? ESCAPE '\\')`)
+                .map(() => `(${SQL_SCAN_FOLD}(e.name) LIKE ? ESCAPE '\\' ` +
+                `OR ${SQL_SCAN_FOLD}(COALESCE(e.title, '')) LIKE ? ESCAPE '\\' ` +
+                `OR ${SQL_SCAN_FOLD}(o.content) LIKE ? ESCAPE '\\')`)
                 .join(strictSelected ? ' AND ' : ' OR ');
             const archivedParams = likeTerms.flatMap((t) => [t, t, t]);
             if (opts?.tag)
@@ -564,11 +578,11 @@ export class KnowledgeGraph {
     }
     scanActiveRows(query, tagFilter, namespaceFilter, filterParams) {
         const allTerms = tokenizeQuery(query);
-        const terms = allTerms.slice(0, MAX_QUERY_TERMS).map(likeTerm);
-        registerNfcFunction(this.db);
-        const termArm = `(${SQL_NFC_FUNCTION}(e.name) LIKE ? ESCAPE '\\' ` +
-            `OR ${SQL_NFC_FUNCTION}(COALESCE(e.title, '')) LIKE ? ESCAPE '\\' ` +
-            `OR EXISTS (SELECT 1 FROM observations o WHERE o.entity_id = e.id AND ${SQL_NFC_FUNCTION}(o.content) LIKE ? ESCAPE '\\'))`;
+        const terms = allTerms.slice(0, MAX_QUERY_TERMS).map(term => likeTerm(foldScanText(term)));
+        registerScanFold(this.db);
+        const termArm = `(${SQL_SCAN_FOLD}(e.name) LIKE ? ESCAPE '\\' ` +
+            `OR ${SQL_SCAN_FOLD}(COALESCE(e.title, '')) LIKE ? ESCAPE '\\' ` +
+            `OR EXISTS (SELECT 1 FROM observations o WHERE o.entity_id = e.id AND ${SQL_SCAN_FOLD}(o.content) LIKE ? ESCAPE '\\'))`;
         const run = (joiner) => this.db
             .prepare(`SELECT e.id FROM entities e
            WHERE (${terms.map(() => termArm).join(joiner)})

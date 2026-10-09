@@ -3,9 +3,12 @@ export declare const TASK_STATE_FIELDS: readonly ["goal", "next", "blocked", "do
 export type TaskStateField = (typeof TASK_STATE_FIELDS)[number];
 export type TaskState = Partial<Record<TaskStateField, string>> & {
     updated_at?: string;
+    legacy_updated_at?: string;
+    stated_at?: Partial<Record<TaskStateField, string>>;
 };
 export declare const MAX_FIELD_CHARS = 300;
 export declare function taskStateName(project: string): string;
+export declare function taskStateUnreadableMessage(project: string): string;
 export declare function parseTaskState(metadata: unknown): TaskState;
 export declare function normalizeFieldValue(value: string): string | null;
 export interface TaskStateMerge {

@@ -33,6 +33,35 @@ describe('FTS-only config', () => {
     return JSON.parse(fs.readFileSync(getConfigPath(), 'utf8')) as Record<string, unknown>;
   }
 
+  it('a partial failed write keeps the original config and capture opt-out', () => {
+    fs.writeFileSync(getConfigPath(), JSON.stringify({ autoCapture: false, extension: { value: 'owned' } }));
+    const before = fs.readFileSync(getConfigPath());
+    const write = fs.writeFileSync;
+    const spy = vi.spyOn(fs, 'writeFileSync').mockImplementation((target, data, options) => {
+      write(target, String(data).slice(0, 12), options);
+      throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+    });
+    try {
+      expect(() => updateConfig({ sessionLimit: 12 })).toThrow('disk full');
+    } finally { spy.mockRestore(); }
+    expect(fs.readFileSync(getConfigPath())).toEqual(before);
+    expect(readConfigResult()).toEqual({ config: { autoCapture: false }, state: 'ok' });
+    expect(fs.readdirSync(dir)).toEqual(['config.json']);
+  });
+
+  it('a failed replacement keeps the original config and removes its temporary file', () => {
+    fs.writeFileSync(getConfigPath(), JSON.stringify({ autoCapture: false }));
+    const before = fs.readFileSync(getConfigPath());
+    const spy = vi.spyOn(fs, 'renameSync').mockImplementation(() => {
+      throw Object.assign(new Error('replacement denied'), { code: 'EACCES' });
+    });
+    try {
+      expect(() => updateConfig({ sessionLimit: 12 })).toThrow('replacement denied');
+    } finally { spy.mockRestore(); }
+    expect(fs.readFileSync(getConfigPath())).toEqual(before);
+    expect(fs.readdirSync(dir)).toEqual(['config.json']);
+  });
+
   it('treats an absent file as an empty supported configuration', () => {
     expect(readConfigResult()).toEqual({ config: {}, state: 'absent' });
     expect(readConfig()).toEqual({});
@@ -226,6 +255,25 @@ describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('confi
     expect(() => updateConfig({ autoCapture: false })).toThrow(/EACCES/);
     expect(mode()).toBe(0o500);
     expect(fs.existsSync(getConfigPath())).toBe(false);
+  });
+
+  it('replacement does not bypass a read-only config file', () => {
+    fs.writeFileSync(getConfigPath(), JSON.stringify({ autoCapture: false }), { mode: 0o400 });
+    const before = fs.readFileSync(getConfigPath());
+    expect(() => updateConfig({ sessionLimit: 12 })).toThrow(/EACCES/);
+    expect(fs.readFileSync(getConfigPath())).toEqual(before);
+    expect(fs.statSync(getConfigPath()).mode & 0o777).toBe(0o400);
+    expect(fs.readdirSync(dir)).toEqual(['config.json']);
+  });
+
+  it('updates an existing config symlink target and leaves the link intact', () => {
+    const target = path.join(dir, 'owned-target.json');
+    fs.writeFileSync(target, JSON.stringify({ autoCapture: false }), { mode: 0o600 });
+    fs.symlinkSync(target, getConfigPath());
+    updateConfig({ sessionLimit: 12 });
+    expect(fs.lstatSync(getConfigPath()).isSymbolicLink()).toBe(true);
+    expect(JSON.parse(fs.readFileSync(target, 'utf8'))).toEqual({ autoCapture: false, sessionLimit: 12 });
+    expect(fs.readdirSync(dir).sort()).toEqual(['config.json', 'owned-target.json']);
   });
 
   it('an existing config.json whose permissions cannot be tightened is reported', () => {

@@ -210,6 +210,18 @@ describe('work-topology', () => {
     if (lines.length > 0) expect(lines.some((l) => l.startsWith('- ['))).toBe(true);
   });
 
+  it('keeps a populated decision section when more budget reaches a whole-line boundary', () => {
+    const decisions = Array.from({ length: 8 }, (_, i) =>
+      entity({ type: 'decision', title: `decision ${i} ${'x'.repeat(200)}` }));
+    const lineCost = topologyLine(decisions[0], 172).length + 1;
+    const headingCost = groupTopology(decisions, 'p')[0].heading.length + 2;
+    const smaller = buildTopologyLines(decisions, 'p', { maxChars: 2 * lineCost + headingCost, maxLineChars: 172 });
+    const larger = buildTopologyLines(decisions, 'p', { maxChars: 3 * lineCost, maxLineChars: 172 });
+    expect(smaller.filter((line) => line.startsWith('- [')).length).toBe(2);
+    expect(larger.filter((line) => line.startsWith('- [')).length).toBeGreaterThanOrEqual(2);
+    expect(larger.join('\n').length).toBeLessThanOrEqual(3 * lineCost);
+  });
+
   it('never lists a task-state row, whatever pool it arrives from', () => {
     // taskStateLines is that type's sole sanctioned renderer. Dropped by
     // TYPE in the leaf — a name check in each consumer only protects the

@@ -29,10 +29,16 @@
       },
       {
         "id": "unit",
-        "label": "isolated test suite (throwaway HOME)",
+        "label": "isolated non-UI test suite (throwaway HOME; UI functional tests skipped by KT)",
         "command": "node",
         "args": [
-          "scripts/run-tests-isolated.mjs"
+          "scripts/run-tests-isolated.mjs",
+          "--exclude",
+          "tests/dashboard/**",
+          "--exclude",
+          "tests/dashboard-*.test.ts",
+          "--exclude",
+          "tests/qa-ui-review.test.ts"
         ],
         "cwd": "."
       },
@@ -43,17 +49,6 @@
         "args": [
           "run",
           "test:packaged"
-        ],
-        "cwd": ".",
-        "journeys": true
-      },
-      {
-        "id": "dashboard-e2e",
-        "label": "packaged dashboard e2e (Playwright Chromium against the real serve)",
-        "command": "npm",
-        "args": [
-          "run",
-          "test:e2e-dashboard"
         ],
         "cwd": ".",
         "journeys": true

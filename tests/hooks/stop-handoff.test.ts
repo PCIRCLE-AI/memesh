@@ -442,6 +442,22 @@ describe('Stop hook: the session handoff', () => {
       expect(records.at(-1)?.host, 'provenance and the outcome record must name the same host').toBe('codex');
     }, 90_000);
 
+    it('replacing a local Claude handoff under Codex records the latest writer', () => {
+      runStop({ last_assistant_message: LONG_ENOUGH });
+      expect(metadata().provenance).toEqual({ source_host: 'claude-code' });
+      const codexHome = path.join(home, 'codex-home');
+      fs.mkdirSync(codexHome, { recursive: true });
+      runStop({ last_assistant_message: 'CODEX-LATEST: finished the importer and will next check the isolated restore before delivery.' }, { CODEX_HOME: codexHome });
+      expect(metadata().provenance).toEqual({ source_host: 'codex' });
+      expect(start()).toContain('source: codex');
+      runStop({ last_assistant_message: LONG_ENOUGH });
+      expect(metadata().provenance).toEqual({ source_host: 'claude-code' });
+      expect(start()).toContain('source: claude-code');
+      runStop({ last_assistant_message: 'UNKNOWN-LATEST: the latest writer finished the restore and will next verify the archive before delivery.', transcript_path: null, hook_event_name: null });
+      expect(metadata().provenance).toEqual({});
+      expect(start()).not.toContain('source:');
+    }, 90_000);
+
     it('is not healed by a Stop that stores nothing (too short, capture off, archived)', () => {
       seedImported();
       runStop({ last_assistant_message: 'Done.' });
@@ -489,7 +505,7 @@ describe('Stop hook: the session handoff', () => {
 
       const r = runStop({ last_assistant_message: 'CORRUPT-NEW: the next local Stop replaces the text, so the handoff can be trusted again.' });
       expect(r.stderr).toMatch(/healed corrupted metadata for entity \d+/);
-      expect(metadata()).toEqual({});
+      expect(metadata()).toEqual({ provenance: { source_host: 'claude-code' } });
       expect(start()).toContain('CORRUPT-NEW');
     }, 90_000);
 

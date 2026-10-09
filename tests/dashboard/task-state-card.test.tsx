@@ -11,6 +11,22 @@ function response(data: unknown): Response {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 describe('Project tab: the stated task state (#237)', () => {
+  it('#406 displays each field date instead of giving old done the newest record date', () => {
+    const old = '2026-09-01T08:00:00.000Z';
+    const fresh = '2026-10-07T08:00:00.000Z';
+    const { container } = render(<TaskStateCard error="" data={{ project: 'p', state: {
+      goal: 'New goal', done: 'Old release', next: 'Undated step', updated_at: fresh,
+      stated_at: { goal: fresh, done: old },
+    } }} />);
+    const rows = Array.from(container.querySelectorAll('dd'));
+    expect(rows).toHaveLength(3);
+    const done = rows.find(row => row.textContent?.includes('Old release'))!;
+    expect(done.querySelector('time')?.dateTime).toBe(old);
+    expect(done.textContent).not.toContain(fresh);
+    expect(rows.find(row => row.textContent?.includes('Undated step'))?.querySelector('time')).toBeNull();
+    expect(container.querySelectorAll('time')).toHaveLength(2);
+    expect(container.querySelector('p')?.textContent).toBe(t('project.taskState.provenance'));
+  });
   it('a failed task-state fetch is shown as a failure, never as "nothing stated"', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(((input: RequestInfo | URL) => {
       const url = String(input);

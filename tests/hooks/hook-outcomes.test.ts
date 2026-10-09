@@ -254,10 +254,14 @@ describe('hook outcome records', () => {
 
   it('session-summary records a WROTE naming the session entity', () => {
     const transcript = path.join(testDir, 't.jsonl');
-    const toolUse = (name: string, input: object) => JSON.stringify({
-      type: 'assistant',
-      message: { content: [{ type: 'tool_use', name, input }] },
-    });
+    let nextId = 0;
+    const toolUse = (name: string, input: object) => {
+      const id = `completed-${++nextId}`;
+      return [
+        { type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input }] } },
+        { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, is_error: false, content: 'ok' }] } },
+      ].map((entry) => JSON.stringify(entry)).join('\n');
+    };
     fs.writeFileSync(transcript, [
       toolUse('Edit', { file_path: path.join(repoDir, 'a.ts') }),
       toolUse('Edit', { file_path: path.join(repoDir, 'b.ts') }),

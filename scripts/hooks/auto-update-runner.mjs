@@ -2,6 +2,7 @@
 
 import {
   closeSync,
+  existsSync,
   linkSync,
   openSync,
   readFileSync,
@@ -31,8 +32,9 @@ function readLock(lockPath) {
     const [token, pidRaw, startedAtRaw, version] = readFileSync(lockPath, 'utf8').split('\n');
     const pid = Number(pidRaw);
     const startedAt = Number(startedAtRaw);
-    if (!token || !Number.isSafeInteger(pid) || pid <= 0 || !Number.isFinite(startedAt)) return null;
-    return { token, pid, startedAt, version: version || null };
+    if (!token || !Number.isSafeInteger(pid) || pid <= 0
+      || !startedAtRaw || !Number.isSafeInteger(startedAt) || startedAt <= 0 || !version) return null;
+    return { token, pid, startedAt, version };
   } catch {
     return null;
   }
@@ -60,18 +62,24 @@ function createOwnedFile(filePath, token, payload) {
 function tryCreateLock(lockPath, version) {
   const token = ownerToken();
   const startedAt = Date.now();
+  const candidatePath = `${lockPath}.candidate.${token}`;
   try {
     createOwnedFile(
-      lockPath,
+      candidatePath,
       token,
       `${token}\n${process.pid}\n${startedAt}\n${version}\n`,
     );
+    // Publish a complete lock atomically, with the same O_EXCL link used by
+    // recovery claims. A crash during the write cannot expose a partial lock.
+    linkSync(candidatePath, lockPath);
     return { acquired: true, lockPath, ownerToken: token, recoveredStale: false };
   } catch (err) {
     if (err?.code === 'EEXIST') {
       return { acquired: false, lockPath, ownerToken: null, recoveredStale: false };
     }
     throw err;
+  } finally {
+    try { unlinkSync(candidatePath); } catch { /* crash-only candidate orphan */ }
   }
 }
 
@@ -158,7 +166,12 @@ export function tryAcquireAutoUpdateLock(lockPath, version) {
   if (created.acquired) return created;
 
   const observed = readLock(lockPath);
-  if (!observed) return created;
+  if (!observed) {
+    // Ownership cannot be established for a malformed or unreadable lock.
+    // Leave it intact, but do not falsely report an active updater.
+    if (existsSync(lockPath)) throw new Error('Auto-update lock is invalid or unreadable; verify its owner before removing it.');
+    return created;
+  }
   if (Date.now() - observed.startedAt <= AUTO_UPDATE_LOCK_TTL_MS) return created;
   if (processIsAlive(observed.pid)) return created;
 

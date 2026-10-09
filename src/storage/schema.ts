@@ -658,9 +658,9 @@ export const MIGRATION_RETRY_BACKOFF_MS = 24 * 60 * 60 * 1000;
  * the next open would retry — but with no throttle, a persistently failing
  * rebuild re-paid a full corpus scan on every single process start, forever.
  *
- * **A failure is never fatal.** The database still opens. Entities and
- * observations are the source of truth and are untouched by an index rebuild,
- * so a failed migration degrades retrieval rather than losing anything.
+ * **A failure is never fatal.** The database still opens and the failed
+ * transaction is rolled back. The migration remains pending; whether that
+ * affects retrieval or data repair depends on the caller.
  *
  * @returns true if the migration ran and committed
  */
@@ -670,6 +670,7 @@ export function runOnceMigration(
     key: string;
     version: number;
     describe: string;
+    retryCommand?: string;
     migrate: (db: MemeshDatabase, fromVersion: number) => void;
   }
 ): boolean {
@@ -735,8 +736,9 @@ export function runOnceMigration(
 
     process.stderr.write(
       `MeMesh: ${describe} failed (${err instanceof Error ? err.message : String(err)}). ` +
-        `Your memories are unaffected — this rebuilds a derived index. ` +
-        `It will retry in 24h, or run 'memesh reindex --fts' to retry now.\n`
+        `Changes from this migration were rolled back; completion is still pending. ` +
+        `It will retry after 24h on the next start` +
+        (opts.retryCommand ? `, or run '${opts.retryCommand}' to retry now.\n` : `.\n`)
     );
     return false;
   }
@@ -854,6 +856,7 @@ export function ensureFtsSegmentation(db: MemeshDatabase): void {
     key: 'fts_segmentation_version',
     version: FTS_SEGMENTATION_VERSION,
     describe: 'search index rebuild',
+    retryCommand: 'memesh reindex --fts',
     migrate: rebuildFtsIndex,
   });
 }

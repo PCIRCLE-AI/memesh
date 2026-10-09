@@ -407,11 +407,14 @@ export function sendAgentMessage(
   if (normalized.intended_session !== null) {
     // An unregistered id is the normal case: a Claude session without the
     // channel host never registers.
+    const ids = [...sessionAliasChain(db, normalized.intended_session)];
     const registered = db.prepare(`
-      SELECT adapter_kind FROM agent_session_instances WHERE project = ? AND session_instance_id = ?
-    `).get(normalized.project, normalized.intended_session) as { adapter_kind: string } | undefined;
-    if (registered && !INTENDED_SESSION_ADAPTERS.has(registered.adapter_kind)) {
-      throw new AgentIntendedSessionUnsupportedError(normalized.intended_session, registered.adapter_kind);
+      SELECT adapter_kind FROM agent_session_instances
+      WHERE project = ? AND session_instance_id IN (${ids.map(() => '?').join(', ')})
+    `).all(normalized.project, ...ids) as Array<{ adapter_kind: string }>;
+    const unsupported = registered.find((row) => !INTENDED_SESSION_ADAPTERS.has(row.adapter_kind));
+    if (unsupported) {
+      throw new AgentIntendedSessionUnsupportedError(normalized.intended_session, unsupported.adapter_kind);
     }
   }
   const requestHash = hashCanonical({

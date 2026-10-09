@@ -37,6 +37,8 @@ import {
 } from './_shared.js';
 import { redactMemoryText } from './_generated/core-paths.js';
 import { pruneSessionState, recallListName, SESSION_ID_RE } from './_stop-notes.js';
+import { readSnippets, toTopologyEntity } from './_generated/briefing-pools.js';
+import { LESSON_TYPE_LIST } from './_generated/work-topology.js';
 
 const dbPath = getDbPath();
 const memeshDir = getMemeshDirFromDbPath();
@@ -78,6 +80,30 @@ process.stdin.on('data', (chunk) => { input += chunk; });
 process.stdin.on('end', () => {
   try {
     const data = JSON.parse(input);
+    const contexts = editInputs(data).map(recallFile).filter(Boolean);
+    if (contexts.length) console.log(JSON.stringify({ hookSpecificOutput: {
+      hookEventName: 'PreToolUse', additionalContext: contexts.join('\n\n'),
+    } }));
+  } catch (err) {
+    record('error', hookErrorReason(err));
+    try { process.stderr.write(`[memesh pre-edit-recall] ${err?.message || err}\n`); } catch {}
+  }
+});
+
+// Codex 0.160.1 exposes apply_patch as {command}, with Edit/Write matcher aliases.
+// Only read patch headers; never execute the command or manufacture host input.
+function editInputs(data) {
+  const toolInput = data.tool_input;
+  if (data.tool_name !== 'apply_patch' || typeof toolInput?.command !== 'string') return [data];
+  const command = toolInput.command;
+  if (!command.startsWith('*** Begin Patch\n')) return [data];
+  const paths = [...command.matchAll(/^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$/gm)]
+    .map(match => match[1].replace(/\r$/, ''));
+  return paths.length ? [...new Set(paths)].map(file_path => ({ ...data, tool_input: { file_path, content: command } })) : [data];
+}
+
+function recallFile(data) {
+  try {
     payload = data;
     if (!data.tool_input) {
       // Schema-flip signal — Claude Code has renamed `tool_input` for
@@ -477,13 +503,34 @@ process.stdin.on('end', () => {
 
           if (!recallFault && results.length > 0) {
             try {
-              // Fetch first observation for each result
+              // First observation of each non-lesson row.
               const getObs = db.prepare(
                 'SELECT content FROM observations WHERE entity_id = ? ORDER BY id ASC LIMIT 1'
               );
 
+              const shownRows = results.slice(0, MAX_RESULTS);
+              // A lesson reads through the briefing's own rule (toTopologyEntity):
+              // its newest `Fix: …` first, then what went wrong, so the reminder
+              // at the edit says what to do, not only what failed. The text is
+              // cut first and the `[mem:N]` handle appended after it, so the line
+              // ends with a handle the cut never removes.
+              const lessonSnippets = readSnippets(
+                db,
+                shownRows.filter((r) => LESSON_TYPE_LIST.includes(r.type)).map((r) => r.id),
+              );
+
               const snippetLines = [`Relevant memories for ${fileName}:`];
-              for (const r of results.slice(0, MAX_RESULTS)) {
+              for (const r of shownRows) {
+                if (LESSON_TYPE_LIST.includes(r.type)) {
+                  const shown = toTopologyEntity(r, lessonSnippets);
+                  const text = shown.title || shown.snippet;
+                  const lessonName = redactMemoryText(r.name);
+                  snippetLines.push(text
+                    ? `• ${lessonName} (${r.type}): ${text.slice(0, 120)} [mem:${r.id}]`
+                    : `• ${lessonName} (${r.type}) [mem:${r.id}]`
+                  );
+                  continue;
+                }
                 const obs = getObs.get(r.id);
                 // #554: redact BEFORE the cut — a credential cut at 120
                 // characters no longer matches its pattern. Same treatment
@@ -519,23 +566,13 @@ process.stdin.on('end', () => {
       // Same trace and outcome the outer handler gives any other fault, on
       // every run — but the guard half, already evaluated, is still emitted.
       try { process.stderr.write(`[memesh pre-edit-recall] ${recallFault?.message || recallFault}\n`); } catch {}
-      if (guardMatches.length > 0) {
-        const faultToolLabel = data.tool_name === 'Write' ? 'Write' : 'Edit';
-        console.log(JSON.stringify({
-          hookSpecificOutput: {
-            hookEventName: 'PreToolUse',
-            additionalContext: buildReferenceContext(guardWarningLines(guardMatches, faultToolLabel)),
-          },
-        }));
-      }
       record('error', hookErrorReason(recallFault));
-      // Like the normal output path below, a run that wrote to stdout ends
-      // by returning, not `process.exit`, so the write is never cut short.
-      if (guardMatches.length === 0) pass();
-      // Last, as below: the counter must never stand between a match and
-      // its warning.
-      else recordGuardFires(dbPath, guardMatches.map((g) => g.lessonId));
-      return;
+      if (guardMatches.length === 0) return pass();
+      // Return the warning through the same single-response path as healthy targets.
+      const faultToolLabel = data.tool_name === 'Write' ? 'Write' : 'Edit';
+      const context = buildReferenceContext(guardWarningLines(guardMatches, faultToolLabel));
+      recordGuardFires(dbPath, guardMatches.map((g) => g.lessonId));
+      return context;
     }
 
     if (guardMatches.length === 0 && recallLines.length === 0) {
@@ -572,12 +609,7 @@ process.stdin.on('end', () => {
       ? [...guardWarningLines(guardMatches, toolLabel), ...(recallLines.length > 0 ? ['', ...recallLines] : [])]
       : recallLines;
 
-    console.log(JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        additionalContext: buildReferenceContext(lines),
-      },
-    }));
+    const context = buildReferenceContext(lines);
     // A recall hook produces an INJECTION, so it records `notified`, not
     // `wrote`: doctor's `writes` answers "is memory capture still alive",
     // and recalling a memory is not storing one.
@@ -599,6 +631,7 @@ process.stdin.on('end', () => {
     if (guardMatches.length > 0) {
       recordGuardFires(dbPath, guardMatches.map((g) => g.lessonId));
     }
+    return context;
   } catch (err) {
     // Never crash Claude Code, but trace — peer hooks (post-commit,
     // pre-compact, session-summary) all stderr-trace their outer
@@ -609,11 +642,10 @@ process.stdin.on('end', () => {
     record('error', hookErrorReason(err));
     pass();
   }
-});
+}
 
 function pass() {
-  // Empty output = no additional context
-  process.exit(0);
+  // Empty output = no additional context. Allow other patch targets to recall.
 }
 
 /**

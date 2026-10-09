@@ -944,7 +944,13 @@ export function openHookDb(env = process.env, opts = {}) {
 
   removeGroupAndOtherAccess(dbDir);
   const db = openMemeshDb(dbPath);
-  db.pragma('journal_mode = WAL');
+  // Mirrors initialiseDatabase(): VACUUM backups use DELETE mode, and
+  // switching a read-only backup to WAL must not prevent reading it.
+  try {
+    db.pragma('journal_mode = WAL');
+  } catch (err) {
+    if (!/readonly database|SQLITE_READONLY/i.test(err?.message || '')) throw err;
+  }
   db.pragma('foreign_keys = ON');
   // A hook waits for a held write lock for less time than Claude Code will
   // wait for the hook.
@@ -1799,6 +1805,14 @@ function refreshLocalHandoffTrust(db, id, type, replace, written, sourceHost) {
   let changed = corrupt;
   if (meta.trust === 'untrusted') { delete meta.trust; changed = true; }
   if (meta.provenance?.source === 'import') { meta.provenance = sourceHost ? { source_host: sourceHost } : {}; changed = true; }
+  else if (sourceHost && meta.provenance?.source_host !== sourceHost) {
+    meta.provenance = { ...meta.provenance, source_host: sourceHost };
+    changed = true;
+  }
+  else if (!sourceHost && meta.provenance?.source_host !== undefined) {
+    delete meta.provenance.source_host;
+    changed = true;
+  }
   if (changed) db.prepare('UPDATE entities SET metadata = ? WHERE id = ?').run(JSON.stringify(meta), id);
 }
 

@@ -285,11 +285,14 @@ export async function runCoreLiveJourneys({ repoRoot, runDir, env = {}, cli = de
     const transcript = assertInside(journeyDir, path.join(journeyDir, 'transcript.jsonl'));
     fs.writeFileSync(transcript, [
       JSON.stringify({ type: 'assistant', message: { content: [
-        { type: 'tool_use', name: 'Write', input: { file_path: path.join(repoRoot, 'journey.ts') } },
-        { type: 'tool_use', name: 'Bash', input: { command: 'npm test -- core-live-sentinel' } },
+        { type: 'tool_use', id: 'journey-write', name: 'Write', input: { file_path: path.join(repoRoot, 'journey.ts') } },
+        { type: 'tool_use', id: 'journey-test', name: 'Bash', input: { command: 'npm test -- core-live-sentinel' } },
         { type: 'tool_use', name: 'Read', input: { file_path: path.join(repoRoot, 'README.md') } },
       ] } }),
-      JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', is_error: true, content: `controlled session failure ${sentinel}` }] } }),
+      JSON.stringify({ type: 'user', message: { content: [
+        { type: 'tool_result', tool_use_id: 'journey-write', is_error: false, content: 'File created successfully' },
+        { type: 'tool_result', tool_use_id: 'journey-test', is_error: true, content: `controlled session failure ${sentinel}` },
+      ] } }),
     ].join('\n'));
     const hook = path.join(repoRoot, 'scripts/hooks/session-summary.js');
     const payload = { session_id: `core-${sentinel}`, cwd: repoRoot, was_in_agentic_loop: true, transcript_path: transcript };

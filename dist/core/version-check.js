@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { execFile } from 'child_process';
 import { memeshDir } from './paths.js';
-import { compareSemVerPrecedence, parseSemVer } from './semver.js';
+import { compareSemVerPrecedence, normalizeRegistryVersion, parseSemVer } from './semver.js';
 const DEFAULT_TIMEOUT_MS = 5000;
 const STALE_AFTER_MS = 24 * 60 * 60 * 1000;
 const MAX_ERROR_LENGTH = 160;
@@ -26,6 +26,7 @@ export function isAheadOfLatest(update) {
 }
 export function showsPreReleaseNotice(update) {
     return update !== null
+        && update.checkSucceeded
         && isAheadOfLatest(update)
         && !update.currentVersionDeprecated
         && update.freshness !== 'unavailable'
@@ -102,7 +103,8 @@ function parseStoredUpdateCheck(raw) {
         return null;
     if ('currentVersionDeprecation' in candidate && candidate.currentVersionDeprecation !== null && typeof candidate.currentVersionDeprecation !== 'string')
         return null;
-    const normalizedLatestVersion = latestVersion ?? null;
+    const normalizedLatestVersion = typeof latestVersion === 'string' ? normalizeRegistryVersion(latestVersion) : null;
+    const invalidLatestVersion = typeof latestVersion === 'string' && normalizedLatestVersion === null;
     const normalizedLastAttemptAt = lastAttemptAt ?? null;
     const normalizedLastSuccessfulCheckAt = lastSuccessfulCheckAt ?? null;
     const checkSucceeded = typeof candidate.checkSucceeded === 'boolean'
@@ -112,9 +114,9 @@ function parseStoredUpdateCheck(raw) {
         currentVersion: typeof candidate.currentVersion === 'string' ? candidate.currentVersion : null,
         latestVersion: normalizedLatestVersion,
         lastAttemptAt: normalizedLastAttemptAt,
-        lastSuccessfulCheckAt: normalizedLastSuccessfulCheckAt,
-        lastError: typeof candidate.lastError === 'string' ? candidate.lastError : null,
-        checkSucceeded,
+        lastSuccessfulCheckAt: invalidLatestVersion ? null : normalizedLastSuccessfulCheckAt,
+        lastError: invalidLatestVersion ? 'registry returned an invalid version' : typeof candidate.lastError === 'string' ? candidate.lastError : null,
+        checkSucceeded: invalidLatestVersion ? false : checkSucceeded,
         currentVersionDeprecation: typeof candidate.currentVersionDeprecation === 'string'
             ? candidate.currentVersionDeprecation
             : null,
@@ -220,10 +222,14 @@ export async function checkForUpdate(currentVersion, options = {}) {
         const [latestOutcome, deprecationOutcome] = await Promise.all([
             new Promise((resolve) => {
                 execFileImpl('npm', ['show', '@pcircle/memesh', 'version'], { timeout: timeoutMs }, (err, stdout) => {
-                    if (err)
+                    if (err) {
                         resolve({ outcome: 'failed', error: err });
-                    else
-                        resolve({ outcome: 'ok', latest: stdout.trim() });
+                        return;
+                    }
+                    const latest = normalizeRegistryVersion(stdout);
+                    resolve(latest !== null
+                        ? { outcome: 'ok', latest }
+                        : { outcome: 'failed', error: new Error('registry returned an invalid version') });
                 });
             }),
             new Promise((resolve) => {
@@ -356,6 +362,9 @@ export function formatUpdateCheckStatus(update) {
     }
     else if (update.updateAvailable && update.latestVersion) {
         lines.push(`🔄 Update available: ${update.latestVersion} (${formatFreshness(update)}; run: memesh update)`);
+    }
+    else if (!update.checkSucceeded) {
+        lines.push(`Update check: failed (${formatFreshness(update)}; last known latest ${update.latestVersion ?? 'unknown'})`);
     }
     else if (update.checkSucceeded && update.lastError) {
         lines.push(`Update check: partial — deprecation status unknown (${formatFreshness(update)})`);

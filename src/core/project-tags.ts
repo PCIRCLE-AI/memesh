@@ -34,8 +34,8 @@ export interface RenameProjectResult {
   /**
    * Durable-message rows whose `project` scope carries the `from` name.
    *
-   * A project identity lives in two places, not one: `project:<name>` tags on
-   * entities, and the `project` column of the durable-message tables, which is
+   * A project identity lives in entity tags, proposals and durable messages.
+   * The `project` column of the durable-message tables is
    * half the key of an inbox. Renaming only the tags left the messages behind
    * — on the maintainer's own graph, `memesh` and `memesh-llm-memory` (the same
    * repository before and after a GitHub rename; the old name still redirects)
@@ -51,6 +51,8 @@ export interface RenameProjectResult {
    * is the owner's decision, not this function's.
    */
   messageRowsBlocked: number;
+  /** Proposal rows moved with their project, so accepting one cannot revive the old scope. */
+  proposalRows: number;
 }
 
 /** All `project:*` tag values with entity counts, most-used first. */
@@ -98,9 +100,10 @@ export function renameProjectTag(
   if (!opts?.apply) return previewOnCopy(conn, from, to);
 
   const { affected, plan, merged, renamed, messagePlan, messageRows } = planRename(conn, from, to);
+  const proposalIds = proposalRowsForProject(conn, from);
   let messageRowsBlocked = 0;
 
-  if (affected.length > 0 || messageRows > 0) {
+  if (affected.length > 0 || messageRows > 0 || proposalIds.length > 0) {
     const del = conn.prepare('DELETE FROM tags WHERE entity_id = ? AND tag = ?');
     const upd = conn.prepare('UPDATE tags SET tag = ? WHERE entity_id = ? AND tag = ?');
     const movedRows: Array<{ table: string; rid: number }> = [];
@@ -131,6 +134,10 @@ export function renameProjectTag(
           }
         }
       }
+      if (proposalIds.length > 0) {
+        const move = conn.prepare('UPDATE dream_proposals SET project = ? WHERE id = ?');
+        for (const id of proposalIds) move.run(to, id);
+      }
       // Read the state back instead of trusting the statements: a trigger can
       // turn an UPDATE or DELETE into a silent no-op (RAISE(IGNORE)) or undo it
       // afterwards, which would leave a memory in `from` while its messages move
@@ -147,6 +154,14 @@ export function renameProjectTag(
           throw new Error(`${table} row ${rid} is not scoped to ${to} after the rename (a trigger or constraint changed the result)`);
         }
       }
+      if (proposalIds.length > 0) {
+        const read = conn.prepare('SELECT project FROM dream_proposals WHERE id = ?');
+        for (const id of proposalIds) {
+          if ((read.get(id) as { project: string } | undefined)?.project !== to) {
+            throw new Error(`proposal ${id} is not scoped to ${to} after the rename (a trigger or constraint changed the result)`);
+          }
+        }
+      }
     });
     tx();
   }
@@ -161,7 +176,19 @@ export function renameProjectTag(
     affectedNames: affected.map((e) => e.name),
     messageRows,
     messageRowsBlocked,
+    proposalRows: proposalIds.length,
   };
+}
+
+function proposalRowsForProject(conn: MemeshDatabase, project: string): number[] {
+  try {
+    return (conn.prepare('SELECT id FROM dream_proposals WHERE project = ?').all(project) as Array<{ id: number }>).map(row => row.id);
+  } catch (err) {
+    // Legacy databases may predate proposals. Other read errors must abort,
+    // rather than moving tags while silently leaving proposals behind.
+    if (/^no such table: (?:main\.)?dream_proposals$/i.test(err instanceof Error ? err.message : String(err))) return [];
+    throw err;
+  }
 }
 
 /** What a rename of `from` to `to` would touch. Reads only. */
@@ -198,10 +225,10 @@ function planRename(conn: MemeshDatabase, from: string, to: string) {
   return { affected, plan, merged, renamed, messagePlan, messageRows };
 }
 
-/** Does anything carry project `from`: an entity tag or a durable-message row? */
+/** Does anything carry project `from`: an entity tag, proposal or durable-message row? */
 export function hasRenameWork(from: string, db?: MemeshDatabase): boolean {
   const { affected, messageRows } = planRename(db ?? getDatabase(), from, from);
-  return affected.length > 0 || messageRows > 0;
+  return affected.length > 0 || messageRows > 0 || proposalRowsForProject(db ?? getDatabase(), from).length > 0;
 }
 
 /**

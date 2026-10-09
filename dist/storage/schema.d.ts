@@ -11,6 +11,7 @@ export declare function runOnceMigration(db: MemeshDatabase, opts: {
     key: string;
     version: number;
     describe: string;
+    retryCommand?: string;
     migrate: (db: MemeshDatabase, fromVersion: number) => void;
 }): boolean;
 export declare const FTS_SEGMENTATION_VERSION = 3;

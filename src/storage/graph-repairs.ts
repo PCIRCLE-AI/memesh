@@ -624,7 +624,7 @@ export function repairFusedLessonShellHistory(db: MemeshDatabase): number {
              AND NOT EXISTS (SELECT 1 FROM observations o WHERE o.entity_id = e.id)
              AND EXISTS (
                SELECT 1 FROM entities s
-               WHERE json_extract(s.metadata, '$.split_from') = e.name
+               WHERE json_extract(CASE WHEN json_valid(s.metadata) THEN s.metadata ELSE '{}' END, '$.split_from') = e.name
              )`,
         )
         .all() as unknown as Array<{ id: number; name: string }>;

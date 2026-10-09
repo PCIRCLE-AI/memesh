@@ -178,6 +178,14 @@ describe('handoffLines (the one renderer both surfaces use)', () => {
   const rec = (msAgo: number, text = 'We finished the parser tests.\nNext: open the PR once CI is green.') =>
     ({ id: 42, text, observedAt: sqlite(msAgo) });
 
+  it('names a known source host without inventing one for legacy metadata', () => {
+    expect(handoffLines({ ...rec(HOUR), metadata: JSON.stringify({ provenance: { source_host: 'codex' } }) }, NOW)[0])
+      .toContain('source: codex');
+    expect(handoffLines({ ...rec(HOUR), metadata: '{invalid' }, NOW)[0]).not.toContain('source:');
+    expect(handoffLines({ ...rec(HOUR), metadata: JSON.stringify({ provenance: { source_host: 'unrecognised' } }) }, NOW)[0])
+      .not.toContain('source:');
+  });
+
   it('leads with where the last session left off, its age and a citation handle, then the text', () => {
     expect(handoffLines(rec(2 * HOUR), NOW)).toEqual([
       'Where the last session left off (2 hours ago): [mem:42]',

@@ -87,7 +87,13 @@ function isReadonlyDbError(err) {
     return /readonly database|SQLITE_READONLY/i.test(msg);
 }
 function initialiseDatabase(db) {
-    db.pragma('journal_mode = WAL');
+    try {
+        db.pragma('journal_mode = WAL');
+    }
+    catch (err) {
+        if (!isReadonlyDbError(err))
+            throw err;
+    }
     db.pragma('foreign_keys = ON');
     try {
         migrateToCurrentSchema(db);
@@ -178,48 +184,47 @@ function backfillSignalScores(db) {
     const obsStmt = db.prepare('SELECT content FROM observations WHERE entity_id = ?');
     const tagStmt = db.prepare('SELECT tag FROM tags WHERE entity_id = ?');
     const updateStmt = db.prepare('UPDATE entities SET metadata = ? WHERE id = ?');
-    const tx = db.transaction(() => {
-        if (db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(MARKER))
-            return;
-        const rows = db.prepare('SELECT id, name, type, metadata FROM entities').all();
-        let scored = 0;
-        let skipped = 0;
-        for (const row of rows) {
-            let metadata;
-            if (row.metadata) {
-                try {
-                    metadata = JSON.parse(row.metadata);
+    runOnceMigration(db, { key: `${MARKER}_migration`, version: 1, describe: 'signal-score backfill', migrate: () => {
+            if (db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(MARKER))
+                return;
+            const rows = db.prepare('SELECT id, name, type, metadata FROM entities').all();
+            let scored = 0;
+            let skipped = 0;
+            for (const row of rows) {
+                let metadata;
+                if (row.metadata) {
+                    try {
+                        metadata = JSON.parse(row.metadata);
+                    }
+                    catch {
+                        skipped++;
+                        continue;
+                    }
+                    if (typeof metadata !== 'object' || metadata === null || Array.isArray(metadata)) {
+                        skipped++;
+                        continue;
+                    }
                 }
-                catch {
+                else {
+                    metadata = {};
+                }
+                if (typeof metadata.signal_score === 'number') {
                     skipped++;
                     continue;
                 }
-                if (typeof metadata !== 'object' || metadata === null || Array.isArray(metadata)) {
-                    skipped++;
-                    continue;
-                }
+                const observations = obsStmt.all(row.id).map(o => o.content);
+                const tags = tagStmt.all(row.id).map(t => t.tag);
+                metadata.signal_score = computeSignalScore({
+                    type: row.type,
+                    name: row.name,
+                    observations,
+                    tags,
+                });
+                updateStmt.run(JSON.stringify(metadata), row.id);
+                scored++;
             }
-            else {
-                metadata = {};
-            }
-            if (typeof metadata.signal_score === 'number') {
-                skipped++;
-                continue;
-            }
-            const observations = obsStmt.all(row.id).map(o => o.content);
-            const tags = tagStmt.all(row.id).map(t => t.tag);
-            metadata.signal_score = computeSignalScore({
-                type: row.type,
-                name: row.name,
-                observations,
-                tags,
-            });
-            updateStmt.run(JSON.stringify(metadata), row.id);
-            scored++;
-        }
-        db.prepare("INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)").run(MARKER, JSON.stringify({ at: new Date().toISOString(), scored, skipped }));
-    });
-    tx();
+            db.prepare("INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)").run(MARKER, JSON.stringify({ at: new Date().toISOString(), scored, skipped }));
+        } });
 }
 function deriveHeuristicTitle(type, observations) {
     if (observations.length === 0)
@@ -250,43 +255,36 @@ function backfillAcceptedProposalTrust(db) {
     const stamp = (cleared, skipped) => db.prepare('INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)')
         .run(MARKER, JSON.stringify({ at: new Date().toISOString(), cleared, skipped }));
     const updateStmt = db.prepare('UPDATE entities SET metadata = ? WHERE id = ?');
-    const tx = db.transaction(() => {
-        if (db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(MARKER))
-            return;
-        let rows;
-        try {
-            rows = db.prepare(`SELECT id, metadata FROM entities
+    runOnceMigration(db, { key: `${MARKER}_migration`, version: 1, describe: 'accepted-proposal trust backfill', migrate: () => {
+            if (db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(MARKER))
+                return;
+            const rows = db.prepare(`SELECT id, metadata FROM entities
           WHERE metadata IS NOT NULL
             AND json_valid(metadata)
             AND json_extract(metadata, '$.trust') = 'untrusted'
             AND json_extract(metadata, '$.proposal_id') IS NOT NULL`).all();
-        }
-        catch {
-            return;
-        }
-        let cleared = 0;
-        let skipped = 0;
-        for (const row of rows) {
-            let metadata;
-            try {
-                const parsed = JSON.parse(row.metadata ?? '{}');
-                if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+            let cleared = 0;
+            let skipped = 0;
+            for (const row of rows) {
+                let metadata;
+                try {
+                    const parsed = JSON.parse(row.metadata ?? '{}');
+                    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+                        skipped++;
+                        continue;
+                    }
+                    metadata = parsed;
+                }
+                catch {
                     skipped++;
                     continue;
                 }
-                metadata = parsed;
+                delete metadata.trust;
+                updateStmt.run(JSON.stringify(metadata), row.id);
+                cleared++;
             }
-            catch {
-                skipped++;
-                continue;
-            }
-            delete metadata.trust;
-            updateStmt.run(JSON.stringify(metadata), row.id);
-            cleared++;
-        }
-        stamp(cleared, skipped);
-    });
-    tx();
+            stamp(cleared, skipped);
+        } });
 }
 function backfillTitles(db) {
     const MARKER = 'title_backfill_v1';
@@ -295,48 +293,47 @@ function backfillTitles(db) {
         return;
     const obsStmt = db.prepare('SELECT content FROM observations WHERE entity_id = ? ORDER BY id');
     const updateStmt = db.prepare('UPDATE entities SET title = ?, metadata = ? WHERE id = ?');
-    const tx = db.transaction(() => {
-        if (db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(MARKER))
-            return;
-        const rows = db.prepare('SELECT id, name, type, status, metadata FROM entities WHERE title IS NULL').all();
-        let titled = 0;
-        let skipped = 0;
-        for (const row of rows) {
-            let metadata;
-            if (row.metadata) {
-                try {
-                    metadata = JSON.parse(row.metadata);
+    runOnceMigration(db, { key: `${MARKER}_migration`, version: 1, describe: 'title backfill', migrate: () => {
+            if (db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(MARKER))
+                return;
+            const rows = db.prepare('SELECT id, name, type, status, metadata FROM entities WHERE title IS NULL').all();
+            let titled = 0;
+            let skipped = 0;
+            for (const row of rows) {
+                let metadata;
+                if (row.metadata) {
+                    try {
+                        metadata = JSON.parse(row.metadata);
+                    }
+                    catch {
+                        skipped++;
+                        continue;
+                    }
+                    if (typeof metadata !== 'object' || metadata === null || Array.isArray(metadata)) {
+                        skipped++;
+                        continue;
+                    }
                 }
-                catch {
+                else {
+                    metadata = {};
+                }
+                const observations = obsStmt.all(row.id).map(o => o.content);
+                const title = deriveHeuristicTitle(row.type, observations);
+                if (!title) {
                     skipped++;
                     continue;
                 }
-                if (typeof metadata !== 'object' || metadata === null || Array.isArray(metadata)) {
-                    skipped++;
-                    continue;
+                metadata.title_source = 'heuristic';
+                updateStmt.run(title, JSON.stringify(metadata), row.id);
+                if (row.status === 'active') {
+                    const obsText = joinIndexedObservations(observations);
+                    removeFromFts(db, row.id, row.name, obsText);
+                    insertFtsRow(db, row.id, row.name, obsText, title);
                 }
+                titled++;
             }
-            else {
-                metadata = {};
-            }
-            const observations = obsStmt.all(row.id).map(o => o.content);
-            const title = deriveHeuristicTitle(row.type, observations);
-            if (!title) {
-                skipped++;
-                continue;
-            }
-            metadata.title_source = 'heuristic';
-            updateStmt.run(title, JSON.stringify(metadata), row.id);
-            if (row.status === 'active') {
-                const obsText = joinIndexedObservations(observations);
-                removeFromFts(db, row.id, row.name, obsText);
-                insertFtsRow(db, row.id, row.name, obsText, title);
-            }
-            titled++;
-        }
-        db.prepare('INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)').run(MARKER, JSON.stringify({ at: new Date().toISOString(), titled, skipped }));
-    });
-    tx();
+            db.prepare('INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)').run(MARKER, JSON.stringify({ at: new Date().toISOString(), titled, skipped }));
+        } });
 }
 export function closeDatabase() {
     if (db) {

@@ -32,6 +32,33 @@ const recall = async (args: Record<string, unknown>, context?: ReturnType<typeof
 };
 const names = (parsed: { entities: Array<{ name: string }> }) => parsed.entities.map(e => e.name).sort();
 
+describe('invalid project scopes do not file an unreachable memory', () => {
+  it('refuses invalid explicit recall scopes instead of searching an unreachable scope', async () => {
+    for (const project of ['/Users/example/repo', './repo', 'parent/repo', 'C:\\repo', '   ']) {
+      const result = await handleTool('recall', { project }, undefined, undefined, bound('A'));
+      expect(result.isError, result.content[0].text).toBe(true);
+    }
+  });
+  for (const project of ['/Users/example/repo', './repo', 'parent/repo', 'C:\\repo', '   ']) {
+    for (const field of ['project', 'tag'] as const) {
+      it(`refuses ${field} ${JSON.stringify(project)} without changing stored memories`, async () => {
+        await handleTool('remember', { name: 'keeper', type: 'fact', observations: ['preserve me'], project: 'A' });
+        const db = getDatabase();
+        const snapshot = () => JSON.stringify({
+          entities: db.prepare('SELECT * FROM entities ORDER BY id').all(),
+          observations: db.prepare('SELECT * FROM observations ORDER BY id').all(),
+          tags: db.prepare('SELECT * FROM tags ORDER BY id').all(),
+        });
+        const before = snapshot();
+        const scope = field === 'project' ? { project } : { tags: [`project:${project}`] };
+        const result = await handleTool('remember', { name: 'unreachable', type: 'fact', observations: ['must refuse'], ...scope }, undefined, undefined, bound('A'));
+        expect.soft(result.isError, result.content[0].text).toBe(true);
+        expect(snapshot()).toBe(before);
+      });
+    }
+  }
+});
+
 let dir: string;
 let previousMemeshDir: string | undefined;
 beforeEach(() => {

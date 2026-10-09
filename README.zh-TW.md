@@ -44,7 +44,7 @@ MeMesh 讓代理在本機共用記憶與交換訊息。主要用途是跨 sessio
 - **在適當時機記錄、提醒與防護。** MeMesh 的 Claude Code 與 Codex 整合共提供 **10 個 hook command**：其中 9 個 Claude Code hook 分別在開新對話、改檔案前、`git commit` 後、計畫核准或你回答問題後、Claude 停下來時（兩次：記錄這次對話內容，以及在還有訊息未讀時擋下結束）、對話被壓縮前、你說「記下來」時（聽得懂 5 種語言），以及執行可能重犯已接受教訓的危險指令前運作。計畫/問題與「記下來」hook 只會提醒 agent 呼叫 `remember`；第 10 個 command 同時處理 Codex SessionStart 與 SessionEnd，註冊並退場符合資格的一般 Codex CLI session。
 - **所有工具共用一份記憶。** 今天在 Claude Code 存的決定，明天 Codex 或 Cursor 也用得到。
 - **agent 之間可以留言。** 本機的耐久收件匣可跨重啟保存；在 macOS 或 Linux 上，裝有 MeMesh plugin 的一般 Codex CLI thread 可保留有界的回合後原生 queue 視窗，並在同一 thread 恢復時取用已被接受的訊息。
-- **留下工作交接。** Claude Code 可把最後一則有實質內容的回覆留給同一專案的下個 session。用 `task_state` 記錄已明確說出的目標、下一步、阻礙或完成項目，再用 `message` 將證據位置或待處理問題送給確切收件者。
+- **留下工作交接。** Claude Code 可把最後一則有實質內容的回覆留給同一專案的下個 session。Briefing 會標示已知的 Claude Code 或 Codex 交接來源，讓另一個 host 的回覆可被辨識；取代交接時也會更新作者來源。用 `task_state` 記錄已明確說出的目標、下一步、阻礙或完成項目，再用 `message` 將證據位置或待處理問題送給確切收件者。
 - **有儀表板** 可以瀏覽全部內容：4 個分頁、11 種語言，在 `http://localhost:3737/dashboard`。
 
 ---

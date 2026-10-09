@@ -113,8 +113,15 @@ export function handoffView(record, now = new Date()) {
     const when = stale
         ? `${ageText(age)} — may be out of date; check it against the repository`
         : ageText(age);
+    let source = '';
+    try {
+        const host = JSON.parse(record.metadata ?? 'null')?.provenance?.source_host;
+        if (host === 'codex' || host === 'claude-code')
+            source = `; source: ${host}`;
+    }
+    catch { }
     return {
-        lines: [`Where the last session left off (${when}): [mem:${record.id}]`, ...text.split('\n')],
+        lines: [`Where the last session left off (${when}${source}): [mem:${record.id}]`, ...text.split('\n')],
         status: stale ? 'stale' : 'shown',
     };
 }

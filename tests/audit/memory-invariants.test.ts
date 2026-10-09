@@ -549,6 +549,31 @@ describe('memory-invariants: read-only detector over a real graph', () => {
     }
   });
 
+  it('D15 — malformed unrelated metadata does not hide a split shell violation or mutate the database', () => {
+    const { dir, dbPath } = freshGraph();
+    try {
+      withRawDb(dbPath, (db) => {
+        insertEntity(db, 'legacy-invalid-metadata', 'note', { metadata: '{invalid' });
+        insertEntity(db, 'lesson-proj-other', 'lesson_learned', {
+          status: 'archived', recall_hits: '3', recall_misses: '61',
+        });
+        insertEntity(db, 'lesson-proj-successor', 'lesson_learned', {
+          metadata: JSON.stringify({ split_from: 'lesson-proj-other' }),
+        });
+      });
+      const hash = () => createHash('sha256').update(fs.readFileSync(dbPath)).digest('hex');
+      const before = hash();
+      const result = run(dbPath);
+      expect(result.status, result.stdout + result.stderr).toBe(1);
+      expect(result.stdout).toContain('FAIL split-lesson-shell-carries-no-recall-history');
+      expect(result.stdout).toContain('lesson-proj-other  hits=3 misses=61');
+      expect(result.stdout + result.stderr).not.toContain('malformed JSON');
+      expect(hash()).toBe(before);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('D15 — an archived empty lesson with no split successor is not a violation (not every empty archive is a shell)', () => {
     const { dir, dbPath } = freshGraph();
     try {

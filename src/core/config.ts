@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { randomBytes } from 'crypto';
 import { memeshDir } from './paths.js';
 import { removeGroupAndOtherAccess } from './file-mode.js';
 // #431 — the sessionLimit range, the integer check and the effective-value
@@ -162,10 +163,28 @@ function writeRawConfig(raw: RawConfig): void {
   // #520: other users lose access; the owner keeps exactly the bits the owner
   // set. A read-only folder then makes the write below fail with EACCES.
   removeGroupAndOtherAccess(dir);
-  fs.writeFileSync(p, JSON.stringify(raw, null, 2), { mode: PRIVATE_FILE_MODE });
-  // `mode` applies only when the file is created; an existing config.json
-  // keeps its old mode until this, which says so when it cannot tighten it.
-  removeGroupAndOtherAccess(p);
+  let target = p;
+  let mode = PRIVATE_FILE_MODE;
+  let existing: fs.Stats | undefined;
+  try {
+    existing = fs.lstatSync(p);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  if (existing) {
+    if (existing.isSymbolicLink()) target = fs.realpathSync(p);
+    // Replacement must not bypass an owner's read-only config file.
+    fs.accessSync(target, fs.constants.W_OK);
+    mode = fs.statSync(target).mode & 0o700;
+    removeGroupAndOtherAccess(p);
+  }
+  const temp = `${target}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`;
+  try {
+    fs.writeFileSync(temp, JSON.stringify(raw, null, 2), { flag: 'wx', mode });
+    fs.renameSync(temp, target);
+  } finally {
+    if (fs.existsSync(temp)) fs.unlinkSync(temp);
+  }
 }
 
 export class ConfigUnreadableError extends Error {
