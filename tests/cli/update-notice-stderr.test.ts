@@ -72,7 +72,7 @@ describe('CLI first-use update notice (#308: any entry point)', () => {
       require('node:module').syncBuiltinESMExports();
     `);
     const resolver = path.join(repoRoot, 'dist/core/update-entrypoint.js');
-    const script = `import {updateNoticeForEntryPoint} from ${JSON.stringify(resolver)}; updateNoticeForEntryPoint({dir:process.env.MEMESH_DIR,currentVersion:${JSON.stringify(CURRENT_VERSION)},entryPoint:'mcp',processOnce:new Set()});`;
+    const script = `import {updateNoticeForEntryPoint} from ${JSON.stringify(pathToFileURL(resolver).href)}; updateNoticeForEntryPoint({dir:process.env.MEMESH_DIR,currentVersion:${JSON.stringify(CURRENT_VERSION)},entryPoint:'mcp',processOnce:new Set()});`;
     try {
       const result = spawnSync(process.execPath, ['--require', preload, '--input-type=module', '-e', script], { env: { ...process.env, HOME: dir, MEMESH_DIR: dir }, encoding: 'utf8', timeout: 10000 });
       expect(result.status, result.stderr).toBe(0);

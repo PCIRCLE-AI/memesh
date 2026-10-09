@@ -44,6 +44,9 @@ function expectNoStackTrace(text: string, label: string): void {
 describe('CLI error envelopes: caller mistakes are one line, not a crash', () => {
   beforeEach(() => {
     home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-errenv-'));
+    // Error-envelope cases must not race the independently tested update worker.
+    fs.mkdirSync(path.join(home, '.memesh'));
+    fs.writeFileSync(path.join(home, '.memesh', 'config.json'), JSON.stringify({ updateCheck: false }));
   });
   afterEach(() => {
     fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
@@ -75,7 +78,9 @@ describe('CLI error envelopes: caller mistakes are one line, not a crash', () =>
     expect(r.stderr.trim()).not.toBe('');
     expectNoStackTrace(r.stderr, args.join(' '));
     expect(r.stderr).not.toMatch(/file:\/\/|node:internal|"origin"|"code"|\\"origin\\"|\\"code\\"/);
-    if (args.includes('--workspace')) expect(r.stderr).toContain('--workspace');
+    if (args.includes('--workspace')) {
+      expect(r.stderr).toContain(process.platform === 'win32' ? 'not supported on Windows' : '--workspace');
+    }
   });
 
   it('dream accept <nonexistent id> exits 1 with the message and a next step', () => {
