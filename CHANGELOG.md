@@ -4,6 +4,10 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Stop handoffs omit prose copied verbatim from agent-message payloads found in the last 256 KiB of the transcript (#469). Matching requires at least 24 consecutive characters; short or reworded quotes are not detected. If too little own text remains, the previous handoff is kept.
+
 ## [4.10.12] — 2026-10-09
 
 ### Changed

@@ -755,6 +755,8 @@ The saved-memory lines inside the fence share one 4000 UTF-16 code-unit limit ac
 
 Claude Code's Stop hook replaces one `session-handoff` memory for the exact project with its latest assistant reply, after credential-shaped redaction and removal of fenced code. Capture needs at least 80 cleaned characters and obeys `autoCapture`; a skipped capture leaves the previous handoff untouched. Display uses only an active, trusted exact-project handoff's newest observation, limited to 800 characters even if the memory was written manually. Up to 72 hours old it appears normally; after 72 hours through 14 days it carries a stale warning; older than 14 days, undatable, or more than five minutes future-dated it is omitted. Imported handoffs are not injected merely because they have the right name. The handoff is background context, not an inferred task list or a guarantee that work resumes.
 
+Stop capture omits prose copied verbatim from agent-message payloads in the last 256 KiB of the transcript, matching at least 24 consecutive characters. Short or reworded quotes are not detected; if too little own text remains, the previous handoff is kept (#469).
+
 Task-state fields older than 72 hours, missing or unreadable timestamps, and timestamps more than five minutes in the future are not shown as current. Per-field dates keep an updated goal from refreshing an untouched old done/next/blocked field. Instead, every level shows a one-line stale or unknown-age flag and points to `memesh task` for the stored record. `minimal` can return `text: ""` and `empty: true` when it has no content; `standard` and `full` still show the index's empty-state line.
 
 **Input Schema**:

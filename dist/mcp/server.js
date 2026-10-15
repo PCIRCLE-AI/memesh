@@ -26630,6 +26630,7 @@ function cleanHandoffText(raw) {
     text = text.slice(newline + 1);
   return `\u2026${text.trim()}`;
 }
+var CHANNEL_SCAN_MAX_CHARS = 17 * 1024;
 function ageText(hours) {
   if (hours < 1)
     return "less than an hour ago";
