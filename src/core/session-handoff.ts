@@ -163,6 +163,8 @@ function jsonValueEnd(s: string, i: number): number {
     if (c === '"') inString = true;
     else if (c === '{' || c === '[') depth++;
     else if ((c === '}' || c === ']') && --depth === 0) return j + 1;
+    // Raw markup is not JSON: stop instead of rescanning overlapping broken tags.
+    else if (c === '<') return -1;
   }
   return -1;
 }

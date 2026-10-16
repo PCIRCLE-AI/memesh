@@ -133,8 +133,8 @@
     },
     {
       "path": "scripts/hooks/_generated/session-handoff.js",
-      "sha256": "a260b8fc8e74a0658d4505dd824a588f0ca9b630d343307e853dce54b5a699f7",
-      "bytes": 10251
+      "sha256": "ce7ebb3629901e97db2db668ad94a54bb1ed656200802900ee64f3509952c0a6",
+      "bytes": 10302
     },
     {
       "path": "scripts/hooks/_generated/session-limit.js",

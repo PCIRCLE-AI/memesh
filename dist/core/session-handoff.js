@@ -105,6 +105,8 @@ function jsonValueEnd(s, i) {
             depth++;
         else if ((c === '}' || c === ']') && --depth === 0)
             return j + 1;
+        else if (c === '<')
+            return -1;
     }
     return -1;
 }
