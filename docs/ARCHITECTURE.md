@@ -8,7 +8,24 @@
 
 ## Overview
 
-MeMesh is the local agentic-memory and governed-collaboration layer for individual AI coding agents, including Claude Code, Codex, Gemini, Cursor, and other MCP-compatible clients. It provides 12 MCP tools (`work_package`, `remember`, `recall`, `forget`, `export`, `import`, `learn`, `task_state`, `briefing`, `user_patterns`, `improvement`, `message`) backed by SQLite and FTS5 full-text search. Memory, bounded discovery of live project registrations, and durable exact-recipient messaging are available through CLI, HTTP REST, and MCP. `work_package` prepares either one bounded calendar-selected digest package or one bounded package from the newest Claude Code session associated with the client's single matching MCP workspace root. An already-running agent submits exactly one strict result or defers; submit stages the existing pending human-review proposal with bounded redacted source turns retained for comparison, and the MCP contract exposes no apply/reject action. The local Dashboard and CLI provide cooperative human review surfaces, not authenticated actor identity. Packages omit hidden reasoning, tool traffic, raw transcripts, and transcript file paths; recognized credential-shaped text is redacted, but this heuristic is not a guarantee that arbitrary secrets are absent. Missing or ambiguous MCP roots fail closed. No provider is called. The Dashboard only reviews proposals that are already staged; it cannot start or wake an agent. Package hashes identify freshness and workspace scope, not authentication. `improvement` stages proposals through MCP while the existing CLI/HTTP review surfaces retain human accept/reject authority. Generic briefing has no recipient identity and stays quiet; the SessionStart and prompt hooks do too, unless the session declares one with `MEMESH_RECIPIENT` or, when that is unset, the host's registered principal (`principal_id` in `hosts/claude.json` under Claude Code), and then they report the deliveries waiting for exactly that recipient (per project, up to five). `briefing(project, recipient)` reports only that exact recipient's deliveries that have no intake receipt and directs the caller to poll, fetch and record `intake`.
+MeMesh gives local coding agents shared memory and a way to exchange messages.
+It stores memories in SQLite and searches them with FTS5. Claude Code and Codex
+use plugins; other local clients can use MCP, the CLI, or HTTP.
+
+The 12 MCP tools are `work_package`, `remember`, `recall`, `forget`, `export`,
+`import`, `learn`, `task_state`, `briefing`, `user_patterns`, `improvement`, and
+`message`. See the [API reference](api/API_REFERENCE.md) for their contracts.
+
+Messages are stored locally for recovery. Native notifications require an
+eligible running host; acceptance does not mean the agent read or completed
+the task. Briefing and hooks show only the addressed recipient's pending
+messages when that identity is available.
+
+Agents can prepare a bounded digest or transcript package and submit a proposal
+for human review. They cannot apply or reject it through MCP. The Dashboard
+reviews staged proposals; it cannot start an agent. Package hashes check
+freshness and workspace scope, not identity. Source text remains untrusted,
+and credential redaction is a heuristic rather than a guarantee.
 
 The package is intentionally local-first and inspectable:
 - one SQLite database under the user's control
@@ -54,9 +71,9 @@ This repository is the standalone local package. Hosted workspace and enterprise
 
 MeMesh separates concerns into two layers:
 
-**Core** (`src/core/`) — pure business logic with zero transport dependencies:
+**Core** (`src/core/`) — shared application logic independent of transports:
 - `types.ts` — shared TypeScript interfaces (zero external deps)
-- `operations.ts` — `remember`, `recall`, `forget`, `export`, `import` as pure functions called by all transports
+- `operations.ts` — `remember`, `recall`, `forget`, `export`, `import` as shared operations called by all transports
 - `agent-messaging.ts` — transactional exact-recipient messages, opaque cursors, bounded waits, payload fetch, a 64 KiB JSON-encoded durable payload cap, and independent receipt facts
 - `agent-router.ts` — owner-private local routing from a durable message event to an eligible active host adapter, plus a bounded project-scoped directory of live registrations; native delivery is bounded by a 16 KiB cap on the untrusted full envelope, including routing metadata and payload; the Claude Code channel carries that envelope, the Codex CLI queue only a notice naming the message
 - `config.ts` — owner-local configuration reads and partial updates for the retained non-model settings

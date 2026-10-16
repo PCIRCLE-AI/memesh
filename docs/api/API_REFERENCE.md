@@ -2,7 +2,7 @@
 
 **Protocol**: Model Context Protocol (MCP) over stdio
 **Version**: 4.10.12
-**Compatibility**: Works with Claude Code plugins, Claude Managed Agents (via MCP connector), and any MCP-compatible client.
+**Compatibility**: Claude Code, Codex, and other MCP clients that can launch the local stdio server. Hosted chat products need a separate bridge; they do not connect to this local server automatically.
 
 **Native Integrations**: Beyond MCP, MeMesh integrates as a native memory provider for Hermes Agent (Python `MemoryProvider` plugin). A source-only OpenClaw TypeScript memory-capability plugin is also included, but it is not published or live-tested. Neither path is an HTTP bridge. See [docs/platforms/](../platforms/) for platform-specific guides.
 
@@ -976,7 +976,7 @@ The CLI also exposes owner-operated storage accounting and bounded retention:
 | `name` | string | Unique entity name |
 | `type` | string | Entity type |
 | `namespace` | string | Namespace scope (`"personal"`, `"team"`, `"global"`) |
-| `created_at` | string | ISO timestamp |
+| `created_at` | string | SQLite UTC timestamp string (`YYYY-MM-DD HH:MM:SS`); imported values may use another accepted UTC format |
 | `metadata` | object | Optional JSON metadata |
 | `observations` | string[] | Associated observations |
 | `tags` | string[] | Associated tags |
@@ -1105,6 +1105,7 @@ Every `success: false` envelope carries a machine-readable `errorCode` **alongsi
 | `operation.failed` | 400 | The request was well-formed but the operation itself rejected it |
 | `operation.permission-denied` | 500 | An explicit local repair could not write its required config or plugin files; the response contains fixed, path-free recovery guidance |
 | `doctor.repair-incomplete` | 500 | A repair that runs two commands (the Codex plugin refresh) ran the first and had too little of its 120 s budget left to start the second; the `error` text names what ran and the command to finish by hand |
+| `rate.limited` | 429 | Too many requests in the window (non-loopback only) |
 | `server.internal` | 500/503 | Unexpected server-side failure |
 
 ### The origin boundary
@@ -1369,7 +1370,7 @@ Returns computed analytics insights for the memory database.
 
 Runs the same check suite as `memesh doctor` and returns the structured result. Any secret-shaped substring (for example bearer tokens) is redacted before the response leaves the server.
 
-**Response:** `{ "success": true, "data": { ...doctor result... } }`, or `500` with `{ "success": false, "error": "..." }` if the suite itself failed to run.
+**Response:** `{ "success": true, "data": { ...doctor result... } }`, or `500` with `{ "success": false, "errorCode": "server.internal", "error": "..." }` if the suite itself failed to run.
 
 The result carries a `capture` object next to `checks` whenever the
 capture-liveness check could run — the same figures as `memesh doctor --json`,
@@ -2123,7 +2124,8 @@ human-authority actions; an agent using `work_package` can only submit a pending
 proposal or defer. The Dashboard exposes the same list, detail, accept, and
 reject review surface without adding another queue or execution path.
 
-A proposal has one of five kinds, and `accept`'s effect is specific to each:
+There are five proposal kinds. `digest` has two source variants with different
+accept effects:
 
 - `digest` from a calendar cluster: creates one digest entity from the
   proposal's source memories and archives those sources.

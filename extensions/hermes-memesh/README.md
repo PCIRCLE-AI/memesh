@@ -6,7 +6,7 @@ default `http://localhost:3737`).
 
 ## Setup
 
-1. Install MeMesh globally: `npm install -g @pcircle/memesh` (requires Node >= 22).
+1. Install MeMesh globally: `npm install -g @pcircle/memesh` (requires Node >= 22.13.0).
    If your global npm prefix isn't user-writable, configure a user-owned one
    (e.g. `npm config set prefix ~/.npm-global`) and make sure the resulting
    `bin/` directory is on `PATH` — including in whatever process manager

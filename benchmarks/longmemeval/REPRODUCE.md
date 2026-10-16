@@ -73,7 +73,9 @@ Each result JSON includes `run_info.environment` with:
 - Git SHA
 - Dataset SHA256
 
-Results have been reproduced on Apple M2 Pro (macOS 25.4.0, Node v22.22.0) with identical numbers across multiple runs.
+The published v4.2.11 result (`results/mode-A-2026-07-29T08-15-09.json`)
+records Apple M2 Pro, Darwin kernel 25.5.0, and Node v24.15.0. It is a historical
+measurement, not a benchmark of the current release.
 
 ## Dataset License
 

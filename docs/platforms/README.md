@@ -1,171 +1,37 @@
-# MeMesh Integration Guide
+# MeMesh integrations
 
-MeMesh is designed for local coding-agent memory first. The preferred path is MCP for Claude Code and other MCP-compatible coding agents, with HTTP and CLI available for local tools, scripts, and bridge-based experiments.
+MeMesh is a local memory layer for Claude Code and Codex. Start with the
+[installation guide](../../llms-install.md). Both hosts share memories when
+they run as the same user with matching database settings.
 
-If your goal is cross-agent collaboration rather than memory alone, start with the [Local Agent Messaging Guide](./agent-messaging.md). It explains the explicit local message lifecycle, what still requires polling or a bridge, and which host behaviors remain adapter-dependent.
+## Choose an entry point
 
----
+| Entry point | Use it for |
+|---|---|
+| Claude Code plugin | Memory tools, automatic capture, and reminders. |
+| Codex plugin | Memory tools, startup context, and eligible CLI message notifications. |
+| MCP server (`memesh-mcp`) | Other local MCP clients; automatic hooks depend on the host. |
+| CLI (`memesh`) | Direct commands, diagnostics, and backups. |
+| HTTP (`memesh serve`) | Local scripts, apps, or a bridge you operate. |
 
-## 🎯 Quick Platform Guide
+The database is local. MeMesh does not run a separate model or connect a hosted
+chat product to your computer automatically. A browser-based product needs a
+bridge that can reach your local server. For non-loopback HTTP access, follow
+the [bearer-token requirements](../api/API_REFERENCE.md#http-rest-api).
 
-| Client | Best Mode | Setup | Guide |
-|--------|-----------|-------|-------|
-| **Claude Code** | Plugin (hooks + MCP + skills, wired automatically) | `/plugin marketplace add PCIRCLE-AI/memesh` → `/plugin install memesh@pcircle-memesh` | See root [README](../../README.md) |
-| **Codex CLI** | Plugin (SessionStart + MCP, wired automatically) | `codex plugin marketplace add PCIRCLE-AI/memesh` → `codex plugin add memesh@pcircle-memesh`; global `memesh-mcp` remains a manual alternative | See root [README](../../README.md) |
-| **Gemini CLI** | MCP Server | `gemini mcp add -s user memesh memesh-mcp` (needs `npm install -g @pcircle/memesh`) | See root [README](../../README.md) |
-| **Other MCP coding agents (Cursor, Cline…)** | MCP Server | Point the client at `memesh-mcp` | See root [README](../../README.md) |
-| **Local agent messaging across hosts** | MCP / HTTP / CLI; native path where documented | Explicit exact-recipient local messaging today; ordinary Codex CLI has active-session native delivery, while other host behavior remains adapter-specific | [agent-messaging.md](./agent-messaging.md) |
-| **Hermes Agent (NousResearch)** | Native `MemoryProvider` plugin | Drop `plugins/memory/memesh/` into a Hermes Agent checkout; `hermes memory setup memesh` | [hermes-agent.md](./hermes-agent.md) |
-| **Delegate workers (DeepSeek worker, or any other)** | Orchestrator-side CLI record; the worker never writes | `memesh delegation record --envelope <file> --prompt-file <file> --source <name>` | [deepseek-worker.md](./deepseek-worker.md) |
-| **OpenClaw** | Native memory plugin (source; not live-tested or published) | `openclaw plugins install @pcircle/openclaw-memory-memesh` when published, or drop into OpenClaw checkout; configure `plugins.slots.memory` | [openclaw.md](./openclaw.md) |
-| **Custom apps / scripts** | HTTP API | Run `memesh serve` and call `/v1/*` | [universal.md](./universal.md) |
-| **ChatGPT / Custom GPT experiments** | HTTP API | Use a local connector/proxy that can reach localhost | [chatgpt.md](./chatgpt.md) |
-| **Gemini web / AI Studio experiments** | HTTP API | Use a local connector/proxy that can reach localhost (the Gemini **CLI** uses MCP above instead) | [gemini.md](./gemini.md) |
-| **Grok or other browser-hosted AI** | HTTP API | Use a local connector/proxy that can reach localhost; support is adapter-specific | [agent-messaging.md](./agent-messaging.md) |
+## Guides
 
----
+- [Agent messaging](agent-messaging.md): send, fetch, and acknowledge messages.
+  Delivery or queue acceptance is not task completion.
+- [Universal HTTP guide](universal.md): connect a local script or app.
+- [ChatGPT bridge](chatgpt.md) and [Gemini bridge](gemini.md): optional bridge
+  setups, not native local access from the hosted chat page.
+- [Hermes Agent](hermes-agent.md): optional native MemoryProvider integration;
+  its recorded live test used MeMesh 4.5.1. Verify current host compatibility.
+- [OpenClaw](openclaw.md): source-only integration, not published or live-tested.
+- [DeepSeek worker](deepseek-worker.md): optional delegated worker, not a MeMesh host.
 
-## 📊 Integration Modes Comparison
+The Dashboard is included in 4.10.12. Its future replacement does not change
+the shared memory core, MCP tools, or CLI described here.
 
-### 🟢 HTTP API Mode
-**Best for**: custom local apps, scripts, dashboards, and bridge-based experiments that can call `localhost`
-
-**Pros**:
-- Works with local apps and custom bridges
-- No MCP support required
-- Easy to test manually with curl
-
-**Cons**:
-- Requires server to be running
-- Browser-only AI products still need a connector, action, proxy, or local bridge to reach `localhost`
-
-**Setup**:
-```bash
-npm install -g @pcircle/memesh
-memesh serve --port 3737
-curl http://localhost:3737/v1/health
-```
-
----
-
-### 🟡 MCP Server Mode (Native)
-**Best for**: Claude Code and MCP-compatible coding agents
-
-**Pros**:
-- Native tool integration (cleanest UX)
-- Structured inputs/outputs
-- Auto-discovery of capabilities
-
-**Cons**:
-- Only works with MCP-compatible clients
-- Requires MCP config setup
-
-**Setup**:
-```bash
-npm install -g @pcircle/memesh
-memesh-mcp
-# Add this command to your MCP client's server config.
-```
-
-MeMesh binds a session to the project of the client's workspace root. For a client that reports no workspace root, set `MEMESH_PROJECT_ROOT` to the project's absolute directory in the server's environment, or pass `project` on each `remember`, `learn` and `recall` call.
-
----
-
-### 🔴 CLI Mode (Advanced)
-**Best for**: Terminal-based workflows, scripting, CI/CD
-
-**Pros**:
-- Works without server
-- Can be scripted
-- Direct database access
-
-**Cons**:
-- Requires AI to invoke shell commands
-- Less interactive
-
-**Setup**:
-```bash
-npm install -g @pcircle/memesh
-memesh remember --name "test" --type note --obs "Hello"
-memesh recall "test"
-```
-
----
-
-## 🚀 Quick Start (Local Workflow)
-
-### 1. Install MeMesh
-```bash
-npm install -g @pcircle/memesh
-```
-
-### 2. Start the server
-```bash
-memesh serve
-# Server running at http://localhost:3737
-# Dashboard at http://localhost:3737/dashboard
-```
-
-### 3. Test the HTTP API
-```bash
-curl http://localhost:3737/v1/health
-curl -X POST http://localhost:3737/v1/recall \
-  -H 'Content-Type: application/json' \
-  -d '{"query":"test"}'
-```
-
-### 4. Connect your client
-Use MCP mode when the client supports MCP. Use HTTP mode when you control a local app, script, or connector that can call `localhost`.
-
----
-
-## 📚 Platform-Specific Guides
-
-- **[Hermes Agent (NousResearch)](./hermes-agent.md)** - Native `MemoryProvider` plugin, on par with MCP mode
-- **[OpenClaw](./openclaw.md)** - Source-only native memory plugin (TypeScript); not published or live-tested
-- **[Local Agent Messaging Guide](./agent-messaging.md)** - Durable local message lifecycle, recovery semantics, limits, and host matrix
-- **[ChatGPT / Custom GPTs](./chatgpt.md)** - HTTP API with custom instructions
-- **[Google Gemini](./gemini.md)** - HTTP API with system instructions
-- **[Universal Guide](./universal.md)** - For local tools or bridge-based integrations
-
----
-
-## 🔍 How to Choose
-
-**Use MCP Mode if**:
-- Your platform explicitly supports MCP (Model Context Protocol)
-- You want the cleanest, most native experience
-- You're using Claude Code or another MCP-compatible coding agent
-
-**Use HTTP API Mode if**:
-- You control a local app, script, or connector that can call `localhost`
-- You want to integrate MeMesh into a custom workflow outside native MCP
-- You're using ChatGPT or Gemini through a local bridge rather than the hosted web UI alone
-
-**Use CLI Mode if**:
-- You're building scripts or automation
-- You need direct database access
-- You're integrating MeMesh into CI/CD
-
----
-
-## 🛠️ Troubleshooting
-
-**"Connection refused" error**:
-- Make sure `memesh serve` is running
-- Check the port (default: 3737)
-- Try `curl http://localhost:3737/v1/health`
-
-**"No memories found"**:
-- Create a test memory: `memesh remember --name test --type note --obs "Hello"`
-- Check dashboard: http://localhost:3737/dashboard
-
-**MCP client not seeing tools**:
-- Verify the client is configured to run `memesh-mcp`
-- Run `memesh doctor` to verify the plugin MCP manifest (`.claude-plugin/mcp.json`), hooks, dashboard assets, local database, and install method
-- Run `memesh status` to confirm the install method and update state
-- Check the client logs for MCP server startup errors
-
----
-
-**Need help?** Open an issue: https://github.com/PCIRCLE-AI/memesh/issues
+[API reference](../api/API_REFERENCE.md) · [Architecture](../ARCHITECTURE.md)

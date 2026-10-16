@@ -1,8 +1,14 @@
 # Changelog
 
-All notable changes to MeMesh are documented here.
+All notable changes to MeMesh are documented here. Released entries are
+historical; later entries may correct earlier claims. `[Unreleased]` changes
+are not part of a published npm release yet.
 
 ## [Unreleased]
+
+### Changed
+
+- Simplified the English and Traditional Chinese getting-started guides. Corrected API examples, integration prerequisites, and historical benchmark labels.
 
 ### Fixed
 
