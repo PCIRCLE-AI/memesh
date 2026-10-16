@@ -55,7 +55,9 @@ const HANDOFF_TITLE = 'Where the last session left off';
 function readTranscriptTail(transcriptPath) {
   const fd = openSync(transcriptPath, 'r');
   try {
-    const size = fstatSync(fd).size;
+    const stat = fstatSync(fd);
+    if (stat.isDirectory()) throw new Error('transcript_path is a directory');
+    const size = stat.size;
     const start = Math.max(0, size - HANDOFF_TRANSCRIPT_TAIL_BYTES);
     const buf = Buffer.alloc(size - start);
     let got = 0;

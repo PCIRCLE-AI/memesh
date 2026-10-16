@@ -178,8 +178,8 @@
     },
     {
       "path": "scripts/hooks/_stop-handoff.js",
-      "sha256": "7efbb23d2de01cbeb3b039ba66e0662db9309cb95873e3d96ea714bf4aac9d12",
-      "bytes": 7861
+      "sha256": "fd292b0ef24f5191404f11f495612d175b455d7e68ef1058f8e5368f13d28758",
+      "bytes": 7963
     },
     {
       "path": "scripts/hooks/_stop-notes.js",
