@@ -11,14 +11,13 @@ We support the latest published MeMesh release. Older releases should be assumed
 
 ## Reporting a Vulnerability
 
-Do not report security vulnerabilities in public GitHub issues.
+Do not post vulnerability details in public GitHub issues.
 
-Report privately through GitHub Security Advisories:
-
-https://github.com/PCIRCLE-AI/memesh/security/advisories/new
-
-That link opens a private report visible only to the maintainers — it is the
-single channel for vulnerability reports.
+GitHub private vulnerability reporting is not currently enabled for this
+repository. Use an existing private maintainer contact, or
+[open an issue](https://github.com/PCIRCLE-AI/memesh/issues/new) asking a
+maintainer how to report privately. Include no vulnerability details in that
+public request; wait for a private contact before sharing them.
 
 ## What to Include
 
