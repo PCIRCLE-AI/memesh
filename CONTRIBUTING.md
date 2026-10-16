@@ -187,8 +187,9 @@ default, or `next` during the trial), installs
 it from the registry into a throwaway prefix and runs it, runs the shipped
 capture hooks against a throwaway graph (the `capture` receipt: post-commit must
 store one commit and session-summary one session insight), and then asks whether
-this machine is on that version. It changes nothing — every remediation it
-finds is printed for you to run. Registry propagation lags a green publish by
+this machine is on that version. It uses a disposable installation and graph; it does not upgrade the owner’s
+installation or repair the owner’s data. Suggested remediations are printed
+for you to run. Registry propagation lags a green publish by
 minutes, so a first `registry` FAIL right after the workflow goes green is
 worth re-running once before investigating.
 

@@ -1,5 +1,8 @@
 # MeMesh LongMemEval Benchmark Results
 
+**Historical measurement:** MeMesh v4.2.11, 2026-07-29. These figures do not
+measure the current release.
+
 **Measured through:** `recallEnhanced()` — the function every transport calls for `recall`.
 **Status:** PUBLIC — recomputed from raw per-question JSON, dataset SHA256 cross-checked.
 
@@ -34,7 +37,7 @@ before the change are retained unmodified and labelled in
 
 ## Summary
 
-MeMesh achieves **R@5 = 95.60%** on LongMemEval-S (500 questions, MIT license
+MeMesh v4.2.11 measured **R@5 = 95.60%** on LongMemEval-S (500 questions, MIT license
 dataset, publicly available from Hugging Face), measured end to end through the
 code path a real `recall` call takes. The benchmark covers one task: given a
 question, retrieve the relevant session(s) from a haystack of ~50 sessions.

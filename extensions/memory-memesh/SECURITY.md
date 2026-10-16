@@ -21,7 +21,7 @@ normalized = normalized.replace(/^(ignore|disregard|forget|new instructions?)[\s
 
 Query sanitization now removes system-like prefixes and directive-like patterns before recall.
 
-### 2. Tenant Isolation (HIGH) ✅ FIXED
+### 2. Agent-tag filtering — cooperative only
 
 **Location**: `index.ts` - all memory operations
 
@@ -86,7 +86,7 @@ The plugin includes prompt injection defense via `INJECTION_PATTERNS`. This is a
 
 Before deploying to production:
 
-- [x] Tenant isolation with agentId-tagged filtering (FIXED)
+- [x] Agent-tag filtering implemented (cooperative only; not a security boundary)
 - [x] Query sanitization for recall (FIXED)
 - [ ] Preview or confirmation before query-based `memory_forget` archival (NOT IMPLEMENTED)
 - [x] Cooldown implementation reviewed (APPROPRIATE)

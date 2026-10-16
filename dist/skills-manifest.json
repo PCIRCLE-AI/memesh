@@ -133,8 +133,8 @@
     },
     {
       "path": "scripts/hooks/_generated/session-handoff.js",
-      "sha256": "7a4cb8ec333888db01dedb79d2e3bbb77b9dbc251758405f3d58a548128f9eb5",
-      "bytes": 4891
+      "sha256": "ce7ebb3629901e97db2db668ad94a54bb1ed656200802900ee64f3509952c0a6",
+      "bytes": 10302
     },
     {
       "path": "scripts/hooks/_generated/session-limit.js",
@@ -178,8 +178,8 @@
     },
     {
       "path": "scripts/hooks/_stop-handoff.js",
-      "sha256": "a3fce2204cb9040f549ffd4116c658bbf840e1a9726e666eee65cf78ed06caac",
-      "bytes": 5526
+      "sha256": "fd292b0ef24f5191404f11f495612d175b455d7e68ef1058f8e5368f13d28758",
+      "bytes": 7963
     },
     {
       "path": "scripts/hooks/_stop-notes.js",

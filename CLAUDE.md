@@ -31,7 +31,7 @@ it here and link instead.
 
 - Verify: `npm run verify` (about 8 minutes; must end with `[verify] GREEN. Receipt for tree <hash> written to .verify/receipt.json.`)
 - Fast inner loop: `npm run typecheck` then `node scripts/run-tests-isolated.mjs` (ends with `Test Files … passed`), then `npm run verify` before reporting.
-- Journeys only: `npm run verify:journeys` (build + packaged smoke + dashboard e2e; writes no receipt)
+- Journeys only: `npm run verify:journeys` (build + packaged smoke; writes no receipt)
 - Receipt state: `npm run verify:receipt` (prints `fresh`, `stale` or `missing` for the current tree)
 - Run the app: `npm run build && node dist/transports/cli/cli.js serve --host 127.0.0.1 --port 3737` (dashboard at http://127.0.0.1:3737)
 

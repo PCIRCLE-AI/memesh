@@ -36,8 +36,8 @@ plugins/memory/memesh/
 └── README.md
 ```
 
-**Reference implementation**: the deployed, live-tested source lives in this
-repo at [`extensions/hermes-memesh/`](../../extensions/hermes-memesh/) — copy
+**Reference implementation**: source previously live-tested with MeMesh 4.5.1
+lives in this repo at [`extensions/hermes-memesh/`](../../extensions/hermes-memesh/) — copy
 it into a Hermes checkout as `plugins/memory/memesh/`. It includes the
 session-boundary hooks (`on_pre_compress`/`on_session_end`/`on_session_switch`)
 whose synchronous-write requirement is explained under Troubleshooting and safety below.

@@ -6,8 +6,9 @@ then stop. Once installed, read [AGENTS.md](AGENTS.md) for how to use it.
 
 Facts that hold for every path below:
 
-- Every host reads and writes the **same database**: `~/.memesh/knowledge-graph.db`.
-  Installing for a second host adds an access path, not a second memory.
+- Hosts running as the same local user share `~/.memesh/knowledge-graph.db`
+  by default. `MEMESH_DIR` or `MEMESH_DB_PATH` can select a different database;
+  keep those settings consistent when hosts should share memories.
 - **Nothing is auto-configured beyond what each step states.** `npm install -g`
   runs **no install scripts** — the package has none, by design (it installs
   fully working even under `--ignore-scripts`). Nothing registers MCP servers
@@ -214,7 +215,8 @@ memesh doctor
 ```
 
 Expected: a report starting `MeMesh doctor v…` with `Overall: PASS`
-(`PASS_WITH_CONCERNS` is also functional), exit code 0.
+or `PASS_WITH_CONCERNS`, exit code 0. This checks installation and local
+integration health; it does not prove that a host or model received context.
 
 | Failure | Remedy |
 |---|---|

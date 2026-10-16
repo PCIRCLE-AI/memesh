@@ -8,7 +8,24 @@
 
 ## Overview
 
-MeMesh is the local agentic-memory and governed-collaboration layer for individual AI coding agents, including Claude Code, Codex, Gemini, Cursor, and other MCP-compatible clients. It provides 12 MCP tools (`work_package`, `remember`, `recall`, `forget`, `export`, `import`, `learn`, `task_state`, `briefing`, `user_patterns`, `improvement`, `message`) backed by SQLite and FTS5 full-text search. Memory, bounded discovery of live project registrations, and durable exact-recipient messaging are available through CLI, HTTP REST, and MCP. `work_package` prepares either one bounded calendar-selected digest package or one bounded package from the newest Claude Code session associated with the client's single matching MCP workspace root. An already-running agent submits exactly one strict result or defers; submit stages the existing pending human-review proposal with bounded redacted source turns retained for comparison, and the MCP contract exposes no apply/reject action. The local Dashboard and CLI provide cooperative human review surfaces, not authenticated actor identity. Packages omit hidden reasoning, tool traffic, raw transcripts, and transcript file paths; recognized credential-shaped text is redacted, but this heuristic is not a guarantee that arbitrary secrets are absent. Missing or ambiguous MCP roots fail closed. No provider is called. The Dashboard only reviews proposals that are already staged; it cannot start or wake an agent. Package hashes identify freshness and workspace scope, not authentication. `improvement` stages proposals through MCP while the existing CLI/HTTP review surfaces retain human accept/reject authority. Generic briefing has no recipient identity and stays quiet; the SessionStart and prompt hooks do too, unless the session declares one with `MEMESH_RECIPIENT` or, when that is unset, the host's registered principal (`principal_id` in `hosts/claude.json` under Claude Code), and then they report the deliveries waiting for exactly that recipient (per project, up to five). `briefing(project, recipient)` reports only that exact recipient's deliveries that have no intake receipt and directs the caller to poll, fetch and record `intake`.
+MeMesh gives local coding agents shared memory and a way to exchange messages.
+It stores memories in SQLite and searches them with FTS5. Claude Code and Codex
+use plugins; other local clients can use MCP, the CLI, or HTTP.
+
+The 12 MCP tools are `work_package`, `remember`, `recall`, `forget`, `export`,
+`import`, `learn`, `task_state`, `briefing`, `user_patterns`, `improvement`, and
+`message`. See the [API reference](api/API_REFERENCE.md) for their contracts.
+
+Messages are stored locally for recovery. Native notifications require an
+eligible running host; acceptance does not mean the agent read or completed
+the task. Briefing and hooks show only the addressed recipient's pending
+messages when that identity is available.
+
+Agents can prepare a bounded digest or transcript package and submit a proposal
+for human review. They cannot apply or reject it through MCP. The Dashboard
+reviews staged proposals; it cannot start an agent. Package hashes check
+freshness and workspace scope, not identity. Source text remains untrusted,
+and credential redaction is a heuristic rather than a guarantee.
 
 The package is intentionally local-first and inspectable:
 - one SQLite database under the user's control
@@ -54,9 +71,9 @@ This repository is the standalone local package. Hosted workspace and enterprise
 
 MeMesh separates concerns into two layers:
 
-**Core** (`src/core/`) — pure business logic with zero transport dependencies:
+**Core** (`src/core/`) — shared application logic independent of transports:
 - `types.ts` — shared TypeScript interfaces (zero external deps)
-- `operations.ts` — `remember`, `recall`, `forget`, `export`, `import` as pure functions called by all transports
+- `operations.ts` — `remember`, `recall`, `forget`, `export`, `import` as shared operations called by all transports
 - `agent-messaging.ts` — transactional exact-recipient messages, opaque cursors, bounded waits, payload fetch, a 64 KiB JSON-encoded durable payload cap, and independent receipt facts
 - `agent-router.ts` — owner-private local routing from a durable message event to an eligible active host adapter, plus a bounded project-scoped directory of live registrations; native delivery is bounded by a 16 KiB cap on the untrusted full envelope, including routing metadata and payload; the Claude Code channel carries that envelope, the Codex CLI queue only a notice naming the message
 - `config.ts` — owner-local configuration reads and partial updates for the retained non-model settings
@@ -476,6 +493,8 @@ Hook commands are defined in `hooks/hooks.json`: nine run at Claude Code lifecyc
 - **Behavior**: Extracts session knowledge (files edited, errors fixed, decisions made) with deterministic rules and stores it as entities in the knowledge graph. It reads the newest exact-project injection record under the database directory's `sessions/` folder, strips hook-output echoes, and increments `recall_hits` only for explicit `[mem:id]` citations that match entities injected into that session. `recall_misses` stays unchanged because absence of a citation is not proof that the memory was unused. Opt-out via `MEMESH_AUTO_CAPTURE=false`
 - **On the same Stop (#324)**, `scripts/hooks/_stop-notes.js` also ingests the project's memory directory as note files and, separately, prints a remember nudge. Only the ingestion is a write, and only it is gated on `MEMESH_AUTO_CAPTURE=false`; the nudge sits outside that check.
 - **Also on the same Stop**, `scripts/hooks/_stop-handoff.js` keeps the agent's own last message as the project's session handoff: one `session-handoff:<project>` entity, replaced on each qualifying Stop, redacted for known credential shapes, fenced code removed, at most 800 characters including a leading `…` (the end of the message is kept). It uses the payload's `last_assistant_message` and falls back to the newest assistant text in the last 256 KB of the transcript; the source is written into the `handoff-capture` outcome. A message under 80 characters after cleaning leaves the previous handoff in place. It costs no extra model turn and is gated on `MEMESH_AUTO_CAPTURE`. An active, trusted, exact-project handoff precedes ranked memories in SessionStart and core `briefing` at every level, after optional repository facts, using only its newest observation; the shared renderer caps even manually stored text at 800 characters. Content up to 72 hours old is shown normally, over 72 hours through 14 days is marked stale, and older, undatable, or more than five minutes future-dated content is omitted. Imported content remains outside auto-context unless a successful fresh local Stop replacement removes its import trust marks; archived or skipped replacements leave those marks untouched. The handoff stays outside the ranked block, recent and project pools, durable index, pre-edit recall, `memesh doctor`'s per-type trend, project list and patterns view (`recall` and the dashboard can still find it).
+
+Stop capture omits prose copied verbatim from agent-message payloads in the last 256 KiB of the transcript, matching at least 24 consecutive characters. Short or reworded quotes are not detected; if too little own text remains, the previous handoff is kept (#469).
 
 ### Stop Message Gate (`scripts/hooks/stop-message-gate.js`) (#468)
 

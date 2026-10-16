@@ -8,6 +8,17 @@ export declare const HANDOFF_TRANSCRIPT_TAIL_BYTES: number;
 export declare function sessionHandoffName(project: string): string;
 export declare function cleanHandoffText(raw: string): string;
 export declare function lastAssistantText(jsonl: string): string | null;
+export declare const AGENT_TEXT_OMITTED = "[text from an agent message omitted]";
+export declare const AGENT_QUOTE_MIN_CHARS = 24;
+export declare const CHANNEL_SCAN_MAX_CHARS: number;
+export declare function agentMessageTexts(jsonl: string): {
+    texts: string[];
+    unreadTags: number;
+};
+export declare function omitAgentMessageText(text: string, payloads: readonly string[]): {
+    text: string;
+    omitted: number;
+};
 export interface HandoffRecord {
     id: number;
     text: string;

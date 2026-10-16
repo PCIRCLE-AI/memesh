@@ -711,7 +711,7 @@ reply, or a stopped-session wake-up.
 
 | Participant | Current path | Status today | Notes |
 |---|---|---|---|
-| Ordinary Codex CLI | automatic plugin SessionStart registration; optional `codex-session` identity override | bounded full-message native delivery while active | Exact thread identity is discoverable; oversized envelopes return `native_message_too_large`, while stopped or disconnected sessions return `recipient_unavailable` |
+| Ordinary Codex CLI | automatic plugin SessionStart registration; optional `codex-session` identity override | short native notice while active; the agent fetches the message body | Exact thread identity is discoverable; oversized envelopes return `native_message_too_large`, while stopped or disconnected sessions return `recipient_unavailable` |
 | MeMesh-managed Codex app-server | `memesh-host-codex` | separate managed path | It creates its own Codex thread; it does not attach to an ordinary session |
 | Claude channel | `memesh-host-claude` | separate channel path | Requires the documented Channel opt-in; no stopped-session resume |
 | Other local MCP clients | MCP, HTTP, or CLI message operations | durable messaging only | Use `poll`/`watch` and scoped fetch where their own host loop supports it; this guide makes no native-wakeup claim |

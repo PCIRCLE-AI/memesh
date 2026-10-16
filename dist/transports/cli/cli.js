@@ -5425,7 +5425,7 @@ function handoffView(record2, now = /* @__PURE__ */ new Date()) {
 function handoffLines(record2, now = /* @__PURE__ */ new Date()) {
   return handoffView(record2, now).lines;
 }
-var SESSION_HANDOFF_TYPE, HANDOFF_STALE_HOURS, HANDOFF_MAX_AGE_DAYS, HANDOFF_FUTURE_SKEW_MINUTES, HANDOFF_MAX_CHARS, HANDOFF_TRANSCRIPT_TAIL_BYTES, FENCE_LINE;
+var SESSION_HANDOFF_TYPE, HANDOFF_STALE_HOURS, HANDOFF_MAX_AGE_DAYS, HANDOFF_FUTURE_SKEW_MINUTES, HANDOFF_MAX_CHARS, HANDOFF_TRANSCRIPT_TAIL_BYTES, FENCE_LINE, CHANNEL_SCAN_MAX_CHARS;
 var init_session_handoff = __esm({
   "dist/core/session-handoff.js"() {
     "use strict";
@@ -5438,6 +5438,7 @@ var init_session_handoff = __esm({
     HANDOFF_MAX_CHARS = 800;
     HANDOFF_TRANSCRIPT_TAIL_BYTES = 256 * 1024;
     FENCE_LINE = /^\s*(`{3,}|~{3,})(.*)$/;
+    CHANNEL_SCAN_MAX_CHARS = 17 * 1024;
   }
 });
 

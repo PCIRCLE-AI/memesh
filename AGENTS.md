@@ -1,8 +1,9 @@
 # Using MeMesh — for AI agents
 
-MeMesh is persistent memory shared by every MCP host on this machine — one
-SQLite database at `~/.memesh/knowledge-graph.db`. A memory stored from one
-host is recallable from all of them. Not installed yet? Follow
+MeMesh gives local AI agents shared persistent memory. Hosts running as the
+same user share `~/.memesh/knowledge-graph.db` by default. `MEMESH_DIR` or
+`MEMESH_DB_PATH` can select a different database; use matching settings when
+hosts should share memories. Not installed yet? Follow
 [llms-install.md](llms-install.md).
 
 ## The loop that pays for itself
