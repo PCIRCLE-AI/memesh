@@ -673,6 +673,23 @@ describe('Feature: memory_20250818 over the knowledge graph', () => {
       expect(snapshot(name)).toEqual(before);
     });
 
+    it.each(['str_replace', 'insert', 'create'] as const)('#531 a real %s changes the text without raising confidence', (command) => {
+      const name = `confidence-${command}`;
+      seedAged(name);
+      const result = command === 'str_replace'
+        ? handleMemoryCommand({ command, path: file(name), old_str: 'alpha', new_str: 'ALPHA' })
+        : command === 'insert'
+          ? handleMemoryCommand({ command, path: file(name), insert_line: 0, insert_text: 'gamma' })
+          : handleMemoryCommand({ command, path: file(name), file_text: 'ALPHA\nbeta' });
+      expect(result.isError, result.content).toBe(false);
+      expect(observationsOf(name)).not.toEqual(['alpha', 'beta']);
+      expect(snapshot(name).confidence).toBe(0.5);
+      const again = handleMemoryCommand({ command: 'create', path: file(name), file_text: 'final text' });
+      expect(again.isError, again.content).toBe(false);
+      expect(observationsOf(name)).toEqual(['final text']);
+      expect(snapshot(name).confidence).toBe(0.5);
+    });
+
     it('a real edit still rewrites the memory', () => {
       seedAged('real-edit');
       const result = handleMemoryCommand({ command: 'str_replace', path: file('real-edit'), old_str: 'alpha', new_str: 'ALPHA' });

@@ -117,6 +117,15 @@ describe('hook outcome records', () => {
 
   // ── post-commit ──────────────────────────────────────────────────────────
 
+  it('#526 a real Claude hook records Claude with an inherited CODEX_HOME', () => {
+    runHook('post-commit', { tool_name: 'Bash', tool_input: { command: 'git status' }, cwd: repoDir }, {
+      CODEX_HOME: path.join(testDir, 'codex'), CLAUDECODE: '1',
+      CODEX_SANDBOX: '', CODEX_PLUGIN_ROOT: '', PLUGIN_ROOT: '', MEMESH_HOOK_HOST: '',
+    });
+    expect(records('post-commit')).toHaveLength(1);
+    expect(records('post-commit')[0].host).toBe('claude-code');
+  });
+
   it('post-commit records a WROTE with the entity name', () => {
     const c = realCommit('feat(x): add a thing');
     runHook('post-commit', {

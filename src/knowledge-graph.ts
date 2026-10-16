@@ -479,6 +479,8 @@ export class KnowledgeGraph {
        * `'untrusted'` to opt out of the bump.
        */
       trustOverride?: 'trusted' | 'untrusted';
+      /** Editing existing text is not a new confirmation of its accuracy. */
+      reinforceConfidence?: boolean;
     }
   ): number {
     // One transaction, for the same reason `archiveEntity`, `deleteEntity`
@@ -590,21 +592,25 @@ export class KnowledgeGraph {
         .prepare('UPDATE entities SET title = ? WHERE id = ?')
         .run(opts.title, entityId);
       // User-provided title: clear title_source from metadata to mark as permanent.
-      // Heal corrupted metadata if parse fails (Fix C2).
+      // A title edit must not discard metadata whose contents cannot be read.
       const metaRow = this.db.prepare('SELECT metadata FROM entities WHERE id = ?').get(entityId) as { metadata: string | null } | undefined;
-      let metadata: Record<string, unknown> = {};
+      let metadata: Record<string, unknown> | undefined = {};
       if (metaRow?.metadata) {
         try {
           const parsed = JSON.parse(metaRow.metadata);
-          metadata = (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
+          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('metadata is not an object');
+          metadata = parsed;
         } catch {
-          console.error(`MeMesh: healed corrupted metadata for entity ${entityId} during title update.`);
+          metadata = undefined;
+          console.error(`MeMesh: metadata for entity ${entityId} could not be read; left unchanged during title update.`);
         }
       }
       // Remove title_source to mark as user-provided (permanent)
-      delete metadata.title_source;
-      this.db.prepare('UPDATE entities SET metadata = ? WHERE id = ?')
-        .run(JSON.stringify(metadata), entityId);
+      if (metadata) {
+        delete metadata.title_source;
+        this.db.prepare('UPDATE entities SET metadata = ? WHERE id = ?')
+          .run(JSON.stringify(metadata), entityId);
+      }
     }
 
     // An explicit namespace applies to an entity that already exists, too.
@@ -713,7 +719,7 @@ export class KnowledgeGraph {
           : undefined;
       const incomingTrust = opts?.trustOverride ?? trustFromMetadata;
       const isTrusted = incomingTrust === undefined || incomingTrust === 'trusted';
-      if (introducesNewObservation && isTrusted) {
+      if (introducesNewObservation && isTrusted && opts?.reinforceConfidence !== false) {
         this.db
           .prepare('UPDATE entities SET confidence = MIN(confidence + 0.05, 1.0) WHERE id = ?')
           .run(entityId);

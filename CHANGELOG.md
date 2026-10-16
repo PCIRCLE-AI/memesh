@@ -12,6 +12,10 @@ are not part of a published npm release yet.
 
 ### Fixed
 
+- Claude hooks are no longer labelled Codex just because the shell exports `CODEX_HOME`. Task-state changes record their latest known writer; no-op updates retain the previous attribution (#526).
+- Edits through the Anthropic memory tool no longer increase confidence. Explicit remembers with new observations retain their existing confirmation behavior (#531).
+- Changing a title leaves unreadable metadata intact instead of replacing it with an empty object. Valid metadata still loses only its generated-title marker, and title search remains updated (#535).
+
 - Stop handoffs omit prose copied verbatim from agent-message payloads found in the last 256 KiB of the transcript (#469). Matching requires at least 24 consecutive characters; short or reworded quotes are not detected. If too little own text remains, the previous handoff is kept.
 
 ## [4.10.12] — 2026-10-09

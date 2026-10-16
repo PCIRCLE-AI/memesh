@@ -34,6 +34,21 @@ afterEach(() => {
 const payload = (result: { content: Array<{ text: string }> }) => JSON.parse(result.content[0].text);
 
 describe('task-state store', () => {
+  it('#526 records the latest task-state writer without relabelling a no-op', () => {
+    const stored = () => JSON.parse((getDatabase().prepare('SELECT metadata FROM entities WHERE name = ?')
+      .get(taskStateName('alpha')) as { metadata: string }).metadata);
+    setTaskState({ project: 'alpha', patch: { goal: 'first goal' }, sourceHost: 'claude-code' });
+    expect(stored().provenance.source_host).toBe('claude-code');
+    setTaskState({ project: 'alpha', patch: { next: 'next step' }, sourceHost: 'codex' });
+    expect(stored().provenance.source_host).toBe('codex');
+    expect(stored().task_state.goal).toBe('first goal');
+    const before = stored();
+    setTaskState({ project: 'alpha', patch: { next: 'next step' }, sourceHost: 'claude-code' });
+    expect(stored()).toEqual(before);
+    setTaskState({ project: 'alpha', patch: { next: 'another step' } });
+    expect(stored().provenance.source_host).toBe('codex');
+  });
+
   it('does not read or revive archived fields when a project starts a fresh state', async () => {
     setTaskState({ project: 'alpha', patch: { goal: 'forgotten goal', done: 'forgotten done' } });
     expect(payload(await handleTool('forget', { name: taskStateName('alpha') })).archived).toBe(true);

@@ -402,7 +402,19 @@ function rememberInTransaction(
   // `parseMetadata(row.metadata)`, which returns `{}` for null, for non-object
   // JSON and for a parse failure — so `current` is never nullish, and a
   // fallback there would read as a safety net that cannot fire.
-  kg.updateEntityMetadata(args.name, (current) => buildLocalMetadata(
+  // Retitling does not authorize replacing unreadable stored metadata with
+  // fresh local provenance. The task-state writer has its own explicit recovery.
+  let stampLocalMetadata = true;
+  if (existing && args.title !== undefined && args.title !== existing.title) {
+    const row = db.prepare('SELECT metadata FROM entities WHERE name = ?').get(args.name) as { metadata: string | null };
+    if (row.metadata) {
+      try {
+        const parsed = JSON.parse(row.metadata);
+        stampLocalMetadata = Boolean(parsed && typeof parsed === 'object' && !Array.isArray(parsed));
+      } catch { stampLocalMetadata = false; }
+    }
+  }
+  if (stampLocalMetadata) kg.updateEntityMetadata(args.name, (current) => buildLocalMetadata(
     current as EntityMetadata,
     {
       trust: args.trustOverride,

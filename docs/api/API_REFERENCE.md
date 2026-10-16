@@ -2296,7 +2296,7 @@ An observation may itself contain newlines, so the line → memory map is comput
 Three behaviours worth stating because they differ from a filesystem:
 
 - **`delete` archives.** The person whose memory it is did not ask for the deletion — a model did. From the model's side the file is gone (`view` lists only active entities); from the user's side it is restorable. A deleted path stays gone for `view`, a second `delete`, `str_replace` and `insert`: each answers that the path does not exist and changes nothing, so an edit cannot reactivate it. `create` over the path writes the new text and brings the memory back; `rename` still moves an archived memory and leaves it archived.
-- **An edit that changes nothing writes nothing.** A `str_replace` or `create` that leaves the memory's lines as they are does not raise its confidence or reset its observations' creation times.
+- **Edits do not reconfirm accuracy.** `str_replace`, `insert`, and `create` over an existing memory do not raise confidence. An edit that leaves the lines unchanged also preserves their creation times. Explicit `remember` calls with new observations retain their existing confirmation behavior.
 - **`str_replace` refuses an ambiguous `old_str`** rather than editing the first match, and returns the line numbers of every occurrence so the model can widen it. This is a write, and the wrong one is silent.
 
 ### Refusals

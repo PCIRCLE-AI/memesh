@@ -215,15 +215,20 @@ export class KnowledgeGraph {
             if (metaRow?.metadata) {
                 try {
                     const parsed = JSON.parse(metaRow.metadata);
-                    metadata = (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
+                    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+                        throw new Error('metadata is not an object');
+                    metadata = parsed;
                 }
                 catch {
-                    console.error(`MeMesh: healed corrupted metadata for entity ${entityId} during title update.`);
+                    metadata = undefined;
+                    console.error(`MeMesh: metadata for entity ${entityId} could not be read; left unchanged during title update.`);
                 }
             }
-            delete metadata.title_source;
-            this.db.prepare('UPDATE entities SET metadata = ? WHERE id = ?')
-                .run(JSON.stringify(metadata), entityId);
+            if (metadata) {
+                delete metadata.title_source;
+                this.db.prepare('UPDATE entities SET metadata = ? WHERE id = ?')
+                    .run(JSON.stringify(metadata), entityId);
+            }
         }
         const previousNamespace = row.namespace ?? 'personal';
         const requestedNamespace = opts?.namespace;
@@ -256,7 +261,7 @@ export class KnowledgeGraph {
                 : undefined;
             const incomingTrust = opts?.trustOverride ?? trustFromMetadata;
             const isTrusted = incomingTrust === undefined || incomingTrust === 'trusted';
-            if (introducesNewObservation && isTrusted) {
+            if (introducesNewObservation && isTrusted && opts?.reinforceConfidence !== false) {
                 this.db
                     .prepare('UPDATE entities SET confidence = MIN(confidence + 0.05, 1.0) WHERE id = ?')
                     .run(entityId);

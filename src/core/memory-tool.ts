@@ -387,6 +387,7 @@ function rewriteObservations(
       observations: next,
       tags: entity.tags,
       namespace: entity.namespace,
+      reinforceConfidence: false,
     });
   }).immediate();
 }

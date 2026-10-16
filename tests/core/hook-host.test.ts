@@ -12,6 +12,14 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
  * until PLUGIN_ROOT (the Codex companion's own signal) was checked first (#325).
  */
 describe('detectHookHost', () => {
+  it.each(['CLAUDE_PLUGIN_ROOT', 'CLAUDE_PROJECT_DIR', 'CLAUDECODE'])('#526 an inherited CODEX_HOME does not override %s', (signal) => {
+    expect(detectHookHost({ hook_event_name: 'Stop' }, { CODEX_HOME: '/codex-home', [signal]: '/claude' })).toBe('claude-code');
+  });
+
+  it('#526 keeps CODEX_HOME as a fallback without a Claude signal', () => {
+    expect(detectHookHost(null, { CODEX_HOME: '/codex-home' })).toBe('codex');
+  });
+
   it('labels a Codex hook run codex although its payload looks like Claude Code', () => {
     expect(detectHookHost({ hook_event_name: 'PreCompact', transcript_path: '/t' }, { PLUGIN_ROOT: '/p/memesh/4.10.5' })).toBe('codex');
   });

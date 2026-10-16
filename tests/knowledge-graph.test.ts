@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { openDatabase, closeDatabase } from '../src/db.js';
 import { KnowledgeGraph } from '../src/knowledge-graph.js';
+import { remember } from '../src/core/operations.js';
 import type { CreateEntityInput } from '../src/knowledge-graph.js';
 import { MemeshDatabase as Database } from '../src/storage/sqlite.js';
 import { indexedObservationText, insertFtsRow, removeFromFts } from '../src/storage/fts-index.js';
@@ -33,6 +34,33 @@ describe('Feature: Knowledge Graph', () => {
   });
 
   describe('Title (UX-1 human-readable label)', () => {
+    it.each(['{not json', '["legacy"]', 'null'])('#535 retitling preserves unreadable metadata bytes: %s', (raw) => {
+      kg.createEntity('broken-meta-title', 'note', { title: 'old gazelle', observations: ['keep this fact'] });
+      db.prepare('UPDATE entities SET metadata = ? WHERE name = ?').run(raw, 'broken-meta-title');
+      kg.createEntity('broken-meta-title', 'note', { title: 'new ibex' });
+      const row = db.prepare('SELECT title, metadata FROM entities WHERE name = ?')
+        .get('broken-meta-title') as { title: string; metadata: string };
+      expect(row).toEqual({ title: 'new ibex', metadata: raw });
+      expect(kg.getEntity('broken-meta-title')!.observations).toEqual(['keep this fact']);
+      expect(kg.search('ibex').map(e => e.name)).toContain('broken-meta-title');
+      expect(kg.search('gazelle').map(e => e.name)).not.toContain('broken-meta-title');
+    });
+
+    it('#535 retitling valid metadata clears only the heuristic title marker', () => {
+      kg.createEntity('valid-meta-title', 'note', { title: 'old title', metadata: { title_source: 'heuristic', marker: 'keep' } });
+      kg.createEntity('valid-meta-title', 'note', { title: 'new title' });
+      expect(kg.getEntity('valid-meta-title')!.metadata).toMatchObject({ marker: 'keep' });
+      expect(kg.getEntity('valid-meta-title')!.metadata).not.toHaveProperty('title_source');
+    });
+
+    it.each(['{not json', '["legacy"]', 'null'])('#535 remember retitling does not stamp over corrupted metadata: %s', (raw) => {
+      kg.createEntity('remember-bad-title', 'note', { title: 'old title', observations: ['keep this fact'] });
+      db.prepare('UPDATE entities SET metadata = ? WHERE name = ?').run(raw, 'remember-bad-title');
+      remember({ name: 'remember-bad-title', type: 'note', title: 'new title' });
+      expect(db.prepare('SELECT title, metadata FROM entities WHERE name = ?').get('remember-bad-title'))
+        .toEqual({ title: 'new title', metadata: raw });
+    });
+
     it('roundtrips a title through createEntity and getEntity', () => {
       kg.createEntity('auth-decision-3f9', 'decision', {
         title: 'Adopt OAuth 2.0 with PKCE',

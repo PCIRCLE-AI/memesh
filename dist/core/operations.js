@@ -194,13 +194,27 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
         trustOverride: args.trustOverride,
         title,
     });
-    kg.updateEntityMetadata(args.name, (current) => buildLocalMetadata(current, {
-        trust: args.trustOverride,
-        provenance: {
-            ...(args.sourceHost && !existing ? { source_host: args.sourceHost } : {}),
-            ...(args.provenanceOverride ?? {}),
-        },
-    }));
+    let stampLocalMetadata = true;
+    if (existing && args.title !== undefined && args.title !== existing.title) {
+        const row = db.prepare('SELECT metadata FROM entities WHERE name = ?').get(args.name);
+        if (row.metadata) {
+            try {
+                const parsed = JSON.parse(row.metadata);
+                stampLocalMetadata = Boolean(parsed && typeof parsed === 'object' && !Array.isArray(parsed));
+            }
+            catch {
+                stampLocalMetadata = false;
+            }
+        }
+    }
+    if (stampLocalMetadata)
+        kg.updateEntityMetadata(args.name, (current) => buildLocalMetadata(current, {
+            trust: args.trustOverride,
+            provenance: {
+                ...(args.sourceHost && !existing ? { source_host: args.sourceHost } : {}),
+                ...(args.provenanceOverride ?? {}),
+            },
+        }));
     if (replacedVersion) {
         const version = redactVersionText(replacedVersion);
         kg.updateEntityMetadata(args.name, (current) => {

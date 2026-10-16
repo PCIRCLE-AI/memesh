@@ -18,6 +18,7 @@ export declare class KnowledgeGraph {
         namespace?: string;
         title?: string | null;
         trustOverride?: 'trusted' | 'untrusted';
+        reinforceConfidence?: boolean;
     }): number;
     private createEntityInner;
     createEntitiesBatch(entities: CreateEntityInput[]): void;
