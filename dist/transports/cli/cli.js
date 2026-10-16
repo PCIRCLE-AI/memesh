@@ -5700,13 +5700,18 @@ var init_knowledge_graph = __esm({
           if (metaRow?.metadata) {
             try {
               const parsed = JSON.parse(metaRow.metadata);
-              metadata = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+              if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+                throw new Error("metadata is not an object");
+              metadata = parsed;
             } catch {
-              console.error(`MeMesh: healed corrupted metadata for entity ${entityId} during title update.`);
+              metadata = void 0;
+              console.error(`MeMesh: metadata for entity ${entityId} could not be read; left unchanged during title update.`);
             }
           }
-          delete metadata.title_source;
-          this.db.prepare("UPDATE entities SET metadata = ? WHERE id = ?").run(JSON.stringify(metadata), entityId);
+          if (metadata) {
+            delete metadata.title_source;
+            this.db.prepare("UPDATE entities SET metadata = ? WHERE id = ?").run(JSON.stringify(metadata), entityId);
+          }
         }
         const previousNamespace = row.namespace ?? "personal";
         const requestedNamespace = opts?.namespace;
@@ -5729,7 +5734,7 @@ var init_knowledge_graph = __esm({
           const trustFromMetadata = opts?.metadata && typeof opts.metadata === "object" ? opts.metadata.trust : void 0;
           const incomingTrust = opts?.trustOverride ?? trustFromMetadata;
           const isTrusted = incomingTrust === void 0 || incomingTrust === "trusted";
-          if (introducesNewObservation && isTrusted) {
+          if (introducesNewObservation && isTrusted && opts?.reinforceConfidence !== false) {
             this.db.prepare("UPDATE entities SET confidence = MIN(confidence + 0.05, 1.0) WHERE id = ?").run(entityId);
           }
         }
@@ -8102,13 +8107,26 @@ function rememberInTransaction(args, derived, typeGiven, db2, kg) {
     trustOverride: args.trustOverride,
     title
   });
-  kg.updateEntityMetadata(args.name, (current) => buildLocalMetadata(current, {
-    trust: args.trustOverride,
-    provenance: {
-      ...args.sourceHost && !existing ? { source_host: args.sourceHost } : {},
-      ...args.provenanceOverride ?? {}
+  let stampLocalMetadata = true;
+  if (existing && args.title !== void 0 && args.title !== existing.title) {
+    const row = db2.prepare("SELECT metadata FROM entities WHERE name = ?").get(args.name);
+    if (row.metadata) {
+      try {
+        const parsed = JSON.parse(row.metadata);
+        stampLocalMetadata = Boolean(parsed && typeof parsed === "object" && !Array.isArray(parsed));
+      } catch {
+        stampLocalMetadata = false;
+      }
     }
-  }));
+  }
+  if (stampLocalMetadata)
+    kg.updateEntityMetadata(args.name, (current) => buildLocalMetadata(current, {
+      trust: args.trustOverride,
+      provenance: {
+        ...args.sourceHost && !existing ? { source_host: args.sourceHost } : {},
+        ...args.provenanceOverride ?? {}
+      }
+    }));
   if (replacedVersion) {
     const version2 = redactVersionText(replacedVersion);
     kg.updateEntityMetadata(args.name, (current) => {
@@ -26286,6 +26304,10 @@ function setTaskState(input) {
     });
     new KnowledgeGraph(db2).updateEntityMetadata(name, (current) => ({
       ...current,
+      ...input.sourceHost ? { provenance: {
+        ...current.provenance && typeof current.provenance === "object" && !Array.isArray(current.provenance) ? current.provenance : {},
+        source_host: input.sourceHost
+      } } : {},
       task_state: state
     }));
     return { project, state: redactedState(state), changed };

@@ -1108,11 +1108,13 @@ export function detectHookHost(
   if (env.MEMESH_HOOK_HOST === 'claude-code' || env.MEMESH_HOOK_HOST === 'codex') {
     return env.MEMESH_HOOK_HOST;
   }
-  if (env.CODEX_HOME || env.CODEX_SANDBOX || env.CODEX_PLUGIN_ROOT) return 'codex';
+  if (env.CODEX_SANDBOX || env.CODEX_PLUGIN_ROOT) return 'codex';
   const codexPluginRoot = options.pluginRootIsHookRoot
     ?? (!env.CLAUDE_PLUGIN_ROOT || env.CLAUDE_PLUGIN_ROOT === env.PLUGIN_ROOT);
   if (env.PLUGIN_ROOT && codexPluginRoot) return 'codex';
   if (env.CLAUDE_PLUGIN_ROOT || env.CLAUDE_PROJECT_DIR || env.CLAUDECODE) return 'claude-code';
+  // A shell-wide configuration path does not identify the running host.
+  if (env.CODEX_HOME) return 'codex';
   if (env.PLUGIN_ROOT && options.pluginRootIsHookRoot === false) return 'unknown';
   if (payload && typeof payload === 'object') {
     if (typeof payload.transcript_path === 'string' || typeof payload.hook_event_name === 'string') {

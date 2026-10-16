@@ -137,6 +137,7 @@ function rewriteObservations(kg, entity, observations) {
             observations: next,
             tags: entity.tags,
             namespace: entity.namespace,
+            reinforceConfidence: false,
         });
     }).immediate();
 }

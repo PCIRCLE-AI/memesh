@@ -153,6 +153,10 @@ export function setTaskState(input: SetTaskStateInput): SetTaskStateResult {
     // row that does not exist yet, and on a first call it does not.
     new KnowledgeGraph(db).updateEntityMetadata(name, (current) => ({
       ...current,
+      ...(input.sourceHost ? { provenance: {
+        ...(current.provenance && typeof current.provenance === 'object' && !Array.isArray(current.provenance) ? current.provenance : {}),
+        source_host: input.sourceHost,
+      } } : {}),
       task_state: state,
     }));
     return { project, state: redactedState(state), changed };

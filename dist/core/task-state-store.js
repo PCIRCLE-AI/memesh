@@ -67,6 +67,10 @@ export function setTaskState(input) {
         });
         new KnowledgeGraph(db).updateEntityMetadata(name, (current) => ({
             ...current,
+            ...(input.sourceHost ? { provenance: {
+                    ...(current.provenance && typeof current.provenance === 'object' && !Array.isArray(current.provenance) ? current.provenance : {}),
+                    source_host: input.sourceHost,
+                } } : {}),
             task_state: state,
         }));
         return { project, state: redactedState(state), changed };
