@@ -178,10 +178,6 @@ function sourceFiles(root: string = repoRoot): string[] {
   return [
     ...walkSourceFiles(path.join(root, 'src'), ['.ts']),
     ...walkSourceFiles(path.join(root, 'scripts/hooks'), ['.js']),
-    // Round 7: dashboard code reads entity metadata for display too (the
-    // roadmap view filters on `signal_score`) — a dashboard-only authority
-    // key would previously never have been scraped at all.
-    ...walkSourceFiles(path.join(root, 'dashboard/src'), ['.ts', '.tsx']),
   ];
 }
 
@@ -195,16 +191,6 @@ function sourceFiles(root: string = repoRoot): string[] {
  * under the same key name during that round's red/green fixture).
  */
 const SCRAPE_NOISE: ReadonlyArray<{ key: string; file: string; reason: string }> = [
-  {
-    key: 'style',
-    file: 'src/cli/view-live.ts',
-    reason: "`meta` there is a DOM element local variable (`meta.style.cssText = ...`), not an entity's metadata.",
-  },
-  {
-    key: 'textContent',
-    file: 'src/cli/view-live.ts',
-    reason: 'the same DOM element variable (`meta.textContent = ...`).',
-  },
   {
     key: 'type',
     file: 'src/core/note-ingest.ts',
@@ -427,15 +413,6 @@ describe('import metadata classification — every behaviour-reading or metadata
     }
   });
 
-  it('round 7: the walk actually reaches dashboard/src — not just src/ and scripts/hooks/', () => {
-    const found = scrapeMetadataKeys();
-    // `demo` appears inside dashboard/src/lib/i18n.ts's translated help copy
-    // ("Removes everything tagged metadata.demo") — a real file, a real hit,
-    // proof the directory is genuinely walked, not just named in a comment.
-    const demoFiles = found.get('demo');
-    expect(demoFiles?.has('dashboard/src/lib/i18n.ts'), 'the dashboard/src walk is not reaching its files').toBe(true);
-  });
-
   it('every scraped key is classified as IMPORTABLE, AUTHORITY, or documented (key, file)-scoped scan noise — none fall through', () => {
     const found = scrapeMetadataKeys();
     // Round 7: a key already in one of the two real Sets is fully resolved
@@ -541,24 +518,6 @@ describe('import metadata classification — round 9: temp-root regression tests
     );
   });
 
-  it('a dashboard-only key under a temp dashboard/src/ is found — the round-7 regression, now safe', () => {
-    withTempRoot(
-      (root) => {
-        fs.mkdirSync(path.join(root, 'dashboard/src'), { recursive: true });
-        fs.writeFileSync(
-          path.join(root, 'dashboard/src/probe.tsx'),
-          "export function Probe(entity: { metadata?: Record<string, unknown> }) {\n" +
-          "  return entity.metadata?.dashboard_only_key;\n" +
-          "}\n",
-        );
-      },
-      (root) => {
-        const found = scrapeMetadataKeys(root);
-        expect(found.has('dashboard_only_key'), 'a dashboard/src-only key was not found by the scan').toBe(true);
-      },
-    );
-  });
-
   it('a real metadata.type branch at a NEW location is found and is NOT silently suppressed by the (key, file)-scoped noise list — the other round-7 regression, now safe', () => {
     withTempRoot(
       (root) => {
@@ -587,21 +546,18 @@ describe('import metadata classification — round 9: temp-root regression tests
     );
   });
 
-  it('mirrors all three walked roots (src/, scripts/hooks/, dashboard/src/) under one temp tree in a single pass', () => {
+  it('mirrors both walked roots (src/ and scripts/hooks/) under one temp tree in a single pass', () => {
     withTempRoot(
       (root) => {
         fs.mkdirSync(path.join(root, 'src/core'), { recursive: true });
         fs.mkdirSync(path.join(root, 'scripts/hooks'), { recursive: true });
-        fs.mkdirSync(path.join(root, 'dashboard/src'), { recursive: true });
         fs.writeFileSync(path.join(root, 'src/core/x.ts'), "export const a = (e) => e.metadata?.probe_src_root;\n");
         fs.writeFileSync(path.join(root, 'scripts/hooks/y.js'), "module.exports = (e) => e.metadata?.probe_hooks_root;\n");
-        fs.writeFileSync(path.join(root, 'dashboard/src/z.tsx'), "export const c = (e) => e.metadata?.probe_dashboard_root;\n");
       },
       (root) => {
         const found = scrapeMetadataKeys(root);
         expect(found.has('probe_src_root'), 'src/ was not walked under the temp root').toBe(true);
         expect(found.has('probe_hooks_root'), 'scripts/hooks/ was not walked under the temp root').toBe(true);
-        expect(found.has('probe_dashboard_root'), 'dashboard/src/ was not walked under the temp root').toBe(true);
       },
     );
   });

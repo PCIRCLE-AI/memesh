@@ -25,7 +25,7 @@ const baseline = {
 
 describe('current source-backed documentation contracts', () => {
   it('accepts the synchronized current docs', () => {
-    expect(checkCurrentDocumentationContracts(baseline)).toMatchObject({ errors: [], routeCount: 31, webRouteCount: 2, toolCount: 12 });
+    expect(checkCurrentDocumentationContracts(baseline)).toMatchObject({ errors: [], routeCount: 31, webRouteCount: 0, toolCount: 12 });
   });
 
   it.each([
