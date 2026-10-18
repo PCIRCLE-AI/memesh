@@ -174,13 +174,23 @@ fields have no defaults: fill only what should change, leaving blank or omitted
 fields to keep their original values. This option is MCP-only, not part of the
 HTTP schema or its tool export. Submitting saves through the shared
 writer without raising confidence, preserves replacement history, and returns
-`{ status: "saved", memory: { name, project, type, createdAt, title, body } }` from
+`{ status: "saved", memory: { name, project, type, createdAt, title, body, observations } }` from
 the stored result. An unchanged submission returns `unchanged`; Cancel or Decline
 returns `cancelled` and writes nothing. A memory changed during the form is refused
 as `memory_changed`. Oversized or unreadable records are refused without clipping
 or repairing them. Each existing observation has its own field, preserving
 observation boundaries and any internal blank lines. A title-only edit preserves masked observations;
 rewriting text containing hidden content is refused rather than losing it.
+
+Claude Desktop uses inputs inside the Mod pane because its MCP form request can
+return cancelled without displaying a form. The same `remember` tool accepts
+`{ name, project, editor: { action: "prepare" } }`, returning `ready`, a `revision`,
+and the full memory with its observation array, without writing. Saving sends
+`{ name, project, editor: { action: "save", revision, title, observations } }`.
+The revision refuses stale edits; it is not authentication or proof of human input.
+This MCP-only pane path reuses the same ownership, metadata, hidden-content,
+history and confidence checks. Cancel discards the local draft without a save
+call. The terminal Mod and Codex retain the existing `interactive` form path.
 
 Claude Code's `/memesh-memories` Mod searches and displays the current project's memories
 and opens this same editor. Codex reaches it through the existing `remember` MCP

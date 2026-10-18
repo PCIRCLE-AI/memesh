@@ -155,6 +155,77 @@ export declare const TOOL_DEFINITIONS: readonly [{
                 readonly const: true;
                 readonly description: "Open the native human editor for one existing memory: pass only name, interactive: true and optional project. Shows existing text and asks only for changed title/paragraphs; blank fields keep their original values. Only the human form submission saves, cancellation writes nothing, and the result reads back the stored memory. Requires a host supporting MCP form elicitation. Use recall to find and display the memory first.";
             };
+            readonly editor: {
+                readonly description: "For a host pane: prepare returns the full existing text and revision without writing; save sends that revision, title and observations. Stale edits are refused. Uses the same guarded writer and reads back stored text; the revision is a consistency check, not proof of human identity. Do not combine with interactive or ordinary remember fields.";
+                readonly "~standard": z.core.ZodStandardSchemaWithJSON<z.ZodDiscriminatedUnion<[z.ZodObject<{
+                    action: z.ZodLiteral<"prepare">;
+                }, z.core.$strict>, z.ZodObject<{
+                    title: z.ZodString;
+                    observations: z.ZodArray<z.ZodString>;
+                    action: z.ZodLiteral<"save">;
+                    revision: z.ZodString;
+                }, z.core.$strict>], "action">>;
+                readonly $schema?: "https://json-schema.org/draft/2020-12/schema" | "http://json-schema.org/draft-07/schema#" | "http://json-schema.org/draft-04/schema#";
+                readonly $id?: string;
+                readonly $anchor?: string;
+                readonly $ref?: string;
+                readonly $dynamicRef?: string;
+                readonly $dynamicAnchor?: string;
+                readonly $vocabulary?: Record<string, boolean>;
+                readonly $comment?: string;
+                readonly $defs?: Record<string, z.core.JSONSchema.JSONSchema>;
+                readonly type?: "object" | "array" | "string" | "number" | "boolean" | "null" | "integer";
+                readonly additionalItems?: z.core.JSONSchema._JSONSchema;
+                readonly unevaluatedItems?: z.core.JSONSchema._JSONSchema;
+                readonly prefixItems?: z.core.JSONSchema._JSONSchema[];
+                readonly items?: z.core.JSONSchema._JSONSchema | z.core.JSONSchema._JSONSchema[];
+                readonly contains?: z.core.JSONSchema._JSONSchema;
+                readonly additionalProperties?: z.core.JSONSchema._JSONSchema;
+                readonly unevaluatedProperties?: z.core.JSONSchema._JSONSchema;
+                readonly properties?: Record<string, z.core.JSONSchema._JSONSchema>;
+                readonly patternProperties?: Record<string, z.core.JSONSchema._JSONSchema>;
+                readonly dependentSchemas?: Record<string, z.core.JSONSchema._JSONSchema>;
+                readonly propertyNames?: z.core.JSONSchema._JSONSchema;
+                readonly if?: z.core.JSONSchema._JSONSchema;
+                readonly then?: z.core.JSONSchema._JSONSchema;
+                readonly else?: z.core.JSONSchema._JSONSchema;
+                readonly allOf?: z.core.JSONSchema.JSONSchema[];
+                readonly anyOf?: z.core.JSONSchema.JSONSchema[];
+                readonly oneOf?: z.core.JSONSchema.JSONSchema[];
+                readonly not?: z.core.JSONSchema._JSONSchema;
+                readonly multipleOf?: number;
+                readonly maximum?: number;
+                readonly exclusiveMaximum?: number | boolean;
+                readonly minimum?: number;
+                readonly exclusiveMinimum?: number | boolean;
+                readonly maxLength?: number;
+                readonly minLength?: number;
+                readonly pattern?: string;
+                readonly maxItems?: number;
+                readonly minItems?: number;
+                readonly uniqueItems?: boolean;
+                readonly maxContains?: number;
+                readonly minContains?: number;
+                readonly maxProperties?: number;
+                readonly minProperties?: number;
+                readonly required?: string[];
+                readonly dependentRequired?: Record<string, string[]>;
+                readonly enum?: Array<string | number | boolean | null>;
+                readonly const?: string | number | boolean | null;
+                readonly id?: string;
+                readonly title?: string;
+                readonly default?: unknown;
+                readonly deprecated?: boolean;
+                readonly readOnly?: boolean;
+                readonly writeOnly?: boolean;
+                readonly nullable?: boolean;
+                readonly examples?: unknown[];
+                readonly format?: string;
+                readonly contentMediaType?: string;
+                readonly contentEncoding?: string;
+                readonly contentSchema?: z.core.JSONSchema.JSONSchema;
+                readonly _prefault?: unknown;
+            };
             readonly title: {
                 readonly type: "string";
                 readonly description: "Short human-readable label for this memory (e.g. \"Use PKCE over implicit flow for auth\"), distinct from name (which stays a stable machine key). Shown as the headline in the dashboard and in memory recalled by an agent, instead of the raw name. Reusing an existing name with a different title UPDATES the title; omit to leave an existing title untouched.";
@@ -233,6 +304,8 @@ export declare const TOOL_DEFINITIONS: readonly [{
                     readonly const: true;
                 };
             };
+        }, {
+            readonly required: readonly ["name", "editor"];
         }];
     };
 }, {

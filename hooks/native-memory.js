@@ -13,6 +13,7 @@ let project;
 let folder;
 let memories = [];
 let selected;
+let draft;
 let busy = false;
 // tone is undefined (plain), 'success' or 'error'; the words carry the meaning, colour only confirms it.
 let notice = { text: '' };
@@ -39,6 +40,7 @@ const run = async ($, action) => {
 const search = ($, value) => run($, async () => {
   query = value;
   selected = undefined;
+  draft = undefined;
   const result = await call($, 'recall', { query, limit: 5 });
   project = result.scope?.project;
   // The first slice edits only the current project, never an implicitly selected global memory.
@@ -59,6 +61,25 @@ const edit = $ => run($, async () => {
     // Closing the form hands the keys to the prompt, whatever it ended in; ask for them back for the pane.
     await $.ui.open(OPEN);
   }
+});
+const editInPane = $ => run($, async () => {
+  const result = await call($, 'remember', { name: selected.name, project, editor: { action: 'prepare' } });
+  selected = { ...selected, ...result.memory, truncated: undefined };
+  draft = { revision: result.revision, memory: result.memory, title: '', observations: result.memory.observations.map(() => '') };
+});
+const saveInPane = $ => run($, async () => {
+  const { memory, revision, title, observations } = draft;
+  const result = await call($, 'remember', { name: memory.name, project, editor: {
+    action: 'save', revision,
+    title: title.trim() ? title : memory.title,
+    observations: observations.map((text, index) => text.trim() ? text : memory.observations[index]),
+  } });
+  selected = { ...selected, ...result.memory, truncated: undefined };
+  memories = memories.map(memory => memory.name === selected.name ? selected : memory);
+  draft = undefined;
+  notice = result.status === 'saved'
+    ? { text: '✓ Saved. Below is the text read back from the database.', tone: 'success' }
+    : { text: 'Nothing changed, so nothing was saved.' };
 });
 
 export function register(on) {
@@ -94,18 +115,37 @@ export function register(on) {
       ...(selected ? [] : [hint(folder.replace(/^\/(Users|home)\/[^/]+/, '~'))]),
     ];
     const source = selected?.metadata?.provenance?.source_host;
+    const updateTitle = value => { if (!busy && draft) draft.title = value; };
     const detail = selected && [
       Text({ children: [selected.title || typeName(selected)], bold: true }),
       Text({ children: [`${typeName(selected)} · created ${day(selected)} · `,
         source ? Text({ children: [`written by ${HOST_NAMES[source] || source}`] }) : Text({ children: ['source not recorded'], color: 'warning' })], dimColor: true }),
       // Actions sit above the text: a pane is only so tall, and a long memory would push them out of view.
-      Box({ flexDirection: 'row', gap: 2, marginTop: 1, children: [
+      Box({ flexDirection: 'row', gap: 2, marginTop: 1, children: draft ? [
+        Button({ key: 'memesh-save', label: 'Save changes', hotkey: 's', variant: 'primary', onPress: () => { void saveInPane($); } }),
+        Button({ key: 'memesh-cancel', label: 'Cancel', hotkey: 'c', onPress: () => {
+          if (!busy) { draft = undefined; notice = { text: 'Cancelled. Your edits were not saved.' }; redraw(); }
+        } }),
+      ] : [
         // The form waits on a person; a press hook has 10 seconds, so the edit runs on and redraws when it settles.
-        Button({ key: 'memesh-edit', label: 'Edit this memory', hotkey: 'e', variant: 'primary', onPress: () => { void edit($); } }),
+        Button({ key: 'memesh-edit', label: 'Edit this memory', hotkey: 'e', variant: 'primary', onPress: () => {
+          if (event.surface === 'desktop') void editInPane($);
+          else void edit($);
+        } }),
         Button({ key: 'memesh-back', label: 'Back to list', hotkey: 'b', onPress: () => { if (!busy) { selected = undefined; notice = { text: '' }; redraw(); } } }),
       ] }),
-      hint('e edit · b back to list · Esc close'),
-      hint('Edit opens a form: fill in only what you want to change, blank keeps the original; Accept saves, Esc cancels.'),
+      hint(draft ? 'Fill only what you want to change; blank keeps the original. Save changes or Cancel above.'
+        : event.surface === 'desktop' ? 'e edit in this pane · b back to list · Esc close'
+          : 'e edit · b back to list · Esc close'),
+      ...(!draft && event.surface !== 'desktop' ? [hint('Edit opens a form: fill in only what you want to change, blank keeps the original; Accept saves, Esc cancels.')] : []),
+      ...(draft ? [
+        Input({ key: 'memesh-title', label: 'New title (blank keeps original)', value: draft.title, autoFocus: true, submitLabel: 'keep editing',
+          onInput: updateTitle, onSubmit: updateTitle }),
+        ...draft.observations.map((text, index) => {
+          const update = value => { if (!busy && draft) draft.observations[index] = value; };
+          return Input({ key: `memesh-paragraph-${index}`, label: `Paragraph ${index + 1} (blank keeps original)`, value: text, submitLabel: 'keep editing', onInput: update, onSubmit: update });
+        }),
+      ] : []),
       Box({ borderStyle: 'round', borderDimColor: true, paddingX: 1, children: [Text({ children: [selected.observations.join('\n\n')] })] }),
       ...(selected.truncated ? [hint('Only part is shown here; Edit loads the full text.')] : []),
     ];
@@ -119,8 +159,8 @@ export function register(on) {
       : [];
     return Box({ flexDirection: 'column', children: [
       ...(where || []),
-      Box({ marginTop: 1, children: [Input({ key: 'memesh-search', label: 'Search', placeholder: 'type words and press Enter; leave empty for recent memories', value: query, submitLabel: 'search',
-        onInput: value => { query = value; }, onSubmit: value => search($, value) })] }),
+      ...(!draft ? [Box({ marginTop: 1, children: [Input({ key: 'memesh-search', label: 'Search', placeholder: 'type words and press Enter; leave empty for recent memories', value: query, submitLabel: 'search',
+        onInput: value => { query = value; }, onSubmit: value => search($, value) })] })] : []),
       // Status sits above the results for the same reason as the actions.
       ...(busy || notice.text ? [Text({ children: [busy ? 'Working…' : notice.text], ...(notice.tone && !busy ? { color: notice.tone } : { dimColor: true }) })] : []),
       ...(!busy && notice.detail ? [hint(notice.detail)] : []),

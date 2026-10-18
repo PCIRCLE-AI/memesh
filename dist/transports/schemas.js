@@ -124,6 +124,18 @@ export const NativeMemoryEditFieldsSchema = z.object({
     observations: z.array(z.string().max(16_000).refine(s => s.trim().length > 0, 'Memory text must not be empty'))
         .min(1).max(100).refine(items => items.join('\n\n').length <= 16_000, 'Memory text exceeds 16000 characters'),
 }).strict();
+export const PaneMemoryEditorSchema = z.object({
+    name: nameField,
+    project: mcpProjectField,
+    editor: z.discriminatedUnion('action', [
+        z.object({ action: z.literal('prepare') }).strict(),
+        z.object({
+            action: z.literal('save'),
+            revision: z.string().regex(/^[a-f0-9]{64}$/),
+            ...NativeMemoryEditFieldsSchema.shape,
+        }).strict(),
+    ]),
+}).strict();
 const recallShape = {
     query: z.string().max(1000).optional(),
     tag: z.string().max(255).optional(),

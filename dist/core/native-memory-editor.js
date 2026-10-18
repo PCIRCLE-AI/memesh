@@ -3,7 +3,7 @@ import { getDatabase } from '../db.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { projectOwnershipRefusal } from '../storage/memory-mutation.js';
 import { remember, shownEntity } from './operations.js';
-export async function editMemoryInteractively(name, project, sourceHost, ask) {
+export async function editMemoryInteractively(name, project, sourceHost, ask, expectedRevision) {
     const db = getDatabase();
     const kg = new KnowledgeGraph(db);
     const snapshot = () => {
@@ -30,11 +30,14 @@ export async function editMemoryInteractively(name, project, sourceHost, ask) {
         return { entity, revision };
     };
     const before = snapshot();
+    if (expectedRevision !== undefined && expectedRevision !== before.revision) {
+        throw new Error('memory_changed: Reload this memory before saving; your edit was not applied.');
+    }
     const viewOf = (entity) => {
         const shown = shownEntity(entity);
         return {
             name: shown.name, project, type: shown.type, createdAt: shown.created_at,
-            title: shown.title ?? '', body: shown.observations.join('\n\n'),
+            title: shown.title ?? '', body: shown.observations.join('\n\n'), observations: shown.observations,
         };
     };
     const view = viewOf(before.entity);
@@ -43,6 +46,8 @@ export async function editMemoryInteractively(name, project, sourceHost, ask) {
     }
     const shownObservations = shownEntity(before.entity).observations;
     const fields = await ask(view, shownObservations);
+    if (fields === undefined)
+        return { status: 'ready', memory: view, revision: before.revision };
     if (fields === null)
         return { status: 'cancelled', memory: view };
     return db.transaction(() => {

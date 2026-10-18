@@ -12,7 +12,7 @@ import { getTaskState, setTaskState } from '../../core/task-state-store.js';
 import { getProductImprovementStatus, stageProductImprovement, } from '../../core/product-improvements.js';
 import { executeAgentMessageAction } from '../agent-messaging.js';
 import { hostSessionFromEnv } from '../../core/host-session.js';
-import { McpRememberSchema, McpRecallSchema, ForgetSchema, BriefingSchema, ExportSchema, ImportSchema, McpLearnSchema, TaskStateSchema, UserPatternsSchema, ImprovementSchema, MessageSchema, WorkPackageSchema, NativeMemoryEditorSchema, NativeMemoryEditFieldsSchema, } from '../schemas.js';
+import { McpRememberSchema, McpRecallSchema, ForgetSchema, BriefingSchema, ExportSchema, ImportSchema, McpLearnSchema, TaskStateSchema, UserPatternsSchema, ImprovementSchema, MessageSchema, WorkPackageSchema, NativeMemoryEditorSchema, NativeMemoryEditFieldsSchema, PaneMemoryEditorSchema, } from '../schemas.js';
 import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../../core/agent-messaging.js';
 import { getProjectName, memeshDir } from '../../core/paths.js';
 import { updateNoticeForEntryPoint, updateCheckEnabledIn } from '../../core/update-entrypoint.js';
@@ -95,6 +95,10 @@ export const TOOL_DEFINITIONS = [
                     const: true,
                     description: 'Open the native human editor for one existing memory: pass only name, interactive: true and optional project. Shows existing text and asks only for changed title/paragraphs; blank fields keep their original values. Only the human form submission saves, cancellation writes nothing, and the result reads back the stored memory. Requires a host supporting MCP form elicitation. Use recall to find and display the memory first.',
                 },
+                editor: {
+                    ...z.toJSONSchema(PaneMemoryEditorSchema.shape.editor),
+                    description: 'For a host pane: prepare returns the full existing text and revision without writing; save sends that revision, title and observations. Stale edits are refused. Uses the same guarded writer and reads back stored text; the revision is a consistency check, not proof of human identity. Do not combine with interactive or ordinary remember fields.',
+                },
                 title: {
                     type: 'string',
                     description: 'Short human-readable label for this memory (e.g. "Use PKCE over implicit flow for auth"), distinct from name (which stays a stable machine key). Shown as the headline in the dashboard and in memory recalled by an agent, instead of the raw name. Reusing an existing name with a different title UPDATES the title; omit to leave an existing title untouched.',
@@ -149,6 +153,7 @@ export const TOOL_DEFINITIONS = [
                 { required: ['name', 'type'] },
                 { required: ['name', 'replace', 'observations'], properties: { replace: { const: true }, observations: { minItems: 1 } } },
                 { required: ['name', 'interactive'], properties: { interactive: { const: true } } },
+                { required: ['name', 'editor'] },
             ],
         },
     },
@@ -508,6 +513,16 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
             return result.status === 'error' ? { ...ok(result), isError: true } : ok(result);
         }
         if (name === 'remember') {
+            if (args?.editor !== undefined) {
+                const r = parseOrFail(PaneMemoryEditorSchema, args);
+                if (!r.ok)
+                    return r.result;
+                const resolved = writeProject(r.data.project, undefined, requestContext);
+                if ('result' in resolved)
+                    return resolved.result;
+                const editor = r.data.editor;
+                return ok(await editMemoryInteractively(r.data.name, resolved.project ?? null, sourceHost, async () => editor.action === 'prepare' ? undefined : { title: editor.title, observations: editor.observations }, editor.action === 'save' ? editor.revision : undefined));
+            }
             if (args?.interactive === true) {
                 const r = parseOrFail(NativeMemoryEditorSchema, args);
                 if (!r.ok)
