@@ -1,11 +1,6 @@
 {
   "comment": "Recorded triage, not suppression: every entry is a hit somebody classified, with the reason. New hits fail the audit until they are fixed or land here with a classification. Full detail: the 2026-08-04 triage (two agent passes, lead-verified).",
   "hits": {
-    "C6 tests/dashboard/readability.test.ts": {
-      "class": "WIRING-PIN",
-      "reason": "Source-only typography and palette guard, explicitly not rendered usability evidence. Controlled old palette and inline font failures establish sensitivity; independent browser review separately exercises computed contrast, clipping and responsive layout.",
-      "triaged": "2026-09-08"
-    },
     "C4 .github/workflows/ci.yml:222": {
       "class": "SAFE-CAPTURED-EXIT",
       "reason": "The doctor exit code is captured and rejected before this grep; the grep is an additional content assertion, not the verdict owner.",
@@ -161,16 +156,6 @@
       "reason": "retired message lives in RETIRED_ROUTES; remaining source asserts pin the wiring, behavior tested via route test",
       "triaged": "2026-08-04"
     },
-    "C6 tests/dashboard/component-contracts.test.tsx": {
-      "class": "DATA-EXTRACTION",
-      "reason": "reads i18n.ts to build the key catalogue, not to assert text-as-behavior",
-      "triaged": "2026-08-04"
-    },
-    "C6 tests/dashboard-i18n.test.ts": {
-      "class": "DATA-EXTRACTION",
-      "reason": "cross-checks key usage between components and catalogue",
-      "triaged": "2026-08-04"
-    },
     "C6 tests/hooks/hook-fts-migration.test.ts": {
       "class": "WIRING-PIN",
       "reason": "parity pin that core and hook mirror share the classifier; behavior tested in the same file",
@@ -236,35 +221,10 @@
       "reason": "the `toEqual([])` assertions on `actions` are each pinned by non-empty counterparts asserting exact action kinds and arg arrays; emptiness is the positive claim (nothing to prescribe on a wired host), not vacuity.",
       "triaged": "2026-08-16 (P1 memesh setup; re-applied after merge took main baseline)"
     },
-    "C5 dashboard/src/components/LessonCards.tsx:71": {
-      "class": "SAFE-DISPLAY",
-      "reason": "display fallbacks; empty renders an explicit notice",
-      "triaged": "2026-08-16 (tab consolidation: statement moved verbatim from the retired LessonsTab/BrowseTab; original triage 2026-08-04); re-keyed 2026-10-05 59->71"
-    },
-    "C5 dashboard/src/components/LessonCards.tsx:101": {
-      "class": "SAFE-DISPLAY",
-      "reason": "display fallbacks; empty renders an explicit notice",
-      "triaged": "2026-08-16 (tab consolidation: statement moved verbatim from the retired LessonsTab/BrowseTab; original triage 2026-08-04); re-keyed 2026-10-05 80->101"
-    },
-    "C5 dashboard/src/components/LessonCards.tsx:132": {
-      "class": "SAFE-DISPLAY",
-      "reason": "display fallbacks; empty renders an explicit notice",
-      "triaged": "2026-08-16 (tab consolidation: statement moved verbatim from the retired LessonsTab/BrowseTab; original triage 2026-08-04); re-keyed 2026-10-05 111->132"
-    },
-    "C5 dashboard/src/components/LessonCards.tsx:172": {
-      "class": "SAFE-DISPLAY",
-      "reason": "display fallbacks; empty renders an explicit notice",
-      "triaged": "2026-08-16 (tab consolidation: statement moved verbatim from the retired LessonsTab/BrowseTab; original triage 2026-08-04); re-keyed 2026-10-05 150->172"
-    },
     "C5 src/core/work-topology.ts:736": {
       "class": "SAFE-BY-CONSTRUCTION",
       "reason": "`line.match(/`+/g) ?? []` in buildReferenceContext, moved verbatim from scripts/hooks/_shared.js (which the C5 scan does not cover) so the MCP briefing surface shares the hook's fence. match() returns null when a line contains no backtick run; the empty list truthfully means 'no backticks', and the fence floor Math.max(3, longestRun + 1) still applies. Pinned by tests/hooks/reference-context-fence.test.ts, which feeds lines WITH backtick runs and asserts the fence outruns them.",
       "triaged": "2026-08-16 (A1c briefing); re-keyed 2026-09-20 386→468 (#360: assembleTopologyBlock/budget consts, citation-handle additions, issue-242 global-section additions, and hasBriefingContent all added above buildReferenceContext across several commits; statement byte-identical, classification unchanged); re-keyed 2026-09-24 468→473 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-24 473→598 (#434 step 3: decision/budget helpers added above; statement byte-identical); re-keyed 2026-09-25 598→604 (LESSON_TYPE_LIST export, #443); re-keyed 2026-09-26 604→626 (#451: canonicalEntityType added above LESSON_TYPE_LIST; statement byte-identical); re-keyed 2026-09-27 626→631 (#374: the control-character strip (stripControlChars) and its call sites added above longestRun; statement byte-identical); re-keyed 2026-09-27 631→633 (#409: the routing-hash strip added above in topologyLine; statement byte-identical); re-keyed 2026-10-04 633→641 (M2-a: the noProject entity flag, pool flag and section added above; statement byte-identical) Re-keyed 2026-10-06: decision `why` lines added above; statement byte-identical. Re-keyed 2026-10-06 679→734 (decision reason: utcEpoch, unconfirmedDaysSince, restatesWhy and the reason-first line budget added above; statement byte-identical). Re-keyed 2026-10-07 734→736 (section heading budget fix above; statement byte-identical, detector and classification unchanged)."
-    },
-    "C1 tests/dashboard/ProjectTab.select.test.ts": {
-      "class": "SAFE",
-      "reason": "the empty-result assertions ARE the contract under test (archived pointer readmits nothing), and every scenario pairs them with positive name-list assertions",
-      "triaged": "2026-08-16 (UX-3 readmission rule)"
     },
     "C3 scripts/wait-for-checks.mjs": {
       "class": "NOT-A-GATE",
@@ -321,36 +281,6 @@
       "reason": "ACP child argv is optional by API contract; absence truthfully means launch the configured executable with zero arguments. Every supplied argument and the aggregate argv are independently bounded before spawn.",
       "triaged": "2026-08-27 host-native push release audit; re-keyed 2026-10-06 after merging main (statement unchanged)"
     },
-    "C5 dashboard/src/components/MemoriesTab.tsx:263": {
-      "class": "SAFE-DISPLAY",
-      "reason": "client-side search haystack only (absorbs the retired BrowseTab:169 and LessonsTab:298 hay statements) (re-keyed 244→242 on 2026-08-29; 242→243 on 2026-09-08 after ranked-search exit state moved above; 243→250 on 2026-09-28 after the #493 project-chip-label memo was added above; line shift only, classification unchanged)",
-      "triaged": "2026-08-16 (tab consolidation: statement moved verbatim from the retired LessonsTab/BrowseTab; original triage 2026-08-04); re-keyed 2026-08-16 (UX-3: local CLUSTER_DOT block removed above, statement unchanged — verified); re-keyed 2026-09-08 after ranked-search exit state moved above, statement unchanged — verified; re-keyed 2026-09-28 (#493: projectChipText memo added above, statement unchanged — verified); re-keyed 2026-10-05 250->263"
-    },
-    "C5 dashboard/src/components/ProjectRoadmap.tsx:363": {
-      "class": "SAFE-DISPLAY",
-      "reason": "`e.relations ?? []` while collecting lineage edges — relations are optional on the wire; absence draws no arc and the visible legend counts only DRAWN arcs, so missing input yields visible emptiness, not claimed success. (re-keyed 342→346 on 2026-08-29; line shift only, classification unchanged)",
-      "triaged": "2026-08-16 (UX-3 lineage overlay); re-keyed 2026-09-24 346→347 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-28 347→347 (#493: header span byte-identical; net-zero churn during review); re-keyed 2026-10-05 347->363"
-    },
-    "C5 dashboard/src/components/ProjectRoadmap.tsx:1092": {
-      "class": "SAFE-DISPLAY",
-      "reason": "`e.relations ?? []` building the reverse supersession index in DecisionsView — no relations means no chain lines render; status falls back to active only when NO supersedes edge points at the entity anywhere in the set. (re-keyed 1065→1070 on 2026-08-29; line shift only, classification unchanged)",
-      "triaged": "2026-08-16 (UX-3 ADR view); re-keyed 2026-09-24 1070→1071 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-28 1071→1072 (#493: header span import above, comment dedup below; net +1; statement byte-identical); re-keyed 2026-10-05 1074->1092"
-    },
-    "C5 dashboard/src/components/ProjectRoadmap.tsx:1094": {
-      "class": "SAFE-DISPLAY",
-      "reason": "`m.get(r.to) ?? []` — standard multimap-append idiom inside the reverse index build; the default is the empty bucket being created, not a masked failure. (re-keyed 1067→1072 on 2026-08-29; line shift only, classification unchanged)",
-      "triaged": "2026-08-16 (UX-3 ADR view); re-keyed 2026-09-24 1068→1069 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-28 1069→1074 (#493: header span import above, comment dedup below; net +5; statement byte-identical); re-keyed 2026-10-05 1076->1094"
-    },
-    "C5 dashboard/src/components/ProjectRoadmap.tsx:1125": {
-      "class": "SAFE-DISPLAY",
-      "reason": "`supersededBy.get(e.name) ?? []` — a decision nothing points at is genuinely unreplaced; the empty default is the honest answer and renders as status \"active\", which is the documented two-state contract. (re-keyed 1098→1103 on 2026-08-29; line shift only, classification unchanged)",
-      "triaged": "2026-08-16 (UX-3 ADR view); re-keyed 2026-09-24 1101→1102 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-28 1102→1105 (#493: header span import + comment dedup above; net +3; statement byte-identical); re-keyed 2026-10-05 1107->1125"
-    },
-    "C5 dashboard/src/components/ProjectRoadmap.tsx:1129": {
-      "class": "SAFE-DISPLAY",
-      "reason": "`(e.relations ?? []).filter` listing outgoing supersedes chain lines — absence renders no chain section at all rather than an empty claim. (re-keyed 1102→1107 on 2026-08-29; line shift only, classification unchanged)",
-      "triaged": "2026-08-16 (UX-3 ADR view); re-keyed 2026-09-24 1105→1106 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-28 1106→1109 (#493: header span import + comment dedup above; net +3; statement byte-identical); re-keyed 2026-10-05 1111->1129"
-    },
     "C1 tests/cli/briefing-recipient.test.ts": {
       "class": "SAFE-HEURISTIC-FALSE-POSITIVE",
       "reason": "The detector's `.toBe(0)` matches successful CLI exit-status assertions, not empty collections. The test separately pins generic briefing suppression, exact recipient/project output, and exclusion of the other recipient.",
@@ -360,31 +290,6 @@
       "class": "SAFE",
       "reason": "Per-issue focused runner for the completion-gate review contract, which accepts an exact declared `npm run test:*` argv. Nothing in CI references it by design: all four test files it names are already inside the default test run, so the script adds a bounded replay entry point rather than separate coverage.",
       "triaged": "2026-08-31 issue #267 audit"
-    },
-    "C3 npm:test:issue-224": {
-      "class": "SAFE",
-      "reason": "Per-issue focused runner for the completion-gate review contract, which only accepts an exact declared `npm run test:*` argv. Nothing in CI references it by design: every test file it names is already inside the default `tests/` run, so the script adds a bounded replay entry point, not coverage. All 9 referenced files were confirmed present on 2026-08-29.",
-      "triaged": "2026-08-29 v4.8.2 dashboard issue sweep"
-    },
-    "C3 npm:test:issue-227": {
-      "class": "SAFE",
-      "reason": "Per-issue focused runner for the completion-gate review contract, which only accepts an exact declared `npm run test:*` argv. Nothing in CI references it by design: every test file it names is already inside the default `tests/` run, so the script adds a bounded replay entry point, not coverage. All 9 referenced files were confirmed present on 2026-08-29.",
-      "triaged": "2026-08-29 v4.8.2 dashboard issue sweep"
-    },
-    "C3 npm:test:issue-228": {
-      "class": "SAFE",
-      "reason": "Per-issue focused runner for the completion-gate review contract, which only accepts an exact declared `npm run test:*` argv. Nothing in CI references it by design: every test file it names is already inside the default `tests/` run, so the script adds a bounded replay entry point, not coverage. All 9 referenced files were confirmed present on 2026-08-29.",
-      "triaged": "2026-08-29 v4.8.2 dashboard issue sweep"
-    },
-    "C3 npm:test:issue-229": {
-      "class": "SAFE",
-      "reason": "Per-issue focused runner for the completion-gate review contract, which only accepts an exact declared `npm run test:*` argv. Nothing in CI references it by design: every test file it names is already inside the default `tests/` run, so the script adds a bounded replay entry point, not coverage. All 9 referenced files were confirmed present on 2026-08-29.",
-      "triaged": "2026-08-29 v4.8.2 dashboard issue sweep"
-    },
-    "C3 npm:test:issue-230": {
-      "class": "SAFE",
-      "reason": "Per-issue focused runner for the completion-gate review contract, which only accepts an exact declared `npm run test:*` argv. Nothing in CI references it by design: every test file it names is already inside the default `tests/` run, so the script adds a bounded replay entry point, not coverage. All 9 referenced files were confirmed present on 2026-08-29.",
-      "triaged": "2026-08-29 v4.8.2 dashboard issue sweep"
     },
     "C3 npm:audit:memory": {
       "class": "SAFE",
@@ -400,16 +305,6 @@
       "class": "SAFE",
       "reason": "emptiness assertions (non-target tool, malformed JSON, rate-limited second call emit nothing) are paired in the same file with positive assertions that ExitPlanMode and AskUserQuestion emit the nudge line; the mutation that disables the rate limit turns the emptiness test red",
       "triaged": "2026-09-02"
-    },
-    "C3 scripts/qa/verify-dashboard-doctor-banner-i18n.mjs": {
-      "class": "NOT-A-GATE",
-      "reason": "real-browser (real HTTP server + real Chromium) verification that the dashboard doctor banner renders correctly translated across all 11 locales, for evidence-gates output_readback/process_boundary/failure_path evidence -- invoked directly by `eg record`, not by any npm script or CI workflow. A human or eg re-runs it on demand when the dashboard i18n catalogue changes; it does not gate a commit or a release on its own.",
-      "triaged": "2026-09-03"
-    },
-    "C3 scripts/qa/verify-dashboard-mcp-config-banner-i18n.mjs": {
-      "class": "NOT-A-GATE",
-      "reason": "real-browser (real HTTP server + real Chromium) verification that the dashboard doctor banner renders the mcp-config.placeholder-unresolved (quiet) and mcp-config.missing (translated banner) states correctly across all 11 locales, for evidence-gates output_readback/process_boundary/failure_path evidence -- invoked directly by `eg record`, not by any npm script or CI workflow. Renamed from verify-dashboard-doctor-banner-i18n.mjs during a rebase over PR #293, which already claimed that filename for its own llm-telemetry.silent-failure banner script -- distinct doctor codes, distinct files. A human or eg re-runs it on demand when the dashboard i18n catalogue changes; it does not gate a commit or a release on its own.",
-      "triaged": "2026-09-04"
     },
     "C1 tests/upgrade-plugin-cache-sweep.test.ts": {
       "class": "SAFE",
@@ -440,21 +335,6 @@
       "class": "SAFE",
       "reason": "Every emptiness assertion is paired in the same test with a positive readback: the stale-marker test asserts UP_TO_DATE first and then that the marker file is gone; the claim test asserts the first claimant received {from,to} before the second gets null and the directory listing is empty; the corrupt-snooze test writes the bad bytes it expects to be rejected; the refresh-policy test asserts true and false on both sides of each TTL.",
       "triaged": "2026-09-10 #308 update-notice resolver"
-    },
-    "C5 dashboard/src/lib/entity-display.ts:253": {
-      "class": "SAFE-DISPLAY",
-      "reason": "classification falls through to the freeform bucket",
-      "triaged": "2026-08-04; re-keyed 2026-08-14 (displayTitle helper added above; same statement — verified); re-keyed 2026-08-16 (UX-3: CLUSTER_DOT block added above; same statement — verified); re-keyed 2026-09-10 (#237: relationLabel removed above; same statement — verified); re-keyed 2026-09-24 191→192 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-28 192→245 (#493: projectChipLabels + shortProjectId added above, doc trimmed same day; net +53; statement byte-identical); re-keyed 2026-10-05 245->253"
-    },
-    "C5 dashboard/src/lib/entity-display.ts:255": {
-      "class": "SAFE-DISPLAY",
-      "reason": "classification falls through to the freeform bucket",
-      "triaged": "2026-08-04; re-keyed 2026-08-14 (displayTitle helper added above; same statement — verified); re-keyed 2026-08-16 (UX-3: CLUSTER_DOT block added above; same statement — verified); re-keyed 2026-09-10 (#237: relationLabel removed above; same statement — verified); re-keyed 2026-09-24 193→194 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-28 194→247 (#493: projectChipLabels + shortProjectId added above, doc trimmed same day; net +53; statement byte-identical); re-keyed 2026-10-05 247->255"
-    },
-    "C5 dashboard/src/components/ProjectTab.tsx:54": {
-      "class": "SAFE-DISPLAY",
-      "reason": "`e.relations ?? []` in selectProjectEntities — an entity without relations simply readmits nothing; the readmission rule is pinned by tests/dashboard/ProjectTab.select.test.ts including the no-relations path. (re-keyed 43→44 on 2026-08-29; line shift only, classification unchanged)",
-      "triaged": "2026-08-16 (UX-3 readmission rule); re-keyed 2026-09-10 (#237: Fragment import added above; same statement — verified); re-keyed 2026-10-05 45->54"
     },
     "C1 tests/cli/remember-plain-project-tag.test.ts": {
       "class": "SAFE",
@@ -655,6 +535,10 @@
       "class": "SAFE-OPTIONAL-COLLECTION",
       "reason": "KnowledgeGraph.getEntity returns relations: undefined only when its successful SQL relation query has zero rows. This internal known-empty set is used solely for append dedupe; a SQL read failure still throws and is reported by import. Any incoming relation absent from the set prevents addsNothing and is queued only after the entity transaction commits. Relation-only and text-plus-relation imports across CLI/MCP/HTTP, repeated-import no-change, and readonly refusal retain direct source/installed evidence. No malformed bundle, failed read or pending incoming relation is converted into silent success.",
       "triaged": "2026-10-08 (#594 append relation restore): optional internal collection contract at knowledge-graph.ts:868/878; existing empty relation set, not input validation or read-failure suppression."
+    },
+    "C7 README.md:80": {
+      "classification": "gated",
+      "reason": "Existing check-doc-claims.mjs derives the intent-language count from INTENT_PATTERNS; UI retirement removes the same-line tabs/languages phrase, not the intent hook or its source-backed check."
     }
   }
 }

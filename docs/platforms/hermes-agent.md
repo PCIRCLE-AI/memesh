@@ -59,7 +59,7 @@ contract):
 Automatic writes go through the `memesh` CLI rather than `POST /v1/remember`
 because the HTTP route stamps everything it writes
 `metadata.provenance.source_host: "http"`; the CLI path stamps `"hermes"`, so
-the dashboard can tell Hermes memories from Claude Code or Codex ones. The
+clients can distinguish Hermes memories from Claude Code or Codex ones. The
 payload travels on stdin, never argv. Consequence: the CLI and `memesh serve`
 must open the same database — true by default when both run as the same user
 on the same machine, not true if `base_url` points at another host. Every

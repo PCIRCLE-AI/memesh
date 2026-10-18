@@ -17,26 +17,22 @@ Treat this as a single-context repo: one product, one domain vocabulary, which
 is why a single glossary fits. The layout underneath that is not uniform, and an
 agent enumerating source files will miss code if it assumes it is. There is no
 npm workspace — the root `package.json` has no `workspaces` field — and code
-lives in four differently-shaped places, **only three of which a
+lives in three differently-shaped places, **only two of which a
 `package.json`-or-`src/` sweep will find**:
 
 | Where | Shape |
 |---|---|
 | repository root | `package.json`; code in `src/`, `scripts/`, `tests/`, `benchmarks/`, and two root config files |
-| `dashboard/` | its own `package.json`, sources in `dashboard/src/`, built into `dashboard/dist/` |
 | `extensions/memory-memesh/` | its own `package.json`, TypeScript at the directory root (`index.ts`, `config.ts`) — **no `src/`** |
 | `extensions/hermes-memesh/` | Python: `__init__.py` and `plugin.yaml`, **no `package.json` at all** |
 
-The fourth row is the one the sweep misses, and it is why this table exists.
+The Python row is the one the sweep misses, and it is why this table exists.
 
 For the root row, the scripts in `package.json` are the authority on which of
 those directories is first-class, and they disagree slightly, so read both:
-`lint` selects tracked files under `src/ scripts/ tests/ dashboard/src/`, and
-`typecheck` runs both `tsconfig.check.json` and `tsconfig.check-dashboard.json`.
-The first covers root TypeScript source, `.ts` tests outside `tests/dashboard/`,
-and root `*.config.ts`; the second covers dashboard source, `.tsx` tests, and
-the dashboard's `.ts` tests. Read both configurations for the current file
-scope instead of relying on a fixed file count. `benchmarks/` is checked by
+`lint` selects tracked files under `src/ scripts/ tests/`, and
+`typecheck` uses `tsconfig.check.json` for source, tests and root configuration.
+Read the configuration for the current scope rather than a fixed file count. `benchmarks/` is checked by
 neither script, and `eslint.config.js` is checked by neither either: it is
 `.js`, so the `*.config.ts` glob misses it, and `lint`'s path list never
 reaches the repository root. `dist/` holds the largest file count here and is

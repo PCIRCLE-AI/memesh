@@ -6,9 +6,15 @@ are not part of a published npm release yet.
 
 ## [Unreleased]
 
+## [4.11.0] — 2026-10-19
+
+### Added
+
 - Add a minimal Claude Code Mod and optional native `remember` editor for MCP form-capable hosts: view project memory, cancel without writing, or save through the existing writer and read the result back.
 
 ### Changed
+
+- Removed the standalone Web Dashboard, legacy HTML fallback and their build/test dependencies. `memesh serve` retains the HTTP API; `/dashboard` no longer serves a UI. Claude Code and Claude Desktop Code use the Mod, while Codex uses MCP/native forms.
 
 - Simplified the English and Traditional Chinese getting-started guides. Corrected API examples, integration prerequisites, and historical benchmark labels.
 

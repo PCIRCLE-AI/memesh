@@ -1,7 +1,7 @@
 # MeMesh Plugin -- API Reference
 
 **Protocol**: Model Context Protocol (MCP) over stdio
-**Version**: 4.10.12
+**Version**: 4.11.0
 **Compatibility**: Claude Code, Codex, and other MCP clients that can launch the local stdio server. Hosted chat products need a separate bridge; they do not connect to this local server automatically.
 
 **Native Integrations**: Beyond MCP, MeMesh integrates as a native memory provider for Hermes Agent (Python `MemoryProvider` plugin). A source-only OpenClaw TypeScript memory-capability plugin is also included, but it is not published or live-tested. Neither path is an HTTP bridge. See [docs/platforms/](../platforms/) for platform-specific guides.
@@ -53,7 +53,7 @@ Two forms. **Structured**: `name` + `type`, with `title` / `observations`. **Not
 - `name` (when absent) = slug of the title + `-` + the first 8 hex characters of the SHA-256 of the cleaned text, so the same text twice is one memory (the second call adds nothing); two different texts landing on the same name is possible but very unlikely, not impossible — the suffix is only 32 bits; a title with no ASCII letters or digits slugs to `note`;
 - `type` defaults to `"note"`.
 
-The note is cleaned before anything is derived from it: control characters (other than newline and tab) are removed and credential-shaped substrings are replaced with `***REDACTED***`. Every write path gets the same credential redaction for the text it stores (#523; names, tags, relations and agent message payloads are identifiers or protocol data and are stored as given): the structured form's `title` and `observations`, `learn`'s four fields (redacted before the lesson's name is derived), `import` (see below), `task_state`'s fields, the Anthropic memory tool's writes (the whole text, before it is split into lines, so a credential that spans lines is caught), the memories the Claude Code hooks capture (before any title is shortened), and the graph's own `createEntity`/`createEntitiesBatch`, which every other writer — including the acceptance of a dreamer proposal — goes through. The text inside metadata a caller can set is redacted too — by the graph's public writers (`createEntity`, `createEntitiesBatch`, `updateEntityMetadata`) for every string value at any depth of the value as it will be stored (a value with its own `toJSON()` or an object without a prototype is redacted in its serialized form; a metadata key name is redacted on its own), and by `import` for its allow-listed fields. `replaced_history` follows provenance rather than a blanket exception: the entries a memory already holds are kept exactly as they are; any other entry — one handed in by a caller, one an updater pushes onto the stored list, and the version `replace` files away (redacted before the history's 20-version and 64 KB limits are applied) — is new text and is redacted, and a `replaced_history` that is not a list is redacted like any other text. A product-improvement proposal is redacted when it is staged, so `memesh dream show` prints the stored form. A guard's `pattern`, when it is a string, is stored and kept exactly as given (a later metadata write never rewrites it — a pattern that detects credentials looks like one); its message, its examples and any other text in it are redacted like other metadata, and a message stored before this rule is redacted when a hook prints it. A guard whose stored pattern no longer compiles is recorded as an error outcome by the Bash and the Edit/Write guard hooks rather than skipped in silence, and a guard proposal is refused at acceptance only when an example carries credential-shaped text (nothing is written, the proposal stays pending, and the message names `memesh dream reject <id>`, since nothing edits a proposal). `forget` and the memory tool's `str_replace` act only on an exact match of the stored text: a memory written before this rule that still holds a raw credential is found by that raw text, and a line the graph stored redacted is found by its stored text. `recall` and `view` show a line stored before this rule masked, so its shown form is not a selector for it: select it by its stored text, which `export` returns, rewrite the memory with `replace`, or forget the whole memory. Many different texts redact to the same `***REDACTED***`, so when what you send has no exact match but its redacted spelling is stored, the call is refused as ambiguous and nothing changes: `forget` fails with "No exact stored-text match for that observation. recall shows credential-shaped text masked; a line is selected by its stored text, which export returns, or rewrite the memory with replace." (an error result over MCP, HTTP 400, exit 1 from the CLI), and `str_replace` answers with an error saying that `view` shows such text masked and `old_str` must match the stored text, which `export` returns. A selector that matches neither spelling gets the usual not-found answer. Both echo only the redacted form. The memory tool's `insert` redacts the whole resulting file, like `create` and `str_replace`, so a credential that spans an existing line and the inserted one is caught. Redaction repeats until the text stops changing, so credentials glued together with no separator are caught, including a key or a `name=value` credential written directly after another credential. Redacting text that is already redacted changes nothing, so an edit never removes the lines after an earlier `***REDACTED***`; a private key written one line per call is therefore recognised only once its END line is in the file. Text that is, as a whole, one JSON document is redacted by value: every decoded string, key names included, goes through the credential rules, so a key inside a string is masked to the end of that string without touching its quotes. Strings that are stored together are redacted as one set: the strings and key names of one JSON document, a memory's title and observations (`remember`, `import`, the memory tool, hook captures, accepted dream proposals), the fields of one `learn`, task state or product improvement, and the title and observations of one replaced version. When any of them holds only part of a private key (a BEGIN line with no END after it, or an END line with no BEGIN before it, also when written with `\u` escapes inside JSON, as a key split by `readlines()`, across fields or across array elements gives), every string in the set becomes `***REDACTED***`, and in a JSON document every key name too, because which strings hold the rest cannot be told from their order (JSON reorders integer-like keys) (#565). Numbers, booleans, null and the structure stay; key names that land on one name once redacted all stay, each later one as ` (2)`, ` (3)`…, so no value is dropped. Metadata is redacted string by string, so fields such as `trust`, `kind` and timestamps are never masked; new metadata that would still hold part of a private key, or a key name that holds a credential, is refused and nothing is written (text a memory already holds is not checked again). Part of a private key next to new text in one write is refused as a whole too, and nothing is written: a BEGIN or END line in the title or observations with text or key names in the metadata, or such a line that a memory stored before this change already holds in its title, observations, metadata or `replaced_history`, beside any new text (a title, an observation, a metadata value or key name). The new text cannot be told apart from the rest of a key; a lone BEGIN or END line is not proof of a key, and the message says so. `memesh unpin --name <name>` adds no text, so it is allowed on such a memory (pinned or not), and it masks every part of a key in its metadata, including the history entries that hold one (each redacted as its own set, its timestamp and other fields kept; every other history entry stays as stored); a line among the observations is removed with `memesh forget --name <name> --observation "<that line>"`, and such a title is replaced with `memesh remember --name <name> --type <its type> --title "<new title>"`. After that the memory takes new text again. A `learn` whose error text is nothing but credentials once redacted is refused too, since it could not be told apart from another such lesson. A document with no escape (`\`) in it and nothing to redact comes back byte for byte; any other is written again compactly with `JSON.stringify`, which keeps every number as spelled and, of duplicate keys, only the last (`JSON.parse` drops the others, so an earlier duplicate is never stored). A dream proposal or guard example counts as credential-shaped only when something in it is masked (a credential in a duplicate JSON key included, also when it is written in `\u` escapes; text whose escapes nest more than eight levels deep cannot be read and is stored as `***REDACTED***` on its own), not when its JSON is merely written again. A JSON document nested too deep to read (about a thousand levels) cannot be checked and is stored as `***REDACTED***` as a whole. In other text, a private-key region is sensitive as a whole: from the `-----BEGIN … PRIVATE KEY-----` header through the next `-----END … PRIVATE KEY-----` line, whatever is inside (a hard-wrapped key, line prefixes, blank lines, junk characters, any kind of line break). A header with no END line after it has no trustworthy end, so everything from it to the end of the text is masked: prose that merely quotes a header loses the text after it, and editing a note stored before this change that does so masks it from the header on. Text before the header and text after a genuine END stay, and text with no header is untouched. A session handoff stored before this rule is redacted when it is shown, like the task state. A connection-string password, a token assignment or an API key is stored with that part replaced by `***REDACTED***`; `name` and `tags` are never rewritten. Redaction is applied at write time, so text that was stored before this rule stays as it was stored. `recall` (MCP, CLI and `POST /v1/recall`), the memory tool's `view` and the dashboard's `GET /v1/entities` and `GET /v1/entities/:name` (its `replaced_history` included, each version as one set) show such text masked — title and observations as one set, metadata text string by string — without changing what is stored; the memory tool's `insert` numbers lines as `view` shows them. The `title` (200) and `observations` (10,000) caps are **input** caps, checked before redaction: `***REDACTED***` can be longer than what it replaces (a run of short keys grows by up to two thirds), so accepted text may be stored longer than the cap. The caps that bound what leaves the server — `recall`'s 8 KB per entity and 32 KB per response — are applied to the stored text, and the Anthropic memory tool's file-size cap is checked on the redacted text, so neither can be exceeded by the expansion. The `note` may be at most 20,000 characters, and the paragraphs it splits into may not derive more than 100 observations — a paragraph made only of list items yields one observation per item, so a single paragraph can push the count over the limit on its own; beyond that the call is rejected. One derived observation longer than 10,000 characters is **silently truncated** to that length with a trailing `…` — unlike a structured `observations` entry of the same length, which is rejected. Nothing in the response says it happened, so a caller sending one very long paragraph should split it rather than rely on the cap. `note` cannot be combined with `title` or `observations`. A note sent to a `name` that already exists appends its observations and leaves the existing title alone.
+The note is cleaned before anything is derived from it: control characters (other than newline and tab) are removed and credential-shaped substrings are replaced with `***REDACTED***`. Every write path gets the same credential redaction for the text it stores (#523; names, tags, relations and agent message payloads are identifiers or protocol data and are stored as given): the structured form's `title` and `observations`, `learn`'s four fields (redacted before the lesson's name is derived), `import` (see below), `task_state`'s fields, the Anthropic memory tool's writes (the whole text, before it is split into lines, so a credential that spans lines is caught), the memories the Claude Code hooks capture (before any title is shortened), and the graph's own `createEntity`/`createEntitiesBatch`, which every other writer — including the acceptance of a dreamer proposal — goes through. The text inside metadata a caller can set is redacted too — by the graph's public writers (`createEntity`, `createEntitiesBatch`, `updateEntityMetadata`) for every string value at any depth of the value as it will be stored (a value with its own `toJSON()` or an object without a prototype is redacted in its serialized form; a metadata key name is redacted on its own), and by `import` for its allow-listed fields. `replaced_history` follows provenance rather than a blanket exception: the entries a memory already holds are kept exactly as they are; any other entry — one handed in by a caller, one an updater pushes onto the stored list, and the version `replace` files away (redacted before the history's 20-version and 64 KB limits are applied) — is new text and is redacted, and a `replaced_history` that is not a list is redacted like any other text. A product-improvement proposal is redacted when it is staged, so `memesh dream show` prints the stored form. A guard's `pattern`, when it is a string, is stored and kept exactly as given (a later metadata write never rewrites it — a pattern that detects credentials looks like one); its message, its examples and any other text in it are redacted like other metadata, and a message stored before this rule is redacted when a hook prints it. A guard whose stored pattern no longer compiles is recorded as an error outcome by the Bash and the Edit/Write guard hooks rather than skipped in silence, and a guard proposal is refused at acceptance only when an example carries credential-shaped text (nothing is written, the proposal stays pending, and the message names `memesh dream reject <id>`, since nothing edits a proposal). `forget` and the memory tool's `str_replace` act only on an exact match of the stored text: a memory written before this rule that still holds a raw credential is found by that raw text, and a line the graph stored redacted is found by its stored text. `recall` and `view` show a line stored before this rule masked, so its shown form is not a selector for it: select it by its stored text, which `export` returns, rewrite the memory with `replace`, or forget the whole memory. Many different texts redact to the same `***REDACTED***`, so when what you send has no exact match but its redacted spelling is stored, the call is refused as ambiguous and nothing changes: `forget` fails with "No exact stored-text match for that observation. recall shows credential-shaped text masked; a line is selected by its stored text, which export returns, or rewrite the memory with replace." (an error result over MCP, HTTP 400, exit 1 from the CLI), and `str_replace` answers with an error saying that `view` shows such text masked and `old_str` must match the stored text, which `export` returns. A selector that matches neither spelling gets the usual not-found answer. Both echo only the redacted form. The memory tool's `insert` redacts the whole resulting file, like `create` and `str_replace`, so a credential that spans an existing line and the inserted one is caught. Redaction repeats until the text stops changing, so credentials glued together with no separator are caught, including a key or a `name=value` credential written directly after another credential. Redacting text that is already redacted changes nothing, so an edit never removes the lines after an earlier `***REDACTED***`; a private key written one line per call is therefore recognised only once its END line is in the file. Text that is, as a whole, one JSON document is redacted by value: every decoded string, key names included, goes through the credential rules, so a key inside a string is masked to the end of that string without touching its quotes. Strings that are stored together are redacted as one set: the strings and key names of one JSON document, a memory's title and observations (`remember`, `import`, the memory tool, hook captures, accepted dream proposals), the fields of one `learn`, task state or product improvement, and the title and observations of one replaced version. When any of them holds only part of a private key (a BEGIN line with no END after it, or an END line with no BEGIN before it, also when written with `\u` escapes inside JSON, as a key split by `readlines()`, across fields or across array elements gives), every string in the set becomes `***REDACTED***`, and in a JSON document every key name too, because which strings hold the rest cannot be told from their order (JSON reorders integer-like keys) (#565). Numbers, booleans, null and the structure stay; key names that land on one name once redacted all stay, each later one as ` (2)`, ` (3)`…, so no value is dropped. Metadata is redacted string by string, so fields such as `trust`, `kind` and timestamps are never masked; new metadata that would still hold part of a private key, or a key name that holds a credential, is refused and nothing is written (text a memory already holds is not checked again). Part of a private key next to new text in one write is refused as a whole too, and nothing is written: a BEGIN or END line in the title or observations with text or key names in the metadata, or such a line that a memory stored before this change already holds in its title, observations, metadata or `replaced_history`, beside any new text (a title, an observation, a metadata value or key name). The new text cannot be told apart from the rest of a key; a lone BEGIN or END line is not proof of a key, and the message says so. `memesh unpin --name <name>` adds no text, so it is allowed on such a memory (pinned or not), and it masks every part of a key in its metadata, including the history entries that hold one (each redacted as its own set, its timestamp and other fields kept; every other history entry stays as stored); a line among the observations is removed with `memesh forget --name <name> --observation "<that line>"`, and such a title is replaced with `memesh remember --name <name> --type <its type> --title "<new title>"`. After that the memory takes new text again. A `learn` whose error text is nothing but credentials once redacted is refused too, since it could not be told apart from another such lesson. A document with no escape (`\`) in it and nothing to redact comes back byte for byte; any other is written again compactly with `JSON.stringify`, which keeps every number as spelled and, of duplicate keys, only the last (`JSON.parse` drops the others, so an earlier duplicate is never stored). A dream proposal or guard example counts as credential-shaped only when something in it is masked (a credential in a duplicate JSON key included, also when it is written in `\u` escapes; text whose escapes nest more than eight levels deep cannot be read and is stored as `***REDACTED***` on its own), not when its JSON is merely written again. A JSON document nested too deep to read (about a thousand levels) cannot be checked and is stored as `***REDACTED***` as a whole. In other text, a private-key region is sensitive as a whole: from the `-----BEGIN … PRIVATE KEY-----` header through the next `-----END … PRIVATE KEY-----` line, whatever is inside (a hard-wrapped key, line prefixes, blank lines, junk characters, any kind of line break). A header with no END line after it has no trustworthy end, so everything from it to the end of the text is masked: prose that merely quotes a header loses the text after it, and editing a note stored before this change that does so masks it from the header on. Text before the header and text after a genuine END stay, and text with no header is untouched. A session handoff stored before this rule is redacted when it is shown, like the task state. A connection-string password, a token assignment or an API key is stored with that part replaced by `***REDACTED***`; `name` and `tags` are never rewritten. Redaction is applied at write time, so text that was stored before this rule stays as it was stored. `recall` (MCP, CLI and `POST /v1/recall`), the memory tool's `view` and `GET /v1/entities` and `GET /v1/entities/:name` (its `replaced_history` included, each version as one set) show such text masked — title and observations as one set, metadata text string by string — without changing what is stored; the memory tool's `insert` numbers lines as `view` shows them. The `title` (200) and `observations` (10,000) caps are **input** caps, checked before redaction: `***REDACTED***` can be longer than what it replaces (a run of short keys grows by up to two thirds), so accepted text may be stored longer than the cap. The caps that bound what leaves the server — `recall`'s 8 KB per entity and 32 KB per response — are applied to the stored text, and the Anthropic memory tool's file-size cap is checked on the redacted text, so neither can be exceeded by the expansion. The `note` may be at most 20,000 characters, and the paragraphs it splits into may not derive more than 100 observations — a paragraph made only of list items yields one observation per item, so a single paragraph can push the count over the limit on its own; beyond that the call is rejected. One derived observation longer than 10,000 characters is **silently truncated** to that length with a trailing `…` — unlike a structured `observations` entry of the same length, which is rejected. Nothing in the response says it happened, so a caller sending one very long paragraph should split it rather than rely on the cap. `note` cannot be combined with `title` or `observations`. A note sent to a `name` that already exists appends its observations and leaves the existing title alone.
 
 **Replace**: `replace: true` with a `name` rewrites that memory: its observations are replaced by the ones given (or derived from `note`), so a replace carrying neither `observations` nor `note` is refused — over MCP, HTTP and the CLI alike — because it would empty the memory; to change only its title or tags, send its current observations together with the new title or tags. Its tags are replaced too when `tags` is given (omitted tags are kept), its title when `title` or `note` is given. The previous title, observations and tags are appended to `metadata.replaced_history` as `{ replaced_at, title, observations, tags }`, with credential-shaped text redacted, so the wrong line leaves recall but is not lost. The history keeps the newest 20 versions and at most 64 KB: older versions are dropped first, and a single version larger than that keeps the observations, then the tags, that fit and is marked `truncated: true`; its title is cut too when even that does not fit (redaction can lengthen it; a half emoji the cut leaves behind is dropped), so a replaced version is never dropped. Relations are untouched by a replace. `recall` results do not carry the history — they carry `metadata.replaced_history_count` — so read the versions from `GET /v1/entities/:name` (credential-shaped text masked) or `export` (as stored). The keyword index is rewritten in the same transaction. On a name that does not exist yet there is no stored type to inherit, so `replace: true` needs an explicit `type`; with one it creates the memory and reports `replaced: false`, without one it is rejected. A memory archived with `forget` refuses `replace` outright: remember it again without `replace` to bring it back, then replace it. `replace` with `note` requires an explicit `name`.
 
@@ -278,7 +278,7 @@ ranking; it is not the raw BM25 score. The empty-query
 listing (recent memories) carries no `match` field — a listing is not a match.
 In CLI (non-`--json`) output, observations longer than 500 characters are
 additionally capped on display with `… (+N more chars)`, and an observation
-the size cap below already cut shows `… (cut; full text in the dashboard)`
+the size cap below already cut shows `… (cut; use memesh export for the full text)`
 instead; storage always carries the full text. `--json` is subject to the size cap below, not to this
 500-character display cap.
 
@@ -332,11 +332,8 @@ size" — it is unrelated to `retrieval.truncated`, which means "the search
 LIMIT window filled; more matching entities may exist". Both can be true, or
 neither.
 
-**The HTTP API (`POST /v1/recall`, the dashboard's data source) is NOT
-capped.** It returns `file:*` tags and full observation text, exactly as
-before this cap existed — the dashboard already renders large entities with
-its own UI-level truncation, and does not need this agent-context-budget
-protection.
+**The HTTP API (`POST /v1/recall`) is NOT capped.** It returns `file:*`
+tags and full observation text; the cap protects only agent-context responses.
 
 **Conflict detection**: When any pair of returned entities have a `contradicts` relation, the object gains a `conflicts` array beside `entities`. Nothing creates that relation for you — a caller states it via `remember`'s `relations` (see [remember](#remember)), so an absent `conflicts` means "none stated between these results", not "checked and clean":
 
@@ -486,7 +483,7 @@ ONLY onto an entity the import creates — never onto one you already have.
 **HTTP**: `POST /v1/consolidate` answers `410 Gone` with a pointer, rather than 404 — a script author reads the difference.
 **CLI**: `memesh consolidate` prints where to go and exits `1`.
 
-Use [`work_package`](#work_package) from an already-running agent session instead. It prepares a bounded digest or visible-transcript package and stages exactly one proposal for human review. The Dashboard can inspect, accept, or reject that staged proposal; it does not create the package or wake an agent. There is no reviewed equivalent of "compress this one named entity" today.
+Use [`work_package`](#work_package) from an already-running agent session instead. It prepares a bounded digest or visible-transcript package and stages exactly one proposal for human review through the CLI. There is no reviewed equivalent of "compress this one named entity" today.
 
 ---
 
@@ -725,7 +722,7 @@ Call it with **no arguments** to read. Any field present is a write. Each writte
 | `blocked` | string | No | What is standing in the way |
 | `done` | string | No | What was just finished |
 
-Each field has its own date in `state.stated_at`. Changing `goal` does not refresh an untouched `done`, `next`, or `blocked`; clearing a field also removes its date. The CLI's complete text and the Dashboard show each field's date. At `standard`/`full`, briefing and SessionStart show only fields with a known date no older than 72 hours (allowing five minutes of clock skew), and flag omitted old or unknown-age fields at every level. Legacy records without `stated_at` retain their original shared `updated_at`; the first changed write preserves a valid original shared timestamp as `legacy_updated_at` provenance. Untouched legacy fields keep their values but their individual dates remain unknown: a shared timestamp cannot prove when each field was stated. Only explicitly changed fields receive a new individual date. Subsequent changes do not refresh the preserved legacy provenance.
+Each field has its own date in `state.stated_at`. Changing `goal` does not refresh an untouched `done`, `next`, or `blocked`; clearing a field also removes its date. The CLI's complete text shows each field's date. At `standard`/`full`, briefing and SessionStart show only fields with a known date no older than 72 hours (allowing five minutes of clock skew), and flag omitted old or unknown-age fields at every level. Legacy records without `stated_at` retain their original shared `updated_at`; the first changed write preserves a valid original shared timestamp as `legacy_updated_at` provenance. Untouched legacy fields keep their values but their individual dates remain unknown: a shared timestamp cannot prove when each field was stated. Only explicitly changed fields receive a new individual date. Subsequent changes do not refresh the preserved legacy provenance.
 
 Passing an **empty string** clears a field — that is how a blocker is removed once it is resolved. Omitting a field leaves it untouched, which is a different thing.
 
@@ -898,7 +895,7 @@ Analyze user work patterns from existing memory. Returns work schedule (peak hou
 
 Turn active memories or lessons into a governed product-improvement proposal, or inspect an existing proposal's status. This is the memory-to-product bridge: source memories remain evidence, and staging is idempotent for the same normalized project, sources, problem, change, verification scenario, success criteria, and priority.
 
-Agents have proposal authority only. The MCP tool intentionally has no `accept` or `reject` action. A human reviews the full proposal with `memesh dream show <id>` or the dashboard, then applies or rejects it through the existing review surface. Acceptance means approved for product work; it does **not** mean implemented, effective, released, or deployed.
+Agents have proposal authority only. The MCP tool intentionally has no `accept` or `reject` action. A human reviews the full proposal with `memesh dream show <id>` through the CLI, then applies or rejects it through the existing review surface. Acceptance means approved for product work; it does **not** mean implemented, effective, released, or deployed.
 
 **Propose input schema**:
 
@@ -1124,7 +1121,7 @@ All responses: `{ success: true, data: ... }` or `{ success: false, errorCode: "
 
 ### Stable error codes
 
-Every `success: false` envelope carries a machine-readable `errorCode` **alongside** the human `error` string. The `error` text is English prose and may be reworded in any release; `errorCode` is the stable contract — clients (the dashboard translates known codes into the UI locale) should branch on it instead of matching English sentences. Removing or renaming a code is a breaking change; adding one is not.
+Every `success: false` envelope carries a machine-readable `errorCode` **alongside** the human `error` string. The `error` text is English prose and may be reworded in any release; `errorCode` is the stable contract — clients should branch on it instead of matching English sentences. Removing or renaming a code is a breaking change; adding one is not.
 
 | `errorCode` | HTTP status | Meaning |
 |---|---|---|
@@ -1156,7 +1153,7 @@ reply, which hides the result rather than preventing it.
 Every `/v1/*` request is therefore checked before anything else runs:
 
 - **`Sec-Fetch-Site`** — set by the browser and unsettable from page script.
-  `same-origin` (the dashboard) and `none` (a typed URL or bookmark) pass;
+  `same-origin` and `none` (a typed URL or bookmark) pass;
   `cross-site` and `same-site` answer `403 auth.cross-origin`.
 - **`Origin`** — the fallback for a browser that sends no `Sec-Fetch-Site`. It
   must match the `Host` the request arrived on.
@@ -1191,9 +1188,6 @@ Capability diagnosis belongs to `GET /v1/doctor`, not this response.
   }
 }
 ```
-
-Dashboard locale is browser-local UI state and is not part of this server
-configuration.
 
 `sessionLimit` (#431) — a whole number from 1 to 100, the top-N recent
 memories the SessionStart hook injects. `POST /v1/config` rejects anything
@@ -1280,7 +1274,7 @@ Save a partial config update. Fields not provided are preserved.
 
 **Request body**: Any supported subset of the non-model `MeMeshConfig` fields
 (`autoCapture`, `sessionLimit`, `autoUpdate`, `setupCompleted`, `briefing`). Unknown fields
-are rejected. Dashboard locale is stored in the browser and is not sent here.
+are rejected. Interface locale is not a server configuration key.
 
 **Response**: `{ success: true, data: <updated config> }`. Clients that present
 a persisted-success state should follow with `GET /v1/config` and render that
@@ -1315,8 +1309,8 @@ Returns aggregate counts and distributions for the knowledge graph.
 What the owner stated about one project with `memesh task` — `goal`, `next`,
 `blocked`, `done` — read from the project's task-state entity, plus the
 `updated_at` of the last statement. Fields that were never stated are absent,
-not empty strings: the dashboard's Project tab renders an absent field as "not
-stated" and never derives progress from memory counts (#237). `project` is
+not empty strings: absence means "not stated", and progress is never derived
+from memory counts (#237). `project` is
 required (`400`, `validation.bad-param` without it, or when it is blank or over 200 characters); it is read as an exact key — a legacy project key that is a filesystem path can still be READ here, but `learn`, `task_state` and `briefing` accept no path as a project (messaging and `kg rename-project` rules are unchanged); a project with no
 statement is a `200` with `state: {}`.
 
@@ -1336,8 +1330,7 @@ statement is a `200` with `state: {}`.
 
 The durable-memory index for one project — the same section the `briefing`
 tool and the SessionStart block close with at `standard`/`full` (see
-[briefing](#briefing) for selection, redaction and the frozen caps). The dashboard's Project tab renders
-it. `project` is required (`400`, `validation.bad-param` without it, or when it is blank or over 200 characters). It is read as an exact key: a legacy project key that is a filesystem path can still be read here, while new project names may not be paths; a project
+[briefing](#briefing) for selection, redaction and the frozen caps). `project` is required (`400`, `validation.bad-param` without it, or when it is blank or over 200 characters). It is read as an exact key: a legacy project key that is a filesystem path can still be read here, while new project names may not be paths; a project
 with no durable memories is a `200` whose `lines` carry the empty-state line.
 `staleDays` is the staleness window, sent so a client does not restate it.
 
@@ -1394,7 +1387,7 @@ Returns computed analytics insights for the memory database.
 }
 ```
 
-> `valueMetrics`, `recallEffectiveness`, and `cleanup` were removed — they were computed on every request but never rendered by any dashboard component. The dashboard reads `healthScore`, `healthFactors`, `loopMetric`, `criticalLessons`, `citationCompliance`, `timeline`, `ageMatrix`, and `knowledgeRadar`.
+> `valueMetrics`, `recallEffectiveness`, and `cleanup` were removed — they are no longer returned. The retained fields are `healthScore`, `healthFactors`, `loopMetric`, `criticalLessons`, `citationCompliance`, `timeline`, `ageMatrix`, and `knowledgeRadar`.
 
 **Health Score Algorithm:**
 - Activity (30%): percentage of active entities accessed in last 30 days
@@ -1415,12 +1408,12 @@ described under [memesh doctor — capture liveness](#memesh-doctor--capture-liv
 ### POST /v1/doctor/fix
 
 Applies one repair identified by a current doctor check's `id`. The route
-re-runs doctor before changing anything, so a stale Dashboard cannot apply a
+re-runs doctor before changing anything, so a stale client cannot apply a
 repair to a different condition. It currently supports only recoverable
 actions: removing known retired top-level config keys after creating a
 byte-for-byte backup, and refreshing a stale Claude Code or Codex plugin cache
 through the host's existing updater. The request is never triggered by a GET
-or by loading the Dashboard; it requires an explicit user action. Plugin
+and requires an explicit user action. Plugin
 refresh returns `restartRequired: true` because the host must reload the cache.
 
 **Request:** `{ "id": "config" }` or a host-specific `plugin-cache-*` check id.
@@ -1430,7 +1423,7 @@ The response is path- and secret-redacted like `GET /v1/doctor`.
 
 ### GET /v1/projects
 
-Lists distinct projects extracted from entity tags (`project:*`) and lesson names. Only active memories count, and a project's session handoff is not counted. The list is sorted by `count`, largest first. The dashboard's Memories and Project tabs use it to populate the project chips.
+Lists distinct projects extracted from entity tags (`project:*`) and lesson names. Only active memories count, and a project's session handoff is not counted. The list is sorted by `count`, largest first.
 
 **Response:**
 
@@ -1447,13 +1440,13 @@ Lists distinct projects extracted from entity tags (`project:*`) and lesson name
 
 ### POST /v1/demo/seed / POST /v1/demo/reset
 
-Back the dashboard onboarding banner: `seed` inserts the demo tour dataset (every entity carries `metadata.demo = true`), `reset` removes exactly those entities in one all-or-nothing transaction, routed through the knowledge-graph delete so the FTS index stays consistent. The CLI equivalent is `memesh demo`.
+Manage the demo data: `seed` inserts the demo tour dataset (every entity carries `metadata.demo = true`), `reset` removes exactly those entities in one all-or-nothing transaction, routed through the knowledge-graph delete so the FTS index stays consistent. The CLI equivalent is `memesh demo`.
 
 **Response:** `{ "success": true, "data": { "inserted": 12, "removed": 0 } }` — counts of demo entities written or removed.
 
 ### GET /v1/analytics/pm
 
-Returns PM-framed metrics: decision velocity, knowledge-graph connectedness, and staleness indicators. Designed for the dashboard PM Analytics panel.
+Returns PM-framed metrics: decision velocity, knowledge-graph connectedness, and staleness indicators. Designed fthrough the CLI PM Analytics panel.
 
 **Query parameters:**
 
@@ -1499,7 +1492,7 @@ associated with the file by `file:<basename>` tag.
 The route runs **no git, ever** — commit hashes come from the caller, and
 the strict schema has no repo-path field on purpose: the server is never
 handed a directory to execute anything in. A caller without a working tree
-(e.g. the dashboard) omits `commits` and gets the file-tag half, plus the
+omits `commits` and gets the file-tag half, plus the
 `no_commits_supplied` abstention saying so — omitting the field is a gap in
 the question, and the response must not look like the answer "this file has
 no remembered commits". A caller that resolved commits itself and found none
@@ -1556,11 +1549,9 @@ labelled `basis: "file-tag"` because it is associated by basename tag —
 not derived from the commits — and the two must not be read as the same
 kind of evidence.
 
-### GET /dashboard
+### HTTP access
 
-Returns the full interactive MeMesh Dashboard as a self-contained HTML page. Served by the HTTP server — no separate build step needed.
-
-**Usage**: Run `memesh serve` (prints the dashboard URL), then open `http://localhost:3737/dashboard` in a browser. Bare `memesh` with no subcommand prints the command list.
+`memesh serve` provides the API only. The standalone Dashboard was removed in 4.11.0; `/dashboard` returns 404. Use the Claude Mod or Codex MCP/native forms for memory editing.
 
 Request/response bodies for `POST /v1/remember`, `/v1/recall`, `/v1/forget`, and `/v1/message` mirror the MCP tool schemas above (same field names, same types). HTTP responses wrap results as `{ "success": true, "data": ... }`.
 
@@ -2157,8 +2148,7 @@ memesh dream reject <id> [--reason <text>]
 
 `show` prints the complete proposal before review. `accept` and `reject` are
 human-authority actions; an agent using `work_package` can only submit a pending
-proposal or defer. The Dashboard exposes the same list, detail, accept, and
-reject review surface without adding another queue or execution path.
+proposal or defer. Use the CLI review commands above for human review.
 
 There are five proposal kinds. `digest` has two source variants with different
 accept effects:
@@ -2391,18 +2381,18 @@ Returns user work patterns extracted from existing memory entities.
 
 ### GET /v1/dream/proposals
 
-Lists proposals that an agent or deterministic rule has already staged for human review. The Dashboard reads this review queue; it does not create work packages or wake an agent.
+Lists proposals that an agent or deterministic rule has already staged for human review. Reading the queue does not create work packages or wake an agent.
 
 **Query parameters:**
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `status` | enum | `pending` | One of `pending`, `applied`, `rejected`, `all` |
 
-**Response:** array of `{ id, project, cluster_key, source_count, digest_name, digest_observations_preview, status, created_at, kind, source_kind }`. Agent-assisted work packages stage `kind: "digest"` with `source_kind: "entities" | "transcript"`; the Dashboard labels entity clusters as calendar-grouped. Other retained proposal kinds share the same review lifecycle.
+**Response:** array of `{ id, project, cluster_key, source_count, digest_name, digest_observations_preview, status, created_at, kind, source_kind }`. Agent-assisted work packages stage `kind: "digest"` with `source_kind: "entities" | "transcript"`; entity clusters are calendar-grouped. Other retained proposal kinds share the same review lifecycle.
 
 ### GET /v1/dream/proposals/:id
 
-Full proposal detail for the Dashboard review view.
+Full proposal detail for human review.
 
 **Response:** `{ id, project, cluster_key, source_ids, proposed_digest, prompt_version, status, reason, created_at, reviewed_at, kind, source_kind }`. `proposed_digest` includes the complete kind-specific payload. Digest payloads include `name`, `type`, `observations`, and `tags`.
 

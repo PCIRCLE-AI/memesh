@@ -125,7 +125,6 @@ Do not claim memory was checked or written unless the tool/API call succeeded.
 - Default database: `~/.memesh/knowledge-graph.db`
 - Default HTTP host: `127.0.0.1`
 - Default HTTP port: `3737`
-- Dashboard: `http://localhost:3737/dashboard`
 - API docs: [API_REFERENCE.md](../api/API_REFERENCE.md)
 
 ## Troubleshooting

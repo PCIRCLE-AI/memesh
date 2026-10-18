@@ -25,7 +25,6 @@ Default endpoints:
 
 ```text
 API:       http://localhost:3737/v1
-Dashboard: http://localhost:3737/dashboard
 ```
 
 Verify:

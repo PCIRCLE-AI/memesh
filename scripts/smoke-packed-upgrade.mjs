@@ -224,10 +224,11 @@ function runMcp(serverPath, packageRoot, env, mode, requiredTools) {
             name: 'packed-upgrade-existing-memory',
             type: 'fact',
             observations: ['This marker was written by the installed baseline MCP server before upgrade.'],
-            tags: ['packed-upgrade'],
+            // Published baselines require a project when the client reports no workspace root.
+            tags: ['packed-upgrade', 'project:packed-upgrade'],
           },
         });
-        assert.notEqual(saved.isError, true, 'baseline MCP remember failed');
+        assert.notEqual(saved.isError, true, 'baseline MCP remember failed: ' + JSON.stringify(saved));
       } else {
         const recalled = await client.callTool({
           name: 'recall',

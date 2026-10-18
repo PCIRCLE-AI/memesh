@@ -7,7 +7,7 @@
     "steps": [
       {
         "id": "build",
-        "label": "build (tsc, bundles, hook core, skills manifest, dashboard, smoke-test; regenerates the tracked dist/)",
+        "label": "build (tsc, bundles, hook core, skills manifest, smoke-test; regenerates tracked dist/)",
         "command": "npm",
         "args": [
           "run",
@@ -29,16 +29,10 @@
       },
       {
         "id": "unit",
-        "label": "isolated non-UI test suite (throwaway HOME; UI functional tests skipped by KT)",
+        "label": "isolated test suite (throwaway HOME)",
         "command": "node",
         "args": [
-          "scripts/run-tests-isolated.mjs",
-          "--exclude",
-          "tests/dashboard/**",
-          "--exclude",
-          "tests/dashboard-*.test.ts",
-          "--exclude",
-          "tests/qa-ui-review.test.ts"
+          "scripts/run-tests-isolated.mjs"
         ],
         "cwd": "."
       },

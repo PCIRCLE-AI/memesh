@@ -240,9 +240,10 @@ describe('Installation Verification', () => {
     });
   });
 
-  describe('Dashboard', () => {
-    it('should have dashboard build output', () => {
-      expect(fs.existsSync('dashboard/dist/index.html')).toBe(true);
+  describe('Retired web UI', () => {
+    it('does not retain dashboard or HTML fallback build output', () => {
+      expect(fs.existsSync('dashboard/dist/index.html')).toBe(false);
+      expect(fs.existsSync('dist/cli/view-live.js')).toBe(false);
     });
   });
 });

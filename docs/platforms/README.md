@@ -31,7 +31,8 @@ the [bearer-token requirements](../api/API_REFERENCE.md#http-rest-api).
 - [OpenClaw](openclaw.md): source-only integration, not published or live-tested.
 - [DeepSeek worker](deepseek-worker.md): optional delegated worker, not a MeMesh host.
 
-The Dashboard is included in 4.10.12. Its future replacement does not change
-the shared memory core, MCP tools, or CLI described here.
+The standalone Web Dashboard was removed in 4.11.0. Claude Code and Claude
+Desktop Code use the MeMesh Mod; Codex uses MCP/native forms. The shared memory
+core, HTTP API and CLI remain available.
 
 [API reference](../api/API_REFERENCE.md) · [Architecture](../ARCHITECTURE.md)

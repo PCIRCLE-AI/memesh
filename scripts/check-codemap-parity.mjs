@@ -108,12 +108,13 @@ const expectedArchitectureHooks = uniqueHookCommands.map((command) => (
 ));
 checkExact('docs/ARCHITECTURE.md hook commands', architectureHookNames, expectedArchitectureHooks);
 
-const cliSourceFiles = fs.readdirSync(path.join(root, 'src/cli'), { withFileTypes: true })
+const legacyCliRoot = path.join(root, 'src/cli');
+const cliSourceFiles = (fs.existsSync(legacyCliRoot) ? fs.readdirSync(legacyCliRoot, { withFileTypes: true }) : [])
   .filter((entry) => entry.isFile() && entry.name.endsWith('.ts'))
   .map((entry) => entry.name)
   .sort();
 const cliDirectoryLine = codemap.match(/^[├└]── cli\/\s+#\s+(.+)$/m)?.[1] ?? '';
-if (!cliDirectoryLine) errors.push('CODEMAP.md directory map has no src/cli entry');
+if (cliSourceFiles.length && !cliDirectoryLine) errors.push('CODEMAP.md directory map has no src/cli entry');
 const documentedCliSources = [...cliDirectoryLine.matchAll(/(?:^|[ +])([A-Za-z0-9_-]+\.ts)(?=$|[ +])/g)]
   .map((match) => match[1]);
 checkExact('CODEMAP.md src/cli TypeScript files', documentedCliSources, cliSourceFiles);

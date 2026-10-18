@@ -1,6 +1,6 @@
 # MeMesh Plugin Architecture
 
-**Version**: 4.10.12
+**Version**: 4.11.0
 
 > Looking for "which file do I change for X?" — see [CODEMAP.md](../CODEMAP.md).
 
@@ -22,8 +22,7 @@ the task. Briefing and hooks show only the addressed recipient's pending
 messages when that identity is available.
 
 Agents can prepare a bounded digest or transcript package and submit a proposal
-for human review. They cannot apply or reject it through MCP. The Dashboard
-reviews staged proposals; it cannot start an agent. Package hashes check
+for human review. They cannot apply or reject it through MCP. Humans review staged proposals through the CLI. Package hashes check
 freshness and workspace scope, not identity. Source text remains untrusted,
 and credential redaction is a heuristic rather than a guarantee.
 
@@ -83,7 +82,7 @@ MeMesh separates concerns into two layers:
 - `dreamer.ts` — work-package preparation plus the shared proposal list/detail/accept/reject lifecycle. Digest candidates use deterministic calendar buckets; transcript packages expose only bounded visible turns from the newest Claude Code session under the host-provided MCP workspace root. Submission retains those redacted turns for review, stages one proposal, and never applies it.
 - `kg-backfill.ts` — deterministic relation backfill: 5 rules (tag co-occurrence, project clustering, session co-occurrence, name-token similarity, and evidence-to-work linking)
 - `project-identity-split.ts` — finds plain `project:<name>` tags that share their name with a project id in the same graph (#408); read by `memesh doctor`
-- `project-attribution.ts` — the one pure rule for which project a memory belongs to: its first `project:` tag, else a `lesson-<project>-<pattern>` name; shared by `/v1/projects`, the project filter on `/v1/entities` and the dashboard
+- `project-attribution.ts` — the one pure rule for which project a memory belongs to: its first `project:` tag, else a `lesson-<project>-<pattern>` name; shared by `/v1/projects`, the project filter on `/v1/entities`
 - `project-tags.ts` — list / merge / rename `project:<name>` tags AND the `project` scope column of the durable-message tables, in one transaction (heals tags mis-homed before git-based project identity, and the split inboxes that go with them); backs `memesh kg rename-project`
 - `agent-scope-id.ts` — the canonical form (Unicode NFC + trim) and fail-closed validation for durable-message scope identifiers (`project`, `recipient`, `actor`), plus the one list of columns that hold them; imported by the transport boundary and core write path, and mirrored by the read-only `scripts/audit/memory-invariants.mjs` detector. Also build-generated as `scripts/hooks/_generated/agent-scope-id.js` (`scripts/generate-hook-core.mjs`), so the Claude Code hooks refuse a path-shaped `MEMESH_RECIPIENT` by this exact same rule. Historical ambiguous identities are preserved until an owner supplies a mapping.
 - `version-check.ts` — npm registry version check for update notifications
@@ -93,13 +92,20 @@ MeMesh separates concerns into two layers:
 
 **Transports** (`src/transports/`) — thin adapters that expose core operations:
 - `cli/cli.ts` — Commander CLI (`memesh` command; `message`, `agent`, `config`, `kg`, `dream`, `hermes`, and `delegation` have subcommands)
-- `http/server.ts` — Express server (`memesh serve`, default port 3737): 31 `/v1` endpoints including two retired 410 routes, plus `/dashboard` and `/favicon.ico`; bearer-auth gate when bound non-loopback
+- `http/server.ts` — Express server (`memesh serve`, default port 3737): 31 `/v1` endpoints including two retired 410 routes, HTTP API only; bearer-auth gate when bound non-loopback
 - `agent-messaging.ts` — shared MCP/HTTP/CLI dispatcher that records cooperative transport provenance (not authenticated human/model identity) and never turns a read into a receipt
 - `src/mcp/server.ts` + `src/transports/mcp/handlers.ts` — stdio MCP server (`memesh-mcp`, 12 tools); `src/mcp/tools.ts` is a re-export shim
 
-This separation means the same `remember`/`recall`/`forget` logic runs identically whether invoked from a terminal, an HTTP request, or an MCP tool call. Governed product-improvement proposals reuse the dream staging/review lifecycle: agents can propose over MCP, and humans apply or reject through the CLI or dashboard-backed HTTP endpoints.
+This separation means the same `remember`/`recall`/`forget` logic runs identically whether invoked from a terminal, an HTTP request, or an MCP tool call. Governed product-improvement proposals reuse the dream staging/review lifecycle: agents can propose over MCP, and humans apply or reject through the CLI or HTTP endpoints.
 
 ---
+
+## Native memory editing
+
+Claude Code and Claude Desktop Code use `hooks/native-memory.js` (the MeMesh Mod).
+Codex uses the existing `remember` MCP tool with native forms. Both call
+`src/core/native-memory-editor.ts`, which reuses the shared memory writer.
+`memesh serve` remains API-only; there is no standalone Web Dashboard or HTML fallback.
 
 ## Source Structure
 
@@ -128,7 +134,6 @@ src/
 ├── knowledge-graph.ts     # Entity CRUD, relations, FTS5 search, findConflicts
 ├── index.ts               # Package exports
 ├── cli/
-│   └── view-live.ts       # Legacy HTML dashboard generator
 ├── host-adapters/         # Native Claude/Codex adapters; ACP remains experimental and not release-gated
 ├── host-runtime/          # Private-router connection and managed host runtime
 ├── mcp/
@@ -251,27 +256,6 @@ Express server exposed via `memesh serve` (default port 3737; the endpoint count
 Commander-based CLI exposed via the `memesh` binary. The public command list is
 derived from `cli.ts` and checked by `scripts/check-doc-claims.mjs`.
 
-### dashboard/ -- Packaged Dashboard SPA
-
-The primary dashboard is now the packaged Preact single-page app served by `GET /dashboard` from `dashboard/dist/index.html`.
-
-- packaged with the npm artifact under `dashboard/dist/`
-- preferred over the legacy HTML generator path
-- used for live local inspection, proposal review, update preferences, and UI locale
-
-**Dashboard tabs**:
-
-| Tab | Feature |
-|-----|---------|
-| Home | One recommended next step (from the library size and the review queue), a metrics row, local memory status plus staged work-package review; the analytics stack — health score, 30-day timeline, **MemoryAgeMatrix** (type × age heat map), **KnowledgeRadar** (6-axis SVG), work patterns — remains read-only |
-| Memories | The whole library behind one surface: instant client filter + Enter for server-ranked recall, work-layer / evidence / all / archived scope chips (`layerOf()` over the shared `WORK_LAYER_TYPES` whitelist), cluster composition bar, per-row expandable detail (structured lesson bodies via `LessonCards`), inline archive/restore; the header's Focused / All memories switch (default Focused) decides whether it opens on the work layer |
-| Project | One project behind a project selector (its memories load a page at a time from `GET /v1/entities?project=`): the owner-stated task state (`memesh task` — goal / next / blocked / done, with its timestamp and a provenance line) above the retrospective **Project History** (capture-density phases, key lessons). Absent state renders as "not stated", never as a guess |
-| Settings | Package update preferences, browser-local interface locale, and optional installation details (versions and paths) |
-
-The dashboard is a client of the ordinary HTTP API — no private endpoints — so the endpoint list lives in exactly one place: the route table in [API_REFERENCE.md](api/API_REFERENCE.md#http-rest-api), which `scripts/check-doc-claims.mjs` checks against `server.ts`'s registrations. A copy of it used to sit here and had already rotted: it named seven endpoints and missed two routes the dashboard called (one of them `/v1/projects`). A second list nothing gates is a list that goes quietly wrong. When the packaged build is unavailable, the HTTP server falls back to the legacy `cli/view-live.ts` HTML generator for compatibility.
-
----
-
 ## Data Flow
 
 ### Store knowledge (remember)
@@ -356,8 +340,7 @@ Tool call: recall({query, tag, limit})
 ```
 
 The size cap exists only on the MCP tool and CLI paths — the answer goes
-straight into an agent's context on those two. `POST /v1/recall` (the
-dashboard's data source) stays uncapped; see `### recall` in
+straight into an agent's context on those two. `POST /v1/recall` stays uncapped; see `### recall` in
 [API_REFERENCE.md](api/API_REFERENCE.md#recall) for the full shape.
 
 ### Prepare agent-assisted memory (`work_package`)
@@ -371,13 +354,12 @@ Agent calls work_package.prepare(project, kind)
   -> submit stages one pending proposal plus bounded redacted review evidence
      (nothing enters the graph yet)
   -> human review: memesh dream show <id> / accept <id> / reject <id>
-     -> Dashboard exposes the same list/detail/accept/reject surface
 ```
 
 The interactive suggestion belongs to an already-running host session. Where
 the host supports choices, it may offer **Dispatch agent task**, **Later**, or
-**Don't suggest again**. The Dashboard cannot wake or dispatch an agent; it
-only reviews proposals that are already staged.
+**Don't suggest again**. Human review uses the CLI; preparation belongs to
+the already-running agent.
 
 ### Archive knowledge or remove one observation (`forget`)
 
@@ -493,7 +475,7 @@ Hook commands are defined in `hooks/hooks.json`: nine run at Claude Code lifecyc
 - **Matcher**: `*` (all sessions)
 - **Behavior**: Extracts session knowledge (files edited, errors fixed, decisions made) with deterministic rules and stores it as entities in the knowledge graph. It reads the newest exact-project injection record under the database directory's `sessions/` folder, strips hook-output echoes, and increments `recall_hits` only for explicit `[mem:id]` citations that match entities injected into that session. `recall_misses` stays unchanged because absence of a citation is not proof that the memory was unused. Opt-out via `MEMESH_AUTO_CAPTURE=false`
 - **On the same Stop (#324)**, `scripts/hooks/_stop-notes.js` also ingests the project's memory directory as note files and, separately, prints a remember nudge. Only the ingestion is a write, and only it is gated on `MEMESH_AUTO_CAPTURE=false`; the nudge sits outside that check.
-- **Also on the same Stop**, `scripts/hooks/_stop-handoff.js` keeps the agent's own last message as the project's session handoff: one `session-handoff:<project>` entity, replaced on each qualifying Stop, redacted for known credential shapes, fenced code removed, at most 800 characters including a leading `…` (the end of the message is kept). It uses the payload's `last_assistant_message` and falls back to the newest assistant text in the last 256 KB of the transcript; the source is written into the `handoff-capture` outcome. A message under 80 characters after cleaning leaves the previous handoff in place. It costs no extra model turn and is gated on `MEMESH_AUTO_CAPTURE`. An active, trusted, exact-project handoff precedes ranked memories in SessionStart and core `briefing` at every level, after optional repository facts, using only its newest observation; the shared renderer caps even manually stored text at 800 characters. Content up to 72 hours old is shown normally, over 72 hours through 14 days is marked stale, and older, undatable, or more than five minutes future-dated content is omitted. Imported content remains outside auto-context unless a successful fresh local Stop replacement removes its import trust marks; archived or skipped replacements leave those marks untouched. The handoff stays outside the ranked block, recent and project pools, durable index, pre-edit recall, `memesh doctor`'s per-type trend, project list and patterns view (`recall` and the dashboard can still find it).
+- **Also on the same Stop**, `scripts/hooks/_stop-handoff.js` keeps the agent's own last message as the project's session handoff: one `session-handoff:<project>` entity, replaced on each qualifying Stop, redacted for known credential shapes, fenced code removed, at most 800 characters including a leading `…` (the end of the message is kept). It uses the payload's `last_assistant_message` and falls back to the newest assistant text in the last 256 KB of the transcript; the source is written into the `handoff-capture` outcome. A message under 80 characters after cleaning leaves the previous handoff in place. It costs no extra model turn and is gated on `MEMESH_AUTO_CAPTURE`. An active, trusted, exact-project handoff precedes ranked memories in SessionStart and core `briefing` at every level, after optional repository facts, using only its newest observation; the shared renderer caps even manually stored text at 800 characters. Content up to 72 hours old is shown normally, over 72 hours through 14 days is marked stale, and older, undatable, or more than five minutes future-dated content is omitted. Imported content remains outside auto-context unless a successful fresh local Stop replacement removes its import trust marks; archived or skipped replacements leave those marks untouched. The handoff stays outside the ranked block, recent and project pools, durable index, pre-edit recall, `memesh doctor`'s per-type trend, project list and patterns view (`recall` can still find it).
 
 Stop capture omits prose copied verbatim from agent-message payloads in the last 256 KiB of the transcript, matching at least 24 consecutive characters. Short or reworded quotes are not detected; if too little own text remains, the previous handoff is kept (#469).
 
@@ -609,7 +591,7 @@ MeMesh supports three integration tiers:
 | | Gemini CLI | MCP server (`memesh-mcp` in client config) |
 | | Cursor | MCP server (`memesh-mcp` in client config) |
 | | Custom apps | Direct stdio MCP connection |
-| **HTTP API** | Custom apps/scripts | `memesh serve`: documented `/v1` routes, plus `/dashboard` and `/favicon.ico` |
+| **HTTP API** | Custom apps/scripts | `memesh serve`: documented `/v1` API routes only |
 
 See [docs/platforms/](platforms/) for platform-specific integration guides.
 
@@ -632,7 +614,6 @@ The automated test suite covers:
 - knowledge graph CRUD, relations, FTS search, and tag filtering
 - MCP tool validation and dispatch
 - hook behavior for session start and post-commit flows
-- dashboard HTML generation and XSS escaping
 - repository/package structure checks
 
 Framework: vitest (forks pool mode to avoid SIGSEGV with native modules).
@@ -653,8 +634,7 @@ For release safety, `npm run test:packaged` creates a real npm tarball, extracts
 ### Agent-assisted digest and transcript review
 - `work_package` prepares one bounded calendar digest or visible-turn transcript package.
 - The already-running agent may submit one strict result or defer without durable change.
-- Submission only stages a proposal. A human reviews full detail and accepts or rejects it through the existing CLI or Dashboard review surface.
-- The Dashboard does not prepare packages and cannot start or wake an agent.
+- Submission only stages a proposal. A human reviews full detail and accepts or rejects it through the existing CLI review surface.
 
 ### Smart Session-Start
 - Session-start hook loads top-N entities through the shared selection (`src/core/briefing-pools.ts`): each pool reads its newest candidates (up to 400), ranks them with `rankEntities` (recency, frequency, confidence and recall impact; no search term), gates and caps them. Older ordinary memories can fall outside that window; `recall` reaches them

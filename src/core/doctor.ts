@@ -2608,30 +2608,6 @@ function inspectClaudeChannelRegistration(
   );
 }
 
-function inspectDashboardArtifact(
-  packageRoot: string,
-  existsSyncImpl: typeof fs.existsSync,
-): DoctorCheck {
-  const dashboardPath = path.join(packageRoot, 'dashboard', 'dist', 'index.html');
-  if (!existsSyncImpl(dashboardPath)) {
-    return createCheck(
-      'dashboard',
-      'Dashboard artifact',
-      'fail',
-      'dashboard/dist/index.html is missing.',
-      'Build the dashboard with `cd dashboard && npm install && npm run build`, then run `npm run build` at the repo root if needed.',
-      { code: 'dashboard.missing' },
-    );
-  }
-
-  return createCheck(
-    'dashboard',
-    'Dashboard artifact',
-    'pass',
-    'dashboard/dist/index.html is present.',
-  );
-}
-
 /**
  * True when the install is younger than the same 24h grace period the
  * hook-wiring check already gives a fresh install (line ~873): "no
@@ -2886,7 +2862,7 @@ async function inspectHttpProbe(
       'HTTP probe',
       'warn',
       `No running HTTP server detected at ${httpBaseUrl}.`,
-      'Start the local server with `memesh serve` if you want dashboard and HTTP API verification.',
+      'Start the local server with `memesh serve` if you want HTTP API verification.',
       { code: 'http-probe.no-server', params: { url: httpBaseUrl } },
     );
   }
@@ -3578,7 +3554,6 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   // The figures behind the capture-liveness row, surfaced on the result so
   // `--json` carries the evidence and not only the verdict.
   const captureReport = captureLiveness.report;
-  checks.push(inspectDashboardArtifact(packageRoot, existsSyncImpl));
   // Before the native-binding row, because when that one is red this one is
   // the context that explains it.
   checks.push(inspectNodeRuntime(packageRoot, existsSyncImpl, readFileSyncImpl));

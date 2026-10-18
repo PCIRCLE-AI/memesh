@@ -206,18 +206,6 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     }
   });
 
-  it('installs dashboard deps from the lockfile, not the ranges', () => {
-    // `dashboard/dist/index.html` is committed and shipped, and the one moment
-    // node_modules is absent — the only moment this branch runs — is a clean CI
-    // checkout, i.e. exactly where the dependency set must be pinned. The
-    // script used to run `npm install` unconditionally, so the convenience
-    // applied where it was never needed and the pinning was missing where it
-    // always is.
-    const text = read('scripts/build-dashboard.mjs');
-    expect(text).toMatch(/package-lock\.json/);
-    expect(text).toMatch(/\['ci',/);
-  });
-
   it('the line-ending rule covers every text file, not a list of suffixes', () => {
     // Both Windows CI legs failed on this branch because `.gitattributes`
     // enumerated ten extensions and missed `.css` and `.html`. Windows checked
@@ -427,10 +415,6 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     expect(publisher).not.toContain('npx playwright install');
     unconditionalStep(publisher, 'npm test -- --run');
     // npm publish runs prepublishOnly -> test:isolated without CLI excludes.
-    const defaultExcludes = read('vitest.config.ts').match(/exclude:\s*\[([^\]]*)\],\n\n\s*\/\/ Explicit cleanup/)?.[1] ?? '';
-    for (const pattern of ['tests/dashboard/**', 'tests/dashboard-*.test.ts', 'tests/qa-ui-review.test.ts']) {
-      expect(defaultExcludes).toContain(`'${pattern}'`);
-    }
     // Journeys only: every Build & Test leg already runs the build, verify:release
     // and the full suite, so the full run here repeated them on the same OS and Node.
     unconditionalStep(sdlcJob, 'node scripts/verify.mjs --journeys');
@@ -445,16 +429,13 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     expect(config.verify.steps.map((step) => step.id)).toEqual(['build', 'release-gates', 'unit', 'packaged']);
     expect(config.verify.steps.find((step) => step.id === 'unit')?.args).toEqual([
       'scripts/run-tests-isolated.mjs',
-      '--exclude', 'tests/dashboard/**',
-      '--exclude', 'tests/dashboard-*.test.ts',
-      '--exclude', 'tests/qa-ui-review.test.ts',
     ]);
     const commands = config.verify.steps.map((step) => [step.command, ...(step.args ?? [])].join(' '));
     expect(commands).toEqual(
       expect.arrayContaining([
         'npm run build',
         'npm run verify:release',
-        'node scripts/run-tests-isolated.mjs --exclude tests/dashboard/** --exclude tests/dashboard-*.test.ts --exclude tests/qa-ui-review.test.ts',
+        'node scripts/run-tests-isolated.mjs',
         'npm run test:packaged',
       ]),
     );
@@ -1147,9 +1128,7 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
 
     // Both scripts import the shared helper rather than hand-rolling their
     // own isolation — a second hand-rolled copy is exactly how D17 happened.
-    const dashboardSource = read('scripts/dashboard-e2e-smoke.mjs');
     const packedArtifactSource = read('scripts/smoke-packed-artifact.mjs');
-    expect(dashboardSource).toMatch(/import \{ buildIsolatedRuntimeEnv \} from '\.\/lib\/isolated-env\.mjs';/);
     expect(packedArtifactSource).toMatch(/import \{ buildIsolatedRuntimeEnv \} from '\.\/lib\/isolated-env\.mjs';/);
     // The three scripts that need the deleting variant instead. Two of them —
     // both audit scripts — pinned only HOME, which `src/core/paths.ts`
@@ -1177,7 +1156,6 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       'scripts/run-tests-isolated.mjs',
       'scripts/audit/mutation-sample.mjs',
       'scripts/audit/measure-injection-tokens.mjs',
-      'scripts/dashboard-e2e-smoke.mjs',
       'scripts/smoke-packed-artifact.mjs',
     ]) {
       expect(read(rel), `${rel} hand-rolls an ambient spread with a pinned HOME`)

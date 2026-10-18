@@ -185,7 +185,7 @@ echo "release-verify @ $(date)"
 echo "repo: $REPO_ROOT"
 
 [ "$SKIP_SUITE" = 0 ] && run_gate "typecheck (tsc -p tsconfig.check.json)" gate_typecheck
-run_gate "build (tsc + dashboard)" gate_build
+run_gate "build (tsc + bundles)" gate_build
 
 if [ "$QUICK" = 0 ]; then
   [ "$SKIP_SUITE" = 0 ] && run_gate "full vitest suite (throwaway HOME, no real config)" gate_full_test_suite

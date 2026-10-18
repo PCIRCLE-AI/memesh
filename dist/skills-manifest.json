@@ -8,8 +8,8 @@
     },
     {
       "path": ".claude-plugin/plugin.json",
-      "sha256": "795615f9b894655cd4c61ca3587f4c2a9b0be2fb089f727a47a80cf1a0adc239",
-      "bytes": 591
+      "sha256": "3fa6be7151883f13d02f05aa7e3871db330fb520b32749d901f737b3e603dc58",
+      "bytes": 590
     },
     {
       "path": ".codex-plugin/mcp.json",
@@ -18,8 +18,8 @@
     },
     {
       "path": ".codex-plugin/plugin.json",
-      "sha256": "b8cb0469ea62b5d2f0ac80db0fb0258991ec7e3f8cb75c143b5e4928964723e5",
-      "bytes": 221
+      "sha256": "e389d0ade9c246d2c1f3a178f8f298efb8477cd29e0f3eb55e01cff3e2686de7",
+      "bytes": 220
     },
     {
       "path": "hooks/hooks.json",
@@ -243,13 +243,13 @@
     },
     {
       "path": "skills/memesh-review/SKILL.md",
-      "sha256": "f7b8637293f8d0013faa8e0e56514b42df4e1687601b5bb74888e51128362adb",
-      "bytes": 3715
+      "sha256": "9aed2a0eb6cea4915e4fe89872043e731480c7508037c6f399d8b6a502478053",
+      "bytes": 3678
     },
     {
       "path": "skills/memesh/SKILL.md",
-      "sha256": "d725c71caaa1d543f5a0ca1f2720a0aa9d895f94a3fe4254064e8fd01d9b49be",
-      "bytes": 28368
+      "sha256": "f84f45ef505dcafab940aa30bfbd290757531b127d0d1a5c49fe88f3fd0c5613",
+      "bytes": 28369
     }
   ]
 }

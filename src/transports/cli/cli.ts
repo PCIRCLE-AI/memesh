@@ -318,7 +318,7 @@ const packageRoot = path.dirname(packageJsonPath);
 const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
 
 /** How human-readable `recall` says the size cap (#494) left results out. */
-const RECALL_OMITTED_HINT = 'omitted to keep the response under size — narrow the query, or open the dashboard for the full text';
+const RECALL_OMITTED_HINT = 'omitted to keep the response under size — narrow the query, or use memesh export for the full text';
 /** Plain-text recall: the keyword index was out of date, so a stored-text scan answered (#571). */
 const RECALL_SCAN_NOTE = 'The search index is out of date; these results come from a scan of the stored text.';
 
@@ -640,7 +640,7 @@ program
               // surrogate prints as a broken glyph.
               if (/[\uD800-\uDBFF]$/.test(head)) head = head.slice(0, -1);
               shown = cut
-                ? `${head}${head ? ' ' : ''}… (cut; full text in the dashboard)`
+                ? `${head}${head ? ' ' : ''}… (cut; use memesh export for the full text)`
                 : `${head} … (+${text.length - head.length} more chars)`;
             }
             console.log(`    - ${shown}`);
@@ -2088,7 +2088,7 @@ program
         return;
       }
       console.log(`✓ Seeded ${result.inserted} demo entit${result.inserted === 1 ? 'y' : 'ies'} tagged project:memesh-demo.`);
-      console.log('  Open the dashboard (memesh serve) and tour Browse / Lessons / Graph / Analytics.');
+      console.log('  Browse the demo with memesh recall, or use the MeMesh memory editor in your host.');
       console.log('  Wipe with: memesh demo --reset --yes');
     });
   });
@@ -2096,7 +2096,7 @@ program
 // --- serve (start HTTP server) ---
 program
   .command('serve')
-  .description('Start the HTTP API server and web dashboard')
+  .description('Start the HTTP API server')
   .option('--port <port>', 'Port number', wholeNumber('--port', 0), 3737)
   .option('--host <host>', 'Host to bind', '127.0.0.1')
   // The token sentence is conditional and used not to say so. Auth is keyed to

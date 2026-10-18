@@ -167,18 +167,6 @@ test('HTTP server starts', () => {
   if (!output.includes('OK')) throw new Error('Server did not start');
 });
 
-// Test 6: Dashboard artifact exists
-test('Dashboard artifact exists', () => {
-  const dashboardPath = join(projectRoot, 'dashboard/dist/index.html');
-  if (!fs.existsSync(dashboardPath)) {
-    throw new Error('dashboard/dist/index.html not found. Run: npm run build:dashboard');
-  }
-  const stat = fs.statSync(dashboardPath);
-  if (stat.size < 100000) {
-    throw new Error(`Dashboard artifact is suspiciously small (${stat.size} bytes)`);
-  }
-});
-
 // Summary
 console.log('\n' + '─'.repeat(50));
 if (testsFailed === 0) {

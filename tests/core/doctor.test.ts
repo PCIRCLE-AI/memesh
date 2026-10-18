@@ -164,8 +164,6 @@ function createPackageRoot(root = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-
     fs.chmodSync(fullPath, 0o755);
   }
 
-  fs.mkdirSync(path.join(root, 'dashboard', 'dist'), { recursive: true });
-  fs.writeFileSync(path.join(root, 'dashboard', 'dist', 'index.html'), '<html></html>');
 
   // F4: doctor verifies dist/skills-manifest.json. The fixture must
   // include one matching the on-disk hook stubs, otherwise the new
@@ -420,6 +418,7 @@ describe('doctor', () => {
     });
 
     expect(result.status).toBe('PASS');
+    expect(result.checks.find((check) => check.id === 'http-probe')?.status).toBe('pass');
     expect(result.checks.every((check) => check.status === 'pass')).toBe(true);
 
     const lines = formatDoctorReport(result, '4.0.3');

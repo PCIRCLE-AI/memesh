@@ -177,12 +177,12 @@ describe('memesh recall size caps (#494)', () => {
 
     const r = runCli(home, 'recall', '--tag', 'project:recallsizeclihumancut');
     expect(r.status, r.stderr).toBe(0);
-    expect(r.stdout).toContain('(cut; full text in the dashboard)');
+    expect(r.stdout).toContain('(cut; use memesh export for the full text)');
     expect(r.stdout).not.toContain('more chars');
     expect(r.stdout).not.toContain('more bytes');
   });
 
-  it('human-readable output: a cut observation with little text left still shows the one dashboard marker', () => {
+  it('human-readable output: a cut observation with little text left still shows one export hint', () => {
     seed(home, (kg) => {
       kg.createEntity('recall-size-human-short-cut', 'note', {
         observations: [filler('huge', 20_000)],
@@ -192,7 +192,7 @@ describe('memesh recall size caps (#494)', () => {
 
     const r = runCli(home, 'recall', '--tag', 'project:recallsizeclishortcut');
     expect(r.status, r.stderr).toBe(0);
-    expect(r.stdout).toContain('(cut; full text in the dashboard)');
+    expect(r.stdout).toContain('(cut; use memesh export for the full text)');
     expect(r.stdout).not.toContain('more bytes');
   });
 

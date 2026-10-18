@@ -264,20 +264,6 @@ else ok(`registry and API_REFERENCE.md agree on ${toolsInCode} MCP tools`);
     else ok(`API_REFERENCE health-factor weights match analytics.ts (${factorWeights.join('/')})`);
   }
 
-  // (e) README's "N tabs, M languages" vs the dashboard's actual registries.
-  const tabsMatch = read('dashboard/src/App.tsx').match(/const TAB_KEYS = \[([^\]]+)\]/);
-  const localeMatch = read('dashboard/src/lib/i18n.ts').match(/^type Locale = (.+);$/m);
-  if (!tabsMatch || !localeMatch) {
-    fail('TAB_KEYS or Locale extraction stopped matching — the tabs/languages gate is blind');
-  } else {
-    const tabs = tabsMatch[1].split(',').filter(t => t.trim()).length;
-    const locales = localeMatch[1].split('|').length;
-    const claim = `${tabs} tabs, ${locales} languages`;
-    if (!read('README.md').includes(claim))
-      fail(`README no longer says "${claim}" — the dashboard registries changed or the prose drifted`);
-    else ok(`README dashboard claim matches: ${claim}`);
-  }
-
   // (f) The intent hook's language count. The language markers are the
   // "// <Language>:" group comments inside INTENT_PATTERNS — the only
   // per-language anchor in the file. A pattern added without its language
@@ -371,13 +357,12 @@ ok('no phantom Python surface in READMEs');
 // answered true for a directory no clone would ever contain, and the mutation
 // that should have failed passed. The question a reader asks is "will this path
 // be there when I clone", and only the index answers it.
-const docRoots = ['src/', 'scripts/', 'tests/', 'docs/', 'dashboard/', 'benchmarks/', 'skills/', 'hooks/', 'packages/', '.github/', '.claude-plugin/'];
+const docRoots = ['src/', 'scripts/', 'tests/', 'docs/', 'benchmarks/', 'skills/', 'hooks/', 'packages/', '.github/', '.claude-plugin/'];
 const livingDocs = [
   ...readmes,
   ...AGENT_DOCS,
   'CONTRIBUTING.md',
   'CODEMAP.md',
-  'DESIGN.md',
   'SECURITY.md',
   'CLAUDE.md',
   'docs/ARCHITECTURE.md',
@@ -418,7 +403,6 @@ else ok(`${livingDocs.length} living documents, no dangling repo paths`);
 // exempt: they describe the figure as disproven.
 const BANNED_CLAIMS = [/95[.,]\s?40\s?%?\s?R@5/i, /95[.,]40/];
 const userFacing = [
-  'dashboard/src/lib/i18n.ts',
   ...[...tracked].filter(f => /^README(\.[a-zA-Z-]+)?\.md$/.test(f)),
 ].filter(isTracked);
 const banned = [];
