@@ -11,6 +11,8 @@ import { MemeshDatabase } from '../src/storage/sqlite.js';
 it('the actual MCP process negotiates a native form: cancel leaves data, submit saves and reads back', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-form-runtime-'));
   const workspace = fs.realpathSync(dir);
+  // Keep the detached update checker from holding this fixture's cwd on Windows.
+  fs.writeFileSync(path.join(workspace, 'config.json'), JSON.stringify({ updateCheck: false }));
   const env = { HOME: workspace, USERPROFILE: workspace, MEMESH_DIR: workspace, MEMESH_DB_PATH: path.join(workspace, 'memory.db'), PATH: path.dirname(process.execPath) };
   const client = new Client({ name: 'codex', version: 'native-form-fixture' }, { capabilities: { roots: {}, elicitation: { form: {} } } });
   client.setRequestHandler(ListRootsRequestSchema, async () => ({ roots: [{ uri: pathToFileURL(workspace).href }] }));
@@ -27,6 +29,7 @@ it('the actual MCP process negotiates a native form: cancel leaves data, submit 
     await client.connect(transport);
     const seeded = await client.callTool({ name: 'remember', arguments: { name: 'ui-note', type: 'note', observations: ['Original paragraph'] } });
     expect(seeded.isError, JSON.stringify(seeded)).not.toBe(true);
+    expect(fs.readdirSync(workspace).filter(name => name.startsWith('last-fresh-refresh.'))).toEqual([]);
     const db = new MemeshDatabase(env.MEMESH_DB_PATH, { readOnly: true });
     const row = () => db.prepare('SELECT title, metadata FROM entities WHERE name = ?').get('ui-note');
     try {
