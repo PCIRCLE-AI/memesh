@@ -92,6 +92,7 @@ targets.push(...(await walk(join(repoRoot, 'scripts', 'hooks'), true)).filter(p 
 // class this release exists to remove.
 for (const f of [
   'hooks/hooks.json',
+  'hooks/native-memory.js',
   '.claude-plugin/mcp.json',
   '.claude-plugin/plugin.json',
   '.codex-plugin/mcp.json',

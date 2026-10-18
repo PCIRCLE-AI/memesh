@@ -390,6 +390,7 @@ function rememberInTransaction(
     tags,
     namespace: args.namespace,
     trustOverride: args.trustOverride,
+    reinforceConfidence: args.reinforceConfidence,
     title,
   });
   // `current`, not the snapshot taken before `createEntity`. The updater used

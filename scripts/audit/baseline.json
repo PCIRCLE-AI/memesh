@@ -81,6 +81,11 @@
       "reason": "The detector's `.toBe(0)` matches the short SessionStart launcher's successful process exit status, not an empty collection. The same test separately waits for the detached lifecycle state and router socket, asserts a distinct companion PID, reads back exactly one registered session from SQLite, and performs authenticated exact-companion cleanup.",
       "triaged": "2026-09-08 Codex detached companion release audit"
     },
+    "C1 tests/mcp-native-memory-runtime.test.ts": {
+      "class": "SAFE",
+      "reason": "The empty refresh-marker list verifies that the owned native-form fixture starts no unrelated detached updater. The same test requires two form requests, saved title and exact nonempty observations, plus recall readback. Controlled red without updateCheck:false produced a refresh marker; green retained every functional assertion.",
+      "triaged": "2026-10-19 native-form Windows fixture isolation"
+    },
     "C1 tests/node-shim.test.ts": {
       "class": "SAFE-HEURISTIC-FALSE-POSITIVE",
       "reason": "The detector's `.toBe(0)` matches the spawned shim's process exit status, not an empty collection. Each run test also requires empty stderr and the exact stdout the shim prints (`function`), and fails without the sibling package.json (break-tested: `require is not defined in ES module scope`).",
@@ -516,7 +521,7 @@
       "reason": "Omitted tags are no tags, so the memory belongs to no project: projects is [], which the response reports as exactly that. Nothing reads as success from it.",
       "triaged": "2026-10-03 (M1 binding separated; classification carried from C5 src/core/recall-agent-view.ts:181 at tree 16cc446c, statement byte-identical)"
     },
-    "C5 src/transports/mcp/handlers.ts:70": {
+    "C5 src/transports/mcp/handlers.ts:74": {
       "class": "SAFE-OPTIONAL-COLLECTION",
       "reason": "No tags means no project tag, which fails closed: the call then needs a bound project and is refused without one.",
       "triaged": "2026-10-03 (M1 binding separated; classification carried from C5 src/transports/mcp/handlers.ts:67 at tree 16cc446c, statement byte-identical); re-keyed 2026-10-06 after merging main (statement unchanged)"
@@ -551,7 +556,7 @@
       "reason": "Omitted tags are no tags; the bound project tag is appended to them.",
       "triaged": "2026-10-03 (M1 binding separated; classification carried from C5 src/core/operations.ts:330 at tree 16cc446c, statement byte-identical) Re-keyed 2026-10-06: decision `why` lines added above; statement byte-identical. Re-keyed 2026-10-06 375→377 (decision reason round 2: the leading-label strip in resolveRememberInput added two lines above; statement byte-identical).; re-keyed 2026-10-06 after merging main (statement unchanged)"
     },
-    "C5 src/core/operations.ts:430": {
+    "C5 src/core/operations.ts:431": {
       "class": "SAFE-OPTIONAL-OBJECT",
       "reason": "Absent caller provenance overrides correctly preserve generated provenance unchanged.",
       "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-07 after transaction-boundary refactor shifted the unchanged statement; re-keyed 2026-09-12 (#324 src/core fix round shifted the unchanged statement); re-keyed again 2026-09-12 (#324 T4 root-cause fix shifted the same statement from :299 to :327); re-keyed 2026-09-26 327→334 (#451: canonicalEntityType import plus the entityType canonicalization comment block added above; statement byte-identical); re-keyed 2026-09-28 334→335 (#494: one import line added above; statement byte-identical); re-keyed 2026-09-30 335→300 (#530: replaced_history moved to src/core/replaced-history.ts and the overwrite history write added; statement byte-identical, classification unchanged); re-keyed 2026-09-30 300→299 (#530 review follow-up: a stray blank line removed above; statement byte-identical); re-keyed 2026-10-01 299→309 (#523 merge with main 37fbb687: lines moved; statement byte-identical, classification unchanged); re-keyed 2026-10-01 309→331 (#523 r21: lines added above; statement byte-identical, classification unchanged); re-keyed 331→335 (#523 review fixes added comment lines above; statement byte-identical) Re-keyed 2026-10-06: decision `why` lines added above; statement byte-identical. Re-keyed 2026-10-06 413→415 (decision reason round 2: the leading-label strip in resolveRememberInput added two lines above; statement byte-identical).; re-keyed 2026-10-06 after merging main (statement unchanged)"

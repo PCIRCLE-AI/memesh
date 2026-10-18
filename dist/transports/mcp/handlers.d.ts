@@ -1,6 +1,8 @@
 import { z } from 'zod';
+import type { ElicitRequestFormParams, ElicitResult } from '@modelcontextprotocol/sdk/types.js';
 import type { McpProjectResolution } from './project-context.js';
 export interface McpRequestContext {
+    elicit?: (params: ElicitRequestFormParams) => Promise<ElicitResult>;
     workspaceRootUris?: readonly string[];
     projectBinding?: McpProjectResolution;
 }
@@ -148,6 +150,11 @@ export declare const TOOL_DEFINITIONS: readonly [{
                 readonly type: "boolean";
                 readonly description: "Rewrite the memory named by `name` instead of appending to it: its observations are replaced by the `observations` (or `note`) you give — one of them is required, a replace with neither is refused — and its tags when `tags` is given, its title when `title` or `note` is given. The previous version is kept in metadata.replaced_history with the time it was replaced. Default false (append).";
             };
+            readonly interactive: {
+                readonly type: "boolean";
+                readonly const: true;
+                readonly description: "Open the native human editor for one existing memory: pass only name, interactive: true and optional project. Shows existing text and asks only for changed title/paragraphs; blank fields keep their original values. Only the human form submission saves, cancellation writes nothing, and the result reads back the stored memory. Requires a host supporting MCP form elicitation. Use recall to find and display the memory first.";
+            };
             readonly title: {
                 readonly type: "string";
                 readonly description: "Short human-readable label for this memory (e.g. \"Use PKCE over implicit flow for auth\"), distinct from name (which stays a stable machine key). Shown as the headline in the dashboard and in memory recalled by an agent, instead of the raw name. Reusing an existing name with a different title UPDATES the title; omit to leave an existing title untouched.";
@@ -217,6 +224,13 @@ export declare const TOOL_DEFINITIONS: readonly [{
                 };
                 readonly observations: {
                     readonly minItems: 1;
+                };
+            };
+        }, {
+            readonly required: readonly ["name", "interactive"];
+            readonly properties: {
+                readonly interactive: {
+                    readonly const: true;
                 };
             };
         }];

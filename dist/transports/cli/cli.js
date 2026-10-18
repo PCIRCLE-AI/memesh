@@ -8105,6 +8105,7 @@ function rememberInTransaction(args, derived, typeGiven, db2, kg) {
     tags,
     namespace: args.namespace,
     trustOverride: args.trustOverride,
+    reinforceConfidence: args.reinforceConfidence,
     title
   });
   let stampLocalMetadata = true;
@@ -25675,7 +25676,7 @@ function refineRemember(data, ctx) {
     ctx.addIssue({ code: "custom", path: ["note"], message: `note yields ${derived.observations.length} observations; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory` });
   }
 }
-var projectRules, projectName, sanitizeName, nameField, titleField, observationField, workPackageText, digestWorkPackageRef, transcriptWorkPackageRef, workPackageIdentity, WORK_PACKAGE_RESULT_MAX_BYTES, WorkPackageSchema, rememberShape, RememberSchema, mcpProjectField, McpRememberSchema, recallShape, RecallSchema, McpRecallSchema, ForgetSchema, ExportSchema, ExportResultSchema, ImportSchema, nonBlankBounded, agentScopeId, learnShape, LearnSchema, McpLearnSchema, HttpLearnSchema, TaskStateSchema, BriefingSchema, WhySchema, UserPatternsSchema, ImprovementSchema, messageProject, messageRecipient, messageSender, messageId, messageCursor, messageIdempotencyKey, messageReceiptBase, MessageSchema;
+var projectRules, projectName, sanitizeName, nameField, titleField, observationField, workPackageText, digestWorkPackageRef, transcriptWorkPackageRef, workPackageIdentity, WORK_PACKAGE_RESULT_MAX_BYTES, WorkPackageSchema, rememberShape, RememberSchema, mcpProjectField, McpRememberSchema, NativeMemoryEditorSchema, NativeMemoryEditFieldsSchema, recallShape, RecallSchema, McpRecallSchema, ForgetSchema, ExportSchema, ExportResultSchema, ImportSchema, nonBlankBounded, agentScopeId, learnShape, LearnSchema, McpLearnSchema, HttpLearnSchema, TaskStateSchema, BriefingSchema, WhySchema, UserPatternsSchema, ImprovementSchema, messageProject, messageRecipient, messageSender, messageId, messageCursor, messageIdempotencyKey, messageReceiptBase, MessageSchema;
 var init_schemas3 = __esm({
   "dist/transports/schemas.js"() {
     "use strict";
@@ -25750,6 +25751,15 @@ var init_schemas3 = __esm({
     RememberSchema = external_exports.object(rememberShape).strict().superRefine(refineRemember);
     mcpProjectField = external_exports.union([projectName, external_exports.literal(false)]).optional();
     McpRememberSchema = external_exports.object({ ...rememberShape, project: mcpProjectField }).strict().superRefine(refineRemember);
+    NativeMemoryEditorSchema = external_exports.object({
+      name: nameField,
+      interactive: external_exports.literal(true),
+      project: mcpProjectField
+    }).strict();
+    NativeMemoryEditFieldsSchema = external_exports.object({
+      title: external_exports.string().max(TITLE_MAX_LENGTH),
+      observations: external_exports.array(external_exports.string().max(16e3).refine((s) => s.trim().length > 0, "Memory text must not be empty")).min(1).max(100).refine((items) => items.join("\n\n").length <= 16e3, "Memory text exceeds 16000 characters")
+    }).strict();
     recallShape = {
       query: external_exports.string().max(1e3).optional(),
       tag: external_exports.string().max(255).optional(),

@@ -161,6 +161,32 @@ Five more fields are conditional. `retagged` appears when a `project:<name>` tag
 
 ---
 
+#### Native human editing (unreleased source builds)
+
+To open the native editor for an existing memory, call `remember` with only
+`name`, `interactive: true`, and optional `project` (same binding rules as ordinary
+remember). The client must advertise MCP `elicitation.form`; unsupported clients
+receive `native_form_unavailable` and no write occurs. Find the name with `recall`
+first. Model-provided replacement text cannot be combined with this request.
+
+The form message shows the stored title and paragraphs. Optional replacement
+fields have no defaults: fill only what should change, leaving blank or omitted
+fields to keep their original values. This option is MCP-only, not part of the
+HTTP schema or its tool export. Submitting saves through the shared
+writer without raising confidence, preserves replacement history, and returns
+`{ status: "saved", memory: { name, project, type, createdAt, title, body } }` from
+the stored result. An unchanged submission returns `unchanged`; Cancel or Decline
+returns `cancelled` and writes nothing. A memory changed during the form is refused
+as `memory_changed`. Oversized or unreadable records are refused without clipping
+or repairing them. Each existing observation has its own field, preserving
+observation boundaries and any internal blank lines. A title-only edit preserves masked observations;
+rewriting text containing hidden content is refused rather than losing it.
+
+Claude Code's `/memesh-memories` Mod searches and displays the current project's memories
+and opens this same editor. Codex reaches it through the existing `remember` MCP
+tool and the MeMesh skill. Native rendering depends on the installed client;
+protocol or test-kit success alone does not establish real host UI acceptance.
+
 ### recall
 
 Search and retrieve stored knowledge. Uses local SQLite FTS5 full-text search, with optional tag filtering and multi-factor scoring. With no `tag` and no `cross_project`, the MCP tool searches one project, memories with no project, and memories in the `global` namespace. The project is `project` when given, else the session's bound project — `MEMESH_PROJECT_ROOT` from the launch, or the client's single workspace root (`roots/list`). `project: false`, or a session with nothing bound, searches only memories with no project and global ones. A `MEMESH_PROJECT_ROOT` or a workspace root that is set but cannot be resolved (not an existing directory, or roots the client advertised but did not return) is refused with `workspace_unavailable` and its reason, and launch and workspace roots that disagree with `workspace_ambiguous`. Each memory then carries `projects` (every project it belongs to, sorted; `[]` for none — an older memory can belong to more than one) and the response carries `scope: { project, searched }`, saying what was searched; both are counted inside the response size cap. `project` cannot be combined with `tag` or `cross_project`: such a call is refused. An explicit `tag` or `cross_project` needs no binding. A `null` or empty `tag`, and a `null` `cross_project`, count as not given. Results are ranked by a weighted combination of search relevance, recency, access frequency, confidence, and recall-effectiveness impact. Call with no query to list recent memories.

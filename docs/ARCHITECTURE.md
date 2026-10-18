@@ -74,6 +74,7 @@ MeMesh separates concerns into two layers:
 **Core** (`src/core/`) — shared application logic independent of transports:
 - `types.ts` — shared TypeScript interfaces (zero external deps)
 - `operations.ts` — `remember`, `recall`, `forget`, `export`, `import` as shared operations called by all transports
+- `native-memory-editor.ts` — one human form submission edits an existing project memory through `remember`, preserves history without increasing confidence, refuses stale edits, and reads back stored text. MCP form elicitation supplies the form; the Claude Mod in `hooks/native-memory.js` uses the same operation, with no separate database or web server.
 - `agent-messaging.ts` — transactional exact-recipient messages, opaque cursors, bounded waits, payload fetch, a 64 KiB JSON-encoded durable payload cap, and independent receipt facts
 - `agent-router.ts` — owner-private local routing from a durable message event to an eligible active host adapter, plus a bounded project-scoped directory of live registrations; native delivery is bounded by a 16 KiB cap on the untrusted full envelope, including routing metadata and payload; the Claude Code channel carries that envelope, the Codex CLI queue only a notice naming the message
 - `config.ts` — owner-local configuration reads and partial updates for the retained non-model settings
@@ -229,7 +230,7 @@ Thin adapter: imports shared Zod schemas from `transports/schemas.ts`, validates
 | Tool | Schema | Handler |
 |------|--------|---------|
 | `work_package` | WorkPackageSchema | Delegates to `core/dreamer.executeWorkPackage()` with the MCP client's bounded workspace-root context |
-| `remember` | McpRememberSchema | Delegates to `operations.remember()` |
+| `remember` | McpRememberSchema, NativeMemoryEditorSchema | Stores through `operations.remember()`; `interactive: true` opens a human form before editing an existing memory |
 | `recall` | McpRecallSchema | Delegates to `operations.recallForAgent()` (backed by `recallWithConflicts()` / `recallEnhanced()`, capped for size by `core/recall-agent-view.ts` — #494) |
 | `forget` | ForgetSchema | Delegates to `operations.forget()` |
 | `export` | ExportSchema | Delegates to `operations.exportMemories()` |

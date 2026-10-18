@@ -184,6 +184,8 @@ export interface RememberInput {
    * the time it was replaced. Without it, a same-name call appends.
    */
   replace?: boolean;
+  /** Internal edit path: changing text is not another confirmation of its accuracy. */
+  reinforceConfidence?: boolean;
   /** Optional human-readable display string. Auto-capture hooks generate
    *  one heuristically; a deliberate `remember` call may supply its own. */
   title?: string;

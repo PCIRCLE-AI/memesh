@@ -7,6 +7,8 @@
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
+import type { ElicitRequestFormParams, ElicitResult } from '@modelcontextprotocol/sdk/types.js';
+import { editMemoryInteractively } from '../../core/native-memory-editor.js';
 import { remember, recallForAgent, forget, exportMemories, importMemories, learn } from '../../core/operations.js';
 import { agentRecallEnvelope } from '../../core/recall-agent-view.js';
 import { getDatabase } from '../../db.js';
@@ -24,6 +26,7 @@ import {
   McpRememberSchema, McpRecallSchema, ForgetSchema,
   BriefingSchema, ExportSchema, ImportSchema, McpLearnSchema, TaskStateSchema, UserPatternsSchema,
   ImprovementSchema, MessageSchema, WorkPackageSchema,
+  NativeMemoryEditorSchema, NativeMemoryEditFieldsSchema,
 } from '../schemas.js';
 import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../../core/agent-messaging.js';
 import { getProjectName, memeshDir } from '../../core/paths.js';
@@ -32,6 +35,7 @@ import { updateNoticeForEntryPoint, updateCheckEnabledIn } from '../../core/upda
 import { staleRunningProcessNotice } from '../../core/update-notice.js';
 
 export interface McpRequestContext {
+  elicit?: (params: ElicitRequestFormParams) => Promise<ElicitResult>;
   workspaceRootUris?: readonly string[];
   /** The project a call belongs to when it names none (resolveMcpProject). */
   projectBinding?: McpProjectResolution;
@@ -132,6 +136,11 @@ export const TOOL_DEFINITIONS = [
           description:
             'Rewrite the memory named by `name` instead of appending to it: its observations are replaced by the `observations` (or `note`) you give — one of them is required, a replace with neither is refused — and its tags when `tags` is given, its title when `title` or `note` is given. The previous version is kept in metadata.replaced_history with the time it was replaced. Default false (append).',
         },
+        interactive: {
+          type: 'boolean',
+          const: true,
+          description: 'Open the native human editor for one existing memory: pass only name, interactive: true and optional project. Shows existing text and asks only for changed title/paragraphs; blank fields keep their original values. Only the human form submission saves, cancellation writes nothing, and the result reads back the stored memory. Requires a host supporting MCP form elicitation. Use recall to find and display the memory first.',
+        },
         title: {
           type: 'string',
           description:
@@ -201,12 +210,13 @@ export const TOOL_DEFINITIONS = [
       // — which was wrong for the note form — left this schema declaring
       // nothing required at all, so a client reading it could believe `{}` is
       // a valid call and only learn otherwise from a runtime rejection. Same
-      // branches in the same order as the exported OpenAI schema in
-      // src/core/schema-export.ts.
+      // ordinary branches in the same order as the exported OpenAI schema
+      // in src/core/schema-export.ts, plus the MCP-only human editor.
       anyOf: [
         { required: ['note'] },
         { required: ['name', 'type'] },
         { required: ['name', 'replace', 'observations'], properties: { replace: { const: true }, observations: { minItems: 1 } } },
+        { required: ['name', 'interactive'], properties: { interactive: { const: true } } },
       ],
     },
   },
@@ -716,6 +726,45 @@ async function handleToolInner(
       return result.status === 'error' ? { ...ok(result), isError: true } : ok(result);
     }
     if (name === 'remember') {
+      if (args?.interactive === true) {
+        const r = parseOrFail(NativeMemoryEditorSchema, args);
+        if (!r.ok) return r.result;
+        const resolved = writeProject(r.data.project, undefined, requestContext);
+        if ('result' in resolved) return resolved.result;
+        const elicit = requestContext.elicit;
+        if (!elicit) return fail('native_form_unavailable: This host cannot show the native editor. Use recall and the existing remember workflow; nothing was saved.');
+        return ok(await editMemoryInteractively(r.data.name, resolved.project ?? null, sourceHost, async (view, observations) => {
+          const paragraphs = observations.map((text, index) => {
+            const preview = text.replace(/\s+/g, ' ');
+            return { key: index === 0 ? 'body' : `body_${index}`, text,
+              label: `Paragraph ${index + 1}: ${preview.slice(0, 40)}${preview.length > 40 ? '…' : ''}` };
+          });
+          const shape: Record<string, z.ZodOptional<z.ZodString>> = { title: NativeMemoryEditFieldsSchema.shape.title.optional() };
+          for (const paragraph of paragraphs) shape[paragraph.key] = z.string().max(16_000).optional();
+          const response = await elicit({
+            mode: 'form',
+            message: [`Edit MeMesh memory: ${view.title || 'Untitled'}\nCreated ${view.createdAt.slice(0, 10)}\nFill only what you want to change. Blank fields keep the original. Submit saves; cancel changes nothing.`,
+              ...paragraphs.map((paragraph, index) => `Original paragraph ${index + 1}:\n${paragraph.text}`)].join('\n\n'),
+            requestedSchema: {
+              type: 'object',
+              properties: {
+                title: { type: 'string', title: 'New title (leave blank to keep)' },
+                ...Object.fromEntries(paragraphs.map(paragraph => [paragraph.key, { type: 'string' as const, title: paragraph.label, maxLength: 16_000 }])),
+              },
+              required: [],
+            },
+          });
+          if (response.action !== 'accept') return null;
+          const submitted = z.object(shape).strict().parse(response.content);
+          return NativeMemoryEditFieldsSchema.parse({
+            title: submitted.title === undefined || submitted.title.trim() === '' ? view.title : submitted.title,
+            observations: paragraphs.map(paragraph => {
+              const replacement = submitted[paragraph.key];
+              return replacement === undefined || replacement.trim() === '' ? paragraph.text : replacement;
+            }),
+          });
+        }));
+      }
       const r = parseOrFail(McpRememberSchema, args);
       if (!r.ok) return r.result;
       // A memory belongs to at most one project. Core checks the project (or

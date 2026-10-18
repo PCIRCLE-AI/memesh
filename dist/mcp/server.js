@@ -28219,6 +28219,9 @@ function getDatabase() {
 import fs12 from "node:fs";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
+// dist/core/native-memory-editor.js
+import { createHash as createHash5 } from "node:crypto";
+
 // dist/storage/memory-mutation.js
 function projectOwnershipRefusal(db2, name, project) {
   const row = db2.prepare("SELECT id FROM entities WHERE name = ?").get(name);
@@ -29101,6 +29104,7 @@ function rememberInTransaction(args, derived, typeGiven, db2, kg) {
     tags,
     namespace: args.namespace,
     trustOverride: args.trustOverride,
+    reinforceConfidence: args.reinforceConfidence,
     title
   });
   let stampLocalMetadata = true;
@@ -29256,12 +29260,88 @@ function forget(args) {
   return { archived: true, name: args.name };
 }
 
+// dist/core/native-memory-editor.js
+async function editMemoryInteractively(name, project, sourceHost, ask) {
+  const db2 = getDatabase();
+  const kg = new KnowledgeGraph(db2);
+  const snapshot = () => {
+    const refusal = projectOwnershipRefusal(db2, name, project);
+    if (refusal)
+      throw new Error(refusal);
+    const entity = kg.getEntity(name);
+    if (!entity || entity.archived)
+      throw new Error("memory_not_found: Choose an active memory from recall.");
+    const row = db2.prepare("SELECT metadata FROM entities WHERE name = ?").get(name);
+    if (row.metadata) {
+      let metadata;
+      try {
+        metadata = JSON.parse(row.metadata);
+      } catch {
+      }
+      if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+        throw new Error("metadata_unreadable: The original metadata was left unchanged.");
+      }
+    }
+    const revision = createHash5("sha256").update(JSON.stringify([
+      entity.id,
+      entity.title,
+      entity.type,
+      entity.archived,
+      entity.observations,
+      entity.tags,
+      row.metadata
+    ])).digest("hex");
+    return { entity, revision };
+  };
+  const before = snapshot();
+  const viewOf = (entity) => {
+    const shown = shownEntity(entity);
+    return {
+      name: shown.name,
+      project,
+      type: shown.type,
+      createdAt: shown.created_at,
+      title: shown.title ?? "",
+      body: shown.observations.join("\n\n")
+    };
+  };
+  const view = viewOf(before.entity);
+  if (view.body.length > 16e3 || before.entity.observations.length > 100) {
+    throw new Error("memory_too_large: Use the existing targeted memory tools; no text was clipped or saved.");
+  }
+  const shownObservations = shownEntity(before.entity).observations;
+  const fields = await ask(view, shownObservations);
+  if (fields === null)
+    return { status: "cancelled", memory: view };
+  return db2.transaction(() => {
+    const current = snapshot();
+    if (current.revision !== before.revision)
+      throw new Error("memory_changed: Reload this memory before saving; your edit was not applied.");
+    const contentUnchanged = JSON.stringify(fields.observations) === JSON.stringify(shownObservations);
+    if (fields.title === view.title && contentUnchanged)
+      return { status: "unchanged", memory: view };
+    if (!contentUnchanged && JSON.stringify(shownObservations) !== JSON.stringify(before.entity.observations)) {
+      throw new Error("masked_content: Edit the individual observation with the existing memory tools; hidden text was left unchanged.");
+    }
+    remember({
+      name,
+      replace: true,
+      project,
+      sourceHost,
+      reinforceConfidence: false,
+      ...fields.title !== view.title ? { title: fields.title } : {},
+      observations: contentUnchanged ? before.entity.observations : fields.observations
+    });
+    return { status: "saved", memory: viewOf(kg.getEntity(name)) };
+  }).immediate();
+}
+
 // dist/core/dreamer.js
-import { createHash as createHash7 } from "node:crypto";
+import { createHash as createHash8 } from "node:crypto";
 
 // dist/core/transcript-source.js
 import fs4 from "fs";
-import { createHash as createHash5 } from "node:crypto";
+import { createHash as createHash6 } from "node:crypto";
 import path3 from "path";
 var MAX_TRANSCRIPT_SOURCE_BYTES = 8 * 1024 * 1024;
 var MAX_TRANSCRIPT_SCAN_BYTES = 16 * 1024 * 1024;
@@ -29304,7 +29384,7 @@ function readTranscriptSnapshotWithin(transcriptPath, expected, aggregateBytesRe
     if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) {
       return { snapshot: null, aggregateLimitExceeded: false };
     }
-    const contentHash = createHash5("sha256").update(bytes).digest("hex");
+    const contentHash = createHash6("sha256").update(bytes).digest("hex");
     if (expected && contentHash !== expected.contentHash)
       return { snapshot: null, aggregateLimitExceeded: false };
     return { snapshot: { bytes, contentHash, ...identity }, aggregateLimitExceeded: false };
@@ -29519,7 +29599,7 @@ function parseVisibleConversation(transcript) {
 }
 
 // dist/core/product-improvements.js
-import { createHash as createHash6 } from "node:crypto";
+import { createHash as createHash7 } from "node:crypto";
 var PRODUCT_IMPROVEMENT_KIND = "product_improvement";
 function clean(label, value, max) {
   const normalized = value.replace(/\s+/g, " ").trim();
@@ -29633,7 +29713,7 @@ function stageProductImprovement(db2, input) {
       success_criteria: successCriteria,
       priority
     };
-    const digest = createHash6("sha256").update(JSON.stringify(canonical)).digest("hex");
+    const digest = createHash7("sha256").update(JSON.stringify(canonical)).digest("hex");
     const clusterKey = `product-improvement:${digest}`;
     const existing = db2.prepare(`SELECT id, project, source_ids, proposed_digest, status, reason, created_at, reviewed_at
        FROM dream_proposals
@@ -29839,7 +29919,7 @@ function executeWorkPackage(db2, input, context = {}) {
   const execute = () => {
     const project = input.action === "prepare" ? input.project : input.ref.project;
     const kind = input.action === "prepare" ? input.kind : input.ref.kind;
-    const hash2 = (value) => createHash7("sha256").update(JSON.stringify(value)).digest("hex");
+    const hash2 = (value) => createHash8("sha256").update(JSON.stringify(value)).digest("hex");
     if (input.action !== "prepare") {
       const submitted = input.action === "submit" ? input.result : void 0;
       if (submitted && holdsSecret([submitted.name, ...submitted.observations, ...submitted.tags])) {
@@ -31222,13 +31302,13 @@ function assembleBriefing(project, recipient) {
 }
 
 // dist/transports/agent-messaging.js
-import { createHash as createHash10, randomUUID as randomUUID4 } from "node:crypto";
+import { createHash as createHash11, randomUUID as randomUUID4 } from "node:crypto";
 
 // dist/core/agent-messaging.js
-import { createHash as createHash9, randomBytes, randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash10, randomBytes, randomUUID as randomUUID2 } from "node:crypto";
 
 // dist/core/agent-message-storage.js
-import { createHash as createHash8, randomUUID } from "node:crypto";
+import { createHash as createHash9, randomUUID } from "node:crypto";
 import fs7 from "node:fs";
 var TERMINAL_WORKFLOW_STATES = /* @__PURE__ */ new Set(["completed", "cancelled", "rejected"]);
 var AgentMessageStorageError = class extends Error {
@@ -31919,7 +31999,7 @@ function parseJsonObjectOrValue(json2) {
   return parsed;
 }
 function hashCanonical(value) {
-  return createHash9("sha256").update(stableStringify(value)).digest("hex");
+  return createHash10("sha256").update(stableStringify(value)).digest("hex");
 }
 function stableStringify(value) {
   if (value === null)
@@ -32124,6 +32204,15 @@ function refineRemember(data, ctx) {
 var RememberSchema = external_exports.object(rememberShape).strict().superRefine(refineRemember);
 var mcpProjectField = external_exports.union([projectName, external_exports.literal(false)]).optional();
 var McpRememberSchema = external_exports.object({ ...rememberShape, project: mcpProjectField }).strict().superRefine(refineRemember);
+var NativeMemoryEditorSchema = external_exports.object({
+  name: nameField,
+  interactive: external_exports.literal(true),
+  project: mcpProjectField
+}).strict();
+var NativeMemoryEditFieldsSchema = external_exports.object({
+  title: external_exports.string().max(TITLE_MAX_LENGTH),
+  observations: external_exports.array(external_exports.string().max(16e3).refine((s) => s.trim().length > 0, "Memory text must not be empty")).min(1).max(100).refine((items) => items.join("\n\n").length <= 16e3, "Memory text exceeds 16000 characters")
+}).strict();
 var recallShape = {
   query: external_exports.string().max(1e3).optional(),
   tag: external_exports.string().max(255).optional(),
@@ -32867,7 +32956,7 @@ function parseStoredObject(raw, label) {
   throw new AgentMessagingError(`Invalid stored JSON object in ${label}.`);
 }
 function principalFallbackKey(idempotencyKey) {
-  return `principal-fallback:${createHash10("sha256").update(idempotencyKey).digest("hex")}`;
+  return `principal-fallback:${createHash11("sha256").update(idempotencyKey).digest("hex")}`;
 }
 function hasPrincipalFallback(db2, sent, idempotencyKey) {
   return db2.prepare(`
@@ -33628,6 +33717,11 @@ var TOOL_DEFINITIONS = [
           type: "boolean",
           description: "Rewrite the memory named by `name` instead of appending to it: its observations are replaced by the `observations` (or `note`) you give \u2014 one of them is required, a replace with neither is refused \u2014 and its tags when `tags` is given, its title when `title` or `note` is given. The previous version is kept in metadata.replaced_history with the time it was replaced. Default false (append)."
         },
+        interactive: {
+          type: "boolean",
+          const: true,
+          description: "Open the native human editor for one existing memory: pass only name, interactive: true and optional project. Shows existing text and asks only for changed title/paragraphs; blank fields keep their original values. Only the human form submission saves, cancellation writes nothing, and the result reads back the stored memory. Requires a host supporting MCP form elicitation. Use recall to find and display the memory first."
+        },
         title: {
           type: "string",
           description: 'Short human-readable label for this memory (e.g. "Use PKCE over implicit flow for auth"), distinct from name (which stays a stable machine key). Shown as the headline in the dashboard and in memory recalled by an agent, instead of the raw name. Reusing an existing name with a different title UPDATES the title; omit to leave an existing title untouched.'
@@ -33676,7 +33770,8 @@ var TOOL_DEFINITIONS = [
       anyOf: [
         { required: ["note"] },
         { required: ["name", "type"] },
-        { required: ["name", "replace", "observations"], properties: { replace: { const: true }, observations: { minItems: 1 } } }
+        { required: ["name", "replace", "observations"], properties: { replace: { const: true }, observations: { minItems: 1 } } },
+        { required: ["name", "interactive"], properties: { interactive: { const: true } } }
       ]
     }
   },
@@ -34027,6 +34122,58 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
       return result.status === "error" ? { ...ok(result), isError: true } : ok(result);
     }
     if (name === "remember") {
+      if (args?.interactive === true) {
+        const r2 = parseOrFail(NativeMemoryEditorSchema, args);
+        if (!r2.ok)
+          return r2.result;
+        const resolved2 = writeProject(r2.data.project, void 0, requestContext);
+        if ("result" in resolved2)
+          return resolved2.result;
+        const elicit = requestContext.elicit;
+        if (!elicit)
+          return fail("native_form_unavailable: This host cannot show the native editor. Use recall and the existing remember workflow; nothing was saved.");
+        return ok(await editMemoryInteractively(r2.data.name, resolved2.project ?? null, sourceHost, async (view, observations) => {
+          const paragraphs = observations.map((text, index) => {
+            const preview = text.replace(/\s+/g, " ");
+            return {
+              key: index === 0 ? "body" : `body_${index}`,
+              text,
+              label: `Paragraph ${index + 1}: ${preview.slice(0, 40)}${preview.length > 40 ? "\u2026" : ""}`
+            };
+          });
+          const shape = { title: NativeMemoryEditFieldsSchema.shape.title.optional() };
+          for (const paragraph of paragraphs)
+            shape[paragraph.key] = external_exports.string().max(16e3).optional();
+          const response = await elicit({
+            mode: "form",
+            message: [
+              `Edit MeMesh memory: ${view.title || "Untitled"}
+Created ${view.createdAt.slice(0, 10)}
+Fill only what you want to change. Blank fields keep the original. Submit saves; cancel changes nothing.`,
+              ...paragraphs.map((paragraph, index) => `Original paragraph ${index + 1}:
+${paragraph.text}`)
+            ].join("\n\n"),
+            requestedSchema: {
+              type: "object",
+              properties: {
+                title: { type: "string", title: "New title (leave blank to keep)" },
+                ...Object.fromEntries(paragraphs.map((paragraph) => [paragraph.key, { type: "string", title: paragraph.label, maxLength: 16e3 }]))
+              },
+              required: []
+            }
+          });
+          if (response.action !== "accept")
+            return null;
+          const submitted = external_exports.object(shape).strict().parse(response.content);
+          return NativeMemoryEditFieldsSchema.parse({
+            title: submitted.title === void 0 || submitted.title.trim() === "" ? view.title : submitted.title,
+            observations: paragraphs.map((paragraph) => {
+              const replacement = submitted[paragraph.key];
+              return replacement === void 0 || replacement.trim() === "" ? paragraph.text : replacement;
+            })
+          });
+        }));
+      }
       const r = parseOrFail(McpRememberSchema, args);
       if (!r.ok)
         return r.result;
@@ -34319,7 +34466,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     }
   }
   const projectBinding = needsProjectBinding ? resolveMcpProject(process.env.MEMESH_PROJECT_ROOT, rootsUnreadable ? null : workspaceRootUris) : void 0;
-  return handleTool(name, args, normalizeClientHost(server.getClientVersion()?.name), extra.signal, { workspaceRootUris, projectBinding });
+  return handleTool(name, args, normalizeClientHost(server.getClientVersion()?.name), extra.signal, {
+    workspaceRootUris,
+    projectBinding,
+    ...server.getClientCapabilities()?.elicitation?.form ? {
+      elicit: (params) => server.elicitInput(params, { signal: extra.signal, timeout: 12e4 })
+    } : {}
+  });
 });
 async function main() {
   openDatabase();

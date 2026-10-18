@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
+import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
 import { exportOpenAITools } from '../../src/core/schema-export.js';
 import { BriefingSchema, HttpLearnSchema, LearnSchema, McpLearnSchema, MessageSchema, RememberSchema, RecallSchema, WorkPackageSchema } from '../../src/transports/schemas.js';
 import { TOOL_DEFINITIONS } from '../../src/transports/mcp/handlers.js';
@@ -90,9 +91,15 @@ describe('exportOpenAITools', () => {
       { required: ['name', 'type'] },
       { required: ['name', 'replace', 'observations'], properties: { replace: { const: true }, observations: { minItems: 1 } } },
     ]);
-    // The MCP tool definition an agent actually reads states the same branches.
-    const mcpRemember = TOOL_DEFINITIONS.find((t) => t.name === 'remember') as { inputSchema: { anyOf?: unknown } } | undefined;
-    expect(mcpRemember?.inputSchema.anyOf).toEqual(tool.function.parameters.anyOf);
+    // MCP also advertises the human editor, which the HTTP export cannot open.
+    const mcpRemember = TOOL_DEFINITIONS.find((t) => t.name === 'remember')!;
+    expect(mcpRemember.inputSchema.anyOf).toEqual([...tool.function.parameters.anyOf,
+      { required: ['name', 'interactive'], properties: { interactive: { const: true } } },
+    ]);
+    const validate = new AjvJsonSchemaValidator().getValidator(mcpRemember.inputSchema as any);
+    expect(validate({ name: 'existing-note', interactive: true }).valid).toBe(true);
+    expect(validate({}).valid).toBe(false);
+    expect(validate({ name: 'existing-note', interactive: false }).valid).toBe(false);
     // `required` stays absent: a top-level list would be a THIRD claim, and
     // neither field is unconditionally required.
     expect(tool.function.parameters.required).toBeUndefined();
@@ -287,8 +294,14 @@ describe('#534 the export matches the live MCP tools', () => {
   /** MCP-only on purpose: the session-bound project; the export follows HTTP, which names project tags instead. */
   // `learn`'s `project` is exported too: the export describes the HTTP API,
   // and POST /v1/learn requires it (#558).
-  const MCP_ONLY: Record<string, string[]> = { remember: ['project'], recall: ['project'] };
+  // A native form needs an MCP client; HTTP and its export do not accept interactive.
+  const MCP_ONLY: Record<string, string[]> = { remember: ['project', 'interactive'], recall: ['project'] };
   const exported = new Map(exportOpenAITools().map((t: any) => [t.function.name.replace(/^memesh_/, ''), t.function.parameters?.properties ?? {}]));
+
+  it('does not advertise or accept native MCP editing over HTTP', () => {
+    expect(exported.get('remember')).not.toHaveProperty('interactive');
+    expect(RememberSchema.safeParse({ name: 'existing-note', interactive: true }).success).toBe(false);
+  });
 
   it.each(TOOL_DEFINITIONS.map((d: any) => [d.name, d]))('%s', (name, definition: any) => {
     const live = definition.inputSchema?.properties ?? {};
