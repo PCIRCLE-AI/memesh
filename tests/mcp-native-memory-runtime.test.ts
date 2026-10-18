@@ -8,7 +8,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { ElicitRequestSchema, ListRootsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { MemeshDatabase } from '../src/storage/sqlite.js';
 
-it('the actual MCP process negotiates a native form: cancel leaves data, submit saves and reads back', async () => {
+it('the actual MCP process preserves native forms and saves pane drafts without another form', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-form-runtime-'));
   const workspace = fs.realpathSync(dir);
   // Keep the detached update checker from holding this fixture's cwd on Windows.
@@ -46,6 +46,24 @@ it('the actual MCP process negotiates a native form: cancel leaves data, submit 
       expect(db.prepare('SELECT content FROM observations').all()).toEqual([{ content: 'Saved paragraph' }]);
       const recalled = await client.callTool({ name: 'recall', arguments: { query: 'Saved' } });
       expect(JSON.stringify(recalled)).toContain('Saved paragraph');
+      expect(forms).toBe(2);
+
+      // Desktop can report form capability yet cancel it immediately. Pane drafts need no form.
+      accept = false;
+      const beforePane = row();
+      const prepared = await client.callTool({ name: 'remember', arguments: { name: 'ui-note', editor: { action: 'prepare' } } });
+      expect(prepared.isError, JSON.stringify(prepared)).not.toBe(true);
+      const draft = JSON.parse((prepared.content as { text: string }[])[0].text);
+      expect(draft.memory.observations).toEqual(['Saved paragraph']);
+      expect(row()).toEqual(beforePane);
+      const paneSaved = await client.callTool({ name: 'remember', arguments: {
+        name: 'ui-note', editor: { action: 'save', revision: draft.revision, title: 'Pane title', observations: ['Pane paragraph'] },
+      } });
+      expect(paneSaved.isError, JSON.stringify(paneSaved)).not.toBe(true);
+      expect(JSON.stringify(paneSaved)).toContain('Pane paragraph');
+      expect(row()).toMatchObject({ title: 'Pane title' });
+      expect(db.prepare('SELECT content FROM observations').all()).toEqual([{ content: 'Pane paragraph' }]);
+      expect(JSON.stringify(await client.callTool({ name: 'recall', arguments: { query: 'Pane' } }))).toContain('Pane paragraph');
       expect(forms).toBe(2);
     } finally { db.close(); }
   } finally {

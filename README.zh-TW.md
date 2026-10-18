@@ -50,7 +50,7 @@ memesh doctor
 
 Claude Code 插件提供自動記錄和提醒。Codex 插件在獲准執行 hooks 後，可以在對話開始時帶入記憶；其他自動記錄行為依工具而異。你也可以直接請 agent 儲存或查找記憶。
 
-尚未發布的原始碼版本新增 Claude Code `/memesh-memories` 入口，可查看專案記憶並開啟原生編輯器。Codex 可請 `$memesh` 查找並編輯記憶。表單顯示原文，只填要改的標題或段落，留白保留原文。提交後儲存並讀回結果，取消不寫入；不支援的宿主仍可用原本的對話操作。
+尚未發布的原始碼版本新增 Claude Code `/memesh-memories` 入口，可查看及修改專案記憶。Claude Desktop 在面板內編輯；終端 Claude Code 與 Codex 使用原生表單。Codex 可請 `$memesh` 查找並編輯記憶。只填要改的標題或段落，留白保留原文。儲存後讀回結果，取消不寫入；不支援的宿主仍可用原本的對話操作。
 
 [完整工具與指令說明](docs/api/API_REFERENCE.md) · [Agent 訊息](docs/platforms/agent-messaging.md) · [運作方式](docs/ARCHITECTURE.md) · [參與開發](CONTRIBUTING.md)
 

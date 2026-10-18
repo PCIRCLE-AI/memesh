@@ -14,6 +14,8 @@ are not part of a published npm release yet.
 
 ### Fixed
 
+- Claude Desktop memory editing uses inputs inside the Mod pane instead of a form request that the host can cancel without displaying. Saves retain the same stale-edit and data-preservation checks; terminal forms are unchanged.
+
 - Claude hooks are no longer labelled Codex just because the shell exports `CODEX_HOME`. Task-state changes record their latest known writer; no-op updates retain the previous attribution (#526).
 - Edits through the Anthropic memory tool no longer increase confidence. Explicit remembers with new observations retain their existing confirmation behavior (#531).
 - Changing a title leaves unreadable metadata intact instead of replacing it with an empty object. Valid metadata still loses only its generated-title marker, and title search remains updated (#535).

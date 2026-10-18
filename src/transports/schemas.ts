@@ -193,6 +193,20 @@ export const NativeMemoryEditFieldsSchema = z.object({
     .min(1).max(100).refine(items => items.join('\n\n').length <= 16_000, 'Memory text exceeds 16000 characters'),
 }).strict();
 
+/** The Mod submits its pane draft through the same guarded writer, without MCP elicitation. */
+export const PaneMemoryEditorSchema = z.object({
+  name: nameField,
+  project: mcpProjectField,
+  editor: z.discriminatedUnion('action', [
+    z.object({ action: z.literal('prepare') }).strict(),
+    z.object({
+      action: z.literal('save'),
+      revision: z.string().regex(/^[a-f0-9]{64}$/),
+      ...NativeMemoryEditFieldsSchema.shape,
+    }).strict(),
+  ]),
+}).strict();
+
 const recallShape = {
   query: z.string().max(1000).optional(),
   tag: z.string().max(255).optional(),

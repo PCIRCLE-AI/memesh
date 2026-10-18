@@ -29261,7 +29261,7 @@ function forget(args) {
 }
 
 // dist/core/native-memory-editor.js
-async function editMemoryInteractively(name, project, sourceHost, ask) {
+async function editMemoryInteractively(name, project, sourceHost, ask, expectedRevision) {
   const db2 = getDatabase();
   const kg = new KnowledgeGraph(db2);
   const snapshot = () => {
@@ -29294,6 +29294,9 @@ async function editMemoryInteractively(name, project, sourceHost, ask) {
     return { entity, revision };
   };
   const before = snapshot();
+  if (expectedRevision !== void 0 && expectedRevision !== before.revision) {
+    throw new Error("memory_changed: Reload this memory before saving; your edit was not applied.");
+  }
   const viewOf = (entity) => {
     const shown = shownEntity(entity);
     return {
@@ -29302,7 +29305,8 @@ async function editMemoryInteractively(name, project, sourceHost, ask) {
       type: shown.type,
       createdAt: shown.created_at,
       title: shown.title ?? "",
-      body: shown.observations.join("\n\n")
+      body: shown.observations.join("\n\n"),
+      observations: shown.observations
     };
   };
   const view = viewOf(before.entity);
@@ -29311,6 +29315,8 @@ async function editMemoryInteractively(name, project, sourceHost, ask) {
   }
   const shownObservations = shownEntity(before.entity).observations;
   const fields = await ask(view, shownObservations);
+  if (fields === void 0)
+    return { status: "ready", memory: view, revision: before.revision };
   if (fields === null)
     return { status: "cancelled", memory: view };
   return db2.transaction(() => {
@@ -32213,6 +32219,18 @@ var NativeMemoryEditFieldsSchema = external_exports.object({
   title: external_exports.string().max(TITLE_MAX_LENGTH),
   observations: external_exports.array(external_exports.string().max(16e3).refine((s) => s.trim().length > 0, "Memory text must not be empty")).min(1).max(100).refine((items) => items.join("\n\n").length <= 16e3, "Memory text exceeds 16000 characters")
 }).strict();
+var PaneMemoryEditorSchema = external_exports.object({
+  name: nameField,
+  project: mcpProjectField,
+  editor: external_exports.discriminatedUnion("action", [
+    external_exports.object({ action: external_exports.literal("prepare") }).strict(),
+    external_exports.object({
+      action: external_exports.literal("save"),
+      revision: external_exports.string().regex(/^[a-f0-9]{64}$/),
+      ...NativeMemoryEditFieldsSchema.shape
+    }).strict()
+  ])
+}).strict();
 var recallShape = {
   query: external_exports.string().max(1e3).optional(),
   tag: external_exports.string().max(255).optional(),
@@ -33722,6 +33740,10 @@ var TOOL_DEFINITIONS = [
           const: true,
           description: "Open the native human editor for one existing memory: pass only name, interactive: true and optional project. Shows existing text and asks only for changed title/paragraphs; blank fields keep their original values. Only the human form submission saves, cancellation writes nothing, and the result reads back the stored memory. Requires a host supporting MCP form elicitation. Use recall to find and display the memory first."
         },
+        editor: {
+          ...external_exports.toJSONSchema(PaneMemoryEditorSchema.shape.editor),
+          description: "For a host pane: prepare returns the full existing text and revision without writing; save sends that revision, title and observations. Stale edits are refused. Uses the same guarded writer and reads back stored text; the revision is a consistency check, not proof of human identity. Do not combine with interactive or ordinary remember fields."
+        },
         title: {
           type: "string",
           description: 'Short human-readable label for this memory (e.g. "Use PKCE over implicit flow for auth"), distinct from name (which stays a stable machine key). Shown as the headline in the dashboard and in memory recalled by an agent, instead of the raw name. Reusing an existing name with a different title UPDATES the title; omit to leave an existing title untouched.'
@@ -33771,7 +33793,8 @@ var TOOL_DEFINITIONS = [
         { required: ["note"] },
         { required: ["name", "type"] },
         { required: ["name", "replace", "observations"], properties: { replace: { const: true }, observations: { minItems: 1 } } },
-        { required: ["name", "interactive"], properties: { interactive: { const: true } } }
+        { required: ["name", "interactive"], properties: { interactive: { const: true } } },
+        { required: ["name", "editor"] }
       ]
     }
   },
@@ -34122,6 +34145,16 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
       return result.status === "error" ? { ...ok(result), isError: true } : ok(result);
     }
     if (name === "remember") {
+      if (args?.editor !== void 0) {
+        const r2 = parseOrFail(PaneMemoryEditorSchema, args);
+        if (!r2.ok)
+          return r2.result;
+        const resolved2 = writeProject(r2.data.project, void 0, requestContext);
+        if ("result" in resolved2)
+          return resolved2.result;
+        const editor = r2.data.editor;
+        return ok(await editMemoryInteractively(r2.data.name, resolved2.project ?? null, sourceHost, async () => editor.action === "prepare" ? void 0 : { title: editor.title, observations: editor.observations }, editor.action === "save" ? editor.revision : void 0));
+      }
       if (args?.interactive === true) {
         const r2 = parseOrFail(NativeMemoryEditorSchema, args);
         if (!r2.ok)

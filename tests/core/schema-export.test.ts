@@ -95,9 +95,12 @@ describe('exportOpenAITools', () => {
     const mcpRemember = TOOL_DEFINITIONS.find((t) => t.name === 'remember')!;
     expect(mcpRemember.inputSchema.anyOf).toEqual([...tool.function.parameters.anyOf,
       { required: ['name', 'interactive'], properties: { interactive: { const: true } } },
+      { required: ['name', 'editor'] },
     ]);
     const validate = new AjvJsonSchemaValidator().getValidator(mcpRemember.inputSchema as any);
     expect(validate({ name: 'existing-note', interactive: true }).valid).toBe(true);
+    expect(validate({ name: 'existing-note', editor: { action: 'prepare' } }).valid).toBe(true);
+    expect(validate({ name: 'existing-note', editor: { action: 'save', title: 'Missing revision', observations: ['Text'] } }).valid).toBe(false);
     expect(validate({}).valid).toBe(false);
     expect(validate({ name: 'existing-note', interactive: false }).valid).toBe(false);
     // `required` stays absent: a top-level list would be a THIRD claim, and
@@ -295,12 +298,14 @@ describe('#534 the export matches the live MCP tools', () => {
   // `learn`'s `project` is exported too: the export describes the HTTP API,
   // and POST /v1/learn requires it (#558).
   // A native form needs an MCP client; HTTP and its export do not accept interactive.
-  const MCP_ONLY: Record<string, string[]> = { remember: ['project', 'interactive'], recall: ['project'] };
+  const MCP_ONLY: Record<string, string[]> = { remember: ['project', 'interactive', 'editor'], recall: ['project'] };
   const exported = new Map(exportOpenAITools().map((t: any) => [t.function.name.replace(/^memesh_/, ''), t.function.parameters?.properties ?? {}]));
 
   it('does not advertise or accept native MCP editing over HTTP', () => {
     expect(exported.get('remember')).not.toHaveProperty('interactive');
+    expect(exported.get('remember')).not.toHaveProperty('editor');
     expect(RememberSchema.safeParse({ name: 'existing-note', interactive: true }).success).toBe(false);
+    expect(RememberSchema.safeParse({ name: 'existing-note', editor: { action: 'prepare' } }).success).toBe(false);
   });
 
   it.each(TOOL_DEFINITIONS.map((d: any) => [d.name, d]))('%s', (name, definition: any) => {

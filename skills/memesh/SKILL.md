@@ -231,6 +231,11 @@ paragraph plus a title field. The human fills only what should change; blank or
 omitted fields keep their original values. Do not fill those fields for the human.
 Claude Code source builds also provide the `/memesh-memories` Mod entrypoint. Installed
 releases may not yet include it; use the available tool schema as the authority.
+Claude Desktop edits inside that pane; terminal Claude Code and Codex retain the
+MCP form. If no form appeared, do not assume the person cancelled or automatically
+save model-written text instead. The Desktop pane prepares a revision and submits
+its inputs through the same guarded writer; the revision prevents stale edits
+and does not prove human identity.
 
 ### You just fixed a bug
 ```bash

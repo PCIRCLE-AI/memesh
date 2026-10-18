@@ -99,6 +99,18 @@ export declare const NativeMemoryEditFieldsSchema: z.ZodObject<{
     title: z.ZodString;
     observations: z.ZodArray<z.ZodString>;
 }, z.core.$strict>;
+export declare const PaneMemoryEditorSchema: z.ZodObject<{
+    name: z.ZodPipe<z.ZodString, z.ZodTransform<string, string>>;
+    project: z.ZodOptional<z.ZodUnion<readonly [z.ZodString, z.ZodLiteral<false>]>>;
+    editor: z.ZodDiscriminatedUnion<[z.ZodObject<{
+        action: z.ZodLiteral<"prepare">;
+    }, z.core.$strict>, z.ZodObject<{
+        title: z.ZodString;
+        observations: z.ZodArray<z.ZodString>;
+        action: z.ZodLiteral<"save">;
+        revision: z.ZodString;
+    }, z.core.$strict>], "action">;
+}, z.core.$strict>;
 export declare const RecallSchema: z.ZodObject<{
     query: z.ZodOptional<z.ZodString>;
     tag: z.ZodOptional<z.ZodString>;

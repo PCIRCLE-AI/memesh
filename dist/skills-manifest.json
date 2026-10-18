@@ -28,8 +28,8 @@
     },
     {
       "path": "hooks/native-memory.js",
-      "sha256": "bb6055d7175fa9c29feac50d8ae2b3aab0259b0205deff79ff4d42d757fa0535",
-      "bytes": 7937
+      "sha256": "4b8280686babac52358b10de2cdb3a61a3ad3b9606179ec45f6a7784a973ee08",
+      "bytes": 10481
     },
     {
       "path": "scripts/hooks/_claude-channel.js",
@@ -248,8 +248,8 @@
     },
     {
       "path": "skills/memesh/SKILL.md",
-      "sha256": "4cabc7811ecd7c34e50a5eaf6749a433300ca58ea57b35465c6c5c032a40db8d",
-      "bytes": 28009
+      "sha256": "d725c71caaa1d543f5a0ca1f2720a0aa9d895f94a3fe4254064e8fd01d9b49be",
+      "bytes": 28368
     }
   ]
 }
