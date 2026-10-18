@@ -6,6 +6,10 @@ are not part of a published npm release yet.
 
 ## [Unreleased]
 
+## [4.11.0] — 2026-10-19
+
+### Added
+
 - Add a minimal Claude Code Mod and optional native `remember` editor for MCP form-capable hosts: view project memory, cancel without writing, or save through the existing writer and read the result back.
 
 ### Changed
