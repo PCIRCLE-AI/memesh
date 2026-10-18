@@ -81,6 +81,11 @@
       "reason": "The detector's `.toBe(0)` matches the short SessionStart launcher's successful process exit status, not an empty collection. The same test separately waits for the detached lifecycle state and router socket, asserts a distinct companion PID, reads back exactly one registered session from SQLite, and performs authenticated exact-companion cleanup.",
       "triaged": "2026-09-08 Codex detached companion release audit"
     },
+    "C1 tests/mcp-native-memory-runtime.test.ts": {
+      "class": "SAFE",
+      "reason": "The empty refresh-marker list verifies that the owned native-form fixture starts no unrelated detached updater. The same test requires two form requests, saved title and exact nonempty observations, plus recall readback. Controlled red without updateCheck:false produced a refresh marker; green retained every functional assertion.",
+      "triaged": "2026-10-19 native-form Windows fixture isolation"
+    },
     "C1 tests/node-shim.test.ts": {
       "class": "SAFE-HEURISTIC-FALSE-POSITIVE",
       "reason": "The detector's `.toBe(0)` matches the spawned shim's process exit status, not an empty collection. Each run test also requires empty stderr and the exact stdout the shim prints (`function`), and fails without the sibling package.json (break-tested: `require is not defined in ES module scope`).",
