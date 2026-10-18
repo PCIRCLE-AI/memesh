@@ -133,6 +133,11 @@ unless it is on `main`, the tree is clean, local `HEAD` matches `origin/main`,
 reason it refuses is printed at once, so a `--dry-run` tells you the whole list
 rather than the first item.
 
+If a prerelease exists but npm publication failed, retry its unchanged tag with
+`gh workflow run publish-npm.yml -f release_tag=vX.Y.Z`. This accepts only an
+existing non-draft prerelease and publishes to `next`; it does not move tags or
+promote `latest`. `prepublishOnly` still runs the full artifact gates once.
+
 Pick the release body deliberately. With no `--notes-file` it publishes the
 whole `## [X.Y.Z]` CHANGELOG section — complete, and long: 4.6.1's was 26,355
 characters. The bodies actually published for 4.6.1 and 4.6.0 were 2,790 and

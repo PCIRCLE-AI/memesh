@@ -413,7 +413,12 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     const publisher = read('.github/workflows/publish-npm.yml');
     expect(publisher).not.toContain('run: npm run test:e2e-dashboard');
     expect(publisher).not.toContain('npx playwright install');
-    unconditionalStep(publisher, 'npm test -- --run');
+    unconditionalStep(publisher.split('\n  promote:')[0], 'npm publish --access public --provenance --tag "$MEMESH_NPM_DIST_TAG"');
+    expect(publisher).not.toContain('run: npm test -- --run');
+    const pkg = JSON.parse(read('package.json'));
+    expect(pkg.scripts.prepublishOnly).toBe('npm run build && npm run verify:artifact');
+    expect(pkg.scripts['verify:artifact']).toBe('npm run verify:release && npm run test:isolated && npm run test:packaged && npm run test:packaged:upgrade');
+    expect(publisher).not.toMatch(/--ignore-scripts|NPM_CONFIG_IGNORE_SCRIPTS|npm_config_ignore_scripts/);
     // npm publish runs prepublishOnly -> test:isolated without CLI excludes.
     // Journeys only: every Build & Test leg already runs the build, verify:release
     // and the full suite, so the full run here repeated them on the same OS and Node.
@@ -722,7 +727,7 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       expect(workflow).toMatch(/release:\s*\n\s*types:\s*\[\s*published\s*,\s*released\s*\]/);
     });
 
-    it('the publish job runs only for a `published` action, so it never runs twice for one release', () => {
+    it('publishes automatically only for published, with an explicit manual retry', () => {
       // A directly published full release fires BOTH `published` and
       // `released` as two separate workflow runs. Without this guard the
       // publish job — build, full suite, both smoke tests, `npm publish` —
@@ -733,7 +738,19 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       // survives a mutant that WIDENS the guard (`|| ... == 'released'`) or
       // MOVES it down from the job onto a single step, since both leave that
       // substring intact somewhere in the block.
-      expect(jobBlock('publish')).toMatch(/^ {4}if: github\.event\.action == 'published'$/m);
+      expect(jobBlock('publish')).toMatch(/^ {4}if: github\.event\.action == 'published' \|\| github\.event_name == 'workflow_dispatch'$/m);
+    });
+
+    it('retries only an existing non-draft prerelease, checks out that tag, and cannot promote latest', () => {
+      const publish = jobBlock('publish');
+      expect(publish).toContain("if: github.event_name == 'workflow_dispatch'");
+      expect(publish).toContain('[[ "$RELEASE_TAG" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]]');
+      expect(publish).toContain("--json isDraft,isPrerelease --jq '(.isDraft == false) and (.isPrerelease == true)'");
+      expect(publish.indexOf('Validate prerelease retry')).toBeLessThan(publish.indexOf('Checkout code'));
+      expect(publish).toContain('ref: ${{ inputs.release_tag || github.ref }}');
+      expect(publish).toContain('RELEASE_TAG: ${{ inputs.release_tag || github.event.release.tag_name }}');
+      expect(publish).toContain("(github.event_name == 'workflow_dispatch' || github.event.release.prerelease) && 'next' || 'latest'");
+      for (const body of runBodies(publish)) expect(body).not.toMatch(/\$\{\{/);
     });
 
     it('the promote job runs only for a `released` action', () => {
