@@ -581,7 +581,7 @@ describe('finish-release cuts the release in one call', () => {
     expect(code).toContain('runPostPublishFlow(');
     const publisher = fs.readFileSync(path.join(repoRoot, '.github/workflows/publish-npm.yml'), 'utf8');
     expect(publisher).toContain('npm publish --access public --provenance --tag "$MEMESH_NPM_DIST_TAG"');
-    expect(publisher).toContain("github.event.release.prerelease && 'next' || 'latest'");
+    expect(publisher).toContain("(github.event_name == 'workflow_dispatch' || github.event.release.prerelease) && 'next' || 'latest'");
   });
 
   it('#359 round 4: the poll, the latest read and the decision no longer live in this script at all', () => {
