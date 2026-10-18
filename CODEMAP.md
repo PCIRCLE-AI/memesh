@@ -21,7 +21,6 @@ for the public API surface see [`docs/api/API_REFERENCE.md`](docs/api/API_REFERE
 | `memesh-host-codex-session` | `src/host-runtime/codex-session.ts` |
 | `memesh-host-acp` (experimental, not release-gated) | `src/host-runtime/acp.ts` |
 | `memesh serve` (HTTP REST) | `src/transports/http/server.ts` |
-| `memesh` (dashboard) | `dashboard/src/main.tsx` → `dashboard/src/App.tsx` root component (served from `dashboard/dist/index.html`) |
 | Claude Code hooks | `scripts/hooks/*.js` (wired in `hooks/hooks.json`) |
 
 Memory CRUD flows share `src/core/operations.ts`. Durable local messaging uses
@@ -42,9 +41,7 @@ src/
 ├── host-adapters/   # native Claude/Codex adapters + experimental ACP protocol adapter
 ├── host-runtime/    # managed host processes + private-router client/server
 ├── mcp/             # stdio server (NOTE: server lives here, handlers in transports/mcp/)
-└── cli/             # view-live.ts (dashboard fallback, NOT a transport)
 scripts/hooks/       # Claude/Codex hook entrypoints + shared/generated helpers
-dashboard/src/       # Preact + Vite dashboard
 tests/               # vitest (forks pool) — mirrors src/ layout
 benchmarks/longmemeval/  # public LongMemEval-S evidence (REPRODUCE.md)
 benchmarks/token/        # token-usage measurability verdict + frozen benchmark contract (CONTRACT.md)
@@ -79,7 +76,7 @@ docs/                # ARCHITECTURE.md, api/API_REFERENCE.md
 - Heuristic relation backfill (orphan connector) → `src/core/kg-backfill.ts`
 
 ### Config / self-update
-- Stated task state read by the dashboard's Project tab → `GET /v1/task-state` in `src/transports/http/server.ts` → `src/core/task-state-store.ts`
+- Stated task state over HTTP → `GET /v1/task-state` in `src/transports/http/server.ts` → `src/core/task-state-store.ts`
 - Config read/write → `src/core/config.ts`
 - Path resolution (explicit `MEMESH_DIR` / `MEMESH_DB_PATH` overrides, then HOME defaults) → `src/core/paths.ts`
 - `memesh doctor` health check + real probes → `src/core/doctor.ts`
@@ -95,11 +92,13 @@ docs/                # ARCHITECTURE.md, api/API_REFERENCE.md
 - Managed router and host runtimes → `src/host-runtime/`
 - Lifecycle and operator contract → `docs/platforms/agent-messaging.md`
 
-### Dashboard (Preact)
-- Tab routing → `dashboard/src/App.tsx`
-- Analytics and proposal-review panels → `dashboard/src/components/`
-- Read-only aggregation endpoints → `src/core/analytics.ts`, `stats.ts`, `projects.ts`, `patterns.ts`
-- i18n registry → `dashboard/src/lib/i18n.ts`
+### Native memory editor
+
+- Claude Mod → `hooks/native-memory.js` (terminal forms and Desktop pane inputs)
+- Codex native forms → `src/transports/mcp/handlers.ts` (`remember`)
+- Shared editing → `src/core/native-memory-editor.ts`
+- Memory writes and saved history → `src/core/operations.ts`, `src/core/replaced-history.ts`
+- HTTP remains API-only; the standalone Dashboard and HTML fallback are removed.
 
 ### Hook commands (`hooks/hooks.json`)
 | Command | Fires on | Does |
@@ -148,10 +147,6 @@ are helpers, not hook commands. `scripts/hooks/auto-update-runner.mjs` is spawne
 | `src/core/database-diagnosis.ts` | Why the database will not open, and the one fix to print |
 | `src/core/transcript-source.ts` | Read-only, project-scoped transcript discovery |
 | `src/core/project-attribution.ts` | Which project a memory belongs to (pure functions) |
-| `dashboard/src/lib/api.ts` | Dashboard bearer-token plumbing and fetch wrapper |
-| `dashboard/src/lib/i18n.ts` | i18n registry |
-| `dashboard/src/lib/entity-display.ts`, `dashboard/src/lib/type-palette.ts`, `dashboard/src/lib/tokens.ts` | Shared entity display helpers, type colours, canvas-readable tokens |
-| `dashboard/src/lib/failure.ts`, `dashboard/src/lib/signalMode.ts`, `dashboard/src/lib/external-handoffs.ts` | Load-failure kinds, Signal Mode toggle, inventory of deliberate exits |
 
 ---
 

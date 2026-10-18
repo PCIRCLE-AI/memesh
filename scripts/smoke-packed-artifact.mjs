@@ -69,6 +69,10 @@ try {
 
 const packageDir = path.join(extractDir, 'package');
 
+for (const retired of ['dashboard', 'dist/cli/view-live.js']) {
+  if (fs.existsSync(path.join(packageDir, retired))) throw new Error(`Retired web UI shipped: ${retired}`);
+}
+
 const requiredFiles = [
   // Core
   'package.json',
@@ -125,8 +129,6 @@ const requiredFiles = [
   'skills/memesh-review/SKILL.md',
   // The public README links this exact lifecycle and support contract.
   'docs/platforms/agent-messaging.md',
-  // Dashboard build
-  'dashboard/dist/index.html',
 ];
 
 for (const relativePath of requiredFiles) {

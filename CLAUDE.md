@@ -13,7 +13,6 @@ So — **read the real documents.** Do not restate them here.
 | What are the modules, how does data flow, why is it built this way | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | What is the MCP / HTTP / CLI surface, exactly | [docs/api/API_REFERENCE.md](docs/api/API_REFERENCE.md) |
 | What does the product do, how is it installed | [README.md](README.md) |
-| Colour, type, spacing, interaction — before ANY dashboard change | [DESIGN.md](DESIGN.md) |
 | How do I report a vulnerability | [SECURITY.md](SECURITY.md) |
 | I am an agent INSTALLING memesh for a user | [llms-install.md](llms-install.md) |
 | I am an agent USING memesh (the loop, the 12 tools, hygiene) | [AGENTS.md](AGENTS.md) |
@@ -33,7 +32,7 @@ it here and link instead.
 - Fast inner loop: `npm run typecheck` then `node scripts/run-tests-isolated.mjs` (ends with `Test Files … passed`), then `npm run verify` before reporting.
 - Journeys only: `npm run verify:journeys` (build + packaged smoke; writes no receipt)
 - Receipt state: `npm run verify:receipt` (prints `fresh`, `stale` or `missing` for the current tree)
-- Run the app: `npm run build && node dist/transports/cli/cli.js serve --host 127.0.0.1 --port 3737` (dashboard at http://127.0.0.1:3737)
+- Run the app: `npm run build && node dist/transports/cli/cli.js serve --host 127.0.0.1 --port 3737` (HTTP API only)
 
 Run `npm run verify` before reporting any task complete and paste its closing lines. If a test fails, fix the code, not the test.
 
@@ -59,11 +58,8 @@ expressed as `maxWorkers: 1` + `fileParallelism: false`; the older
 `singleFork`/`maxForks`/`minForks` keys do not exist in Vitest 4 and were being
 silently ignored.
 
-`npm run typecheck` runs two configs: `tsconfig.check.json` (`src/`, `.ts`
-tests outside `tests/dashboard/`, root `*.config.ts`) and
-`tsconfig.check-dashboard.json` (`dashboard/src/`, `.tsx` tests and the
-dashboard's `.ts` tests). `tsconfig.json` is narrower on purpose — it is the
-config that emits `dist/`.
+`npm run typecheck` checks `src/`, all tests and root config files through
+`tsconfig.check.json`. `tsconfig.json` emits `dist/`.
 
 ### Coverage, and what a 0% file means
 
@@ -77,13 +73,6 @@ hooks, the MCP server and the packaged binaries are exercised through
 `spawnSync`, so they report **0% while being well tested**.
 `src/transports/cli/cli.ts` is the clearest case — a whole directory of tests
 against it, 0% in the report.
-
-What the number is good for is the opposite direction: a file at 0% that is
-*not* spawned anywhere is genuinely unexercised. That is where most of the
-dashboard sits. Do not write the count down here — this file has already been
-wrong about it once, and `tests/dashboard/component-contracts.test.tsx` derives
-the real list from the directory and fails when a component belongs to neither
-side of it.
 
 ### Verifying a change before claiming it works
 
@@ -150,7 +139,7 @@ Two more rules:
   `node scripts/check-readme-tool-parity.mjs` prints.
 - **`scripts/check-generated-mirror.mjs` compares a fresh build with the git
   index.** Run `npm run build`, stage the regenerated `dist/`,
-  `scripts/hooks/_generated/` and `dashboard/dist/`, then run `npm run verify`.
+  `scripts/hooks/_generated/`, then run `npm run verify`.
 
 ### Working policy
 

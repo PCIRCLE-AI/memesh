@@ -26,9 +26,8 @@ Documentation is part of the change, not follow-up work. CI's version, generated
 - Update `README.md` when behavior, installation, or development workflow changes (and re-sync the 1 locale parity — `README.zh-TW.md`).
 - Update `docs/api/API_REFERENCE.md` when the MCP / HTTP / CLI surface changes (and bump its `**Version**: ` line on a release).
 - Update `docs/ARCHITECTURE.md` when module structure, storage behavior, or packaging flow changes (and bump its `**Version**: ` line on a release).
-- Read `DESIGN.md` before any dashboard change that touches colour, type, spacing or an interaction, and update it when a token or rule changes. It is derived from `dashboard/src/styles/global.css`; when the two disagree the CSS is what ships, so fix whichever is wrong rather than leaving them apart.
 - Keep version metadata coherent: `package.json`, both the root `version` and `packages[""].version` in `package-lock.json`, `.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`, `.claude-plugin/marketplace.json` `plugins[].version`, the `CHANGELOG.md` release header, and the `**Version**:` lines in `CODEMAP.md`, `docs/ARCHITECTURE.md`, and `docs/api/API_REFERENCE.md`. Run `node scripts/check-version-coherence.mjs` to check these anchors. `npm version` updates the lockfile; hand-editing `package.json` does not.
-- After ANY change to `.claude-plugin/`, `scripts/hooks/`, `skills/`, or version files, run `npm run build` so `dist/skills-manifest.json` regenerates. Otherwise `memesh doctor` reports `Skills + hooks integrity FAIL` and users see "memesh setup is incomplete" in their dashboard. CI's `Doctor` step catches this before merge.
+- After ANY change to `.claude-plugin/`, `scripts/hooks/`, `skills/`, or version files, run `npm run build` so `dist/skills-manifest.json` regenerates. Otherwise `memesh doctor` reports `Skills + hooks integrity FAIL`. CI's `Doctor` step catches this before merge.
 
 `CLAUDE.md` carries the same rules in the form an AI coding assistant reads. It is a pointer file — this document is the source of truth for anything that applies to a human contributor.
 
@@ -44,10 +43,10 @@ Documentation is part of the change, not follow-up work. CI's version, generated
 ## Cutting a Release
 
 An explicit release-owner decision may reuse valid baseline evidence plus
-affected deltas, or mark Dashboard review `SKIP`. Record that decision privately
+affected deltas. Record that decision privately
 in `.qa/release-evidence-reuse.json`; never commit it or rewrite an old failed
 receipt as a passing run. The mapping names `version`, the clean candidate's
-`revision` and `tree`, `authority.decidedBy` and `authority.decision`, `uiSkip`,
+`revision` and `tree`, `authority.decidedBy` and `authority.decision`, `uiSkip` (a legacy Dashboard-waiver marker),
 the `g6` applicability rationale, separate `hosts.codex` and `hosts.claude`
 rationales, and retained `concerns`. Its `evidence` entries each carry `scope`
 (`g6`, `codex`, or `claude`), `path`, `sha256`, and the source-to-candidate
@@ -95,79 +94,11 @@ in its default `latest` mode.
 Without `--prerelease`, `release:finish` retains the stable `latest` behavior;
 do not use that mode to skip trial observation for a new candidate.
 
-`npm run qa:pre-release` runs the build, requires the independent UI review below against that build, then runs the `verify:artifact` sequence and
-`audit:memory`, prints each step's real exit code, and ends with the list of
-checks it could not run — the interactive live journey among them. It is not a
-substitute for reading that list.
-
-### Required UI review and repair before release
-
-CI, translation-key parity, page-load smoke tests, and screenshots alone do not
-prove that the interface is understandable or truthful. Before **every release**,
-a reviewer who authored none of the candidate changes must exercise the actual
-candidate dashboard in a browser. Keep the report and replay evidence private in
-`.qa/`; never commit internal review notes or fabricate a passing report.
-
-Review **every advertised locale and every top-level tab**, derived from
-`dashboard/src/lib/i18n.ts` and `dashboard/src/App.tsx`, including dialogs,
-notifications, backend-originated diagnostics, and empty/loading/error states.
-The mandatory review includes:
-
-- **Plain language:** users can understand what happened, its impact, and their
-  next action. Internal paths and raw technical diagnostics belong in expandable
-  details, not routine homepage warnings.
-- **Complete localization:** labels, explanations, errors and backend-originated
-  text use the selected language. Missing keys and silent English fallback are
-  findings, not successful localization. Product names and code are not prose.
-- **Truthful, actionable diagnostics:** warnings reflect a verified problem that
-  affects the user. Test an unpublished candidate beside an older installed CLI:
-  do not recommend an unavailable upgrade. Test isolated databases: do not claim
-  installations share data without verifying their actual database identity.
-- **Feature/navigation alignment:** each visible feature, tab and term matches
-  the current release's behavior and documentation. Explicitly review whether
-  "Knowledge Graph" still serves a supported user task; neither keep it merely
-  because it renders nor remove underlying relationships merely because search
-  uses FTS. Resolve unclear product intent with the owner before release.
-- **Failure paths and effects:** exercise empty data, loading, unavailable server,
-  invalid actions and recovery. Read back state changes and clean only disposable
-  test data; do not mutate the owner's memories or settings to obtain a pass.
-
-Record findings first. Each finding needs a fix, a focused regression check
-(including a controlled failing case where practical), and a browser retest.
-Refreeze after changes and obtain a fresh independent review on the new candidate.
-Unresolved findings, missing coverage, or unavailable language expertise block
-release; do not downgrade them to a warning just to publish.
-
-`npm run qa:ui-review` checks `.qa/ui-review.json`, and `qa:pre-release` invokes
-it after building and before the full suite. `release:finish` already runs `qa:pre-release` fresh, so it cannot use
-successful build/tests instead of this requirement. The report contract is:
-
-- `schema_version: "memesh-ui-review/v1"`, exact 40-character `revision`,
-  `dirty: false`, ISO `reviewed_at` within 24 hours, and actual browser/server
-  `runtime` identification, and `dashboard_sha256` of the served candidate's
-  `dashboard/dist/index.html` (checked against the current build).
-- Distinct `reviewer` and `implementer` identities, `independent: true`, and
-  `verdict: "PASS"`. The owner verifies the reviewer authored no changed paths;
-  retain `reviewer_basis` identifying the independent assignment/non-authorship
-  evidence. These fields are attestations, not authenticated identity proof.
-- `checks`: one entry per `REQUIRED_CHECKS` ID in `scripts/qa/ui-review.mjs`.
-  This includes text contrast and readable type sizes, plus responsive layout:
-  inspect actual computed colours (including opacity), small-screen wrapping,
-  keyboard focus, and zoom. A palette unit test alone is not browser evidence.
-- `coverage`: one entry per advertised `locale`/`tab` pair, with rendered-state
-  observations, not just a translation-key or HTTP response check.
-- Each check/coverage entry has `status: "PASS"`, a concrete `observation`, an
-  `replay` array of steps, `expected` and `actual` visible results, an
-  `evidence` file under `.qa/`, and that file's `sha256`. Retain browser replay
-  steps, visible output, test setup, and relevant effect/failure readbacks.
-- `findings`: the complete inventory (an empty array only if none were found).
-  Each has `id`, `fix`, `resolved: true`, and `retest` with the same observation,
-  evidence, digest and status fields. Do not drop earlier findings after repair.
-
-The validator proves only report completeness, file digests and candidate
-binding. It cannot judge language quality, authenticate authorship, or prove
-that observations are true. The release owner must inspect the evidence and
-have the independent reviewer replay the claims. It grants no release authority.
+`npm run qa:pre-release` runs the build, `verify:artifact` and `audit:memory`,
+reports their real exits and names boundaries not exercised. The standalone
+Dashboard and its browser-review gate were removed in 4.11.0. Native Mod or MCP
+form changes still need independent review and evidence at the affected host;
+reuse valid evidence for unchanged behavior.
 
 `release:finish` requires separate v4 live receipts for both hosts on the exact
 clean commit, produced within the previous 24 hours. The Claude receipt comes

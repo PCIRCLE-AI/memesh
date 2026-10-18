@@ -58,12 +58,6 @@ jobs:
       - name: Build project
         run: npm run build
 
-      # No separate "Build dashboard" step: `npm run build` above already
-      # produces it via scripts/build-dashboard.mjs, with a locked install.
-      # ci.yml removed the identical step; leaving it here is the same
-      # "two hand-maintained copies of what must be true before this ships"
-      # the release gate exists to prevent.
-
       - name: Run tests
         # vitest.config.ts skips release UI tests; shared API/data tests remain required.
         run: npm test -- --run

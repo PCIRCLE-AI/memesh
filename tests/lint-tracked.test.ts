@@ -94,7 +94,7 @@ function buildLintRepo(dirs: string[], cleanName = 'clean.ts'): string {
 
 describe('Feature: the lint entry point never reports a clean pass it did not earn', () => {
   it('fails, naming the directory, when one lint directory contributes no file', () => {
-    const root = buildLintRepo(LINT_DIRS.filter((dir) => dir !== 'dashboard/src'));
+    const root = buildLintRepo(LINT_DIRS.filter((dir) => dir !== 'tests'));
 
     const result = spawnSync(process.execPath, [path.join(root, 'scripts', 'lint-tracked.mjs'), '--max-warnings', '0'], {
       encoding: 'utf8',
@@ -103,7 +103,7 @@ describe('Feature: the lint entry point never reports a clean pass it did not ea
     });
 
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain('no lintable file under dashboard/src');
+    expect(result.stderr).toContain('no lintable file under tests');
   }, 60_000);
 
   // No node_modules symlink needed: the missing path was the ONLY file

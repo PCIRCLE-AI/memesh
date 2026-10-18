@@ -770,7 +770,7 @@ describe('shipped paths come from package.json, not a hand-kept list', () => {
   it('covers the surfaces the first hand-kept list missed, using the real package.json', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
     const paths = shippedPathsFromPackageJson(pkg)!;
-    for (const must of ['dist', 'dashboard/dist', 'hooks/hooks.json', 'scripts/hooks', 'skills', '.claude-plugin', 'package.json']) {
+    for (const must of ['dist', 'hooks/hooks.json', 'scripts/hooks', 'skills', '.claude-plugin', 'package.json']) {
       expect(paths, `${must} is shipped and must be guarded`).toContain(must);
     }
   });

@@ -68,7 +68,6 @@ export const REQUIRED_DOCTOR_CHECKS = [
   'hook-scripts',
   'skills-manifest',
   'native-binding',
-  'dashboard',
 ];
 
 /**

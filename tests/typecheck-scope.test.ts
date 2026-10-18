@@ -29,7 +29,7 @@ import vitestConfig from '../vitest.config.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-const PROJECTS = ['tsconfig.check.json', 'tsconfig.check-dashboard.json'];
+const PROJECTS = ['tsconfig.check.json'];
 
 /**
  * Suffixes vitest collects under `tests/`, DERIVED from the config it ships
@@ -126,7 +126,6 @@ describe('typecheck scope', () => {
     // Without this the comparison below is "no file was missing from a set of
     // zero", which passes for the wrong reason.
     expect(collected.length).toBeGreaterThan(50);
-    expect(collected.some(f => f.endsWith('.test.tsx'))).toBe(true);
 
     const seen = new Set(PROJECTS.flatMap(p => filesSeenBy(p)));
     expect(seen.size).toBeGreaterThan(100);

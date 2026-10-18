@@ -9,7 +9,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const LINT_DIRS = ['src', 'scripts', 'tests', 'dashboard/src'];
+export const LINT_DIRS = ['src', 'scripts', 'tests'];
 // Extensions ESLint's flat config (eslint.config.js) actually parses here:
 // js.configs.recommended + tseslint.configs.recommended cover
 // .js/.mjs/.cjs/.ts/.tsx/.mts/.cts. The list follows what the CONFIG

@@ -1193,13 +1193,6 @@ function inspectClaudeChannelRegistration(existsSyncImpl, readFileSyncImpl) {
     }
     return createInfo('claude-channel', 'Claude Channel registration', 'The user-scoped memesh-channel registration and owner-private config target are coherent (CONFIGURED). Development-channel admission and agent surfacing are not verified; durable MCP/inbox messaging remains a separate path.');
 }
-function inspectDashboardArtifact(packageRoot, existsSyncImpl) {
-    const dashboardPath = path.join(packageRoot, 'dashboard', 'dist', 'index.html');
-    if (!existsSyncImpl(dashboardPath)) {
-        return createCheck('dashboard', 'Dashboard artifact', 'fail', 'dashboard/dist/index.html is missing.', 'Build the dashboard with `cd dashboard && npm install && npm run build`, then run `npm run build` at the repo root if needed.', { code: 'dashboard.missing' });
-    }
-    return createCheck('dashboard', 'Dashboard artifact', 'pass', 'dashboard/dist/index.html is present.');
-}
 function isFreshInstall() {
     try {
         const createdAt = new Date(getInstallRecord().created_at).getTime();
@@ -1302,7 +1295,7 @@ async function inspectHttpProbe(httpBaseUrl, fetchImpl) {
         return createCheck('http-probe', 'HTTP probe', 'pass', `HTTP server is reachable at ${httpBaseUrl}.`);
     }
     catch {
-        return createCheck('http-probe', 'HTTP probe', 'warn', `No running HTTP server detected at ${httpBaseUrl}.`, 'Start the local server with `memesh serve` if you want dashboard and HTTP API verification.', { code: 'http-probe.no-server', params: { url: httpBaseUrl } });
+        return createCheck('http-probe', 'HTTP probe', 'warn', `No running HTTP server detected at ${httpBaseUrl}.`, 'Start the local server with `memesh serve` if you want HTTP API verification.', { code: 'http-probe.no-server', params: { url: httpBaseUrl } });
     }
 }
 function verifySkillsManifest(packageRoot, existsSyncImpl, readFileSyncImpl, installSupport) {
@@ -1641,7 +1634,6 @@ export async function runDoctor(options) {
     const captureLiveness = withRecordedHosts(inspectCaptureLiveness(openDatabaseImpl, safeCloseDatabaseImpl, readFileSyncImpl, getMemeshDirFromDbPath, captureWired));
     checks.push(captureLiveness.check);
     const captureReport = captureLiveness.report;
-    checks.push(inspectDashboardArtifact(packageRoot, existsSyncImpl));
     checks.push(inspectNodeRuntime(packageRoot, existsSyncImpl, readFileSyncImpl));
     checks.push(inspectNativeBinding(packageRoot, existsSyncImpl, nativeBindingProbeImpl));
     checks.push(inspectShellCli(install, packageRoot, packageVersion, resolveShellMemeshImpl, existsSyncImpl, readFileSyncImpl));

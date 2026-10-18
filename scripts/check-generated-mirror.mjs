@@ -48,7 +48,7 @@ import { npmSync } from './lib/npm-bin.mjs';
  * checks than the PR path — the same shape as the hook and bin lists in
  * scripts/lib/executable-targets.mjs.
  */
-const BUILD_OUTPUTS = ['scripts/hooks/_generated', 'dist', 'dashboard/dist'];
+const BUILD_OUTPUTS = ['scripts/hooks/_generated', 'dist'];
 
 const COMPILER_SUFFIXES = ['.d.ts.map', '.d.ts', '.js.map', '.js'];
 

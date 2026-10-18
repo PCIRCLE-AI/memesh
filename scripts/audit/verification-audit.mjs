@@ -217,7 +217,7 @@ detector('C4', (record) => {
 
 /* ---- C5: optimistic defaults ---------------------------------------------- */
 detector('C5', (record) => {
-  const files = [...walk('src', ['.ts']), ...walk('dashboard/src', ['.ts', '.tsx'])];
+  const files = walk('src', ['.ts']);
   const hits = [];
   for (const f of files) {
     read(f).split('\n').forEach((line, i) => {

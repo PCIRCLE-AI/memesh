@@ -104,7 +104,7 @@ const CROSS_SITE_REFUSAL = {
     success: false,
     errorCode: 'auth.cross-origin',
     error: 'Cross-site requests are not accepted by the MeMesh API.',
-    hint: 'The dashboard served by this server is same-origin and works normally. Scripts should call the API directly (no Origin header) or use the CLI.',
+    hint: 'Scripts should call the API directly (no Origin header) or use the CLI.',
 };
 function sameSiteOnly(req, res, next) {
     const ownerServer = req.socket.server;
@@ -218,26 +218,12 @@ function payloadTooLargeHandler(err, _req, res, next) {
     });
 }
 app.use('/v1/', payloadTooLargeHandler);
-app.get('/favicon.ico', (_req, res) => {
-    res.status(204).end();
-});
 app.use((_req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('X-XSS-Protection', '0');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     next();
-});
-app.get('/dashboard', (_req, res) => {
-    const dashboardPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../dashboard/dist/index.html');
-    if (fs.existsSync(dashboardPath)) {
-        res.type('html').sendFile(dashboardPath, { dotfiles: 'allow' });
-    }
-    else {
-        import('../../cli/view-live.js')
-            .then(m => res.type('html').send(m.generateLiveDashboardHtml()))
-            .catch(() => res.status(500).send('Dashboard unavailable'));
-    }
 });
 app.get('/v1/health', (_req, res) => {
     try {
@@ -309,7 +295,7 @@ app.post('/v1/doctor/fix', (req, res) => handlePost(DoctorFixBody, req, res, asy
             throw new HttpError(500, 'doctor.repair-incomplete', error.message);
         }
         if (isDoctorFixPermissionError(error)) {
-            throw new HttpError(500, 'operation.permission-denied', 'MeMesh cannot modify the local files required for this repair. Close this dashboard, start `memesh serve` from your own Terminal, and retry. If it still fails, run `memesh doctor`.');
+            throw new HttpError(500, 'operation.permission-denied', 'MeMesh cannot modify the local files required for this repair. Start `memesh serve` from your own Terminal, and retry. If it still fails, run `memesh doctor`.');
         }
         throw error;
     }
@@ -744,7 +730,6 @@ export function startServer(host = HOST, port = PORT, opts) {
         const addr = server.address();
         if (addr && typeof addr === 'object') {
             console.log(`MeMesh HTTP server running at http://${addr.address}:${addr.port}`);
-            console.log(`MeMesh dashboard: http://${addr.address}:${addr.port}/dashboard`);
         }
     });
     server.on('error', (err) => {

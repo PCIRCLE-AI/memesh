@@ -349,19 +349,19 @@ describe('listGitFiles', () => {
 });
 
 describe('emptyLintDirs', () => {
-  const oneEach = ['src/a.ts', 'scripts/b.mjs', 'tests/c.test.ts', 'dashboard/src/d.tsx'];
+  const oneEach = ['src/a.ts', 'scripts/b.mjs', 'tests/c.test.ts'];
 
   it('reports nothing when every lint directory contributes a file', () => {
     expect(emptyLintDirs(oneEach)).toEqual([]);
   });
 
   it('names the one directory that contributes nothing while the others do', () => {
-    expect(emptyLintDirs(oneEach.filter((rel) => !rel.startsWith('dashboard/')))).toEqual(['dashboard/src']);
+    expect(emptyLintDirs(oneEach.filter((rel) => !rel.startsWith('tests/')))).toEqual(['tests']);
   });
 
-  it('matches a whole path segment: dashboard/srcfoo/x.ts is not under dashboard/src', () => {
-    const paths = ['src/a.ts', 'scripts/b.mjs', 'tests/c.test.ts', 'dashboard/srcfoo/x.ts'];
-    expect(emptyLintDirs(paths)).toEqual(['dashboard/src']);
+  it('matches a whole path segment: testsfoo/x.ts is not under tests', () => {
+    const paths = ['src/a.ts', 'scripts/b.mjs', 'testsfoo/c.test.ts'];
+    expect(emptyLintDirs(paths)).toEqual(['tests']);
   });
 
   it('names every directory for an empty list, in LINT_DIRS order', () => {

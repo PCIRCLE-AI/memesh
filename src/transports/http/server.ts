@@ -271,7 +271,7 @@ const CROSS_SITE_REFUSAL = {
   success: false,
   errorCode: 'auth.cross-origin' satisfies ErrorCode,
   error: 'Cross-site requests are not accepted by the MeMesh API.',
-  hint: 'The dashboard served by this server is same-origin and works normally. Scripts should call the API directly (no Origin header) or use the CLI.',
+  hint: 'Scripts should call the API directly (no Origin header) or use the CLI.',
 } as const;
 
 function sameSiteOnly(req: Request, res: Response, next: NextFunction): void {
@@ -464,10 +464,6 @@ function payloadTooLargeHandler(err: unknown, _req: Request, res: Response, next
 }
 app.use('/v1/', payloadTooLargeHandler);
 
-app.get('/favicon.ico', (_req, res) => {
-  res.status(204).end();
-});
-
 // --- Security headers ---
 app.use((_req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -475,21 +471,6 @@ app.use((_req, res, next) => {
   res.setHeader('X-XSS-Protection', '0');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   next();
-});
-
-// --- Dashboard ---
-app.get('/dashboard', (_req, res) => {
-  // Serve Preact SPA build (preferred)
-  const dashboardPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../dashboard/dist/index.html');
-  if (fs.existsSync(dashboardPath)) {
-    // CRITICAL: dotfiles: 'allow' is required for paths containing hidden directories like .nvm
-    res.type('html').sendFile(dashboardPath, { dotfiles: 'allow' });
-  } else {
-    // Fallback to legacy template (only reached in source checkouts pre-build)
-    import('../../cli/view-live.js')
-      .then(m => res.type('html').send(m.generateLiveDashboardHtml()))
-      .catch(() => res.status(500).send('Dashboard unavailable'));
-  }
 });
 
 // --- Health ---
@@ -605,7 +586,7 @@ app.post('/v1/doctor/fix', (req, res) => handlePost(DoctorFixBody, req, res, asy
       throw new HttpError(
         500,
         'operation.permission-denied',
-        'MeMesh cannot modify the local files required for this repair. Close this dashboard, start `memesh serve` from your own Terminal, and retry. If it still fails, run `memesh doctor`.',
+        'MeMesh cannot modify the local files required for this repair. Start `memesh serve` from your own Terminal, and retry. If it still fails, run `memesh doctor`.',
       );
     }
     throw error;
@@ -1370,7 +1351,6 @@ export function startServer(
     const addr = server.address();
     if (addr && typeof addr === 'object') {
       console.log(`MeMesh HTTP server running at http://${addr.address}:${addr.port}`);
-      console.log(`MeMesh dashboard: http://${addr.address}:${addr.port}/dashboard`);
     }
   });
 

@@ -27,8 +27,8 @@ memesh recall --limit 50 --json
 ```
 
 Recall is a bounded window, not a whole-database count. For an exact health
-score and factor totals, use the Dashboard Analytics view after `memesh serve`
-or its local `GET /v1/analytics` endpoint. If it is unavailable, omit the
+score and factor totals, use the local `GET /v1/analytics` API after
+`memesh serve`. If it is unavailable, omit the
 score and label any counts from recall as sample counts.
 
 If MCP `user_patterns` tool is available, also run it for work pattern analysis:
@@ -100,4 +100,4 @@ memesh recall --limit 5 --json    # confirm changes took effect
 - Run every 1-2 weeks to keep memory healthy
 - Health score < 50 → inspect the four factor scores before recommending a cause
 - Noise > 80% → encourage deliberate `memesh remember` for decisions
-- Dashboard available at: http://localhost:3737/dashboard (run `memesh serve` first)
+- Use the Claude Mod or Codex MCP/native forms to view and edit individual memories.

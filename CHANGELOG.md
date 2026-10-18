@@ -14,6 +14,8 @@ are not part of a published npm release yet.
 
 ### Changed
 
+- Removed the standalone Web Dashboard, legacy HTML fallback and their build/test dependencies. `memesh serve` retains the HTTP API; `/dashboard` no longer serves a UI. Claude Code and Claude Desktop Code use the Mod, while Codex uses MCP/native forms.
+
 - Simplified the English and Traditional Chinese getting-started guides. Corrected API examples, integration prerequisites, and historical benchmark labels.
 
 ### Fixed

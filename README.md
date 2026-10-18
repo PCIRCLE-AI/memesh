@@ -77,7 +77,9 @@ Unreleased source builds add `/memesh-memories` in Claude Code to view and edit 
 ---
 
 Plugins ship **10 hooks**. The intent reminder recognizes "remember this"
-(5 languages). The included Dashboard has 4 tabs, 11 languages.
+(5 languages). Memory editing lives in Claude Code/Claude Desktop Code
+through the MeMesh Mod, and in Codex through MCP/native forms. There is no
+standalone Web Dashboard.
 
 **Scored Ranking** — relevance (30%) + recency (25%) + frequency (18%) + confidence (17%) + recall impact (10%). See the [architecture](docs/ARCHITECTURE.md) for details.
 

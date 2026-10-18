@@ -21,13 +21,11 @@ queries:
 paths:
   - src
   - scripts
-  - dashboard/src
   - tests
   - hooks
 
 paths-ignore:
   - dist
-  - dashboard/dist
   - node_modules
   - "**/node_modules"
   - .claude

@@ -108,7 +108,7 @@ when the session has come back since or the retry leaves out
 - only that session can record `intake` or a `disposition` for it. The MCP
   tool and the CLI take the caller's session from `CLAUDE_CODE_SESSION_ID`,
   else `CODEX_THREAD_ID`. Any other caller — another session, or HTTP and the
-  dashboard, which have no session — gets `intended_for_other_session`, and
+  HTTP clients, which have no session — gets `intended_for_other_session`, and
   the message stays waiting for the session it is meant for. A Codex session
   records it with the CLI from its shell (`memesh message intake ...`),
   because Codex does not pass its thread id to MCP servers. `poll`, `fetch`,

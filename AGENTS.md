@@ -66,7 +66,7 @@ hosts should share memories. Not installed yet? Follow
    The last choice suppresses only this session's prompt; it does not create a
    durable opt-out. Dispatch means
    using `work_package` in this already-running agent session; it does not mean
-   the Dashboard can start or wake an agent. Prepare either one calendar-selected
+   a separate UI can start or wake an agent. Prepare either one calendar-selected
    digest package or, when the MCP client supplies one unambiguous matching
    workspace root, one package from its newest Claude Code session's visible
    turns. Submit one bounded result for human review or defer without writing.

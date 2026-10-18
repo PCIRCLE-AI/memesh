@@ -76,8 +76,8 @@ Claude Code 插件提供自動記錄和提醒。Codex 插件在獲准執行 hook
 
 ---
 
-插件共有 10 個 hook 指令。「記住這件事」提醒支援 5 種語言；本版內含的
-Dashboard 有 4 個分頁、11 種語言。
+插件共有 10 個 hook 指令。「記住這件事」提醒支援 5 種語言。
+記憶介面在 Claude Code／Claude Desktop Code 使用 MeMesh Mod，Codex 使用 MCP／原生表單；不再提供獨立 Web Dashboard。
 
 排序權重：相關性 30%、新近程度 25%、使用頻率 18%、信心 17%、回憶影響 10%。詳見[架構說明](docs/ARCHITECTURE.md)。
 

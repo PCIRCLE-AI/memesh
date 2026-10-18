@@ -30,10 +30,6 @@ export const STEPS = [
     why: 'dist/ is version-controlled and several gates spawn it; a stale build makes every later step measure the wrong code.',
   },
   {
-    id: 'qa:ui-review',
-    why: 'require a fresh independent browser review bound to this clean candidate and built dashboard; fix and retest all UI findings before the full suite.',
-  },
-  {
     id: 'verify:artifact',
     why: 'lint, typecheck, version coherence, doc claims, the isolated test suite, the packed artifact and every derived upgrade path — the same sequence npm publish runs.',
     // The one step slow enough (several minutes: the full isolated suite plus
@@ -120,7 +116,6 @@ export function currentTreeHash(repoRoot) {
  * cannot run here, so nobody reads a green verdict as more than it is.
  */
 export const NOT_CHECKED = [
-  'UI review evidence is checked for completeness and candidate binding, not semantic truth. The release owner must verify reviewer independence and replay the retained browser observations; a JSON report cannot prove usability.',
   'Real-host qa:live-journey checks need a caller-prepared authenticated --codex-home for Codex and an interactive Claude Code session for Claude. ' +
     'Both hosts need memesh-live-journey/v4 receipts or explicitly approved, candidate-bound evidence reuse (see release-preconditions.mjs).',
   'npm run qa:post-release — only meaningful after the release is published; run it next.',
@@ -190,11 +185,6 @@ function main() {
         console.error(`pre-release gate: ${error.message}`);
         process.exit(1);
       }
-    }
-    if (approvedReuse && step.id === 'qa:ui-review') {
-      console.log(`--- ${step.id}\n    SKIP by explicit release disposition: ${approvedReuse.authority.decision}`);
-      results.push({ id: step.id, status: 0, signal: null, disposition: 'SKIP', reused: approvedReuse.path });
-      continue;
     }
     if (approvedReuse && step.id === 'verify:artifact') {
       // Keep security/version/artifact gates fresh. Only the suite and unchanged

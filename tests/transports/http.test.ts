@@ -1252,17 +1252,16 @@ describe('HTTP Transport: startServer host guard', () => {
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 
 describe('HTTP Transport: GET /dashboard', () => {
-  it('returns HTML with dashboard content', async () => {
+  it('does not serve the retired web UI', async () => {
     const res = await fetch(`http://127.0.0.1:${port}/dashboard`);
-    expect(res.status).toBe(200);
-    expect(res.headers.get('content-type')).toContain('html');
-    const html = await res.text();
-    expect(html).toContain('MeMesh');
+    expect(res.status).toBe(404);
+    expect(res.headers.get('content-type')).toContain('json');
+    expect((await res.json()).success).toBe(false);
   });
 
-  it('returns no content for browser favicon probes', async () => {
+  it('has no standalone browser favicon endpoint', async () => {
     const res = await fetch(`http://127.0.0.1:${port}/favicon.ico`);
-    expect(res.status).toBe(204);
+    expect(res.status).toBe(404);
   });
 });
 
