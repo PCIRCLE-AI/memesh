@@ -57,6 +57,7 @@ export interface RememberInput {
     type?: string;
     note?: string;
     replace?: boolean;
+    reinforceConfidence?: boolean;
     title?: string;
     observations?: string[];
     why?: string;

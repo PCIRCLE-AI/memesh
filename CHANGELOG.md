@@ -6,6 +6,8 @@ are not part of a published npm release yet.
 
 ## [Unreleased]
 
+- Add a minimal Claude Code Mod and optional native `remember` editor for MCP form-capable hosts: view project memory, cancel without writing, or save through the existing writer and read the result back.
+
 ### Changed
 
 - Simplified the English and Traditional Chinese getting-started guides. Corrected API examples, integration prerequisites, and historical benchmark labels.

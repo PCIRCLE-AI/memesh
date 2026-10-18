@@ -218,6 +218,20 @@ and retiring outdated info.
 
 ## Common Scenarios
 
+### The user wants to view or edit a memory in the native interface
+
+Use `recall` to identify and show the memory in the current project. If `remember` advertises
+`interactive`, call it with only `name`, `interactive: true`, and optional `project`.
+The human form supplies the edit; do not pass replacement text or resubmit after
+cancellation. Report `saved`, `unchanged`, or `cancelled` as returned, showing the
+actual stored result. If the host reports `native_form_unavailable`, explain the
+limitation and use the existing conversation workflow under the user's instruction.
+The form shows the original text and offers one optional replacement field per
+paragraph plus a title field. The human fills only what should change; blank or
+omitted fields keep their original values. Do not fill those fields for the human.
+Claude Code source builds also provide the `/memesh-memories` Mod entrypoint. Installed
+releases may not yet include it; use the available tool schema as the authority.
+
 ### You just fixed a bug
 ```bash
 memesh learn \

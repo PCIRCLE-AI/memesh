@@ -40,8 +40,8 @@ function architectureToolRows(architecture) {
   const rows = tableBody(section, '| Tool | Schema | Handler |');
   if (rows === null) return null;
   return rows.map((row) => {
-    const match = row.match(/^\| `([a-z_]+)` \| ([A-Za-z]+Schema) \|/);
-    return match ? { name: match[1], schema: match[2] } : null;
+    const match = row.match(/^\| `([a-z_]+)` \| ([A-Za-z]+Schema(?:, [A-Za-z]+Schema)*) \|/);
+    return match ? { name: match[1], schema: uniqueSorted(match[2].split(', ')).join(',') } : null;
   }).filter(Boolean);
 }
 
@@ -55,7 +55,8 @@ function handlerSchemaMappings(handlers, names) {
     if (start === -1) return { name, schema: null };
     const next = handlers.indexOf("\n    if (name === '", start + 1);
     const block = handlers.slice(start, next === -1 ? undefined : next);
-    return { name, schema: block.match(/parseOrFail\(([A-Za-z]+Schema), args\)/)?.[1] ?? null };
+    const schemas = [...block.matchAll(/parseOrFail\(([A-Za-z]+Schema), args\)/g)].map(match => match[1]);
+    return { name, schema: uniqueSorted(schemas).join(',') || null };
   });
 }
 

@@ -114,6 +114,16 @@ function refineRemember(data, ctx) {
 export const RememberSchema = z.object(rememberShape).strict().superRefine(refineRemember);
 const mcpProjectField = z.union([projectName, z.literal(false)]).optional();
 export const McpRememberSchema = z.object({ ...rememberShape, project: mcpProjectField }).strict().superRefine(refineRemember);
+export const NativeMemoryEditorSchema = z.object({
+    name: nameField,
+    interactive: z.literal(true),
+    project: mcpProjectField,
+}).strict();
+export const NativeMemoryEditFieldsSchema = z.object({
+    title: z.string().max(TITLE_MAX_LENGTH),
+    observations: z.array(z.string().max(16_000).refine(s => s.trim().length > 0, 'Memory text must not be empty'))
+        .min(1).max(100).refine(items => items.join('\n\n').length <= 16_000, 'Memory text exceeds 16000 characters'),
+}).strict();
 const recallShape = {
     query: z.string().max(1000).optional(),
     tag: z.string().max(255).optional(),

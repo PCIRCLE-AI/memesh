@@ -50,6 +50,8 @@ Ask your agent in plain language:
 
 Claude Code's plugin provides automatic capture and reminders. The Codex plugin can provide context at session start once its hooks are allowed to run; other capture behavior varies by host. You can also ask the agent to store or look up memories directly.
 
+Unreleased source builds add `/memesh-memories` in Claude Code to view project memories and open the native editor. In Codex, ask `$memesh` to find and edit a memory. The form shows the original text; fill only the title or paragraphs you want to change, leaving other fields blank. Submit saves and reads back the stored result; Cancel saves nothing. Unsupported hosts keep the existing conversation workflow.
+
 [Full tool and command reference](docs/api/API_REFERENCE.md) · [Agent messaging](docs/platforms/agent-messaging.md) · [How it works](docs/ARCHITECTURE.md) · [Contributing](CONTRIBUTING.md)
 
 <details>

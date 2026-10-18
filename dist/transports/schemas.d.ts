@@ -90,6 +90,15 @@ export declare const McpRememberSchema: z.ZodObject<{
         global: "global";
     }>>;
 }, z.core.$strict>;
+export declare const NativeMemoryEditorSchema: z.ZodObject<{
+    name: z.ZodPipe<z.ZodString, z.ZodTransform<string, string>>;
+    interactive: z.ZodLiteral<true>;
+    project: z.ZodOptional<z.ZodUnion<readonly [z.ZodString, z.ZodLiteral<false>]>>;
+}, z.core.$strict>;
+export declare const NativeMemoryEditFieldsSchema: z.ZodObject<{
+    title: z.ZodString;
+    observations: z.ZodArray<z.ZodString>;
+}, z.core.$strict>;
 export declare const RecallSchema: z.ZodObject<{
     query: z.ZodOptional<z.ZodString>;
     tag: z.ZodOptional<z.ZodString>;

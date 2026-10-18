@@ -18,6 +18,7 @@
     "dist/",
     "dashboard/dist/",
     "hooks/hooks.json",
+    "hooks/native-memory.js",
     "scripts/hooks/",
     "scripts/upgrade-plugin.sh",
     "skills/",

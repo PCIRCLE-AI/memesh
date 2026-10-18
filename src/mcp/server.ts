@@ -94,7 +94,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     args,
     normalizeClientHost(server.getClientVersion()?.name),
     extra.signal,
-    { workspaceRootUris, projectBinding },
+    {
+      workspaceRootUris, projectBinding,
+      ...(server.getClientCapabilities()?.elicitation?.form ? {
+        elicit: (params: import('@modelcontextprotocol/sdk/types.js').ElicitRequestFormParams) =>
+          server.elicitInput(params, { signal: extra.signal, timeout: 120_000 }),
+      } : {}),
+    },
   );
 });
 

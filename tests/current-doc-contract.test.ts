@@ -32,6 +32,8 @@ describe('current source-backed documentation contracts', () => {
     ['MCP tool row removal', { architecture: baseline.architecture.replace(/^\| `work_package`.*\n/m, '') }, 'MCP handler table differs'],
     ['MCP tool duplicate', { architecture: baseline.architecture.replace(/^\| `work_package`.*\n/m, (row) => `${row}${row}`) }, 'MCP handler table differs'],
     ['MCP schema mismatch', { architecture: baseline.architecture.replace('| `forget` | ForgetSchema |', '| `forget` | RecallSchema |') }, 'MCP handler table differs'],
+    ['MCP normal remember branch omitted', { architecture: baseline.architecture.replace('McpRememberSchema, NativeMemoryEditorSchema |', 'NativeMemoryEditorSchema |') }, 'MCP handler table differs'],
+    ['MCP interactive remember branch omitted', { architecture: baseline.architecture.replace('McpRememberSchema, NativeMemoryEditorSchema |', 'McpRememberSchema |') }, 'MCP handler table differs'],
     ['removed config symbol', { architecture: baseline.architecture.replace('owner-local configuration reads', 'owner-local configuration reads via logCapabilities') }, 'removed logCapabilities'],
     ['hard-delete forget claim', { architecture: baseline.architecture.replace('KnowledgeGraph.archiveEntity(name)', 'KnowledgeGraph.deleteEntity(name)') }, 'forget section'],
     ['hard-delete forget implementation', { operations: baseline.operations.replace('kg.archiveEntity(args.name)', 'kg.deleteEntity(args.name)') }, 'operations.forget source'],

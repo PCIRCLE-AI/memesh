@@ -192,6 +192,7 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
         tags,
         namespace: args.namespace,
         trustOverride: args.trustOverride,
+        reinforceConfidence: args.reinforceConfidence,
         title,
     });
     let stampLocalMetadata = true;
