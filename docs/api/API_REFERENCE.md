@@ -1,7 +1,7 @@
 # MeMesh Plugin -- API Reference
 
 **Protocol**: Model Context Protocol (MCP) over stdio
-**Version**: 4.11.0
+**Version**: 4.11.1
 **Compatibility**: Claude Code, Codex, and other MCP clients that can launch the local stdio server. Hosted chat products need a separate bridge; they do not connect to this local server automatically.
 
 **Native Integrations**: Beyond MCP, MeMesh integrates as a native memory provider for Hermes Agent (Python `MemoryProvider` plugin). A source-only OpenClaw TypeScript memory-capability plugin is also included, but it is not published or live-tested. Neither path is an HTTP bridge. See [docs/platforms/](../platforms/) for platform-specific guides.
