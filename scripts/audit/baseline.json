@@ -536,7 +536,7 @@
       "reason": "KnowledgeGraph.getEntity returns relations: undefined only when its successful SQL relation query has zero rows. This internal known-empty set is used solely for append dedupe; a SQL read failure still throws and is reported by import. Any incoming relation absent from the set prevents addsNothing and is queued only after the entity transaction commits. Relation-only and text-plus-relation imports across CLI/MCP/HTTP, repeated-import no-change, and readonly refusal retain direct source/installed evidence. No malformed bundle, failed read or pending incoming relation is converted into silent success.",
       "triaged": "2026-10-08 (#594 append relation restore): optional internal collection contract at knowledge-graph.ts:868/878; existing empty relation set, not input validation or read-failure suppression."
     },
-    "C7 README.md:80": {
+    "C7 README.md:82": {
       "classification": "gated",
       "reason": "Existing check-doc-claims.mjs derives the intent-language count from INTENT_PATTERNS; UI retirement removes the same-line tabs/languages phrase, not the intent hook or its source-backed check."
     }

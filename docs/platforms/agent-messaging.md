@@ -16,18 +16,18 @@ receipt operation; router unavailability is an explicit error, never an empty
 directory.
 
 Briefing follows the same trust boundary. Generic `briefing` has no recipient
-identity, so it never aggregates or announces unread message activity, and
-neither do the SessionStart and prompt hooks unless the session declares one:
-start it with `MEMESH_RECIPIENT=<exact recipient id>` (for example
-`MEMESH_RECIPIENT=claude-implementer claude`). The hooks then say, at session
+identity, so it never aggregates or announces unread message activity.
+Claude Code's installed hooks use recipient `claude-code` by default, or
+the configured identity described below. To choose an explicit identity,
+start with `MEMESH_RECIPIENT=<exact recipient id>` (for example
+`MEMESH_RECIPIENT=claude-implementer claude`). The hooks say, at session
 start and at every prompt, how many messages are waiting for exactly that
 recipient and in which project to poll (senders choose the project string, so
 each project with a waiting message is named, up to five, most waiting first),
 until the session records the `intake` action for them (fetching alone does not
-end it). An ordinary Claude Code session started without the channel flag
-has no other identity a sender could address, so without this variable — and
-without the owner-private fallback below — it only sees messages it polls for
-itself. A value over 200 characters, or shaped like
+end it). Basic reminders need no Channel registration or launch flag;
+they do not wake an idle or stopped session. An explicitly empty
+`MEMESH_RECIPIENT` disables these reminders. A value over 200 characters, or shaped like
 a filesystem path (the same rule the `message` tool refuses a recipient by —
 `/root`, `C:\work`, `\\host\share`), is refused rather than silently accepted,
 with no database required: one line on stderr (`MEMESH_RECIPIENT ignored: ...`),
@@ -192,11 +192,12 @@ this hook run is Claude Code, SessionStart and the prompt hook read
 `principal_id` — never `auth_token`, and never `project` (below) — from the
 owner-private `hosts/claude.json` the [Claude channel runner](#claude-channel-runner)
 setup below writes, and use it as the recipient whenever the file is present
-and valid. A missing or unreadable file, or a `principal_id` that fails the
-same length/path-shape rules above, is quiet: no recipient, exactly as an
-unset `MEMESH_RECIPIENT` is today. This makes the reminder work even when the
-channel itself never connected — the config file only has to exist,
-independent of whether the launch flag below was actually honoured. Codex
+and valid. If that file is absent, they use the local `claude-code` principal;
+no config or router token is created. Existing unreadable or insecure files,
+or an invalid `principal_id`, remain quiet rather than choosing a different
+identity. This makes basic reminders independent of the optional Channel.
+Both paths use the same message IDs and intake receipts: a Channel acceptance
+alone does not stop reminders, while recorded intake does. Codex
 loads the same `hooks/hooks.json` and never uses this fallback: it has its own
 automatic thread-scoped registration and would otherwise silently adopt
 Claude's principal in a shared project.

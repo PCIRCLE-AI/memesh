@@ -6,6 +6,10 @@ are not part of a published npm release yet.
 
 ## [Unreleased]
 
+### Fixed
+
+- Claude Code inbox reminders now work without Channel setup, using the local `claude-code` recipient when no identity is configured. Custom identities and receipt-based reminder suppression are preserved; live Channel push remains optional.
+
 ## [4.11.0] — 2026-10-19
 
 ### Added

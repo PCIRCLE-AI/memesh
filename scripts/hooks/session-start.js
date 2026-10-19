@@ -51,6 +51,7 @@ import {
   briefingTaskStateLines,
   resolveBriefingLevel,
   automaticCodexSessionPrincipal,
+  DEFAULT_CLAUDE_RECIPIENT,
   isClaudeCodeHost,
   isCodexHost,
   resolveMessageRecipient,
@@ -1333,7 +1334,8 @@ process.stdin.on('end', async () => {
         // `isAutomaticCodexRecipient` (resolved above): a fresh
         // `codex-thread-<uuid>` id cannot be a typo, so it never reaches this
         // check at all — see its own comment for why.
-        if (recipient && !isAutomaticCodexRecipient && inboxLines.length === 0) {
+        const isDefaultClaudeRecipient = isClaudeCodeHost(process.env) && recipient === DEFAULT_CLAUDE_RECIPIENT;
+        if (recipient && !isAutomaticCodexRecipient && !isDefaultClaudeRecipient && inboxLines.length === 0) {
           const everSeen = recipientEverSeenAnywhere(db, recipient, (err) =>
             record({
               outcome: 'error',

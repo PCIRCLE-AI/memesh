@@ -94,6 +94,13 @@ over-quota send is rejected atomically.
 
 ### Optional: one-time local host setup
 
+Claude Code's installed hooks already provide basic inbox reminders, using
+recipient `claude-code` when no identity is configured. SessionStart states
+the project's messaging address. Reminders run at startup, the next prompt
+and turn end; `intake` for that message ends them. No Channel registration
+or launch flag is needed for this path. The setup below is optional for
+Claude Code live push, which still requires explicit Channel admission.
+
 This is separate from MCP setup. It is for the owner of an active local Codex
 session, a MeMesh-managed Codex app-server, or a Claude channel. Keep all
 files private to that Unix account; do not commit the token or config files.

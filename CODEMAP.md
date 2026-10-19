@@ -103,7 +103,7 @@ docs/                # ARCHITECTURE.md, api/API_REFERENCE.md
 ### Hook commands (`hooks/hooks.json`)
 | Command | Fires on | Does |
 |---|---|---|
-| `session-start.js` | SessionStart | inject top-N memories (additionalContext), banner, lesson warnings, update notice / consent prompt (does not spawn the auto-update) |
+| `session-start.js` | SessionStart | inject project memories, inbox reminders and messaging address, banner, lesson warnings, update notice / consent prompt (does not spawn the auto-update) |
 | `pre-edit-recall.js` | PreToolUse Edit/Write | inject file-relevant memories; also evaluates accepted lesson guards on the content being written |
 | `guard-check.js` | PreToolUse Bash | enforce accepted lesson guards before risky repeats |
 | `src/host-runtime/codex-session.ts` | SessionStart / SessionEnd | launch, supersede, and retire the detached exact-thread companion; apply a matching optional identity override |
@@ -115,7 +115,7 @@ docs/                # ARCHITECTURE.md, api/API_REFERENCE.md
 | `user-prompt-intent.js` | UserPromptSubmit | detect "remember" intent; also records the update-consent answer |
 
 `scripts/hooks/_shared.js`, `_claude-channel.js`, `_clear-alias.js`, `_stop-notes.js` and `_stop-handoff.js`
-are helpers, not hook commands. `scripts/hooks/auto-update-runner.mjs` is spawned by the Stop hook
+are helpers, not hook commands. `_shared.js` resolves Claude's configured recipient or default `claude-code`; inbox queries suppress message IDs with intake receipts. Channel push is optional. `scripts/hooks/auto-update-runner.mjs` is spawned by the Stop hook
 (`session-summary.js` → `_shared.js` `spawnAutoUpdate`) once consent is approved; it is not registered in the manifest.
 
 ---

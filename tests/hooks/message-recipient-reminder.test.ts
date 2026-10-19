@@ -66,6 +66,40 @@ describe('Feature: a session that declares MEMESH_RECIPIENT is told when a messa
       .map((line) => JSON.parse(line) as { hook: string; outcome: string; reason?: string })
       .filter((record) => record.hook === hook);
 
+  it('provides basic Claude reminders without Channel setup and stops after intake', async () => {
+    const project = getProjectName(tmp);
+    const messageId = await send('claude-code', project);
+    const env = { MEMESH_HOOK_HOST: 'claude-code' };
+    const sessionId = randomUUID();
+    const start = run('session-start.js', { cwd: tmp, session_id: sessionId, source: 'startup' }, env);
+    expect(context(start.stdout)).toContain('recipient "claude-code"');
+    expect(context(start.stdout)).toContain('1 message waiting for "claude-code"');
+    expect(context(prompt(env).stdout)).toContain('1 message waiting for "claude-code"');
+    expect(fs.existsSync(path.join(tmp, 'hosts', 'claude.json'))).toBe(false);
+    const stop = run('stop-message-gate.js', { cwd: tmp, session_id: sessionId }, env);
+    expect(JSON.parse(stop.stdout).decision).toBe('block');
+
+    await executeAgentMessageAction(getDatabase(), {
+      action: 'intake', project, recipient: 'claude-code', message_id: messageId,
+      intake_state: 'ingested', idempotency_key: `intake-${messageId}`,
+    }, { transport: 'mcp', sourceHost: 'test-host' });
+    expect(prompt(env).stdout).toBe('');
+    const resumed = run('session-start.js', { cwd: tmp, session_id: sessionId, source: 'resume' }, env);
+    expect(resumed.stdout).not.toContain('message waiting');
+    expect(run('stop-message-gate.js', { cwd: tmp, session_id: randomUUID() }, env).stdout).toBe('');
+  });
+
+  it('keeps the automatic Claude inbox quiet when empty or explicitly disabled', async () => {
+    const env = { MEMESH_HOOK_HOST: 'claude-code' };
+    const start = run('session-start.js', { cwd: tmp, session_id: 's-1', source: 'startup' }, env);
+    expect(context(start.stdout)).toContain('recipient "claude-code"');
+    expect(start.stdout).not.toContain('never been seen');
+    expect(prompt(env).stdout).toBe('');
+    await send('claude-code');
+    expect(prompt({ ...env, MEMESH_RECIPIENT: '' }).stdout).toBe('');
+    expect(prompt({ MEMESH_HOOK_HOST: 'codex' }).stdout).toBe('');
+  });
+
   it('tells the session at its next prompt, naming the project to poll with', async () => {
     await send('claude-implementer');
 
@@ -506,10 +540,10 @@ describe('Feature: a session that declares MEMESH_RECIPIENT is told when a messa
       expect(result.stdout).toBe('');
     });
 
-    it('ignores a missing config file exactly like an unset MEMESH_RECIPIENT', () => {
-      const result = prompt({ MEMESH_HOOK_HOST: 'claude-code' });
-
-      expect(result.stdout).toBe('');
+    it('uses the default Claude recipient when the config file is missing', () => {
+      const resolved = withRealDbPathEnv(() =>
+        resolveMessageRecipient({ MEMESH_HOOK_HOST: 'claude-code' }, undefined));
+      expect(resolved).toBe('claude-code');
     });
   });
 
@@ -782,6 +816,14 @@ describe('Feature: a session that declares MEMESH_RECIPIENT is told when a messa
         MEMESH_HOOK_HOST: 'claude-code', MEMESH_RECIPIENT: 'claude-implementer',
       });
       expect(context(promptResult.stdout)).toContain(`1 message waiting for the live session ${JSON.stringify(sessionId)}`);
+
+      await executeAgentMessageAction(getDatabase(), {
+        action: 'intake', project: 'team-room', recipient: sessionId, message_id: sent.message_id,
+        intake_state: 'ingested', idempotency_key: `intake-${sent.message_id}`,
+      }, { transport: 'mcp', sourceHost: 'test-host', hostSession: sessionId });
+      expect(run('user-prompt-intent.js', { prompt: 'hello there', session_id: sessionId, cwd: tmp }, {
+        MEMESH_HOOK_HOST: 'claude-code', MEMESH_RECIPIENT: 'claude-implementer',
+      }).stdout).toBe('');
     });
 
     it('UserPromptSubmit reminds about a session-targeted message for a LIVE session under the declared principal, naming the session and target_kind', async () => {
