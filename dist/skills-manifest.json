@@ -178,8 +178,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "3ba38684d31e2afb668eb918601b4ff14fe7af25351fdab1421b25bf32e05268",
-      "bytes": 126798
+      "sha256": "a41dd063242ff98b72466264585656856eb80991ab2d57b289074a333bbe0e64",
+      "bytes": 127201
     },
     {
       "path": "scripts/hooks/_stop-handoff.js",
@@ -223,8 +223,8 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "f7e11b9e3663112202d5be44f0fd91b3dcd259e82b8aa01238a38198e97ab03f",
-      "bytes": 97078
+      "sha256": "28dd063d0157fb2d76a91b0d1b5f582f49e27509eb05a1ed4caf722847c8b06b",
+      "bytes": 97249
     },
     {
       "path": "scripts/hooks/session-summary.js",

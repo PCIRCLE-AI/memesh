@@ -580,7 +580,8 @@ export const HOOK_BUSY_TIMEOUT_MS = 2000;
  *
  * With `MEMESH_RECIPIENT` unset, the fallback names the session's own
  * registered principal: `hosts/claude.json`'s `principal_id` under Claude
- * Code, or the Codex companion's principal under Codex (#474).
+ * Code (default `claude-code` when absent), or the Codex companion's
+ * principal under Codex (#474).
  * @param {{ sessionId?: unknown, cwd?: unknown }} [hostContext] - the calling
  *   hook's own `session_id`/`cwd`, consulted only for a Codex run.
  */
@@ -678,9 +679,9 @@ function readOwnerPrivateJsonQuiet(filePath, maxBytes) {
  * the derived id. `principal_id` is one identity for every Claude Code
  * session on the machine, in every project.
  *
- * Every check below still fails CLOSED to "no recipient", exactly as an
- * unset `MEMESH_RECIPIENT` does today — a missing file, an unreadable one,
- * or an invalid `principal_id`:
+ * With no config file, basic reminders use the local `claude-code`
+ * principal without configuring or starting a Channel. Existing unreadable
+ * files and invalid identities still fail CLOSED to "no recipient":
  *   - Claude Code only. The Codex plugin loads the same hooks; a Codex
  *     session must never adopt Claude's principal.
  *   - `principal_id` is refused by the same length and filesystem-path rules
@@ -688,9 +689,18 @@ function readOwnerPrivateJsonQuiet(filePath, maxBytes) {
  *     (#402) — quietly here, since a malformed config is not something the
  *     env-var rejection path's "MEMESH_RECIPIENT ignored" wording describes.
  */
+export const DEFAULT_CLAUDE_RECIPIENT = 'claude-code';
+
 function resolveClaudeHostFallbackRecipient(env) {
   if (!isClaudeCodeHost(env)) return undefined;
   const configPath = join(getMemeshDirFromDbPath(), 'hosts', 'claude.json');
+  // Basic inbox reminders need no Channel setup. Only absence selects the
+  // default; an existing invalid/insecure config must still fail closed.
+  try {
+    lstatSync(configPath);
+  } catch (err) {
+    return err.code === 'ENOENT' ? DEFAULT_CLAUDE_RECIPIENT : undefined;
+  }
   const parsed = readOwnerPrivateJsonQuiet(configPath, HOST_CONFIG_MAX_BYTES);
   if (!parsed) return undefined;
   const principal = typeof parsed.principal_id === 'string' ? parsed.principal_id.normalize('NFC').trim() : '';

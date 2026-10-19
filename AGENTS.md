@@ -79,12 +79,12 @@ hosts should share memories. Not installed yet? Follow
    Code's `SendMessage`, a Codex queue) delivers a wakeup; it is not the
    record, and it cannot reach an agent on a different host or one that is
    not running. Generic `briefing` has no recipient identity and stays quiet;
-   so do the SessionStart and prompt hooks, unless the session declared who it
-   is by starting with `MEMESH_RECIPIENT=<id>` — or, under Claude Code with the
-   memesh-channel already set up (`memesh agent setup claude`), the
-   owner-private `hosts/claude.json` config supplies `principal_id`
-   automatically whenever the file is present and valid (#474), so the
-   reminder works even before or without a live channel connection. Either way they can show how
+   Claude Code's installed hooks use local recipient `claude-code` when
+   `hosts/claude.json` is absent; a valid owner-private config supplies its
+   `principal_id` instead. `MEMESH_RECIPIENT=<id>` overrides either, while an
+   explicitly empty value disables reminders. Existing invalid configs stay
+   quiet. Basic reminders need no Channel setup; live push is optional.
+   The hooks can show how
    many messages wait for that recipient and in which project. An id over 200
    characters, or shaped like a filesystem path, is refused rather than
    silently accepted, with no database required: a line on stderr, a record

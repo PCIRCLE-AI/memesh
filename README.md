@@ -50,6 +50,8 @@ Ask your agent in plain language:
 
 Claude Code's plugin provides automatic capture and reminders. The Codex plugin can provide context at session start once its hooks are allowed to run; other capture behavior varies by host. You can also ask the agent to store or look up memories directly.
 
+Claude Code inbox reminders work without Channel setup: hooks use the local `claude-code` recipient unless you configured another identity. They check at startup, your next prompt and turn end, and stop reminding once the agent records `intake` for that message. Live Channel push is optional; see the [messaging guide](docs/platforms/agent-messaging.md#claude-channel-runner).
+
 Unreleased source builds add `/memesh-memories` in Claude Code to view and edit project memories. Claude Desktop edits inside the pane; terminal Claude Code and Codex use a native form. In Codex, ask `$memesh` to find and edit a memory. Fill only the title or paragraphs you want to change, leaving other fields blank. Save reads back the stored result; Cancel saves nothing. Unsupported hosts keep the existing conversation workflow.
 
 [Full tool and command reference](docs/api/API_REFERENCE.md) · [Agent messaging](docs/platforms/agent-messaging.md) · [How it works](docs/ARCHITECTURE.md) · [Contributing](CONTRIBUTING.md)
