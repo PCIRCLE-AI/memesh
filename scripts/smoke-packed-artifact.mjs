@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -85,6 +85,7 @@ const requiredFiles = [
   'dist/index.js',
   'dist/db.js',
   'dist/knowledge-graph.js',
+  'dist/transports/cli/THIRD_PARTY_NOTICES.txt',
   'dist/core/operations.js',
   'dist/core/types.js',
   'dist/core/config.js',
@@ -332,6 +333,52 @@ try {
     }),
   },
 );
+
+// Doctor must probe the raw plugin cache too, without borrowing the smoke
+// runner's SDK or requiring npm install inside the extracted package.
+const runRawDoctor = () => spawnSync(
+  process.execPath,
+  [path.join(packageDir, 'dist/transports/cli/cli.js'), 'doctor', '--json'],
+  {
+    cwd: packageDir,
+    encoding: 'utf8',
+    timeout: 30_000,
+    env: buildIsolatedRuntimeEnv({
+      ...rawBaseEnv,
+      CLAUDE_PLUGIN_ROOT: packageDir,
+      MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY: '1',
+    }, {
+      runtimeHome: rawProtocolHome,
+      memeshDir: rawProtocolMemeshDir,
+      dbPath: rawProtocolDbPath,
+    }),
+  },
+);
+const rawDoctor = runRawDoctor();
+const rawDoctorReport = JSON.parse(rawDoctor.stdout);
+assert.equal(
+  rawDoctorReport.checks.find((check) => check.id === 'message-capability')?.status,
+  'pass',
+  `raw plugin cache doctor message probe failed: ${rawDoctor.stdout}`,
+);
+assert.equal(rawDoctor.status, 0, rawDoctor.stderr);
+
+// A real MCP startup failure must still fail the opt-in diagnostic.
+const rawMcpPath = path.join(packageDir, mcpTarget);
+const rawMcpBytes = fs.readFileSync(rawMcpPath);
+try {
+  fs.writeFileSync(rawMcpPath, "throw new Error('expected broken MCP fixture');\n");
+  const brokenDoctor = runRawDoctor();
+  const brokenReport = JSON.parse(brokenDoctor.stdout);
+  assert.equal(brokenDoctor.status, 1);
+  assert.equal(
+    brokenReport.checks.find((check) => check.id === 'message-capability')?.status,
+    'fail',
+    'doctor hid a real installed MCP startup failure',
+  );
+} finally {
+  fs.writeFileSync(rawMcpPath, rawMcpBytes);
+}
 
 // A running MCP server never re-reads its own package.json after startup, so
 // a plugin-marketplace upgrade that replaces files on disk while this process

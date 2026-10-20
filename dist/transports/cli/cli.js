@@ -57893,6 +57893,7 @@ function verifySkillsManifest(packageRoot3, existsSyncImpl, readFileSyncImpl, in
 }
 function probeInstalledMessageCapability(packageRoot3) {
   const required2 = [
+    "dist/transports/cli/doctor-message-probe.js",
     "dist/mcp/server.js",
     "dist/transports/mcp/handlers.js",
     "dist/host-adapters/codex-app-server.js",
@@ -57904,27 +57905,7 @@ function probeInstalledMessageCapability(packageRoot3) {
     return { ok: false, message: `installed runtime is missing ${absent.join(", ")}` };
   const probeHome = fs20.mkdtempSync(path17.join(os2.tmpdir(), "memesh-doctor-message-"));
   try {
-    execFileSync7(process.execPath, ["--input-type=module", "-e", `
-      import assert from 'node:assert/strict';
-      import { pathToFileURL } from 'node:url';
-      import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-      import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-      const root = ${JSON.stringify(packageRoot3)};
-      await Promise.all([
-        import(pathToFileURL(root + '/dist/host-adapters/codex-app-server.js').href),
-        import(pathToFileURL(root + '/dist/host-adapters/claude-channel.js').href),
-        import(pathToFileURL(root + '/dist/host-adapters/acp-client.js').href),
-      ]);
-      const client = new Client({ name: 'memesh-doctor-message-probe', version: '1' });
-      const transport = new StdioClientTransport({ command: process.execPath, args: [root + '/dist/mcp/server.js'], env: process.env });
-      try {
-        await client.connect(transport);
-        const tool = (await client.listTools()).tools.find((candidate) => candidate.name === 'message');
-        assert.ok(tool, 'installed MCP did not advertise message');
-        const actions = tool.inputSchema?.properties?.action?.enum;
-        assert.deepEqual(actions, ['send', 'poll', 'discover', 'fetch', 'intake', 'ack', 'disposition', 'activation', 'receipts']);
-      } finally { await client.close(); }
-    `], {
+    execFileSync7(process.execPath, [path17.join(packageRoot3, "dist/transports/cli/doctor-message-probe.js"), packageRoot3], {
       cwd: packageRoot3,
       stdio: "pipe",
       timeout: 15e3,

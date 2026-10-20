@@ -147,7 +147,8 @@ src/
     ├── http/
     │   └── server.ts      # Express REST API server (imports schemas, 1MB body limit, rate limiting)
     └── cli/
-        └── cli.ts         # Commander CLI (conflict warnings in recall output)
+        ├── cli.ts         # Commander CLI (conflict warnings in recall output)
+        └── doctor-message-probe.ts # bundled diagnostic child for raw plugin caches
 ```
 
 ---

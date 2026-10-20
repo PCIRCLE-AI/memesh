@@ -79,7 +79,7 @@ docs/                # ARCHITECTURE.md, api/API_REFERENCE.md
 - Stated task state over HTTP → `GET /v1/task-state` in `src/transports/http/server.ts` → `src/core/task-state-store.ts`
 - Config read/write → `src/core/config.ts`
 - Path resolution (explicit `MEMESH_DIR` / `MEMESH_DB_PATH` overrides, then HOME defaults) → `src/core/paths.ts`
-- `memesh doctor` health check + real probes → `src/core/doctor.ts`
+- `memesh doctor` health check + real probes → `src/core/doctor.ts`; bundled MCP diagnostic child → `src/transports/cli/doctor-message-probe.ts`
 - What every entry point says about updates (snooze, just-upgraded receipt, failed check) → `src/core/update-notice.ts`; the MCP first-call and CLI stderr notice → `src/core/update-entrypoint.ts`
   (build-generated as `scripts/hooks/_generated/update-notice.js` for the SessionStart / UserPromptSubmit / Stop hooks)
 - npm version check / self-update → `src/core/version-check.ts`, `src/core/updater.ts`, `src/core/install-channel.ts`, `src/core/install-hooks.ts`
