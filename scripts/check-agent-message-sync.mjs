@@ -118,8 +118,9 @@ requireText('src/host-adapters/claude-channel.ts', [
   "'claude/channel'", 'notifications/claude/channel', 'createClaudeChannelServer',
 ]);
 requireText('dist/host-adapters/claude-channel.js', [
-  "'claude/channel'", 'notifications/claude/channel', 'createClaudeChannelServer',
+  'notifications/claude/channel', 'createClaudeChannelServer',
 ]);
+requirePattern('dist/host-adapters/claude-channel.js', /['"]claude\/channel['"]/, 'claude/channel capability');
 requireText('src/host-adapters/codex-app-server.ts', [
   'experimentalApi: true', 'thread/queue/add', 'ws://localhost/rpc', 'perMessageDeflate: false',
 ]);
