@@ -112,6 +112,63 @@ async function startLegacyRouter(
 }
 
 describe.skipIf(process.platform === 'win32')('Feature: #518 an old router after an upgrade', () => {
+  it('hands an authenticated <=4.11.2 router over before any legacy Claude registration', async () => {
+    const { db, socketPath } = setup();
+    let rowsBeforeHandover = -1;
+    const old = new AgentRouter({
+      db, socket_path: socketPath, memesh_version: '4.11.2',
+      adapters: [{ kind: 'claude-channel', authenticate: value => value.auth_token === 'token' }],
+      on_superseded: () => {
+        rowsBeforeHandover = (db.prepare('SELECT count(*) AS n FROM agent_session_connections').get() as { n: number }).n;
+        void old.stop();
+      },
+    });
+    await old.start();
+    routers.push(old);
+    connection = await connectRouterHost({
+      socket_path: socketPath, auth_token: 'token',
+      identity: { project: 'project-a', principal_id: 'principal-a', session_instance_id: 'session-a', adapter_kind: 'claude-inbox' },
+      deliver: async () => { throw new Error('No Channel'); },
+      resilience: {
+        initial_retry_ms: 10, max_retry_ms: 20, retry_jitter: 0,
+        start_router: async () => {
+          const next = new AgentRouter({
+            db, socket_path: socketPath, memesh_version: memeshPackageVersion(),
+            adapters: [{ kind: 'claude-inbox', authenticate: value => value.auth_token === 'token' }],
+          });
+          await next.start();
+          routers.push(next);
+        },
+      },
+    });
+    expect(rowsBeforeHandover).toBe(0);
+    expect(db.prepare('SELECT adapter_kind, session_instance_id FROM agent_session_connections').all())
+      .toEqual([{ adapter_kind: 'claude-inbox', session_instance_id: 'session-a' }]);
+    expect(db.prepare('SELECT count(*) AS n FROM agent_host_accepts').get()).toEqual({ n: 0 });
+  });
+
+  it.each(['wrong-token', 'not-newer'])('does not hand an old router over for %s', async reason => {
+    const { db, socketPath } = setup();
+    const superseded = vi.fn();
+    const old = new AgentRouter({
+      db, socket_path: socketPath, memesh_version: '4.11.2', on_superseded: superseded,
+      adapters: [{ kind: 'claude-channel', authenticate: value => value.auth_token === 'token' }],
+    });
+    await old.start();
+    routers.push(old);
+    const startRouter = vi.fn(async () => undefined);
+    await expect(connectRouterHost({
+      socket_path: socketPath, auth_token: reason === 'wrong-token' ? 'wrong-token' : 'token',
+      identity: { project: 'project-a', principal_id: 'principal-a', session_instance_id: 'session-a', adapter_kind: 'claude-inbox' },
+      deliver: async () => ({}),
+      resilience: { initial_attempts: 1, start_router: startRouter,
+        installed_version: reason === 'not-newer' ? () => '4.11.2' : memeshPackageVersion },
+    })).rejects.toThrow();
+    expect(superseded).not.toHaveBeenCalled();
+    expect(startRouter).not.toHaveBeenCalled();
+    expect(db.prepare('SELECT count(*) AS n FROM agent_session_connections').get()).toEqual({ n: 0 });
+  });
+
   it('the installed version is read from the package', () => {
     const version = memeshPackageVersion();
     const pkg = JSON.parse(fs.readFileSync(path.resolve('package.json'), 'utf8')) as { version: string };

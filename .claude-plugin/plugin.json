@@ -1,10 +1,10 @@
 {
   "name": "memesh",
-  "description": "MeMesh \u2014 local collaboration for AI coding agents. Share memory across sessions, exchange task messages, and preserve work context. One SQLite file; no cloud required.",
+  "description": "MeMesh — local collaboration for AI coding agents. Share memory across sessions, exchange task messages, and preserve work context. One SQLite file; no cloud required.",
   "author": {
     "name": "PCIRCLE AI"
   },
-  "version": "4.11.2",
+  "version": "4.11.3",
   "mcpServers": "./.claude-plugin/mcp.json",
   "homepage": "https://github.com/PCIRCLE-AI/memesh",
   "repository": "https://github.com/PCIRCLE-AI/memesh",

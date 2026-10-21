@@ -25623,10 +25623,10 @@ var init_agent_messaging = __esm({
         super(`intended_for_other_session: message ${messageId2} is meant for session ${JSON.stringify(intendedSession)}, and ${caller}. Otherwise leave it for that session: do not record intake or a disposition for it.`);
       }
     };
-    INTENDED_SESSION_ADAPTERS = /* @__PURE__ */ new Set(["claude-channel", "codex-cli-queue"]);
+    INTENDED_SESSION_ADAPTERS = /* @__PURE__ */ new Set(["claude-channel", "claude-inbox", "codex-cli-queue"]);
     AgentIntendedSessionUnsupportedError = class extends AgentMessagingError {
       constructor(session, adapterKind) {
-        super(`intended_session ${JSON.stringify(session)} is registered by the ${JSON.stringify(adapterKind)} host, which cannot say which session it is when it records intake. Only Claude Code sessions and Codex CLI threads (claude-channel, codex-cli-queue, or an id the router never registered) can be named as intended_session.`);
+        super(`intended_session ${JSON.stringify(session)} is registered by the ${JSON.stringify(adapterKind)} host, which cannot say which session it is when it records intake. Only Claude Code sessions and Codex CLI threads (claude-channel, claude-inbox, codex-cli-queue, or an id the router never registered) can be named as intended_session.`);
       }
     };
     AgentWaitAbortedError = class extends AgentMessagingError {

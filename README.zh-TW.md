@@ -52,6 +52,8 @@ Claude Code 插件提供自動記錄和提醒。Codex 插件在獲准執行 hook
 
 Claude Code 的收件提醒不需設定 Channel：沒有自訂身分時，hooks 使用本機 `claude-code` 收件者，在啟動、下一次輸入與回合結束時檢查；agent 為該訊息登記 `intake` 後便停止提醒。Channel 即時推送是選配，詳見[訊息指南](docs/platforms/agent-messaging.md#claude-channel-runner)。
 
+一般 Claude Code MCP 對話會自動登記到 `message discover`，不需啟用 Channel。在線表示對話已連接；即時推送仍需 Channel，未啟用時使用持久收件匣與原有 hook 提醒。
+
 尚未發布的原始碼版本新增 Claude Code `/memesh-memories` 入口，可查看及修改專案記憶。Claude Desktop 在面板內編輯；終端 Claude Code 與 Codex 使用原生表單。Codex 可請 `$memesh` 查找並編輯記憶。只填要改的標題或段落，留白保留原文。儲存後讀回結果，取消不寫入；不支援的宿主仍可用原本的對話操作。
 
 [完整工具與指令說明](docs/api/API_REFERENCE.md) · [Agent 訊息](docs/platforms/agent-messaging.md) · [運作方式](docs/ARCHITECTURE.md) · [參與開發](CONTRIBUTING.md)

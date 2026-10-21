@@ -13,6 +13,8 @@ import { openDatabase, closeDatabase } from '../db.js';
 import { handleTool, TOOL_DEFINITIONS } from './tools.js';
 import { configureVersionSource, normalizeClientHost } from '../transports/mcp/handlers.js';
 import { resolveMcpProject } from '../transports/mcp/project-context.js';
+import { startClaudeInboxPresence } from '../host-runtime/claude-inbox.js';
+import type { RouterHostConnection } from '../host-runtime/router-client.js';
 
 // This file sits at the same depth (2 levels below the package root) both as
 // TS source (src/mcp/server.ts) and inside the bundled dist/mcp/server.js
@@ -32,6 +34,23 @@ const server = new Server(
   { name: 'memesh', version: packageVersion },
   { capabilities: { tools: {} } }
 );
+
+let presence: RouterHostConnection | undefined;
+let closing = false;
+server.oninitialized = () => {
+  if (normalizeClientHost(server.getClientVersion()?.name) !== 'claude-code') return;
+  void (async () => {
+    const roots = server.getClientCapabilities()?.roots
+      ? (await server.listRoots(undefined, { timeout: 3000 })).roots.map(root => root.uri)
+      : [];
+    const connection = await startClaudeInboxPresence(roots);
+    if (closing) await connection?.close();
+    else presence = connection;
+  })().catch(error => {
+    // Registration is optional to core memory tools, but never silently green.
+    console.error('[memesh] Claude online registration:', error instanceof Error ? error.message : String(error));
+  });
+};
 
 // List tools
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -111,12 +130,16 @@ async function main() {
   await server.connect(transport);
 }
 
-function shutdown() {
+async function shutdown() {
+  if (closing) return;
+  closing = true;
+  await presence?.close();
   try { closeDatabase(); } catch { /* best effort */ }
   process.exit(0);
 }
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+server.onclose = () => { void shutdown(); };
+process.on('SIGINT', () => { void shutdown(); });
+process.on('SIGTERM', () => { void shutdown(); });
 
 main().catch((err) => {
   console.error('MeMesh server error:', err instanceof Error ? err.message : String(err));

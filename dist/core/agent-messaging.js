@@ -31,12 +31,12 @@ export class AgentIntendedForOtherSessionError extends AgentMessageAccessError {
             + 'Otherwise leave it for that session: do not record intake or a disposition for it.');
     }
 }
-const INTENDED_SESSION_ADAPTERS = new Set(['claude-channel', 'codex-cli-queue']);
+const INTENDED_SESSION_ADAPTERS = new Set(['claude-channel', 'claude-inbox', 'codex-cli-queue']);
 export class AgentIntendedSessionUnsupportedError extends AgentMessagingError {
     constructor(session, adapterKind) {
         super(`intended_session ${JSON.stringify(session)} is registered by the ${JSON.stringify(adapterKind)} host, which cannot `
             + 'say which session it is when it records intake. Only Claude Code sessions and Codex CLI threads '
-            + '(claude-channel, codex-cli-queue, or an id the router never registered) can be named as intended_session.');
+            + '(claude-channel, claude-inbox, codex-cli-queue, or an id the router never registered) can be named as intended_session.');
     }
 }
 export class AgentWaitAbortedError extends AgentMessagingError {

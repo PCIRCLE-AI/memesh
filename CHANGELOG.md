@@ -6,6 +6,12 @@ are not part of a published npm release yet.
 
 ## [Unreleased]
 
+## [4.11.3] — 2026-10-21
+
+### Fixed
+
+- Ordinary Claude Code MCP sessions register online automatically without Channel setup. Their presence ends when the MCP connection closes; Channel remains optional for immediate push and takes precedence when enabled. Inbox reminders and explicit intake retain their existing behavior.
+
 ## [4.11.2] — 2026-10-21
 
 ### Fixed

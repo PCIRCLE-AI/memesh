@@ -3229,8 +3229,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path12) {
-      let input = path12;
+    function removeDotSegments(path13) {
+      let input = path13;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3482,8 +3482,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path12, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path12 && path12 !== "/" ? path12 : void 0;
+        const [path13, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path13 && path13 !== "/" ? path13 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -6902,12 +6902,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f;
     };
-    function addFormats(ajv, list, fs15, exportName) {
+    function addFormats(ajv, list, fs17, exportName) {
       var _a3;
       var _b;
       (_a3 = (_b = ajv.opts.code).formats) !== null && _a3 !== void 0 ? _a3 : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs15[f]);
+        ajv.addFormat(f, fs17[f]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -6916,8 +6916,8 @@ var require_dist = __commonJS({
 });
 
 // dist/mcp/server.js
-import fs14 from "fs";
-import path11 from "path";
+import fs16 from "fs";
+import path12 from "path";
 
 // node_modules/zod/v4/core/index.js
 var core_exports2 = {};
@@ -7442,10 +7442,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path12) {
-  if (!path12)
+function getElementAtPath(obj, path13) {
+  if (!path13)
     return obj;
-  return path12.reduce((acc, key) => acc?.[key], obj);
+  return path13.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -7854,11 +7854,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path12, issues) {
+function prefixIssues(path13, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path12);
+    iss.path.unshift(path13);
     return iss;
   });
 }
@@ -8005,16 +8005,16 @@ function flattenError(error51, mapper = (issue2) => issue2.message) {
 }
 function formatError(error51, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error52, path12 = []) => {
+  const processError = (error52, path13 = []) => {
     for (const issue2 of error52.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path12, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path13, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path12, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path13, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path12, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path13, ...issue2.path]);
       } else {
-        const fullpath = [...path12, ...issue2.path];
+        const fullpath = [...path13, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -8041,17 +8041,17 @@ function formatError(error51, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error51, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error52, path12 = []) => {
+  const processError = (error52, path13 = []) => {
     var _a3, _b;
     for (const issue2 of error52.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path12, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path13, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path12, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path13, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path12, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path13, ...issue2.path]);
       } else {
-        const fullpath = [...path12, ...issue2.path];
+        const fullpath = [...path13, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -8083,8 +8083,8 @@ function treeifyError(error51, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path12 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path12) {
+  const path13 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path13) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -21082,13 +21082,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path12 = ref.slice(1).split("/").filter(Boolean);
-  if (path12.length === 0) {
+  const path13 = ref.slice(1).split("/").filter(Boolean);
+  if (path13.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path12[0] === defsKey) {
-    const key = path12[1];
+  if (path13[0] === defsKey) {
+    const key = path13[1];
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -24793,7 +24793,7 @@ var StdioServerTransport = class {
 };
 
 // dist/mcp/server.js
-import { fileURLToPath as fileURLToPath4 } from "url";
+import { fileURLToPath as fileURLToPath6 } from "url";
 
 // dist/storage/sqlite.js
 import { createRequire } from "node:module";
@@ -24819,8 +24819,8 @@ var { DatabaseSync } = loadNodeSqlite();
 var BUSY_TIMEOUT_MS = 3e4;
 var MemeshDatabase = class extends DatabaseSync {
   #depth = 0;
-  constructor(path12, options = {}) {
-    super(path12, options);
+  constructor(path13, options = {}) {
+    super(path13, options);
     this.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
   }
   pragma(statement) {
@@ -26014,6 +26014,7 @@ import path from "path";
 import { createHash } from "crypto";
 import { execFileSync } from "child_process";
 var AGENT_ROUTER_SOCKET_FILENAME = "agent-router-v2.sock";
+var LEGACY_AGENT_ROUTER_SOCKET_FILENAME = "agent-router.sock";
 function homeDir() {
   const home = process.env.HOME;
   if (home && home.length > 0)
@@ -26034,6 +26035,10 @@ function getMemeshDirFromDbPath() {
 }
 function getAgentRouterSocketPath() {
   return path.join(getMemeshDirFromDbPath(), AGENT_ROUTER_SOCKET_FILENAME);
+}
+function normalizeAgentRouterSocketPath(socketPath) {
+  const dataDir = getMemeshDirFromDbPath();
+  return socketPath === path.join(dataDir, LEGACY_AGENT_ROUTER_SOCKET_FILENAME) ? getAgentRouterSocketPath() : socketPath;
 }
 function getProjectName(cwdInput) {
   const cwd = cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd();
@@ -27431,6 +27436,18 @@ function guardDatabaseFiles(dbPath) {
   for (const target of databaseFiles(dbPath))
     removeGroupAndOtherAccess(target);
   refuseMismatchedSidecars(dbPath);
+}
+function requirePrivateWritableDirectory(dir, purpose) {
+  removeGroupAndOtherAccess(dir);
+  const mode = fs2.statSync(dir).mode & 511;
+  if ((mode & 63) !== 0) {
+    throw new Error(`${dir} is still open to other users (${mode.toString(8)}), and ${purpose}. Run: chmod go-rwx ${shellQuote(dir)}`);
+  }
+  try {
+    fs2.accessSync(dir, fs2.constants.W_OK);
+  } catch {
+    throw new Error(`${dir} is read-only, and ${purpose}. MeMesh does not make it writable; if you want it to run, run: chmod u+w ${shellQuote(dir)}`);
+  }
 }
 var SIDECAR_PERMISSIONS_CODE = "MEMESH_SIDECAR_PERMISSIONS";
 var OWNER_LETTERS = [[256, "r"], [128, "w"], [64, "x"]];
@@ -31387,10 +31404,10 @@ var AgentIntendedForOtherSessionError = class extends AgentMessageAccessError {
     super(`intended_for_other_session: message ${messageId2} is meant for session ${JSON.stringify(intendedSession)}, and ${caller}. Otherwise leave it for that session: do not record intake or a disposition for it.`);
   }
 };
-var INTENDED_SESSION_ADAPTERS = /* @__PURE__ */ new Set(["claude-channel", "codex-cli-queue"]);
+var INTENDED_SESSION_ADAPTERS = /* @__PURE__ */ new Set(["claude-channel", "claude-inbox", "codex-cli-queue"]);
 var AgentIntendedSessionUnsupportedError = class extends AgentMessagingError {
   constructor(session, adapterKind) {
-    super(`intended_session ${JSON.stringify(session)} is registered by the ${JSON.stringify(adapterKind)} host, which cannot say which session it is when it records intake. Only Claude Code sessions and Codex CLI threads (claude-channel, codex-cli-queue, or an id the router never registered) can be named as intended_session.`);
+    super(`intended_session ${JSON.stringify(session)} is registered by the ${JSON.stringify(adapterKind)} host, which cannot say which session it is when it records intake. Only Claude Code sessions and Codex CLI threads (claude-channel, claude-inbox, codex-cli-queue, or an id the router never registered) can be named as intended_session.`);
   }
 };
 var AgentWaitAbortedError = class extends AgentMessagingError {
@@ -32649,6 +32666,11 @@ function isSelectionCard(value, project) {
   if (!isPlainObject5(value))
     return false;
   return typeof value.session_id === "string" && typeof value.principal_id === "string" && ["codex", "claude", "gemini", "other"].includes(String(value.host_kind)) && value.project === project && (value.model === null || typeof value.model === "string") && (value.work_summary === null || typeof value.work_summary === "string") && value.active === true && Number.isSafeInteger(value.generation) && value.generation >= 1 && Number.isSafeInteger(value.lease_expires_at_ms) && value.lease_expires_at_ms >= 0;
+}
+function isNewerVersion(candidate, current) {
+  const a = parseSemVer(candidate);
+  const b = parseSemVer(current);
+  return a !== null && b !== null && compareSemVerPrecedence(a, b) > 0;
 }
 function validateSocketPath(socketPath) {
   if (typeof socketPath !== "string" || !path6.isAbsolute(socketPath) || Buffer.byteLength(socketPath) > AGENT_ROUTER_SOCKET_PATH_MAX_BYTES) {
@@ -34059,8 +34081,8 @@ function fail(message) {
   return { content: [{ type: "text", text: message }], isError: true };
 }
 function formatIssue(issue2) {
-  const path12 = issue2.path.join(".");
-  return path12 ? `${path12}: ${issue2.message}` : issue2.message;
+  const path13 = issue2.path.join(".");
+  return path13 ? `${path13}: ${issue2.message}` : issue2.message;
 }
 function stripNullProps(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value))
@@ -34461,11 +34483,695 @@ function resolveMcpProject(launchRoot, rootUris) {
   };
 }
 
+// dist/host-runtime/claude-inbox.js
+import path11 from "node:path";
+import { spawn as spawn3 } from "node:child_process";
+import { fileURLToPath as fileURLToPath5 } from "node:url";
+
+// dist/host-runtime/config.js
+import { randomBytes as randomBytes2 } from "node:crypto";
+import fs14 from "node:fs";
+var MAX_ROUTER_TOKEN_FILE_BYTES = 8 * 1024;
+var SECURE_LOCAL_HOST_RUNTIME_UNSUPPORTED = "The secure local host runtime is not supported on Windows.";
+function assertSecureLocalHostRuntimeSupported() {
+  if (process.platform === "win32") {
+    throw new Error(SECURE_LOCAL_HOST_RUNTIME_UNSUPPORTED);
+  }
+}
+function readTokenFile(tokenFile) {
+  const file2 = requiredString(tokenFile, "token_file");
+  return requiredString(readOwnerPrivateFile(file2, "router token file", MAX_ROUTER_TOKEN_FILE_BYTES).trim(), "router token");
+}
+function ensureRouterTokenFile(tokenFile) {
+  assertSecureLocalHostRuntimeSupported();
+  try {
+    fs14.writeFileSync(tokenFile, `${randomBytes2(32).toString("hex")}
+`, { mode: 384, flag: "wx" });
+  } catch (error51) {
+    if (error51.code !== "EEXIST")
+      throw error51;
+  }
+  return readTokenFile(tokenFile);
+}
+function requiredString(value, field) {
+  if (typeof value !== "string" || value.length === 0 || Buffer.byteLength(value) > 4096) {
+    throw new Error(`${field} must be a bounded non-empty string.`);
+  }
+  return value;
+}
+function readOwnerPrivateFile(file2, label, maxBytes) {
+  assertSecureLocalHostRuntimeSupported();
+  if (typeof fs14.constants.O_NOFOLLOW !== "number") {
+    throw new Error(`This platform cannot safely reject a symlink ${label}.`);
+  }
+  const descriptor = fs14.openSync(file2, fs14.constants.O_RDONLY | fs14.constants.O_NOFOLLOW | fs14.constants.O_NONBLOCK);
+  try {
+    const stat = fs14.fstatSync(descriptor);
+    if (!stat.isFile())
+      throw new Error(`The ${label} must be an owner-private regular file.`);
+    assertOwnerPrivate(stat, label);
+    if (stat.size > maxBytes)
+      throw new Error(`The ${label} exceeds its ${maxBytes}-byte limit.`);
+    const content = Buffer.allocUnsafe(maxBytes + 1);
+    let bytesRead = 0;
+    while (bytesRead < content.length) {
+      const chunkBytes = fs14.readSync(descriptor, content, bytesRead, content.length - bytesRead, null);
+      if (chunkBytes === 0)
+        break;
+      bytesRead += chunkBytes;
+    }
+    if (bytesRead > maxBytes)
+      throw new Error(`The ${label} exceeds its ${maxBytes}-byte limit.`);
+    return content.subarray(0, bytesRead).toString("utf8");
+  } finally {
+    fs14.closeSync(descriptor);
+  }
+}
+function assertOwnerPrivate(stat, label) {
+  if ((stat.mode & 63) !== 0)
+    throw new Error(`The ${label} must be owner-private.`);
+  if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
+    throw new Error(`The ${label} must be owned by the current user.`);
+  }
+}
+
+// dist/host-runtime/router-client.js
+import { spawn as spawn2 } from "node:child_process";
+import { randomUUID as randomUUID5 } from "node:crypto";
+import fs15 from "node:fs";
+import net2 from "node:net";
+import { fileURLToPath as fileURLToPath4 } from "node:url";
+
+// dist/host-runtime/package-version.js
+import { readFileSync } from "node:fs";
+function memeshPackageVersion() {
+  const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
+  if (typeof pkg.version !== "string" || pkg.version.length === 0) {
+    throw new Error("The installed MeMesh package.json has no version.");
+  }
+  return pkg.version;
+}
+
+// dist/host-runtime/router-client.js
+var DEFAULT_INITIAL_RETRY_MS = 100;
+var DEFAULT_MAX_RETRY_MS = 5e3;
+var DEFAULT_RETRY_JITTER = 0.2;
+var DEFAULT_INITIAL_ATTEMPTS = 6;
+var DEFAULT_REGISTRATION_TIMEOUT_MS = 5e3;
+var MIN_RETRY_MS = 10;
+var RouterTransportError = class extends Error {
+};
+var ActiveRouterHostConnection = class {
+  input;
+  resilience;
+  currentConnectionId = "";
+  currentGeneration = 0;
+  reportedOutdatedRouter = false;
+  currentSocket = null;
+  connectingSocket = null;
+  heartbeat = null;
+  retryTimer = null;
+  cancelRetryWait = null;
+  reconnectTask = null;
+  reconnectAttempt = 0;
+  closed = false;
+  deliveryTail = Promise.resolve();
+  acceptedDeliveries = /* @__PURE__ */ new Map();
+  constructor(input, resilience) {
+    this.input = input;
+    this.resilience = resilience;
+  }
+  get connection_id() {
+    return this.currentConnectionId;
+  }
+  get generation() {
+    return this.currentGeneration;
+  }
+  async connectInitial() {
+    let lastError = new RouterTransportError("Could not connect to the router.");
+    for (let attempt = 0; attempt < this.resilience.initial_attempts; attempt += 1) {
+      try {
+        await this.connectOnce();
+        return;
+      } catch (error51) {
+        lastError = error51;
+        if (this.closed || !isRetryableTransportError(error51))
+          throw error51;
+        if (attempt + 1 < this.resilience.initial_attempts) {
+          await this.waitForRetry(this.retryDelay(attempt));
+        }
+      }
+    }
+    throw lastError;
+  }
+  async close() {
+    if (this.closed)
+      return;
+    this.closed = true;
+    this.clearHeartbeat();
+    this.cancelPendingRetry();
+    const connecting = this.connectingSocket;
+    this.connectingSocket = null;
+    connecting?.destroy();
+    const socket = this.currentSocket;
+    this.currentSocket = null;
+    if (!socket)
+      return;
+    try {
+      this.write(socket, {
+        version: AGENT_ROUTER_PROTOCOL_VERSION,
+        type: "disconnect",
+        request_id: randomUUID5(),
+        project: this.input.identity.project,
+        session_instance_id: this.input.identity.session_instance_id,
+        connection_id: this.currentConnectionId,
+        generation: this.currentGeneration,
+        hops: 0
+      });
+    } finally {
+      socket.destroy();
+    }
+  }
+  async connectOnce() {
+    let installedVersion;
+    try {
+      installedVersion = this.resilience.installed_version();
+    } catch (error51) {
+      throw new RouterTransportError(`Could not read the installed MeMesh version: ${error51 instanceof Error ? error51.message : String(error51)}`);
+    }
+    try {
+      assertPrivateRouterSocket(this.input.socket_path);
+      const socket = net2.createConnection(this.input.socket_path);
+      this.connectingSocket = socket;
+      try {
+        await waitForSocketConnect(socket);
+        if (this.closed)
+          throw new RouterTransportError("Router host connection was closed.");
+        await this.registerSocket(socket, installedVersion);
+      } catch (error51) {
+        socket.destroy();
+        throw error51;
+      } finally {
+        if (this.connectingSocket === socket)
+          this.connectingSocket = null;
+      }
+    } catch (error51) {
+      if (!this.closed && isRouterUnavailable(error51)) {
+        try {
+          await this.resilience.start_router();
+        } catch {
+        }
+      }
+      throw error51;
+    }
+  }
+  registerSocket(socket, installedVersion) {
+    const registerId = randomUUID5();
+    let buffer = Buffer.alloc(0);
+    let connectionId = "";
+    let generation = 0;
+    let registrationSettled = false;
+    let legacyVersionHandshake = false;
+    const registration = {
+      version: AGENT_ROUTER_PROTOCOL_VERSION,
+      type: "register",
+      request_id: registerId,
+      ...this.input.identity,
+      auth_token: this.input.auth_token,
+      memesh_version: installedVersion,
+      hops: 0
+    };
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        finish(new RouterTransportError("Router registration timed out."));
+      }, this.resilience.registration_timeout_ms);
+      timer.unref();
+      const finish = (error51) => {
+        if (registrationSettled)
+          return;
+        registrationSettled = true;
+        clearTimeout(timer);
+        if (error51)
+          reject(error51);
+        else
+          resolve();
+      };
+      socket.on("data", (chunk) => {
+        buffer = Buffer.concat([buffer, chunk]);
+        if (buffer.length > AGENT_ROUTER_MAX_FRAME_BYTES && !buffer.includes(10)) {
+          socket.destroy(new Error("Router frame exceeds the byte limit."));
+          return;
+        }
+        for (; ; ) {
+          const newline = buffer.indexOf(10);
+          if (newline < 0)
+            break;
+          const raw = buffer.subarray(0, newline);
+          buffer = buffer.subarray(newline + 1);
+          if (raw.length === 0 || raw.length > AGENT_ROUTER_MAX_FRAME_BYTES)
+            continue;
+          let parsed;
+          try {
+            parsed = JSON.parse(raw.toString("utf8"));
+          } catch {
+            continue;
+          }
+          if (!isRecord(parsed)) {
+            socket.destroy(new AgentRouterProtocolError("invalid_response", "Router frame must be a JSON object."));
+            return;
+          }
+          const frame = parsed;
+          if (!registrationSettled && isLegacyAgentRouterVersionMismatchResponse(frame)) {
+            finish(new AgentRouterProtocolError("router_version_mismatch", "router_version_mismatch: the configured router endpoint uses a stale protocol; restart that router with the current MeMesh version."));
+            continue;
+          }
+          if (!registrationSettled && isRouterRejectingVersionField(frame)) {
+            finish(routerOutdatedError());
+            continue;
+          }
+          if (!registrationSettled && frame.request_id === registerId) {
+            if (frame.version !== AGENT_ROUTER_PROTOCOL_VERSION) {
+              finish(new AgentRouterProtocolError("invalid_response", "Router response identity does not match."));
+              continue;
+            }
+            if (frame.ok === false && isRecord(frame.error) && frame.error.code === "router_outdated") {
+              finish(new RouterTransportError(String(frame.error.message)));
+              continue;
+            }
+            if (!legacyVersionHandshake && this.input.identity.adapter_kind === "claude-inbox" && isNewerVersion(installedVersion, "4.11.2") && frame.ok === false && isRecord(frame.error) && frame.error.code === "adapter_unavailable") {
+              legacyVersionHandshake = true;
+              this.write(socket, { ...registration, adapter_kind: "claude-channel" });
+              continue;
+            }
+            if (legacyVersionHandshake) {
+              finish(new Error("Legacy router did not step aside for the installed version; restart it before registering Claude."));
+              continue;
+            }
+            if (frame.ok !== true || !isRecord(frame.result)) {
+              finish(new Error("Router registration was rejected."));
+              continue;
+            }
+            if (!requiredNonEmptyString(frame.result.memesh_version)) {
+              finish(routerOutdatedError());
+              continue;
+            }
+            try {
+              connectionId = requiredFrameString(frame.result.connection_id);
+              generation = requiredFrameInteger(frame.result.generation);
+              const leaseMs = requiredFrameInteger(frame.result.lease_ms);
+              this.activate(socket, connectionId, generation, leaseMs);
+              finish();
+            } catch (error51) {
+              finish(error51 instanceof Error ? error51 : new Error(String(error51)));
+            }
+            continue;
+          }
+          if (registrationSettled && frame.ok === true)
+            this.reconnectAttempt = 0;
+          if (registrationSettled && frame.ok === false && isRecord(frame.error) && frame.error.code === "stale_generation") {
+            socket.destroy();
+            return;
+          }
+          if (frame.type === "session_superseded") {
+            if (frame.version !== AGENT_ROUTER_PROTOCOL_VERSION || frame.connection_id !== connectionId || frame.generation !== generation) {
+              socket.destroy(new AgentRouterProtocolError("invalid_response", "Router frame identity does not match the registered host."));
+              return;
+            }
+            const current = !this.closed && this.currentSocket === socket;
+            this.closed = true;
+            this.clearHeartbeat();
+            if (this.currentSocket === socket)
+              this.currentSocket = null;
+            socket.destroy();
+            if (current)
+              this.input.on_superseded?.();
+            continue;
+          }
+          if (frame.type !== "deliver")
+            continue;
+          if (!registrationSettled) {
+            socket.destroy(new AgentRouterProtocolError("invalid_response", "Router delivered a message before registration completed."));
+            return;
+          }
+          if (!isDelivery(frame, connectionId, generation, this.input.identity)) {
+            socket.destroy(new AgentRouterProtocolError("invalid_response", "Router frame identity does not match the registered host."));
+            return;
+          }
+          this.deliveryTail = this.deliveryTail.then(() => this.handleDelivery(socket, frame, connectionId, generation)).catch(() => void 0);
+        }
+      });
+      socket.on("error", (error51) => {
+        if (!registrationSettled)
+          finish(error51);
+      });
+      socket.once("close", () => {
+        if (!registrationSettled) {
+          finish(new RouterTransportError("Router disconnected during registration."));
+          return;
+        }
+        this.handleDisconnect(socket);
+      });
+      this.write(socket, registration);
+    });
+  }
+  activate(socket, connectionId, generation, leaseMs) {
+    this.currentSocket = socket;
+    this.currentConnectionId = connectionId;
+    this.currentGeneration = generation;
+    this.reportedOutdatedRouter = false;
+    this.clearHeartbeat();
+    this.heartbeat = setInterval(() => {
+      if (this.closed || this.currentSocket !== socket)
+        return;
+      this.write(socket, {
+        version: AGENT_ROUTER_PROTOCOL_VERSION,
+        type: "heartbeat",
+        request_id: randomUUID5(),
+        project: this.input.identity.project,
+        session_instance_id: this.input.identity.session_instance_id,
+        connection_id: connectionId,
+        generation,
+        hops: 0
+      });
+    }, Math.max(100, Math.floor(leaseMs / 2)));
+    this.heartbeat.unref();
+  }
+  async handleDelivery(socket, frame, connectionId, generation) {
+    if (this.closed || !isDelivery(frame, connectionId, generation, this.input.identity))
+      return;
+    const common = {
+      version: AGENT_ROUTER_PROTOCOL_VERSION,
+      request_id: randomUUID5(),
+      attempt_id: frame.attempt_id,
+      delivery_id: frame.delivery_id,
+      connection_id: connectionId,
+      generation,
+      hops: frame.hops
+    };
+    try {
+      const duplicateReceipt = this.acceptedDeliveries.get(frame.delivery_id);
+      const receipt = duplicateReceipt ?? await this.input.deliver(frame);
+      if (!duplicateReceipt) {
+        this.acceptedDeliveries.set(frame.delivery_id, receipt);
+        if (this.acceptedDeliveries.size > 1024) {
+          const oldest = this.acceptedDeliveries.keys().next().value;
+          if (typeof oldest === "string")
+            this.acceptedDeliveries.delete(oldest);
+        }
+      }
+      this.write(socket, { ...common, type: "host_accept", receipt });
+    } catch (error51) {
+      this.write(socket, { ...common, type: "host_reject", failure_code: failureCode(error51) });
+    }
+  }
+  handleDisconnect(socket) {
+    if (this.currentSocket !== socket)
+      return;
+    this.currentSocket = null;
+    this.clearHeartbeat();
+    if (!this.closed)
+      this.beginReconnect();
+  }
+  beginReconnect() {
+    if (this.closed || this.reconnectTask)
+      return;
+    const task = this.reconnectLoop();
+    this.reconnectTask = task;
+    void task.finally(() => {
+      if (this.reconnectTask === task)
+        this.reconnectTask = null;
+      if (!this.closed && !this.currentSocket)
+        this.beginReconnect();
+    });
+  }
+  async reconnectLoop() {
+    while (!this.closed) {
+      if (!await this.waitForRetry(this.retryDelay(this.reconnectAttempt)))
+        return;
+      this.reconnectAttempt += 1;
+      try {
+        await this.connectOnce();
+        if (this.currentSocket)
+          return;
+      } catch (error51) {
+        const outdated = routerOutdatedDetail(error51);
+        if (outdated && !this.reportedOutdatedRouter) {
+          this.reportedOutdatedRouter = true;
+          try {
+            process.stderr.write(`memesh-host:${outdated}
+`);
+          } catch {
+          }
+        }
+      }
+    }
+  }
+  retryDelay(attempt) {
+    const exponent = Math.min(attempt, 30);
+    const base = Math.min(this.resilience.max_retry_ms, this.resilience.initial_retry_ms * 2 ** exponent);
+    const random = Math.min(1, Math.max(0, this.resilience.random()));
+    return Math.max(MIN_RETRY_MS, Math.floor(base * (1 - this.resilience.retry_jitter * random)));
+  }
+  waitForRetry(delayMs) {
+    if (this.closed)
+      return Promise.resolve(false);
+    return new Promise((resolve) => {
+      const finish = (continueRetrying) => {
+        if (this.retryTimer === timer)
+          this.retryTimer = null;
+        if (this.cancelRetryWait === cancel)
+          this.cancelRetryWait = null;
+        resolve(continueRetrying);
+      };
+      const timer = setTimeout(() => finish(!this.closed), delayMs);
+      const cancel = () => {
+        clearTimeout(timer);
+        finish(false);
+      };
+      this.retryTimer = timer;
+      this.cancelRetryWait = cancel;
+    });
+  }
+  cancelPendingRetry() {
+    this.cancelRetryWait?.();
+    this.cancelRetryWait = null;
+    if (this.retryTimer)
+      clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+  }
+  clearHeartbeat() {
+    if (this.heartbeat)
+      clearInterval(this.heartbeat);
+    this.heartbeat = null;
+  }
+  write(socket, frame) {
+    const encoded = Buffer.from(`${JSON.stringify(frame)}
+`, "utf8");
+    if (encoded.length > AGENT_ROUTER_MAX_FRAME_BYTES)
+      throw new Error("Router frame exceeds the byte limit.");
+    if (!socket.destroyed)
+      socket.write(encoded);
+  }
+};
+async function connectRouterHost(input) {
+  assertSecureLocalHostRuntimeSupported();
+  const connection = new ActiveRouterHostConnection(input, normalizeResilience(input.resilience));
+  await connection.connectInitial();
+  return connection;
+}
+function waitForSocketConnect(socket) {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      socket.off("connect", onConnect);
+      socket.off("error", onError);
+      socket.off("close", onClose);
+    };
+    const onConnect = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = (error51) => {
+      cleanup();
+      reject(error51);
+    };
+    const onClose = () => {
+      cleanup();
+      reject(new RouterTransportError("Router disconnected before connection."));
+    };
+    socket.once("connect", onConnect);
+    socket.once("error", onError);
+    socket.once("close", onClose);
+  });
+}
+function assertPrivateRouterSocket(socketPath) {
+  const stat = fs15.lstatSync(socketPath);
+  if (!stat.isSocket() || (stat.mode & 63) !== 0) {
+    throw new Error("The router socket must be owner-private.");
+  }
+  if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
+    throw new Error("The router socket must be owned by the current user.");
+  }
+}
+function normalizeResilience(options = {}) {
+  const initialRetryMs = boundedInteger(options.initial_retry_ms ?? DEFAULT_INITIAL_RETRY_MS, MIN_RETRY_MS, 6e4, "initial_retry_ms");
+  return {
+    initial_retry_ms: initialRetryMs,
+    max_retry_ms: boundedInteger(options.max_retry_ms ?? DEFAULT_MAX_RETRY_MS, initialRetryMs, 6e4, "max_retry_ms"),
+    retry_jitter: boundedNumber(options.retry_jitter ?? DEFAULT_RETRY_JITTER, 0, 1, "retry_jitter"),
+    initial_attempts: boundedInteger(options.initial_attempts ?? DEFAULT_INITIAL_ATTEMPTS, 1, 100, "initial_attempts"),
+    registration_timeout_ms: boundedInteger(options.registration_timeout_ms ?? DEFAULT_REGISTRATION_TIMEOUT_MS, 100, 6e4, "registration_timeout_ms"),
+    start_router: async () => {
+      if (options.start_router)
+        await options.start_router();
+      else
+        await startPackagedRouter();
+    },
+    installed_version: options.installed_version ?? memeshPackageVersion,
+    random: options.random ?? Math.random
+  };
+}
+function startPackagedRouter() {
+  const entrypoint = fileURLToPath4(new URL("./router.js", import.meta.url));
+  return new Promise((resolve, reject) => {
+    const child = spawn2(process.execPath, [entrypoint], {
+      detached: true,
+      shell: false,
+      stdio: "ignore"
+    });
+    child.once("spawn", () => {
+      child.unref();
+      resolve();
+    });
+    child.once("error", reject);
+  });
+}
+function isDelivery(value, connectionId, generation, identity) {
+  const envelope = value.envelope;
+  return value.type === "deliver" && value.version === AGENT_ROUTER_PROTOCOL_VERSION && value.project === identity.project && value.principal_id === identity.principal_id && value.session_instance_id === identity.session_instance_id && value.connection_id === connectionId && value.generation === generation && value.untrusted_payload === true && requiredNonEmptyString(value.attempt_id) && requiredNonEmptyString(value.delivery_id) && Number.isInteger(value.hops) && isRecord(envelope) && requiredNonEmptyString(envelope.message_id) && envelope.project === identity.project && requiredNonEmptyString(envelope.sender) && (envelope.sender_host === null || requiredNonEmptyString(envelope.sender_host)) && (envelope.target_kind === "principal" && envelope.recipient === identity.principal_id || envelope.target_kind === "session" && envelope.recipient === identity.session_instance_id) && (envelope.content_type === "text/plain" || envelope.content_type === "application/json") && (envelope.correlation_id === null || requiredNonEmptyString(envelope.correlation_id)) && (envelope.reply_to === null || requiredNonEmptyString(envelope.reply_to)) && (envelope.privacy === "private" || envelope.privacy === "team") && requiredNonEmptyString(envelope.created_at) && Object.hasOwn(envelope, "payload") && isRecord(envelope.provenance);
+}
+function isRouterRejectingVersionField(frame) {
+  return frame.ok === false && frame.request_id === "" && isRecord(frame.error) && frame.error.code === "unexpected_field" && typeof frame.error.message === "string" && frame.error.message.includes("memesh_version");
+}
+function routerOutdatedDetail(error51) {
+  return error51 instanceof AgentRouterProtocolError && error51.code === "router_outdated" ? ` ${error51.message}` : "";
+}
+function routerOutdatedError() {
+  return new AgentRouterProtocolError("router_outdated", "router_outdated: the running MeMesh message router started before this MeMesh version was installed and still runs the old code. Stop it with `pkill -f dist/host-runtime/router.js`; the next MeMesh session starts the installed one.");
+}
+function requiredNonEmptyString(value) {
+  return typeof value === "string" && value.length > 0;
+}
+function isRouterUnavailable(error51) {
+  const code = error51?.code;
+  return code === "ENOENT" || code === "ECONNREFUSED";
+}
+function isRetryableTransportError(error51) {
+  if (error51 instanceof RouterTransportError || isRouterUnavailable(error51))
+    return true;
+  const code = error51?.code;
+  return code === "ECONNRESET" || code === "EPIPE" || code === "ETIMEDOUT";
+}
+function boundedInteger(value, min, max, name) {
+  if (!Number.isSafeInteger(value) || value < min || value > max) {
+    throw new Error(`${name} must be an integer between ${min} and ${max}.`);
+  }
+  return value;
+}
+function boundedNumber(value, min, max, name) {
+  if (!Number.isFinite(value) || value < min || value > max) {
+    throw new Error(`${name} must be between ${min} and ${max}.`);
+  }
+  return value;
+}
+function requiredFrameString(value) {
+  if (typeof value !== "string" || value.length === 0)
+    throw new Error("Invalid router string field.");
+  return value;
+}
+function requiredFrameInteger(value) {
+  if (!Number.isSafeInteger(value) || value < 1)
+    throw new Error("Invalid router integer field.");
+  return value;
+}
+function failureCode(error51) {
+  const code = isRecord(error51) ? error51.code : void 0;
+  if (typeof code === "string" && /^[a-z0-9_]{1,64}$/.test(code))
+    return code;
+  const name = error51 instanceof Error ? error51.name : "host_rejected";
+  return name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().replace(/[^a-z0-9_]/g, "_").slice(0, 64) || "host_rejected";
+}
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// dist/host-runtime/claude-inbox.js
+async function startClaudeInboxPresence(rootUris) {
+  if (process.platform === "win32")
+    return void 0;
+  const session = claudeCodeSessionFromEnv();
+  if (!session)
+    throw new Error("Claude online registration skipped: no valid CLAUDE_CODE_SESSION_ID.");
+  const binding = resolveMcpProject(process.env.MEMESH_PROJECT_ROOT ?? process.env.CLAUDE_PROJECT_DIR, rootUris);
+  if ("error" in binding)
+    throw new Error(`Claude online registration skipped: ${binding.reason}`);
+  const hookUrl = new URL("../../scripts/hooks/_shared.js", import.meta.url).href;
+  const hooks = await import(hookUrl);
+  const principal = hooks.resolveMessageRecipient({ ...process.env, MEMESH_HOOK_HOST: "claude-code" });
+  if (!principal)
+    return void 0;
+  const dataDir = getMemeshDirFromDbPath();
+  requirePrivateWritableDirectory(dataDir, "the local router keeps its lifecycle state there");
+  const token = ensureRouterTokenFile(path11.join(dataDir, "agent-router.token"));
+  return connectRouterHost({
+    socket_path: normalizeAgentRouterSocketPath(process.env.MEMESH_ROUTER_SOCKET ?? getAgentRouterSocketPath()),
+    auth_token: token,
+    identity: {
+      project: binding.project,
+      principal_id: principal,
+      session_instance_id: session,
+      adapter_kind: "claude-inbox"
+    },
+    deliver: async () => {
+      throw new Error("Use the durable inbox; Claude Channel is not enabled.");
+    },
+    resilience: {
+      start_router: () => new Promise((resolve, reject) => {
+        const child = spawn3(process.execPath, [fileURLToPath5(new URL("../host-runtime/router.js", import.meta.url))], {
+          detached: true,
+          shell: false,
+          stdio: "ignore"
+        });
+        child.once("spawn", () => {
+          child.unref();
+          resolve();
+        });
+        child.once("error", reject);
+      })
+    }
+  });
+}
+
 // dist/mcp/server.js
-var packageJsonPath2 = path11.resolve(path11.dirname(fileURLToPath4(import.meta.url)), "../../package.json");
-var packageVersion2 = JSON.parse(fs14.readFileSync(packageJsonPath2, "utf8")).version ?? "0.0.0";
+var packageJsonPath2 = path12.resolve(path12.dirname(fileURLToPath6(import.meta.url)), "../../package.json");
+var packageVersion2 = JSON.parse(fs16.readFileSync(packageJsonPath2, "utf8")).version ?? "0.0.0";
 configureVersionSource(packageVersion2, packageJsonPath2);
 var server = new Server({ name: "memesh", version: packageVersion2 }, { capabilities: { tools: {} } });
+var presence;
+var closing = false;
+server.oninitialized = () => {
+  if (normalizeClientHost(server.getClientVersion()?.name) !== "claude-code")
+    return;
+  void (async () => {
+    const roots = server.getClientCapabilities()?.roots ? (await server.listRoots(void 0, { timeout: 3e3 })).roots.map((root) => root.uri) : [];
+    const connection = await startClaudeInboxPresence(roots);
+    if (closing)
+      await connection?.close();
+    else
+      presence = connection;
+  })().catch((error51) => {
+    console.error("[memesh] Claude online registration:", error51 instanceof Error ? error51.message : String(error51));
+  });
+};
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: TOOL_DEFINITIONS.map((t) => ({
     name: t.name,
@@ -34512,15 +35218,26 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
-function shutdown() {
+async function shutdown() {
+  if (closing)
+    return;
+  closing = true;
+  await presence?.close();
   try {
     closeDatabase();
   } catch {
   }
   process.exit(0);
 }
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+server.onclose = () => {
+  void shutdown();
+};
+process.on("SIGINT", () => {
+  void shutdown();
+});
+process.on("SIGTERM", () => {
+  void shutdown();
+});
 main().catch((err) => {
   console.error("MeMesh server error:", err instanceof Error ? err.message : String(err));
   try {

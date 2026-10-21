@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
-import { AGENT_ROUTER_MAX_FRAME_BYTES, AGENT_ROUTER_PROTOCOL_VERSION, AgentRouterProtocolError, isLegacyAgentRouterVersionMismatchResponse, } from '../core/agent-router.js';
+import { AGENT_ROUTER_MAX_FRAME_BYTES, AGENT_ROUTER_PROTOCOL_VERSION, AgentRouterProtocolError, isNewerVersion, isLegacyAgentRouterVersionMismatchResponse, } from '../core/agent-router.js';
 import { assertSecureLocalHostRuntimeSupported } from './config.js';
 import { memeshPackageVersion } from './package-version.js';
 const DEFAULT_INITIAL_RETRY_MS = 100;
@@ -131,6 +131,16 @@ class ActiveRouterHostConnection {
         let connectionId = '';
         let generation = 0;
         let registrationSettled = false;
+        let legacyVersionHandshake = false;
+        const registration = {
+            version: AGENT_ROUTER_PROTOCOL_VERSION,
+            type: 'register',
+            request_id: registerId,
+            ...this.input.identity,
+            auth_token: this.input.auth_token,
+            memesh_version: installedVersion,
+            hops: 0,
+        };
         return new Promise((resolve, reject) => {
             const timer = setTimeout(() => {
                 finish(new RouterTransportError('Router registration timed out.'));
@@ -187,6 +197,17 @@ class ActiveRouterHostConnection {
                         }
                         if (frame.ok === false && isRecord(frame.error) && frame.error.code === 'router_outdated') {
                             finish(new RouterTransportError(String(frame.error.message)));
+                            continue;
+                        }
+                        if (!legacyVersionHandshake && this.input.identity.adapter_kind === 'claude-inbox'
+                            && isNewerVersion(installedVersion, '4.11.2')
+                            && frame.ok === false && isRecord(frame.error) && frame.error.code === 'adapter_unavailable') {
+                            legacyVersionHandshake = true;
+                            this.write(socket, { ...registration, adapter_kind: 'claude-channel' });
+                            continue;
+                        }
+                        if (legacyVersionHandshake) {
+                            finish(new Error('Legacy router did not step aside for the installed version; restart it before registering Claude.'));
                             continue;
                         }
                         if (frame.ok !== true || !isRecord(frame.result)) {
@@ -257,15 +278,7 @@ class ActiveRouterHostConnection {
                 }
                 this.handleDisconnect(socket);
             });
-            this.write(socket, {
-                version: AGENT_ROUTER_PROTOCOL_VERSION,
-                type: 'register',
-                request_id: registerId,
-                ...this.input.identity,
-                auth_token: this.input.auth_token,
-                memesh_version: installedVersion,
-                hops: 0,
-            });
+            this.write(socket, registration);
         });
     }
     activate(socket, connectionId, generation, leaseMs) {

@@ -414,7 +414,10 @@ export class AgentRouter {
         SELECT principal_id, adapter_kind, last_generation
         FROM agent_session_instances WHERE project = ? AND session_instance_id = ?
       `).get(registration.project, registration.session_instance_id);
-            if (session && (session.principal_id !== registration.principal_id || session.adapter_kind !== registration.adapter_kind)) {
+            const claudeHandoff = session && new Set([session.adapter_kind, registration.adapter_kind]).size === 2
+                && [session.adapter_kind, registration.adapter_kind].every(kind => kind === 'claude-channel' || kind === 'claude-inbox');
+            if (session && (session.principal_id !== registration.principal_id
+                || (session.adapter_kind !== registration.adapter_kind && !claudeHandoff))) {
                 throw new AgentRouterError('session_identity_conflict', 'The session instance is already bound to another principal or adapter.');
             }
             if (!session) {
@@ -430,6 +433,14 @@ export class AgentRouter {
         FROM agent_session_connections
         WHERE project = ? AND session_instance_id = ? AND disconnected_at IS NULL
       `).all(registration.project, registration.session_instance_id);
+            if (registration.adapter_kind === 'claude-inbox'
+                && active.some(row => row.adapter_kind === 'claude-channel' && row.lease_expires_at_ms > Date.now())) {
+                throw new AgentRouterError('channel_active', 'This Claude session is already online through its Channel.');
+            }
+            if (claudeHandoff)
+                this.db.prepare(`
+        UPDATE agent_session_instances SET adapter_kind = ? WHERE project = ? AND session_instance_id = ?
+      `).run(registration.adapter_kind, registration.project, registration.session_instance_id);
             for (const previous of active) {
                 const previousSocket = this.externalConnections.get(previous.connection_id);
                 this.externalConnections.delete(previous.connection_id);
@@ -1083,7 +1094,7 @@ export function isNewerVersion(candidate, current) {
 function hostKind(adapterKind) {
     if (adapterKind === 'codex-cli-queue' || adapterKind === 'codex-app-server')
         return 'codex';
-    if (adapterKind === 'claude-channel')
+    if (adapterKind === 'claude-channel' || adapterKind === 'claude-inbox')
         return 'claude';
     if (adapterKind === 'acp')
         return 'gemini';
