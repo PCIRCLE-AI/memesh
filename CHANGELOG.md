@@ -6,6 +6,12 @@ are not part of a published npm release yet.
 
 ## [Unreleased]
 
+## [4.11.4] — 2026-10-22
+
+### Fixed
+
+- Codex loads its existing command hooks without trying to parse Claude's Mod declaration. Claude's memory editor and the shared hook commands are unchanged.
+
 ## [4.11.3] — 2026-10-21
 
 ### Fixed

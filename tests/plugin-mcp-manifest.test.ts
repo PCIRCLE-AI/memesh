@@ -175,6 +175,21 @@ describe('the Claude plugin MCP manifest is not also a project-scoped config', (
 });
 
 describe('Codex and Claude plugin MCP manifests', () => {
+  it('gives Codex every existing command hook without Claude-only Mod fields', () => {
+    const codexPlugin = JSON.parse(
+      fs.readFileSync(path.join(repoRoot, '.codex-plugin', 'plugin.json'), 'utf8'),
+    );
+    const claudeHooks = JSON.parse(
+      fs.readFileSync(path.join(repoRoot, 'hooks', 'hooks.json'), 'utf8'),
+    );
+
+    // Codex rejects `modules` in the default hook file. Its explicit hooks
+    // replace default discovery, while Claude keeps the Mod and all commands.
+    expect(Object.keys(codexPlugin.hooks ?? {})).toEqual(['hooks']);
+    expect(codexPlugin.hooks.hooks).toEqual(claudeHooks.hooks);
+    expect(claudeHooks.modules).toEqual(['./native-memory.js']);
+  });
+
   it('resolve to the same canonical bundled server', () => {
     const codexPlugin = JSON.parse(
       fs.readFileSync(path.join(repoRoot, '.codex-plugin', 'plugin.json'), 'utf8'),
