@@ -8,6 +8,7 @@ import {
   AGENT_ROUTER_MAX_FRAME_BYTES,
   AGENT_ROUTER_PROTOCOL_VERSION,
   AgentRouterProtocolError,
+  isNewerVersion,
   isLegacyAgentRouterVersionMismatchResponse,
 } from '../core/agent-router.js';
 import { assertSecureLocalHostRuntimeSupported } from './config.js';
@@ -207,6 +208,16 @@ class ActiveRouterHostConnection implements RouterHostConnection {
     let connectionId = '';
     let generation = 0;
     let registrationSettled = false;
+    let legacyVersionHandshake = false;
+    const registration = {
+      version: AGENT_ROUTER_PROTOCOL_VERSION,
+      type: 'register' as const,
+      request_id: registerId,
+      ...this.input.identity,
+      auth_token: this.input.auth_token,
+      memesh_version: installedVersion,
+      hops: 0,
+    };
 
     return new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -263,6 +274,21 @@ class ActiveRouterHostConnection implements RouterHostConnection {
             if (frame.ok === false && isRecord(frame.error) && frame.error.code === 'router_outdated') {
               // An older router stepping aside: retrying starts the installed one.
               finish(new RouterTransportError(String(frame.error.message)));
+              continue;
+            }
+            // Routers <=4.11.2 reject the new inbox adapter before checking
+            // versions. Their existing Claude handshake authenticates, then
+            // steps aside BEFORE registering any session. Only a strictly
+            // newer installed version may use that compatibility handshake.
+            if (!legacyVersionHandshake && this.input.identity.adapter_kind === 'claude-inbox'
+              && isNewerVersion(installedVersion, '4.11.2')
+              && frame.ok === false && isRecord(frame.error) && frame.error.code === 'adapter_unavailable') {
+              legacyVersionHandshake = true;
+              this.write(socket, { ...registration, adapter_kind: 'claude-channel' });
+              continue;
+            }
+            if (legacyVersionHandshake) {
+              finish(new Error('Legacy router did not step aside for the installed version; restart it before registering Claude.'));
               continue;
             }
             if (frame.ok !== true || !isRecord(frame.result)) {
@@ -345,15 +371,7 @@ class ActiveRouterHostConnection implements RouterHostConnection {
         this.handleDisconnect(socket);
       });
 
-      this.write(socket, {
-        version: AGENT_ROUTER_PROTOCOL_VERSION,
-        type: 'register',
-        request_id: registerId,
-        ...this.input.identity,
-        auth_token: this.input.auth_token,
-        memesh_version: installedVersion,
-        hops: 0,
-      });
+      this.write(socket, registration);
     });
   }
 

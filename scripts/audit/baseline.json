@@ -271,7 +271,7 @@
       "reason": "`input.commits ?? []` — WhySchema documents commits as optional (a caller without a working tree resolves none); the result carries commits: [] visibly, and every real gap in the chain is a typed abstention, never a default.",
       "triaged": "2026-08-16 (UX-3 memesh why); re-keyed 2026-08-24 (M-07: file_not_found abstention + why.ts imports added above; statements byte-identical, classification unchanged)"
     },
-    "C5 src/core/agent-router.ts:952": {
+    "C5 src/core/agent-router.ts:960": {
       "class": "SAFE-BY-CONSTRUCTION",
       "reason": "A host adapter may accept a delivery without optional transport metadata. The empty receipt is still validated and persisted as an explicit host_accept fact; accepted itself is required and no ACK, read, or workflow state is inferred from the missing receipt.",
       "triaged": "2026-08-27 host-native push release audit; re-keyed 2026-08-28 after bounded backlog drain and the Windows fail-closed guard moved the unchanged statement; re-keyed 2026-09-01 after live-directory code shifted the unchanged statement; re-keyed 2026-09-06 after router protocol constants shifted the unchanged statement; re-keyed 2026-09-26 843→848 after AGENT_ROUTER_SOCKET_PATH_MAX_BYTES was added above (#402/#404); re-keyed 2026-09-28 848→850 after the card model field gained a doc comment above; statement byte-identical, classification unchanged; re-keyed 2026-09-28 850→851 (#497: DeliveryRow gained intended_session above; statement byte-identical, classification unchanged); re-keyed 2026-09-30 851→899 (#518: memesh_version option, register step-aside and the superseded hold were added above; statement byte-identical, classification unchanged)"
@@ -536,7 +536,7 @@
       "reason": "KnowledgeGraph.getEntity returns relations: undefined only when its successful SQL relation query has zero rows. This internal known-empty set is used solely for append dedupe; a SQL read failure still throws and is reported by import. Any incoming relation absent from the set prevents addsNothing and is queued only after the entity transaction commits. Relation-only and text-plus-relation imports across CLI/MCP/HTTP, repeated-import no-change, and readonly refusal retain direct source/installed evidence. No malformed bundle, failed read or pending incoming relation is converted into silent success.",
       "triaged": "2026-10-08 (#594 append relation restore): optional internal collection contract at knowledge-graph.ts:868/878; existing empty relation set, not input validation or read-failure suppression."
     },
-    "C7 README.md:82": {
+    "C7 README.md:84": {
       "classification": "gated",
       "reason": "Existing check-doc-claims.mjs derives the intent-language count from INTENT_PATTERNS; UI retirement removes the same-line tabs/languages phrase, not the intent hook or its source-backed check."
     }

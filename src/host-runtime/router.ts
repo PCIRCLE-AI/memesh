@@ -62,7 +62,7 @@ try {
     on_superseded: () => { void shutdown().finally(() => process.exit(0)); },
     adapters: [
       createCodexCliQueueAdapter({ authenticate, release_watch: { db } }),
-      ...['claude-channel', 'codex-app-server', 'acp'].map(kind => ({ kind, authenticate })),
+      ...['claude-channel', 'claude-inbox', 'codex-app-server', 'acp'].map(kind => ({ kind, authenticate })),
     ],
   });
 } catch (error) {

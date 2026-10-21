@@ -1,6 +1,6 @@
 # CODEMAP
 
-**Version**: 4.11.2
+**Version**: 4.11.3
 
 A navigation map for the codebase: *"I want to change X — which file?"* For the
 design rationale behind these modules see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md);
@@ -39,7 +39,7 @@ src/
 ├── storage/         # schema.ts (schema + migrations) · sqlite.ts (driver) · conflicts.ts · fts-index.ts / entity-index.ts (contentless-FTS5) · entity-write.ts / memory-mutation.ts (write kernel + guards) · graph-repairs.ts
 ├── transports/      # cli/ · http/ · mcp/ (+ schemas.ts = shared Zod validation)
 ├── host-adapters/   # native Claude/Codex adapters + experimental ACP protocol adapter
-├── host-runtime/    # managed host processes + private-router client/server
+├── host-runtime/    # managed hosts, ordinary Claude MCP presence (claude-inbox.ts), private router
 ├── mcp/             # stdio server (NOTE: server lives here, handlers in transports/mcp/)
 scripts/hooks/       # Claude/Codex hook entrypoints + shared/generated helpers
 tests/               # vitest (forks pool) — mirrors src/ layout

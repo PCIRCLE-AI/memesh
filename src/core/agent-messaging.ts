@@ -275,7 +275,7 @@ export class AgentIntendedForOtherSessionError extends AgentMessageAccessError {
  * its shell as `CODEX_THREAD_ID`. `codex-app-server` registers a configured
  * or random id, not the thread id, so it is not here.
  */
-const INTENDED_SESSION_ADAPTERS: ReadonlySet<string> = new Set(['claude-channel', 'codex-cli-queue']);
+const INTENDED_SESSION_ADAPTERS: ReadonlySet<string> = new Set(['claude-channel', 'claude-inbox', 'codex-cli-queue']);
 
 /**
  * #497: `intended_session` names a session registered through a host that
@@ -287,7 +287,7 @@ export class AgentIntendedSessionUnsupportedError extends AgentMessagingError {
     super(
       `intended_session ${JSON.stringify(session)} is registered by the ${JSON.stringify(adapterKind)} host, which cannot `
       + 'say which session it is when it records intake. Only Claude Code sessions and Codex CLI threads '
-      + '(claude-channel, codex-cli-queue, or an id the router never registered) can be named as intended_session.',
+      + '(claude-channel, claude-inbox, codex-cli-queue, or an id the router never registered) can be named as intended_session.',
     );
   }
 }

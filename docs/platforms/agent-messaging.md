@@ -15,6 +15,16 @@ runs, so none is shown; the key stays for older clients), declared
 receipt operation; router unavailability is an explicit error, never an empty
 directory.
 
+Ordinary Claude Code MCP sessions register automatically after initialization,
+using the host's real session id, bound workspace and existing inbox identity.
+No Channel setup is needed to appear online. Registration follows the MCP
+process lifetime and its existing router lease. Missing session/workspace is reported on stderr; an invalid identity stays
+unregistered. Neither disables memory tools.
+Online presence alone does not mean live push: without Channel, send to the
+principal inbox (or request `fallback_to_principal`) and use the normal hook
+reminders. A Channel for the same session takes precedence without a duplicate
+online entry. Windows remains outside the secure local-router runtime.
+
 Briefing follows the same trust boundary. Generic `briefing` has no recipient
 identity, so it never aggregates or announces unread message activity.
 Claude Code's installed hooks use recipient `claude-code` by default, or
@@ -79,8 +89,8 @@ commands it runs in its shell — not for MCP servers. A session registered
 through any other host (`acp`, or `codex-app-server`, which registers a
 configured id rather than the thread id) is refused, because nothing there
 could say which session it is when it records intake. An id the router never
-registered is allowed — a Claude Code session without the channel host is the
-normal case. A `target_kind: "session"` send with
+registered is also allowed. Ordinary Claude MCP presence uses `claude-inbox`,
+which can identify the same session for intake without Channel. A `target_kind: "session"` send with
 `fallback_to_principal: true` does this by itself when the session refuses the
 message (`recipient_unavailable`): it sends the same message to the principal
 that session registered under, with `intended_session` set to it, and returns
