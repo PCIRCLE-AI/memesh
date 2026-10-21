@@ -23,6 +23,7 @@ import { execFileSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { removeTempDir } from '../helpers/temp-dir.js';
 
 const CLI_PATH = path.join(__dirname, '..', '..', 'dist', 'transports', 'cli', 'cli.js');
 
@@ -58,7 +59,7 @@ function writeBundle(name: string, body: unknown): string {
 }
 
 beforeEach(() => { home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-serveimport-')); });
-afterEach(() => { fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
+afterEach(() => removeTempDir(home));
 
 describe('import: a malformed bundle is described in its own terms (C12)', () => {
   it('names the missing field instead of a SQLite parameter number', () => {

@@ -6,6 +6,8 @@ are not part of a published npm release yet.
 
 ## [Unreleased]
 
+## [4.11.2] — 2026-10-21
+
 ### Fixed
 
 - Doctor's opt-in message capability check works from plugin caches without `node_modules`; its diagnostic client and checked SDK/WebSocket adapters are bundled. Broken MCP startup still reports a failure.
