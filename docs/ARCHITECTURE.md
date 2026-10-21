@@ -1,6 +1,6 @@
 # MeMesh Plugin Architecture
 
-**Version**: 4.11.3
+**Version**: 4.11.4
 
 > Looking for "which file do I change for X?" — see [CODEMAP.md](../CODEMAP.md).
 
@@ -406,7 +406,7 @@ Foreign key cascades: deleting an entity automatically deletes its observations,
 
 ## Hook Architecture
 
-Hook commands are defined in `hooks/hooks.json`: nine run at Claude Code lifecycle events, while the separate Codex SessionStart/SessionEnd lifecycle registers and retires eligible ordinary Codex CLI sessions.
+Hook commands are defined in `hooks/hooks.json`: nine run at Claude Code lifecycle events, while the separate Codex SessionStart/SessionEnd lifecycle registers and retires eligible ordinary Codex CLI sessions. The Codex plugin declares those same commands inline in `.codex-plugin/plugin.json` so it does not parse Claude's Mod-only `modules` field; a parity test keeps the two command sets identical.
 
 ### Hook Commands (10 hooks)
 

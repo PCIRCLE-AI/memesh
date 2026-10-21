@@ -8,7 +8,7 @@
     },
     {
       "path": ".claude-plugin/plugin.json",
-      "sha256": "cb3a7b70f4c945272f6b5c6860e35a0d19b1ddd8bfe7c5ac462a56f2a640b592",
+      "sha256": "35a9e2c4a5384be9a490962d25dd57fcf0595ea0da1f205b29b085b59c4a4525",
       "bytes": 587
     },
     {
@@ -18,8 +18,8 @@
     },
     {
       "path": ".codex-plugin/plugin.json",
-      "sha256": "a188f48b762f067dc68b526fb7b0c917c58a23365400ee3ab89263f527d1b138",
-      "bytes": 220
+      "sha256": "eb158ca0810408777af6346bccc2a662c11563352fc7db5cc2cdcf04fd14a1b8",
+      "bytes": 3206
     },
     {
       "path": "hooks/hooks.json",

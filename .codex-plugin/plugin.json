@@ -1,6 +1,129 @@
 {
   "name": "memesh",
   "description": "MeMesh — local collaboration for AI coding agents. Share memory across sessions and exchange task messages.",
-  "version": "4.11.3",
-  "mcpServers": "./.codex-plugin/mcp.json"
+  "version": "4.11.4",
+  "mcpServers": "./.codex-plugin/mcp.json",
+  "hooks": {
+    "hooks": {
+      "PreToolUse": [
+        {
+          "matcher": "Edit|Write",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/pre-edit-recall.js",
+              "timeout": 5
+            }
+          ]
+        },
+        {
+          "matcher": "Bash",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/guard-check.js",
+              "timeout": 5
+            }
+          ]
+        }
+      ],
+      "SessionStart": [
+        {
+          "matcher": "*",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/session-start.js",
+              "timeout": 10
+            }
+          ]
+        },
+        {
+          "matcher": "startup|resume",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "${CLAUDE_PLUGIN_ROOT}/dist/host-runtime/codex-session.js",
+              "timeout": 10
+            }
+          ]
+        }
+      ],
+      "SessionEnd": [
+        {
+          "matcher": "*",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "${CLAUDE_PLUGIN_ROOT}/dist/host-runtime/codex-session.js",
+              "timeout": 3
+            }
+          ]
+        }
+      ],
+      "PostToolUse": [
+        {
+          "matcher": "Bash",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/post-commit.js",
+              "timeout": 5
+            }
+          ]
+        },
+        {
+          "matcher": "ExitPlanMode|AskUserQuestion",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/decision-nudge.js",
+              "timeout": 5
+            }
+          ]
+        }
+      ],
+      "Stop": [
+        {
+          "matcher": "*",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/session-summary.js",
+              "timeout": 10
+            },
+            {
+              "type": "command",
+              "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/stop-message-gate.js",
+              "timeout": 5
+            }
+          ]
+        }
+      ],
+      "PreCompact": [
+        {
+          "matcher": "*",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/pre-compact.js",
+              "timeout": 10
+            }
+          ]
+        }
+      ],
+      "UserPromptSubmit": [
+        {
+          "matcher": "*",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/user-prompt-intent.js",
+              "timeout": 3
+            }
+          ]
+        }
+      ]
+    }
+  }
 }
