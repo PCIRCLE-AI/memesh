@@ -28,6 +28,7 @@ import { spawnSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { removeTempDir } from '../helpers/temp-dir.js';
 
 const CLI_PATH = path.join(__dirname, '..', '..', 'dist', 'transports', 'cli', 'cli.js');
 
@@ -48,7 +49,7 @@ function seed(...names: string[]): void {
 }
 
 beforeEach(() => { home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-partial-')); });
-afterEach(() => { fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
+afterEach(() => removeTempDir(home));
 
 describe('a bundle that is only part of the graph says so', () => {
   it('warns on stderr, names --limit, and keeps stdout pure JSON', () => {
