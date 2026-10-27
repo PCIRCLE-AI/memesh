@@ -75,7 +75,7 @@ export declare const TOOL_DEFINITIONS: readonly [{
         readonly $vocabulary?: Record<string, boolean>;
         readonly $comment?: string;
         readonly $defs?: Record<string, z.core.JSONSchema.JSONSchema>;
-        type: "object" | "array" | "string" | "number" | "boolean" | "null" | "integer";
+        type: z.core.JSONSchema.SchemaType | z.core.JSONSchema.SchemaType[];
         readonly additionalItems?: z.core.JSONSchema._JSONSchema;
         readonly unevaluatedItems?: z.core.JSONSchema._JSONSchema;
         readonly prefixItems?: z.core.JSONSchema._JSONSchema[];
@@ -174,7 +174,7 @@ export declare const TOOL_DEFINITIONS: readonly [{
                 readonly $vocabulary?: Record<string, boolean>;
                 readonly $comment?: string;
                 readonly $defs?: Record<string, z.core.JSONSchema.JSONSchema>;
-                readonly type?: "object" | "array" | "string" | "number" | "boolean" | "null" | "integer";
+                readonly type?: z.core.JSONSchema.SchemaType | z.core.JSONSchema.SchemaType[];
                 readonly additionalItems?: z.core.JSONSchema._JSONSchema;
                 readonly unevaluatedItems?: z.core.JSONSchema._JSONSchema;
                 readonly prefixItems?: z.core.JSONSchema._JSONSchema[];

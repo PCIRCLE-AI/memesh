@@ -44,6 +44,20 @@ describe('RememberSchema', () => {
     expect(result.success).toBe(false);
   });
 
+  it('rejects oversized invalid observations before accumulating per-item errors', () => {
+    const result = RememberSchema.safeParse({
+      name: 'oversized-input',
+      type: 'note',
+      observations: Array(10000).fill(0),
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toEqual([
+        expect.objectContaining({ code: 'too_big', path: ['observations'], maximum: 100 }),
+      ]);
+    }
+  });
+
   it('rejects empty name', () => {
     const result = RememberSchema.safeParse({ name: '', type: 'note' });
     expect(result.success).toBe(false);

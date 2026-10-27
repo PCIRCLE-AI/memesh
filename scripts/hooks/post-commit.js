@@ -367,22 +367,31 @@ process.stdin.on('end', () => {
         ? stateBatch
         : [{ hash: commitHash, message: commitMsg, branch, batch: false }];
       const captured = [];
+      let archivedCount = 0;
       for (const commit of commits) {
         const result = captureCommit(db, data, projectName, commit);
         if (!result.written) {
           record('error', 'captureEntity did not land the write', result.entityName);
           return exit0();
         }
+        if (result.written.archived) {
+          archivedCount++;
+          continue;
+        }
         captured.push(result.entityName);
       }
 
       // One hook invocation is one heartbeat even when a merge exposes a
       // bounded batch. Advance the state only after every selected commit
-      // landed, so a partial database failure is retried instead of forgotten.
-      recordHookRun(db, 'post-commit');
+      // landed or was deliberately skipped, so failures can still retry.
       if (state) writeHeadState(state);
-      const reason = captured.length > 1 || batchSkipped > 0
-        ? `captured ${captured.length} commits as a batch; skipped ${batchSkipped} older commits`
+      if (captured.length === 0) {
+        record('skipped', SKIP_REASONS.captureTargetArchived, `commit-${commitHash}`);
+        return exit0();
+      }
+      recordHookRun(db, 'post-commit');
+      const reason = captured.length > 1 || batchSkipped > 0 || archivedCount > 0
+        ? `captured ${captured.length} commits as a batch; skipped ${batchSkipped} older commits` + (archivedCount ? `; ${archivedCount} archived commits left unchanged` : '')
         : undefined;
       record('wrote', reason, captured.at(-1));
     } finally {

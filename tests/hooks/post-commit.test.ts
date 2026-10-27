@@ -6,6 +6,7 @@ import path from 'path';
 import os from 'os';
 import { MemeshDatabase as Database } from '../../src/storage/sqlite.js';
 import { HOOK_OUTCOMES_FILENAME } from '../../src/core/capture-liveness.js';
+import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import { withoutHostIdentity } from '../helpers/host-env.js';
 
 /**
@@ -109,6 +110,44 @@ describe('Feature: Post-Commit Hook', () => {
     const file = path.join(testDir, HOOK_OUTCOMES_FILENAME);
     return fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
   }
+
+  it.each([false, true])('Scenario: an archived commit stays forgotten in a batch (active sibling=%s)', (withActive) => {
+    const payload = {
+      tool_name: 'Bash', cwd: repoDir,
+      tool_input: { command: 'git commit -q -m capture' },
+      tool_response: { stdout: '', stderr: '', interrupted: false, isError: false },
+    };
+    commit('baseline');
+    runHook(payload);
+    const forgotten = commit('forgotten commit');
+    const name = `commit-${forgotten.hash}`;
+    const setup = new Database(dbPath);
+    try {
+      const graph = new KnowledgeGraph(setup);
+      graph.createEntity(name, 'commit', { observations: ['preserved original'] });
+      graph.archiveEntity(name);
+      setup.exec("DELETE FROM hook_runs WHERE hook='post-commit'");
+    } finally {
+      setup.close();
+    }
+    const active = withActive ? commit('active sibling') : null;
+    runHook(payload);
+    const db = openDb();
+    try {
+      expect(db.prepare('SELECT status FROM entities WHERE name=?').get(name)).toEqual({ status: 'archived' });
+      expect(db.prepare('SELECT content FROM observations WHERE entity_id=(SELECT id FROM entities WHERE name=?)').all(name)).toEqual([{ content: 'preserved original' }]);
+      expect(db.prepare("SELECT f.rowid FROM entities_fts f JOIN entities e ON e.id=f.rowid WHERE e.status='archived'").all()).toEqual([]);
+      expect(db.prepare("SELECT run_count FROM hook_runs WHERE hook='post-commit'").get()).toEqual(withActive ? { run_count: 1 } : undefined);
+      if (active) expect(db.prepare('SELECT status FROM entities WHERE name=?').get(`commit-${active.hash}`)).toEqual({ status: 'active' });
+    } finally {
+      db.close();
+    }
+    expect(outcomes().at(-1)).toMatchObject(withActive
+      ? { outcome: 'wrote', entity: `commit-${active!.hash}` }
+      : { outcome: 'skipped', reason: 'capture target is archived', entity: name });
+    runHook(payload);
+    expect(outcomes().at(-1)?.reason).toContain('HEAD did not change');
+  });
 
   it('Scenario: a first quiet commit with an explicit successful tool response -> entity created from HEAD', () => {
     const baseline = commit('chore: establish hook baseline');

@@ -1859,8 +1859,8 @@ function refreshLocalHandoffTrust(db, id, type, replace, written, sourceHost) {
  *   Unlike `remember({ replace: true })` in core, this is a HARD delete: no
  *   `replaced_history` is kept (see the comment at the DELETE below for why).
  * @returns {{ id: number, isNew: boolean, archived?: true } | null} null if the row
- *   could not be resolved; `archived: true` if `replace` was requested on an
- *   entity `forget` archived — nothing was written, by design
+ *   could not be resolved; `archived: true` if the target was archived —
+ *   nothing was written, by design
  */
 export function captureEntity(db, { name, type, observations = [], tags = [], title, metadata, replace = false, localHandoff = false, sourceHost = null }) {
   // One transaction, because this function performs six writes that only
@@ -1922,29 +1922,12 @@ function captureEntityInner(db, { name, type, observations: rawObservations, tag
   const isNew = row.isNew;
   const id = row.id;
 
-  // `replace` never touches an archived entity. src/core/operations.ts's
-  // `remember({ replace: true })` REFUSES this case with a thrown error —
-  // right for a rare, interactive call the user reads the response of, but
-  // a hook must never throw (it would abort the OTHER two entities' writes
-  // this Stop, and crash risk is exactly what this file exists to avoid).
-  // So the hook path degrades to a silent no-op instead: the archived row,
-  // its observations and its FTS absence are all left exactly as `forget`
-  // left them.
-  //
-  // Without this, a whole-entity `forget` (archiveEntity: status flipped to
-  // 'archived', its row removed from entities_fts) would come undone on the
-  // next Stop — `replace` would overwrite the preserved observations with a
-  // fresh derivation from the transcript and reinsert the entity into
-  // entities_fts, un-hiding it from FTS keyword search even though its
-  // status stays 'archived' (recall's default query filters status='active',
-  // which caps but does not close that exposure). `removeFromFts` guards its
-  // own delete on a rowid COUNT, so calling it on an already-removed row is
-  // a safe no-op either way — this check is about not losing the user's
-  // forgotten content, not about a contentless-FTS5 delete failure.
-  //
-  // Observation-level corrections remain active and are filtered below;
-  // this branch preserves the separate whole-entity archive contract.
-  if (replace && !isNew && row.status === 'archived') {
+  // Automatic capture must preserve a whole-entity forget in both modes.
+  // Append captures (PreCompact and post-commit) otherwise change the archived
+  // row and reinsert it into FTS just like replace captures used to. Callers
+  // record this as a skip, without a write heartbeat. Explicit remember keeps
+  // its separate restore behavior.
+  if (!isNew && row.status === 'archived') {
     return { id, isNew: false, archived: true };
   }
 

@@ -7,6 +7,7 @@ import os from 'os';
 import { expectValidHookOutput, HOOK_SPECIFIC_OUTPUT_EVENTS } from '../helpers/hook-output-contract.js';
 import { withoutHostIdentity } from '../helpers/host-env.js';
 import { MemeshDatabase as Database } from '../../src/storage/sqlite.js';
+import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 
 const require = createRequire(import.meta.url);
 // Non-git identity = basename + real-path hash (tests/core/project-identity.test.ts).
@@ -52,6 +53,31 @@ describe('Feature: PreCompact Hook', () => {
       timeout: 60000,
     });
   }
+
+  it('Scenario: repeated compaction preserves a forgotten memory and records a skip', () => {
+    const payload = { session_id: 'forgotten', cwd: testDir, trigger: 'auto' };
+    runHook(payload);
+    const db = new Database(dbPath);
+    try {
+      new KnowledgeGraph(db).archiveEntity('pre-compact-forgotten');
+      db.exec("DELETE FROM hook_runs WHERE hook = 'pre-compact'");
+    } finally {
+      db.close();
+    }
+    const output = JSON.parse(runHook({ ...payload, trigger: 'manual' }));
+    expect(output.systemMessage).toContain('archived');
+    expect(output.systemMessage).not.toContain('Saved');
+    const after = openDb();
+    try {
+      expect(after.prepare("SELECT COUNT(*) AS n FROM entities_fts f JOIN entities e ON e.id=f.rowid WHERE e.status='archived'").get()).toEqual({ n: 0 });
+      expect(after.prepare("SELECT * FROM hook_runs WHERE hook='pre-compact'").get()).toBeUndefined();
+      expect(after.prepare("SELECT content FROM observations WHERE content='Compaction reason: manual'").all()).toEqual([]);
+    } finally {
+      after.close();
+    }
+    const records = fs.readFileSync(path.join(testDir, 'hook-outcomes.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(records.at(-1)).toMatchObject({ outcome: 'skipped', reason: 'capture target is archived', entity: 'pre-compact-forgotten' });
+  });
 
   function openDb(): Database {
     return new Database(dbPath, { readOnly: true });
