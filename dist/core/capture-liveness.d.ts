@@ -52,6 +52,7 @@ export declare const SKIP_REASONS: {
     readonly tooLittleActivity: "too little activity in the session to be worth saving";
     readonly noRuleMatched: "no rule matched (no edited file and fewer than 20 tool calls)";
     readonly allMatchedEntitiesArchived: "every rule that matched targeted an entity the user forget-archived";
+    readonly captureTargetArchived: "capture target is archived";
     readonly toolInputAbsent: "tool_input absent in payload";
     readonly noFilePath: "no file_path in the tool input";
     readonly noDatabaseForRecall: "no database yet — nothing to recall";

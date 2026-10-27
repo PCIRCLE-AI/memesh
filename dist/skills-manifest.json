@@ -8,7 +8,7 @@
     },
     {
       "path": ".claude-plugin/plugin.json",
-      "sha256": "35a9e2c4a5384be9a490962d25dd57fcf0595ea0da1f205b29b085b59c4a4525",
+      "sha256": "006d33b9c26c1720b39bdefaf539bd2dc3bbc7e127a73bf5fad1be9131f1ee6d",
       "bytes": 587
     },
     {
@@ -18,7 +18,7 @@
     },
     {
       "path": ".codex-plugin/plugin.json",
-      "sha256": "eb158ca0810408777af6346bccc2a662c11563352fc7db5cc2cdcf04fd14a1b8",
+      "sha256": "fffdde6cecd2df33c39a495753d975debfcae4f1b5582690d02b17e53e14901b",
       "bytes": 3206
     },
     {
@@ -78,8 +78,8 @@
     },
     {
       "path": "scripts/hooks/_generated/capture-liveness.js",
-      "sha256": "78ea48f215f9b400a80aef98ed86e91c8c6d57473c0e10d92ba35ba593185a68",
-      "bytes": 22163
+      "sha256": "662711304911182db2a66d32bb2804729a4b243023667cf60201feba2309115e",
+      "bytes": 22220
     },
     {
       "path": "scripts/hooks/_generated/citation-rule.js",
@@ -178,8 +178,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "a41dd063242ff98b72466264585656856eb80991ab2d57b289074a333bbe0e64",
-      "bytes": 127201
+      "sha256": "683176f2d47d7bb2cc9001570f003833d4e436386ac6ea00bbe35bd90a57237c",
+      "bytes": 126054
     },
     {
       "path": "scripts/hooks/_stop-handoff.js",
@@ -208,13 +208,13 @@
     },
     {
       "path": "scripts/hooks/post-commit.js",
-      "sha256": "aebc58aebf8b1cd9562025772300170d7120ce2eaf4ecc6a3be39745bf351753",
-      "bytes": 18860
+      "sha256": "8556833eec95c93c1c36a2ef39cec3981cd0c0fbb38f8fc0d70fc71564f4725f",
+      "bytes": 19232
     },
     {
       "path": "scripts/hooks/pre-compact.js",
-      "sha256": "55fb5a6daed686228251db70e5eef8207f92136cafce878bdfdc7200fc59e72d",
-      "bytes": 10857
+      "sha256": "0df25bb159ffa181b15e14fe24c74576cfffaff2ba110cd4febf046d2c919f93",
+      "bytes": 11113
     },
     {
       "path": "scripts/hooks/pre-edit-recall.js",

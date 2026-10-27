@@ -159,6 +159,12 @@ process.stdin.on('end', () => {
         sourceHost: hookSourceHost(payload, process.env),
       });
 
+      if (written?.archived) {
+        record('skipped', SKIP_REASONS.captureTargetArchived, entityName);
+        console.log(JSON.stringify({ systemMessage: 'MeMesh: pre-compaction memory is archived; left unchanged' }));
+        return exit0();
+      }
+
       // Heartbeat AFTER capture, so the stamp certifies "the capture loop
       // completed", not "a database handle existed". A throw above skips it,
       // and so does a null return — captureEntity's null means the write did

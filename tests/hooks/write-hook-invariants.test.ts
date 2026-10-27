@@ -21,6 +21,7 @@ const shared = require('../../scripts/hooks/_shared.js');
 // exposes it (see the header comment on captureEntity's own removeFromFts use).
 const { removeFromFts } = require('../../scripts/hooks/_generated/fts-index.js');
 import { TITLE_MAX_LENGTH } from '../../src/core/title.js';
+import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 
 describe('write-hook invariants (fake-working gates)', () => {
   let tmpDir: string;
@@ -41,6 +42,33 @@ describe('write-hook invariants (fake-working gates)', () => {
       `SELECT rowid FROM entities_fts WHERE entities_fts MATCH '${term}'`,
     ).all() as Array<{ rowid: number }>).map((r) => r.rowid);
   }
+
+  it.each([false, true])('captureEntity leaves an archived target untouched (replace=%s)', (replace) => {
+    const { db } = shared.openHookDb({ ...process.env, MEMESH_DB_PATH: dbPath }, { fts: true });
+    try {
+      const name = 'pre-compact-forgotten';
+      const first = shared.captureEntity(db, {
+        name, type: 'session-summary', title: 'originaltitle',
+        observations: ['originaltoken'], tags: ['project:test'],
+      });
+      new KnowledgeGraph(db).archiveEntity(name);
+      const snapshot = () => ({
+        entity: db.prepare('SELECT * FROM entities WHERE id = ?').get(first.id),
+        observations: db.prepare('SELECT * FROM observations WHERE entity_id = ?').all(first.id),
+        tags: db.prepare('SELECT * FROM tags WHERE entity_id = ?').all(first.id),
+      });
+      const before = snapshot();
+      const result = shared.captureEntity(db, {
+        name, type: 'session-summary', title: 'replacementtitle',
+        observations: ['replacementtoken'], tags: ['project:changed'], replace,
+      });
+      expect(result).toMatchObject({ id: first.id, isNew: false, archived: true });
+      expect(snapshot()).toEqual(before);
+      expect(db.prepare('SELECT rowid FROM entities_fts WHERE rowid = ?').all(first.id)).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
 
   it('captureEntity keeps entities_fts in sync, so hook-written memories are FTS-recallable', () => {
     const handle = shared.openHookDb({ ...process.env, MEMESH_DB_PATH: dbPath }, { fts: true });

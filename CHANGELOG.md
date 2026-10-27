@@ -6,6 +6,13 @@ are not part of a published npm release yet.
 
 ## [Unreleased]
 
+## [4.11.5] — 2026-10-27
+
+### Fixed
+
+- Reject oversized constrained collections before validating each item by updating Zod to 4.6.6, avoiding excessive error allocation (GHSA-mrhx-c7xc-m3w5).
+- Automatic pre-compaction and commit capture leave archived memories unchanged instead of adding them back to the keyword index. Skipped captures no longer report a write or advance the capture heartbeat.
+
 ## [4.11.4] — 2026-10-22
 
 ### Fixed
