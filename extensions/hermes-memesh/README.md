@@ -4,6 +4,10 @@ Local-first knowledge-graph memory for Hermes Agent, backed by
 [MeMesh](https://github.com/PCIRCLE-AI/memesh) (`memesh serve`, HTTP API,
 default `http://localhost:3737`).
 
+## Codex and Claude Code collaboration
+
+MeMesh also lets Codex and Claude Code sessions exchange tasks, questions, reviews, and results through its local messaging channel. Claude Channel provides live delivery into a running Claude session; eligible Codex CLI sessions receive a native notice and fetch the message body. See the [collaboration setup](../../README.md#let-codex-and-claude-code-collaborate). Both hosts need the same local MeMesh instance and project; stopped sessions are not automatically resumed. This Hermes memory provider does not register Hermes as a messaging recipient.
+
 ## Setup
 
 1. Install MeMesh globally: `npm install -g @pcircle/memesh` (requires Node >= 22.13.0).

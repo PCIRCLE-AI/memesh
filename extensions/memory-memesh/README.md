@@ -6,6 +6,10 @@ Native memory-capability plugin that integrates MeMesh's HTTP API as a first-par
 
 **Source implementation only; not published or live-tested.** It follows the documented OpenClaw plugin contract and the `@openclaw/memory-lancedb` reference shape, but installation and behavior in a running OpenClaw host remain unverified.
 
+## Codex and Claude Code collaboration
+
+MeMesh also lets Codex and Claude Code sessions exchange tasks, questions, reviews, and results through its local messaging channel. Claude Channel provides live delivery into a running Claude session; eligible Codex CLI sessions receive a native notice and fetch the message body. See the [collaboration setup](../../README.md#let-codex-and-claude-code-collaborate). Both hosts need the same local MeMesh instance and project; stopped sessions are not automatically resumed. This OpenClaw memory provider does not register OpenClaw as a messaging recipient.
+
 ## Installation
 
 ### Option 1: Install from npm (once published)

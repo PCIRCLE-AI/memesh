@@ -21,6 +21,7 @@ the [bearer-token requirements](../api/API_REFERENCE.md#http-rest-api).
 
 ## Guides
 
+- [Codex ↔ Claude Code collaboration](../../README.md#let-codex-and-claude-code-collaborate): exchange tasks, review requests, and results through MeMesh messaging. Claude Channel delivers into a running Claude session; eligible Codex CLI sessions receive native notices and fetch the body. Both need the same local MeMesh instance and project; stopped sessions are not automatically resumed.
 - [Agent messaging](agent-messaging.md): send, fetch, and acknowledge messages.
   Delivery or queue acceptance is not task completion.
 - [Universal HTTP guide](universal.md): connect a local script or app.
