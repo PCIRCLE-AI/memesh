@@ -2,14 +2,14 @@
 
 # MeMesh
 
-**讓 Claude Code 和 Codex 共用本機記憶。**
+**AI 程式開發 agent 的本機協作層。**
 
-MeMesh 幫你的程式開發 AI 記住偏好、專案決策和過去的教訓，讓你不用每次開新對話，都重新解釋同樣的事。
+MeMesh 讓程式開發 AI 共用背景、交換任務與審查結果，並在不同對話間留下清楚的交接。共享記憶則保留你的偏好、專案決策和過去的教訓，讓你不必每次重新解釋。
 
-- **換對話也記得。** 存下決策或教訓，下次需要時再找回來。
-- **不同工具共用。** 同一台電腦上的 Claude Code 和 Codex 可以使用相同記憶。
-- **留下交接。** 記下工作停在哪裡，供下一個對話確認。
-- **跨對話協作。** Codex 和 Claude Code session 可透過 MeMesh 訊息與選配的 Claude Channel 交換任務、問題、審查和結果。
+- **跨對話分工。** 正在執行的 Codex 和 Claude Code session 可透過 MeMesh 訊息與選配的 Claude Channel 交換任務、問題、審查請求和結果。
+- **共用專案背景。** 同一台電腦上的 agent 可沿用專案決策和教訓，不必每次從頭了解。
+- **留下清楚的交接。** 記錄目標、下一步與阻擋，供下一個對話確認後接續。
+- **保留有用的記憶。** 儲存偏好、決策和教訓，讓不同對話與工具都能查找。
 
 記憶預設存放在你電腦上的單一檔案：`~/.memesh/knowledge-graph.db`。MeMesh 不另跑 AI 模型。自動提醒依工具整合而定；交接提供背景，不代表任務一定會自動接續。
 
@@ -28,6 +28,8 @@ MeMesh 幫你的程式開發 AI 記住偏好、專案決策和過去的教訓，
 codex plugin marketplace add PCIRCLE-AI/memesh
 codex plugin add memesh@pcircle-memesh
 ```
+
+**Hermes Agent** — 依 [MeMesh 記憶整合指南](docs/platforms/hermes-agent.md)連接 Hermes，即可使用記憶查找與擷取功能。
 
 若也需要命令列工具，先安裝 [Node.js 22.13+](https://nodejs.org)，再執行：
 
@@ -52,7 +54,7 @@ memesh doctor
 
 [設定、路由與收據詳情](docs/platforms/agent-messaging.md)
 
-## 使用
+## 保留跨對話的背景
 
 直接用平常說話的方式請 agent 幫忙：
 

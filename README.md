@@ -2,14 +2,14 @@
 
 # MeMesh
 
-**Shared local memory for Claude Code and Codex.**
+**Local collaboration layer for AI coding agents.**
 
-MeMesh helps your coding agents remember your preferences, project decisions, and lessons from past work, so you spend less time explaining the same things in every new session.
+MeMesh helps AI coding agents share context, exchange tasks and review results, and leave clear handoffs across sessions. Shared memory keeps your preferences, project decisions, and lessons available without explaining them again each time.
 
-- **Remember across sessions.** Save a decision or lesson and find it again later.
-- **Share context between tools.** Claude Code and Codex on the same computer can use the same memories.
-- **Leave a handoff.** Keep a note of where work stopped for the next session to check.
-- **Collaborate across sessions.** Codex and Claude Code sessions can exchange tasks, questions, reviews, and results through MeMesh messaging and the optional Claude Channel.
+- **Coordinate work between sessions.** Send tasks, questions, review requests, and results between running Codex and Claude Code sessions through MeMesh messaging and the optional Claude Channel.
+- **Share project context.** Agents on the same computer can reuse project decisions and lessons instead of starting from scratch.
+- **Leave a clear handoff.** Record the goal, next step, and blockers for the next session to check before continuing.
+- **Keep useful memory.** Save preferences, decisions, and lessons so they remain available across sessions and tools.
 
 By default, memories live in one file on your computer: `~/.memesh/knowledge-graph.db`. MeMesh needs no separate AI model. Automatic reminders depend on the host integration; a handoff is context, not a guarantee that a task will restart itself.
 
@@ -28,6 +28,8 @@ By default, memories live in one file on your computer: `~/.memesh/knowledge-gra
 codex plugin marketplace add PCIRCLE-AI/memesh
 codex plugin add memesh@pcircle-memesh
 ```
+
+**Hermes Agent** — follow the [MeMesh memory provider guide](docs/platforms/hermes-agent.md) to connect Hermes for memory recall and capture.
 
 To use the command-line tools too, install [Node.js 22.13+](https://nodejs.org), then run:
 
@@ -52,7 +54,7 @@ Without Claude Channel, the durable inbox and Claude Code hook reminders still w
 
 [Setup, routing, and receipt details](docs/platforms/agent-messaging.md)
 
-## Use it
+## Keep context between sessions
 
 Ask your agent in plain language:
 
