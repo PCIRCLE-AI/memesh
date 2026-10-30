@@ -88,3 +88,7 @@ never implemented.
 
 See [METHODOLOGY §2](../METHODOLOGY.md#2-adapter-architecture) and
 [CHANGELOG 4.2.11](../../../CHANGELOG.md#4211--2026-08-03) / PRs #78–#79.
+
+## Codex and Claude Code collaboration
+
+Outside these historical retrieval benchmarks, MeMesh lets Codex and Claude Code sessions exchange tasks, review requests, and results through its local messaging channel. Claude Channel delivers into a running Claude session; eligible Codex CLI sessions receive a native notice and fetch the body. See the [collaboration setup](../../../README.md#let-codex-and-claude-code-collaborate). Both hosts need the same local MeMesh instance and project; stopped sessions are not automatically resumed. The results in this directory do not measure channel delivery or session collaboration.

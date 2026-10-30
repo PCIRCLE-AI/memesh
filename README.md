@@ -1,17 +1,17 @@
-🌐 [English](README.md) | [繁體中文](README.zh-TW.md)
+🌐 [English](README.md) | [繁體中文](README.zh-TW.md) | [Tiếng Việt](README.vi.md)
 
 # MeMesh
 
-**Shared local memory for Claude Code and Codex.**
+**Local collaboration layer for AI coding agents.**
 
-MeMesh helps your coding agents remember your preferences, project decisions, and lessons from past work, so you spend less time explaining the same things in every new session.
+MeMesh helps AI coding agents share context, exchange tasks and review results, and leave clear handoffs across sessions. Shared memory keeps your preferences, project decisions, and lessons available without explaining them again each time.
 
-- **Remember across sessions.** Save a decision or lesson and find it again later.
-- **Share context between tools.** Claude Code and Codex on the same computer can use the same memories.
-- **Leave a handoff.** Keep a note of where work stopped for the next session to check.
-- **Exchange messages.** Running local agents can send each other work, questions, and results.
+- **Coordinate work between sessions.** Send tasks, questions, review requests, and results between running Codex and Claude Code sessions through MeMesh messaging and the optional Claude Channel.
+- **Share project context.** Agents on the same computer can reuse project decisions and lessons instead of starting from scratch.
+- **Leave a clear handoff.** Record the goal, next step, and blockers for the next session to check before continuing.
+- **Keep useful memory.** Save preferences, decisions, and lessons so they remain available across sessions and tools.
 
-Memories live in one file on your computer: `~/.memesh/knowledge-graph.db`. MeMesh needs no cloud memory service or separate AI model. Automatic reminders depend on the host integration; a handoff is context, not a guarantee that a task will restart itself.
+By default, memories live in one file on your computer: `~/.memesh/knowledge-graph.db`. MeMesh needs no separate AI model. Automatic reminders depend on the host integration; a handoff is context, not a guarantee that a task will restart itself.
 
 ## Install
 
@@ -29,6 +29,8 @@ codex plugin marketplace add PCIRCLE-AI/memesh
 codex plugin add memesh@pcircle-memesh
 ```
 
+**Hermes Agent** — follow the [MeMesh memory provider guide](docs/platforms/hermes-agent.md) to connect Hermes for memory recall and capture.
+
 To use the command-line tools too, install [Node.js 22.13+](https://nodejs.org), then run:
 
 ```bash
@@ -38,7 +40,21 @@ memesh doctor
 
 [Installation and update guide](llms-install.md) · [Other integrations](docs/platforms/README.md)
 
-## Use it
+`PCIRCLE-AI/memesh` is the GitHub repository that supplies the marketplace. `memesh@pcircle-memesh` selects the `memesh` plugin from the `pcircle-memesh` marketplace.
+
+## Let Codex and Claude Code collaborate
+
+Use one session to implement a change and another to review it, ask questions, or report results. MeMesh provides a shared local message inbox; Claude Channel adds live delivery into a running Claude Code session. Codex uses its own native notification path, then fetches the message body.
+
+1. Install the plugins above and start both hosts in the same repository, as the same OS user, with matching MeMesh database settings.
+2. For live Claude delivery, follow the [Claude Channel setup](docs/platforms/agent-messaging.md#claude-channel-runner), including registration and the required launch flag. Eligible ordinary Codex CLI sessions register automatically when the plugin's SessionStart hook runs (macOS/Linux).
+3. Ask your agent: “Find the running Claude/Codex session for this project with `message discover`, send it a review request, and report its reply.” Select the actual discovered recipient; do not guess a session ID. The receiver reads the message, records `intake`, and replies with findings.
+
+Without Claude Channel, the durable inbox and Claude Code hook reminders still work. Delivery does not mean the other agent accepted or completed the work. Stopped sessions are not automatically resumed; verify Codex Desktop participation in `message discover` rather than assuming it. This local channel does not relay messages across computers.
+
+[Setup, routing, and receipt details](docs/platforms/agent-messaging.md)
+
+## Keep context between sessions
 
 Ask your agent in plain language:
 
@@ -88,8 +104,6 @@ standalone Web Dashboard.
 **Scored Ranking** — relevance (30%) + recency (25%) + frequency (18%) + confidence (17%) + recall impact (10%). See the [architecture](docs/ARCHITECTURE.md) for details.
 
 ## The fine print
-
-**Scored Ranking** — Results ranked by relevance (30%) + recency (25%) + frequency (18%) + confidence (17%) + recall impact (10%).
 
 **Agent messaging, the exact rules** (full guide: [docs/platforms/agent-messaging.md](docs/platforms/agent-messaging.md)):
 

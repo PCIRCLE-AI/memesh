@@ -1,7 +1,7 @@
 # MeMesh integrations
 
-MeMesh is a local memory layer for Claude Code and Codex. Start with the
-[installation guide](../../llms-install.md). Both hosts share memories when
+MeMesh is a local collaboration layer for AI coding agents, with shared memory and session messaging. Start with the
+[installation guide](../../llms-install.md). Hosts share memories when
 they run as the same user with matching database settings.
 
 ## Choose an entry point
@@ -10,6 +10,7 @@ they run as the same user with matching database settings.
 |---|---|
 | Claude Code plugin | Memory tools, automatic capture, and reminders. |
 | Codex plugin | Memory tools, startup context, and eligible CLI message notifications. |
+| Hermes Agent memory provider | Memory recall and capture through the local MeMesh server and CLI. |
 | MCP server (`memesh-mcp`) | Other local MCP clients; automatic hooks depend on the host. |
 | CLI (`memesh`) | Direct commands, diagnostics, and backups. |
 | HTTP (`memesh serve`) | Local scripts, apps, or a bridge you operate. |
@@ -21,6 +22,7 @@ the [bearer-token requirements](../api/API_REFERENCE.md#http-rest-api).
 
 ## Guides
 
+- [Codex ↔ Claude Code collaboration](../../README.md#let-codex-and-claude-code-collaborate): exchange tasks, review requests, and results through MeMesh messaging. Claude Channel delivers into a running Claude session; eligible Codex CLI sessions receive native notices and fetch the body. Both need the same local MeMesh instance and project; stopped sessions are not automatically resumed.
 - [Agent messaging](agent-messaging.md): send, fetch, and acknowledge messages.
   Delivery or queue acceptance is not task completion.
 - [Universal HTTP guide](universal.md): connect a local script or app.

@@ -1,17 +1,17 @@
-🌐 [English](README.md) | [繁體中文](README.zh-TW.md)
+🌐 [English](README.md) | [繁體中文](README.zh-TW.md) | [Tiếng Việt](README.vi.md)
 
 # MeMesh
 
-**讓 Claude Code 和 Codex 共用本機記憶。**
+**AI 程式開發 agent 的本機協作層。**
 
-MeMesh 幫你的程式開發 AI 記住偏好、專案決策和過去的教訓，讓你不用每次開新對話，都重新解釋同樣的事。
+MeMesh 讓程式開發 AI 共用背景、交換任務與審查結果，並在不同對話間留下清楚的交接。共享記憶則保留你的偏好、專案決策和過去的教訓，讓你不必每次重新解釋。
 
-- **換對話也記得。** 存下決策或教訓，下次需要時再找回來。
-- **不同工具共用。** 同一台電腦上的 Claude Code 和 Codex 可以使用相同記憶。
-- **留下交接。** 記下工作停在哪裡，供下一個對話確認。
-- **互相傳訊息。** 正在執行的本機 agent 可以交換任務、問題和結果。
+- **跨對話分工。** 正在執行的 Codex 和 Claude Code session 可透過 MeMesh 訊息與選配的 Claude Channel 交換任務、問題、審查請求和結果。
+- **共用專案背景。** 同一台電腦上的 agent 可沿用專案決策和教訓，不必每次從頭了解。
+- **留下清楚的交接。** 記錄目標、下一步與阻擋，供下一個對話確認後接續。
+- **保留有用的記憶。** 儲存偏好、決策和教訓，讓不同對話與工具都能查找。
 
-記憶存放在你電腦上的單一檔案：`~/.memesh/knowledge-graph.db`。MeMesh 不需要雲端記憶服務，也不另跑 AI 模型。自動提醒依工具整合而定；交接提供背景，不代表任務一定會自動接續。
+記憶預設存放在你電腦上的單一檔案：`~/.memesh/knowledge-graph.db`。MeMesh 不另跑 AI 模型。自動提醒依工具整合而定；交接提供背景，不代表任務一定會自動接續。
 
 ## 安裝
 
@@ -29,6 +29,8 @@ codex plugin marketplace add PCIRCLE-AI/memesh
 codex plugin add memesh@pcircle-memesh
 ```
 
+**Hermes Agent** — 依 [MeMesh 記憶整合指南](docs/platforms/hermes-agent.md)連接 Hermes，即可使用記憶查找與擷取功能。
+
 若也需要命令列工具，先安裝 [Node.js 22.13+](https://nodejs.org)，再執行：
 
 ```bash
@@ -38,7 +40,21 @@ memesh doctor
 
 [安裝與更新指南](llms-install.md) · [其他工具整合](docs/platforms/README.md)
 
-## 使用
+`PCIRCLE-AI/memesh` 是提供 marketplace 的 GitHub 儲存庫；`memesh@pcircle-memesh` 表示從 `pcircle-memesh` marketplace 安裝 `memesh` 插件。
+
+## 讓 Codex 和 Claude Code 協作
+
+一個 session 實作，另一個審查、提問或回報結果。MeMesh 提供共用的本機訊息收件匣；Claude Channel 可將訊息即時送進正在執行的 Claude Code session。Codex 使用自己的原生通知路徑，再擷取訊息正文。
+
+1. 安裝上方插件，以相同作業系統使用者、相同 MeMesh 資料庫設定，在同一個 repository 啟動兩個工具。
+2. 若需即時送達 Claude，依 [Claude Channel 設定](docs/platforms/agent-messaging.md#claude-channel-runner)完成註冊及必要的啟動旗標。一般 Codex CLI session 在插件 SessionStart hook 執行時自動註冊（macOS／Linux）。
+3. 請 agent：「用 `message discover` 找到這個專案正在執行的 Claude／Codex session，送出審查請求，並回報對方回覆。」使用實際查到的收件者，不猜 session ID。接收方讀取訊息、記錄 `intake`，再回覆審查結果。
+
+未啟用 Claude Channel 時，仍可使用持久收件匣與 Claude Code hook 提醒。送達不代表對方已接下或完成工作；已停止的 session 不會自動恢復。Codex Desktop 是否參與，須以 `message discover` 查到的實際 session 為準。本機 channel 不負責跨電腦傳遞訊息。
+
+[設定、路由與收據詳情](docs/platforms/agent-messaging.md)
+
+## 保留跨對話的背景
 
 直接用平常說話的方式請 agent 幫忙：
 
@@ -86,8 +102,6 @@ Claude Code 的收件提醒不需設定 Channel：沒有自訂身分時，hooks 
 排序權重：相關性 30%、新近程度 25%、使用頻率 18%、信心 17%、回憶影響 10%。詳見[架構說明](docs/ARCHITECTURE.md)。
 
 ## 細節
-
-**評分排序** — 結果依相關性（30%）+ 近期性（25%）+ 頻率（18%）+ 信心（17%）+ 回想影響（10%）排序。
 
 **agent 訊息的完整規則**（完整說明：[docs/platforms/agent-messaging.md](docs/platforms/agent-messaging.md)）：
 
