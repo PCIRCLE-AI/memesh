@@ -79,6 +79,8 @@ export interface SendAgentMessageOptions {
   notifier?: AgentMessagePostCommitNotifier;
   /** Trusted host policy. Omit to leave retention/quota policy owner-controlled. */
   storage_quota_bytes?: number;
+  /** Internal principal fallback of an already counted send; never a public input. */
+  fallback_of_message_id?: string;
 }
 
 export interface PollAgentEventsInput {
@@ -247,6 +249,14 @@ const MIN_WAIT_INTERVAL_MS = 10;
 export class AgentMessagingError extends Error {}
 export class AgentIdempotencyConflictError extends AgentMessagingError {}
 export class AgentMessageAccessError extends AgentMessagingError {}
+export class AgentConversationLoopError extends AgentMessagingError {
+  readonly code = 'conversation_loop_suspected';
+
+  constructor() {
+    super('conversation_loop_suspected: these two agents have exchanged 30 messages within 10 minutes; '
+      + 'this may be a loop. Ask your user before continuing. No new message was stored.');
+  }
+}
 /**
  * #497: intake or a disposition for a principal delivery meant for another
  * session of that principal. Refused so that the session it is meant for
@@ -398,12 +408,59 @@ type AckFactRow = Omit<AgentAckFact, 'detail'> & { detail_json: string; request_
 type WorkflowFactRow = Omit<AgentWorkflowFact, 'detail'> & { detail_json: string; request_hash: string };
 type RetentionFactRow = Omit<AgentRetentionFact, 'detail'> & { detail_json: string; request_hash: string };
 
+function enforceConversationLoopLimit(db: MemeshDatabase, input: SendAgentMessageInput): void {
+  const sessions = new Map<string, string>();
+  const endpoint = (name: string, session: AgentJsonValue | undefined) => {
+    if (typeof session !== 'string' || session.length === 0) return { principal: name, session: null };
+    let canonical = sessions.get(session);
+    if (canonical === undefined) {
+      const aliases = [...sessionAliasChain(db, session)];
+      canonical = aliases.sort()[0];
+      for (const alias of aliases) sessions.set(alias, canonical);
+    }
+    return { principal: name, session: canonical };
+  };
+  // A plain principal recipient has no session yet. Match its principal to
+  // the replying sender, while two known sessions still stay separate.
+  const same = (left: ReturnType<typeof endpoint>, right: ReturnType<typeof endpoint>) =>
+    left.session !== null && right.session !== null
+      ? left.session === right.session : left.principal === right.principal;
+  const from = endpoint(input.sender, input.provenance?.sender_session);
+  const to = endpoint(input.recipient, input.intended_session
+    ?? (input.target_kind === 'session' ? input.recipient : undefined));
+  const cutoff = new Date(Date.now() - 10 * 60_000).toISOString().slice(0, 19).replace('T', ' ');
+  const recent = db.prepare(`
+    SELECT m.sender, m.recipient, m.provenance_json, d.target_kind, d.intended_session
+    FROM agent_messages m
+    JOIN agent_message_deliveries d ON d.message_id = m.message_id
+    WHERE m.project = ? AND m.created_at >= ?
+  `).all(input.project, cutoff) as Array<{
+    sender: string; recipient: string; provenance_json: string;
+    target_kind: string; intended_session: string | null;
+  }>;
+  let count = 0;
+  for (const row of recent) {
+    const provenance = parseJsonObject(row.provenance_json, 'provenance_json');
+    if (typeof provenance.fallback_of_message_id === 'string') continue;
+    const rowFrom = endpoint(row.sender, provenance.sender_session);
+    const rowTo = endpoint(row.recipient, row.intended_session
+      ?? (row.target_kind === 'session' ? row.recipient : undefined));
+    if ((same(rowFrom, from) && same(rowTo, to)) || (same(rowFrom, to) && same(rowTo, from))) {
+      count += 1;
+      if (count >= 30) throw new AgentConversationLoopError();
+    }
+  }
+}
+
 export function sendAgentMessage(
   db: MemeshDatabase,
   input: SendAgentMessageInput,
   options: SendAgentMessageOptions = {},
 ): SentAgentMessage {
-  const normalized = normalizeSendInput(input);
+  const normalized = normalizeSendInput(options.fallback_of_message_id === undefined ? input : {
+    ...input,
+    provenance: { ...input.provenance, fallback_of_message_id: options.fallback_of_message_id },
+  });
   if (normalized.intended_session !== null) {
     // An unregistered id is the normal case: a Claude session without the
     // channel host never registers.
@@ -417,6 +474,11 @@ export function sendAgentMessage(
       throw new AgentIntendedSessionUnsupportedError(normalized.intended_session, unsupported.adapter_kind);
     }
   }
+  // Counting metadata is not part of the caller's request: older sends and
+  // retries after /clear must retain their original idempotency hash.
+  const requestProvenance = { ...normalized.provenance };
+  delete requestProvenance.sender_session;
+  delete requestProvenance.fallback_of_message_id;
   const requestHash = hashCanonical({
     project: normalized.project,
     sender: normalized.sender,
@@ -432,18 +494,8 @@ export function sendAgentMessage(
     reply_to: normalized.reply_to,
     privacy: normalized.privacy,
     payload: normalized.payload,
-    provenance: normalized.provenance,
+    provenance: requestProvenance,
   });
-
-  const existing = lookupExistingMessage(db, normalized.project, normalized.sender, normalized.idempotency_key);
-  if (existing) {
-    if (existing.request_hash !== requestHash) {
-      throw new AgentIdempotencyConflictError(
-        `Agent message idempotency conflict for sender ${normalized.sender} in project ${normalized.project}.`,
-      );
-    }
-    return finishSentMessage(existing, options);
-  }
 
   const messageId = randomUUID();
   const deliveryId = randomUUID();
@@ -451,6 +503,16 @@ export function sendAgentMessage(
   const payloadJson = stableStringify(normalized.payload);
 
   const tx = db.transaction(() => {
+    const existing = lookupExistingMessage(db, normalized.project, normalized.sender, normalized.idempotency_key);
+    if (existing) {
+      if (existing.request_hash !== requestHash) {
+        throw new AgentIdempotencyConflictError(
+          `Agent message idempotency conflict for sender ${normalized.sender} in project ${normalized.project}.`,
+        );
+      }
+      return existing;
+    }
+    if (options.fallback_of_message_id === undefined) enforceConversationLoopLimit(db, normalized);
     if (options.storage_quota_bytes !== undefined) {
       enforceAgentMessageStorageQuota(db, {
         quotaBytes: options.storage_quota_bytes,
@@ -497,10 +559,14 @@ export function sendAgentMessage(
       INSERT INTO agent_message_idempotency (project, sender, idempotency_key, request_hash, message_id)
       VALUES (?, ?, ?, ?, ?)
     `).run(normalized.project, normalized.sender, normalized.idempotency_key, requestHash, messageId);
+
+    const stored = loadSentMessage(db, normalized.project, normalized.recipient, messageId);
+    if (!stored) throw new AgentMessagingError(`Sent agent message ${messageId} could not be read back.`);
+    return stored;
   });
 
   try {
-    tx.immediate();
+    return finishSentMessage(tx.immediate(), options);
   } catch (error) {
     if (!isUniqueConstraint(error)) throw error;
     const raced = lookupExistingMessage(db, normalized.project, normalized.sender, normalized.idempotency_key);
@@ -513,9 +579,6 @@ export function sendAgentMessage(
     throw error;
   }
 
-  const stored = loadSentMessage(db, normalized.project, normalized.recipient, messageId);
-  if (!stored) throw new AgentMessagingError(`Sent agent message ${messageId} could not be read back.`);
-  return finishSentMessage(stored, options);
 }
 
 export function pollAgentEvents(db: MemeshDatabase, input: PollAgentEventsInput): PollAgentEventsResult {

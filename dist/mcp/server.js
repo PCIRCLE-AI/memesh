@@ -36600,6 +36600,12 @@ var AgentIdempotencyConflictError = class extends AgentMessagingError {
 };
 var AgentMessageAccessError = class extends AgentMessagingError {
 };
+var AgentConversationLoopError = class extends AgentMessagingError {
+  code = "conversation_loop_suspected";
+  constructor() {
+    super("conversation_loop_suspected: these two agents have exchanged 30 messages within 10 minutes; this may be a loop. Ask your user before continuing. No new message was stored.");
+  }
+};
 var AgentIntendedForOtherSessionError = class extends AgentMessageAccessError {
   code = "intended_for_other_session";
   constructor(messageId2, intendedSession, callerSession) {
@@ -36621,8 +36627,49 @@ var AgentNativeMessageTooLargeError = class extends AgentMessagingError {
     super(`native_message_too_large: native agent message exceeds ${AGENT_NATIVE_MESSAGE_MAX_BYTES} UTF-8 bytes.`);
   }
 };
+function enforceConversationLoopLimit(db2, input2) {
+  const sessions = /* @__PURE__ */ new Map();
+  const endpoint = (name, session) => {
+    if (typeof session !== "string" || session.length === 0)
+      return { principal: name, session: null };
+    let canonical = sessions.get(session);
+    if (canonical === void 0) {
+      const aliases = [...sessionAliasChain(db2, session)];
+      canonical = aliases.sort()[0];
+      for (const alias of aliases)
+        sessions.set(alias, canonical);
+    }
+    return { principal: name, session: canonical };
+  };
+  const same = (left, right) => left.session !== null && right.session !== null ? left.session === right.session : left.principal === right.principal;
+  const from = endpoint(input2.sender, input2.provenance?.sender_session);
+  const to = endpoint(input2.recipient, input2.intended_session ?? (input2.target_kind === "session" ? input2.recipient : void 0));
+  const cutoff = new Date(Date.now() - 10 * 6e4).toISOString().slice(0, 19).replace("T", " ");
+  const recent = db2.prepare(`
+    SELECT m.sender, m.recipient, m.provenance_json, d.target_kind, d.intended_session
+    FROM agent_messages m
+    JOIN agent_message_deliveries d ON d.message_id = m.message_id
+    WHERE m.project = ? AND m.created_at >= ?
+  `).all(input2.project, cutoff);
+  let count = 0;
+  for (const row of recent) {
+    const provenance = parseJsonObject(row.provenance_json, "provenance_json");
+    if (typeof provenance.fallback_of_message_id === "string")
+      continue;
+    const rowFrom = endpoint(row.sender, provenance.sender_session);
+    const rowTo = endpoint(row.recipient, row.intended_session ?? (row.target_kind === "session" ? row.recipient : void 0));
+    if (same(rowFrom, from) && same(rowTo, to) || same(rowFrom, to) && same(rowTo, from)) {
+      count += 1;
+      if (count >= 30)
+        throw new AgentConversationLoopError();
+    }
+  }
+}
 function sendAgentMessage(db2, input2, options = {}) {
-  const normalized = normalizeSendInput(input2);
+  const normalized = normalizeSendInput(options.fallback_of_message_id === void 0 ? input2 : {
+    ...input2,
+    provenance: { ...input2.provenance, fallback_of_message_id: options.fallback_of_message_id }
+  });
   if (normalized.intended_session !== null) {
     const ids = [...sessionAliasChain(db2, normalized.intended_session)];
     const registered = db2.prepare(`
@@ -36634,6 +36681,9 @@ function sendAgentMessage(db2, input2, options = {}) {
       throw new AgentIntendedSessionUnsupportedError(normalized.intended_session, unsupported.adapter_kind);
     }
   }
+  const requestProvenance = { ...normalized.provenance };
+  delete requestProvenance.sender_session;
+  delete requestProvenance.fallback_of_message_id;
   const requestHash = hashCanonical({
     project: normalized.project,
     sender: normalized.sender,
@@ -36647,20 +36697,22 @@ function sendAgentMessage(db2, input2, options = {}) {
     reply_to: normalized.reply_to,
     privacy: normalized.privacy,
     payload: normalized.payload,
-    provenance: normalized.provenance
+    provenance: requestProvenance
   });
-  const existing = lookupExistingMessage(db2, normalized.project, normalized.sender, normalized.idempotency_key);
-  if (existing) {
-    if (existing.request_hash !== requestHash) {
-      throw new AgentIdempotencyConflictError(`Agent message idempotency conflict for sender ${normalized.sender} in project ${normalized.project}.`);
-    }
-    return finishSentMessage(existing, options);
-  }
   const messageId2 = randomUUID2();
   const deliveryId = randomUUID2();
   const eventId = randomUUID2();
   const payloadJson = stableStringify(normalized.payload);
   const tx = db2.transaction(() => {
+    const existing = lookupExistingMessage(db2, normalized.project, normalized.sender, normalized.idempotency_key);
+    if (existing) {
+      if (existing.request_hash !== requestHash) {
+        throw new AgentIdempotencyConflictError(`Agent message idempotency conflict for sender ${normalized.sender} in project ${normalized.project}.`);
+      }
+      return existing;
+    }
+    if (options.fallback_of_message_id === void 0)
+      enforceConversationLoopLimit(db2, normalized);
     if (options.storage_quota_bytes !== void 0) {
       enforceAgentMessageStorageQuota(db2, {
         quotaBytes: options.storage_quota_bytes,
@@ -36685,9 +36737,13 @@ function sendAgentMessage(db2, input2, options = {}) {
       INSERT INTO agent_message_idempotency (project, sender, idempotency_key, request_hash, message_id)
       VALUES (?, ?, ?, ?, ?)
     `).run(normalized.project, normalized.sender, normalized.idempotency_key, requestHash, messageId2);
+    const stored = loadSentMessage(db2, normalized.project, normalized.recipient, messageId2);
+    if (!stored)
+      throw new AgentMessagingError(`Sent agent message ${messageId2} could not be read back.`);
+    return stored;
   });
   try {
-    tx.immediate();
+    return finishSentMessage(tx.immediate(), options);
   } catch (error62) {
     if (!isUniqueConstraint(error62))
       throw error62;
@@ -36699,10 +36755,6 @@ function sendAgentMessage(db2, input2, options = {}) {
     }
     throw error62;
   }
-  const stored = loadSentMessage(db2, normalized.project, normalized.recipient, messageId2);
-  if (!stored)
-    throw new AgentMessagingError(`Sent agent message ${messageId2} could not be read back.`);
-  return finishSentMessage(stored, options);
 }
 function pollAgentEvents(db2, input2) {
   const project = requireScopeId("project", input2.project);
@@ -38230,7 +38282,8 @@ function sendPrincipalFallback(db2, message, refused) {
       idempotency_key: principalFallbackKey(message.idempotency_key)
     }, {
       notifier: optionalRouterNotifier(),
-      storage_quota_bytes: configuredAgentMessageStorageQuotaBytes()
+      storage_quota_bytes: configuredAgentMessageStorageQuotaBytes(),
+      fallback_of_message_id: refused.message_id
     });
   } catch (error62) {
     if (error62 instanceof AgentIntendedSessionUnsupportedError) {
@@ -38277,7 +38330,8 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
         reply_to: input2.reply_to,
         provenance: {
           transport: context.transport,
-          source_host: context.sourceHost
+          source_host: context.sourceHost,
+          ...context.hostSession ? { sender_session: context.hostSession } : {}
         }
       };
       const sent = sendAgentMessage(db2, {

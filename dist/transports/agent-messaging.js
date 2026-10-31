@@ -368,6 +368,7 @@ function sendPrincipalFallback(db, message, refused) {
         }, {
             notifier: optionalRouterNotifier(),
             storage_quota_bytes: configuredAgentMessageStorageQuotaBytes(),
+            fallback_of_message_id: refused.message_id,
         });
     }
     catch (error) {
@@ -418,6 +419,7 @@ export async function executeAgentMessageAction(db, rawInput, context, dependenc
                 provenance: {
                     transport: context.transport,
                     source_host: context.sourceHost,
+                    ...(context.hostSession ? { sender_session: context.hostSession } : {}),
                 },
             };
             const sent = sendAgentMessage(db, {
