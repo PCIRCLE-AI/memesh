@@ -51,7 +51,7 @@ export class AgentWaitAbortedError extends AgentMessagingError {
 export class AgentNativeMessageTooLargeError extends AgentMessagingError {
     code = 'native_message_too_large';
     constructor() {
-        super(`native_message_too_large: native agent message exceeds ${AGENT_NATIVE_MESSAGE_MAX_BYTES} UTF-8 bytes.`);
+        super(`native_message_too_large: native agent message exceeds ${AGENT_NATIVE_MESSAGE_MAX_BYTES} UTF-8 bytes. The durable message is preserved; shorten the message and send it with a new idempotency key.`);
     }
 }
 export function serializeNativeAgentMessage(envelope, deliveryId) {
@@ -145,12 +145,14 @@ export function sendAgentMessage(db, input, options = {}) {
     const deliveryId = randomUUID();
     const eventId = randomUUID();
     const payloadJson = stableStringify(normalized.payload);
+    let reused = false;
     const tx = db.transaction(() => {
         const existing = lookupExistingMessage(db, normalized.project, normalized.sender, normalized.idempotency_key);
         if (existing) {
             if (existing.request_hash !== requestHash) {
                 throw new AgentIdempotencyConflictError(`Agent message idempotency conflict for sender ${normalized.sender} in project ${normalized.project}.`);
             }
+            reused = true;
             return existing;
         }
         if (options.fallback_of_message_id === undefined)
@@ -185,14 +187,15 @@ export function sendAgentMessage(db, input, options = {}) {
         return stored;
     });
     try {
-        return finishSentMessage(tx.immediate(), options);
+        const sent = finishSentMessage(tx.immediate(), options);
+        return reused ? { ...sent, reused: true } : sent;
     }
     catch (error) {
         if (!isUniqueConstraint(error))
             throw error;
         const raced = lookupExistingMessage(db, normalized.project, normalized.sender, normalized.idempotency_key);
         if (raced && raced.request_hash === requestHash)
-            return finishSentMessage(raced, options);
+            return { ...finishSentMessage(raced, options), reused: true };
         if (raced) {
             throw new AgentIdempotencyConflictError(`Agent message idempotency conflict for sender ${normalized.sender} in project ${normalized.project}.`);
         }

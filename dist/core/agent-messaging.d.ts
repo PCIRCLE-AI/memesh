@@ -29,6 +29,7 @@ export interface SendAgentMessageInput {
     provenance?: AgentJsonObject;
 }
 export interface SentAgentMessage {
+    reused?: true;
     message_id: string;
     delivery_id: string;
     event_id: string;

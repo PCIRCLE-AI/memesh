@@ -30093,7 +30093,7 @@ var init_agent_message_storage = __esm({
       usedBytes;
       requestedBytes;
       constructor(quotaBytes, usedBytes, requestedBytes) {
-        super("storage_quota_exceeded", "Agent message storage quota exceeded.");
+        super("storage_quota_exceeded", "Agent message storage quota exceeded. Review stored messages and the owner-configured quota before retrying.");
         this.name = "AgentMessageStorageQuotaExceededError";
         this.quotaBytes = quotaBytes;
         this.usedBytes = usedBytes;
@@ -30288,12 +30288,14 @@ function sendAgentMessage(db2, input2, options = {}) {
   const deliveryId = randomUUID2();
   const eventId = randomUUID2();
   const payloadJson = stableStringify(normalized.payload);
+  let reused = false;
   const tx = db2.transaction(() => {
     const existing = lookupExistingMessage(db2, normalized.project, normalized.sender, normalized.idempotency_key);
     if (existing) {
       if (existing.request_hash !== requestHash) {
         throw new AgentIdempotencyConflictError(`Agent message idempotency conflict for sender ${normalized.sender} in project ${normalized.project}.`);
       }
+      reused = true;
       return existing;
     }
     if (options.fallback_of_message_id === void 0)
@@ -30328,13 +30330,14 @@ function sendAgentMessage(db2, input2, options = {}) {
     return stored;
   });
   try {
-    return finishSentMessage(tx.immediate(), options);
+    const sent = finishSentMessage(tx.immediate(), options);
+    return reused ? { ...sent, reused: true } : sent;
   } catch (error62) {
     if (!isUniqueConstraint(error62))
       throw error62;
     const raced = lookupExistingMessage(db2, normalized.project, normalized.sender, normalized.idempotency_key);
     if (raced && raced.request_hash === requestHash)
-      return finishSentMessage(raced, options);
+      return { ...finishSentMessage(raced, options), reused: true };
     if (raced) {
       throw new AgentIdempotencyConflictError(`Agent message idempotency conflict for sender ${normalized.sender} in project ${normalized.project}.`);
     }
@@ -31013,7 +31016,7 @@ var init_agent_messaging = __esm({
     AgentNativeMessageTooLargeError = class extends AgentMessagingError {
       code = "native_message_too_large";
       constructor() {
-        super(`native_message_too_large: native agent message exceeds ${AGENT_NATIVE_MESSAGE_MAX_BYTES} UTF-8 bytes.`);
+        super(`native_message_too_large: native agent message exceeds ${AGENT_NATIVE_MESSAGE_MAX_BYTES} UTF-8 bytes. The durable message is preserved; shorten the message and send it with a new idempotency key.`);
       }
     };
   }
@@ -32903,6 +32906,11 @@ function nativeAcceptance(row) {
     accepted_at: sqliteUtcToIso(row.created_at)
   };
 }
+function publicSentMessage(sent, adapter) {
+  const { reused, ...message } = sent;
+  const delivery_note = reused ? "Reused the previous message_id; no new message was created. An unconfirmed notification may be sent again." : adapter ? `${adapter} accepted the notification. This does not mean the model has read or accepted it.` : `Stored in ${sent.recipient}'s inbox. This does not mean the recipient has read or accepted it.`;
+  return { ...message, delivery_note };
+}
 async function requireExactSessionNativeAcceptance(db2, sent, dependencies) {
   const existing = readHostAccept(db2, sent.delivery_id);
   if (existing)
@@ -33210,7 +33218,7 @@ function sendPrincipalFallback(db2, message, refused) {
     LIMIT 1
   `).get(refused.project, session.principal_id, ...ids, Date.now()) !== void 0;
   return {
-    ...fallback,
+    ...publicSentMessage(fallback),
     fallback: {
       reason: "recipient_unavailable",
       intended_session_connected: connected,
@@ -33256,15 +33264,13 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
         storage_quota_bytes: configuredAgentMessageStorageQuotaBytes()
       });
       if (sent.target_kind !== "session")
-        return sent;
+        return publicSentMessage(sent);
       if (hasPrincipalFallback(db2, sent, input2.idempotency_key)) {
         return sendPrincipalFallback(db2, message, sent);
       }
       try {
-        return {
-          ...sent,
-          native_delivery: await requireExactSessionNativeAcceptance(db2, sent, dependencies)
-        };
+        const native_delivery = await requireExactSessionNativeAcceptance(db2, sent, dependencies);
+        return { ...publicSentMessage(sent, String(native_delivery.adapter_kind)), native_delivery };
       } catch (error62) {
         if (input2.fallback_to_principal !== true || !(error62 instanceof AgentRecipientUnavailableError))
           throw error62;
@@ -33345,13 +33351,13 @@ var init_agent_messaging2 = __esm({
     AgentRecipientUnavailableError = class extends AgentMessagingError {
       code = "recipient_unavailable";
       constructor(detail) {
-        super(`recipient_unavailable: the exact active session did not accept the native message.${detail ? ` ${detail}` : ""}`);
+        super(`recipient_unavailable: Could not confirm the session accepted the notification. It may have already arrived, or the session stopped, disconnected, refused it, or its queue is full. The durable message is preserved in the inbox. Try fallback_to_principal to store it in the shared inbox.${detail ? ` ${detail}` : ""}`);
       }
     };
     AgentRouterUnavailableError = class extends AgentMessagingError {
       code = "router_unreachable";
       constructor() {
-        super("router_unreachable: the sender could not reach the local agent router; the durable message is preserved.");
+        super("router_unreachable: the sender could not reach the local agent router; the durable message is preserved. Start the router and retry.");
       }
     };
     AgentDiscoveryUnavailableError = class extends AgentMessagingError {

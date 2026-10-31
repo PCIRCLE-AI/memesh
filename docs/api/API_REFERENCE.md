@@ -990,6 +990,8 @@ Payload JSON is limited to 65,536 UTF-8 bytes. Sender-host provenance is supplie
 
 `send` allows at most 30 new logical messages between the same two participants in one project within 10 minutes, counting both directions. Known sessions keep different conversations separate, and `/clear` session aliases count as one session. When either participant lacks a session for comparison, its principal name is used. Exact retries return the original message even at the limit; automatic `fallback_to_principal` counts only the original send. Host-supplied sender-session and fallback metadata are stored in provenance but do not change a retry's identity.
 
+Successful `send` results include `delivery_note`: principal delivery confirms storage, and exact-session delivery confirms adapter acceptance; neither means the recipient or model has read or accepted the message. When an existing message is reused, the note identifies the previous message ID and says no new message was created; an unconfirmed notification may still be attempted again. A retry that first creates a principal fallback instead reports that new stored message. Fallback results retain their `fallback` details.
+
 | Send error | Meaning and next step |
 |---|---|
 | `conversation_loop_suspected` | The pair has already sent 30 messages within 10 minutes. No new message, delivery, event or idempotency row is stored. Ask your user before continuing. MCP and CLI include this code in their error text; HTTP returns status 400 with `errorCode: "operation.failed"` and the code in `error`. |

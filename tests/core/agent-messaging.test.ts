@@ -103,7 +103,7 @@ describe('agent messaging durable core', () => {
       provenance: { transport: 'cli', host: 'codex' },
     });
 
-    expect(retried).toEqual(sent);
+    expect(retried).toEqual({ ...sent, reused: true });
 
     const events = pollAgentEvents(getDatabase(), { project: 'proj-a', recipient: 'receiver-1' });
     expect(events.events).toHaveLength(1);
