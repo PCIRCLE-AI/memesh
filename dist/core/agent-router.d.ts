@@ -141,6 +141,7 @@ export type AgentRouterErrorResponse = {
 export type AgentRouterResponse = AgentRouterSuccessResponse | AgentRouterErrorResponse;
 export declare function isLegacyAgentRouterVersionMismatchResponse(value: unknown): boolean;
 export interface AgentSelectionCard {
+    handle?: string;
     session_id: string;
     principal_id: string;
     host_kind: 'codex' | 'claude' | 'gemini' | 'other';

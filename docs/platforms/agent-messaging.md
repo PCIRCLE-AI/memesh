@@ -78,6 +78,8 @@ older release, before the queue carried only notices, whose `codex exec` run
 exited before running it — is still reminded until the recipient records
 intake (#514). Under Claude Code they still remind.
 
+Discover cards include a handle made from the project name before `~`, the host kind, and the last four session ID characters. Send with `recipient_handle` (CLI: `--recipient-handle`) instead of `recipient` to resolve a registered session, including an offline one. Claude and Codex CLI sessions resolve to their principal with `intended_session`; other hosts resolve to the exact session. A missing or ambiguous handle is rejected before writing; use an available handle or an exact session ID. Handles identify host kinds, not models.
+
 Every Claude Code session in one project shares one principal, so a message
 sent to that principal reaches all of them. A message can instead name the
 one session it is meant for (#497): `send` with `target_kind: "principal"` and

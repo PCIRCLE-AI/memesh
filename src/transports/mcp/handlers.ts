@@ -466,7 +466,8 @@ export const TOOL_DEFINITIONS = [
         },
         project: { type: 'string', description: 'Local project scope shared by sender and recipient. A stable identifier, never a filesystem path; compared exactly, after Unicode NFC normalisation.' },
         sender: { type: 'string', description: 'Required for send. Stable local sender/agent identifier; provenance only, and stored exactly as given.' },
-        recipient: { type: 'string', description: 'Required for every action except discover. Stable target local agent/host identifier, never a filesystem path; compared exactly, after Unicode NFC normalisation, so no prefix is treated as a namespace.' },
+        recipient: { type: 'string', description: 'Required except discover and send with recipient_handle. Stable target identifier, never a filesystem path; compared exactly after Unicode NFC normalisation.' },
+        recipient_handle: { type: 'string', description: 'Send only: a discovered project-scoped session handle, mutually exclusive with recipient. Offline registered sessions can also be addressed.' },
         target_kind: {
           type: 'string',
           enum: ['principal', 'session'],

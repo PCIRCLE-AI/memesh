@@ -286,8 +286,9 @@ export declare const MessageSchema: z.ZodDiscriminatedUnion<[z.ZodObject<{
     action: z.ZodLiteral<"send">;
     project: z.ZodPipe<z.ZodString, z.ZodTransform<string, string>>;
     sender: z.ZodString;
-    recipient: z.ZodPipe<z.ZodString, z.ZodTransform<string, string>>;
-    target_kind: z.ZodDefault<z.ZodEnum<{
+    recipient: z.ZodOptional<z.ZodPipe<z.ZodString, z.ZodTransform<string, string>>>;
+    recipient_handle: z.ZodOptional<z.ZodString>;
+    target_kind: z.ZodOptional<z.ZodEnum<{
         principal: "principal";
         session: "session";
     }>>;

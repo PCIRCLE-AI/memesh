@@ -5,6 +5,8 @@ import path from 'node:path';
 import type { MemeshDatabase } from '../storage/sqlite.js';
 import {
   fetchAgentMessage,
+  agentHostKind,
+  agentSessionHandle,
   type AgentJsonObject,
   type AgentJsonValue,
   type AgentMessagePayload,
@@ -224,6 +226,7 @@ type ConnectionRow = {
 };
 
 export interface AgentSelectionCard {
+  handle?: string;
   session_id: string;
   principal_id: string;
   host_kind: 'codex' | 'claude' | 'gemini' | 'other';
@@ -491,7 +494,8 @@ export class AgentRouter {
     this.selectionCards.set(connection.connection_id, {
       session_id: connection.session_instance_id,
       principal_id: connection.principal_id,
-      host_kind: hostKind(connection.adapter_kind),
+      host_kind: agentHostKind(connection.adapter_kind),
+      handle: agentSessionHandle(connection.project, connection.adapter_kind, connection.session_instance_id),
       project: connection.project,
       model: null,
       work_summary: registration.work_summary ?? null,
@@ -1305,6 +1309,7 @@ function validateRouterSuccessResult(request: AgentRouterRequest, value: unknown
 function isSelectionCard(value: unknown, project: string): boolean {
   if (!isPlainObject(value)) return false;
   return typeof value.session_id === 'string'
+    && (value.handle === undefined || typeof value.handle === 'string')
     && typeof value.principal_id === 'string'
     && ['codex', 'claude', 'gemini', 'other'].includes(String(value.host_kind))
     && value.project === project
@@ -1457,13 +1462,6 @@ export function isNewerVersion(candidate: string, current: string): boolean {
   const a = parseSemVer(candidate);
   const b = parseSemVer(current);
   return a !== null && b !== null && compareSemVerPrecedence(a, b) > 0;
-}
-
-function hostKind(adapterKind: string): AgentSelectionCard['host_kind'] {
-  if (adapterKind === 'codex-cli-queue' || adapterKind === 'codex-app-server') return 'codex';
-  if (adapterKind === 'claude-channel' || adapterKind === 'claude-inbox') return 'claude';
-  if (adapterKind === 'acp') return 'gemini';
-  return 'other';
 }
 
 function validateInteger(label: string, value: unknown, min: number, max: number): number {

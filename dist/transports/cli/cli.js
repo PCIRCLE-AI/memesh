@@ -30212,6 +30212,29 @@ var init_agent_message_inbox = __esm({
 
 // dist/core/agent-messaging.js
 import { createHash as createHash6, randomBytes as randomBytes3, randomUUID as randomUUID2 } from "node:crypto";
+function agentHostKind(adapter) {
+  if (adapter === "codex-cli-queue" || adapter === "codex-app-server")
+    return "codex";
+  if (adapter === "claude-channel" || adapter === "claude-inbox")
+    return "claude";
+  if (adapter === "acp")
+    return "gemini";
+  return "other";
+}
+function agentSessionHandle(project, adapter, session) {
+  return `${project.split("~")[0]}-${agentHostKind(adapter)}-${session.slice(-4)}`;
+}
+function resolveAgentSessionHandle(db2, project, handle) {
+  const rows = db2.prepare("SELECT session_instance_id, principal_id, adapter_kind FROM agent_session_instances WHERE project = ?").all(project);
+  const matches = rows.filter((row) => agentSessionHandle(project, row.adapter_kind, row.session_instance_id) === handle);
+  const available = [...new Set(rows.map((row) => agentSessionHandle(project, row.adapter_kind, row.session_instance_id)))];
+  if (matches.length === 0)
+    throw new AgentHandleError("handle_not_found", `handle_not_found: No session matches this handle in this project. Discover live agents or use an available handle: ${available.join(", ") || "(none)"}.`);
+  if (matches.length > 1)
+    throw new AgentHandleError("handle_ambiguous", `handle_ambiguous: This handle matches multiple sessions in this project. Use an exact session id. Available handles: ${available.join(", ")}.`);
+  const match = matches[0];
+  return INTENDED_SESSION_ADAPTERS.has(match.adapter_kind) ? { recipient: match.principal_id, target_kind: "principal", intended_session: match.session_instance_id } : { recipient: match.session_instance_id, target_kind: "session", intended_session: void 0 };
+}
 function enforceConversationLoopLimit(db2, input2) {
   const sessions = /* @__PURE__ */ new Map();
   const endpoint = (name, session) => {
@@ -30968,7 +30991,7 @@ async function waitForDelay(ms, signal) {
       onAbort();
   });
 }
-var MAX_SCOPE_FIELD, MAX_IDEMPOTENCY_KEY, MAX_CURSOR_TOKEN, AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES, DEFAULT_POLL_LIMIT, MAX_POLL_LIMIT, DEFAULT_WAIT_TIMEOUT_MS, DEFAULT_WAIT_INTERVAL_MS, MIN_WAIT_INTERVAL_MS, AgentMessagingError, AgentIdempotencyConflictError, AgentMessageAccessError, AgentConversationLoopError, AgentIntendedForOtherSessionError, INTENDED_SESSION_ADAPTERS, AgentIntendedSessionUnsupportedError, AgentWaitAbortedError, AgentNativeMessageTooLargeError;
+var MAX_SCOPE_FIELD, MAX_IDEMPOTENCY_KEY, MAX_CURSOR_TOKEN, AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES, DEFAULT_POLL_LIMIT, MAX_POLL_LIMIT, DEFAULT_WAIT_TIMEOUT_MS, DEFAULT_WAIT_INTERVAL_MS, MIN_WAIT_INTERVAL_MS, AgentMessagingError, AgentIdempotencyConflictError, AgentMessageAccessError, AgentConversationLoopError, AgentIntendedForOtherSessionError, INTENDED_SESSION_ADAPTERS, AgentHandleError, AgentIntendedSessionUnsupportedError, AgentWaitAbortedError, AgentNativeMessageTooLargeError;
 var init_agent_messaging = __esm({
   "dist/core/agent-messaging.js"() {
     "use strict";
@@ -31006,6 +31029,13 @@ var init_agent_messaging = __esm({
       }
     };
     INTENDED_SESSION_ADAPTERS = /* @__PURE__ */ new Set(["claude-channel", "claude-inbox", "codex-cli-queue"]);
+    AgentHandleError = class extends Error {
+      code;
+      constructor(code, message) {
+        super(message);
+        this.code = code;
+      }
+    };
     AgentIntendedSessionUnsupportedError = class extends AgentMessagingError {
       constructor(session, adapterKind) {
         super(`intended_session ${JSON.stringify(session)} is registered by the ${JSON.stringify(adapterKind)} host, which cannot say which session it is when it records intake. Only Claude Code sessions and Codex CLI threads (claude-channel, claude-inbox, codex-cli-queue, or an id the router never registered) can be named as intended_session.`);
@@ -31267,8 +31297,9 @@ var init_schemas3 = __esm({
         action: external_exports.literal("send"),
         project: messageProject,
         sender: messageSender,
-        recipient: messageRecipient,
-        target_kind: external_exports.enum(["principal", "session"]).default("principal"),
+        recipient: messageRecipient.optional(),
+        recipient_handle: nonBlankBounded(220).optional(),
+        target_kind: external_exports.enum(["principal", "session"]).optional(),
         intended_session: agentScopeId("intended_session").optional(),
         fallback_to_principal: external_exports.boolean().optional(),
         idempotency_key: messageIdempotencyKey,
@@ -31278,14 +31309,17 @@ var init_schemas3 = __esm({
         correlation_id: nonBlankBounded(255).optional(),
         reply_to: messageId.optional()
       }).strict().superRefine((send, ctx) => {
-        if (send.intended_session !== void 0 && send.target_kind !== "principal") {
+        if (send.recipient === void 0 === (send.recipient_handle === void 0)) {
+          ctx.addIssue({ code: "custom", path: ["recipient"], message: "Provide exactly one of recipient or recipient_handle." });
+        }
+        if (send.recipient_handle === void 0 && send.intended_session !== void 0 && (send.target_kind ?? "principal") !== "principal") {
           ctx.addIssue({
             code: "custom",
             path: ["intended_session"],
             message: 'intended_session is only valid with target_kind "principal".'
           });
         }
-        if (send.fallback_to_principal !== void 0 && send.target_kind !== "session") {
+        if (send.recipient_handle === void 0 && send.fallback_to_principal !== void 0 && (send.target_kind ?? "principal") !== "session") {
           ctx.addIssue({
             code: "custom",
             path: ["fallback_to_principal"],
@@ -32835,7 +32869,7 @@ function validateRouterSuccessResult(request, value) {
 function isSelectionCard(value, project) {
   if (!isPlainObject4(value))
     return false;
-  return typeof value.session_id === "string" && typeof value.principal_id === "string" && ["codex", "claude", "gemini", "other"].includes(String(value.host_kind)) && value.project === project && (value.model === null || typeof value.model === "string") && (value.work_summary === null || typeof value.work_summary === "string") && value.active === true && Number.isSafeInteger(value.generation) && value.generation >= 1 && Number.isSafeInteger(value.lease_expires_at_ms) && value.lease_expires_at_ms >= 0;
+  return typeof value.session_id === "string" && (value.handle === void 0 || typeof value.handle === "string") && typeof value.principal_id === "string" && ["codex", "claude", "gemini", "other"].includes(String(value.host_kind)) && value.project === project && (value.model === null || typeof value.model === "string") && (value.work_summary === null || typeof value.work_summary === "string") && value.active === true && Number.isSafeInteger(value.generation) && value.generation >= 1 && Number.isSafeInteger(value.lease_expires_at_ms) && value.lease_expires_at_ms >= 0;
 }
 function validateSocketPath(socketPath) {
   if (typeof socketPath !== "string" || !path14.isAbsolute(socketPath) || Buffer.byteLength(socketPath) > AGENT_ROUTER_SOCKET_PATH_MAX_BYTES) {
@@ -33238,6 +33272,16 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
   const input2 = MessageSchema.parse(rawInput);
   switch (input2.action) {
     case "send": {
+      const resolved = input2.recipient_handle === void 0 ? { recipient: input2.recipient, target_kind: input2.target_kind ?? "principal", intended_session: input2.intended_session } : resolveAgentSessionHandle(db2, input2.project, input2.recipient_handle);
+      if (input2.recipient_handle !== void 0 && input2.target_kind !== void 0 && input2.target_kind !== resolved.target_kind) {
+        throw new AgentMessagingError("target_kind does not match the recipient handle. Omit it or use the resolved target kind.");
+      }
+      if (input2.recipient_handle !== void 0 && input2.intended_session !== void 0 && input2.intended_session !== resolved.intended_session) {
+        throw new AgentMessagingError("intended_session does not match the recipient handle. Omit it or use the resolved session.");
+      }
+      if (input2.fallback_to_principal !== void 0 && resolved.target_kind !== "session") {
+        throw new AgentMessagingError('fallback_to_principal is only valid with target_kind "session".');
+      }
       const message = {
         project: input2.project,
         sender: input2.sender,
@@ -33256,11 +33300,9 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
       };
       const sent = sendAgentMessage(db2, {
         ...message,
-        recipient: input2.recipient,
-        target_kind: input2.target_kind,
-        intended_session: input2.intended_session
+        ...resolved
       }, {
-        notifier: input2.target_kind === "session" ? void 0 : optionalRouterNotifier(),
+        notifier: resolved.target_kind === "session" ? void 0 : optionalRouterNotifier(),
         storage_quota_bytes: configuredAgentMessageStorageQuotaBytes()
       });
       if (sent.target_kind !== "session")
@@ -33889,7 +33931,8 @@ function exportOpenAITools() {
             },
             project: { type: "string", description: "Local project scope. A stable identifier, never a filesystem path; compared exactly, after Unicode NFC normalisation." },
             sender: { type: "string", description: "Required for send. Stable local sender identifier; provenance only, and stored exactly as given." },
-            recipient: { type: "string", description: "Required for every action except discover. Stable target local agent/host identifier, never a filesystem path; compared exactly, after Unicode NFC normalisation, so no prefix is treated as a namespace." },
+            recipient: { type: "string", description: "Required except discover and send with recipient_handle. Stable target identifier, never a filesystem path; compared exactly after Unicode NFC normalisation." },
+            recipient_handle: { type: "string", description: "Send only: a discovered project-scoped session handle, mutually exclusive with recipient. Offline registered sessions can also be addressed." },
             target_kind: { type: "string", enum: ["principal", "session"], description: "Recipient identity kind for send and fetch. Defaults to principal; exact-session delivery and fetch require session." },
             intended_session: { type: "string", description: "Optional for send with target_kind principal: the one session of that principal this message is meant for. Only that session is reminded of it and may record intake or a disposition." },
             fallback_to_principal: { type: "boolean", description: "Optional for send with target_kind session: if that session refuses the message (recipient_unavailable), send it to the principal it registered under, with intended_session set to it." },
@@ -68515,16 +68558,18 @@ messageCmd.command("discover").description("Discover active leased agents in one
   project: opts.project,
   limit: opts.limit
 }));
-messageCmd.command("send").description(`Durably send one exact-recipient message (payload 64 KiB; complete native envelope 16 KiB; idempotent)`).requiredOption("--project <name>", "Project scope").requiredOption("--sender <id>", "Stable sender agent/host ID").requiredOption("--recipient <id>", "Stable recipient agent/host ID").option("--target-kind <kind>", "principal | session", "principal").option("--intended-session <id>", "Principal target only: the one session of that principal this message is meant for").option("--fallback-to-principal", "Session target only: if that session refuses it, send it to its principal, meant for that session").requiredOption("--idempotency-key <key>", "Stable retry key").requiredOption("--payload-stdin", `Read untrusted text or JSON from stdin, never argv (stdin read cap ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes; JSON-encoded durable payload cap ${AGENT_MESSAGE_JSON_MAX_BYTES}; exact-session complete native envelope cap ${AGENT_NATIVE_MESSAGE_MAX_BYTES})`).option("--content-type <type>", "text/plain | application/json", "text/plain").option("--privacy <scope>", "private | team", "private").option("--correlation-id <id>", "Conversation or task correlation ID").option("--reply-to <message-id>", "Message ID this replies to").action(async (opts) => {
+messageCmd.command("send").description(`Durably send one exact-recipient message (payload 64 KiB; complete native envelope 16 KiB; idempotent)`).requiredOption("--project <name>", "Project scope").requiredOption("--sender <id>", "Stable sender agent/host ID").option("--recipient <id>", "Stable recipient agent/host ID").option("--recipient-handle <handle>", "Discover handle for a registered session").option("--target-kind <kind>", "principal | session").option("--intended-session <id>", "Principal target only: the one session of that principal this message is meant for").option("--fallback-to-principal", "Session target only: if that session refuses it, send it to its principal, meant for that session").requiredOption("--idempotency-key <key>", "Stable retry key").requiredOption("--payload-stdin", `Read untrusted text or JSON from stdin, never argv (stdin read cap ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes; JSON-encoded durable payload cap ${AGENT_MESSAGE_JSON_MAX_BYTES}; exact-session complete native envelope cap ${AGENT_NATIVE_MESSAGE_MAX_BYTES})`).option("--content-type <type>", "text/plain | application/json", "text/plain").option("--privacy <scope>", "private | team", "private").option("--correlation-id <id>", "Conversation or task correlation ID").option("--reply-to <message-id>", "Message ID this replies to").action(async (opts) => {
   requireOneOf(opts.contentType, ["text/plain", "application/json"], "--content-type");
   requireOneOf(opts.privacy, ["private", "team"], "--privacy");
-  requireOneOf(opts.targetKind, ["principal", "session"], "--target-kind");
+  if (opts.targetKind !== void 0)
+    requireOneOf(opts.targetKind, ["principal", "session"], "--target-kind");
   try {
     await runCliMessage({
       action: "send",
       project: opts.project,
       sender: opts.sender,
       recipient: opts.recipient,
+      recipient_handle: opts.recipientHandle,
       target_kind: opts.targetKind,
       intended_session: opts.intendedSession,
       fallback_to_principal: opts.fallbackToPrincipal,
