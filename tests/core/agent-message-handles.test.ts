@@ -8,7 +8,7 @@ import { useTestDatabase } from '../helpers/db-fixture.js';
 const fixture = useTestDatabase('memesh-handles-router-');
 
 describe('discover handles', () => {
-  it('returns a computed handle on a live router card for a dashed project name', async () => {
+  it.runIf(process.platform !== 'win32')('returns a computed handle on a live router card for a dashed project name', async () => {
     const socketPath = `${fixture.tmpDir}/router.sock`;
     const router = new AgentRouter({ db: getDatabase(), socket_path: socketPath, memesh_version: '1.0.0', limits: { lease_ms: 5000 }, adapters: [{ kind: 'claude-channel', authenticate: () => true }] });
     await router.start();
