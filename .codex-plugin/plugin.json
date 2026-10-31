@@ -67,6 +67,16 @@
           "hooks": [
             {
               "type": "command",
+              "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/codex-busy-message-notice.js",
+              "timeout": 5
+            }
+          ]
+        },
+        {
+          "matcher": "Bash",
+          "hooks": [
+            {
+              "type": "command",
               "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/post-commit.js",
               "timeout": 5
             }

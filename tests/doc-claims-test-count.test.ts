@@ -13,11 +13,34 @@
  */
 import { describe, it, expect } from 'vitest';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { spawnSync } from 'child_process';
 import { statesTestCount } from '../scripts/lib/test-count-claim.mjs';
 
 describe('the READMEs-state-no-test-count rule', () => {
+  it('accepts a Codex-only invoked hook but still rejects an orphan', () => {
+    const root = path.join(__dirname, '..');
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-doc-hook-'));
+    const fixture = path.join(parent, 'repo');
+    try {
+      const clone = spawnSync('git', ['clone', '--quiet', '--shared', '--no-hardlinks', root, fixture], { encoding: 'utf8' });
+      expect(clone.status, clone.stderr).toBe(0);
+      fs.copyFileSync(path.join(root, 'scripts/check-doc-claims.mjs'), path.join(fixture, 'scripts/check-doc-claims.mjs'));
+      const manifestPath = path.join(fixture, '.codex-plugin/plugin.json');
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+      manifest.hooks.hooks.PostToolUse.push({ matcher: 'Bash', hooks: [{ type: 'command', command: '${CLAUDE_PLUGIN_ROOT}/scripts/hooks/doc-claim-fixture.js' }] });
+      fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+      fs.writeFileSync(path.join(fixture, 'scripts/hooks/doc-claim-fixture.js'), '');
+      const run = () => spawnSync(process.execPath, [path.join(fixture, 'scripts/check-doc-claims.mjs')], { cwd: fixture, encoding: 'utf8' });
+      const accepted = run();
+      expect(accepted.status, `${accepted.stdout}\n${accepted.stderr}`).toBe(0);
+      fs.writeFileSync(path.join(fixture, 'scripts/hooks/doc-claim-orphan.js'), '');
+      const orphan = run();
+      expect(orphan.status).toBe(1);
+      expect(orphan.stderr).toContain('doc-claim-orphan.js');
+    } finally { fs.rmSync(parent, { recursive: true, force: true }); }
+  });
   it.each([
     ['English', 'The suite has 630 tests and they all pass.'],
     ['English, comma-grouped', 'All 1,472 tests pass.'],

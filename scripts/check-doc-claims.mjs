@@ -84,6 +84,7 @@ for (const doc of ['docs/ARCHITECTURE.md', 'docs/api/API_REFERENCE.md']) {
 
 // --- 2. Hooks, derived from the manifest that invokes them -------------------
 const hookManifest = JSON.parse(read('hooks/hooks.json'));
+const codexHookManifest = JSON.parse(read('.codex-plugin/plugin.json')).hooks;
 const manifestHooks = new Set();
 const manifestHookCommands = new Set();
 for (const matchers of Object.values(hookManifest.hooks ?? {})) {
@@ -94,23 +95,30 @@ for (const matchers of Object.values(hookManifest.hooks ?? {})) {
     }
   }
 }
+const codexCommands = new Set();
+for (const matchers of Object.values(codexHookManifest?.hooks ?? {})) {
+  for (const matcher of matchers) {
+    for (const hook of matcher.hooks ?? []) codexCommands.add(hook.command.replace('${CLAUDE_PLUGIN_ROOT}/', ''));
+  }
+}
 if (manifestHooks.size === 0) {
   fail('hooks/hooks.json yielded no hook commands — the manifest is malformed or the shape changed');
 } else {
   // Files only, nothing `_`-prefixed — the rule lives in scripts/lib/
   // hook-files.mjs where a test can feed it a fixture directory.
-  const missingCommands = [...manifestHookCommands].filter(command => !fs.existsSync(path.join(repoRoot, command)));
-  if (missingCommands.length) fail(`hooks/hooks.json invokes missing commands: ${missingCommands.join(', ')}`);
+  const allCommands = new Set([...manifestHookCommands, ...codexCommands]);
+  const missingCommands = [...allCommands].filter(command => !fs.existsSync(path.join(repoRoot, command)));
+  if (missingCommands.length) fail(`hook manifests invoke missing commands: ${missingCommands.join(', ')}`);
   const onDisk = listHookFiles(path.join(repoRoot, 'scripts/hooks'));
   const scriptManifestHooks = new Set(
-    [...manifestHookCommands]
+    [...allCommands]
       .filter(command => command.startsWith('scripts/hooks/'))
       .map(command => path.basename(command)),
   );
   const missing = [...scriptManifestHooks].filter(h => !onDisk.includes(h));
   const extra = onDisk.filter(h => !scriptManifestHooks.has(h));
-  if (missing.length) fail(`hooks/hooks.json omits scripts/hooks commands: ${missing.join(', ')}`);
-  if (extra.length) fail(`scripts/hooks/ holds ${extra.join(', ')}, which hooks.json never invokes`);
+  if (missing.length) fail(`hook manifests reference missing scripts/hooks commands: ${missing.join(', ')}`);
+  if (extra.length) fail(`scripts/hooks/ holds ${extra.join(', ')}, which neither hook manifest invokes`);
   if (!missingCommands.length && !missing.length && !extra.length) {
     ok(`${manifestHooks.size} hook commands exist and scripts/hooks agrees with the manifest`);
   }

@@ -882,10 +882,10 @@ export function waitingMessageLines(db, recipient, sessionId, recordFailure, exc
  * {@link waitingMessageLines}, and the same `sessionId`, `recordFailure` and
  * `excludeHostAccepted`.
  */
-export function waitingMessageRefs(db, recipient, sessionId, recordFailure, excludeHostAccepted = false) {
+export function waitingMessageRefs(db, recipient, sessionId, recordFailure, excludeHostAccepted = false, excludeMessageIds = []) {
   if (!recipient) return [];
   try {
-    return unreadMessageRefsFor(db, recipient, sessionId, undefined, excludeHostAccepted);
+    return unreadMessageRefsFor(db, recipient, sessionId, undefined, excludeHostAccepted, excludeMessageIds);
   } catch (err) {
     return inboxReadFailed(err, recordFailure);
   }

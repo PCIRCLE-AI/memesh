@@ -150,7 +150,7 @@ function deliveryMatches(db, recipient, session) {
         params: own === null ? [recipient, recipient, Date.now()] : [recipient, ...own, recipient, Date.now()],
     };
 }
-export function unreadMessageRefsFor(db, recipient, session, limit = UNREAD_MESSAGE_REFS_LIMIT, excludeHostAccepted = false) {
+export function unreadMessageRefsFor(db, recipient, session, limit = UNREAD_MESSAGE_REFS_LIMIT, excludeHostAccepted = false, excludeMessageIds = []) {
     if (!recipient)
         return [];
     try {
@@ -162,6 +162,7 @@ export function unreadMessageRefsFor(db, recipient, session, limit = UNREAD_MESS
        WHERE ${match.sql}
          ${intended.sql}
          ${accepted.sql}
+         AND NOT EXISTS (SELECT 1 FROM json_each(?) excluded WHERE excluded.value = d.message_id)
          AND NOT EXISTS (
            SELECT 1 FROM agent_message_receipts r
            WHERE r.project = d.project
@@ -170,7 +171,7 @@ export function unreadMessageRefsFor(db, recipient, session, limit = UNREAD_MESS
              AND r.receipt_kind = 'intake'
          )
        ORDER BY d.project, d.message_id
-       LIMIT ?`).all(...match.params, ...intended.params, ...accepted.params, limit);
+       LIMIT ?`).all(...match.params, ...intended.params, ...accepted.params, JSON.stringify(excludeMessageIds), limit);
         return rows.filter((row) => typeof row.project === 'string' && typeof row.message_id === 'string');
     }
     catch (err) {

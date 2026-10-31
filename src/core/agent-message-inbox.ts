@@ -392,6 +392,7 @@ export function unreadMessageRefsFor(
   session?: string,
   limit: number = UNREAD_MESSAGE_REFS_LIMIT,
   excludeHostAccepted = false,
+  excludeMessageIds: readonly string[] = [],
 ): UnreadMessageRef[] {
   if (!recipient) return [];
   try {
@@ -404,6 +405,7 @@ export function unreadMessageRefsFor(
        WHERE ${match.sql}
          ${intended.sql}
          ${accepted.sql}
+         AND NOT EXISTS (SELECT 1 FROM json_each(?) excluded WHERE excluded.value = d.message_id)
          AND NOT EXISTS (
            SELECT 1 FROM agent_message_receipts r
            WHERE r.project = d.project
@@ -413,7 +415,7 @@ export function unreadMessageRefsFor(
          )
        ORDER BY d.project, d.message_id
        LIMIT ?`,
-    ).all(...match.params, ...intended.params, ...accepted.params, limit) as Array<{ project?: string; message_id?: string }>;
+    ).all(...match.params, ...intended.params, ...accepted.params, JSON.stringify(excludeMessageIds), limit) as Array<{ project?: string; message_id?: string }>;
     return rows.filter(
       (row): row is UnreadMessageRef => typeof row.project === 'string' && typeof row.message_id === 'string',
     );

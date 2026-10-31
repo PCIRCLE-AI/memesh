@@ -19,6 +19,15 @@ import { registerAgentSession, sendSessionTargetedMessage } from '../helpers/age
 describe('Feature: #490 a session-targeted delivery is found under its principal, only while live', () => {
   useTestDatabase('memesh-inbox-session-target-');
 
+  it('excludes already-notified IDs before the bounded window without changing default reads', () => {
+    const send = (project: string) => sendAgentMessage(getDatabase(), { project, sender: 'sender', recipient: 'claude-principal', idempotency_key: 'key', payload: 'x', content_type: 'text/plain' });
+    const first = send('project-a');
+    const second = send('project-b');
+    expect(unreadMessageRefsFor(getDatabase(), 'claude-principal', undefined, 1)).toEqual([{ project: 'project-a', message_id: first.message_id }]);
+    expect(unreadMessageRefsFor(getDatabase(), 'claude-principal', undefined, 1, false, [first.message_id])).toEqual([{ project: 'project-b', message_id: second.message_id }]);
+    expect(unreadMessageRefsFor(getDatabase(), 'claude-principal')).toHaveLength(2);
+  });
+
   it('matches a session-targeted delivery whose session is live under the resolved principal', () => {
     const sessionId = registerAgentSession('proj-a', 'claude-principal');
     const sent = sendSessionTargetedMessage('proj-a', sessionId, 'k1');
