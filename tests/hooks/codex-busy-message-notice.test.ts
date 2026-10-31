@@ -82,7 +82,7 @@ describe('Codex PostToolUse message reminder', () => {
     const outputs = await Promise.all(launches);
     expect(outputs.filter(Boolean)).toHaveLength(1);
   });
-  it('leaves a live owner lock alone and recovers dead or incomplete old locks', async () => {
+  it('leaves a live owner lock alone and recovers a dead owner lock', async () => {
     await send();
     const lockDir = path.join(dir, 'codex-busy-message-notice');
     fs.mkdirSync(lockDir, { mode: 0o700 });
@@ -93,7 +93,12 @@ describe('Codex PostToolUse message reminder', () => {
     fs.writeFileSync(lock, '2147483647\n');
     expect(JSON.parse(run().stdout).hookSpecificOutput.additionalContext).toContain('1 new message');
     expect(fs.existsSync(lock)).toBe(false);
+  });
+  it('recovers an incomplete old lock', async () => {
     await send();
+    const lockDir = path.join(dir, 'codex-busy-message-notice');
+    fs.mkdirSync(lockDir, { mode: 0o700 });
+    const lock = path.join(lockDir, `${session}.json.lock`);
     fs.writeFileSync(lock, '', { mode: 0o600, flag: 'wx' });
     const old = new Date(Date.now() - 60_000);
     fs.utimesSync(lock, old, old);

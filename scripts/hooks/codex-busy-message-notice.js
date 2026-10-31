@@ -14,6 +14,33 @@ let input = '';
 // Mirror the router startup lock's owner/PID and inode checks. Contenders
 // retry on a later tool call; a crashed owner (or an incomplete old lock)
 // cannot permanently silence the reminder.
+function clearStaleLock(path) {
+  let fd;
+  try {
+    fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > 64 || (process.platform !== 'win32' && (stat.mode & 0o077) !== 0) || (typeof process.getuid === 'function' && stat.uid !== process.getuid())) return false;
+    // On Windows O_NOFOLLOW may be unavailable: compare the opened file
+    // to the non-following path stat before trusting even its PID.
+    const named = lstatSync(path);
+    if (!named.isFile() || named.dev !== stat.dev || named.ino !== stat.ino) return false;
+    const buffer = Buffer.alloc(65);
+    const length = readSync(fd, buffer, 0, buffer.length, null);
+    if (length > 64) return false;
+    const raw = buffer.subarray(0, length).toString('utf8').trim();
+    let stale = false;
+    if (/^[1-9][0-9]*$/.test(raw) && Number.isSafeInteger(Number(raw)) && Number(raw) <= 2147483647) {
+      try { process.kill(Number(raw), 0); } catch (err) { stale = err.code === 'ESRCH'; }
+    } else stale = Date.now() - stat.mtimeMs > 30_000;
+    if (!stale) return false;
+    const current = lstatSync(path);
+    if (current.dev === stat.dev && current.ino === stat.ino) unlinkSync(path);
+    return true;
+  } catch (err) {
+    if (err.code === 'ENOENT' || err.code === 'ELOOP') return true;
+    throw err;
+  } finally { if (fd !== undefined) closeSync(fd); }
+}
 function acquireLock(path) {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -23,28 +50,7 @@ function acquireLock(path) {
       return identity;
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
-      let stat, stale = false;
-      let fd;
-      try {
-        fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
-        stat = fstatSync(fd);
-        if (!stat.isFile() || stat.size > 64 || (process.platform !== 'win32' && (stat.mode & 0o077) !== 0) || (typeof process.getuid === 'function' && stat.uid !== process.getuid())) return null;
-        // On Windows O_NOFOLLOW may be unavailable: compare the opened file
-        // to the non-following path stat before trusting even its PID.
-        const named = lstatSync(path);
-        if (!named.isFile() || named.dev !== stat.dev || named.ino !== stat.ino) return null;
-        const buffer = Buffer.alloc(65);
-        const length = readSync(fd, buffer, 0, buffer.length, null);
-        if (length > 64) return null;
-        const raw = buffer.subarray(0, length).toString('utf8').trim();
-        if (/^[1-9][0-9]*$/.test(raw) && Number.isSafeInteger(Number(raw)) && Number(raw) <= 2147483647) {
-          try { process.kill(Number(raw), 0); } catch (err) { stale = err.code === 'ESRCH'; }
-        } else stale = Date.now() - stat.mtimeMs > 30_000;
-        if (!stale) return null;
-        const current = lstatSync(path);
-        if (current.dev === stat.dev && current.ino === stat.ino) unlinkSync(path);
-      } catch (err) { if (err.code !== 'ENOENT' && err.code !== 'ELOOP') throw err; }
-      finally { if (fd !== undefined) closeSync(fd); }
+      if (!clearStaleLock(path)) return null;
     }
   }
   return null;

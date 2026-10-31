@@ -198,8 +198,8 @@
     },
     {
       "path": "scripts/hooks/codex-busy-message-notice.js",
-      "sha256": "838c77ff434ac62ed6dd3266c3765d08527e79ae9e00c75c18d6d53416f8d05c",
-      "bytes": 6248
+      "sha256": "67ff0a1f8c06fd2078b77e287e0fd4f36fc186df9c90a4441921df3e2012ed23",
+      "bytes": 6284
     },
     {
       "path": "scripts/hooks/decision-nudge.js",
