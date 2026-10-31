@@ -453,8 +453,9 @@ export const MessageSchema = z.discriminatedUnion('action', [
     action: z.literal('send'),
     project: messageProject,
     sender: messageSender,
-    recipient: messageRecipient,
-    target_kind: z.enum(['principal', 'session']).default('principal'),
+    recipient: messageRecipient.optional(),
+    recipient_handle: nonBlankBounded(220).optional(),
+    target_kind: z.enum(['principal', 'session']).optional(),
     // #497: the one session of a shared principal a principal message is
     // meant for; and, for a session send, "if that session refuses it, send
     // it to its principal meant for that session instead".
@@ -472,14 +473,17 @@ export const MessageSchema = z.discriminatedUnion('action', [
     correlation_id: nonBlankBounded(255).optional(),
     reply_to: messageId.optional(),
   }).strict().superRefine((send, ctx) => {
-    if (send.intended_session !== undefined && send.target_kind !== 'principal') {
+    if ((send.recipient === undefined) === (send.recipient_handle === undefined)) {
+      ctx.addIssue({ code: 'custom', path: ['recipient'], message: 'Provide exactly one of recipient or recipient_handle.' });
+    }
+    if (send.recipient_handle === undefined && send.intended_session !== undefined && (send.target_kind ?? 'principal') !== 'principal') {
       ctx.addIssue({
         code: 'custom',
         path: ['intended_session'],
         message: 'intended_session is only valid with target_kind "principal".',
       });
     }
-    if (send.fallback_to_principal !== undefined && send.target_kind !== 'session') {
+    if (send.recipient_handle === undefined && send.fallback_to_principal !== undefined && (send.target_kind ?? 'principal') !== 'session') {
       ctx.addIssue({
         code: 'custom',
         path: ['fallback_to_principal'],

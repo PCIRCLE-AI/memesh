@@ -601,7 +601,11 @@ export declare const TOOL_DEFINITIONS: readonly [{
             };
             readonly recipient: {
                 readonly type: "string";
-                readonly description: "Required for every action except discover. Stable target local agent/host identifier, never a filesystem path; compared exactly, after Unicode NFC normalisation, so no prefix is treated as a namespace.";
+                readonly description: "Required except discover and send with recipient_handle. Stable target identifier, never a filesystem path; compared exactly after Unicode NFC normalisation.";
+            };
+            readonly recipient_handle: {
+                readonly type: "string";
+                readonly description: "Send only: a discovered project-scoped session handle, mutually exclusive with recipient. Offline registered sessions can also be addressed.";
             };
             readonly target_kind: {
                 readonly type: "string";

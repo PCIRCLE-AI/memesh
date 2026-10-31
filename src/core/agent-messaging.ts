@@ -289,6 +289,34 @@ export class AgentIntendedForOtherSessionError extends AgentMessageAccessError {
  */
 const INTENDED_SESSION_ADAPTERS: ReadonlySet<string> = new Set(['claude-channel', 'claude-inbox', 'codex-cli-queue']);
 
+export function agentHostKind(adapter: string): 'codex' | 'claude' | 'gemini' | 'other' {
+  if (adapter === 'codex-cli-queue' || adapter === 'codex-app-server') return 'codex';
+  if (adapter === 'claude-channel' || adapter === 'claude-inbox') return 'claude';
+  if (adapter === 'acp') return 'gemini';
+  return 'other';
+}
+
+export function agentSessionHandle(project: string, adapter: string, session: string): string {
+  return `${project.split('~')[0]}-${agentHostKind(adapter)}-${session.slice(-4)}`;
+}
+
+export function resolveAgentSessionHandle(db: MemeshDatabase, project: string, handle: string) {
+  const rows = db.prepare('SELECT session_instance_id, principal_id, adapter_kind FROM agent_session_instances WHERE project = ?')
+    .all(project) as Array<{ session_instance_id: string; principal_id: string; adapter_kind: string }>;
+  const matches = rows.filter(row => agentSessionHandle(project, row.adapter_kind, row.session_instance_id) === handle);
+  const available = [...new Set(rows.map(row => agentSessionHandle(project, row.adapter_kind, row.session_instance_id)))];
+  if (matches.length === 0) throw new AgentHandleError('handle_not_found', `handle_not_found: No session matches this handle in this project. Discover live agents or use an available handle: ${available.join(', ') || '(none)'}.`);
+  if (matches.length > 1) throw new AgentHandleError('handle_ambiguous', `handle_ambiguous: This handle matches multiple sessions in this project. Use an exact session id. Available handles: ${available.join(', ')}.`);
+  const match = matches[0];
+  return INTENDED_SESSION_ADAPTERS.has(match.adapter_kind)
+    ? { recipient: match.principal_id, target_kind: 'principal' as const, intended_session: match.session_instance_id }
+    : { recipient: match.session_instance_id, target_kind: 'session' as const, intended_session: undefined };
+}
+
+class AgentHandleError extends Error {
+  constructor(readonly code: 'handle_not_found' | 'handle_ambiguous', message: string) { super(message); }
+}
+
 /**
  * #497: `intended_session` names a session registered through a host that
  * cannot say which session it is when it records intake, so nothing could
