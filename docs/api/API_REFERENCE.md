@@ -988,6 +988,12 @@ Additional `send` fields:
 
 Payload JSON is limited to 65,536 UTF-8 bytes. Sender-host provenance is supplied by the transport and cannot be provided in tool arguments. An opaque cursor is scoped to its exact project and recipient; an unknown or foreign cursor is rejected.
 
+`send` allows at most 30 new logical messages between the same two participants in one project within 10 minutes, counting both directions. Known sessions keep different conversations separate, and `/clear` session aliases count as one session. When either participant lacks a session for comparison, its principal name is used. Exact retries return the original message even at the limit; automatic `fallback_to_principal` counts only the original send. Host-supplied sender-session and fallback metadata are stored in provenance but do not change a retry's identity.
+
+| Send error | Meaning and next step |
+|---|---|
+| `conversation_loop_suspected` | The pair has already sent 30 messages within 10 minutes. No new message, delivery, event or idempotency row is stored. Ask your user before continuing. MCP and CLI include this code in their error text; HTTP returns status 400 with `errorCode: "operation.failed"` and the code in `error`. |
+
 Exact-recipient routing is not per-agent authentication or an ACL. A caller that can access the local MeMesh instance can assert a logical recipient ID, so all callers on a shared instance must be cooperative, trusted workspace participants. HTTP bearer authentication protects instance access; it does not establish a separate cryptographic identity for each agent.
 
 `poll` is a bounded compatibility and diagnostic read, not the normal active-session push path. It does not resume a stopped model session, and no action executes payload content. Poll clients persist `next_cursor`, fetch explicitly, and record only receipt facts that actually occurred; verified active host adapters receive the authorized envelope from the Local router without polling.

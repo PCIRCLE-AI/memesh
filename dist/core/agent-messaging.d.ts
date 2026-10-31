@@ -58,6 +58,7 @@ export interface AgentMessagePostCommitNotifier {
 export interface SendAgentMessageOptions {
     notifier?: AgentMessagePostCommitNotifier;
     storage_quota_bytes?: number;
+    fallback_of_message_id?: string;
 }
 export interface PollAgentEventsInput {
     project: string;
@@ -213,6 +214,10 @@ export declare class AgentMessagingError extends Error {
 export declare class AgentIdempotencyConflictError extends AgentMessagingError {
 }
 export declare class AgentMessageAccessError extends AgentMessagingError {
+}
+export declare class AgentConversationLoopError extends AgentMessagingError {
+    readonly code = "conversation_loop_suspected";
+    constructor();
 }
 export declare class AgentIntendedForOtherSessionError extends AgentMessageAccessError {
     readonly code = "intended_for_other_session";

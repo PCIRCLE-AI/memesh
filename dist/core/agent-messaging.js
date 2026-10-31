@@ -19,6 +19,13 @@ export class AgentIdempotencyConflictError extends AgentMessagingError {
 }
 export class AgentMessageAccessError extends AgentMessagingError {
 }
+export class AgentConversationLoopError extends AgentMessagingError {
+    code = 'conversation_loop_suspected';
+    constructor() {
+        super('conversation_loop_suspected: these two agents have exchanged 30 messages within 10 minutes; '
+            + 'this may be a loop. Ask your user before continuing. No new message was stored.');
+    }
+}
 export class AgentIntendedForOtherSessionError extends AgentMessageAccessError {
     code = 'intended_for_other_session';
     constructor(messageId, intendedSession, callerSession) {
@@ -59,8 +66,52 @@ export function serializeNativeAgentMessage(envelope, deliveryId) {
     }
     return serialized;
 }
+function enforceConversationLoopLimit(db, input) {
+    const sessions = new Map();
+    const endpoint = (name, session) => {
+        if (typeof session !== 'string' || session.length === 0)
+            return { principal: name, session: null };
+        let canonical = sessions.get(session);
+        if (canonical === undefined) {
+            const aliases = [...sessionAliasChain(db, session)];
+            canonical = aliases.sort()[0];
+            for (const alias of aliases)
+                sessions.set(alias, canonical);
+        }
+        return { principal: name, session: canonical };
+    };
+    const same = (left, right) => left.session !== null && right.session !== null
+        ? left.session === right.session : left.principal === right.principal;
+    const from = endpoint(input.sender, input.provenance?.sender_session);
+    const to = endpoint(input.recipient, input.intended_session
+        ?? (input.target_kind === 'session' ? input.recipient : undefined));
+    const cutoff = new Date(Date.now() - 10 * 60_000).toISOString().slice(0, 19).replace('T', ' ');
+    const recent = db.prepare(`
+    SELECT m.sender, m.recipient, m.provenance_json, d.target_kind, d.intended_session
+    FROM agent_messages m
+    JOIN agent_message_deliveries d ON d.message_id = m.message_id
+    WHERE m.project = ? AND m.created_at >= ?
+  `).all(input.project, cutoff);
+    let count = 0;
+    for (const row of recent) {
+        const provenance = parseJsonObject(row.provenance_json, 'provenance_json');
+        if (typeof provenance.fallback_of_message_id === 'string')
+            continue;
+        const rowFrom = endpoint(row.sender, provenance.sender_session);
+        const rowTo = endpoint(row.recipient, row.intended_session
+            ?? (row.target_kind === 'session' ? row.recipient : undefined));
+        if ((same(rowFrom, from) && same(rowTo, to)) || (same(rowFrom, to) && same(rowTo, from))) {
+            count += 1;
+            if (count >= 30)
+                throw new AgentConversationLoopError();
+        }
+    }
+}
 export function sendAgentMessage(db, input, options = {}) {
-    const normalized = normalizeSendInput(input);
+    const normalized = normalizeSendInput(options.fallback_of_message_id === undefined ? input : {
+        ...input,
+        provenance: { ...input.provenance, fallback_of_message_id: options.fallback_of_message_id },
+    });
     if (normalized.intended_session !== null) {
         const ids = [...sessionAliasChain(db, normalized.intended_session)];
         const registered = db.prepare(`
@@ -72,6 +123,9 @@ export function sendAgentMessage(db, input, options = {}) {
             throw new AgentIntendedSessionUnsupportedError(normalized.intended_session, unsupported.adapter_kind);
         }
     }
+    const requestProvenance = { ...normalized.provenance };
+    delete requestProvenance.sender_session;
+    delete requestProvenance.fallback_of_message_id;
     const requestHash = hashCanonical({
         project: normalized.project,
         sender: normalized.sender,
@@ -85,20 +139,22 @@ export function sendAgentMessage(db, input, options = {}) {
         reply_to: normalized.reply_to,
         privacy: normalized.privacy,
         payload: normalized.payload,
-        provenance: normalized.provenance,
+        provenance: requestProvenance,
     });
-    const existing = lookupExistingMessage(db, normalized.project, normalized.sender, normalized.idempotency_key);
-    if (existing) {
-        if (existing.request_hash !== requestHash) {
-            throw new AgentIdempotencyConflictError(`Agent message idempotency conflict for sender ${normalized.sender} in project ${normalized.project}.`);
-        }
-        return finishSentMessage(existing, options);
-    }
     const messageId = randomUUID();
     const deliveryId = randomUUID();
     const eventId = randomUUID();
     const payloadJson = stableStringify(normalized.payload);
     const tx = db.transaction(() => {
+        const existing = lookupExistingMessage(db, normalized.project, normalized.sender, normalized.idempotency_key);
+        if (existing) {
+            if (existing.request_hash !== requestHash) {
+                throw new AgentIdempotencyConflictError(`Agent message idempotency conflict for sender ${normalized.sender} in project ${normalized.project}.`);
+            }
+            return existing;
+        }
+        if (options.fallback_of_message_id === undefined)
+            enforceConversationLoopLimit(db, normalized);
         if (options.storage_quota_bytes !== undefined) {
             enforceAgentMessageStorageQuota(db, {
                 quotaBytes: options.storage_quota_bytes,
@@ -123,9 +179,13 @@ export function sendAgentMessage(db, input, options = {}) {
       INSERT INTO agent_message_idempotency (project, sender, idempotency_key, request_hash, message_id)
       VALUES (?, ?, ?, ?, ?)
     `).run(normalized.project, normalized.sender, normalized.idempotency_key, requestHash, messageId);
+        const stored = loadSentMessage(db, normalized.project, normalized.recipient, messageId);
+        if (!stored)
+            throw new AgentMessagingError(`Sent agent message ${messageId} could not be read back.`);
+        return stored;
     });
     try {
-        tx.immediate();
+        return finishSentMessage(tx.immediate(), options);
     }
     catch (error) {
         if (!isUniqueConstraint(error))
@@ -138,10 +198,6 @@ export function sendAgentMessage(db, input, options = {}) {
         }
         throw error;
     }
-    const stored = loadSentMessage(db, normalized.project, normalized.recipient, messageId);
-    if (!stored)
-        throw new AgentMessagingError(`Sent agent message ${messageId} could not be read back.`);
-    return finishSentMessage(stored, options);
 }
 export function pollAgentEvents(db, input) {
     const project = requireScopeId('project', input.project);
