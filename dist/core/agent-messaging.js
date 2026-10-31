@@ -39,6 +39,39 @@ export class AgentIntendedForOtherSessionError extends AgentMessageAccessError {
     }
 }
 const INTENDED_SESSION_ADAPTERS = new Set(['claude-channel', 'claude-inbox', 'codex-cli-queue']);
+export function agentHostKind(adapter) {
+    if (adapter === 'codex-cli-queue' || adapter === 'codex-app-server')
+        return 'codex';
+    if (adapter === 'claude-channel' || adapter === 'claude-inbox')
+        return 'claude';
+    if (adapter === 'acp')
+        return 'gemini';
+    return 'other';
+}
+export function agentSessionHandle(project, adapter, session) {
+    return `${project.split('~')[0]}-${agentHostKind(adapter)}-${session.slice(-4)}`;
+}
+export function resolveAgentSessionHandle(db, project, handle) {
+    const rows = db.prepare('SELECT session_instance_id, principal_id, adapter_kind FROM agent_session_instances WHERE project = ?')
+        .all(project);
+    const matches = rows.filter(row => agentSessionHandle(project, row.adapter_kind, row.session_instance_id) === handle);
+    const available = [...new Set(rows.map(row => agentSessionHandle(project, row.adapter_kind, row.session_instance_id)))];
+    if (matches.length === 0)
+        throw new AgentHandleError('handle_not_found', `handle_not_found: No session matches this handle in this project. Discover live agents or use an available handle: ${available.join(', ') || '(none)'}.`);
+    if (matches.length > 1)
+        throw new AgentHandleError('handle_ambiguous', `handle_ambiguous: This handle matches multiple sessions in this project. Use an exact session id. Available handles: ${available.join(', ')}.`);
+    const match = matches[0];
+    return INTENDED_SESSION_ADAPTERS.has(match.adapter_kind)
+        ? { recipient: match.principal_id, target_kind: 'principal', intended_session: match.session_instance_id }
+        : { recipient: match.session_instance_id, target_kind: 'session', intended_session: undefined };
+}
+class AgentHandleError extends Error {
+    code;
+    constructor(code, message) {
+        super(message);
+        this.code = code;
+    }
+}
 export class AgentIntendedSessionUnsupportedError extends AgentMessagingError {
     constructor(session, adapterKind) {
         super(`intended_session ${JSON.stringify(session)} is registered by the ${JSON.stringify(adapterKind)} host, which cannot `

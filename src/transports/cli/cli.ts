@@ -1178,8 +1178,9 @@ messageCmd
   .description(`Durably send one exact-recipient message (payload 64 KiB; complete native envelope 16 KiB; idempotent)`)
   .requiredOption('--project <name>', 'Project scope')
   .requiredOption('--sender <id>', 'Stable sender agent/host ID')
-  .requiredOption('--recipient <id>', 'Stable recipient agent/host ID')
-  .option('--target-kind <kind>', 'principal | session', 'principal')
+  .option('--recipient <id>', 'Stable recipient agent/host ID')
+  .option('--recipient-handle <handle>', 'Discover handle for a registered session')
+  .option('--target-kind <kind>', 'principal | session')
   .option('--intended-session <id>', 'Principal target only: the one session of that principal this message is meant for')
   .option('--fallback-to-principal', 'Session target only: if that session refuses it, send it to its principal, meant for that session')
   .requiredOption('--idempotency-key <key>', 'Stable retry key')
@@ -1194,13 +1195,14 @@ messageCmd
   .action(async (opts) => {
     requireOneOf(opts.contentType, ['text/plain', 'application/json'], '--content-type');
     requireOneOf(opts.privacy, ['private', 'team'], '--privacy');
-    requireOneOf(opts.targetKind, ['principal', 'session'], '--target-kind');
+    if (opts.targetKind !== undefined) requireOneOf(opts.targetKind, ['principal', 'session'], '--target-kind');
     try {
       await runCliMessage({
         action: 'send',
         project: opts.project,
         sender: opts.sender,
         recipient: opts.recipient,
+        recipient_handle: opts.recipientHandle,
         target_kind: opts.targetKind,
         intended_session: opts.intendedSession,
         fallback_to_principal: opts.fallbackToPrincipal,

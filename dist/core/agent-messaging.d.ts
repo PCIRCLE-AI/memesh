@@ -224,6 +224,17 @@ export declare class AgentIntendedForOtherSessionError extends AgentMessageAcces
     readonly code = "intended_for_other_session";
     constructor(messageId: string, intendedSession: string, callerSession: string | null);
 }
+export declare function agentHostKind(adapter: string): 'codex' | 'claude' | 'gemini' | 'other';
+export declare function agentSessionHandle(project: string, adapter: string, session: string): string;
+export declare function resolveAgentSessionHandle(db: MemeshDatabase, project: string, handle: string): {
+    recipient: string;
+    target_kind: "principal";
+    intended_session: string;
+} | {
+    recipient: string;
+    target_kind: "session";
+    intended_session: undefined;
+};
 export declare class AgentIntendedSessionUnsupportedError extends AgentMessagingError {
     constructor(session: string, adapterKind: string);
 }

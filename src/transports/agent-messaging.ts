@@ -10,6 +10,7 @@ import {
   pollAgentEvents,
   readAgentMessageReceipts,
   recordAgentReceipt,
+  resolveAgentSessionHandle,
   sendAgentMessage,
   waitForAgentEvents,
   type AgentAckFact,
@@ -637,6 +638,18 @@ export async function executeAgentMessageAction(
 
   switch (input.action) {
     case 'send': {
+      const resolved = input.recipient_handle === undefined
+        ? { recipient: input.recipient!, target_kind: input.target_kind ?? 'principal', intended_session: input.intended_session }
+        : resolveAgentSessionHandle(db, input.project, input.recipient_handle);
+      if (input.recipient_handle !== undefined && input.target_kind !== undefined && input.target_kind !== resolved.target_kind) {
+        throw new AgentMessagingError('target_kind does not match the recipient handle. Omit it or use the resolved target kind.');
+      }
+      if (input.recipient_handle !== undefined && input.intended_session !== undefined && input.intended_session !== resolved.intended_session) {
+        throw new AgentMessagingError('intended_session does not match the recipient handle. Omit it or use the resolved session.');
+      }
+      if (input.fallback_to_principal !== undefined && resolved.target_kind !== 'session') {
+        throw new AgentMessagingError('fallback_to_principal is only valid with target_kind "session".');
+      }
       const message = {
         project: input.project,
         sender: input.sender,
@@ -655,11 +668,9 @@ export async function executeAgentMessageAction(
       };
       const sent = sendAgentMessage(db, {
         ...message,
-        recipient: input.recipient,
-        target_kind: input.target_kind,
-        intended_session: input.intended_session,
+        ...resolved,
       }, {
-        notifier: input.target_kind === 'session' ? undefined : optionalRouterNotifier(),
+        notifier: resolved.target_kind === 'session' ? undefined : optionalRouterNotifier(),
         storage_quota_bytes: configuredAgentMessageStorageQuotaBytes(),
       });
       if (sent.target_kind !== 'session') return publicSentMessage(sent);
