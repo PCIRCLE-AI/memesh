@@ -26,7 +26,7 @@ function acquireLock(path) {
       let stat, stale = false;
       try {
         stat = lstatSync(path);
-        if (!stat.isFile() || (stat.mode & 0o077) !== 0 || (typeof process.getuid === 'function' && stat.uid !== process.getuid())) return null;
+        if (!stat.isFile() || (process.platform !== 'win32' && (stat.mode & 0o077) !== 0) || (typeof process.getuid === 'function' && stat.uid !== process.getuid())) return null;
         const raw = readFileSync(path, 'utf8').trim();
         if (/^[1-9][0-9]*$/.test(raw) && Number.isSafeInteger(Number(raw)) && Number(raw) <= 2147483647) {
           try { process.kill(Number(raw), 0); } catch (err) { stale = err.code === 'ESRCH'; }

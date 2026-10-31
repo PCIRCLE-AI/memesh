@@ -58,7 +58,8 @@ describe('Codex PostToolUse message reminder', () => {
     await executeAgentMessageAction(getDatabase(), { action: 'send', project: 'room', sender: 'sender', recipient: `codex-thread-${session}`, intended_session: session, idempotency_key: 'automatic', payload: 'hello' }, { transport: 'mcp', sourceHost: 'test' });
     const result = spawnSync(process.execPath, [path.resolve('scripts/hooks/codex-busy-message-notice.js')], { input: JSON.stringify({ session_id: session, cwd: dir, hook_event_name: 'PostToolUse', tool_name: 'Bash' }), env: { ...process.env, HOME: dir, MEMESH_DB_PATH: dbPath, MEMESH_RECIPIENT: undefined, MEMESH_HOOK_HOST: 'codex', CODEX_THREAD_ID: session }, encoding: 'utf8' });
     expect(result.status, result.stderr).toBe(0);
-    expect(JSON.parse(result.stdout).hookSpecificOutput.additionalContext).toContain(`codex-thread-${session}`);
+    if (process.platform === 'win32') expect(result.stdout).toBe('');
+    else expect(JSON.parse(result.stdout).hookSpecificOutput.additionalContext).toContain(`codex-thread-${session}`);
   });
   it('does not starve a later message behind 500 already-notified unread messages', async () => {
     for (let i = 0; i < 500; i++) {
@@ -98,6 +99,16 @@ describe('Codex PostToolUse message reminder', () => {
     fs.utimesSync(lock, old, old);
     expect(JSON.parse(run().stdout).hookSpecificOutput.additionalContext).toContain('1 new message');
     expect(fs.existsSync(lock)).toBe(false);
+  });
+  it.runIf(process.platform !== 'win32')('refuses a lock readable by other users', async () => {
+    await send();
+    const lockDir = path.join(dir, 'codex-busy-message-notice');
+    fs.mkdirSync(lockDir, { mode: 0o700 });
+    const lock = path.join(lockDir, `${session}.json.lock`);
+    fs.writeFileSync(lock, '2147483647\n', { mode: 0o644 });
+    fs.chmodSync(lock, 0o644);
+    expect(run().stdout).toBe('');
+    expect(fs.existsSync(lock)).toBe(true);
   });
   it('does not suppress a Codex notice-only host acceptance', async () => {
     const message = await send();
