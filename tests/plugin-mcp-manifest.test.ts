@@ -186,7 +186,13 @@ describe('Codex and Claude plugin MCP manifests', () => {
     // Codex rejects `modules` in the default hook file. Its explicit hooks
     // replace default discovery, while Claude keeps the Mod and all commands.
     expect(Object.keys(codexPlugin.hooks ?? {})).toEqual(['hooks']);
-    expect(codexPlugin.hooks.hooks).toEqual(claudeHooks.hooks);
+    const codexHooks = structuredClone(codexPlugin.hooks.hooks);
+    const onlyCodex = codexHooks.PostToolUse.filter((entry: { hooks: Array<{ command: string }> }) =>
+      entry.hooks.some(hook => hook.command.endsWith('/codex-busy-message-notice.js')));
+    expect(onlyCodex).toHaveLength(1);
+    codexHooks.PostToolUse = codexHooks.PostToolUse.filter((entry: { hooks: Array<{ command: string }> }) =>
+      !entry.hooks.some(hook => hook.command.endsWith('/codex-busy-message-notice.js')));
+    expect(codexHooks).toEqual(claudeHooks.hooks);
     expect(claudeHooks.modules).toEqual(['./native-memory.js']);
   });
 

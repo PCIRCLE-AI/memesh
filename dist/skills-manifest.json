@@ -18,8 +18,8 @@
     },
     {
       "path": ".codex-plugin/plugin.json",
-      "sha256": "fffdde6cecd2df33c39a495753d975debfcae4f1b5582690d02b17e53e14901b",
-      "bytes": 3206
+      "sha256": "9105dfd888e5a013beba12cab4dda0530fa80bfad6471fc20997288d6fbb4581",
+      "bytes": 3470
     },
     {
       "path": "hooks/hooks.json",
@@ -43,8 +43,8 @@
     },
     {
       "path": "scripts/hooks/_generated/agent-message-inbox.js",
-      "sha256": "1728432c57d3a57581ac2105458e801d0a0095eb4991d18a1df8c1f446d341fd",
-      "bytes": 11121
+      "sha256": "a217d5939e352fc34146737bff9687a845ae0417bad36976ba97c69c44abf9ed",
+      "bytes": 11278
     },
     {
       "path": "scripts/hooks/_generated/agent-scope-id.js",
@@ -178,8 +178,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "683176f2d47d7bb2cc9001570f003833d4e436386ac6ea00bbe35bd90a57237c",
-      "bytes": 126054
+      "sha256": "60f8ad987041b1e27f4d75e0406def67758ebe19347e02fc55b22a3106de322e",
+      "bytes": 126097
     },
     {
       "path": "scripts/hooks/_stop-handoff.js",
@@ -195,6 +195,11 @@
       "path": "scripts/hooks/auto-update-runner.mjs",
       "sha256": "4be306189df3748f61d46ab32889e61f2ec3545c371165c76fc2abf67e017ada",
       "bytes": 9267
+    },
+    {
+      "path": "scripts/hooks/codex-busy-message-notice.js",
+      "sha256": "67ff0a1f8c06fd2078b77e287e0fd4f36fc186df9c90a4441921df3e2012ed23",
+      "bytes": 6284
     },
     {
       "path": "scripts/hooks/decision-nudge.js",

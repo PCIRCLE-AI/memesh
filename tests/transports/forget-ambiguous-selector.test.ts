@@ -28,6 +28,7 @@ let port: number;
 
 beforeAll(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-forget-ambiguous-'));
+  fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ updateCheck: false }), { mode: 0o600 });
   process.env.MEMESH_DIR = dir;
   dbPath = path.join(dir, 'test.db');
   openDatabase(dbPath);
