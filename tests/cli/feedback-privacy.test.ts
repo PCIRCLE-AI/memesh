@@ -52,6 +52,9 @@ function issueBody(stdout: string): string {
 
 beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-feedback-'));
+  const dataDir = path.join(home, '.memesh');
+  fs.mkdirSync(dataDir, { mode: 0o700 });
+  fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify({ updateCheck: false }), { mode: 0o600 });
   binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-fakebin-'));
 });
 afterEach(() => {
@@ -106,6 +109,7 @@ describe('CLI: feedback does not publish the account name', () => {
     // which typically carries an account or organisation name.
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-corpshare-'));
     try {
+      fs.writeFileSync(path.join(outside, 'config.json'), JSON.stringify({ updateCheck: false }), { mode: 0o600 });
       const r = runCli(['feedback', '--no-open'], { MEMESH_DIR: outside });
       expect(r.exitCode).toBe(0);
       const body = issueBody(r.stdout);
