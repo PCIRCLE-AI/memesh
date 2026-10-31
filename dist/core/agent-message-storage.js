@@ -18,7 +18,7 @@ export class AgentMessageStorageQuotaExceededError extends AgentMessageStorageEr
     usedBytes;
     requestedBytes;
     constructor(quotaBytes, usedBytes, requestedBytes) {
-        super('storage_quota_exceeded', 'Agent message storage quota exceeded.');
+        super('storage_quota_exceeded', 'Agent message storage quota exceeded. Review stored messages and the owner-configured quota before retrying.');
         this.name = 'AgentMessageStorageQuotaExceededError';
         this.quotaBytes = quotaBytes;
         this.usedBytes = usedBytes;

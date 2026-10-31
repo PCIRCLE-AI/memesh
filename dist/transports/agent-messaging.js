@@ -9,13 +9,13 @@ import { sqliteUtcToIso } from '../core/time-utils.js';
 export class AgentRecipientUnavailableError extends AgentMessagingError {
     code = 'recipient_unavailable';
     constructor(detail) {
-        super(`recipient_unavailable: the exact active session did not accept the native message.${detail ? ` ${detail}` : ''}`);
+        super(`recipient_unavailable: Could not confirm the session accepted the notification. It may have already arrived, or the session stopped, disconnected, refused it, or its queue is full. The durable message is preserved in the inbox. Try fallback_to_principal to store it in the shared inbox.${detail ? ` ${detail}` : ''}`);
     }
 }
 export class AgentRouterUnavailableError extends AgentMessagingError {
     code = 'router_unreachable';
     constructor() {
-        super('router_unreachable: the sender could not reach the local agent router; the durable message is preserved.');
+        super('router_unreachable: the sender could not reach the local agent router; the durable message is preserved. Start the router and retry.');
     }
 }
 export class AgentDiscoveryUnavailableError extends AgentMessagingError {
@@ -62,6 +62,15 @@ function nativeAcceptance(row) {
         receipt: parseStoredObject(row.receipt_json, 'agent_host_accepts.receipt_json'),
         accepted_at: sqliteUtcToIso(row.created_at),
     };
+}
+function publicSentMessage(sent, adapter) {
+    const { reused, ...message } = sent;
+    const delivery_note = reused
+        ? 'Reused the previous message_id; no new message was created. An unconfirmed notification may be sent again.'
+        : adapter
+            ? `${adapter} accepted the notification. This does not mean the model has read or accepted it.`
+            : `Stored in ${sent.recipient}'s inbox. This does not mean the recipient has read or accepted it.`;
+    return { ...message, delivery_note };
 }
 async function requireExactSessionNativeAcceptance(db, sent, dependencies) {
     const existing = readHostAccept(db, sent.delivery_id);
@@ -384,7 +393,7 @@ function sendPrincipalFallback(db, message, refused) {
     LIMIT 1
   `).get(refused.project, session.principal_id, ...ids, Date.now()) !== undefined;
     return {
-        ...fallback,
+        ...publicSentMessage(fallback),
         fallback: {
             reason: 'recipient_unavailable',
             intended_session_connected: connected,
@@ -432,15 +441,13 @@ export async function executeAgentMessageAction(db, rawInput, context, dependenc
                 storage_quota_bytes: configuredAgentMessageStorageQuotaBytes(),
             });
             if (sent.target_kind !== 'session')
-                return sent;
+                return publicSentMessage(sent);
             if (hasPrincipalFallback(db, sent, input.idempotency_key)) {
                 return sendPrincipalFallback(db, message, sent);
             }
             try {
-                return {
-                    ...sent,
-                    native_delivery: await requireExactSessionNativeAcceptance(db, sent, dependencies),
-                };
+                const native_delivery = await requireExactSessionNativeAcceptance(db, sent, dependencies);
+                return { ...publicSentMessage(sent, String(native_delivery.adapter_kind)), native_delivery };
             }
             catch (error) {
                 if (input.fallback_to_principal !== true || !(error instanceof AgentRecipientUnavailableError))
