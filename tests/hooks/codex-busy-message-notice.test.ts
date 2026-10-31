@@ -94,7 +94,7 @@ describe('Codex PostToolUse message reminder', () => {
     expect(JSON.parse(run().stdout).hookSpecificOutput.additionalContext).toContain('1 new message');
     expect(fs.existsSync(lock)).toBe(false);
     await send();
-    fs.writeFileSync(lock, '', { mode: 0o600 });
+    fs.writeFileSync(lock, '', { mode: 0o600, flag: 'wx' });
     const old = new Date(Date.now() - 60_000);
     fs.utimesSync(lock, old, old);
     expect(JSON.parse(run().stdout).hookSpecificOutput.additionalContext).toContain('1 new message');
@@ -109,6 +109,18 @@ describe('Codex PostToolUse message reminder', () => {
     fs.chmodSync(lock, 0o644);
     expect(run().stdout).toBe('');
     expect(fs.existsSync(lock)).toBe(true);
+  });
+  it.runIf(process.platform !== 'win32')('does not follow a lock symlink or alter its target', async () => {
+    await send();
+    const lockDir = path.join(dir, 'codex-busy-message-notice');
+    fs.mkdirSync(lockDir, { mode: 0o700 });
+    const target = path.join(dir, 'target');
+    fs.writeFileSync(target, '2147483647\n', { mode: 0o600, flag: 'wx' });
+    const lock = path.join(lockDir, `${session}.json.lock`);
+    fs.symlinkSync(target, lock);
+    expect(run().stdout).toBe('');
+    expect(fs.lstatSync(lock).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(target, 'utf8')).toBe('2147483647\n');
   });
   it('does not suppress a Codex notice-only host acceptance', async () => {
     const message = await send();
