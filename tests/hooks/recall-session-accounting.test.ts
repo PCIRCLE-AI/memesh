@@ -361,6 +361,30 @@ describe('session citation-or-fetch accounting persists through actual Stop hook
     expect.soft(meta('citation_sessions_cited')).toBe('2');
   });
 
+  it('an expired session resumed directly starts a new window without another session cleaning it first', () => {
+    const filename = inject('direct-expired-resume');
+    const initial = JSON.parse(fs.readFileSync(filename, 'utf8'));
+    const oldRow = { ...assistant(`[mem:${ids[0]}]`), timestamp: initial.injectedAt };
+    stop('direct-expired-resume', [oldRow], 0);
+    expect(hits(ids[0])).toBe(1);
+    const stale = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    fs.utimesSync(filename, stale, stale);
+    hook('session-start.js', { session_id: 'direct-expired-resume', hook_event_name: 'SessionStart', source: 'resume' });
+    const resumed = JSON.parse(fs.readFileSync(filename, 'utf8'));
+    expect.soft(Date.parse(resumed.injectedAt), 'direct resume must expire the previous injection window').toBeGreaterThan(Date.parse(initial.injectedAt));
+    expect.soft(resumed.creditedIds).toEqual([]);
+    expect.soft(resumed.sessionCounted).toBe(false);
+    stop('direct-expired-resume', [oldRow], 0);
+    expect.soft(hits(ids[0]), 'old transcript rows must not be replayed').toBe(1);
+    expect.soft(meta('citation_sessions_total')).toBe('1');
+    expect.soft(meta('citation_sessions_cited')).toBe('1');
+    const newRow = { ...tool(`[mem-fetched:${ids[0]}]`), timestamp: new Date().toISOString() };
+    stop('direct-expired-resume', [oldRow, newRow], 0);
+    expect.soft(hits(ids[0]), 'a new fetch may earn credit in the new window').toBe(2);
+    expect.soft(meta('citation_sessions_total')).toBe('2');
+    expect.soft(meta('citation_sessions_cited')).toBe('2');
+  });
+
   it('R4 persists at most the audit marker prefix rather than complete injected memory text', () => {
     const memory = 'PRIVATE-TEST-MEMORY-' + 'detail '.repeat(8) + '-END';
     const db = new Database(dbPath);

@@ -4,7 +4,7 @@ import { createRequire } from 'module';
 import { spawn } from 'child_process';
 import { join, isAbsolute } from 'path';
 import { pathToFileURL } from 'url';
-import { existsSync, readFileSync, unlinkSync, mkdirSync, accessSync, statSync, constants as fsConstants } from 'fs';
+import { existsSync, readFileSync, unlinkSync, mkdirSync, accessSync, statSync, openSync, fstatSync, closeSync, constants as fsConstants } from 'fs';
 import { channelFlagWarningFor, resolveClaudeLauncher } from './_claude-channel.js';
 import {
   buildReferenceContext,
@@ -84,6 +84,7 @@ import { readIndexCandidates, readSnippets, selectBriefingPools, toTopologyEntit
 import { taskStateUnreadableMessage } from './_generated/task-state.js';
 
 const require = createRequire(import.meta.url);
+const SESSION_RECORD_TTL_MS = 24 * 60 * 60 * 1000;
 
 // dist/core/install-channel.js is emitted as ESM (the project's tsconfig
 // produces NodeNext modules). On Node 20.x `require()` against an ESM file
@@ -1578,9 +1579,17 @@ process.stdin.on('end', async () => {
           const sessionPath = recallSessionPath(sessionsDir, sessionId, projectName);
           if (sessionPath) {
             let prior = null;
-            if (existsSync(sessionPath)) {
-              const candidate = JSON.parse(readFileSync(sessionPath, 'utf8'));
-              if (candidate.sessionId === sessionId && candidate.project === projectName) prior = candidate;
+            let priorFd;
+            try {
+              priorFd = openSync(sessionPath, 'r');
+              if (Date.now() - fstatSync(priorFd).mtimeMs <= SESSION_RECORD_TTL_MS) {
+                const candidate = JSON.parse(readFileSync(priorFd, 'utf8'));
+                if (candidate.sessionId === sessionId && candidate.project === projectName) prior = candidate;
+              }
+            } catch (err) {
+              if (err?.code !== 'ENOENT') throw err;
+            } finally {
+              if (priorFd !== undefined) closeSync(priorFd);
             }
             const injectedById = new Map((prior?.entityIds || []).map((id, i) => [id, prior.entityNames?.[i] ?? String(id)]));
             for (const entity of allInjected) injectedById.set(entity.id, entity.name);
@@ -1607,7 +1616,7 @@ process.stdin.on('end', async () => {
               if (!file.endsWith('.json')) continue;
               const filePath = join(sessionsDir, file);
               const stats = require('fs').statSync(filePath);
-              if (now - stats.mtimeMs > 24 * 60 * 60 * 1000) {
+              if (now - stats.mtimeMs > SESSION_RECORD_TTL_MS) {
                 require('fs').unlinkSync(filePath);
               }
             }

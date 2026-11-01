@@ -20,6 +20,7 @@ import {
   shownEntity,
 } from '../../core/operations.js';
 import { KnowledgeGraph } from '../../knowledge-graph.js';
+import { MEMORY_DATA_NOTICE } from '../../core/work-topology.js';
 import {
   readConfig,
   updateConfig,
@@ -752,7 +753,7 @@ app.post('/v1/recall', (req, res) => handlePost(RecallBody, req, res, async (dat
   // Always return object envelope {entities, retrieval, conflicts?} to match
   // API_REFERENCE.md and MCP transport's documented guarantee (issue #159);
   // `retrieval` reports mode / degraded / truncated in-band.
-  return { entities, retrieval, ...('results' in result ? { results: result.results } : {}), ...(conflicts.length > 0 ? { conflicts } : {}) };
+  return { data_notice: MEMORY_DATA_NOTICE, entities, retrieval, ...('results' in result ? { results: result.results } : {}), ...(conflicts.length > 0 ? { conflicts } : {}) };
 }));
 
 // --- Forget / Consolidate / Export / Import / Learn / Verify ---

@@ -173,8 +173,8 @@
     },
     {
       "path": "scripts/hooks/_generated/work-topology.js",
-      "sha256": "e41d18bef616bdb5ca8934697573f0103555c40dd6e3c811167f45207706c2ff",
-      "bytes": 13859
+      "sha256": "63086e62cca3e491dc9770565a46c9598d2518c8ef89c80e35226cc07d44e913",
+      "bytes": 13903
     },
     {
       "path": "scripts/hooks/_shared.js",
@@ -233,8 +233,8 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "8bb3cd1ead8d53742c9aeedf03c73b08a5ab111aa3649f7341179f9472bfe712",
-      "bytes": 98307
+      "sha256": "d39c7a9f82d54b0f22bc0c9997fc04e945ef073d7a165f5d5b6ee80198b8676b",
+      "bytes": 98712
     },
     {
       "path": "scripts/hooks/session-summary.js",

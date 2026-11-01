@@ -21,6 +21,7 @@ export interface RecallScope {
     searched: string;
 }
 export interface RecallForAgentResult {
+    data_notice: string;
     results?: Array<{
         id: number;
         status: 'found' | 'archived' | 'unavailable' | 'omitted';
@@ -56,6 +57,7 @@ export declare function agentRecallEnvelope(r: RecallForAgentResult): {
         status: "found" | "archived" | "unavailable" | "omitted";
         reference?: string;
     }[] | undefined;
+    data_notice: string;
     entities: AgentRecallEntity[];
 };
 //# sourceMappingURL=recall-agent-view.d.ts.map

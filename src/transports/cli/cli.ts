@@ -605,6 +605,8 @@ program
       });
       const { entities, conflicts, retrieval, entities_omitted } = result;
 
+      if (!opts.json) console.log(result.data_notice.replace('\n', ' '));
+
       if (opts.json) {
         // One envelope shape, always — the old output was a bare array
         // normally and an object when conflicts existed, so every consumer
@@ -621,6 +623,10 @@ program
           if (entity) {
             console.log(JSON.stringify(entity, null, 2));
           }
+        }
+        if (conflicts.length > 0) {
+          console.log('\nWarning: Conflicts detected:');
+          for (const conflict of conflicts) console.log(`  ${conflict}`);
         }
       } else if (entities.length === 0) {
         // Every match can be too large to show (a huge metadata blob): say

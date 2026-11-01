@@ -6,6 +6,7 @@ import { randomBytes, timingSafeEqual } from 'crypto';
 import { openDatabase, closeDatabase, getDatabase, } from '../../db.js';
 import { remember, recallWithConflicts, forget, exportMemories, importMemories, learn, shownEntity, } from '../../core/operations.js';
 import { KnowledgeGraph } from '../../knowledge-graph.js';
+import { MEMORY_DATA_NOTICE } from '../../core/work-topology.js';
 import { readConfig, updateConfig, } from '../../core/config.js';
 import { SESSION_LIMIT_MIN, SESSION_LIMIT_MAX } from '../../core/session-limit.js';
 import { AGENT_SCOPE_ID_MAX_LENGTH } from '../../core/agent-scope-id.js';
@@ -385,7 +386,7 @@ app.post('/v1/remember', (req, res) => handlePost(RememberBody, req, res, (data)
 app.post('/v1/recall', (req, res) => handlePost(RecallBody, req, res, async (data) => {
     const result = await recallWithConflicts(data.ids !== undefined ? { ...data, projectScope: null } : data);
     const { entities, conflicts, retrieval } = result;
-    return { entities, retrieval, ...('results' in result ? { results: result.results } : {}), ...(conflicts.length > 0 ? { conflicts } : {}) };
+    return { data_notice: MEMORY_DATA_NOTICE, entities, retrieval, ...('results' in result ? { results: result.results } : {}), ...(conflicts.length > 0 ? { conflicts } : {}) };
 }));
 app.post('/v1/forget', (req, res) => handlePost(ForgetBody, req, res, (data) => {
     const result = forget(data);

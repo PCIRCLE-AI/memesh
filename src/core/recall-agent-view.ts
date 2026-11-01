@@ -19,6 +19,7 @@
 
 import type { Entity } from './types.js';
 import type { RetrievalMeta } from './operations.js';
+import { MEMORY_DATA_NOTICE } from './work-topology.js';
 
 /** Per-entity budget: observations + tags, as UTF-8 bytes of their
  *  JSON-serialized form — the bytes the wire payload actually carries. */
@@ -49,6 +50,7 @@ export interface RecallScope {
 }
 
 export interface RecallForAgentResult {
+  data_notice: string;
   results?: Array<{ id: number; status: 'found' | 'archived' | 'unavailable' | 'omitted'; reference?: string }>;
   entities: AgentRecallEntity[];
   /** Always present, possibly empty — same contract `recallWithConflicts`
@@ -216,6 +218,7 @@ export function capRecallForAgent(result: {
       retrieval: result.retrieval,
       scope,
       results,
+      data_notice: MEMORY_DATA_NOTICE,
     }));
     if (candidateBytes <= responseBudget) {
       shownCount = count;
@@ -228,6 +231,7 @@ export function capRecallForAgent(result: {
   const anyContentTruncated = shownEntities.some((e) => e.truncated !== undefined);
 
   const envelope: RecallForAgentResult = {
+    data_notice: MEMORY_DATA_NOTICE,
     entities: shownEntities,
     conflicts: result.conflicts,
     retrieval: result.retrieval,
@@ -246,6 +250,7 @@ export function capRecallForAgent(result: {
  *  optional ones present only when set. */
 export function agentRecallEnvelope(r: RecallForAgentResult) {
   return {
+    data_notice: r.data_notice,
     entities: r.entities,
     ...(r.results ? { results: r.results } : {}),
     retrieval: r.retrieval,
