@@ -119,10 +119,23 @@ describe('session citation-or-fetch accounting persists through actual Stop hook
     fs.writeFileSync(filename, '{}', { mode: 0o200 });
     fs.chmodSync(filename, 0o200);
     writePrivateJsonAtomic(filename, { sessionId: 'write-only-session' });
-    expect(fs.statSync(filename).mode & 0o777).toBe(0o200);
-    // Restore only our disposable file's readability to inspect the write.
-    fs.chmodSync(filename, 0o600);
-    expect(JSON.parse(fs.readFileSync(filename, 'utf8'))).toEqual({ sessionId: 'write-only-session' });
+    const writeFd = fs.openSync(filename, fs.constants.O_WRONLY);
+    try {
+      const written = fs.fstatSync(writeFd);
+      expect(written.mode & 0o777).toBe(0o200);
+      // Restore only this held disposable inode's readability.
+      fs.fchmodSync(writeFd, 0o600);
+      const readFd = fs.openSync(filename, fs.constants.O_RDONLY);
+      try {
+        const readable = fs.fstatSync(readFd);
+        expect([readable.dev, readable.ino]).toEqual([written.dev, written.ino]);
+        expect(JSON.parse(fs.readFileSync(readFd, 'utf8'))).toEqual({ sessionId: 'write-only-session' });
+      } finally {
+        fs.closeSync(readFd);
+      }
+    } finally {
+      fs.closeSync(writeFd);
+    }
   });
 
   function nativeVariant(host: 'claude' | 'codex', kind: 'assistant' | 'tool' | 'function', text: string): object {
