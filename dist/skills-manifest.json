@@ -78,8 +78,8 @@
     },
     {
       "path": "scripts/hooks/_generated/capture-liveness.js",
-      "sha256": "662711304911182db2a66d32bb2804729a4b243023667cf60201feba2309115e",
-      "bytes": 22220
+      "sha256": "2f7facc9ac595cfa64c5eb69c7f794fa616c53bdda907e7bd9f3d7ff5defe7ce",
+      "bytes": 22564
     },
     {
       "path": "scripts/hooks/_generated/citation-rule.js",
@@ -173,13 +173,13 @@
     },
     {
       "path": "scripts/hooks/_generated/work-topology.js",
-      "sha256": "e41d18bef616bdb5ca8934697573f0103555c40dd6e3c811167f45207706c2ff",
-      "bytes": 13859
+      "sha256": "63086e62cca3e491dc9770565a46c9598d2518c8ef89c80e35226cc07d44e913",
+      "bytes": 13903
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "60f8ad987041b1e27f4d75e0406def67758ebe19347e02fc55b22a3106de322e",
-      "bytes": 126097
+      "sha256": "a9efd05e201f6224a2496d8e2cd582a11186cca0250c4564ba1290385d28efcc",
+      "bytes": 127314
     },
     {
       "path": "scripts/hooks/_stop-handoff.js",
@@ -233,13 +233,13 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "28dd063d0157fb2d76a91b0d1b5f582f49e27509eb05a1ed4caf722847c8b06b",
-      "bytes": 97249
+      "sha256": "d39c7a9f82d54b0f22bc0c9997fc04e945ef073d7a165f5d5b6ee80198b8676b",
+      "bytes": 98712
     },
     {
       "path": "scripts/hooks/session-summary.js",
-      "sha256": "4eb7a8b633cb27470f0e1e2f762eb2c0efe5e9a3300b6e52d3001d7b376a7600",
-      "bytes": 43851
+      "sha256": "f6d732db386c2a00c89be94d3fa71da7829f5d36f426d841daba40341f3d64c4",
+      "bytes": 38742
     },
     {
       "path": "scripts/hooks/stop-message-gate.js",
@@ -258,8 +258,8 @@
     },
     {
       "path": "skills/memesh/SKILL.md",
-      "sha256": "58c3571d6b6f15e9ebd38427545b93d7bd3e8b63a8db36596c965c4ec55dad49",
-      "bytes": 28717
+      "sha256": "8d60c505f19871be48db1d7e48881f102c35afdfc447cf76f1f073740b7566f2",
+      "bytes": 29878
     }
   ]
 }

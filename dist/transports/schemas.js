@@ -137,6 +137,7 @@ export const PaneMemoryEditorSchema = z.object({
     ]),
 }).strict();
 const recallShape = {
+    ids: z.array(z.number().int().positive()).min(1).max(20).optional(),
     query: z.string().max(1000).optional(),
     tag: z.string().max(255).optional(),
     limit: z.number().int().min(1).max(100).optional(),
@@ -144,8 +145,13 @@ const recallShape = {
     namespace: z.enum(NAMESPACES).optional(),
     cross_project: z.boolean().optional(),
 };
-export const RecallSchema = z.object(recallShape).strict();
-export const McpRecallSchema = z.object({ ...recallShape, project: mcpProjectField }).strict();
+const recallSelector = (value, ctx) => {
+    if (value.ids !== undefined && (value.query !== undefined || value.tag !== undefined || value.cross_project !== undefined)) {
+        ctx.addIssue({ code: 'custom', message: 'ids cannot be combined with query, tag or cross_project' });
+    }
+};
+export const RecallSchema = z.object(recallShape).strict().superRefine(recallSelector);
+export const McpRecallSchema = z.object({ ...recallShape, project: mcpProjectField }).strict().superRefine(recallSelector);
 export const ForgetSchema = z.object({
     name: nameField,
     observation: z.string().min(1).max(10000).optional(),

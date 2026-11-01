@@ -28,7 +28,7 @@ import { MemeshDatabase as Database } from '../../src/storage/sqlite.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
 
 const require = createRequire(import.meta.url);
-const { getProjectName: mirrorProjectName } = require('../../scripts/hooks/_shared.js');
+const { getProjectName: mirrorProjectName, recallSessionPath } = require('../../scripts/hooks/_shared.js');
 
 describe('the compliance numerator counts what the denominator counts', () => {
   let testDir: string;
@@ -47,7 +47,7 @@ describe('the compliance numerator counts what the denominator counts', () => {
   });
 
   function writeTranscript(entries: object[]): void {
-    fs.writeFileSync(transcriptPath, entries.map((e) => JSON.stringify(e)).join('\n'));
+    fs.writeFileSync(transcriptPath, entries.map((e) => JSON.stringify({ timestamp: new Date().toISOString(), ...e })).join('\n'));
   }
 
   function runHook(sessionId: string): void {
@@ -96,7 +96,8 @@ describe('the compliance numerator counts what the denominator counts', () => {
 
     const sessionsDir = path.join(path.dirname(dbPath), 'sessions');
     fs.mkdirSync(sessionsDir, { recursive: true });
-    fs.writeFileSync(path.join(sessionsDir, 'cite-1.json'), JSON.stringify({
+    fs.writeFileSync(recallSessionPath(sessionsDir, 'cite-session', mirrorProjectName(cwd)), JSON.stringify({
+      sessionId: 'cite-session',
       injectedAt: new Date().toISOString(),
       project: mirrorProjectName(cwd),
       entityIds: [id],

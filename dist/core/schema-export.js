@@ -53,10 +53,11 @@ export function exportOpenAITools() {
             type: 'function',
             function: {
                 name: 'memesh_recall',
-                description: 'Search and retrieve stored knowledge. Uses full-text search with scoring.',
+                description: 'Search stored knowledge, or retrieve up to 20 exact memory IDs. IDs cannot be combined with query, tag or cross_project. Found memories count toward ranking like citations; omitted results exceed the response budget. Retry individually; an item still omitted on its own cannot fit the response limit.',
                 parameters: {
                     type: 'object',
                     properties: {
+                        ids: { type: 'array', items: { type: 'integer', minimum: 1 }, minItems: 1, maxItems: 20, description: 'Exact memory IDs. Not with query, tag or cross_project; namespace and include_archived still apply.' },
                         query: { type: 'string', description: 'Search query' },
                         tag: { type: 'string', description: 'Filter by tag' },
                         limit: { type: 'number', description: 'Max results (1-100, default: 20)' },

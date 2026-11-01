@@ -20,6 +20,7 @@ import {
   shownEntity,
 } from '../../core/operations.js';
 import { KnowledgeGraph } from '../../knowledge-graph.js';
+import { MEMORY_DATA_NOTICE } from '../../core/work-topology.js';
 import {
   readConfig,
   updateConfig,
@@ -747,11 +748,12 @@ app.post('/v1/remember', (req, res) => handlePost(RememberBody, req, res, (data)
 app.post('/v1/recall', (req, res) => handlePost(RecallBody, req, res, async (data) => {
   // FTS5 recall and conflict annotation are owned by core so transports
   // cannot drift on the wrapping rule.
-  const { entities, conflicts, retrieval } = await recallWithConflicts(data);
+  const result = await recallWithConflicts(data.ids !== undefined ? { ...data, projectScope: null } : data);
+  const { entities, conflicts, retrieval } = result;
   // Always return object envelope {entities, retrieval, conflicts?} to match
   // API_REFERENCE.md and MCP transport's documented guarantee (issue #159);
   // `retrieval` reports mode / degraded / truncated in-band.
-  return conflicts.length > 0 ? { entities, retrieval, conflicts } : { entities, retrieval };
+  return { data_notice: MEMORY_DATA_NOTICE, entities, retrieval, ...('results' in result ? { results: result.results } : {}), ...(conflicts.length > 0 ? { conflicts } : {}) };
 }));
 
 // --- Forget / Consolidate / Export / Import / Learn / Verify ---

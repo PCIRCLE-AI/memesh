@@ -82,7 +82,7 @@ Các bản dựng từ mã nguồn chưa phát hành bổ sung `/memesh-memories
 | Công cụ | Chức năng |
 |---------|-----------|
 | `remember` | Lưu bộ nhớ; quyết định cần có lý do. |
-| `recall` | Tìm bộ nhớ. |
+| `recall` | Tìm thông tin đã lưu bằng từ khóa hoặc ID. |
 | `forget` | Đưa bộ nhớ vào trạng thái lưu trữ hoặc xóa một ghi nhận trong đó. |
 | `learn` | Lưu sai sót, nguyên nhân và cách tránh lặp lại. |
 | `briefing` | Đọc ngữ cảnh bộ nhớ hiện tại của dự án. |

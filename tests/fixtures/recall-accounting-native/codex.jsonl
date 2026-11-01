@@ -1,0 +1,3 @@
+{"type": "response_item", "payload": {"type": "custom_tool_call_output", "id": "RECORD_1", "call_id": "CALL_1", "output": [{"type": "input_text", "text": "__TEXT__"}, {"type": "input_text", "text": "__TEXT__"}]}, "timestamp": "2026-11-01T09:51:34.569Z"}
+{"type": "response_item", "payload": {"type": "message", "id": "RECORD_3", "role": "assistant", "content": [{"type": "output_text", "text": "__TEXT__"}]}, "timestamp": "2026-11-01T09:51:35.492Z"}
+{"type": "response_item", "payload": {"type": "function_call_output", "id": "RECORD_2", "call_id": "CALL_2", "output": [{"type": "input_text", "text": "__TEXT__"}, {"type": "input_text", "text": "__TEXT__"}]}, "timestamp": "2026-11-01T10:28:01.394Z"}

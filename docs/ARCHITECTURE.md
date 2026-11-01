@@ -16,6 +16,11 @@ The 12 MCP tools are `work_package`, `remember`, `recall`, `forget`, `export`,
 `import`, `learn`, `task_state`, `briefing`, `user_patterns`, `improvement`, and
 `message`. See the [API reference](api/API_REFERENCE.md) for their contracts.
 
+`recall` accepts words or exact memory IDs. ID lookups retain project and
+namespace boundaries and distinguish returned, archived, unavailable and
+size-omitted memories. Session usage credits assistant citations or returned
+ID-fetch markers once per injected memory, across turns and resumes.
+
 Messages are stored locally for recovery. Native notifications require an
 eligible running host; acceptance does not mean the agent read or completed
 the task. Briefing and hooks show only the addressed recipient's pending
@@ -174,7 +179,7 @@ src/
 
 **file-mode.ts** — The one permission rule for MeMesh's own files and folders (#520): remove group/other access and never change the owner's bits, so a database or folder the owner made read-only stays read-only. `removeGroupAndOtherAccess()` warns on stderr when a change cannot be applied, once per file or folder per process: with the `chmod go-rwx` command for the owner's own file or folder, and, for one that belongs to another user (where that command is not the owner's to run), with the advice to point `MEMESH_DB_PATH` at a database the owner owns, in a folder the owner owns; `requirePrivateWritableDirectory()` is the stricter form for the router and the Codex session companion, which must write their sockets and state into the data folder: it stops with the reason instead of adding the owner's write bit. `refuseMismatchedSidecars()` stops an open, before SQLite touches anything, when a `-wal` or `-shm` has fewer owner permissions than the database file, or is empty and has more, and names the files and the `chmod` commands: SQLite resets an empty sidecar to the database's mode when it opens it and opens a non-empty read-only one read-only (leaving the database silently read-only), and MeMesh never changes an owner bit itself. `ownerWriteCommand()` is the `chmod u+w` line printed when a database opens read-only because its owner removed write access, or, when one of those files belongs to another user, the advice to point `MEMESH_DB_PATH` at a database the owner owns, in a folder the owner owns. `guardDatabaseFiles()` is both steps for the database (resolving a symlinked database path first, since SQLite keeps the `-wal`/`-shm` beside the real file) and runs before every open: `openDatabase()`, and in the hooks `openMemeshDb()` in `_shared.js`, the only place a hook may construct a `MemeshDatabase` on the memesh database (read-only handles included, because SQLite resets an empty sidecar's mode on any open; `tests/hooks/data-folder-permissions.test.ts` fails on any other construction). It is a runtime leaf, copied to `scripts/hooks/_generated/file-mode.js`, so the hooks' `ensurePrivateDir`, `openMemeshDb` and the audit scripts that read the database (`memory-invariants.mjs`, `measure-signals.mjs`, `measure-work-topology-baseline.mjs`) apply the same rule.
 
-**scoring.ts** — Multi-factor scoring engine. `scoreEntity()` combines five signals from `DEFAULT_WEIGHTS`: search relevance (0.30), recency via exponential decay (0.25), access frequency via log normalization (0.18), confidence (0.17), and recall-effectiveness impact via Laplace smoothing (0.10). `rankEntities()` sorts any entity list by score descending. Applied in all recall paths (`recall()` and `recallEnhanced()`).
+**scoring.ts** — Multi-factor scoring engine. `scoreEntity()` combines five signals from `DEFAULT_WEIGHTS`: search relevance (0.30), recency via exponential decay (0.25), access frequency via log normalization (0.18), confidence (0.17), and recall-effectiveness impact via Laplace smoothing (0.10). `rankEntities()` sorts any entity list by score descending. Applied to word-search and recent-list recall (`recall()` and `recallEnhanced()`); exact ID lookup preserves the requested order.
 
 The session-start hook and `briefing` rank through the same selection, `src/core/briefing-pools.ts`, which uses `rankEntities` with no search term (relevance is a constant there). The hook loads its generated copy `scripts/hooks/_generated/briefing-pools.js` (a runtime leaf, like the other `_generated` modules), so it needs no `dist/`. Recall hits and misses are observed use signals for that ranking, not proof that a memory is correct.
 
@@ -345,6 +350,28 @@ The size cap exists only on the MCP tool and CLI paths — the answer goes
 straight into an agent's context on those two. `POST /v1/recall` stays uncapped; see `### recall` in
 [API_REFERENCE.md](api/API_REFERENCE.md#recall) for the full shape.
 
+ID lookup uses the same core operation with `ids`, bypassing FTS and ranking.
+`KnowledgeGraph.getEntitiesByIds()` applies project scope and namespace before
+status or content is exposed. The `results` list preserves each requested ID's
+status; returned content stays in `entities`. MCP and CLI apply the existing
+size cap, marking dropped IDs `omitted` without a fetch reference; HTTP keeps
+its uncapped view and unbound scope (only unprojected/global memories).
+Access is recorded for returned `found` entities only.
+
+For recall-use accounting, SessionStart persists the payload's session identity
+under a hashed filename. Resume merges injected IDs with existing credited IDs
+and session-count flags using atomic private JSON writes. Stop matches the
+record's exact session and project, credits only assistant-text citations or
+tool-result fetch markers for injected IDs, and retains and refreshes the record
+for later turns. Resume keeps the earliest injection timestamp; only native
+transcript rows at or after it are eligible. Missing row timestamps do not
+earn credit. The 24-hour stale-record cleanup remains in place: reinjection
+after expiry starts a new counting window and never replays old rows. Records
+keep at most a 120-character context prefix for the existing audit, rather than
+the full memory block. Missing session identity leaves memory injection
+available without inventing a shared tracking identity; missing identities or
+records leave explicit skipped hook outcomes.
+
 ### Prepare agent-assisted memory (`work_package`)
 
 ```
@@ -475,7 +502,7 @@ Hook commands are defined in `hooks/hooks.json`: nine run at Claude Code lifecyc
 
 - **Trigger**: `Stop` event (when Claude finishes responding)
 - **Matcher**: `*` (all sessions)
-- **Behavior**: Extracts session knowledge (files edited, errors fixed, decisions made) with deterministic rules and stores it as entities in the knowledge graph. It reads the newest exact-project injection record under the database directory's `sessions/` folder, strips hook-output echoes, and increments `recall_hits` only for explicit `[mem:id]` citations that match entities injected into that session. `recall_misses` stays unchanged because absence of a citation is not proof that the memory was unused. Opt-out via `MEMESH_AUTO_CAPTURE=false`
+- **Behavior**: Extracts session knowledge (files edited, errors fixed, decisions made) with deterministic rules and stores it as entities in the knowledge graph. Recall-use accounting selects the exact session and project injection record under the database directory's `sessions/` folder. It credits timestamp-eligible assistant `[mem:id]` citations or tool-result `[mem-fetched:id]` retrievals for injected IDs once during the active counting window. Resumes retain prior credit; expiry after 24 hours of inactivity allows a new window without replaying old transcript rows. `recall_misses` stays unchanged because absence of a marker is not proof that the memory was unused. Opt-out via `MEMESH_AUTO_CAPTURE=false`
 - **On the same Stop (#324)**, `scripts/hooks/_stop-notes.js` also ingests the project's memory directory as note files and, separately, prints a remember nudge. Only the ingestion is a write, and only it is gated on `MEMESH_AUTO_CAPTURE=false`; the nudge sits outside that check.
 - **Also on the same Stop**, `scripts/hooks/_stop-handoff.js` keeps the agent's own last message as the project's session handoff: one `session-handoff:<project>` entity, replaced on each qualifying Stop, redacted for known credential shapes, fenced code removed, at most 800 characters including a leading `…` (the end of the message is kept). It uses the payload's `last_assistant_message` and falls back to the newest assistant text in the last 256 KB of the transcript; the source is written into the `handoff-capture` outcome. A message under 80 characters after cleaning leaves the previous handoff in place. It costs no extra model turn and is gated on `MEMESH_AUTO_CAPTURE`. An active, trusted, exact-project handoff precedes ranked memories in SessionStart and core `briefing` at every level, after optional repository facts, using only its newest observation; the shared renderer caps even manually stored text at 800 characters. Content up to 72 hours old is shown normally, over 72 hours through 14 days is marked stale, and older, undatable, or more than five minutes future-dated content is omitted. Imported content remains outside auto-context unless a successful fresh local Stop replacement removes its import trust marks; archived or skipped replacements leave those marks untouched. The handoff stays outside the ranked block, recent and project pools, durable index, pre-edit recall, `memesh doctor`'s per-type trend, project list and patterns view (`recall` can still find it).
 

@@ -218,6 +218,7 @@ export interface RememberInput {
 }
 
 export interface RecallInput {
+  ids?: number[];
   query?: string;
   tag?: string;
   limit?: number;

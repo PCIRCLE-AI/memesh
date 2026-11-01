@@ -80,6 +80,7 @@ export function buildIsolatedSuiteEnv(baseEnv, { runtimeHome }) {
   // session the claude channel host registers as follow these. A suite
   // launched from inside a Claude Code or Codex session must behave as it
   // does in CI, where they are unset.
+  delete isolatedEnv.CLAUDECODE;
   delete isolatedEnv.CLAUDE_CODE_SESSION_ID;
   delete isolatedEnv.CODEX_THREAD_ID;
   delete isolatedEnv.CODEX_SESSION_ID;

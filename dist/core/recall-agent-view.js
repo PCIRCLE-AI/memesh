@@ -1,3 +1,4 @@
+import { MEMORY_DATA_NOTICE } from './work-topology.js';
 export const RECALL_ENTITY_CONTENT_MAX_BYTES = 8 * 1024;
 export const RECALL_RESPONSE_MAX_BYTES = 32 * 1024;
 const RESPONSE_METADATA_RESERVE_BYTES = 128;
@@ -88,11 +89,15 @@ export function capRecallForAgent(result, scope) {
     const responseBudget = RECALL_RESPONSE_MAX_BYTES - RESPONSE_METADATA_RESERVE_BYTES;
     let shownCount = 0;
     for (let count = totalEntities; count >= 0; count--) {
+        const shown = new Set(cappedEntities.slice(0, count).map(e => e.id));
+        const results = result.results?.map(r => r.status === 'found' && !shown.has(r.id) ? { id: r.id, status: 'omitted' } : r);
         const candidateBytes = byteLength(JSON.stringify({
             entities: cappedEntities.slice(0, count),
             conflicts: result.conflicts,
             retrieval: result.retrieval,
             scope,
+            results,
+            data_notice: MEMORY_DATA_NOTICE,
         }));
         if (candidateBytes <= responseBudget) {
             shownCount = count;
@@ -103,10 +108,15 @@ export function capRecallForAgent(result, scope) {
     const entitiesDropped = shownCount < totalEntities;
     const anyContentTruncated = shownEntities.some((e) => e.truncated !== undefined);
     const envelope = {
+        data_notice: MEMORY_DATA_NOTICE,
         entities: shownEntities,
         conflicts: result.conflicts,
         retrieval: result.retrieval,
     };
+    if (result.results) {
+        const shown = new Set(shownEntities.map(e => e.id));
+        envelope.results = result.results.map(r => r.status === 'found' && !shown.has(r.id) ? { id: r.id, status: 'omitted' } : r);
+    }
     if (anyContentTruncated || entitiesDropped)
         envelope.truncated = true;
     if (entitiesDropped)
@@ -117,7 +127,9 @@ export function capRecallForAgent(result, scope) {
 }
 export function agentRecallEnvelope(r) {
     return {
+        data_notice: r.data_notice,
         entities: r.entities,
+        ...(r.results ? { results: r.results } : {}),
         retrieval: r.retrieval,
         ...(r.conflicts.length > 0 ? { conflicts: r.conflicts } : {}),
         ...(r.truncated ? { truncated: r.truncated } : {}),

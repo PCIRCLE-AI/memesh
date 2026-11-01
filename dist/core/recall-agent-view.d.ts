@@ -21,6 +21,12 @@ export interface RecallScope {
     searched: string;
 }
 export interface RecallForAgentResult {
+    data_notice: string;
+    results?: Array<{
+        id: number;
+        status: 'found' | 'archived' | 'unavailable' | 'omitted';
+        reference?: string;
+    }>;
     entities: AgentRecallEntity[];
     conflicts: string[];
     retrieval: RetrievalMeta;
@@ -35,6 +41,7 @@ export declare function capRecallForAgent(result: {
     entities: Entity[];
     conflicts: string[];
     retrieval: RetrievalMeta;
+    results?: RecallForAgentResult['results'];
 }, scope?: RecallScope): RecallForAgentResult;
 export declare function agentRecallEnvelope(r: RecallForAgentResult): {
     scope?: RecallScope | undefined;
@@ -44,7 +51,13 @@ export declare function agentRecallEnvelope(r: RecallForAgentResult): {
     } | undefined;
     truncated?: true | undefined;
     conflicts?: string[] | undefined;
-    entities: AgentRecallEntity[];
     retrieval: RetrievalMeta;
+    results?: {
+        id: number;
+        status: "found" | "archived" | "unavailable" | "omitted";
+        reference?: string;
+    }[] | undefined;
+    data_notice: string;
+    entities: AgentRecallEntity[];
 };
 //# sourceMappingURL=recall-agent-view.d.ts.map

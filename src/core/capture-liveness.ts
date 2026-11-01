@@ -339,6 +339,9 @@ export const SKIP_REASONS = {
   toolNameAbsent: 'tool_name absent in payload',
   notDecisionTool: 'not a decision-shaped tool call',
   noSessionId: 'no usable session_id in the payload',
+  /** Stop accounting: this exact session has no retained injection record. */
+  noRecallSessionRecord: 'no usable injection record for this session — recall use was not counted',
+  noEligibleRecallRows: 'no timestamped assistant or tool rows since injection — recall use was not counted',
   alreadyNudged: 'already nudged for this tool in this session',
   noBashCommand: 'no Bash command in the payload',
   noDatabaseForGuards: 'no database yet — nothing to guard against',
@@ -572,7 +575,8 @@ function valueEnd(s: string, i: number): number {
  */
 export const NOT_TRIGGERED_SKIP_REASONS: Readonly<Record<string, readonly string[]>> = {
   'post-commit': [SKIP_REASONS.notBash, SKIP_REASONS.notGitCommit],
-  'session-summary': [SKIP_REASONS.alreadyCaptured],
+  'session-summary': [SKIP_REASONS.alreadyCaptured, SKIP_REASONS.noSessionId, SKIP_REASONS.noRecallSessionRecord, SKIP_REASONS.noEligibleRecallRows],
+  'session-start': [SKIP_REASONS.noSessionId],
   // #324: the Stop-side pair. Both fire on EVERY Stop, i.e. every turn, and
   // both correctly do nothing on most of them — a turn that edited no note
   // file, and a turn that made no decision. Counted as runs they filled the
@@ -621,7 +625,6 @@ export const UNCLASSIFIED_SKIP_HOOKS = [
   'user-prompt-intent',
   'decision-nudge',
   'guard-check',
-  'session-start',
   'stop-message-gate',
 ] as const;
 

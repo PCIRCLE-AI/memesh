@@ -316,12 +316,41 @@ export async function recallEnhanced(args) {
     };
 }
 export async function recallWithConflicts(args) {
+    if (args.ids !== undefined) {
+        const { kg, ...result } = recallIds(args, args.ids);
+        kg.trackAccess(result.entities.map(e => e.id));
+        return result;
+    }
     const { entities, retrieval } = await recallEnhanced(args);
     const kg = new KnowledgeGraph(getDatabase());
     const conflicts = kg.findConflicts(entities.map((e) => e.name));
     return { entities, conflicts, retrieval };
 }
+function recallIds(args, requestedIds) {
+    const ids = [...new Set(requestedIds)];
+    const kg = new KnowledgeGraph(getDatabase());
+    const rows = kg.getEntitiesByIds(ids, { includeArchived: true, namespace: args.namespace, projectScope: args.projectScope, filterRelations: true, relationIncludeArchived: args.include_archived });
+    const byId = new Map(rows.map(entity => [entity.id, entity]));
+    const results = ids.map(id => {
+        const entity = byId.get(id);
+        if (!entity)
+            return { id, status: 'unavailable' };
+        if (entity.archived && !args.include_archived)
+            return { id, status: 'archived' };
+        return { id, status: 'found', reference: `[mem-fetched:${id}]` };
+    });
+    const entities = summarizeReplacedHistory(results.filter(r => r.status === 'found').map(r => byId.get(r.id))).map(shownEntity);
+    const conflicts = kg.findConflicts(entities.map(e => e.name));
+    const retrieval = { mode: 'ids', degraded: false, truncated: false };
+    return { kg, entities, conflicts, retrieval, results };
+}
 export async function recallForAgent(args, scope) {
+    if (args.ids !== undefined) {
+        const { kg, ...raw } = recallIds(args, args.ids);
+        const result = capRecallForAgent(raw, scope);
+        kg.trackAccess(result.entities.map(e => e.id));
+        return result;
+    }
     return capRecallForAgent(await recallWithConflicts(args), scope);
 }
 export { exportMemories, importMemories } from './serializer.js';

@@ -2117,6 +2117,32 @@ export function writePrivateJson(filePath, value) {
   writePrivateFile(filePath, JSON.stringify(value));
 }
 
+// Session identities are host data, never filesystem paths. Include the
+// project so two project scopes cannot overwrite each other's accounting.
+export function recallSessionPath(sessionsDir, sessionId, project) {
+  if (typeof sessionId !== 'string' || !sessionId) return null;
+  const key = createHash('sha256').update(JSON.stringify([project, sessionId])).digest('hex');
+  return join(sessionsDir, `${key}.json`);
+}
+
+// Same exclusive random-temp + rename pattern as hook-outcome rotation.
+// Preserve an owner's read-only intent rather than replacing a 0400 file.
+export function writePrivateJsonAtomic(filePath, value) {
+  let mode = PRIVATE_FILE_MODE;
+  if (existsSync(filePath)) {
+    const stat = lstatSync(filePath);
+    if (!stat.isFile() || !(stat.mode & 0o200)) throw new Error('session record is not an owner-writable regular file');
+    mode = stat.mode & 0o600;
+  }
+  const tmpPath = `${filePath}.${randomBytes(8).toString('hex')}.tmp`;
+  try {
+    writeFileSync(tmpPath, JSON.stringify(value), { encoding: 'utf8', mode, flag: 'wx' });
+    renameSync(tmpPath, filePath);
+  } finally {
+    try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch { /* preserve the original write error */ }
+  }
+}
+
 export function parseEntityMetadata(rawMetadata) {
   if (!rawMetadata) return null;
   if (typeof rawMetadata === 'object') return rawMetadata;

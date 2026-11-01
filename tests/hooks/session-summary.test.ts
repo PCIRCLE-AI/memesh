@@ -12,7 +12,7 @@ import { HOOK_OUTCOMES_FILENAME, parseHookOutcomes, SKIP_REASONS } from '../../s
 
 const require = createRequire(import.meta.url);
 // Non-git identity = basename + real-path hash (tests/core/project-identity.test.ts).
-const { getProjectName: mirrorProjectName } = require('../../scripts/hooks/_shared.js');
+const { getProjectName: mirrorProjectName, recallSessionPath } = require('../../scripts/hooks/_shared.js');
 // Contentless FTS5 needs the special delete form to mirror what `forget`
 // (archiveEntity) actually does to an entity before the next Stop sees it.
 const { removeFromFts } = require('../../scripts/hooks/_generated/fts-index.js');
@@ -46,7 +46,7 @@ describe('Feature: Session Summary (Stop Hook)', () => {
       });
       return results.length ? [entry, { type: 'user', message: { content: results } }] : [entry];
     });
-    fs.writeFileSync(transcriptPath, completed.map(e => JSON.stringify(e)).join('\n'));
+    fs.writeFileSync(transcriptPath, completed.map(e => JSON.stringify({ timestamp: new Date().toISOString(), ...e })).join('\n'));
   }
 
   function runHook(input: object, env: Record<string, string> = {}): string {
@@ -167,7 +167,8 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     // ignores arguments), which runHook sets to dbPath; mirror that here.
     const sessionsDir = path.join(path.dirname(dbPath), 'sessions');
     fs.mkdirSync(sessionsDir, { recursive: true });
-    fs.writeFileSync(path.join(sessionsDir, 'cite-1.json'), JSON.stringify({
+    fs.writeFileSync(recallSessionPath(sessionsDir, 'cite-session', projectName), JSON.stringify({
+      sessionId: 'cite-session',
       injectedAt: new Date().toISOString(),
       project: projectName,
       entityIds: [citedId, silentId],
@@ -206,9 +207,9 @@ describe('Feature: Session Summary (Stop Hook)', () => {
       const meta = (key: string) => (check.prepare(
         'SELECT value FROM memesh_metadata WHERE key = ?'
       ).get(key) as { value: string } | undefined)?.value;
-      // v2 (#323): the injected set includes durable-memory index ids, which
-      // widens the citation_sessions_total denominator — a new era.
-      expect(meta('recall_accounting_mode')).toContain('citation-v2');
+      // The current era counts assistant citations or tool-result fetch markers
+      // for this exact session's injected set.
+      expect(meta('recall_accounting_mode')).toContain('citation-or-fetch-v3');
       expect(meta('citation_sessions_total')).toBe('1');
       expect(meta('citation_sessions_cited')).toBe('1');
     } finally {
@@ -217,11 +218,10 @@ describe('Feature: Session Summary (Stop Hook)', () => {
   });
 
   it('Scenario: a graph that counted under the previous accounting era starts the new one from zero', () => {
-    // The stamp says which question the counters answer. v1 counted a
-    // session as compliant when the transcript carried ANY `[mem:N]`; v2
-    // counts one only when an id THIS session injected was cited. Carrying
-    // v1's totals into v2 would report one mixed-era ratio under the v2
-    // label, with no key that separates them — so the change of stamp
+    // The stamp says which question the counters answer. The current era
+    // credits assistant citations or tool fetches for this session's injected
+    // ids. Carrying old totals forward would mix different measurements
+    // under one label, so the change of stamp
     // resets the pair, and the discarded numbers go to stderr rather than
     // disappearing.
     const cwd = '/tmp/erachange';
@@ -240,7 +240,8 @@ describe('Feature: Session Summary (Stop Hook)', () => {
 
     const sessionsDir = path.join(path.dirname(dbPath), 'sessions');
     fs.mkdirSync(sessionsDir, { recursive: true });
-    fs.writeFileSync(path.join(sessionsDir, 'era-1.json'), JSON.stringify({
+    fs.writeFileSync(recallSessionPath(sessionsDir, 'era-session', projectName), JSON.stringify({
+      sessionId: 'era-session',
       injectedAt: new Date().toISOString(),
       project: projectName,
       entityIds: [citedId],
@@ -263,9 +264,9 @@ describe('Feature: Session Summary (Stop Hook)', () => {
       const meta = (key: string) => (check.prepare(
         'SELECT value FROM memesh_metadata WHERE key = ?'
       ).get(key) as { value: string } | undefined)?.value;
-      expect(meta('recall_accounting_mode')).toBe('citation-v2 since 2026-09-12');
-      // 1 and 1, not 413 and 38: this session is the whole v2 record so far.
-      expect(meta('citation_sessions_total'), 'v1 totals were carried into the v2 era').toBe('1');
+      expect(meta('recall_accounting_mode')).toBe('citation-or-fetch-v3 since 2026-11-01');
+      // 1 and 1, not 413 and 38: this session is the whole current-era record so far.
+      expect(meta('citation_sessions_total'), 'old totals were carried into the current era').toBe('1');
       expect(meta('citation_sessions_cited')).toBe('1');
       // The reset left a record of what it discarded.
       expect(stderr).toContain('citation accounting generation changed');
@@ -276,13 +277,20 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     }
 
     // Idempotent: a second session in the SAME era keeps counting. It needs
-    // its own injected-set record — the hook consumes the first.
-    fs.writeFileSync(path.join(sessionsDir, 'era-2.json'), JSON.stringify({
+    // its own SID-bound injected-set record; Stop retains the first session.
+    fs.writeFileSync(recallSessionPath(sessionsDir, 'era-session-2', projectName), JSON.stringify({
+      sessionId: 'era-session-2',
       injectedAt: new Date().toISOString(),
       project: projectName,
       entityIds: [citedId],
       entityNames: ['era-decision'],
       injectedContext: 'unused-by-the-accounting',
+    }));
+    // These are this second synthetic session's events, after its injection.
+    writeTranscript(fs.readFileSync(transcriptPath, 'utf8').trim().split('\n').map(line => {
+      const entry = JSON.parse(line);
+      delete entry.timestamp;
+      return entry;
     }));
     runHook({ session_id: 'era-session-2', transcript_path: transcriptPath, cwd });
     const again = new Database(dbPath, { readOnly: true });

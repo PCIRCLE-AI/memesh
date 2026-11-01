@@ -4,7 +4,6 @@
 // Extracts knowledge from completed Claude Code sessions
 // and stores as session-insight entities in MeMesh.
 //
-import { createRequire } from 'module';
 import { join } from 'path';
 import { existsSync, readFileSync, writeSync } from 'fs';
 import { pathToFileURL } from 'url';
@@ -14,6 +13,8 @@ import {
   captureEntity,
   decideAutoUpdateHook,
   extractCitedMemoryIds,
+  recallSessionPath,
+  writePrivateJsonAtomic,
   getMemeshDirFromDbPath,
   getProjectName,
   findAutoUpdateConsent,
@@ -36,8 +37,6 @@ import { runStopNotes } from './_stop-notes.js';
 // Edited file names from Bash and Edit/Write, under one path-shape rule
 // (#495). Generated from src/core/bash-edited-paths.ts — do not hand-edit.
 import { bashEditedFileNames, editedFileName, isPathShapedFileName } from './_generated/bash-edited-paths.js';
-
-const require = createRequire(import.meta.url);
 
 let installChannel = null;
 try {
@@ -209,6 +208,137 @@ function parseTranscript(transcriptPath) {
   return { filesEdited: [...filesEdited], bashCommands, errorsEncountered, toolCallCount, readFailed, rawText };
 }
 
+// Read marker text only from its native author. Reasoning, user prose and
+// ordinary citations in tool output are not assistant-authored citations.
+function usedMemoryIds(rawTranscript, injectedAt) {
+  const used = new Set();
+  let eligible = false;
+  let candidateRows = 0;
+  let timestampedCandidates = 0;
+  function add(text, fetched = false) {
+    if (typeof text !== 'string') return;
+    if (fetched) {
+      for (const match of text.matchAll(/\[mem-fetched:(\d{1,10})\]/g)) {
+        const id = Number(match[1]);
+        if (id > 0) used.add(id);
+      }
+    } else {
+      for (const id of extractCitedMemoryIds(text)) used.add(id);
+    }
+  }
+  function blocks(content, textType, fetched = false) {
+    if (typeof content === 'string') add(content, fetched);
+    else if (Array.isArray(content)) {
+      for (const block of content) if (block?.type === textType) add(block.text, fetched);
+    }
+  }
+  // Role selection already excludes hook attachments. Native Claude and
+  // Codex rows both carry their timestamp at the JSONL record's root.
+  for (const line of rawTranscript.split('\n')) {
+    let entry;
+    try { entry = JSON.parse(line); } catch { continue; }
+    const claudeAssistant = entry?.type === 'assistant' && (!entry.message?.role || entry.message.role === 'assistant');
+    const claudeTool = entry?.type === 'user' && Array.isArray(entry.message?.content)
+      && entry.message.content.some(block => block?.type === 'tool_result');
+    const item = entry?.type === 'response_item' ? entry.payload : null;
+    const codexAssistant = item?.type === 'message' && item.role === 'assistant';
+    const codexTool = item?.type === 'function_call_output' || item?.type === 'custom_tool_call_output';
+    if (!claudeAssistant && !claudeTool && !codexAssistant && !codexTool) continue;
+    candidateRows++;
+    const timestamp = typeof entry?.timestamp === 'string' ? Date.parse(entry.timestamp) : NaN;
+    if (!Number.isFinite(timestamp)) continue;
+    timestampedCandidates++;
+    if (timestamp < injectedAt) continue;
+    eligible = true;
+    if (claudeAssistant) {
+      blocks(entry.message?.content, 'text');
+    } else if (claudeTool) {
+      for (const block of entry.message.content) {
+        if (block?.type === 'tool_result') {
+          blocks(block.content, 'text', true);
+        }
+      }
+    } else if (codexAssistant) {
+      blocks(item.content, 'output_text');
+    } else if (codexTool) {
+      blocks(item.output, 'input_text', true);
+    }
+  }
+  if (candidateRows > 0 && timestampedCandidates === 0) {
+    const error = new Error('candidate transcript rows have no parseable root timestamp');
+    error.name = 'TranscriptTimestampError';
+    throw error;
+  }
+  return { used, eligible };
+}
+
+const ACCOUNTING_MODE = 'citation-or-fetch-v3 since 2026-11-01';
+
+function accountRecallUse(sessionId, project, rawTranscript) {
+  const filePath = recallSessionPath(join(getMemeshDirFromDbPath(), 'sessions'), sessionId, project);
+  if (!filePath) {
+    record('skipped', SKIP_REASONS.noSessionId);
+    return;
+  }
+  if (!existsSync(filePath)) {
+    record('skipped', SKIP_REASONS.noRecallSessionRecord);
+    return;
+  }
+  const injection = JSON.parse(readFileSync(filePath, 'utf8'));
+  if (injection.sessionId !== sessionId || injection.project !== project) {
+    record('skipped', SKIP_REASONS.noRecallSessionRecord);
+    return;
+  }
+  const entityIds = (injection.entityIds || []).filter(id => Number.isSafeInteger(id) && id > 0);
+  const injectedAt = typeof injection.injectedAt === 'string' ? Date.parse(injection.injectedAt) : NaN;
+  const { used, eligible } = usedMemoryIds(rawTranscript, Number.isFinite(injectedAt) ? injectedAt : Infinity);
+  if (!eligible) {
+    // Keep a live record fresh even when the transcript has only old rows.
+    // A rebuilt record must never replay the transcript before its injection.
+    writePrivateJsonAtomic(filePath, injection);
+    record('skipped', SKIP_REASONS.noEligibleRecallRows);
+    return;
+  }
+  const { db } = openHookDb(process.env, { fts: true });
+  try {
+    db.transaction(() => {
+      const priorMode = db.prepare("SELECT value FROM memesh_metadata WHERE key = 'recall_accounting_mode'").get()?.value;
+      if (priorMode && priorMode !== ACCOUNTING_MODE) {
+        const prior = key => db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(key)?.value ?? 'absent';
+        const total = prior('citation_sessions_total');
+        const cited = prior('citation_sessions_cited');
+        db.prepare("DELETE FROM memesh_metadata WHERE key IN ('citation_sessions_total', 'citation_sessions_cited')").run();
+        try { process.stderr.write(`[memesh session-summary] citation accounting generation changed (${priorMode} -> ${ACCOUNTING_MODE}); counters reset from total=${total} cited=${cited} — the two eras count different things and are not comparable.\n`); } catch {}
+      }
+      // The global stamp may be rewritten by an older installed host. It is
+      // not authority to discard credits this session already persisted.
+      const current = injection.accountingMode === ACCOUNTING_MODE;
+      const credited = new Set(current ? (injection.creditedIds || []) : []);
+      const hadCredit = credited.size > 0;
+      const updateHit = db.prepare('UPDATE entities SET recall_hits = COALESCE(recall_hits, 0) + 1 WHERE id = ?');
+      for (const id of entityIds) {
+        if (used.has(id) && !credited.has(id)) {
+          updateHit.run(id);
+          credited.add(id);
+        }
+      }
+      db.prepare('INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)').run('recall_accounting_mode', ACCOUNTING_MODE);
+      const bump = db.prepare(`INSERT INTO memesh_metadata (key, value) VALUES (?, '1')
+        ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)`);
+      // Absent counters must remain distinguishable from measured zero use.
+      for (const key of ['citation_sessions_total', 'citation_sessions_cited']) {
+        db.prepare("INSERT INTO memesh_metadata (key, value) VALUES (?, '0') ON CONFLICT(key) DO NOTHING").run(key);
+      }
+      if (!(current && injection.sessionCounted)) bump.run('citation_sessions_total');
+      if (!hadCredit && credited.size > 0) bump.run('citation_sessions_cited');
+      writePrivateJsonAtomic(filePath, { ...injection, accountingMode: ACCOUNTING_MODE,
+        creditedIds: [...credited], sessionCounted: true });
+    })();
+  } finally {
+    db.close();
+  }
+}
+
 // Main: read stdin, extract insights, store in DB
 let input = '';
 process.stdin.setEncoding('utf8');
@@ -362,6 +492,15 @@ process.stdin.on('end', async () => {
     if (readFailed) {
       record('error', 'the transcript could not be read');
       return exit0();
+    }
+
+    // A single fetch is a valid use independently of capture's activity bar.
+    // All privacy/opt-out and transcript readability guards above still apply.
+    try {
+      accountRecallUse(inputData.session_id, getProjectName(cwd), transcriptRawText);
+    } catch (err) {
+      record('error', `recall-accounting: ${hookErrorReason(err)}`);
+      try { process.stderr.write(`[memesh session-summary] recall-effectiveness write: ${err?.message || err}\n`); } catch {}
     }
 
     // Skip sessions with too little activity — the single most common
@@ -529,182 +668,6 @@ process.stdin.on('end', async () => {
         );
       }
 
-      // ── Recall effectiveness tracking ────────────────────────────────
-      // Read which entities were injected at session start, check if
-      // their names appear in the transcript, update hits/misses.
-      try {
-        // FIX: Find the most recent session file for this project (within last hour)
-        const sessionsDir = join(getMemeshDirFromDbPath(), 'sessions');
-        let injectedData = null;
-
-        if (existsSync(sessionsDir)) {
-          const files = require('fs').readdirSync(sessionsDir);
-          const recentFiles = files
-            .filter(f => f.endsWith('.json'))
-            .map(f => {
-              const path = join(sessionsDir, f);
-              try {
-                const stats = require('fs').statSync(path);
-                return { path, mtime: stats.mtimeMs };
-              } catch (err) {
-                // statSync threw — file vanished between readdir and stat,
-                // or perms changed mid-scan. Skip but trace.
-                try { process.stderr.write(`[memesh session-summary] sessions-stat ${path}: ${err?.message || err}\n`); } catch {}
-                return null;
-              }
-            })
-            .filter(f => f && Date.now() - f.mtime < 60 * 60 * 1000) // within 1 hour
-            .sort((a, b) => b.mtime - a.mtime); // newest first
-
-          // Try to find matching project, otherwise use most recent
-          for (const { path } of recentFiles) {
-            try {
-              const data = JSON.parse(readFileSync(path, 'utf8'));
-              // Project match must be exact. The earlier
-              // `|| recentFiles.length === 1` fallback caused
-              // cross-project recall-effectiveness leakage: with two
-              // concurrent Claude Code sessions in two repos, a
-              // project-mismatched Stop hook would pick up the OTHER
-              // project's entityIds and update THEIR hits/misses
-              // against this transcript. Lose one session's tracking
-              // rather than corrupt another's.
-              if (data.project === projectName) {
-                injectedData = data;
-                // Delete after reading to prevent reuse
-                require('fs').unlinkSync(path);
-                break;
-              }
-            } catch (err) {
-              // Three failure modes share this catch: JSON.parse on a
-              // corrupt session file, readFileSync on a perm-changed file,
-              // unlinkSync after read. Trace each so a silent unlink
-              // failure (which would re-count the same session) is
-              // visible. Loop continues to the next file regardless.
-              try { process.stderr.write(`[memesh session-summary] sessions-read ${path}: ${err?.message || err}\n`); } catch {}
-            }
-          }
-        }
-
-        if (injectedData) {
-          const { entityIds } = injectedData;
-
-          if (entityIds && entityIds.length > 0) {
-            // Check if recall_hits column exists (v4.0+ migration)
-            const colCheck = db.prepare("PRAGMA table_info(entities)").all();
-            if (colCheck.some(c => c.name === 'recall_hits')) {
-              // Drop the records Claude Code created FROM our own hook
-              // output before scanning: the injected block itself prints a
-              // `[mem:id]` handle on every line, and counting those would
-              // score every injection as a hit. Structural removal is
-              // copy-count and encoding independent. Reuse the raw text
-              // parseTranscript already read — a second readFileSync
-              // doubles the Stop hook's I/O on 47MB transcripts.
-              const sessionText = stripHookEchoes(transcriptRawText);
-
-              // Citation accounting. A hit is an EXPLICIT `[mem:id]` marker
-              // the agent wrote for an id this session injected — the
-              // instruction line session-start appends after the fenced
-              // block. Literal-content matching (the previous accounting)
-              // was retired after measuring 0% signal across ten real
-              // sessions and three matching strategies: every injected
-              // memory drifted toward an unearned recall_miss, and misses
-              // feed the impact factor in core ranking.
-              //
-              // Markers are self-reported: an agent that used a memory
-              // silently earns it nothing, so the signal UNDERCOUNTS and
-              // never overcounts. That asymmetry is why misses are FROZEN —
-              // recall_misses stays untouched until measured marker
-              // compliance (the counters below) justifies reading silence
-              // as non-use. The mode stamp keeps the two eras of numbers
-              // apart.
-              const cited = extractCitedMemoryIds(sessionText);
-              const updateHit = db.prepare(
-                'UPDATE entities SET recall_hits = COALESCE(recall_hits, 0) + 1 WHERE id = ?'
-              );
-              // Counted here, not recomputed below. The compliance
-              // numerator and `recall_hits` have to be the SAME
-              // measurement: `cited.size > 0` asked "did this transcript
-              // contain any [mem:N] at all", which counts a marker for an id
-              // this session never injected — one carried over from an
-              // earlier turn, or a number the agent invented — as compliance.
-              // The denominator counts sessions that received an injection,
-              // so the two halves of the rate were answering different
-              // questions.
-              let injectedAndCited = 0;
-              for (const id of entityIds) {
-                if (cited.has(id)) {
-                  updateHit.run(id);
-                  injectedAndCited++;
-                }
-              }
-
-              // Accounting-mode stamp (constant value, rewritten every
-              // session so it survives DB restores from either era) plus
-              // the compliance denominators: sessions that HAD an injection
-              // vs sessions whose transcript carried any citation marker.
-              //
-              // The counters are scoped to the generation named in the stamp.
-              // When a graph that counted under an EARLIER generation meets
-              // this one, they are cleared rather than added to: the
-              // numerator changed meaning (v1 asked "did the transcript
-              // contain any marker", v2 asks "was an id we injected cited"),
-              // so a sum across both is one ratio wearing the newer label and
-              // no key separates the eras. Readers — analytics.ts and
-              // scripts/audit/measure-signals.mjs — read the bare keys and
-              // therefore keep working unchanged; what they report is now
-              // this generation only. A graph that never counted has no
-              // stamp, so nothing resets on a new install.
-              const ACCOUNTING_MODE = 'citation-v2 since 2026-09-12';
-              const priorMode = db.prepare(
-                "SELECT value FROM memesh_metadata WHERE key = 'recall_accounting_mode'"
-              ).get()?.value;
-              if (priorMode && priorMode !== ACCOUNTING_MODE) {
-                // Traced, not silently dropped: the numbers being discarded
-                // are the only record of the previous era, and a reset that
-                // leaves no result record is the silent-skip shape.
-                const prior = (key) => db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(key)?.value ?? 'absent';
-                const priorTotal = prior('citation_sessions_total');
-                const priorCited = prior('citation_sessions_cited');
-                db.prepare(
-                  "DELETE FROM memesh_metadata WHERE key IN ('citation_sessions_total', 'citation_sessions_cited')"
-                ).run();
-                try {
-                  process.stderr.write(
-                    `[memesh session-summary] citation accounting generation changed (${priorMode} -> ${ACCOUNTING_MODE}); ` +
-                      `counters reset from total=${priorTotal} cited=${priorCited} — the two eras count different things and are not comparable.\n`,
-                  );
-                } catch {}
-              }
-              db.prepare(
-                'INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)'
-              ).run('recall_accounting_mode', ACCOUNTING_MODE);
-              const bump = db.prepare(
-                `INSERT INTO memesh_metadata (key, value) VALUES (?, '1')
-                 ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)`
-              );
-              bump.run('citation_sessions_total');
-              // Initialised unconditionally, then bumped. Writing it only on
-              // a citation made "zero sessions cited" and "this code never
-              // ran" the same absent key — and that is exactly what a real
-              // database showed on 2026-08-24: total=4, cited absent, with
-              // no way to tell a 0% compliance rate from a dead counter.
-              db.prepare(
-                `INSERT INTO memesh_metadata (key, value) VALUES ('citation_sessions_cited', '0')
-                 ON CONFLICT(key) DO NOTHING`
-              ).run();
-              if (injectedAndCited > 0) bump.run('citation_sessions_cited');
-            }
-          }
-        }
-      } catch (err) {
-        // Recall-effectiveness DB write failed. Silently dropping this
-        // converges impact scores to 0.5 (neutral) for every entity, which
-        // is the main signal core/scoring.ts uses to demote ignored
-        // memories — a real-world UX issue. Trace to stderr so a typo or
-        // missing-column failure is visible without crashing the hook.
-        try { process.stderr.write(`[memesh session-summary] recall-effectiveness write: ${err?.message || err}\n`); } catch {}
-      }
-
       // Heartbeat AFTER capture, so the stamp certifies "the capture loop
       // completed", not "a database handle existed". A throw above skips it,
       // and so does a captureEntity null return (writeFailed) — a run whose
@@ -803,53 +766,4 @@ async function exit0() {
   }
   try { settleNudge?.(delivered); } catch { /* diagnostics never take the hook down */ }
   process.exit(0);
-}
-/**
- * Attachment record types Claude Code uses to persist a hook's own output
- * into the transcript. Anything memesh injected reaches the transcript
- * through one of these, so they must be removed before asking "did the
- * session reference this memory?".
- *
- * Verified against Claude Code v2.1.19: ONE SessionStart injection lands in
- * the transcript at least twice — once as `hook_success` (carrying the raw
- * hook stdout) and once as `hook_additional_context` (the parsed payload).
- */
-const HOOK_ECHO_ATTACHMENT_TYPES = new Set([
-  'hook_success',
-  'hook_additional_context',
-  'hook_system_message',
-]);
-
-/**
- * Remove memesh's own injected text from a raw JSONL transcript.
- *
- * Counting occurrences and subtracting the injected copies does NOT work:
- * it depends on knowing exactly how many times Claude Code echoes a hook
- * payload, which is an undocumented internal that has already been observed
- * at 2+ copies (and 16 in one real transcript). Guessing that constant is
- * how "every entity is a miss" becomes "every entity is a hit" — equally
- * useless, and invisible to a hand-built test fixture.
- *
- * Dropping the hook-echo records structurally is independent of both the
- * copy count and the JSON escaping.
- */
-export function stripHookEchoes(rawTranscript) {
-  const kept = [];
-  for (const line of String(rawTranscript ?? '').split('\n')) {
-    if (!line.trim()) continue;
-    let entry;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      // Unparseable line: keep it. Losing a line can only cause a false
-      // MISS (we under-count references), which is the safe direction —
-      // it never manufactures a hit the session did not earn.
-      kept.push(line);
-      continue;
-    }
-    const type = entry?.attachment?.type ?? entry?.type;
-    if (typeof type === 'string' && HOOK_ECHO_ATTACHMENT_TYPES.has(type)) continue;
-    kept.push(line);
-  }
-  return kept.join('\n');
 }

@@ -895,7 +895,7 @@ export class KnowledgeGraph {
 
   getEntitiesByIds(
     ids: number[],
-    opts?: { includeArchived?: boolean; namespace?: string; tag?: string }
+    opts?: { includeArchived?: boolean; namespace?: string; tag?: string; projectScope?: string | null; filterRelations?: boolean; relationIncludeArchived?: boolean }
   ): Entity[] {
     if (ids.length === 0) return [];
 
@@ -907,6 +907,8 @@ export class KnowledgeGraph {
     const statusFilter = opts?.includeArchived === false ? "AND status != 'archived'" : '';
     const namespaceFilter = opts?.namespace ? 'AND namespace = ?' : '';
     if (opts?.namespace) params.push(opts.namespace);
+    const scope = opts?.projectScope !== undefined ? projectScopeFilter(opts.projectScope) : { sql: '', params: [] };
+    params.push(...scope.params);
 
     // Batch query 1: entities
     const entityRows = this.db
@@ -919,7 +921,7 @@ export class KnowledgeGraph {
         // them and got real values; the recall path did not, so one scorer
         // behaved differently depending on who called it.
         `SELECT id, name, title, type, created_at, metadata, status, access_count, last_accessed_at, confidence, namespace, recall_hits, recall_misses
-         FROM entities WHERE id IN (${placeholders}) ${statusFilter} ${namespaceFilter}`
+         FROM entities e WHERE e.id IN (${placeholders}) ${statusFilter} ${namespaceFilter} ${scope.sql}`
       )
       .all(...params) as EntityRow[];
 
@@ -956,6 +958,11 @@ export class KnowledgeGraph {
     }
 
     // Batch query 4: relations (from_entity_id perspective, matching getRelations)
+    const relationScope = opts?.filterRelations && opts.projectScope !== undefined
+      ? projectScopeFilter(opts.projectScope) : { sql: '', params: [] };
+    const relationScopeSql = relationScope.sql.replaceAll('e.', 'e_to.');
+    const relationNamespaceSql = opts?.filterRelations && opts.namespace ? 'AND e_to.namespace = ?' : '';
+    const relationStatusSql = opts?.filterRelations && !opts.relationIncludeArchived ? "AND e_to.status != 'archived'" : '';
     const relRows = this.db
       .prepare(
         `SELECT r.from_entity_id, e_from.name AS "from", e_to.name AS "to",
@@ -963,9 +970,9 @@ export class KnowledgeGraph {
          FROM relations r
          JOIN entities e_from ON r.from_entity_id = e_from.id
          JOIN entities e_to ON r.to_entity_id = e_to.id
-         WHERE r.from_entity_id IN (${placeholders})`
+         WHERE r.from_entity_id IN (${placeholders}) ${relationScopeSql} ${relationNamespaceSql} ${relationStatusSql}`
       )
-      .all(...ids) as Array<{ from_entity_id: number; from: string; to: string; type: string }>;
+      .all(...ids, ...relationScope.params, ...(opts?.filterRelations && opts.namespace ? [opts.namespace] : [])) as Array<{ from_entity_id: number; from: string; to: string; type: string }>;
 
     const relMap = new Map<number, Relation[]>();
     for (const row of relRows) {

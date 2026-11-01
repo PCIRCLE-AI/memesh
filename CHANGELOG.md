@@ -6,6 +6,16 @@ are not part of a published npm release yet.
 
 ## [Unreleased]
 
+### Added
+
+- Retrieve memories by ID with `recall({ ids: [...] })` or `memesh recall --ids`, within the caller's project scope and existing size limits.
+- Retrieving a session-injected memory by ID counts toward ranking like citing it. Each memory is credited once while the session is active, including resumes. After more than a day of inactivity, reinjection may start a new counting window; old transcript entries are not counted again.
+
+### Changed
+
+- Memory usage now counts assistant citations and ID retrievals, including sessions with few tool calls. Citation markers inside tool output no longer count as assistant citations. Session usage statistics restart with this release because the counting rules changed.
+- Recall results include a reminder to treat stored content as reference data, and ID retrievals display detected conflicts in terminal output.
+
 ## [4.12.0] — 2026-11-01
 
 ### Added

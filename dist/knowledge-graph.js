@@ -367,9 +367,11 @@ export class KnowledgeGraph {
         const namespaceFilter = opts?.namespace ? 'AND namespace = ?' : '';
         if (opts?.namespace)
             params.push(opts.namespace);
+        const scope = opts?.projectScope !== undefined ? projectScopeFilter(opts.projectScope) : { sql: '', params: [] };
+        params.push(...scope.params);
         const entityRows = this.db
             .prepare(`SELECT id, name, title, type, created_at, metadata, status, access_count, last_accessed_at, confidence, namespace, recall_hits, recall_misses
-         FROM entities WHERE id IN (${placeholders}) ${statusFilter} ${namespaceFilter}`)
+         FROM entities e WHERE e.id IN (${placeholders}) ${statusFilter} ${namespaceFilter} ${scope.sql}`)
             .all(...params);
         const entityMap = new Map();
         for (const row of entityRows) {
@@ -393,14 +395,19 @@ export class KnowledgeGraph {
                 tagMap.set(row.entity_id, []);
             tagMap.get(row.entity_id).push(row.tag);
         }
+        const relationScope = opts?.filterRelations && opts.projectScope !== undefined
+            ? projectScopeFilter(opts.projectScope) : { sql: '', params: [] };
+        const relationScopeSql = relationScope.sql.replaceAll('e.', 'e_to.');
+        const relationNamespaceSql = opts?.filterRelations && opts.namespace ? 'AND e_to.namespace = ?' : '';
+        const relationStatusSql = opts?.filterRelations && !opts.relationIncludeArchived ? "AND e_to.status != 'archived'" : '';
         const relRows = this.db
             .prepare(`SELECT r.from_entity_id, e_from.name AS "from", e_to.name AS "to",
                 r.relation_type AS type
          FROM relations r
          JOIN entities e_from ON r.from_entity_id = e_from.id
          JOIN entities e_to ON r.to_entity_id = e_to.id
-         WHERE r.from_entity_id IN (${placeholders})`)
-            .all(...ids);
+         WHERE r.from_entity_id IN (${placeholders}) ${relationScopeSql} ${relationNamespaceSql} ${relationStatusSql}`)
+            .all(...ids, ...relationScope.params, ...(opts?.filterRelations && opts.namespace ? [opts.namespace] : []));
         const relMap = new Map();
         for (const row of relRows) {
             if (!relMap.has(row.from_entity_id))
