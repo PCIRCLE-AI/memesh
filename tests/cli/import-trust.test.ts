@@ -9,6 +9,7 @@ import { build } from 'esbuild';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { removeTempDir } from '../helpers/temp-dir.js';
 import { getProjectName } from '../../src/core/paths.js';
 import { isPromptAbort } from '../../src/transports/cli/cli.js';
 
@@ -130,7 +131,7 @@ describe('memesh import --trust (#407)', () => {
   });
 
   afterEach(() => {
-    fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    removeTempDir(home);
   });
 
   it('a plain import prints the untrusted notice with the right count and a command that actually works; the row is recallable but not injected', () => {

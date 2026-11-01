@@ -4,6 +4,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { removeTempDir } from '../helpers/temp-dir.js';
 
 /**
  * `memesh why` end to end, against the packaged CLI: local git resolves the
@@ -59,7 +60,7 @@ describe('CLI: memesh why', () => {
   });
 
   afterEach(() => {
-    fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    removeTempDir(home);
   });
 
   it('Scenario: a committed file joins git history to the graph, scoped to the cwd project', () => {

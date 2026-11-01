@@ -9,6 +9,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { spawnSync } from 'child_process';
 import fs from 'fs';
+import { removeTempDir } from '../helpers/temp-dir.js';
 import os from 'os';
 import path from 'path';
 import { handleTool } from '../../src/transports/mcp/handlers.js';
@@ -222,7 +223,7 @@ describe('#527 CLI: an empty or path-shaped project is refused', () => {
     notes = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-project-attr-notes-'));
   });
   afterAll(() => {
-    fs.rmSync(home, { recursive: true, force: true });
+    removeTempDir(home);
     fs.rmSync(notes, { recursive: true, force: true });
   });
 

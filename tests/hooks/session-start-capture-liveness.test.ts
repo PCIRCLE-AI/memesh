@@ -3,6 +3,7 @@ import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { removeTempDir } from '../helpers/temp-dir.js';
 import {
   serializeHookOutcome,
   HOOK_OUTCOMES_FILENAME,
@@ -35,7 +36,7 @@ describe('SessionStart capture-liveness line', () => {
   });
 
   afterEach(() => {
-    fs.rmSync(testDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    removeTempDir(testDir);
   });
 
   function writeRecords(records: HookOutcomeRecord[]): void {

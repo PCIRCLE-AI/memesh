@@ -31,6 +31,7 @@ import { spawnSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { removeTempDir } from '../helpers/temp-dir.js';
 
 const CLI_PATH = path.join(__dirname, '..', '..', 'dist', 'transports', 'cli', 'cli.js');
 
@@ -42,7 +43,7 @@ describe('a numeric flag that is not a number', () => {
   });
 
   afterEach(() => {
-    fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    removeTempDir(home);
   });
 
   function run(args: string[]): { status: number; stdout: string; stderr: string } {
@@ -110,7 +111,7 @@ describe('a database that will not open', () => {
   });
 
   afterEach(() => {
-    fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    removeTempDir(home);
   });
 
   function run(args: string[]): { status: number; stderr: string } {

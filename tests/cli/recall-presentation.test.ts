@@ -4,6 +4,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { removeTempDir } from '../helpers/temp-dir.js';
 
 /**
  * What `memesh recall` PRINTS, pinned at the spawn level. Two P7 findings
@@ -34,7 +35,7 @@ describe('recall presentation: disclose what geometry cannot certify', () => {
     home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-recallp-'));
   });
   afterEach(() => {
-    fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    removeTempDir(home);
   });
 
   it('an oversized observation is capped on display, storage untouched', () => {
