@@ -25,8 +25,8 @@ import { MEMORY_DATA_NOTICE } from './work-topology.js';
  *  JSON-serialized form — the bytes the wire payload actually carries. */
 export const RECALL_ENTITY_CONTENT_MAX_BYTES = 8 * 1024;
 
-/** Whole-response budget, same accounting, for `entities` + `conflicts` +
- *  `retrieval` together. */
+/** Target whole-response budget for the data notice, entities, conflicts,
+ *  retrieval and optional ID/scope metadata, using the same accounting. */
 export const RECALL_RESPONSE_MAX_BYTES = 32 * 1024;
 
 // Room left for the `truncated`/`entities_omitted` keys a caller adds AFTER

@@ -750,8 +750,8 @@ app.post('/v1/recall', (req, res) => handlePost(RecallBody, req, res, async (dat
   // cannot drift on the wrapping rule.
   const result = await recallWithConflicts(data.ids !== undefined ? { ...data, projectScope: null } : data);
   const { entities, conflicts, retrieval } = result;
-  // Always return object envelope {entities, retrieval, conflicts?} to match
-  // API_REFERENCE.md and MCP transport's documented guarantee (issue #159);
+  // Always return {data_notice, entities, retrieval, results?, conflicts?}
+  // to match API_REFERENCE.md and MCP's documented envelope (issue #159).
   // `retrieval` reports mode / degraded / truncated in-band.
   return { data_notice: MEMORY_DATA_NOTICE, entities, retrieval, ...('results' in result ? { results: result.results } : {}), ...(conflicts.length > 0 ? { conflicts } : {}) };
 }));
