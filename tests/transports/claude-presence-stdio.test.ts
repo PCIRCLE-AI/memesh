@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
+import net from 'node:net';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { ListRootsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
@@ -10,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { openDatabase, closeDatabase } from '../../src/db.js';
 import { AgentRouter, AGENT_ROUTER_PROTOCOL_VERSION, sendAgentRouterRequest } from '../../src/core/agent-router.js';
 import { getProjectName } from '../../src/core/paths.js';
+import { projectTranscriptSlug } from '../../src/core/transcript-source.js';
 import { connectRouterHost, type RouterHostConnection } from '../../src/host-runtime/router-client.js';
 
 const server = fileURLToPath(new URL('../../dist/mcp/server.js', import.meta.url));
@@ -79,6 +81,37 @@ async function setup() {
 }
 
 describe.skipIf(process.platform === 'win32')('ordinary Claude MCP presence without Channel', () => {
+  it('delivers a notice through the supplied native socket without Channel', async () => {
+    const f = await setup();
+    const configDir = path.join(directory, 'claude');
+    const projectDir = path.join(configDir, 'projects', projectTranscriptSlug(f.workspace));
+    fs.mkdirSync(projectDir, { recursive: true }); fs.mkdirSync(path.join(configDir, 'sessions'));
+    fs.writeFileSync(path.join(configDir, 'sessions', `${process.pid}.json`), JSON.stringify({ pid: process.pid, cwd: f.workspace, sessionId: session }), { mode: 0o600 });
+    const transcript = path.join(projectDir, `${session}.jsonl`); fs.writeFileSync(transcript, '');
+    const nativePath = path.join(directory, 'n.sock');
+    const frames: Array<Record<string, any>> = [];
+    const native = net.createServer(socket => socket.on('data', chunk => {
+      const frame = JSON.parse(chunk.toString('utf8').trim()); frames.push(frame);
+      fs.appendFileSync(transcript, JSON.stringify({ type: 'queue-operation', operation: 'enqueue', sessionId: session, content: frame.message.content }) + '\n');
+    }));
+    await new Promise<void>((resolve, reject) => { native.once('error', reject); native.listen(nativePath, resolve); }); fs.chmodSync(nativePath, 0o600);
+    try {
+      const client = await f.start({ CLAUDE_CONFIG_DIR: configDir, CLAUDE_CODE_MESSAGING_SOCKET: nativePath, CLAUDE_CODE_MESSAGING_TOKEN: 'fixture' });
+      await vi.waitFor(async () => expect(await f.discover()).toHaveLength(1));
+      const result = await client.callTool({ name: 'message', arguments: { action: 'send', project: f.project, sender: 'hidden-sender', recipient: session, target_kind: 'session', idempotency_key: 'notice-exact', payload: 'hidden-body' } });
+      expect(result.isError).not.toBe(true);
+      const sent = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+      expect(sent.native_delivery).toMatchObject({ adapter_kind: 'claude-inbox', receipt: { content: 'notice', confirmation: 'enqueue' } });
+      expect(frames).toHaveLength(1);
+      expect(JSON.stringify(frames[0])).not.toMatch(/hidden-sender|hidden-body/);
+      const principal = await client.callTool({ name: 'message', arguments: { action: 'send', project: f.project, sender: 'hidden-sender', recipient: 'claude-code', intended_session: session, idempotency_key: 'notice-principal', payload: 'hidden-body' } });
+      expect(principal.isError).not.toBe(true);
+      const principalSent = JSON.parse((principal.content as Array<{ text: string }>)[0].text);
+      await vi.waitFor(() => expect(frames).toHaveLength(2));
+      await vi.waitFor(() => expect(f.db.prepare('SELECT COUNT(*) AS n FROM agent_host_accepts WHERE delivery_id = ?').get(principalSent.delivery_id)).toEqual({ n: 1 }));
+      expect(JSON.stringify(frames[1])).not.toMatch(/hidden-sender|hidden-body/);
+    } finally { await new Promise<void>((resolve, reject) => native.close(error => error ? reject(error) : resolve())); }
+  });
   it('registers the exact session/project, supports inbox fallback and goes offline when stdio closes', async () => {
     const f = await setup();
     const client = await f.start();

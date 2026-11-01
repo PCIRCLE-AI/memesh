@@ -22,9 +22,7 @@ using the host's real session id, bound workspace and existing inbox identity.
 No Channel setup is needed to appear online. Registration follows the MCP
 process lifetime and its existing router lease. Missing session/workspace is reported on stderr; an invalid identity stays
 unregistered. Neither disables memory tools.
-Online presence alone does not mean live push: without Channel, send to the
-principal inbox (or request `fallback_to_principal`) and use the normal hook
-reminders. A Channel for the same session takes precedence without a duplicate
+Online presence alone does not prove live push. When the native Claude inbox socket is available, an ordinary session receives a bounded notice and fetches the body. Without it, the durable inbox and normal hook reminders remain available. A Channel for the same session takes precedence without a duplicate
 online entry. Windows remains outside the secure local-router runtime.
 
 Briefing follows the same trust boundary. Generic `briefing` has no recipient
@@ -169,12 +167,7 @@ result reports only that recipient's unfetched deliveries and tells it to
 `message poll` with the exact scope before fetching each returned
 `message_id`. Fetching remains separate from intake and acknowledgement.
 
-The messaging path keeps durable store-and-forward compatibility. For an
-exact active local Claude session, MeMesh sends one bounded full message
-through the authenticated native host channel and waits for native
-acceptance; no marker-to-fetch step is required. For an exact active local
-Codex session it queues only a short notice naming the message, and the agent
-reads the body from the inbox. An oversized full envelope
+The messaging path keeps durable store-and-forward compatibility. Claude Channel receives the bounded full envelope. Ordinary Claude inbox and Codex CLI receive a short notice naming the message; the agent fetches the body from the inbox. An exact Claude inbox send is accepted only when a matching newly appended native receive record is observed; lack of confirmation does not prove the notice was not delivered. An oversized full envelope
 returns `native_message_too_large`; other unavailable or rejected exact sessions
 return `recipient_unavailable` while scoped recovery data remains durable.
 Principal targets retain asynchronous store-and-forward semantics.
@@ -732,14 +725,15 @@ reply, or a stopped-session wake-up.
 |---|---|---|---|
 | Ordinary Codex CLI | automatic plugin SessionStart registration; optional `codex-session` identity override | short native notice while active; the agent fetches the message body | Exact thread identity is discoverable; oversized envelopes return `native_message_too_large`, while stopped or disconnected sessions return `recipient_unavailable` |
 | MeMesh-managed Codex app-server | `memesh-host-codex` | separate managed path | It creates its own Codex thread; it does not attach to an ordinary session |
+| Ordinary Claude MCP | `claude-inbox` | native notice when the host supplies its socket | Exact-session sends require a new matching receive record; unavailable sockets keep durable inbox recovery and hook reminders |
 | Claude channel | `memesh-host-claude` | separate channel path | Requires the documented Channel opt-in; no stopped-session resume |
 | Other local MCP clients | MCP, HTTP, or CLI message operations | durable messaging only | Use `poll`/`watch` and scoped fetch where their own host loop supports it; this guide makes no native-wakeup claim |
 
 ## Lifecycle
 
 1. A sender calls `message` with `action: "send"`, a stable sender, one recipient, a project, an idempotency key, and a payload.
-2. For an eligible exact Claude session, the router sends one bounded untrusted
-   full envelope; for a Codex session, a short notice naming the message, whose
+2. For an eligible Claude Channel session, the router sends one bounded untrusted
+   full envelope; for Claude inbox or a Codex session, a short notice naming the message, whose
    body the agent then fetches from the inbox. Either way it waits for native
    host acceptance. An explicit
    `poll`/`watch` client may still read privacy-minimized events for recovery,
