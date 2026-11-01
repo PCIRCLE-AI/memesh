@@ -66,7 +66,7 @@ describe('built CLI recall by IDs', () => {
       expect(JSON.parse(json.stdout).data_notice).toBe(notice);
       const human = run(...args);
       expect(human.status, human.stderr).toBe(0);
-      expect(human.stdout).toContain(notice.replace('\n', ' '));
+      expect(human.stdout).toContain(notice.replaceAll('\n', ' '));
     }
   });
 

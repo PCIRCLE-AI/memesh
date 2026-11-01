@@ -68243,7 +68243,7 @@ program2.command("recall").description("Search stored knowledge").argument("[que
     });
     const { entities, conflicts, retrieval, entities_omitted } = result;
     if (!opts.json)
-      console.log(result.data_notice.replace("\n", " "));
+      console.log(result.data_notice.replaceAll("\n", " "));
     if (opts.json) {
       console.log(JSON.stringify(agentRecallEnvelope(result)));
     } else if (result.results) {

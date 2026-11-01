@@ -605,7 +605,7 @@ program
       });
       const { entities, conflicts, retrieval, entities_omitted } = result;
 
-      if (!opts.json) console.log(result.data_notice.replace('\n', ' '));
+      if (!opts.json) console.log(result.data_notice.replaceAll('\n', ' '));
 
       if (opts.json) {
         // One envelope shape, always — the old output was a bare array
