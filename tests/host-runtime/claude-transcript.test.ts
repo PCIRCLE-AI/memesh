@@ -7,6 +7,25 @@ import { ClaudeTranscriptReader } from '../../src/host-runtime/claude-transcript
 const event = (id: string, name: string, input: unknown) => JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input }] } }) + '\n';
 
 describe('Claude transcript activity', () => {
+  it('offers an independent cursor that reads only complete lines appended after mark', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-cursor-'));
+    try {
+      fs.mkdirSync(path.join(dir, 'one')); const file = path.join(dir, 'one', 'session-a.jsonl');
+      fs.writeFileSync(file, event('old', 'TodoWrite', { todos: [{ content: 'first', status: 'in_progress', activeForm: 'working' }] }));
+      const activity = new ClaudeTranscriptReader(dir); const receipt = new ClaudeTranscriptReader(dir);
+      expect(activity.currentTask('session-a')).toBe('first');
+      const mark = receipt.mark('session-a'); expect(mark).toBeDefined();
+      const line = JSON.stringify({ type: 'queue-operation', operation: 'enqueue', sessionId: 'session-a', content: 'notice' }) + '\n';
+      fs.appendFileSync(file, line.slice(0, 10)); expect(receipt.readNew('session-a', mark!)).toEqual([]);
+      fs.appendFileSync(file, line.slice(10));
+      const received = receipt.readNew('session-a', mark!);
+      expect(received).toHaveLength(1);
+      expect(received).toEqual([expect.objectContaining({ type: 'queue-operation', content: 'notice' })]);
+      expect(activity.currentTask('session-a')).toBe('first');
+      fs.writeFileSync(path.join(dir, 'one', 'session-b.jsonl'), '');
+      expect(receipt.readNew('session-b', mark!)).toBeUndefined();
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
   it('ignores user or tool-result content even if it resembles a tool call', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-activity-'));
     try {

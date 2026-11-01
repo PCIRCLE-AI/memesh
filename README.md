@@ -47,7 +47,7 @@ memesh doctor
 Use one session to implement a change and another to review it, ask questions, or report results. MeMesh provides a shared local message inbox; Claude Channel adds live delivery into a running Claude Code session. Codex uses its own native notification path, then fetches the message body.
 
 1. Install the plugins above and start both hosts in the same repository, as the same OS user, with matching MeMesh database settings.
-2. For live Claude delivery, follow the [Claude Channel setup](docs/platforms/agent-messaging.md#claude-channel-runner), including registration and the required launch flag. Eligible ordinary Codex CLI sessions register automatically when the plugin's SessionStart hook runs (macOS/Linux).
+2. Eligible ordinary Claude MCP sessions can receive a native notice without Channel on macOS/Linux; the optional [Claude Channel setup](docs/platforms/agent-messaging.md#claude-channel-runner) delivers the full envelope. Eligible ordinary Codex CLI sessions register automatically when the plugin's SessionStart hook runs (macOS/Linux).
 3. Ask your agent: “Find the running Claude/Codex session for this project with `message discover`, send it a review request, and report its reply.” Select the actual discovered recipient; do not guess a session ID. The receiver reads the message, records `intake`, and replies with findings.
 
 Without Claude Channel, the durable inbox and Claude Code hook reminders still work. Delivery does not mean the other agent accepted or completed the work. Stopped sessions are not automatically resumed; verify Codex Desktop participation in `message discover` rather than assuming it. This local channel does not relay messages across computers.
@@ -68,7 +68,7 @@ Claude Code's plugin provides automatic capture and reminders. The Codex plugin 
 
 Claude Code inbox reminders work without Channel setup: hooks use the local `claude-code` recipient unless you configured another identity. They check at startup, your next prompt and turn end, and stop reminding once the agent records `intake` for that message. Live Channel push is optional; see the [messaging guide](docs/platforms/agent-messaging.md#claude-channel-runner).
 
-Ordinary Claude Code MCP sessions register in `message discover` without enabling Channel. Online means the session is connected; immediate push still requires Channel. Without it, use the durable inbox and normal hook reminders.
+Ordinary Claude Code MCP sessions register in `message discover` without enabling Channel. When the native inbox socket is available, they receive a notice and fetch the body; otherwise the durable inbox and hook reminders remain available. Online alone does not prove notification delivery.
 
 Unreleased source builds add `/memesh-memories` in Claude Code to view and edit project memories. Claude Desktop edits inside the pane; terminal Claude Code and Codex use a native form. In Codex, ask `$memesh` to find and edit a memory. Fill only the title or paragraphs you want to change, leaving other fields blank. Save reads back the stored result; Cancel saves nothing. Unsupported hosts keep the existing conversation workflow.
 

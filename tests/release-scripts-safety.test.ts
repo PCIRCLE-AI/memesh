@@ -474,8 +474,10 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       const claudeChannelServer = "'claude/channel' notifications/claude/channel createClaudeChannelServer";
       write('src/host-adapters/claude-channel.ts', claudeChannelServer);
       write('src/host-adapters/codex-app-server.ts', 'adapter experimentalApi: true thread/queue/add ws://localhost/rpc perMessageDeflate: false');
-      const codexQueueAdapter = "dispatch(input serializeNativeAgentMessage 'queue', '--thread' '--message', message shell: false";
+      const codexQueueAdapter = "dispatch(input message = JSON.stringify(messageNotice(input.envelope, input.dispatch_id)) 'queue', '--thread' '--message', message shell: false";
+      const noticeFactory = 'function messageNotice(envelope, deliveryId) { serializeNativeAgentMessage(envelope, deliveryId); return {}; }';
       write('src/host-adapters/codex-cli-queue.ts', codexQueueAdapter);
+      write('src/host-adapters/message-notice.ts', noticeFactory);
       write('dist/mcp/server.js');
       write('dist/transports/mcp/handlers.js', mcpMessageSchema);
       write('dist/transports/http/server.js', 'MessageBody executeAgentMessageAction');
@@ -487,6 +489,7 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       write('dist/host-adapters/claude-channel.js', claudeChannelServer);
       write('dist/host-adapters/codex-app-server.js', 'experimentalApi: true thread/queue/add ws://localhost/rpc perMessageDeflate: false');
       write('dist/host-adapters/codex-cli-queue.js', codexQueueAdapter);
+      write('dist/host-adapters/message-notice.js', noticeFactory);
       write('dist/core/agent-router.js', 'class AgentRouter host_accept');
       for (const runtime of ['router', 'router-client', 'config', 'codex', 'codex-session', 'claude', 'acp']) {
         write(`src/host-runtime/${runtime}.ts`);
@@ -564,6 +567,16 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       }));
       const pass = spawnSync(process.execPath, ['scripts/check-agent-message-sync.mjs', '--root', root], { cwd: repoRoot, encoding: 'utf8' });
       expect(pass.status, pass.stderr).toBe(0);
+      write('src/host-adapters/codex-cli-queue.ts', codexQueueAdapter.replace('messageNotice(input.envelope, input.dispatch_id)', 'input.envelope'));
+      const missingNoticeCall = spawnSync(process.execPath, ['scripts/check-agent-message-sync.mjs', '--root', root], { cwd: repoRoot, encoding: 'utf8' });
+      expect(missingNoticeCall.status).toBe(1);
+      expect(missingNoticeCall.stderr).toContain('Codex serializes the shared notice');
+      write('src/host-adapters/codex-cli-queue.ts', codexQueueAdapter);
+      write('src/host-adapters/message-notice.ts', noticeFactory.replace('serializeNativeAgentMessage(envelope, deliveryId);', ''));
+      const missingNoticeGuard = spawnSync(process.execPath, ['scripts/check-agent-message-sync.mjs', '--root', root], { cwd: repoRoot, encoding: 'utf8' });
+      expect(missingNoticeGuard.status).toBe(1);
+      expect(missingNoticeGuard.stderr).toContain('shared notice enforces native envelope size');
+      write('src/host-adapters/message-notice.ts', noticeFactory);
       write('docs/platforms/agent-messaging.md', canonicalMessageDoc.replace('registers automatically', 'does not register automatically'));
       const negatedRegistration = spawnSync(process.execPath, ['scripts/check-agent-message-sync.mjs', '--root', root], { cwd: repoRoot, encoding: 'utf8' });
       expect(negatedRegistration.status).toBe(1);

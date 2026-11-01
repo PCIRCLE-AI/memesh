@@ -128,11 +128,17 @@ requireText('dist/host-adapters/codex-app-server.js', [
   'experimentalApi: true', 'thread/queue/add', 'ws://localhost/rpc', 'perMessageDeflate: false',
 ]);
 requireText('src/host-adapters/codex-cli-queue.ts', [
-  'dispatch(input', 'serializeNativeAgentMessage', "'queue', '--thread'", "'--message', message", 'shell: false',
+  'dispatch(input', "'queue', '--thread'", "'--message', message", 'shell: false',
 ]);
 requireText('dist/host-adapters/codex-cli-queue.js', [
-  'dispatch(input', 'serializeNativeAgentMessage', "'queue', '--thread'", "'--message', message", 'shell: false',
+  'dispatch(input', "'queue', '--thread'", "'--message', message", 'shell: false',
 ]);
+for (const file of ['src/host-adapters/codex-cli-queue.ts', 'dist/host-adapters/codex-cli-queue.js']) {
+  requirePattern(file, /message\s*=\s*JSON\.stringify\(messageNotice\(input\.envelope,\s*input\.dispatch_id\)\)/, 'Codex serializes the shared notice');
+}
+for (const file of ['src/host-adapters/message-notice.ts', 'dist/host-adapters/message-notice.js']) {
+  requirePattern(file, /function messageNotice\([^)]*\)\s*\{\s*serializeNativeAgentMessage\(envelope,\s*deliveryId\);/, 'shared notice enforces native envelope size');
+}
 requireText('src/core/codex-session-principal.ts', ['CODEX_THREAD_ID', 'codex-thread-${session.threadId}']);
 requireText('dist/core/codex-session-principal.js', ['CODEX_THREAD_ID', 'codex-thread-${session.threadId}']);
 requireText('src/host-runtime/codex-session.ts', [

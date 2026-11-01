@@ -33,6 +33,7 @@ import {
   REQUIRED_DIST,
   assertClaudeModelIntakeArmingConfirmation,
   assertClaudePluginIsolationConfirmation,
+  assertClaudeInboxEnqueue,
   assertCodexRanNoCommands,
   assertCodexReply,
   assertInstalledCodexPluginJourney,
@@ -59,6 +60,7 @@ import {
   buildLiveJourneyPayload,
   buildPackedUpgradeReceipt,
   claudeTrustedIntakePrompt,
+  claudeInboxTrustedPrompt,
   collectCodexAgentMessages,
   findIntakeReceipt,
   findLiveCards,
@@ -68,6 +70,7 @@ import {
   parseCodexThreadId,
   realpathAsFarAsPossible,
   requestClaudePluginIsolationConfirmation,
+  runClaudeInboxDeliveries,
   requestClaudeModelIntakeArmingConfirmation,
   shouldRemoveWorkingDirectories,
   workingDirectoryCleanupReceipt,
@@ -164,6 +167,7 @@ describe('parseArgs', () => {
   it('accepts each supported host', () => {
     expect(parseArgs(['--host', 'codex', '--codex-home', '/private/tmp/codex-home']).host).toBe('codex');
     expect(parseArgs(['--host', 'claude']).host).toBe('claude');
+    expect(parseArgs(['--host', 'claude-inbox']).host).toBe('claude-inbox');
   });
 
   it('defaults out/keep/wait-ms', () => {
@@ -729,7 +733,42 @@ describe('assertCodexRanNoCommands', () => {
   });
 });
 
+describe('ordinary Claude inbox journey', () => {
+  function fixture() {
+    const steps: string[] = []; let discoverCount = 0; let exactCount = 0;
+    const card = { session_id: 'session', principal_id: 'principal' };
+    const journey = {
+      project: 'project', say: () => {}, step: (name: string) => steps.push(name),
+      discover: () => ({ cards: [{ ...card, work_summary: ++discoverCount < 3 ? 'idle' : 'busy' }] }),
+      until: async (_description: string, fn: () => unknown) => { const result = await fn(); if (!result) throw new Error('not observed'); return result; },
+      cli: () => ({ status: 0, stdout: JSON.stringify({ message_id: 'principal-message', delivery_id: 'principal-delivery' }), stderr: '' }),
+      cliJson: (args: string[]) => {
+        const recipient = args[args.indexOf('--recipient') + 1]; const id = args[args.indexOf('--message-id') + 1];
+        return [{ receipt_kind: 'host_accept', adapter_kind: 'claude-inbox', delivery_id: id.replace('message', 'delivery'), message_id: id, recipient }, { fact_source: 'agent_message_receipt', receipt_kind: 'intake', intake_state: 'ingested', message_id: id, recipient, actor: recipient }];
+      },
+      sendAccepted: () => { const kind = ++exactCount === 1 ? 'exact' : 'busy'; return { messageId: `${kind}-message`, deliveryId: `${kind}-delivery`, native: { adapter_kind: 'claude-inbox', receipt: { confirmation: 'enqueue' } } }; },
+    };
+    return { journey, card, steps };
+  }
+  it('requires principal idle, session idle, and session busy evidence', async () => {
+    const f = fixture();
+    await runClaudeInboxDeliveries(f.journey, f.card, 1000, async (prompt: string) => prompt.includes('CLAUDE_BUSY_NOW') ? 'CLAUDE_BUSY_NOW' : 'OBSERVED_FETCH_AND_REPLY');
+    expect(f.steps).toEqual(['idle principal inbox delivery', 'idle exact-session inbox delivery', 'operator attested the Claude task was still busy', 'busy exact-session inbox delivery']);
+  });
+  it('fails when the exact delivery cannot be accepted', async () => {
+    const f = fixture();
+    f.journey.sendAccepted = () => { throw new Error('recipient_unavailable'); };
+    await expect(runClaudeInboxDeliveries(f.journey, f.card, 1000, async () => 'OBSERVED_FETCH_AND_REPLY')).rejects.toThrow('recipient_unavailable');
+  });
+});
+
 describe('assertNativeAccepted', () => {
+  it('requires a confirmed Claude inbox enqueue for the busy path', () => {
+    expect(() => assertClaudeInboxEnqueue({ native: { adapter_kind: 'claude-inbox', receipt: { confirmation: 'enqueue' } } })).not.toThrow();
+    expect(() => assertClaudeInboxEnqueue({ native: { adapter_kind: 'claude-inbox', receipt: { confirmation: 'user' } } })).toThrow(/enqueue/);
+    expect(() => assertClaudeInboxEnqueue({ native: { adapter_kind: 'claude-channel', receipt: { confirmation: 'enqueue' } } })).toThrow(/enqueue/);
+    expect(claudeInboxTrustedPrompt()).toMatch(/next three.*fetch.*intake.*reply/i);
+  });
   it('accepts a send whose exact session took the frame', () => {
     expect(assertNativeAccepted(ACCEPTED_SEND, { adapterKind: 'codex-cli-queue', recipient: THREAD }))
       .toMatchObject({ messageId: MESSAGE_ID, deliveryId: DELIVERY_ID });

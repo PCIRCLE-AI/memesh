@@ -15,6 +15,90 @@ export class ClaudeTranscriptReader {
         this.projectsDir = projectsDir;
         this.projectSlug = projectSlug;
     }
+    locate(session) {
+        if (!/^[A-Za-z0-9_-]{1,128}$/.test(session))
+            return undefined;
+        try {
+            for (const entry of fs.readdirSync(this.projectsDir, { withFileTypes: true })) {
+                if (!entry.isDirectory() || (this.projectSlug !== undefined && entry.name !== this.projectSlug))
+                    continue;
+                const candidate = path.join(this.projectsDir, entry.name, `${session}.jsonl`);
+                try {
+                    if (fs.lstatSync(candidate).isFile())
+                        return candidate;
+                }
+                catch { }
+            }
+        }
+        catch { }
+        return undefined;
+    }
+    mark(session) {
+        const file = this.locate(session);
+        if (!file)
+            return undefined;
+        let fd;
+        try {
+            if (!fs.lstatSync(path.dirname(file)).isDirectory())
+                return undefined;
+            fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
+            const stat = fs.fstatSync(fd);
+            const named = fs.lstatSync(file);
+            if (!stat.isFile() || !named.isFile() || stat.dev !== named.dev || stat.ino !== named.ino || (typeof process.getuid === 'function' && stat.uid !== process.getuid()))
+                return undefined;
+            const last = Buffer.alloc(1);
+            const discardPartial = stat.size > 0 && fs.readSync(fd, last, 0, 1, stat.size - 1) === 1 && last[0] !== 10;
+            return { session, file, dev: stat.dev, ino: stat.ino, offset: stat.size, pending: Buffer.alloc(0), discardPartial };
+        }
+        catch {
+            return undefined;
+        }
+        finally {
+            if (fd !== undefined)
+                fs.closeSync(fd);
+        }
+    }
+    readNew(session, mark) {
+        if (session !== mark.session)
+            return undefined;
+        let fd;
+        try {
+            if (!fs.lstatSync(path.dirname(mark.file)).isDirectory())
+                return undefined;
+            fd = fs.openSync(mark.file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
+            const stat = fs.fstatSync(fd);
+            const named = fs.lstatSync(mark.file);
+            if (!stat.isFile() || !named.isFile() || stat.dev !== mark.dev || stat.ino !== mark.ino || named.dev !== stat.dev || named.ino !== stat.ino || (typeof process.getuid === 'function' && stat.uid !== process.getuid()) || stat.size < mark.offset || stat.size - mark.offset > MAX_BYTES)
+                return undefined;
+            const buffer = Buffer.alloc(stat.size - mark.offset);
+            const n = fs.readSync(fd, buffer, 0, buffer.length, mark.offset);
+            mark.offset += n;
+            let bytes = Buffer.concat([mark.pending, buffer.subarray(0, n)]);
+            if (bytes.length > MAX_BYTES)
+                return undefined;
+            const result = [];
+            let newline;
+            while ((newline = bytes.indexOf(10)) >= 0) {
+                if (mark.discardPartial)
+                    mark.discardPartial = false;
+                else
+                    try {
+                        result.push(JSON.parse(bytes.subarray(0, newline).toString('utf8')));
+                    }
+                    catch { }
+                bytes = bytes.subarray(newline + 1);
+            }
+            mark.pending = Buffer.from(bytes);
+            return result;
+        }
+        catch {
+            return undefined;
+        }
+        finally {
+            if (fd !== undefined)
+                fs.closeSync(fd);
+        }
+    }
     currentTask(session) {
         if (!/^[A-Za-z0-9_-]{1,128}$/.test(session))
             return undefined;
@@ -23,25 +107,8 @@ export class ClaudeTranscriptReader {
             this.file = undefined;
             this.reset();
         }
-        if (!this.file) {
-            try {
-                for (const entry of fs.readdirSync(this.projectsDir, { withFileTypes: true })) {
-                    if (!entry.isDirectory() || (this.projectSlug !== undefined && entry.name !== this.projectSlug))
-                        continue;
-                    const candidate = path.join(this.projectsDir, entry.name, `${session}.jsonl`);
-                    try {
-                        if (fs.lstatSync(candidate).isFile()) {
-                            this.file = candidate;
-                            break;
-                        }
-                    }
-                    catch { }
-                }
-            }
-            catch {
-                return undefined;
-            }
-        }
+        if (!this.file)
+            this.file = this.locate(session);
         if (!this.file)
             return undefined;
         let fd;
