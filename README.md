@@ -82,7 +82,7 @@ Unreleased source builds add `/memesh-memories` in Claude Code to view and edit 
 | Tool | What it does |
 |------|-------------|
 | `remember` | Save a memory; decisions need a reason. |
-| `recall` | Find memories. |
+| `recall` | Find memories by words or retrieve them by ID. |
 | `forget` | Archive a memory or remove one observation. |
 | `learn` | Save a mistake, its cause, and how to avoid it. |
 | `briefing` | Read the project's current memory context. |

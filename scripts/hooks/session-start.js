@@ -68,7 +68,8 @@ import {
   taskStateName,
   writeCitationRule,
   writeAutoUpdateConsent,
-  writePrivateJson,
+  writePrivateJsonAtomic,
+  recallSessionPath,
   openMemeshDb,
   sessionProjectLine,
   jsonStringLiteral,
@@ -1539,13 +1540,13 @@ process.stdin.on('end', async () => {
       // is a per-session cost with no effect.
 
       // --- Record injected entity IDs for recall effectiveness tracking ---
-      // The Stop hook credits recall_hits from EXPLICIT `[mem:id]` citations
-      // the agent writes (after structurally removing the transcript records
-      // Claude Code created FROM this hook's output — the injected block
-      // itself prints a handle on every line; see stripHookEchoes in
-      // session-summary.js). Literal-content matching was retired after
-      // measuring 0% signal over ten real sessions. `injectedContext` is
-      // kept as the record of what was shown.
+      // Stop credits assistant text citations and tool-result fetch markers
+      // for these injected ids. Native roles exclude hook echo attachments;
+      // timestamps restrict credit to the active injection window.
+      // Literal-content matching was retired after
+      // measuring 0% signal over ten real sessions. `injectedContext` keeps
+      // only the audit consumer's 120-character marker prefix, never a copy
+      // of the complete memory block.
       //
       // The set below is every pool the topology block draws from — the
       // lessons pool and the durable-memory index (#323) included. It is
@@ -1573,17 +1574,30 @@ process.stdin.on('end', async () => {
           const sessionsDir = join(memeshDir, 'sessions');
           ensurePrivateDir(sessionsDir);
 
-          const sessionId = `${process.pid}-${Date.now()}`;
-          writePrivateJson(
-            join(sessionsDir, `${sessionId}.json`),
-            {
-              injectedAt: new Date().toISOString(),
-              project: projectName,
-              entityIds: allInjected.map(e => e.id),
-              entityNames: allInjected.map(e => e.name),
-              injectedContext: memoryContext || summary,
+          const sessionId = data.session_id;
+          const sessionPath = recallSessionPath(sessionsDir, sessionId, projectName);
+          if (sessionPath) {
+            let prior = null;
+            if (existsSync(sessionPath)) {
+              const candidate = JSON.parse(readFileSync(sessionPath, 'utf8'));
+              if (candidate.sessionId === sessionId && candidate.project === projectName) prior = candidate;
             }
-          );
+            const injectedById = new Map((prior?.entityIds || []).map((id, i) => [id, prior.entityNames?.[i] ?? String(id)]));
+            for (const entity of allInjected) injectedById.set(entity.id, entity.name);
+            writePrivateJsonAtomic(sessionPath, {
+              ...prior,
+              sessionId,
+              injectedAt: prior?.injectedAt || new Date().toISOString(),
+              project: projectName,
+              entityIds: [...injectedById.keys()],
+              entityNames: [...injectedById.values()],
+              injectedContext: String(memoryContext || summary).slice(0, 120),
+              creditedIds: prior?.creditedIds || [],
+              sessionCounted: prior?.sessionCounted === true,
+            });
+          } else {
+            recordHookOutcome(process.env, { hook: 'session-start', outcome: 'skipped', reason: SKIP_REASONS.noSessionId, payload: data });
+          }
 
           // Clean up old session files (>24h)
           try {
@@ -1600,6 +1614,7 @@ process.stdin.on('end', async () => {
           } catch {}
         }
       } catch (err) {
+        recordHookOutcome(process.env, { hook: 'session-start', outcome: 'error', reason: `sessions-write: ${hookErrorReason(err)}`, payload: data });
         // Non-critical — sessions-file write powers citation accounting
         // (recall_hits credited from `[mem:id]` markers). If it silently
         // breaks, no hit can ever be credited and the impact-score factor

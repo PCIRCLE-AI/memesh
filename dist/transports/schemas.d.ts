@@ -112,6 +112,7 @@ export declare const PaneMemoryEditorSchema: z.ZodObject<{
     }, z.core.$strict>], "action">;
 }, z.core.$strict>;
 export declare const RecallSchema: z.ZodObject<{
+    ids: z.ZodOptional<z.ZodArray<z.ZodNumber>>;
     query: z.ZodOptional<z.ZodString>;
     tag: z.ZodOptional<z.ZodString>;
     limit: z.ZodOptional<z.ZodNumber>;
@@ -125,6 +126,7 @@ export declare const RecallSchema: z.ZodObject<{
 }, z.core.$strict>;
 export declare const McpRecallSchema: z.ZodObject<{
     project: z.ZodOptional<z.ZodUnion<readonly [z.ZodString, z.ZodLiteral<false>]>>;
+    ids: z.ZodOptional<z.ZodArray<z.ZodNumber>>;
     query: z.ZodOptional<z.ZodString>;
     tag: z.ZodOptional<z.ZodString>;
     limit: z.ZodOptional<z.ZodNumber>;

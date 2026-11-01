@@ -44,7 +44,7 @@ import { removeTempDir } from '../helpers/temp-dir.js';
 // The hook-only work-package notice's literal text — single owner in
 // `_shared.js`, so this file never hardcodes a second copy to compare
 // against.
-import { WORK_PACKAGE_NOTICE, sessionProjectLine } from '../../scripts/hooks/_shared.js';
+import { WORK_PACKAGE_NOTICE, recallSessionPath, sessionProjectLine } from '../../scripts/hooks/_shared.js';
 
 /** The hook's memory context: its additionalContext minus the leading line
  *  naming the session's project (hook-only session context, not briefing
@@ -1865,11 +1865,13 @@ describe('decisions first, one budget — both readers (#434 step 3)', () => {
     return id;
   }
 
+  let hookSession = 0;
   /** The hook's injected context and its session record, on the same database. */
   function runHook(level: string, sessionLimit: number, extraEnv: Record<string, string> = {}) {
+    const sessionId = `briefing-test-${++hookSession}`;
     closeDatabase();
     const out = execFileSync('node', [path.resolve('scripts/hooks/session-start.js')], {
-      input: JSON.stringify({ cwd }),
+      input: JSON.stringify({ cwd, session_id: sessionId }),
       env: { ...process.env, MEMESH_DB_PATH: dbPath, MEMESH_BRIEFING: level, MEMESH_SESSION_LIMIT: String(sessionLimit), ...extraEnv },
       encoding: 'utf8',
       timeout: 30_000,
@@ -1877,9 +1879,8 @@ describe('decisions first, one budget — both readers (#434 step 3)', () => {
     openDatabase(dbPath);
     const context = hookMemoryContext(out, cwd)!;
     const sessionsDir = path.join(tmpDir, 'sessions');
-    const newest = fs.readdirSync(sessionsDir).filter((f) => f.endsWith('.json'))
-      .map((f) => path.join(sessionsDir, f)).sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0];
-    const record = JSON.parse(fs.readFileSync(newest, 'utf8')) as { entityIds: number[] };
+    const recordPath = recallSessionPath(sessionsDir, sessionId, project)!;
+    const record = JSON.parse(fs.readFileSync(recordPath, 'utf8')) as { entityIds: number[] };
     return { context, record };
   }
 

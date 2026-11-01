@@ -3367,7 +3367,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
       // has no guards to report. Not a fault, and not worth a row.
     }
 
-    // Injection ROI: is anything the hooks inject actually being cited?
+    // Injection ROI: is anything the hooks inject cited or retrieved by ID?
     //
     // This row exists because the numbers behind it were correct, readable,
     // and seen by nobody. `citation_sessions_total` / `citation_sessions_cited`
@@ -3420,17 +3420,17 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
       if (rate === null) {
         dbChecks.push(createInfo(
           'citation_compliance',
-          'Memory citation rate',
-          `${citationTotal} session(s) received injected memories; how many cited one is not recorded `
+          'Memory use rate',
+          `${citationTotal} session(s) received injected memories; how many cited or retrieved one is not recorded `
           + `(this database predates the counter that would say). The rate will be measurable from the next session on.`,
         ));
       } else if (rate === 0) {
         dbChecks.push(createCheck(
           'citation_compliance',
-          'Memory citation rate',
+          'Memory use rate',
           'warn',
-          `${citationTotal} session(s) received injected memories and NONE cited one. Every injection is `
-          + `costing tokens with no evidence any of it was used — and with no citations, ranking cannot `
+          `${citationTotal} session(s) received injected memories and NONE cited or retrieved one. Every injection is `
+          + `costing tokens with no evidence any of it was used — and with no citations or ID retrievals, ranking cannot `
           + `learn which memories are worth injecting.`,
           rule.state === 'current'
             ? `The citation contract is installed at ${rule.path}. If this stays at 0% across several more sessions, the injected memories are not earning their tokens — consider narrowing what is injected.`
@@ -3440,8 +3440,8 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
       } else {
         dbChecks.push(createInfo(
           'citation_compliance',
-          'Memory citation rate',
-          `${cited} of ${citationTotal} session(s) with injected memories cited at least one (${rate}%).`,
+          'Memory use rate',
+          `${cited} of ${citationTotal} session(s) with injected memories cited or retrieved at least one (${rate}%).`,
         ));
       }
     }

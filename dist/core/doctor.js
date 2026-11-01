@@ -1543,18 +1543,18 @@ export async function runDoctor(options) {
                 rule = { path: citationRulePath(ruleScope, homeDir(), process.cwd()), state: 'unreadable' };
             }
             if (rate === null) {
-                dbChecks.push(createInfo('citation_compliance', 'Memory citation rate', `${citationTotal} session(s) received injected memories; how many cited one is not recorded `
+                dbChecks.push(createInfo('citation_compliance', 'Memory use rate', `${citationTotal} session(s) received injected memories; how many cited or retrieved one is not recorded `
                     + `(this database predates the counter that would say). The rate will be measurable from the next session on.`));
             }
             else if (rate === 0) {
-                dbChecks.push(createCheck('citation_compliance', 'Memory citation rate', 'warn', `${citationTotal} session(s) received injected memories and NONE cited one. Every injection is `
-                    + `costing tokens with no evidence any of it was used — and with no citations, ranking cannot `
+                dbChecks.push(createCheck('citation_compliance', 'Memory use rate', 'warn', `${citationTotal} session(s) received injected memories and NONE cited or retrieved one. Every injection is `
+                    + `costing tokens with no evidence any of it was used — and with no citations or ID retrievals, ranking cannot `
                     + `learn which memories are worth injecting.`, rule.state === 'current'
                     ? `The citation contract is installed at ${rule.path}. If this stays at 0% across several more sessions, the injected memories are not earning their tokens — consider narrowing what is injected.`
                     : `The citation contract is ${rule.state} at ${rule.path}. Run 'memesh install-hooks' (or start a new session) to write it, then re-check after a few sessions.`, { code: 'citation.none', params: { total: citationTotal } }));
             }
             else {
-                dbChecks.push(createInfo('citation_compliance', 'Memory citation rate', `${cited} of ${citationTotal} session(s) with injected memories cited at least one (${rate}%).`));
+                dbChecks.push(createInfo('citation_compliance', 'Memory use rate', `${cited} of ${citationTotal} session(s) with injected memories cited or retrieved at least one (${rate}%).`));
             }
         }
     }

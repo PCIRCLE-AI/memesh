@@ -310,10 +310,20 @@ export declare const TOOL_DEFINITIONS: readonly [{
     };
 }, {
     readonly name: "recall";
-    readonly description: "Search and retrieve stored knowledge. Uses full-text search. Selectors: `project` (that project, memories with no project, and global ones; false = only memories with no project and global ones), `tag` (exactly that tag) or `cross_project` (every project; a `tag` given with it is ignored). `project` cannot be combined with `tag` or `cross_project`. With none, it uses the project this session is bound to (MEMESH_PROJECT_ROOT, or the client’s workspace root) the same way, or only memories with no project and global ones when nothing is bound; a launch or workspace root that is set but cannot be resolved is refused with the reason; the response says what it searched (`scope`) and each result carries its `projects` ([] for none). Call with no query to list recent memories. One- and two-term queries use OR matching; queries with three or more terms try strict all-term matching first and fall back to OR only when strict matching has no hits, with results ranked by relevance. Results are capped for size: each entity's observations+tags at 8 KB, the whole response at 32 KB; a capped entity carries `truncated` with the full shown/total counts, and the response carries `truncated`/`entities_omitted` when anything was cut. `file:*` tags are never included — they exist for pre-edit lookups, not for reading.";
+    readonly description: "Search stored knowledge with full-text search, or retrieve exact memory IDs. Use ids (1–20 positive integers) without query, tag or cross_project. ID results report found, archived, unavailable or omitted; only found memories include content and a mem-fetched reference. Retry omitted results individually; an item still omitted on its own cannot fit the response limit. Selectors: `project` (that project, memories with no project, and global ones; false = only memories with no project and global ones), `tag` (exactly that tag) or `cross_project` (every project; a `tag` given with it is ignored). `project` cannot be combined with `tag` or `cross_project`. With none, it uses the project this session is bound to (MEMESH_PROJECT_ROOT, or the client’s workspace root) the same way, or only memories with no project and global ones when nothing is bound; a launch or workspace root that is set but cannot be resolved is refused with the reason; the response says what it searched (`scope`) and each result carries its `projects` ([] for none). Call with no query to list recent memories. One- and two-term queries use OR matching; queries with three or more terms try strict all-term matching first and fall back to OR only when strict matching has no hits, with results ranked by relevance. Results are capped for size: each entity's observations+tags at 8 KB, the whole response at 32 KB; a capped entity carries `truncated` with the full shown/total counts, and the response carries `truncated`/`entities_omitted` when anything was cut. `file:*` tags are never included — they exist for pre-edit lookups, not for reading.";
     readonly inputSchema: {
         readonly type: "object";
         readonly properties: {
+            readonly ids: {
+                readonly type: "array";
+                readonly items: {
+                    readonly type: "integer";
+                    readonly minimum: 1;
+                };
+                readonly minItems: 1;
+                readonly maxItems: 20;
+                readonly description: "Retrieve exact memory IDs. Cannot be combined with query, tag or cross_project. Results report found, archived, unavailable or omitted; only returned found memories carry a mem-fetched reference.";
+            };
             readonly query: {
                 readonly type: "string";
                 readonly description: "Search query. One- and two-term queries use OR matching; three or more terms use strict all-term matching first, then OR fallback if strict matching has no hits. Results are ranked by relevance (BM25); only the first 32 surviving terms are used, and words present in most of the corpus are ignored as noise. Leave empty to list recent.";

@@ -19,7 +19,7 @@ import { getAgentRouterSocketPath, getDbPath, getProjectName, homeDir, redactSec
 import { agentScopeIdRejection, canonicalAgentScopeId, projectScopeRejection } from '../../core/agent-scope-id.js';
 import { NAMESPACES } from '../../core/types.js';
 import { deriveNote, splitObservations, NOTE_DEFAULT_TYPE, NOTE_MAX_OBSERVATIONS } from '../../core/note-derive.js';
-import { RememberSchema } from '../schemas.js';
+import { RememberSchema, RecallSchema } from '../schemas.js';
 import { ingestNoteDirectory, summarizeNoteIngest } from '../../core/note-ingest.js';
 import { assembleBriefing, readBriefingIndex } from '../../core/briefing.js';
 import { BRIEFING_LEVELS, resolveBriefingLevel } from '../../core/briefing-level.js';
@@ -576,6 +576,7 @@ program
   .command('recall')
   .description('Search stored knowledge')
   .argument('[query]', 'Search query')
+  .option('--ids <ids>', 'Comma-separated memory IDs')
   .option('--tag <tag>', 'Filter by tag')
   .option('--limit <n>', 'Max results', wholeNumber('--limit'), 20)
   .option('--include-archived', 'Include archived entities')
@@ -584,15 +585,23 @@ program
   .option('--json', 'Output as JSON')
   .action(async (query, opts) => {
     requireOneOf(opts.namespace, NAMESPACES, '--namespace');
+    const ids = opts.ids === undefined ? undefined : opts.ids.split(',').map((s: string) => /^\d+$/.test(s) ? Number(s) : NaN);
+    const input = {
+      ...(ids !== undefined ? { ids } : {}),
+      ...(query !== undefined ? { query } : {}),
+      ...(opts.tag !== undefined ? { tag: opts.tag } : {}),
+      ...(opts.crossProject !== undefined ? { cross_project: opts.crossProject } : {}),
+      limit: opts.limit, include_archived: opts.includeArchived, namespace: opts.namespace,
+    };
+    if (ids !== undefined) {
+      const parsed = RecallSchema.safeParse({ ...input, limit: undefined });
+      if (!parsed.success) throw new Error(`--ids: ${parsed.error.issues.map(issue => issue.message).join('; ')}`);
+    }
     await withDatabase(async () => {
       // recallForAgent: recall + conflicts + the agent-facing size cap (#494); see its docstring.
       const result = await recallForAgent({
-        query: query || undefined,
-        tag: opts.tag,
-        limit: opts.limit,
-        include_archived: opts.includeArchived,
-        namespace: opts.namespace,
-        cross_project: opts.crossProject,
+        ...input,
+        ...(ids !== undefined ? { projectScope: `project:${getProjectName()}` } : {}),
       });
       const { entities, conflicts, retrieval, entities_omitted } = result;
 
@@ -605,6 +614,14 @@ program
         // `entities_omitted` ride along only when the size cap cut something
         // — same rule as `conflicts`.
         console.log(JSON.stringify(agentRecallEnvelope(result)));
+      } else if (result.results) {
+        for (const item of result.results) {
+          console.log(`${item.id}: ${item.status}${item.reference ? ` ${item.reference}` : ''}`);
+          const entity = entities.find(e => e.id === item.id);
+          if (entity) {
+            console.log(JSON.stringify(entity, null, 2));
+          }
+        }
       } else if (entities.length === 0) {
         // Every match can be too large to show (a huge metadata blob): say
         // so, never "No results found" for results that exist.

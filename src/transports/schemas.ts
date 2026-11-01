@@ -208,6 +208,7 @@ export const PaneMemoryEditorSchema = z.object({
 }).strict();
 
 const recallShape = {
+  ids: z.array(z.number().int().positive()).min(1).max(20).optional(),
   query: z.string().max(1000).optional(),
   tag: z.string().max(255).optional(),
   limit: z.number().int().min(1).max(100).optional(),
@@ -216,10 +217,15 @@ const recallShape = {
   cross_project: z.boolean().optional(),
 };
 
-export const RecallSchema = z.object(recallShape).strict();
+const recallSelector = (value: { ids?: number[]; query?: string; tag?: string; cross_project?: boolean }, ctx: z.RefinementCtx) => {
+  if (value.ids !== undefined && (value.query !== undefined || value.tag !== undefined || value.cross_project !== undefined)) {
+    ctx.addIssue({ code: 'custom', message: 'ids cannot be combined with query, tag or cross_project' });
+  }
+};
+export const RecallSchema = z.object(recallShape).strict().superRefine(recallSelector);
 
 /** MCP recall: `project` (an id, or false for memories with no project) selects the scope explicitly. */
-export const McpRecallSchema = z.object({ ...recallShape, project: mcpProjectField }).strict();
+export const McpRecallSchema = z.object({ ...recallShape, project: mcpProjectField }).strict().superRefine(recallSelector);
 // Deliberately NO refine requiring query/tag: `{}` is the documented
 // list-recent mode (tests/transports/http.test.ts pins it). The P7 audit
 // initially read the empty-DB `[]` answer as a silent failure; it is the

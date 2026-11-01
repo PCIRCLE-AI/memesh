@@ -74,6 +74,7 @@ export interface RememberInput {
     currentProject?: string;
 }
 export interface RecallInput {
+    ids?: number[];
     query?: string;
     tag?: string;
     limit?: number;

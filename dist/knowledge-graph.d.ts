@@ -28,6 +28,9 @@ export declare class KnowledgeGraph {
         includeArchived?: boolean;
         namespace?: string;
         tag?: string;
+        projectScope?: string | null;
+        filterRelations?: boolean;
+        relationIncludeArchived?: boolean;
     }): Entity[];
     getRelations(entityName: string): Relation[];
     search(query?: string, opts?: SearchOptions): Entity[];

@@ -5,6 +5,10 @@ export declare function remember(input: RememberInput): RememberResult;
 export declare function shownEntity(entity: Entity): Entity;
 export declare function recall(args: RecallInput): Entity[];
 export type RetrievalMeta = {
+    mode: 'ids';
+    degraded: false;
+    truncated: false;
+} | {
     mode: 'fts';
     degraded: false;
     truncated: boolean;
@@ -19,6 +23,19 @@ export declare function recallEnhanced(args: RecallInput): Promise<{
     retrieval: RetrievalMeta;
 }>;
 export declare function recallWithConflicts(args: RecallInput): Promise<{
+    entities: Entity[];
+    conflicts: string[];
+    retrieval: {
+        mode: "ids";
+        degraded: false;
+        truncated: false;
+    };
+    results: {
+        id: number;
+        status: "found" | "archived" | "unavailable" | "omitted";
+        reference?: string;
+    }[];
+} | {
     entities: Entity[];
     conflicts: string[];
     retrieval: RetrievalMeta;

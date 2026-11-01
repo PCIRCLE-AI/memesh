@@ -5822,8 +5822,10 @@ var init_knowledge_graph = __esm({
         const namespaceFilter = opts?.namespace ? "AND namespace = ?" : "";
         if (opts?.namespace)
           params.push(opts.namespace);
+        const scope = opts?.projectScope !== void 0 ? projectScopeFilter(opts.projectScope) : { sql: "", params: [] };
+        params.push(...scope.params);
         const entityRows = this.db.prepare(`SELECT id, name, title, type, created_at, metadata, status, access_count, last_accessed_at, confidence, namespace, recall_hits, recall_misses
-         FROM entities WHERE id IN (${placeholders}) ${statusFilter} ${namespaceFilter}`).all(...params);
+         FROM entities e WHERE e.id IN (${placeholders}) ${statusFilter} ${namespaceFilter} ${scope.sql}`).all(...params);
         const entityMap = /* @__PURE__ */ new Map();
         for (const row of entityRows) {
           entityMap.set(row.id, row);
@@ -5842,12 +5844,16 @@ var init_knowledge_graph = __esm({
             tagMap.set(row.entity_id, []);
           tagMap.get(row.entity_id).push(row.tag);
         }
+        const relationScope = opts?.filterRelations && opts.projectScope !== void 0 ? projectScopeFilter(opts.projectScope) : { sql: "", params: [] };
+        const relationScopeSql = relationScope.sql.replaceAll("e.", "e_to.");
+        const relationNamespaceSql = opts?.filterRelations && opts.namespace ? "AND e_to.namespace = ?" : "";
+        const relationStatusSql = opts?.filterRelations && !opts.relationIncludeArchived ? "AND e_to.status != 'archived'" : "";
         const relRows = this.db.prepare(`SELECT r.from_entity_id, e_from.name AS "from", e_to.name AS "to",
                 r.relation_type AS type
          FROM relations r
          JOIN entities e_from ON r.from_entity_id = e_from.id
          JOIN entities e_to ON r.to_entity_id = e_to.id
-         WHERE r.from_entity_id IN (${placeholders})`).all(...ids);
+         WHERE r.from_entity_id IN (${placeholders}) ${relationScopeSql} ${relationNamespaceSql} ${relationStatusSql}`).all(...ids, ...relationScope.params, ...opts?.filterRelations && opts.namespace ? [opts.namespace] : []);
         const relMap = /* @__PURE__ */ new Map();
         for (const row of relRows) {
           if (!relMap.has(row.from_entity_id))
@@ -7456,11 +7462,14 @@ function capRecallForAgent(result, scope) {
   const responseBudget = RECALL_RESPONSE_MAX_BYTES - RESPONSE_METADATA_RESERVE_BYTES;
   let shownCount = 0;
   for (let count = totalEntities; count >= 0; count--) {
+    const shown = new Set(cappedEntities.slice(0, count).map((e) => e.id));
+    const results = result.results?.map((r) => r.status === "found" && !shown.has(r.id) ? { id: r.id, status: "omitted" } : r);
     const candidateBytes = byteLength(JSON.stringify({
       entities: cappedEntities.slice(0, count),
       conflicts: result.conflicts,
       retrieval: result.retrieval,
-      scope
+      scope,
+      results
     }));
     if (candidateBytes <= responseBudget) {
       shownCount = count;
@@ -7475,6 +7484,10 @@ function capRecallForAgent(result, scope) {
     conflicts: result.conflicts,
     retrieval: result.retrieval
   };
+  if (result.results) {
+    const shown = new Set(shownEntities.map((e) => e.id));
+    envelope.results = result.results.map((r) => r.status === "found" && !shown.has(r.id) ? { id: r.id, status: "omitted" } : r);
+  }
   if (anyContentTruncated || entitiesDropped)
     envelope.truncated = true;
   if (entitiesDropped)
@@ -7486,6 +7499,7 @@ function capRecallForAgent(result, scope) {
 function agentRecallEnvelope(r) {
   return {
     entities: r.entities,
+    ...r.results ? { results: r.results } : {},
     retrieval: r.retrieval,
     ...r.conflicts.length > 0 ? { conflicts: r.conflicts } : {},
     ...r.truncated ? { truncated: r.truncated } : {},
@@ -8215,12 +8229,41 @@ async function recallEnhanced(args) {
   };
 }
 async function recallWithConflicts(args) {
+  if (args.ids !== void 0) {
+    const { kg: kg2, ...result } = recallIds(args, args.ids);
+    kg2.trackAccess(result.entities.map((e) => e.id));
+    return result;
+  }
   const { entities, retrieval } = await recallEnhanced(args);
   const kg = new KnowledgeGraph(getDatabase());
   const conflicts = kg.findConflicts(entities.map((e) => e.name));
   return { entities, conflicts, retrieval };
 }
+function recallIds(args, requestedIds) {
+  const ids = [...new Set(requestedIds)];
+  const kg = new KnowledgeGraph(getDatabase());
+  const rows = kg.getEntitiesByIds(ids, { includeArchived: true, namespace: args.namespace, projectScope: args.projectScope, filterRelations: true, relationIncludeArchived: args.include_archived });
+  const byId = new Map(rows.map((entity) => [entity.id, entity]));
+  const results = ids.map((id) => {
+    const entity = byId.get(id);
+    if (!entity)
+      return { id, status: "unavailable" };
+    if (entity.archived && !args.include_archived)
+      return { id, status: "archived" };
+    return { id, status: "found", reference: `[mem-fetched:${id}]` };
+  });
+  const entities = summarizeReplacedHistory(results.filter((r) => r.status === "found").map((r) => byId.get(r.id))).map(shownEntity);
+  const conflicts = kg.findConflicts(entities.map((e) => e.name));
+  const retrieval = { mode: "ids", degraded: false, truncated: false };
+  return { kg, entities, conflicts, retrieval, results };
+}
 async function recallForAgent(args, scope) {
+  if (args.ids !== void 0) {
+    const { kg, ...raw } = recallIds(args, args.ids);
+    const result = capRecallForAgent(raw, scope);
+    kg.trackAccess(result.entities.map((e) => e.id));
+    return result;
+  }
   return capRecallForAgent(await recallWithConflicts(args), scope);
 }
 function learn(args) {
@@ -31088,7 +31131,7 @@ function refineRemember(data, ctx) {
     ctx.addIssue({ code: "custom", path: ["note"], message: `note yields ${derived2.observations.length} observations; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory` });
   }
 }
-var projectRules, projectName, sanitizeName, nameField, titleField, observationField, workPackageText, digestWorkPackageRef, transcriptWorkPackageRef, workPackageIdentity, WORK_PACKAGE_RESULT_MAX_BYTES, WorkPackageSchema, rememberShape, RememberSchema, mcpProjectField, McpRememberSchema, NativeMemoryEditorSchema, NativeMemoryEditFieldsSchema, PaneMemoryEditorSchema, recallShape, RecallSchema, McpRecallSchema, ForgetSchema, ExportSchema, ExportResultSchema, ImportSchema, nonBlankBounded, agentScopeId, learnShape, LearnSchema, McpLearnSchema, HttpLearnSchema, TaskStateSchema, BriefingSchema, WhySchema, UserPatternsSchema, ImprovementSchema, messageProject, messageRecipient, messageSender, messageId, messageCursor, messageIdempotencyKey, messageReceiptBase, MessageSchema;
+var projectRules, projectName, sanitizeName, nameField, titleField, observationField, workPackageText, digestWorkPackageRef, transcriptWorkPackageRef, workPackageIdentity, WORK_PACKAGE_RESULT_MAX_BYTES, WorkPackageSchema, rememberShape, RememberSchema, mcpProjectField, McpRememberSchema, NativeMemoryEditorSchema, NativeMemoryEditFieldsSchema, PaneMemoryEditorSchema, recallShape, recallSelector, RecallSchema, McpRecallSchema, ForgetSchema, ExportSchema, ExportResultSchema, ImportSchema, nonBlankBounded, agentScopeId, learnShape, LearnSchema, McpLearnSchema, HttpLearnSchema, TaskStateSchema, BriefingSchema, WhySchema, UserPatternsSchema, ImprovementSchema, messageProject, messageRecipient, messageSender, messageId, messageCursor, messageIdempotencyKey, messageReceiptBase, MessageSchema;
 var init_schemas3 = __esm({
   "dist/transports/schemas.js"() {
     "use strict";
@@ -31185,6 +31228,7 @@ var init_schemas3 = __esm({
       ])
     }).strict();
     recallShape = {
+      ids: external_exports.array(external_exports.number().int().positive()).min(1).max(20).optional(),
       query: external_exports.string().max(1e3).optional(),
       tag: external_exports.string().max(255).optional(),
       limit: external_exports.number().int().min(1).max(100).optional(),
@@ -31192,8 +31236,13 @@ var init_schemas3 = __esm({
       namespace: external_exports.enum(NAMESPACES).optional(),
       cross_project: external_exports.boolean().optional()
     };
-    RecallSchema = external_exports.object(recallShape).strict();
-    McpRecallSchema = external_exports.object({ ...recallShape, project: mcpProjectField }).strict();
+    recallSelector = (value, ctx) => {
+      if (value.ids !== void 0 && (value.query !== void 0 || value.tag !== void 0 || value.cross_project !== void 0)) {
+        ctx.addIssue({ code: "custom", message: "ids cannot be combined with query, tag or cross_project" });
+      }
+    };
+    RecallSchema = external_exports.object(recallShape).strict().superRefine(recallSelector);
+    McpRecallSchema = external_exports.object({ ...recallShape, project: mcpProjectField }).strict().superRefine(recallSelector);
     ForgetSchema = external_exports.object({
       name: nameField,
       observation: external_exports.string().min(1).max(1e4).optional()
@@ -33743,10 +33792,11 @@ function exportOpenAITools() {
       type: "function",
       function: {
         name: "memesh_recall",
-        description: "Search and retrieve stored knowledge. Uses full-text search with scoring.",
+        description: "Search stored knowledge, or retrieve up to 20 exact memory IDs. IDs cannot be combined with query, tag or cross_project. Found memories count toward ranking like citations; omitted results exceed the response budget. Retry individually; an item still omitted on its own cannot fit the response limit.",
         parameters: {
           type: "object",
           properties: {
+            ids: { type: "array", items: { type: "integer", minimum: 1 }, minItems: 1, maxItems: 20, description: "Exact memory IDs. Not with query, tag or cross_project; namespace and include_archived still apply." },
             query: { type: "string", description: "Search query" },
             tag: { type: "string", description: "Filter by tag" },
             limit: { type: "number", description: "Max results (1-100, default: 20)" },
@@ -61977,6 +62027,8 @@ var init_capture_liveness = __esm({
       toolNameAbsent: "tool_name absent in payload",
       notDecisionTool: "not a decision-shaped tool call",
       noSessionId: "no usable session_id in the payload",
+      noRecallSessionRecord: "no usable injection record for this session \u2014 recall use was not counted",
+      noEligibleRecallRows: "no timestamped assistant or tool rows since injection \u2014 recall use was not counted",
       alreadyNudged: "already nudged for this tool in this session",
       noBashCommand: "no Bash command in the payload",
       noDatabaseForGuards: "no database yet \u2014 nothing to guard against",
@@ -62033,7 +62085,8 @@ var init_capture_liveness = __esm({
     UNRECOGNISED_REASON = "unrecognised reason";
     NOT_TRIGGERED_SKIP_REASONS = {
       "post-commit": [SKIP_REASONS.notBash, SKIP_REASONS.notGitCommit],
-      "session-summary": [SKIP_REASONS.alreadyCaptured],
+      "session-summary": [SKIP_REASONS.alreadyCaptured, SKIP_REASONS.noSessionId, SKIP_REASONS.noRecallSessionRecord, SKIP_REASONS.noEligibleRecallRows],
+      "session-start": [SKIP_REASONS.noSessionId],
       "note-ingest": [SKIP_REASONS.noNoteChanged],
       "remember-nudge": [SKIP_REASONS.trivialTurn, SKIP_REASONS.noDecisionMove],
       "handoff-capture": [SKIP_REASONS.handoffTooShort, SKIP_REASONS.autoCaptureOff]
@@ -63491,11 +63544,11 @@ async function runDoctor(options) {
         rule = { path: citationRulePath(ruleScope, homeDir(), process.cwd()), state: "unreadable" };
       }
       if (rate === null) {
-        dbChecks.push(createInfo("citation_compliance", "Memory citation rate", `${citationTotal} session(s) received injected memories; how many cited one is not recorded (this database predates the counter that would say). The rate will be measurable from the next session on.`));
+        dbChecks.push(createInfo("citation_compliance", "Memory use rate", `${citationTotal} session(s) received injected memories; how many cited or retrieved one is not recorded (this database predates the counter that would say). The rate will be measurable from the next session on.`));
       } else if (rate === 0) {
-        dbChecks.push(createCheck("citation_compliance", "Memory citation rate", "warn", `${citationTotal} session(s) received injected memories and NONE cited one. Every injection is costing tokens with no evidence any of it was used \u2014 and with no citations, ranking cannot learn which memories are worth injecting.`, rule.state === "current" ? `The citation contract is installed at ${rule.path}. If this stays at 0% across several more sessions, the injected memories are not earning their tokens \u2014 consider narrowing what is injected.` : `The citation contract is ${rule.state} at ${rule.path}. Run 'memesh install-hooks' (or start a new session) to write it, then re-check after a few sessions.`, { code: "citation.none", params: { total: citationTotal } }));
+        dbChecks.push(createCheck("citation_compliance", "Memory use rate", "warn", `${citationTotal} session(s) received injected memories and NONE cited or retrieved one. Every injection is costing tokens with no evidence any of it was used \u2014 and with no citations or ID retrievals, ranking cannot learn which memories are worth injecting.`, rule.state === "current" ? `The citation contract is installed at ${rule.path}. If this stays at 0% across several more sessions, the injected memories are not earning their tokens \u2014 consider narrowing what is injected.` : `The citation contract is ${rule.state} at ${rule.path}. Run 'memesh install-hooks' (or start a new session) to write it, then re-check after a few sessions.`, { code: "citation.none", params: { total: citationTotal } }));
       } else {
-        dbChecks.push(createInfo("citation_compliance", "Memory citation rate", `${cited} of ${citationTotal} session(s) with injected memories cited at least one (${rate}%).`));
+        dbChecks.push(createInfo("citation_compliance", "Memory use rate", `${cited} of ${citationTotal} session(s) with injected memories cited or retrieved at least one (${rate}%).`));
       }
     }
   } catch (err) {
@@ -65255,8 +65308,9 @@ var init_server = __esm({
     };
     app.post("/v1/remember", (req, res) => handlePost(RememberSchema, req, res, (data) => remember({ ...data, sourceHost: "http" })));
     app.post("/v1/recall", (req, res) => handlePost(RecallSchema, req, res, async (data) => {
-      const { entities, conflicts, retrieval } = await recallWithConflicts(data);
-      return conflicts.length > 0 ? { entities, retrieval, conflicts } : { entities, retrieval };
+      const result = await recallWithConflicts(data.ids !== void 0 ? { ...data, projectScope: null } : data);
+      const { entities, conflicts, retrieval } = result;
+      return { entities, retrieval, ..."results" in result ? { results: result.results } : {}, ...conflicts.length > 0 ? { conflicts } : {} };
     }));
     app.post("/v1/forget", (req, res) => handlePost(ForgetSchema, req, res, (data) => {
       const result = forget(data);
@@ -68160,20 +68214,39 @@ program2.command("remember").argument("[text]", "Quick-capture text \u2014 title
       process.exitCode = 1;
   });
 });
-program2.command("recall").description("Search stored knowledge").argument("[query]", "Search query").option("--tag <tag>", "Filter by tag").option("--limit <n>", "Max results", wholeNumber("--limit"), 20).option("--include-archived", "Include archived entities").option("--namespace <namespace>", "Filter by namespace: personal, team, or global").option("--cross-project", "Search across all project tags (ignores --tag filter)").option("--json", "Output as JSON").action(async (query, opts) => {
+program2.command("recall").description("Search stored knowledge").argument("[query]", "Search query").option("--ids <ids>", "Comma-separated memory IDs").option("--tag <tag>", "Filter by tag").option("--limit <n>", "Max results", wholeNumber("--limit"), 20).option("--include-archived", "Include archived entities").option("--namespace <namespace>", "Filter by namespace: personal, team, or global").option("--cross-project", "Search across all project tags (ignores --tag filter)").option("--json", "Output as JSON").action(async (query, opts) => {
   requireOneOf(opts.namespace, NAMESPACES, "--namespace");
+  const ids = opts.ids === void 0 ? void 0 : opts.ids.split(",").map((s) => /^\d+$/.test(s) ? Number(s) : NaN);
+  const input2 = {
+    ...ids !== void 0 ? { ids } : {},
+    ...query !== void 0 ? { query } : {},
+    ...opts.tag !== void 0 ? { tag: opts.tag } : {},
+    ...opts.crossProject !== void 0 ? { cross_project: opts.crossProject } : {},
+    limit: opts.limit,
+    include_archived: opts.includeArchived,
+    namespace: opts.namespace
+  };
+  if (ids !== void 0) {
+    const parsed = RecallSchema.safeParse({ ...input2, limit: void 0 });
+    if (!parsed.success)
+      throw new Error(`--ids: ${parsed.error.issues.map((issue2) => issue2.message).join("; ")}`);
+  }
   await withDatabase(async () => {
     const result = await recallForAgent({
-      query: query || void 0,
-      tag: opts.tag,
-      limit: opts.limit,
-      include_archived: opts.includeArchived,
-      namespace: opts.namespace,
-      cross_project: opts.crossProject
+      ...input2,
+      ...ids !== void 0 ? { projectScope: `project:${getProjectName()}` } : {}
     });
     const { entities, conflicts, retrieval, entities_omitted } = result;
     if (opts.json) {
       console.log(JSON.stringify(agentRecallEnvelope(result)));
+    } else if (result.results) {
+      for (const item of result.results) {
+        console.log(`${item.id}: ${item.status}${item.reference ? ` ${item.reference}` : ""}`);
+        const entity = entities.find((e) => e.id === item.id);
+        if (entity) {
+          console.log(JSON.stringify(entity, null, 2));
+        }
+      }
     } else if (entities.length === 0) {
       if (entities_omitted) {
         console.log(`${entities_omitted.total} result(s) found, all ${RECALL_OMITTED_HINT}.`);

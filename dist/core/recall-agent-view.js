@@ -88,11 +88,14 @@ export function capRecallForAgent(result, scope) {
     const responseBudget = RECALL_RESPONSE_MAX_BYTES - RESPONSE_METADATA_RESERVE_BYTES;
     let shownCount = 0;
     for (let count = totalEntities; count >= 0; count--) {
+        const shown = new Set(cappedEntities.slice(0, count).map(e => e.id));
+        const results = result.results?.map(r => r.status === 'found' && !shown.has(r.id) ? { id: r.id, status: 'omitted' } : r);
         const candidateBytes = byteLength(JSON.stringify({
             entities: cappedEntities.slice(0, count),
             conflicts: result.conflicts,
             retrieval: result.retrieval,
             scope,
+            results,
         }));
         if (candidateBytes <= responseBudget) {
             shownCount = count;
@@ -107,6 +110,10 @@ export function capRecallForAgent(result, scope) {
         conflicts: result.conflicts,
         retrieval: result.retrieval,
     };
+    if (result.results) {
+        const shown = new Set(shownEntities.map(e => e.id));
+        envelope.results = result.results.map(r => r.status === 'found' && !shown.has(r.id) ? { id: r.id, status: 'omitted' } : r);
+    }
     if (anyContentTruncated || entitiesDropped)
         envelope.truncated = true;
     if (entitiesDropped)
@@ -118,6 +125,7 @@ export function capRecallForAgent(result, scope) {
 export function agentRecallEnvelope(r) {
     return {
         entities: r.entities,
+        ...(r.results ? { results: r.results } : {}),
         retrieval: r.retrieval,
         ...(r.conflicts.length > 0 ? { conflicts: r.conflicts } : {}),
         ...(r.truncated ? { truncated: r.truncated } : {}),

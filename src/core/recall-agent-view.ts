@@ -49,6 +49,7 @@ export interface RecallScope {
 }
 
 export interface RecallForAgentResult {
+  results?: Array<{ id: number; status: 'found' | 'archived' | 'unavailable' | 'omitted'; reference?: string }>;
   entities: AgentRecallEntity[];
   /** Always present, possibly empty — same contract `recallWithConflicts`
    *  documents; omitting it when empty stays a transport (MCP/CLI) choice. */
@@ -196,6 +197,7 @@ export function capRecallForAgent(result: {
   entities: Entity[];
   conflicts: string[];
   retrieval: RetrievalMeta;
+  results?: RecallForAgentResult['results'];
 }, scope?: RecallScope): RecallForAgentResult {
   const cappedEntities = result.entities.map((e) => capEntityForAgent(e, scope !== undefined));
   const totalEntities = cappedEntities.length;
@@ -206,11 +208,14 @@ export function capRecallForAgent(result: {
   // prefix that fits, not an arbitrary subset.
   let shownCount = 0;
   for (let count = totalEntities; count >= 0; count--) {
+    const shown = new Set(cappedEntities.slice(0, count).map(e => e.id));
+    const results = result.results?.map(r => r.status === 'found' && !shown.has(r.id) ? { id: r.id, status: 'omitted' as const } : r);
     const candidateBytes = byteLength(JSON.stringify({
       entities: cappedEntities.slice(0, count),
       conflicts: result.conflicts,
       retrieval: result.retrieval,
       scope,
+      results,
     }));
     if (candidateBytes <= responseBudget) {
       shownCount = count;
@@ -227,6 +232,10 @@ export function capRecallForAgent(result: {
     conflicts: result.conflicts,
     retrieval: result.retrieval,
   };
+  if (result.results) {
+    const shown = new Set(shownEntities.map(e => e.id));
+    envelope.results = result.results.map(r => r.status === 'found' && !shown.has(r.id) ? { id: r.id, status: 'omitted' } : r);
+  }
   if (anyContentTruncated || entitiesDropped) envelope.truncated = true;
   if (entitiesDropped) envelope.entities_omitted = { shown: shownCount, total: totalEntities };
   if (scope) envelope.scope = scope;
@@ -238,6 +247,7 @@ export function capRecallForAgent(result: {
 export function agentRecallEnvelope(r: RecallForAgentResult) {
   return {
     entities: r.entities,
+    ...(r.results ? { results: r.results } : {}),
     retrieval: r.retrieval,
     ...(r.conflicts.length > 0 ? { conflicts: r.conflicts } : {}),
     ...(r.truncated ? { truncated: r.truncated } : {}),

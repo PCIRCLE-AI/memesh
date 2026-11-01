@@ -31,7 +31,7 @@ Over MCP, `remember`, `learn` and `recall` also take `project`: a project id, or
 |---|---|
 | `work_package` | Prepare one bounded untrusted `digest` (calendar cluster) or `transcript` package from the newest Claude Code session under the client's single matching MCP workspace root; submit exactly one strict result or defer. Submit only stages pending human review and retains bounded redacted source turns for comparison; agents cannot apply or reject. No hidden reasoning, raw transcript, transcript path, API key, LLM, embedding, or vector data is exposed or used; hashes identify freshness and workspace scope rather than authentication. |
 | `remember` | Store knowledge as an entity with observations, tags, and relations; `note` (free text) derives title/observations/name; `replace: true` rewrites a named memory, keeping history; a new decision, or a `replace` of one, needs `why` |
-| `recall` | Search stored knowledge; empty query lists recent memories |
+| `recall` | Search stored knowledge, list recent memories, or retrieve up to 20 exact IDs; keep `ids` separate from query, tag and cross_project |
 | `forget` | Archive an entity or remove one exact observation |
 | `export` | Export memories as portable JSON |
 | `import` | Import a JSON export with the required skip, append, or overwrite strategy |
@@ -108,11 +108,12 @@ follow-up questions, use `recall`.
 **MEMESH UNAVAILABLE or RECALL EMPTY → say so, never invent.** Report that
 memory is unavailable (or found nothing) and continue without it. Never
 fabricate a memory or cite a `[mem:id]` that was not actually returned.
-Recall is bounded by `limit` — a small hit count is not a graph-wide count,
+Word search is bounded by `limit` — a small hit count is not a graph-wide count,
 and an empty result is not proof nothing was stored: vary the wording or
 narrow by tag before concluding. Every recall answer includes a `retrieval`
 block — `truncated: true` means the window filled (more may exist). Retrieval
-uses the local FTS5 keyword index; it does not call a model or vector service.
+uses the local FTS5 keyword index for words and exact lookups for `ids`
+(`mode: "ids"`); it does not call a model or vector service.
 
 ## Durable messages and active-host delivery
 
@@ -281,7 +282,23 @@ Types: `decision` `pattern` `lesson_learned` `bug_fix` `architecture` `conventio
 memesh recall "authentication" --json
 memesh recall --tag "project:myapp" --limit 10
 memesh recall --cross-project                # search across all projects
+memesh recall --ids 301,302 --json            # read memories named by briefing IDs
 ```
+
+For a `[mem:301]` handle, use `recall({ ids: [301] })` over MCP. Up to 20
+positive IDs may be requested, within the caller's scope; `query`, `tag` and
+`cross_project` are separate search selectors. Results say `found`, `archived`,
+`unavailable` or `omitted`. Archived content needs `include_archived`; an
+unavailable ID reveals no content or existence outside scope. Retry omitted
+IDs individually; an item still omitted on its own cannot fit the response limit. Found content keeps the normal redaction and size caps.
+
+For session-injected memories, the Claude/Codex Stop hook credits assistant
+`[mem:id]` citations or tool-result `[mem-fetched:id]` retrieval markers, once
+per ID while the session is active, including resumes. An idle record can be
+cleared after 24 hours; reinjection starts a new counting window without
+replaying old transcript entries. Ordinary `[mem:id]` text in a tool
+result does not count as an assistant citation.
+
 One or two words match any of them. Three or more must all match, with an
 any-word fallback only when nothing matches all — so search with a few
 specific keywords rather than a whole sentence. Results are ranked by relevance.

@@ -36,11 +36,14 @@ describe('Feature: Session Start Hook', () => {
   let testDir: string;
   let dbPath: string;
   let sessionsDir: string;
+  let sessionSequence = 0;
+  let renderedContexts: Map<string, string>;
 
   beforeEach(() => {
     testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-hook-test-'));
     dbPath = path.join(testDir, 'test.db');
     sessionsDir = path.join(testDir, 'sessions');
+    renderedContexts = new Map();
   });
 
   afterEach(() => {
@@ -49,21 +52,24 @@ describe('Feature: Session Start Hook', () => {
 
   function runHook(input: object, env: Record<string, string | undefined> = {}): Record<string, unknown> {
     const hookPath = path.resolve('scripts/hooks/session-start.js');
-    const jsonInput = JSON.stringify(input);
+    const jsonInput = JSON.stringify({ session_id: `session-start-fixture-${++sessionSequence}`, ...input });
     const result = execFileSync('node', [hookPath], {
       input: jsonInput,
       env: { ...process.env, MEMESH_DB_PATH: dbPath, ...env },
       encoding: 'utf8',
       timeout: 15000,
     });
-    return JSON.parse(result.trim());
+    const output = JSON.parse(result.trim());
+    renderedContexts.set(JSON.parse(jsonInput).session_id, String(output.hookSpecificOutput?.additionalContext ?? ''));
+    return output;
   }
 
   // Tests that need to assert which specific entities were loaded read the
-  // sessions/{pid}-{ts}.json file the hook persists for hit/miss tracking.
+  // SID-bound session file the hook persists for use tracking.
   // The user-visible summary is a count-only tree and intentionally does
   // not surface entity names.
   function readLatestSessionFile(): {
+    sessionId: string;
     project: string;
     entityIds: number[];
     entityNames: string[];
@@ -82,11 +88,11 @@ describe('Feature: Session Start Hook', () => {
   /** The ids the RANKED block rendered, read back off the injected block
    *  itself: everything before the index heading that #323 appends. Derived
    *  rather than recorded — a session field holding this split had no reader
-   *  outside these tests, and `injectedContext` is the record production
-   *  already keeps. The handle regex is the hook's own, anchored to the end
+   *  outside these tests. Read the actual hook output, since production now
+   *  retains only a 120-character audit prefix. The handle regex is anchored to the end
    *  of a line, so a `[mem:N]` written inside an observation is not counted. */
   function rankedIds(session: NonNullable<ReturnType<typeof readLatestSessionFile>>): Set<number> {
-    const beforeIndex = session.injectedContext.split('Index of durable memories for')[0];
+    const beforeIndex = renderedContexts.get(session.sessionId)!.split('Index of durable memories for')[0];
     return new Set([...beforeIndex.matchAll(/ \[mem:(\d{1,10})\]$/gm)].map((m) => Number(m[1])));
   }
 
@@ -333,7 +339,7 @@ describe('Feature: Session Start Hook', () => {
       expect(injected).toContain('PKCE');
     });
 
-    it('records the injected text (not the banner) for hit/miss accounting', () => {
+    it('records only the injected text audit prefix rather than the banner or full memory block', () => {
       seedProjectMemory();
       const output = runHook({ cwd: '/tmp/myproject' }, { MEMESH_DIR: testDir });
 
@@ -341,10 +347,9 @@ describe('Feature: Session Start Hook', () => {
       expect(session).toBeTruthy();
 
       const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
-      // The Stop hook subtracts injectedContext from the transcript before
-      // matching. If this were the counts banner, the hook's own injection
-      // would be double-counted as the user referencing the memory.
-      expect(session!.injectedContext).toBe(injected);
+      // The baseline audit consumes only the first 120 characters. Credit
+      // uses native-role markers and ids, so full content need not persist.
+      expect(session!.injectedContext).toBe(injected.slice(0, 120));
       expect(session!.entityNames).toContain('oauth-pkce-decision');
     });
 
@@ -2049,9 +2054,10 @@ describe('SessionStart: the session handoff leads the injected context (#434 ste
     db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, tag);
     return id;
   }
+  let startSequence = 0;
   function start(level: string, extraEnv: Record<string, string> = {}) {
     const r = spawnSync('node', [path.resolve('scripts/hooks/session-start.js')], {
-      input: JSON.stringify({ cwd, hook_event_name: 'SessionStart', source: 'startup' }),
+      input: JSON.stringify({ cwd, session_id: `handoff-fixture-${++startSequence}`, hook_event_name: 'SessionStart', source: 'startup' }),
       env: { ...process.env, HOME: dir, USERPROFILE: dir, MEMESH_DB_PATH: dbFile, MEMESH_DIR: undefined, MEMESH_BRIEFING: level, ...extraEnv },
       encoding: 'utf8', timeout: 20_000,
     });

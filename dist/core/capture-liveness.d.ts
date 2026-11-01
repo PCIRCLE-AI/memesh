@@ -35,6 +35,8 @@ export declare const SKIP_REASONS: {
     readonly toolNameAbsent: "tool_name absent in payload";
     readonly notDecisionTool: "not a decision-shaped tool call";
     readonly noSessionId: "no usable session_id in the payload";
+    readonly noRecallSessionRecord: "no usable injection record for this session — recall use was not counted";
+    readonly noEligibleRecallRows: "no timestamped assistant or tool rows since injection — recall use was not counted";
     readonly alreadyNudged: "already nudged for this tool in this session";
     readonly noBashCommand: "no Bash command in the payload";
     readonly noDatabaseForGuards: "no database yet — nothing to guard against";
@@ -91,7 +93,7 @@ export declare const UNRECOGNISED_REASON = "unrecognised reason";
 export declare function renderableSkipReason(reason: string | undefined): string;
 export declare function isGitCommitCommand(command: string): boolean;
 export declare const NOT_TRIGGERED_SKIP_REASONS: Readonly<Record<string, readonly string[]>>;
-export declare const UNCLASSIFIED_SKIP_HOOKS: readonly ["pre-compact", "pre-edit-recall", "user-prompt-intent", "decision-nudge", "guard-check", "session-start", "stop-message-gate"];
+export declare const UNCLASSIFIED_SKIP_HOOKS: readonly ["pre-compact", "pre-edit-recall", "user-prompt-intent", "decision-nudge", "guard-check", "stop-message-gate"];
 export declare const NEVER_RAN_GRACE_HOURS = 72;
 export declare function parseHookOutcomes(raw: string | null | undefined, limit?: number): HookOutcomeFile;
 export declare function parseHookOutcomeLine(line: string): HookOutcomeRecord | null;

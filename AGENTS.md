@@ -42,7 +42,10 @@ hosts should share memories. Not installed yet? Follow
    extra), so a crowded block shows fewer index lines than
    `memesh briefing --index`, which has its own 40-line / 3072-byte caps.
    The index is a recent, capped window: when it says there is more, call
-   `recall` instead of assuming it is complete.
+   `recall` instead of assuming it is complete. To read a memory shown as
+   `[mem:301]`, call `recall({ ids: [301] })`; up to 20 IDs can be requested
+   together, within the same project scope. Keep `ids` separate from `query`,
+   `tag` and `cross_project`.
 2. **When the user states a goal, a next step, or a blocker — record it.**
    Call the `task_state` tool (CLI: `memesh task --goal "…" --next "…"`).
    Fresh state is injected at the start of the next session at
@@ -117,7 +120,7 @@ hosts should share memories. Not installed yet? Follow
 |---|---|
 | `work_package` | Prepare one bounded untrusted digest (calendar-selected) or transcript package from the newest Claude Code session under the client's single matching MCP workspace root; submit one strictly validated result for pending human review or defer without durable change. Submission retains bounded redacted source turns for comparison; agents cannot apply or reject, and hashes identify freshness and workspace scope rather than authentication. |
 | `remember` | Store knowledge as an entity with observations, tags, and relations; or pass only `note` (free text) and the title, observations and name are derived; `replace: true` rewrites a named memory, keeping the old version as history; a new decision, or a `replace` of one, needs `why` (its reason and what would make it stop holding) |
-| `recall` | Search stored knowledge: one or two words match any of them; three or more must all match, falling back to any-word matching only when nothing matches all; ranked by relevance. Empty query lists recent |
+| `recall` | Search by words, list recent memories, or retrieve up to 20 exact `ids`. ID results report found, archived, unavailable or omitted; retry omitted IDs individually; an item still omitted on its own cannot fit the response limit. Word search uses any-word matching for one or two words and all-word matching with fallback for longer queries |
 | `forget` | Archive an entity (soft-delete), or remove one observation via the `observation` parameter |
 | `export` | Export memories as portable JSON for sharing or backup |
 | `import` | Import a JSON export; `merge_strategy` (required): skip / append / overwrite |
@@ -189,18 +192,24 @@ hosts should share memories. Not installed yet? Follow
   without it** — never fabricate a memory, and never cite a `[mem:id]`
   handle that was not actually shown to you. A wrong "remembered" fact is
   worse than no memory: it arrives wearing the authority of the graph.
-- Recall windows are bounded (the `limit` parameter, 20 by default), so do
+- Word-search windows are bounded (the `limit` parameter, 20 by default), so do
   not infer graph-wide counts or "there is no memory about X" from the
   number of hits one query returns. Absence of results is absence of
   results, not evidence of absence — vary the wording or narrow by tag
   before concluding anything.
 - When an injected or recalled memory actually changes what you do, cite it
   once as `[mem:id]` in the sentence it affected. Do not cite memories you
-  only read past. Under Claude Code the Stop hook counts these citations,
-  which is how MeMesh learns which memories are worth their tokens.
+  only read past. The Claude/Codex Stop hook credits session-injected IDs
+  cited in assistant text, or returned by ID retrieval with a
+  `[mem-fetched:id]` marker in tool output. It credits each ID once while the
+  session is active, including resumes. An idle record can be cleared after
+  24 hours; reinjection then starts a new counting window without replaying
+  old transcript entries. Ordinary `[mem:id]` text in tool
+  output does not count as an assistant citation.
 - Every recall answer carries a `retrieval` block that says how it was
   produced — read it instead of guessing: `truncated: true` means the
-  window filled and more may exist. Recall is local FTS5 search; do not
+  window filled and more may exist. Word search uses local FTS5; ID retrieval
+  uses exact lookups (`mode: "ids"`), not a keyword search. Do not
   describe results as semantic, vector-ranked, or model-generated.
 
 ## What Claude Code already does — do not double-write
