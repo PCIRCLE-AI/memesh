@@ -18,7 +18,11 @@ const CLI_PATH = path.join(__dirname, '..', '..', 'dist', 'transports', 'cli', '
 
 describe('memesh task on a corrupted record', () => {
   let home: string;
-  beforeEach(() => { home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-task-corrupt-')); });
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-task-corrupt-'));
+    fs.mkdirSync(path.join(home, '.memesh'), { mode: 0o700 });
+    fs.writeFileSync(path.join(home, '.memesh', 'config.json'), JSON.stringify({ updateCheck: false }), { mode: 0o600 });
+  });
   afterEach(() => { fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
 
   function run(args: string[]): { status: number; stdout: string; stderr: string } {
@@ -105,7 +109,11 @@ describe('memesh task names the project by its label, not its hashed id', () => 
   const HASH = '2c0fe491888c8efb9a4894828bbc2733';
   const ID = `memesh~${HASH}`;
   let home: string;
-  beforeEach(() => { home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-task-label-')); });
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-task-label-'));
+    fs.mkdirSync(path.join(home, '.memesh'), { mode: 0o700 });
+    fs.writeFileSync(path.join(home, '.memesh', 'config.json'), JSON.stringify({ updateCheck: false }), { mode: 0o600 });
+  });
   afterEach(() => { fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
 
   function run(args: string[]): { status: number; stdout: string; stderr: string } {
