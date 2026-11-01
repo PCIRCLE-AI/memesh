@@ -8,7 +8,7 @@
       "name": "memesh",
       "source": "./",
       "description": "MeMesh — local collaboration for AI coding agents. Share memory across sessions, exchange task messages, and preserve work context. One SQLite file; no cloud required.",
-      "version": "4.11.5",
+      "version": "4.12.0",
       "author": {
         "name": "PCIRCLE AI"
       },
