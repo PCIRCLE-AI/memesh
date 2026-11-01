@@ -7,6 +7,7 @@ import { requirePrivateWritableDirectory } from '../core/file-mode.js';
 import { resolveMcpProject } from '../transports/mcp/project-context.js';
 import { ensureRouterTokenFile } from './config.js';
 import { connectRouterHost } from './router-client.js';
+import { createClaudeActivity } from '../core/session-activity.js';
 export async function startClaudeInboxPresence(rootUris) {
     if (process.platform === 'win32')
         return undefined;
@@ -24,6 +25,13 @@ export async function startClaudeInboxPresence(rootUris) {
     const dataDir = getMemeshDirFromDbPath();
     requirePrivateWritableDirectory(dataDir, 'the local router keeps its lifecycle state there');
     const token = ensureRouterTokenFile(path.join(dataDir, 'agent-router.token'));
+    let workspace = process.env.MEMESH_PROJECT_ROOT ?? process.env.CLAUDE_PROJECT_DIR;
+    if (!workspace && rootUris?.length === 1) {
+        try {
+            workspace = fileURLToPath(rootUris[0]);
+        }
+        catch { }
+    }
     return connectRouterHost({
         socket_path: normalizeAgentRouterSocketPath(process.env.MEMESH_ROUTER_SOCKET ?? getAgentRouterSocketPath()),
         auth_token: token,
@@ -31,6 +39,7 @@ export async function startClaudeInboxPresence(rootUris) {
             project: binding.project, principal_id: principal,
             session_instance_id: session, adapter_kind: 'claude-inbox',
         },
+        ...(workspace ? { work_summary: createClaudeActivity(process.ppid, workspace) } : {}),
         deliver: async () => { throw new Error('Use the durable inbox; Claude Channel is not enabled.'); },
         resilience: {
             start_router: () => new Promise((resolve, reject) => {

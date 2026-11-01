@@ -1,1 +1,1 @@
-{"version":3,"file":"claude-inbox.d.ts","sourceRoot":"","sources":["../../src/host-runtime/claude-inbox.ts"],"names":[],"mappings":"AAQA,OAAO,EAAqB,KAAK,oBAAoB,EAAE,MAAM,oBAAoB,CAAC;AAGlF,wBAAsB,wBAAwB,CAAC,QAAQ,EAAE,SAAS,MAAM,EAAE,GAAG,IAAI,GAAG,OAAO,CAAC,oBAAoB,GAAG,SAAS,CAAC,CAsC5H"}
+{"version":3,"file":"claude-inbox.d.ts","sourceRoot":"","sources":["../../src/host-runtime/claude-inbox.ts"],"names":[],"mappings":"AAQA,OAAO,EAAqB,KAAK,oBAAoB,EAAE,MAAM,oBAAoB,CAAC;AAIlF,wBAAsB,wBAAwB,CAAC,QAAQ,EAAE,SAAS,MAAM,EAAE,GAAG,IAAI,GAAG,OAAO,CAAC,oBAAoB,GAAG,SAAS,CAAC,CA2C5H"}

@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { closeDatabase, openDatabase } from '../../src/db.js';
 import { AgentNativeMessageTooLargeError, sendAgentMessage } from '../../src/core/agent-messaging.js';
-import { AGENT_ROUTER_PROTOCOL_VERSION, AgentRouter, createAgentRouterNotifier } from '../../src/core/agent-router.js';
+import { AGENT_ROUTER_PROTOCOL_VERSION, AgentRouter, createAgentRouterNotifier, sendAgentRouterRequest } from '../../src/core/agent-router.js';
 import { AcpStaleGenerationError } from '../../src/host-adapters/acp-client.js';
 import {
   connectRouterHost,
@@ -120,6 +120,52 @@ function validDeliveryFrame(connectionId: string, generation: number): Record<st
 }
 
 describe.skipIf(process.platform === 'win32')('production router host client', () => {
+  it('registers live activity and refreshes it with a negotiated router', async () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-activity-router-')); fs.chmodSync(tempDir, 0o700);
+    const socketPath = path.join(tempDir, 'router.sock');
+    const db = openDatabase(path.join(tempDir, 'messages.db'));
+    router = new AgentRouter({ db, socket_path: socketPath, memesh_version: memeshPackageVersion(), limits: { lease_ms: 400 }, adapters: [{ kind: 'test-host', authenticate: () => true }] });
+    await router.start();
+    let summary: string | undefined = 'first';
+    connection = await connectRouterHost({ socket_path: socketPath, auth_token: 'token', identity: { project: 'p', principal_id: 'agent', session_instance_id: 's', adapter_kind: 'test-host' }, work_summary: () => summary, deliver: async () => ({}) });
+    const discover = () => sendAgentRouterRequest(socketPath, { version: AGENT_ROUTER_PROTOCOL_VERSION, type: 'discover', request_id: 'discover', project: 'p', limit: 5, hops: 0 });
+    expect((await discover()).cards).toEqual([expect.objectContaining({ work_summary: 'first' })]);
+    summary = 'second';
+    await vi.waitFor(async () => expect((await discover()).cards).toEqual([expect.objectContaining({ work_summary: 'second' })]));
+    summary = undefined;
+    await vi.waitFor(async () => expect((await discover()).cards).toEqual([expect.objectContaining({ work_summary: null })]));
+  });
+  it('does not send activity to a strict old router that rejects the new heartbeat field', async () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-old-router-'));
+    fs.chmodSync(tempDir, 0o700);
+    const socketPath = path.join(tempDir, 'router.sock');
+    const seen: Array<Record<string, unknown>> = [];
+    const sockets = new Set<net.Socket>();
+    const server = net.createServer(socket => {
+      sockets.add(socket); let buffer = '';
+      socket.on('data', chunk => {
+        buffer += chunk.toString();
+        while (buffer.includes('\n')) {
+          const at = buffer.indexOf('\n'); const frame = JSON.parse(buffer.slice(0, at)); buffer = buffer.slice(at + 1);
+          if (frame.type === 'heartbeat') seen.push(frame);
+          const rejected = frame.type === 'heartbeat' && Object.prototype.hasOwnProperty.call(frame, 'work_summary');
+          const result = frame.type === 'register' ? { connection_id: 'connection', generation: 1, lease_ms: 300, memesh_version: memeshPackageVersion() } : { generation: 1, lease_ms: 300 };
+          socket.write(`${JSON.stringify({ version: AGENT_ROUTER_PROTOCOL_VERSION, request_id: frame.request_id, ok: !rejected, ...(rejected ? { error: { code: 'invalid_field', message: 'unknown work_summary' } } : { result }) })}\n`);
+        }
+      });
+    });
+    await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(socketPath, resolve); });
+    fs.chmodSync(socketPath, 0o600);
+    try {
+      connection = await connectRouterHost({ socket_path: socketPath, auth_token: 'token', identity: { project: 'project-a', principal_id: 'p', session_instance_id: 's', adapter_kind: 'test-host' }, work_summary: () => 'live', deliver: async () => ({}) });
+      await vi.waitFor(() => expect(seen.length).toBeGreaterThanOrEqual(2));
+      expect(seen.every(frame => !Object.prototype.hasOwnProperty.call(frame, 'work_summary'))).toBe(true);
+    } finally {
+      await connection?.close(); connection = undefined;
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  });
   it('uses the unified correlated protocol and invokes a delivery only once for duplicate notify hints', async () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-router-client-'));
     fs.chmodSync(tempDir, 0o700);

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { randomUUID } from 'node:crypto';
+import { createClaudeActivity } from '../core/session-activity.js';
 import { realpathSync } from 'node:fs';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -249,6 +250,7 @@ export async function startClaudeManagedSession(
         adapter_kind: 'claude-channel',
         ...(config.work_summary === undefined ? {} : { work_summary: requiredString(config.work_summary, 'work_summary') }),
       },
+      work_summary: createClaudeActivity(process.ppid, resolveCwd()),
       deliver,
       on_superseded: onSuperseded,
     }).then(async (connection) => {

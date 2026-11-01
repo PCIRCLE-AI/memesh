@@ -33,6 +33,7 @@ export interface ConnectRouterHostInput {
     socket_path: string;
     auth_token: string;
     identity: RouterHostIdentity;
+    work_summary?: () => string | undefined;
     deliver(delivery: RouterDelivery): Promise<AgentJsonObject>;
     on_superseded?: () => void;
     resilience?: RouterClientResilienceOptions;

@@ -18,8 +18,8 @@
     },
     {
       "path": ".codex-plugin/plugin.json",
-      "sha256": "9105dfd888e5a013beba12cab4dda0530fa80bfad6471fc20997288d6fbb4581",
-      "bytes": 3470
+      "sha256": "bb75bcf090ddcb2063d7e8ec53375f935d1d5a8235724ad48a79d27f5a779df6",
+      "bytes": 3657
     },
     {
       "path": "hooks/hooks.json",
@@ -200,6 +200,11 @@
       "path": "scripts/hooks/codex-busy-message-notice.js",
       "sha256": "67ff0a1f8c06fd2078b77e287e0fd4f36fc186df9c90a4441921df3e2012ed23",
       "bytes": 6284
+    },
+    {
+      "path": "scripts/hooks/codex-plan-activity.js",
+      "sha256": "f65b7e799d6d137125eeb00cc673d682ad6505ba7366c914a6644620e71ed9a2",
+      "bytes": 2565
     },
     {
       "path": "scripts/hooks/decision-nudge.js",

@@ -7,6 +7,7 @@ import { requirePrivateWritableDirectory } from '../core/file-mode.js';
 import { resolveMcpProject } from '../transports/mcp/project-context.js';
 import { ensureRouterTokenFile } from './config.js';
 import { connectRouterHost, type RouterHostConnection } from './router-client.js';
+import { createClaudeActivity } from '../core/session-activity.js';
 
 /** Ordinary Claude MCP lifecycle, not a Channel or a second notification path. */
 export async function startClaudeInboxPresence(rootUris: readonly string[] | null): Promise<RouterHostConnection | undefined> {
@@ -27,6 +28,10 @@ export async function startClaudeInboxPresence(rootUris: readonly string[] | nul
   const dataDir = getMemeshDirFromDbPath();
   requirePrivateWritableDirectory(dataDir, 'the local router keeps its lifecycle state there');
   const token = ensureRouterTokenFile(path.join(dataDir, 'agent-router.token'));
+  let workspace = process.env.MEMESH_PROJECT_ROOT ?? process.env.CLAUDE_PROJECT_DIR;
+  if (!workspace && rootUris?.length === 1) {
+    try { workspace = fileURLToPath(rootUris[0]); } catch { /* no usable local workspace */ }
+  }
   return connectRouterHost({
     socket_path: normalizeAgentRouterSocketPath(process.env.MEMESH_ROUTER_SOCKET ?? getAgentRouterSocketPath()),
     auth_token: token,
@@ -34,6 +39,7 @@ export async function startClaudeInboxPresence(rootUris: readonly string[] | nul
       project: binding.project, principal_id: principal,
       session_instance_id: session, adapter_kind: 'claude-inbox',
     },
+    ...(workspace ? { work_summary: createClaudeActivity(process.ppid, workspace) } : {}),
     // Being online does not mean an optional Channel is enabled or that the
     // model received a message. Existing principal fallback/hooks own intake.
     deliver: async () => { throw new Error('Use the durable inbox; Claude Channel is not enabled.'); },

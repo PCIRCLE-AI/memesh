@@ -897,6 +897,18 @@ describe.runIf(process.platform !== 'win32').sequential('AgentRouter real SQLite
     expect(db.prepare('SELECT COUNT(*) AS count FROM agent_host_accepts').get()).toEqual(before.accepts);
   });
 
+  it('advertises heartbeat activity and updates the discover card from a heartbeat', async () => {
+    const { db, socketPath, token } = setup();
+    await startRouter(db, socketPath, token, { lease_ms: 5_000 });
+    const client = await RouterHostClient.connect({ socketPath, token, project: 'project-a', principal: 'principal-a', session: 'session-a' });
+    expect(client.responses.some(frame => (frame.result as { features?: string[] } | undefined)?.features?.includes('heartbeat_work_summary'))).toBe(true);
+    const requestId = randomUUID();
+    client.write({ version: AGENT_ROUTER_PROTOCOL_VERSION, type: 'heartbeat', request_id: requestId, project: 'project-a', session_instance_id: 'session-a', connection_id: client.connectionId, generation: client.generation, work_summary: 'repo@main · busy', hops: 0 });
+    await vi.waitFor(() => expect(client.responses.find(frame => frame.request_id === requestId)).toMatchObject({ ok: true }));
+    const result = await sendAgentRouterRequest(socketPath, { version: AGENT_ROUTER_PROTOCOL_VERSION, type: 'discover', request_id: randomUUID(), project: 'project-a', limit: 10, hops: 0 });
+    expect(result.cards).toEqual([expect.objectContaining({ work_summary: 'repo@main · busy' })]);
+  });
+
   it('maps supported adapter identities to stable host kinds', async () => {
     const { db, socketPath, token } = setup();
     const adapterKinds = ['codex-cli-queue', 'codex-app-server', 'claude-channel', 'acp'];

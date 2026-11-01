@@ -9,11 +9,13 @@ MeMesh provides two complementary collaboration surfaces on one machine:
 Use `memesh message discover --project <name> [--limit 1..100]` to read the
 router directory. Results expose `session_id`, `principal_id`, `host_kind`,
 `project`, `model` (always `null`: no host tells MeMesh which model a session
-runs, so none is shown; the key stays for older clients), declared
+runs, so none is shown; the key stays for older clients), live or configured
 `work_summary` (`null` when absent), `active`, `generation`, and
 `lease_expires_at_ms`. Discovery performs no send, fetch, ACK, replay, or
 receipt operation; router unavailability is an explicit error, never an empty
 directory.
+
+Supported Claude and Codex hosts provide an activity summary when available: repository and branch, title, and an in-progress task; Claude may also report busy or idle. Missing information is omitted. The router refreshes this at heartbeat (normally up to about 30 seconds); an older router receives no new heartbeat field. Codex plan activity requires its native `update_plan` tool and the plugin's PostToolUse hook; enabling that tool is an owner choice.
 
 Ordinary Claude Code MCP sessions register automatically after initialization,
 using the host's real session id, bound workspace and existing inbox identity.
