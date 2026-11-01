@@ -11,6 +11,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { getProjectName } from '../../src/core/paths.js';
+import { removeTempDir } from '../helpers/temp-dir.js';
 
 const CLI_PATH = path.join(__dirname, '..', '..', 'dist', 'transports', 'cli', 'cli.js');
 
@@ -22,7 +23,8 @@ describe('#511 memesh remember with a plain-name project tag', () => {
     repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-511-repo-')));
   });
   afterEach(() => {
-    for (const d of [home, repo]) fs.rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    removeTempDir(home);
+    fs.rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
   function run(args: string[]): { status: number; stdout: string; stderr: string } {

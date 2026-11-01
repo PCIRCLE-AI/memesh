@@ -24,6 +24,7 @@ import { execFileSync, spawnSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { removeTempDir } from '../helpers/temp-dir.js';
 
 const CLI_PATH = path.join(__dirname, '..', '..', 'dist', 'transports', 'cli', 'cli.js');
 
@@ -47,7 +48,7 @@ function runCli(args: string[]): { stdout: string; stderr: string; exitCode: num
 }
 
 beforeEach(() => { home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-flagval-')); });
-afterEach(() => { fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
+afterEach(() => { removeTempDir(home); });
 
 describe('CLI: flags reject values they do not understand', () => {
   describe('--merge', () => {
