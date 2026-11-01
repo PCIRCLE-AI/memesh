@@ -88,6 +88,7 @@ export interface AgentRouterHeartbeatRequest {
     session_instance_id: string;
     connection_id: string;
     generation: number;
+    work_summary?: string | null;
     hops: number;
 }
 export interface AgentRouterDisconnectRequest {

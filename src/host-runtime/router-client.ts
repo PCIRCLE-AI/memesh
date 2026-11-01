@@ -62,6 +62,7 @@ export interface ConnectRouterHostInput {
   socket_path: string;
   auth_token: string;
   identity: RouterHostIdentity;
+  work_summary?: () => string | undefined;
   deliver(delivery: RouterDelivery): Promise<AgentJsonObject>;
   /**
    * Called once, after the connection has stopped, when the router hands this
@@ -102,6 +103,11 @@ class ActiveRouterHostConnection implements RouterHostConnection {
   private closed = false;
   private deliveryTail = Promise.resolve();
   private readonly acceptedDeliveries = new Map<string, AgentJsonObject>();
+
+  private currentWorkSummary(): string | undefined {
+    try { return this.input.work_summary?.() ?? this.input.identity.work_summary; }
+    catch { return this.input.identity.work_summary; }
+  }
 
   constructor(
     private readonly input: ConnectRouterHostInput,
@@ -209,11 +215,13 @@ class ActiveRouterHostConnection implements RouterHostConnection {
     let generation = 0;
     let registrationSettled = false;
     let legacyVersionHandshake = false;
+    const workSummary = this.currentWorkSummary();
     const registration = {
       version: AGENT_ROUTER_PROTOCOL_VERSION,
       type: 'register' as const,
       request_id: registerId,
       ...this.input.identity,
+      ...(workSummary === undefined ? {} : { work_summary: workSummary }),
       auth_token: this.input.auth_token,
       memesh_version: installedVersion,
       hops: 0,
@@ -303,7 +311,7 @@ class ActiveRouterHostConnection implements RouterHostConnection {
               connectionId = requiredFrameString(frame.result.connection_id);
               generation = requiredFrameInteger(frame.result.generation);
               const leaseMs = requiredFrameInteger(frame.result.lease_ms);
-              this.activate(socket, connectionId, generation, leaseMs);
+              this.activate(socket, connectionId, generation, leaseMs, Array.isArray(frame.result.features) && frame.result.features.includes('heartbeat_work_summary'));
               finish();
             } catch (error) {
               finish(error instanceof Error ? error : new Error(String(error)));
@@ -375,7 +383,7 @@ class ActiveRouterHostConnection implements RouterHostConnection {
     });
   }
 
-  private activate(socket: net.Socket, connectionId: string, generation: number, leaseMs: number): void {
+  private activate(socket: net.Socket, connectionId: string, generation: number, leaseMs: number, activitySupported: boolean): void {
     this.currentSocket = socket;
     this.currentConnectionId = connectionId;
     this.currentGeneration = generation;
@@ -391,6 +399,7 @@ class ActiveRouterHostConnection implements RouterHostConnection {
         session_instance_id: this.input.identity.session_instance_id,
         connection_id: connectionId,
         generation,
+        ...(activitySupported ? { work_summary: this.currentWorkSummary() ?? null } : {}),
         hops: 0,
       });
     }, Math.max(100, Math.floor(leaseMs / 2)));

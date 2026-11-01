@@ -30,6 +30,14 @@ class ActiveRouterHostConnection {
     closed = false;
     deliveryTail = Promise.resolve();
     acceptedDeliveries = new Map();
+    currentWorkSummary() {
+        try {
+            return this.input.work_summary?.() ?? this.input.identity.work_summary;
+        }
+        catch {
+            return this.input.identity.work_summary;
+        }
+    }
     constructor(input, resilience) {
         this.input = input;
         this.resilience = resilience;
@@ -132,11 +140,13 @@ class ActiveRouterHostConnection {
         let generation = 0;
         let registrationSettled = false;
         let legacyVersionHandshake = false;
+        const workSummary = this.currentWorkSummary();
         const registration = {
             version: AGENT_ROUTER_PROTOCOL_VERSION,
             type: 'register',
             request_id: registerId,
             ...this.input.identity,
+            ...(workSummary === undefined ? {} : { work_summary: workSummary }),
             auth_token: this.input.auth_token,
             memesh_version: installedVersion,
             hops: 0,
@@ -222,7 +232,7 @@ class ActiveRouterHostConnection {
                             connectionId = requiredFrameString(frame.result.connection_id);
                             generation = requiredFrameInteger(frame.result.generation);
                             const leaseMs = requiredFrameInteger(frame.result.lease_ms);
-                            this.activate(socket, connectionId, generation, leaseMs);
+                            this.activate(socket, connectionId, generation, leaseMs, Array.isArray(frame.result.features) && frame.result.features.includes('heartbeat_work_summary'));
                             finish();
                         }
                         catch (error) {
@@ -281,7 +291,7 @@ class ActiveRouterHostConnection {
             this.write(socket, registration);
         });
     }
-    activate(socket, connectionId, generation, leaseMs) {
+    activate(socket, connectionId, generation, leaseMs, activitySupported) {
         this.currentSocket = socket;
         this.currentConnectionId = connectionId;
         this.currentGeneration = generation;
@@ -298,6 +308,7 @@ class ActiveRouterHostConnection {
                 session_instance_id: this.input.identity.session_instance_id,
                 connection_id: connectionId,
                 generation,
+                ...(activitySupported ? { work_summary: this.currentWorkSummary() ?? null } : {}),
                 hops: 0,
             });
         }, Math.max(100, Math.floor(leaseMs / 2)));

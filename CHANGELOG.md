@@ -8,6 +8,7 @@ are not part of a published npm release yet.
 
 ### Added
 
+- Discover cards can show available live session activity, refreshed at heartbeat for supported Claude and Codex hosts.
 - The Codex plugin reminds a busy session once per waiting message after a Bash tool call, without exposing message content.
 - Discover cards expose project-scoped session handles; send can resolve a handle for a registered session, including an offline one.
 - Successful agent sends explain whether a message was stored, accepted by an adapter, or reused, without implying it was read or accepted by the recipient.

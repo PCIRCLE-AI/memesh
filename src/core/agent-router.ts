@@ -145,6 +145,7 @@ export interface AgentRouterHeartbeatRequest {
   session_instance_id: string;
   connection_id: string;
   generation: number;
+  work_summary?: string | null;
   hops: number;
 }
 
@@ -444,6 +445,10 @@ export class AgentRouter {
             UPDATE agent_session_connections SET lease_expires_at_ms = ? WHERE connection_id = ?
           `).run(expiresAt, connection.connection_id);
         }).immediate();
+        if (request.work_summary !== undefined) {
+          const card = this.selectionCards.get(connection.connection_id);
+          if (card) card.work_summary = request.work_summary;
+        }
         return { generation: connection.generation, lease_ms: this.limits.lease_ms };
       }
       case 'disconnect': {
@@ -507,6 +512,7 @@ export class AgentRouter {
       lease_ms: this.limits.lease_ms,
       drain_scheduled: true,
       memesh_version: this.memesh_version,
+      features: ['heartbeat_work_summary'],
     };
   }
 
@@ -1378,7 +1384,7 @@ function parseRequest(frame: Buffer, maxHops: number): AgentRouterRequest {
     case 'heartbeat':
     case 'disconnect':
       assertAllowedKeys(value, [
-        ...common, 'project', 'session_instance_id', 'connection_id', 'generation',
+        ...common, 'project', 'session_instance_id', 'connection_id', 'generation', ...(type === 'heartbeat' ? ['work_summary'] : []),
       ]);
       return {
         version: AGENT_ROUTER_PROTOCOL_VERSION,
@@ -1388,6 +1394,7 @@ function parseRequest(frame: Buffer, maxHops: number): AgentRouterRequest {
         session_instance_id: validateField('session_instance_id', value.session_instance_id),
         connection_id: validateField('connection_id', value.connection_id),
         generation: validateInteger('generation', value.generation, 1, Number.MAX_SAFE_INTEGER),
+        ...(type === 'heartbeat' && value.work_summary !== undefined ? { work_summary: value.work_summary === null ? null : validateField('work_summary', value.work_summary) } : {}),
         hops,
       };
     case 'host_accept':

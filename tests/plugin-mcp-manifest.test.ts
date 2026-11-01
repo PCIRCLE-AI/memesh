@@ -188,10 +188,10 @@ describe('Codex and Claude plugin MCP manifests', () => {
     expect(Object.keys(codexPlugin.hooks ?? {})).toEqual(['hooks']);
     const codexHooks = structuredClone(codexPlugin.hooks.hooks);
     const onlyCodex = codexHooks.PostToolUse.filter((entry: { hooks: Array<{ command: string }> }) =>
-      entry.hooks.some(hook => hook.command.endsWith('/codex-busy-message-notice.js')));
-    expect(onlyCodex).toHaveLength(1);
+      entry.hooks.some(hook => ['/codex-busy-message-notice.js', '/codex-plan-activity.js'].some(name => hook.command.endsWith(name))));
+    expect(onlyCodex).toHaveLength(2);
     codexHooks.PostToolUse = codexHooks.PostToolUse.filter((entry: { hooks: Array<{ command: string }> }) =>
-      !entry.hooks.some(hook => hook.command.endsWith('/codex-busy-message-notice.js')));
+      !entry.hooks.some(hook => ['/codex-busy-message-notice.js', '/codex-plan-activity.js'].some(name => hook.command.endsWith(name))));
     expect(codexHooks).toEqual(claudeHooks.hooks);
     expect(claudeHooks.modules).toEqual(['./native-memory.js']);
   });

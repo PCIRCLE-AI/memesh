@@ -3229,8 +3229,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path13) {
-      let input2 = path13;
+    function removeDotSegments(path15) {
+      let input2 = path15;
       const output2 = [];
       let nextSlash = -1;
       let len = 0;
@@ -3482,8 +3482,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path13, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path13 && path13 !== "/" ? path13 : void 0;
+        const [path15, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path15 && path15 !== "/" ? path15 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -6902,12 +6902,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f;
     };
-    function addFormats(ajv, list, fs17, exportName) {
+    function addFormats(ajv, list, fs19, exportName) {
       var _a3;
       var _b;
       (_a3 = (_b = ajv.opts.code).formats) !== null && _a3 !== void 0 ? _a3 : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs17[f]);
+        ajv.addFormat(f, fs19[f]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -6916,8 +6916,8 @@ var require_dist = __commonJS({
 });
 
 // dist/mcp/server.js
-import fs16 from "fs";
-import path12 from "path";
+import fs18 from "fs";
+import path14 from "path";
 
 // node_modules/zod/v4/core/index.js
 var core_exports2 = {};
@@ -7473,10 +7473,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path13) {
-  if (!path13)
+function getElementAtPath(obj, path15) {
+  if (!path15)
     return obj;
-  return path13.reduce((acc, key) => acc?.[key], obj);
+  return path15.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -7816,11 +7816,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path13, issues) {
+function prefixIssues(path15, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path13);
+    iss.path.unshift(path15);
     return iss;
   });
 }
@@ -8282,16 +8282,16 @@ function flattenError(error62, mapper = (issue2) => issue2.message) {
 }
 function formatError(error62, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error63, path13 = []) => {
+  const processError = (error63, path15 = []) => {
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path13, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path15, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path13, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path15, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path13, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path15, ...issue2.path]);
       } else {
-        const fullpath = [...path13, ...issue2.path];
+        const fullpath = [...path15, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -8330,17 +8330,17 @@ function formatError(error62, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error62, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error63, path13 = []) => {
+  const processError = (error63, path15 = []) => {
     var _a3;
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path13, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path15, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path13, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path15, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path13, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path15, ...issue2.path]);
       } else {
-        const fullpath = [...path13, ...issue2.path];
+        const fullpath = [...path15, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -8379,8 +8379,8 @@ function treeifyError(error62, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path13 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path13) {
+  const path15 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path15) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -25999,13 +25999,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path13 = ref.slice(1).split("/").filter(Boolean);
-  if (path13.length === 0) {
+  const path15 = ref.slice(1).split("/").filter(Boolean);
+  if (path15.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path13[0] === defsKey) {
-    const key = path13[1] === void 0 ? void 0 : decodeJSONPointerSegment(path13[1]);
+  if (path15[0] === defsKey) {
+    const key = path15[1] === void 0 ? void 0 : decodeJSONPointerSegment(path15[1]);
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -30022,8 +30022,8 @@ var { DatabaseSync } = loadNodeSqlite();
 var BUSY_TIMEOUT_MS = 3e4;
 var MemeshDatabase = class extends DatabaseSync {
   #depth = 0;
-  constructor(path13, options = {}) {
-    super(path13, options);
+  constructor(path15, options = {}) {
+    super(path15, options);
     this.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
   }
   pragma(statement) {
@@ -39387,8 +39387,8 @@ function fail(message) {
   return { content: [{ type: "text", text: message }], isError: true };
 }
 function formatIssue(issue2) {
-  const path13 = issue2.path.join(".");
-  return path13 ? `${path13}: ${issue2.message}` : issue2.message;
+  const path15 = issue2.path.join(".");
+  return path15 ? `${path15}: ${issue2.message}` : issue2.message;
 }
 function stripNullProps(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value))
@@ -39790,7 +39790,7 @@ function resolveMcpProject(launchRoot, rootUris) {
 }
 
 // dist/host-runtime/claude-inbox.js
-import path11 from "node:path";
+import path13 from "node:path";
 import { spawn as spawn3 } from "node:child_process";
 import { fileURLToPath as fileURLToPath5 } from "node:url";
 
@@ -39903,6 +39903,13 @@ var ActiveRouterHostConnection = class {
   closed = false;
   deliveryTail = Promise.resolve();
   acceptedDeliveries = /* @__PURE__ */ new Map();
+  currentWorkSummary() {
+    try {
+      return this.input.work_summary?.() ?? this.input.identity.work_summary;
+    } catch {
+      return this.input.identity.work_summary;
+    }
+  }
   constructor(input2, resilience) {
     this.input = input2;
     this.resilience = resilience;
@@ -39998,11 +40005,13 @@ var ActiveRouterHostConnection = class {
     let generation = 0;
     let registrationSettled = false;
     let legacyVersionHandshake = false;
+    const workSummary = this.currentWorkSummary();
     const registration = {
       version: AGENT_ROUTER_PROTOCOL_VERSION,
       type: "register",
       request_id: registerId,
       ...this.input.identity,
+      ...workSummary === void 0 ? {} : { work_summary: workSummary },
       auth_token: this.input.auth_token,
       memesh_version: installedVersion,
       hops: 0
@@ -40085,7 +40094,7 @@ var ActiveRouterHostConnection = class {
               connectionId = requiredFrameString(frame.result.connection_id);
               generation = requiredFrameInteger(frame.result.generation);
               const leaseMs = requiredFrameInteger(frame.result.lease_ms);
-              this.activate(socket, connectionId, generation, leaseMs);
+              this.activate(socket, connectionId, generation, leaseMs, Array.isArray(frame.result.features) && frame.result.features.includes("heartbeat_work_summary"));
               finish();
             } catch (error62) {
               finish(error62 instanceof Error ? error62 : new Error(String(error62)));
@@ -40140,7 +40149,7 @@ var ActiveRouterHostConnection = class {
       this.write(socket, registration);
     });
   }
-  activate(socket, connectionId, generation, leaseMs) {
+  activate(socket, connectionId, generation, leaseMs, activitySupported) {
     this.currentSocket = socket;
     this.currentConnectionId = connectionId;
     this.currentGeneration = generation;
@@ -40157,6 +40166,7 @@ var ActiveRouterHostConnection = class {
         session_instance_id: this.input.identity.session_instance_id,
         connection_id: connectionId,
         generation,
+        ...activitySupported ? { work_summary: this.currentWorkSummary() ?? null } : {},
         hops: 0
       });
     }, Math.max(100, Math.floor(leaseMs / 2)));
@@ -40410,6 +40420,230 @@ function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// dist/core/session-activity.js
+import fs17 from "node:fs";
+import path12 from "node:path";
+import { execFileSync as execFileSync3 } from "node:child_process";
+
+// dist/host-runtime/claude-transcript.js
+import fs16 from "node:fs";
+import path11 from "node:path";
+var MAX_BYTES = 1024 * 1024;
+var ClaudeTranscriptReader = class {
+  projectsDir;
+  projectSlug;
+  session = "";
+  file;
+  offset = 0;
+  identity = "";
+  pending = Buffer.alloc(0);
+  plan;
+  calls = /* @__PURE__ */ new Set();
+  constructor(projectsDir, projectSlug) {
+    this.projectsDir = projectsDir;
+    this.projectSlug = projectSlug;
+  }
+  currentTask(session) {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(session))
+      return void 0;
+    if (session !== this.session) {
+      this.session = session;
+      this.file = void 0;
+      this.reset();
+    }
+    if (!this.file) {
+      try {
+        for (const entry of fs16.readdirSync(this.projectsDir, { withFileTypes: true })) {
+          if (!entry.isDirectory() || this.projectSlug !== void 0 && entry.name !== this.projectSlug)
+            continue;
+          const candidate = path11.join(this.projectsDir, entry.name, `${session}.jsonl`);
+          try {
+            if (fs16.lstatSync(candidate).isFile()) {
+              this.file = candidate;
+              break;
+            }
+          } catch {
+          }
+        }
+      } catch {
+        return void 0;
+      }
+    }
+    if (!this.file)
+      return void 0;
+    let fd;
+    try {
+      if (!fs16.lstatSync(path11.dirname(this.file)).isDirectory())
+        return void 0;
+      fd = fs16.openSync(this.file, fs16.constants.O_RDONLY | (fs16.constants.O_NOFOLLOW ?? 0) | (fs16.constants.O_NONBLOCK ?? 0));
+      const stat = fs16.fstatSync(fd);
+      const named = fs16.lstatSync(this.file);
+      if (!stat.isFile() || !named.isFile() || stat.dev !== named.dev || stat.ino !== named.ino || typeof process.getuid === "function" && stat.uid !== process.getuid())
+        return void 0;
+      const identity = `${stat.dev}:${stat.ino}`;
+      if (this.identity !== identity || stat.size < this.offset || stat.size - this.offset > MAX_BYTES) {
+        this.reset();
+        this.identity = identity;
+        this.offset = Math.max(0, stat.size - MAX_BYTES);
+      }
+      const start = this.offset;
+      const buffer = Buffer.alloc(stat.size - start);
+      const n = fs16.readSync(fd, buffer, 0, buffer.length, this.offset);
+      this.offset += n;
+      let bytes = Buffer.concat([this.pending, buffer.subarray(0, n)]);
+      if (start > 0 && start === stat.size - MAX_BYTES) {
+        const firstNewline = bytes.indexOf(10);
+        bytes = firstNewline < 0 ? Buffer.alloc(0) : bytes.subarray(firstNewline + 1);
+      }
+      let newline;
+      while ((newline = bytes.indexOf(10)) >= 0) {
+        this.consume(bytes.subarray(0, newline).toString("utf8"));
+        bytes = bytes.subarray(newline + 1);
+      }
+      this.pending = Buffer.from(bytes);
+      if (this.pending.length > MAX_BYTES) {
+        this.reset();
+        return void 0;
+      }
+      if (this.pending.length)
+        return void 0;
+      return this.plan?.find((item) => item.status === "in_progress")?.content;
+    } catch {
+      this.file = void 0;
+      this.reset();
+      return void 0;
+    } finally {
+      if (fd !== void 0)
+        fs16.closeSync(fd);
+    }
+  }
+  reset() {
+    this.offset = 0;
+    this.identity = "";
+    this.pending = Buffer.alloc(0);
+    this.plan = void 0;
+    this.calls.clear();
+  }
+  consume(line) {
+    let record2;
+    try {
+      record2 = JSON.parse(line);
+    } catch {
+      return;
+    }
+    if (!record2 || typeof record2 !== "object" || !("type" in record2) || record2.type !== "assistant" || !("message" in record2) || !record2.message || typeof record2.message !== "object" || !("role" in record2.message) || record2.message.role !== "assistant" || !("content" in record2.message))
+      return;
+    const content = record2.message.content;
+    if (!Array.isArray(content))
+      return;
+    for (const call of content) {
+      if (call?.type !== "tool_use" || !["TodoWrite", "mcp__ccd_turn__update_plan"].includes(call.name))
+        continue;
+      if (typeof call.id !== "string" || !call.id) {
+        this.plan = void 0;
+        continue;
+      }
+      if (this.calls.has(call.id))
+        continue;
+      this.calls.add(call.id);
+      const input2 = call.input;
+      if (call.name === "mcp__ccd_turn__update_plan" && input2?.advance === true && Object.keys(input2).length === 1) {
+        const index = this.plan?.findIndex((item) => item.status === "in_progress") ?? -1;
+        if (!this.plan || index < 0) {
+          this.plan = void 0;
+          continue;
+        }
+        this.plan[index].status = "completed";
+        const next = this.plan.slice(index + 1).find((item) => item.status === "pending");
+        if (next)
+          next.status = "in_progress";
+        continue;
+      }
+      const items = call.name === "TodoWrite" ? input2?.todos : input2?.items;
+      if (call.name !== "TodoWrite" && !["first_task", "continuation"].includes(input2?.scope)) {
+        this.plan = void 0;
+        continue;
+      }
+      if (!Array.isArray(items) || !items.length || items.some((item) => typeof item?.content !== "string" || !["pending", "in_progress", "completed"].includes(item.status)) || items.filter((item) => item.status === "in_progress").length > 1) {
+        this.plan = void 0;
+        continue;
+      }
+      this.plan = items.map((item) => ({ content: item.content, status: item.status }));
+    }
+  }
+};
+
+// dist/core/session-activity.js
+var MAX_BYTES2 = 1024 * 1024;
+function readTail(file2, forbiddenModeBits = 0) {
+  let fd;
+  try {
+    fd = fs17.openSync(file2, fs17.constants.O_RDONLY | (fs17.constants.O_NOFOLLOW ?? 0) | (fs17.constants.O_NONBLOCK ?? 0));
+    const stat = fs17.fstatSync(fd);
+    const named = fs17.lstatSync(file2);
+    if (!stat.isFile() || !named.isFile() || named.dev !== stat.dev || named.ino !== stat.ino || typeof process.getuid === "function" && stat.uid !== process.getuid() || process.platform !== "win32" && (stat.mode & forbiddenModeBits) !== 0)
+      return void 0;
+    const start = Math.max(0, stat.size - MAX_BYTES2);
+    const bytes = Buffer.alloc(stat.size - start);
+    const n = fs17.readSync(fd, bytes, 0, bytes.length, start);
+    const text = bytes.subarray(0, n).toString("utf8");
+    return start ? text.slice(text.indexOf("\n") + 1) : text;
+  } catch {
+    return void 0;
+  } finally {
+    if (fd !== void 0)
+      fs17.closeSync(fd);
+  }
+}
+function formatSessionActivity(fields) {
+  const parts = [fields.repo, fields.status, fields.title, fields.task ? `\u9032\u884C\u4E2D\uFF1A${fields.task}` : void 0].filter((v) => Boolean(v));
+  const result = Array.from(parts.join(" \xB7 "), (char) => char.charCodeAt(0) < 32 ? " " : char).join("").trim();
+  if (!result)
+    return void 0;
+  return result.slice(0, 200).replace(/[\uD800-\uDBFF]$/, "");
+}
+function repoLabel(workspace) {
+  try {
+    const value = execFileSync3("git", ["rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD"], { cwd: workspace, encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim().split("\n");
+    return value.length === 2 && value[0] && value[1] ? `${path12.basename(value[0])}@${value[1]}` : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function createClaudeActivity(pid, workspace, claudeDir = process.env.CLAUDE_CONFIG_DIR || path12.join(homeDir(), ".claude")) {
+  let slug;
+  let reader;
+  return () => {
+    let registry2;
+    try {
+      const value = JSON.parse(readTail(path12.join(claudeDir, "sessions", `${pid}.json`), 18) ?? "");
+      if (value && typeof value === "object" && !Array.isArray(value))
+        registry2 = value;
+    } catch {
+      registry2 = void 0;
+    }
+    if (registry2) {
+      try {
+        if (registry2.pid !== pid || typeof registry2.cwd !== "string" || fs17.realpathSync(registry2.cwd) !== fs17.realpathSync(workspace))
+          registry2 = void 0;
+      } catch {
+        registry2 = void 0;
+      }
+    }
+    const status = registry2?.status === "busy" || registry2?.status === "idle" ? registry2.status : void 0;
+    const title = typeof registry2?.name === "string" ? registry2.name : void 0;
+    if (registry2 && typeof registry2.cwd === "string") {
+      const currentSlug = projectTranscriptSlug(registry2.cwd);
+      if (currentSlug !== slug) {
+        slug = currentSlug;
+        reader = new ClaudeTranscriptReader(path12.join(claudeDir, "projects"), slug);
+      }
+    }
+    const task = typeof registry2?.sessionId === "string" ? reader?.currentTask(registry2.sessionId) : void 0;
+    return formatSessionActivity({ repo: repoLabel(workspace), status, title, task });
+  };
+}
+
 // dist/host-runtime/claude-inbox.js
 async function startClaudeInboxPresence(rootUris) {
   if (process.platform === "win32")
@@ -40427,7 +40661,14 @@ async function startClaudeInboxPresence(rootUris) {
     return void 0;
   const dataDir = getMemeshDirFromDbPath();
   requirePrivateWritableDirectory(dataDir, "the local router keeps its lifecycle state there");
-  const token = ensureRouterTokenFile(path11.join(dataDir, "agent-router.token"));
+  const token = ensureRouterTokenFile(path13.join(dataDir, "agent-router.token"));
+  let workspace = process.env.MEMESH_PROJECT_ROOT ?? process.env.CLAUDE_PROJECT_DIR;
+  if (!workspace && rootUris?.length === 1) {
+    try {
+      workspace = fileURLToPath5(rootUris[0]);
+    } catch {
+    }
+  }
   return connectRouterHost({
     socket_path: normalizeAgentRouterSocketPath(process.env.MEMESH_ROUTER_SOCKET ?? getAgentRouterSocketPath()),
     auth_token: token,
@@ -40437,6 +40678,7 @@ async function startClaudeInboxPresence(rootUris) {
       session_instance_id: session,
       adapter_kind: "claude-inbox"
     },
+    ...workspace ? { work_summary: createClaudeActivity(process.ppid, workspace) } : {},
     deliver: async () => {
       throw new Error("Use the durable inbox; Claude Channel is not enabled.");
     },
@@ -40458,8 +40700,8 @@ async function startClaudeInboxPresence(rootUris) {
 }
 
 // dist/mcp/server.js
-var packageJsonPath2 = path12.resolve(path12.dirname(fileURLToPath6(import.meta.url)), "../../package.json");
-var packageVersion2 = JSON.parse(fs16.readFileSync(packageJsonPath2, "utf8")).version ?? "0.0.0";
+var packageJsonPath2 = path14.resolve(path14.dirname(fileURLToPath6(import.meta.url)), "../../package.json");
+var packageVersion2 = JSON.parse(fs18.readFileSync(packageJsonPath2, "utf8")).version ?? "0.0.0";
 configureVersionSource(packageVersion2, packageJsonPath2);
 var server = new Server({ name: "memesh", version: packageVersion2 }, { capabilities: { tools: {} } });
 var presence;

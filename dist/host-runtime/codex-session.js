@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { canonicalAgentScopeId } from '../core/agent-scope-id.js';
 import { automaticCodexSessionPrincipal, isValidCodexThreadId, resolveCodexSessionPrincipal, } from '../core/codex-session-principal.js';
 import { getAgentRouterSocketPath, getMemeshDirFromDbPath, getProjectName } from '../core/paths.js';
+import { createCodexActivity } from '../core/session-activity.js';
 import { requirePrivateWritableDirectory } from '../core/file-mode.js';
 import { assertSecureLocalHostRuntimeSupported, ensureRouterTokenFile, readHostConfigFile, readTokenFile, normalizeConfiguredRouterSocket, requiredString, } from './config.js';
 import { AgentRouterProtocolError } from '../core/agent-router.js';
@@ -419,6 +420,7 @@ function connectCodexSessionCompanion(config, session, realpath, connect, onSupe
             adapter_kind: 'codex-cli-queue',
             ...(selected.work_summary === undefined ? {} : { work_summary: selected.work_summary }),
         },
+        work_summary: createCodexActivity(session.threadId, session.workspace, getMemeshDirFromDbPath()),
         async deliver() {
             throw new Error('Codex CLI queue delivery is owned by the router adapter.');
         },

@@ -63,6 +63,10 @@
       ],
       "PostToolUse": [
         {
+          "matcher": "update_plan",
+          "hooks": [{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/codex-plan-activity.js", "timeout": 5 }]
+        },
+        {
           "matcher": "Bash",
           "hooks": [
             {
