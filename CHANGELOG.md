@@ -6,6 +6,8 @@ are not part of a published npm release yet.
 
 ## [Unreleased]
 
+## [4.12.0] — 2026-11-01
+
 ### Added
 
 - Eligible ordinary Claude MCP sessions can receive a native inbox notice without Channel; exact-session delivery requires confirmation in the session transcript.
