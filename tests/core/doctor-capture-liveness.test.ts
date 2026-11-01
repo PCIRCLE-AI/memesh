@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { removeTempDir } from '../helpers/temp-dir.js';
 import { spawnSync } from 'child_process';
 import os from 'os';
 import path from 'path';
@@ -35,7 +36,7 @@ afterEach(() => {
     if (value === undefined) delete process.env[key]; else process.env[key] = value;
   }
   for (const root of tempRoots.splice(0)) {
-    fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    removeTempDir(root);
   }
 });
 

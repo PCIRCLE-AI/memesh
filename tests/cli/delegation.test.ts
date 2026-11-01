@@ -3,6 +3,7 @@ import { spawnSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { removeTempDir } from '../helpers/temp-dir.js';
 import { TOOL_DEFINITIONS } from '../../src/transports/mcp/handlers.js';
 
 const repoRoot = path.join(__dirname, '..', '..');
@@ -20,7 +21,7 @@ function run(args: string[]) {
 }
 
 beforeEach(() => { home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-delegation-cli-')); });
-afterEach(() => { fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
+afterEach(() => { removeTempDir(home); });
 
 describe('memesh delegation', () => {
   it('records an envelope, then flips it to verified', () => {

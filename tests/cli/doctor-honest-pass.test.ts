@@ -21,6 +21,7 @@ import { execFileSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { removeTempDir } from '../helpers/temp-dir.js';
 
 const CLI_PATH = path.join(__dirname, '..', '..', 'dist', 'transports', 'cli', 'cli.js');
 
@@ -56,7 +57,7 @@ function doctorCheck(id: string): DoctorCheck {
 }
 
 beforeEach(() => { home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-doctorhonest-')); });
-afterEach(() => { fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
+afterEach(() => { removeTempDir(home); });
 
 describe('doctor: hooks wired (C1)', () => {
   it('does not claim hooks are wired just because the shipped plugin manifest exists', () => {
