@@ -229,7 +229,8 @@ export function dedupeObservations(db: MemeshDatabase): number {
  * `bashEditedPaths` (src/core/bash-edited-paths.ts, the one implementation
  * the Stop hook and session-insight.ts use — see #495) — heredoc
  * redirection, `cat >`, `tee`, `sed -i`, `write_text(`, `writeFileSync(` —
- * with its exclusions: `/dev/*` and `/tmp/*` targets are not edits. A bare `<<` is NOT a write (`psql <<EOF`, `python3 - <<'PY'`
+ * with its exclusions: `/dev/*`, `/tmp/*` and the macOS temp directories
+ * (`/private/tmp`, `/var/folders`) are not edits. A bare `<<` is NOT a write (`psql <<EOF`, `python3 - <<'PY'`
  * only feed stdin), and neither is `| tee` with no path, so substring
  * matching would have turned a true "0 files edited" into a false claim.
  *

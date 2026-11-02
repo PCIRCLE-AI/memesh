@@ -23,6 +23,7 @@ export function basename(p) {
     const parts = p.split(/[\\/]/);
     return parts[parts.length - 1] ?? '';
 }
+const SCRATCH_PREFIXES = ['/dev/', '/tmp/', '/private/tmp/', '/var/folders/', '/private/var/folders/'];
 export function bashEditedPaths(cmd) {
     if (typeof cmd !== 'string')
         return [];
@@ -37,8 +38,9 @@ export function bashEditedPaths(cmd) {
     ]) {
         let m;
         while ((m = re.exec(cmd)) !== null) {
-            if (m[1] && !m[1].startsWith('/dev/') && !m[1].startsWith('/tmp/'))
-                found.add(m[1]);
+            const target = m[1];
+            if (target && !SCRATCH_PREFIXES.some(prefix => target.startsWith(prefix)))
+                found.add(target);
         }
     }
     return [...found];
@@ -55,4 +57,10 @@ export function bashEditedFileNames(cmd) {
 export function editedFileName(filePath) {
     const name = typeof filePath === 'string' ? basename(filePath) : '';
     return isPathShapedFileName(name) ? name : null;
+}
+export const MAX_LISTED_FILES = 30;
+export function listEditedFiles(files) {
+    if (files.length <= MAX_LISTED_FILES)
+        return files.join(', ');
+    return `${files.slice(0, MAX_LISTED_FILES).join(', ')} and ${files.length - MAX_LISTED_FILES} more`;
 }

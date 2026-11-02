@@ -1,7 +1,7 @@
 import { redactSecrets } from './paths.js';
 import { truncateTitle } from './title.js';
 import { remember } from './operations.js';
-import { bashEditedFileNames, editedFileName, isPathShapedFileName } from './bash-edited-paths.js';
+import { bashEditedFileNames, editedFileName, isPathShapedFileName, listEditedFiles } from './bash-edited-paths.js';
 export const MIN_TOOL_CALLS = 3;
 export const HEAVY_SESSION_TOOL_CALLS = 20;
 const FILE_WRITE_TOOLS = new Set(['write_file', 'patch', 'edit_file', 'Write', 'Edit', 'MultiEdit']);
@@ -134,7 +134,7 @@ export function buildSessionInsights(activity, ctx) {
             type: 'session-insight',
             title: truncateTitle(`${titlePrefix}: edited ${filesEdited.length} file(s)`),
             observations: [
-                `Session edited ${filesEdited.length} file(s): ${filesEdited.join(', ')}`,
+                `Session edited ${filesEdited.length} file(s): ${listEditedFiles(filesEdited)}`,
                 `Total tool calls: ${toolCallCount}`,
             ],
             tags: [...baseTags, ...fileTagsFor(filesEdited)],
@@ -146,7 +146,7 @@ export function buildSessionInsights(activity, ctx) {
             type: 'session-insight',
             title: truncateTitle(`${titlePrefix}: fixed ${errorsEncountered.length} error(s)`),
             observations: [
-                `Fixed ${errorsEncountered.length} error(s) by editing ${filesEdited.join(', ')}`,
+                `Fixed ${errorsEncountered.length} error(s) by editing ${listEditedFiles(filesEdited)}`,
                 ...errorsEncountered.slice(0, 3).map((e) => `Error: ${e.slice(0, 100)}`),
             ],
             tags: [...baseTags, 'type:bugfix', ...fileTagsFor(filesEdited)],
