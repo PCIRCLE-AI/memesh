@@ -95,6 +95,20 @@ describe('buildSessionInsights — the Stop hook rules', () => {
     expect(out).toEqual([]);
   });
 
+  it('lists at most 30 edited files in -files and -fixes and counts the rest', () => {
+    const filesEdited = Array.from({ length: 35 }, (_, i) => `f${String(i).padStart(2, '0')}.ts`);
+    const out = buildSessionInsights(
+      { filesEdited, bashCommands: [], errorsEncountered: ['boom'], toolCallCount: 5, unrecognizedTools: [], toolResultsNonJson: 0 },
+      ctx,
+    );
+    const files = out.find((e) => e.name === 's1-files' || e.name.endsWith('-files'))!;
+    const fixes = out.find((e) => e.name.endsWith('-fixes'))!;
+    expect(files.observations[0]).toContain('f29.ts and 5 more');
+    expect(files.observations[0]).not.toContain('f30.ts');
+    expect(fixes.observations[0]).toContain('f29.ts and 5 more');
+    expect(fixes.observations[0]).not.toContain('f30.ts');
+  });
+
   it('writes -fixes only when a file was also edited', () => {
     const out = buildSessionInsights(
       { filesEdited: [], bashCommands: [], errorsEncountered: ['boom'], toolCallCount: 5, unrecognizedTools: [], toolResultsNonJson: 0 },

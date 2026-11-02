@@ -53,6 +53,10 @@ export function basename(p: string): string {
   return parts[parts.length - 1] ?? '';
 }
 
+/** Device and scratch locations: a write there is not an edit to remember.
+ *  macOS reports its temp dirs as /private/tmp and /var/folders. */
+const SCRATCH_PREFIXES = ['/dev/', '/tmp/', '/private/tmp/', '/var/folders/', '/private/var/folders/'];
+
 /**
  * File paths a shell command writes in place: heredoc redirection, `cat >`,
  * `tee`, `sed -i`, pathlib `write_text`, `fs.writeFileSync`. Anything
@@ -75,7 +79,8 @@ export function bashEditedPaths(cmd: unknown): string[] {
   ]) {
     let m: RegExpExecArray | null;
     while ((m = re.exec(cmd)) !== null) {
-      if (m[1] && !m[1].startsWith('/dev/') && !m[1].startsWith('/tmp/')) found.add(m[1]);
+      const target = m[1];
+      if (target && !SCRATCH_PREFIXES.some(prefix => target.startsWith(prefix))) found.add(target);
     }
   }
   return [...found];
@@ -105,4 +110,15 @@ export function bashEditedFileNames(cmd: unknown): string[] {
 export function editedFileName(filePath: unknown): string | null {
   const name = typeof filePath === 'string' ? basename(filePath) : '';
   return isPathShapedFileName(name) ? name : null;
+}
+
+/** The most file names one observation lists. A long session can touch over a
+ *  thousand files (29,709 characters in one real Stop), and the hook's write
+ *  path has no length limit of its own. */
+export const MAX_LISTED_FILES = 30;
+
+/** Edited file names for one observation: the first MAX_LISTED_FILES, then a count. */
+export function listEditedFiles(files: readonly string[]): string {
+  if (files.length <= MAX_LISTED_FILES) return files.join(', ');
+  return `${files.slice(0, MAX_LISTED_FILES).join(', ')} and ${files.length - MAX_LISTED_FILES} more`;
 }

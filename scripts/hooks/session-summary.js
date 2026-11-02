@@ -32,11 +32,12 @@ import {
   spawnAutoUpdate,
   truncateTitle,
 } from './_shared.js';
+import { createCodexState, finishCodex, readCodexRow } from './_codex-rollout.js';
 import { runStopHandoff } from './_stop-handoff.js';
 import { runStopNotes } from './_stop-notes.js';
 // Edited file names from Bash and Edit/Write, under one path-shape rule
 // (#495). Generated from src/core/bash-edited-paths.ts — do not hand-edit.
-import { bashEditedFileNames, editedFileName, isPathShapedFileName } from './_generated/bash-edited-paths.js';
+import { bashEditedFileNames, editedFileName, isPathShapedFileName, listEditedFiles } from './_generated/bash-edited-paths.js';
 
 let installChannel = null;
 try {
@@ -85,6 +86,7 @@ function parseTranscript(transcriptPath) {
   const errorsEncountered = [];
   let toolCallCount = 0;
   let readFailed = false;
+  const codexState = createCodexState();
   // The raw file content, returned so downstream consumers (the
   // recall-effectiveness block) reuse this single read instead of a second
   // readFileSync — real transcripts reach 47MB, so a second full read plus
@@ -137,6 +139,8 @@ function parseTranscript(transcriptPath) {
           }
         }
 
+        toolCallCount += readCodexRow(entry, codexState, redactSecrets);
+
         // Current format: user entries contain tool_result blocks in message.content.
         //
         // Use the explicit `is_error` flag the transcript records on each
@@ -184,6 +188,7 @@ function parseTranscript(transcriptPath) {
         // Skip malformed JSONL lines — benign, per-line, deliberately not traced.
       }
     }
+    finishCodex(codexState, { filesEdited, bashCommands, errorsEncountered }, redactSecrets);
   } catch (err) {
     // The transcript file itself could not be read, which empties this
     // session's entire capture — filesEdited/errors/toolCallCount all return
@@ -624,7 +629,7 @@ process.stdin.on('end', async () => {
           `session-${sessionId}-files`,
           'session-insight',
           [
-            `Successful file-edit tool results for ${filesEdited.length} file(s): ${filesEdited.join(', ')}`,
+            `Successful file-edit tool results for ${filesEdited.length} file(s): ${listEditedFiles(filesEdited)}`,
             `Total tool calls: ${toolCallCount}`,
           ],
           [...baseTags, ...fileTagsFor(filesEdited)],
@@ -638,7 +643,7 @@ process.stdin.on('end', async () => {
           `session-${sessionId}-fixes`,
           'session-insight',
           [
-            `Observed ${errorsEncountered.length} error(s) and successful edit tool results for ${filesEdited.join(', ')}`,
+            `Observed ${errorsEncountered.length} error(s) and successful edit tool results for ${listEditedFiles(filesEdited)}`,
             ...errorsEncountered.slice(0, 3).map(e => `Error: ${e.slice(0, 100)}`),
           ],
           [...baseTags, ...fileTagsFor(filesEdited)],

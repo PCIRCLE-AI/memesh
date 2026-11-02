@@ -6405,8 +6405,9 @@ function bashEditedPaths(cmd) {
   ]) {
     let m;
     while ((m = re.exec(cmd)) !== null) {
-      if (m[1] && !m[1].startsWith("/dev/") && !m[1].startsWith("/tmp/"))
-        found.add(m[1]);
+      const target = m[1];
+      if (target && !SCRATCH_PREFIXES.some((prefix) => target.startsWith(prefix)))
+        found.add(target);
     }
   }
   return [...found];
@@ -6424,9 +6425,17 @@ function editedFileName(filePath) {
   const name = typeof filePath === "string" ? basename(filePath) : "";
   return isPathShapedFileName(name) ? name : null;
 }
+function listEditedFiles(files) {
+  if (files.length <= MAX_LISTED_FILES)
+    return files.join(", ");
+  return `${files.slice(0, MAX_LISTED_FILES).join(", ")} and ${files.length - MAX_LISTED_FILES} more`;
+}
+var SCRATCH_PREFIXES, MAX_LISTED_FILES;
 var init_bash_edited_paths = __esm({
   "dist/core/bash-edited-paths.js"() {
     "use strict";
+    SCRATCH_PREFIXES = ["/dev/", "/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/"];
+    MAX_LISTED_FILES = 30;
   }
 });
 
@@ -67501,7 +67510,7 @@ function buildSessionInsights(activity, ctx) {
       type: "session-insight",
       title: truncateTitle(`${titlePrefix}: edited ${filesEdited.length} file(s)`),
       observations: [
-        `Session edited ${filesEdited.length} file(s): ${filesEdited.join(", ")}`,
+        `Session edited ${filesEdited.length} file(s): ${listEditedFiles(filesEdited)}`,
         `Total tool calls: ${toolCallCount}`
       ],
       tags: [...baseTags, ...fileTagsFor(filesEdited)]
@@ -67513,7 +67522,7 @@ function buildSessionInsights(activity, ctx) {
       type: "session-insight",
       title: truncateTitle(`${titlePrefix}: fixed ${errorsEncountered.length} error(s)`),
       observations: [
-        `Fixed ${errorsEncountered.length} error(s) by editing ${filesEdited.join(", ")}`,
+        `Fixed ${errorsEncountered.length} error(s) by editing ${listEditedFiles(filesEdited)}`,
         ...errorsEncountered.slice(0, 3).map((e) => `Error: ${e.slice(0, 100)}`)
       ],
       tags: [...baseTags, "type:bugfix", ...fileTagsFor(filesEdited)]

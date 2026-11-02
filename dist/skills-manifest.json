@@ -42,6 +42,11 @@
       "bytes": 4540
     },
     {
+      "path": "scripts/hooks/_codex-rollout.js",
+      "sha256": "403492b53a934bb59cb9b661f8e6ab77e8d80adfd7e502cc1cf9b34876fc22a6",
+      "bytes": 14599
+    },
+    {
       "path": "scripts/hooks/_generated/agent-message-inbox.js",
       "sha256": "a217d5939e352fc34146737bff9687a845ae0417bad36976ba97c69c44abf9ed",
       "bytes": 11278
@@ -53,8 +58,8 @@
     },
     {
       "path": "scripts/hooks/_generated/bash-edited-paths.js",
-      "sha256": "e6159a9189e9dd801b835f4844e833cfe3ef4b454d450bfe5a0715d63e7c3b92",
-      "bytes": 2171
+      "sha256": "a3a113c0201670fac2c50bf0d4d001719a22f56c77089ddef3a17803ecd0ed2a",
+      "bytes": 2576
     },
     {
       "path": "scripts/hooks/_generated/briefing-index.js",
@@ -238,8 +243,8 @@
     },
     {
       "path": "scripts/hooks/session-summary.js",
-      "sha256": "f6d732db386c2a00c89be94d3fa71da7829f5d36f426d841daba40341f3d64c4",
-      "bytes": 38742
+      "sha256": "5d3abbaad3a5947c983f38e3686654a3024e1d068a9a7d8b8515a58a7b4b4bcf",
+      "bytes": 39063
     },
     {
       "path": "scripts/hooks/stop-message-gate.js",

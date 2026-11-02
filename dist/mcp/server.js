@@ -32747,6 +32747,7 @@ function isPathShapedFileName(name) {
     return false;
   return true;
 }
+var SCRATCH_PREFIXES = ["/dev/", "/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/"];
 function bashEditedPaths(cmd) {
   if (typeof cmd !== "string")
     return [];
@@ -32761,8 +32762,9 @@ function bashEditedPaths(cmd) {
   ]) {
     let m;
     while ((m = re.exec(cmd)) !== null) {
-      if (m[1] && !m[1].startsWith("/dev/") && !m[1].startsWith("/tmp/"))
-        found.add(m[1]);
+      const target = m[1];
+      if (target && !SCRATCH_PREFIXES.some((prefix) => target.startsWith(prefix)))
+        found.add(target);
     }
   }
   return [...found];

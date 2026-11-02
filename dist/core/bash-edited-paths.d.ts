@@ -3,4 +3,6 @@ export declare function basename(p: string): string;
 export declare function bashEditedPaths(cmd: unknown): string[];
 export declare function bashEditedFileNames(cmd: unknown): string[];
 export declare function editedFileName(filePath: unknown): string | null;
+export declare const MAX_LISTED_FILES = 30;
+export declare function listEditedFiles(files: readonly string[]): string;
 //# sourceMappingURL=bash-edited-paths.d.ts.map
