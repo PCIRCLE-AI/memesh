@@ -47,6 +47,7 @@ export interface CreateEntityInput {
 export interface SearchOptions {
     tag?: string;
     projectScope?: string | null;
+    scopeRelations?: boolean;
     limit?: number;
     includeArchived?: boolean;
     namespace?: string;

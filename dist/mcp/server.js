@@ -31995,10 +31995,11 @@ function dropUbiquitousTerms(db2, terms) {
     return terms;
   }
 }
-var NO_PROJECT_TAG = "NOT EXISTS (SELECT 1 FROM tags sp WHERE sp.entity_id = e.id AND sp.tag LIKE 'project:%')";
-function projectScopeFilter(scope) {
-  return scope === null ? { sql: `AND (${NO_PROJECT_TAG} OR e.namespace = 'global')`, params: [] } : {
-    sql: `AND (EXISTS (SELECT 1 FROM tags st WHERE st.entity_id = e.id AND st.tag = ?) OR ${NO_PROJECT_TAG} OR e.namespace = 'global')`,
+var noProjectTag = (alias = "e") => `NOT EXISTS (SELECT 1 FROM tags sp WHERE sp.entity_id = ${alias}.id AND sp.tag LIKE 'project:%')`;
+function projectScopeFilter(scope, alias = "e") {
+  const noProject = noProjectTag(alias);
+  return scope === null ? { sql: `AND (${noProject} OR ${alias}.namespace = 'global')`, params: [] } : {
+    sql: `AND (EXISTS (SELECT 1 FROM tags st WHERE st.entity_id = ${alias}.id AND st.tag = ?) OR ${noProject} OR ${alias}.namespace = 'global')`,
     params: [scope]
   };
 }
@@ -32216,16 +32217,16 @@ var KnowledgeGraph = class {
         tagMap.set(row.entity_id, []);
       tagMap.get(row.entity_id).push(row.tag);
     }
-    const relationScope = opts?.filterRelations && opts.projectScope !== void 0 ? projectScopeFilter(opts.projectScope) : { sql: "", params: [] };
-    const relationScopeSql = relationScope.sql.replaceAll("e.", "e_to.");
-    const relationNamespaceSql = opts?.filterRelations && opts.namespace ? "AND e_to.namespace = ?" : "";
-    const relationStatusSql = opts?.filterRelations && !opts.relationIncludeArchived ? "AND e_to.status != 'archived'" : "";
+    const view = opts?.relations;
+    const relationScope = view?.scope !== void 0 ? projectScopeFilter(view.scope, "e_to") : { sql: "", params: [] };
+    const relationNamespaceSql = view?.namespace ? "AND e_to.namespace = ?" : "";
+    const relationStatusSql = view && !view.includeArchived ? "AND (e_to.status != 'archived' OR r.relation_type = 'supersedes')" : "";
     const relRows = this.db.prepare(`SELECT r.from_entity_id, e_from.name AS "from", e_to.name AS "to",
                 r.relation_type AS type
          FROM relations r
          JOIN entities e_from ON r.from_entity_id = e_from.id
          JOIN entities e_to ON r.to_entity_id = e_to.id
-         WHERE r.from_entity_id IN (${placeholders}) ${relationScopeSql} ${relationNamespaceSql} ${relationStatusSql}`).all(...ids, ...relationScope.params, ...opts?.filterRelations && opts.namespace ? [opts.namespace] : []);
+         WHERE r.from_entity_id IN (${placeholders}) ${relationScope.sql} ${relationNamespaceSql} ${relationStatusSql}`).all(...ids, ...relationScope.params, ...view?.namespace ? [view.namespace] : []);
     const relMap = /* @__PURE__ */ new Map();
     for (const row of relRows) {
       if (!relMap.has(row.from_entity_id))
@@ -32282,17 +32283,24 @@ var KnowledgeGraph = class {
   search(query, opts) {
     return this.searchWithFacts(query, opts).entities;
   }
+  relationViewFor(opts) {
+    if (!opts?.scopeRelations)
+      return void 0;
+    const scope = opts.tag ? opts.tag.startsWith("project:") ? opts.tag : void 0 : opts.projectScope;
+    return { scope, namespace: opts.namespace, includeArchived: opts.includeArchived };
+  }
   searchWithFacts(query, opts) {
     const limit = opts?.limit ?? 20;
     const countAsAccess = opts?.countAsAccess ?? true;
+    const relations = this.relationViewFor(opts);
     if (!query || query.trim() === "") {
       if (opts?.tag) {
-        return { entities: this.listRecentByTag(opts.tag, limit, opts?.includeArchived, opts?.namespace, countAsAccess), fallback: null };
+        return { entities: this.listRecentByTag(opts.tag, limit, opts?.includeArchived, opts?.namespace, countAsAccess, relations), fallback: null };
       }
       if (opts?.projectScope !== void 0) {
-        return { entities: this.listRecentInScope(opts.projectScope, limit, opts?.includeArchived, opts?.namespace, countAsAccess), fallback: null };
+        return { entities: this.listRecentInScope(opts.projectScope, limit, opts?.includeArchived, opts?.namespace, countAsAccess, relations), fallback: null };
       }
-      return { entities: this.listRecent(limit, opts?.includeArchived, opts?.namespace, countAsAccess), fallback: null };
+      return { entities: this.listRecent(limit, opts?.includeArchived, opts?.namespace, countAsAccess, 0, relations), fallback: null };
     }
     const matchExpressions = buildRecallMatchExpressions(this.db, query);
     if (matchExpressions === null) {
@@ -32353,7 +32361,8 @@ var KnowledgeGraph = class {
     const ftsIds = ftsRows.map((r) => r.id);
     const results = this.getEntitiesByIds(ftsIds, {
       includeArchived: opts?.includeArchived,
-      namespace: opts?.namespace
+      namespace: opts?.namespace,
+      relations
     });
     const seenIds = new Set(ftsIds);
     if (opts?.includeArchived) {
@@ -32383,7 +32392,8 @@ var KnowledgeGraph = class {
       const archivedIds = archivedRows.map((r) => r.id).filter((id) => !seenIds.has(id));
       const archivedEntities = this.getEntitiesByIds(archivedIds, {
         includeArchived: true,
-        namespace: opts?.namespace
+        namespace: opts?.namespace,
+        relations
       });
       results.push(...archivedEntities);
     }
@@ -32416,7 +32426,7 @@ var KnowledgeGraph = class {
   findConflicts(entityNames) {
     return findConflicts(this.db, entityNames);
   }
-  listRecent(limit, includeArchived, namespace, countAsAccess = true, offset = 0) {
+  listRecent(limit, includeArchived, namespace, countAsAccess = true, offset = 0, relations) {
     const statusFilter = includeArchived ? "" : "AND status = 'active'";
     const namespaceFilter = namespace ? "AND namespace = ?" : "";
     const params = [];
@@ -32424,7 +32434,7 @@ var KnowledgeGraph = class {
       params.push(namespace);
     params.push(limit ?? 20, offset);
     const rows = this.db.prepare(`SELECT id FROM entities WHERE 1=1 ${statusFilter} ${namespaceFilter} ORDER BY id DESC LIMIT ? OFFSET ?`).all(...params);
-    const results = this.getEntitiesByIds(rows.map((r) => r.id), { includeArchived, namespace });
+    const results = this.getEntitiesByIds(rows.map((r) => r.id), { includeArchived, namespace, relations });
     if (countAsAccess)
       this.trackAccess(results.map((e) => e.id));
     return results;
@@ -32444,7 +32454,7 @@ var KnowledgeGraph = class {
     const statusFilter = includeArchived ? "" : "AND e.status = 'active'";
     const namespaceFilter = namespace ? "AND e.namespace = ?" : "";
     const lessonNames = project.length >= MIN_NAME_PROJECT_LENGTH ? KNOWN_ERROR_PATTERNS.map((pattern) => `lesson-${project}-${pattern}`) : [];
-    const byName = lessonNames.length === 0 ? "" : `OR (e.name IN (${lessonNames.map(() => "?").join(",")}) AND ${NO_PROJECT_TAG})`;
+    const byName = lessonNames.length === 0 ? "" : `OR (e.name IN (${lessonNames.map(() => "?").join(",")}) AND ${noProjectTag()})`;
     const params = [PROJECT_TAG_PREFIX + project, ...lessonNames, NOT_A_PROJECT_MEMORY.param];
     if (namespace)
       params.push(namespace);
@@ -32459,7 +32469,7 @@ var KnowledgeGraph = class {
          ORDER BY e.id DESC LIMIT ? OFFSET ?`).all(...params);
     return this.getEntitiesByIds(rows.map((r) => r.id), { includeArchived, namespace });
   }
-  listRecentInScope(scope, limit, includeArchived, namespace, countAsAccess = true) {
+  listRecentInScope(scope, limit, includeArchived, namespace, countAsAccess = true, relations) {
     const statusFilter = includeArchived ? "" : "AND e.status = 'active'";
     const namespaceFilter = namespace ? "AND e.namespace = ?" : "";
     const scoped = projectScopeFilter(scope);
@@ -32468,12 +32478,12 @@ var KnowledgeGraph = class {
       params.push(namespace);
     params.push(limit);
     const rows = this.db.prepare(`SELECT e.id FROM entities e WHERE 1=1 ${scoped.sql} ${statusFilter} ${namespaceFilter} ORDER BY e.id DESC LIMIT ?`).all(...params);
-    const results = this.getEntitiesByIds(rows.map((r) => r.id), { includeArchived, namespace });
+    const results = this.getEntitiesByIds(rows.map((r) => r.id), { includeArchived, namespace, relations });
     if (countAsAccess)
       this.trackAccess(results.map((e) => e.id));
     return results;
   }
-  listRecentByTag(tag, limit, includeArchived, namespace, countAsAccess = true) {
+  listRecentByTag(tag, limit, includeArchived, namespace, countAsAccess = true, relations) {
     const statusFilter = includeArchived ? "" : "AND e.status = 'active'";
     const namespaceFilter = namespace ? "AND e.namespace = ?" : "";
     const params = [tag];
@@ -32488,7 +32498,7 @@ var KnowledgeGraph = class {
          ${namespaceFilter}
          ORDER BY e.id DESC
          LIMIT ?`).all(...params);
-    const results = this.getEntitiesByIds(rows.map((r) => r.id), { includeArchived, namespace });
+    const results = this.getEntitiesByIds(rows.map((r) => r.id), { includeArchived, namespace, relations });
     if (countAsAccess)
       this.trackAccess(results.map((e) => e.id));
     return results;
@@ -34432,7 +34442,8 @@ function searchAndScore(args) {
     projectScope: args.cross_project ? void 0 : args.projectScope,
     limit: args.limit,
     includeArchived: args.include_archived,
-    namespace: args.namespace
+    namespace: args.namespace,
+    scopeRelations: !args.cross_project
   });
   const entities = summarizeReplacedHistory(searched.entities).map(shownEntity);
   return {
@@ -34469,7 +34480,7 @@ async function recallWithConflicts(args) {
 function recallIds(args, requestedIds) {
   const ids = [...new Set(requestedIds)];
   const kg = new KnowledgeGraph(getDatabase());
-  const rows = kg.getEntitiesByIds(ids, { includeArchived: true, namespace: args.namespace, projectScope: args.projectScope, filterRelations: true, relationIncludeArchived: args.include_archived });
+  const rows = kg.getEntitiesByIds(ids, { includeArchived: true, namespace: args.namespace, projectScope: args.projectScope, relations: { scope: args.projectScope, namespace: args.namespace, includeArchived: args.include_archived } });
   const byId = new Map(rows.map((entity) => [entity.id, entity]));
   const results = ids.map((id) => {
     const entity = byId.get(id);
@@ -36250,7 +36261,7 @@ function parseMetadata(raw) {
 }
 var active = (cols) => cols.status ? " AND e.status = 'active'" : "";
 var nonGlobal = (cols) => cols.namespace ? " AND (e.namespace IS NULL OR e.namespace <> 'global')" : "";
-var NO_PROJECT_TAG2 = "NOT EXISTS (SELECT 1 FROM tags pt WHERE pt.entity_id = e.id AND pt.tag LIKE 'project:%')";
+var NO_PROJECT_TAG = "NOT EXISTS (SELECT 1 FROM tags pt WHERE pt.entity_id = e.id AND pt.tag LIKE 'project:%')";
 var titleCol = (cols) => cols.title ? "e.title" : "NULL AS title";
 var candidateColumns = (cols) => [
   "e.id",
@@ -36324,7 +36335,7 @@ function selectBriefingPools(db2, projectName2, options) {
      ORDER BY e.id DESC
      LIMIT ${LESSON_POOL_LIMIT}`).all(...LESSON_TYPE_LIST, projectTag).map(toPoolRow).filter((row) => trustedForAutoContext(row.metadata)), options.onError);
   const noProject = selectPool(db2.prepare(`SELECT ${columns} FROM entities e
-     WHERE ${NO_PROJECT_TAG2} AND e.type <> ?${active(cols)}${nonGlobal(cols)}
+     WHERE ${NO_PROJECT_TAG} AND e.type <> ?${active(cols)}${nonGlobal(cols)}
      ORDER BY e.id DESC
      LIMIT ?`).all(SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP), NO_PROJECT_LIMIT);
   const global = options.global && cols.namespace ? selectPool(db2.prepare(`SELECT ${columns} FROM entities e
@@ -36332,7 +36343,7 @@ function selectBriefingPools(db2, projectName2, options) {
        ORDER BY e.id DESC
        LIMIT ?`).all(TOPOLOGY_CANDIDATE_CAP), GLOBAL_TOPOLOGY_LIMIT) : [];
   const recent = options.foreign ? selectPool(db2.prepare(`SELECT ${columns} FROM entities e
-       WHERE NOT ${NO_PROJECT_TAG2} AND e.type <> ?${active(cols)}${nonGlobal(cols)}
+       WHERE NOT ${NO_PROJECT_TAG} AND e.type <> ?${active(cols)}${nonGlobal(cols)}
        ORDER BY e.id DESC
        LIMIT ?`).all(SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP), RECENT_LIMIT) : [];
   return {
