@@ -6391,6 +6391,9 @@ function basename(p) {
   const parts = p.split(/[\\/]/);
   return parts[parts.length - 1] ?? "";
 }
+function isScratchPath(path22) {
+  return SCRATCH_PREFIXES.some((prefix) => path22.startsWith(prefix));
+}
 function bashEditedPaths(cmd) {
   if (typeof cmd !== "string")
     return [];
@@ -6406,7 +6409,7 @@ function bashEditedPaths(cmd) {
     let m;
     while ((m = re.exec(cmd)) !== null) {
       const target = m[1];
-      if (target && !SCRATCH_PREFIXES.some((prefix) => target.startsWith(prefix)))
+      if (target && !isScratchPath(target))
         found.add(target);
     }
   }

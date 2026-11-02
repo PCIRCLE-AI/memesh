@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { basename, bashEditedFileNames, bashEditedPaths, isPathShapedFileName, editedFileName, listEditedFiles, MAX_LISTED_FILES } from '../../src/core/bash-edited-paths.js';
+import { basename, bashEditedFileNames, bashEditedPaths, isPathShapedFileName, editedFileName, listEditedFiles, MAX_LISTED_FILES, isScratchPath } from '../../src/core/bash-edited-paths.js';
 
 /**
  * #495: a captured token that is not path-shaped (a shell variable, a flag
@@ -142,5 +142,19 @@ describe('listEditedFiles', () => {
     expect(over).toBe(`${names(30).join(', ')} and 1 more`);
     expect(over).not.toContain('f30.ts');
     expect(listEditedFiles(names(1300))).toMatch(/ and 1270 more$/);
+  });
+});
+
+describe('isScratchPath', () => {
+  it('is true for device and temporary-folder paths, including the macOS spellings', () => {
+    for (const p of ['/dev/null', '/tmp/a.ts', '/private/tmp/a.ts', '/var/folders/ab/cd/T/a.ts', '/private/var/folders/ab/cd/T/a.ts']) {
+      expect(isScratchPath(p), p).toBe(true);
+    }
+  });
+
+  it('is false for repository paths and for names that only start like a temp folder', () => {
+    for (const p of ['/repo/src/a.ts', 'src/a.ts', '/Users/me/tmp/a.ts', '/private/tmpfile-notes.md', '/tmpfile/a.ts', '']) {
+      expect(isScratchPath(p), p).toBe(false);
+    }
   });
 });

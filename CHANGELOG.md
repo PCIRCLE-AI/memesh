@@ -8,7 +8,7 @@ are not part of a published npm release yet.
 
 ### Fixed
 
-- Codex sessions now produce session insights like Claude sessions do, built from Codex's own record of each command and file change: tool calls, files changed, commands run and failed commands. A failure that Codex printed but did not record as a command is reported too, by a best-effort match that can occasionally miss a failure or count one twice. Previously every Codex session was skipped as too little activity. Shell writes under the macOS temporary folders (`/private/tmp`, `/var/folders`) are no longer remembered as edited files, in Codex and Claude sessions alike. A session insight lists at most 30 edited file names and counts the rest.
+- Codex sessions now produce session insights like Claude sessions do, built from Codex's own record of each command and file change: tool calls, files changed, commands run and failed commands. A failure that Codex printed but did not record as a command is reported too, by a best-effort match that can occasionally miss a failure or count one twice. Previously every Codex session was skipped as too little activity. Files written under the temporary folders (`/tmp`, `/private/tmp`, `/var/folders`) are not remembered as edited files: not those Codex changes with its patch tool, and not shell writes in Codex or Claude sessions. A session insight lists at most 30 edited file names and counts the rest.
 
 ## [4.13.0] — 2026-11-02
 

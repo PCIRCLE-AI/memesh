@@ -27,7 +27,7 @@
 // command to the script that printed it, so this is a best-effort match, not
 // exact: it can still miss a failure or report a repeat.
 
-import { bashEditedFileNames, editedFileName } from './_generated/bash-edited-paths.js';
+import { bashEditedFileNames, editedFileName, isScratchPath } from './_generated/bash-edited-paths.js';
 
 const PATCH_HEADER = /\*\*\* (?:Add|Update) File: ([^\n\\"'`]+)/g;
 const CMD_LITERAL = /\bcmd["']?\s*:\s*("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)/g;
@@ -201,7 +201,8 @@ function readStructured(item, state, redact) {
     if (item.status === 'completed') {
       for (const [path, change] of Object.entries(item.changes ?? {})) {
         if (change?.type !== 'add' && change?.type !== 'update') continue;
-        const name = editedFileName(change.move_path || path);
+        const target = change.move_path || path;
+        const name = isScratchPath(target) ? null : editedFileName(target);
         if (name) out.files.add(name);
       }
     } else {
@@ -218,7 +219,8 @@ function readCall(item, state, redact) {
   const commands = [];
   const cmds = new Set();
   for (const m of code.matchAll(PATCH_HEADER)) {
-    const name = editedFileName(m[1].trim());
+    const target = m[1].trim();
+    const name = isScratchPath(target) ? null : editedFileName(target);
     if (name) patchFiles.push(name);
   }
   for (const m of code.matchAll(CMD_LITERAL)) {

@@ -279,6 +279,29 @@ describe('Codex rollout reader', () => {
     expect(errorsEncountered[0]).not.toContain('invented');
   });
 
+  describe('files under temporary folders', () => {
+    const fileChange = (changes: Record<string, { type: string; move_path?: string }>) => done({ type: 'FileChange', changes, status: 'completed' });
+
+    it('a recorded file change under /tmp, /private/tmp or /var/folders is not an edited file; a repo path still is', () => {
+      const { filesEdited } = read([fileChange({
+        '/tmp/invented-a.ts': { type: 'add' },
+        '/private/tmp/invented-b.ts': { type: 'update' },
+        '/var/folders/ab/cd/T/invented-c.ts': { type: 'add' },
+        '/private/var/folders/ab/cd/T/invented-d.ts': { type: 'update' },
+        '/repo/src/invented-real.ts': { type: 'update' },
+      })]);
+      expect([...filesEdited]).toEqual(['invented-real.ts']);
+    });
+
+    it('a move decides by where the file ends up', () => {
+      const { filesEdited } = read([fileChange({
+        '/repo/src/invented-to-tmp.ts': { type: 'update', move_path: '/tmp/invented-moved-away.ts' },
+        '/tmp/invented-from-tmp.ts': { type: 'update', move_path: '/repo/src/invented-moved-in.ts' },
+      })]);
+      expect([...filesEdited]).toEqual(['invented-moved-in.ts']);
+    });
+  });
+
   describe('older rollouts (fallback)', () => {
     const patch = (name: string, verb = 'Update') => `const p = \`*** ${verb} File: src/${name}\n\`;`;
 
@@ -290,6 +313,14 @@ describe('Codex rollout reader', () => {
         execCall('d', patch('invented-string.ts')), { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'd', output: 'aborted before dispatch' } },
       ]);
       expect([...filesEdited]).toEqual(['invented-done.ts']);
+    });
+
+    it('a patch header under a temporary folder is not an edited file', () => {
+      const { filesEdited } = read([
+        execCall('a', patch('invented-rel.ts')), execOut('a', 'Script completed'),
+        execCall('b', 'const p = `*** Add File: /private/tmp/invented-fb.ts\n+x\n*** Update File: /repo/src/invented-fb-real.ts\n`;'), execOut('b', 'Script completed'),
+      ]);
+      expect([...filesEdited].sort()).toEqual(['invented-fb-real.ts', 'invented-rel.ts']);
     });
 
     it('reads Add File headers and a quoted "cmd" key, and reports a failed exit code', () => {
