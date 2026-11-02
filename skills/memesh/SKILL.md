@@ -326,6 +326,11 @@ memesh reindex --fts                         # rebuild the local keyword index
 
 ## Memory hygiene
 
+Record outcomes and reasons rather than process. Do not write again when a review
+or retry only confirms the same fact. Make each observation
+independently readable with relevant filenames and numbers. Exclude secrets,
+passwords and personal data.
+
 1. **Stable names append — unless you ask to replace.** Remembering under an
    existing name adds observations and dedupes tags by default. Pass
    `replace: true` (CLI: `--replace`) to rewrite the entity's observations,

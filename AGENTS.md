@@ -133,6 +133,10 @@ hosts should share memories. Not installed yet? Follow
 
 ## Memory hygiene
 
+- **Record the outcome and reason, not the process.** Good: `cache.ts: limit 20 avoids oversized responses.` Bad: `cache.ts: ran 3 review rounds.`
+- **Do not write again when a review or retry only confirms the same fact.** Good: keep the existing `cache.ts: limit 20` memory after a second review. Bad: create `cache-review-2` for that unchanged fact.
+- **Make each observation independently readable**, naming relevant files and numbers. Good: `src/cache.ts: limit 20 keeps each response under 32 KB.` Bad: `That limit is 20 there.`
+- **Exclude secrets, passwords and personal data.** Good: `src/config.ts: the API token comes from an environment variable.` Bad: `config.ts: password <password> and person <personal-data>.`
 - **The cheapest write is `remember({ note: "…" })`.** First line → title,
   each following paragraph → one observation, name derived from the text
   (the same text twice is one memory). Optional `type` (default `note`),
