@@ -42,6 +42,8 @@ The `ref` is strict and kind-specific. A digest ref has `project`, sorted unique
 
 Store knowledge as an entity with observations, tags, and relations.
 
+Record standalone outcomes and reasons with relevant filenames and numbers; skip repeated confirmations; never store secrets, passwords, or personal data.
+
 If `remember` is called again with an existing `name`, MeMesh treats it as an append-style upsert: new observations are appended, tags are deduped, and the original entity type is retained. With `replace: true` it rewrites the entity instead (see below).
 
 **Project over MCP.** A memory belongs to one project, or to none. `project: "<id>"` or a `project:<id>` tag names the project (a `project:` tag with no id names nothing, and is refused beside the bound project). `project: false` stores a memory that belongs to no project — a preference, a general lesson — with no project tag and no binding needed. With neither (a `null` `project` counts as not given), the MCP tool files the memory under the session's bound project — `MEMESH_PROJECT_ROOT` from the launch, or the client's single workspace root — and adds its `project:` tag; with no bound project the call is refused with `workspace_unavailable` (or `workspace_ambiguous`), naming these options. A `project` that contradicts a project tag, and two different project tags, are refused. A name is one memory for every project, so a write that names a project — by argument, tag or binding — is refused on a name, or a `supersedes` target, that belongs to another project or to no project; a write with no project is refused on one that belongs to a project. Use a different name. A refused call writes nothing. The same ownership check, the two-tag refusal and the tag-contradiction refusal apply to the CLI and the HTTP API when they carry a project tag; otherwise they keep their own defaults.
@@ -710,6 +712,8 @@ and only `errors` makes the CLI exit non-zero.
 ### learn
 
 Record a structured lesson from a mistake or discovery. Creates a `lesson_learned` entity with structured observations for error, root cause, fix, and prevention. Use it when something went wrong and the cause and fix are known; a choice between options is a `remember` with type `decision`. The project's lessons are shown at the start of later sessions, each leading with its fix.
+
+Record standalone outcomes and reasons with relevant filenames and numbers; skip repeated confirmations; never store secrets, passwords, or personal data.
 
 The MCP tool files the lesson under `project` when given, else under the session's bound project (`MEMESH_PROJECT_ROOT`, or the client's single workspace root). `project: false` records a lesson that belongs to no project. With neither and no bound project the call is refused with `workspace_unavailable` (or `workspace_ambiguous`), and nothing is written.
 

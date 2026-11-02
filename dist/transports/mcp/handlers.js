@@ -70,7 +70,8 @@ export const TOOL_DEFINITIONS = [
         name: 'remember',
         description: 'Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions (with `why`), patterns, lessons learned, and important context. An omitted namespace keeps an existing memory in its current namespace; a "supersedes" relation archives its target, while "contradicts" marks a conflict. ' +
             'Quickest form: pass only `note` (free text) and the server derives title, observations and name; the response echoes what it derived. ' +
-            'To correct a memory, call again with its `name`, `replace: true` and the `observations` it should now hold (a replace without `observations` or `note` is refused, so re-send the ones to keep along with the fix) — the memory keeps the `type` it has unless you pass a different one — and the old content moves to metadata.replaced_history instead of staying next to the fix.',
+            'To correct a memory, call again with its `name`, `replace: true` and the `observations` it should now hold (a replace without `observations` or `note` is refused, so re-send the ones to keep along with the fix) — the memory keeps the `type` it has unless you pass a different one — and the old content moves to metadata.replaced_history instead of staying next to the fix. ' +
+            'Record standalone outcomes and reasons with relevant filenames and numbers; skip repeated confirmations; never store secrets, passwords, or personal data.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -256,7 +257,7 @@ export const TOOL_DEFINITIONS = [
     },
     {
         name: 'learn',
-        description: 'Record a structured lesson from a mistake or discovery. Creates a lesson_learned entity with error, root cause, fix, and prevention. Use it when something went wrong and the cause and fix are known; for a choice between options, use `remember` with type decision. The lesson belongs to `project`, or to the project this session is bound to (MEMESH_PROJECT_ROOT, or the client’s workspace root); pass project false for a general lesson that belongs to no project. With no project and no binding the call is refused with workspace_unavailable. The project\'s lessons are shown at the start of later sessions.',
+        description: 'Record a structured lesson from a mistake or discovery. Creates a lesson_learned entity with error, root cause, fix, and prevention. Use it when something went wrong and the cause and fix are known; for a choice between options, use `remember` with type decision. The lesson belongs to `project`, or to the project this session is bound to (MEMESH_PROJECT_ROOT, or the client’s workspace root); pass project false for a general lesson that belongs to no project. With no project and no binding the call is refused with workspace_unavailable. The project\'s lessons are shown at the start of later sessions. Record standalone outcomes and reasons with relevant filenames and numbers; skip repeated confirmations; never store secrets, passwords, or personal data.',
         inputSchema: {
             type: 'object',
             properties: {

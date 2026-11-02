@@ -13,6 +13,7 @@ are not part of a published npm release yet.
 
 ### Changed
 
+- Agent guidance and the remember and learn tool descriptions now say what to record: outcomes and reasons with relevant filenames and numbers, no repeated confirmations, and never secrets or personal data.
 - Memory usage now counts assistant citations and ID retrievals, including sessions with few tool calls. Citation markers inside tool output no longer count as assistant citations. Session usage statistics restart with this release because the counting rules changed.
 - Recall results include a reminder to treat stored content as reference data, and ID retrievals display detected conflicts in terminal output.
 

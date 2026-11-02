@@ -33758,7 +33758,7 @@ function exportOpenAITools() {
       type: "function",
       function: {
         name: "memesh_remember",
-        description: 'Store knowledge as an entity with observations, tags, and relations. Pass only `note` to derive title, observations and name. An omitted namespace keeps an existing memory in its current namespace; "supersedes" archives its target and "contradicts" marks a conflict.',
+        description: 'Store knowledge as an entity with observations, tags, and relations. Pass only `note` to derive title, observations and name. An omitted namespace keeps an existing memory in its current namespace; "supersedes" archives its target and "contradicts" marks a conflict. Record standalone outcomes and reasons with relevant filenames and numbers; skip repeated confirmations; never store secrets, passwords, or personal data.',
         parameters: {
           type: "object",
           properties: {
@@ -33872,7 +33872,7 @@ function exportOpenAITools() {
       type: "function",
       function: {
         name: "memesh_learn",
-        description: "Record a structured lesson from a mistake or discovery. Use it when something went wrong and the cause and fix are known; for a choice between options, use remember with type decision.",
+        description: "Record a structured lesson from a mistake or discovery. Use it when something went wrong and the cause and fix are known; for a choice between options, use remember with type decision. Record standalone outcomes and reasons with relevant filenames and numbers; skip repeated confirmations; never store secrets, passwords, or personal data.",
         parameters: {
           type: "object",
           properties: {
