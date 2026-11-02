@@ -25,7 +25,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_WAIT_MS,
   MAX_SOCKET_PATH_BYTES,
@@ -61,6 +61,9 @@ import {
   appendCodexMessageToolApproval,
   assertCodexProofTurn,
   assertCodexRolloutProof,
+  judgeCodexProofTurn,
+  installCodexMessageToolApproval,
+  CODEX_PLUGIN_CANDIDATE_FILES,
   mcpResultCarries,
   buildCodexMessageToolApprovalToml,
   CODEX_PROOF_PROMPT,
@@ -782,10 +785,6 @@ describe('assertCodexReply', () => {
     expect(() => check([...proof(), call({ action: 'intake', intake_state: 'ingested', idempotency_key: DELIVERY_ID })])).toThrow(/item:mcp_tool_call/);
   });
 
-  it('rejects NO_ENVELOPE with the reason, not a generic mismatch', () => {
-    expect(() => check(proof(), ['NO_ENVELOPE'])).toThrow(/not visible to the model/);
-  });
-
   it('rejects an empty turn: nothing was fetched, so nothing can be judged', () => {
     expect(() => assertCodexReply({ jsonl: '{"type":"turn.completed"}', ...expected } as Parameters<typeof assertCodexReply>[0]))
       .toThrow(/never fetched the message body/);
@@ -816,20 +815,148 @@ describe('assertCodexProofTurn', () => {
     expect(() => assertCodexProofTurn({ ...base, receipts: [] })).toThrow(/No intake receipt/);
   });
 
-  it('fails when the receipt belongs to another recipient', () => {
-    expect(() => assertCodexProofTurn({ ...base, allowedMessage: { project, recipient: 'someone-else' }, receipts: RECEIPTS_WITH_INTAKE }))
-      .toThrow();
+  it('fails when only the receipts belong to someone else — the turn itself stays valid', () => {
+    const foreign = (field: 'actor' | 'recipient') => RECEIPTS_WITH_INTAKE.map(fact => (fact.receipt_kind === 'intake' ? { ...fact, [field]: 'someone-else' } : fact));
+    expect(() => assertCodexProofTurn({ ...base, receipts: foreign('actor') })).toThrow(/No intake receipt/);
+    expect(() => assertCodexProofTurn({ ...base, receipts: foreign('recipient') })).toThrow(/No intake receipt/);
+    expect(assertCodexProofTurn({ ...base, receipts: RECEIPTS_WITH_INTAKE })).toContain(`CODEX_RECEIVED_${SENTINEL}`);
+  });
+});
+
+describe('judgeCodexProofTurn', () => {
+  const project = 'memesh-live-journey~scope';
+  const REAL_SENTINEL = 'codex-startup-4f19ab27';
+  const item = (args: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
+    id: 'i', type: 'mcp_tool_call', server: 'memesh', tool: 'message', status: 'completed',
+    arguments: { project, recipient: THREAD, message_id: MESSAGE_ID, ...args }, ...extra,
+  });
+  const turn = codexTurn([`CODEX_RECEIVED_${REAL_SENTINEL} ${MESSAGE_ID} ${DELIVERY_ID}`], {
+    extraItems: [
+      item({ action: 'fetch', target_kind: 'session' }, { result: { content: [{ type: 'text', text: `{"payload":{"qa_sentinel":"${REAL_SENTINEL}"}}` }] }, error: null }),
+      item({ action: 'intake', intake_state: 'ingested', idempotency_key: 'k' }),
+    ],
+  });
+  const noticeLine = JSON.stringify({
+    type: 'response_item',
+    payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: JSON.stringify({ message_type: 'memesh_message_notice', message_id: MESSAGE_ID, delivery_id: DELIVERY_ID }) }] },
+  });
+  const homes: string[] = [];
+  afterEach(() => { for (const dir of homes.splice(0)) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 }); });
+  const codexHomeWith = (rollout: string | null) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-judge-'));
+    homes.push(home);
+    if (rollout !== null) {
+      const dir = path.join(home, 'sessions', '2026', '11', '02');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, `rollout-2026-11-02T00-00-00-${THREAD}.jsonl`), rollout);
+    }
+    return home;
+  };
+  const makeJourney = (receipts: unknown = RECEIPTS_WITH_INTAKE) => {
+    const steps: Array<{ name: string; detail: Record<string, unknown> }> = [];
+    const calls: string[][] = [];
+    return {
+      steps, calls,
+      journey: {
+        project,
+        cliJson: (args: string[]) => { calls.push(args); return receipts; },
+        step: (name: string, detail: Record<string, unknown>) => { steps.push({ name, detail }); },
+      },
+    };
+  };
+  const input = (codexHome: string, overrides: Record<string, unknown> = {}) => ({
+    prompt: CODEX_PROOF_PROMPT, turnStdout: turn, sentinel: REAL_SENTINEL, messageId: MESSAGE_ID, deliveryId: DELIVERY_ID,
+    threadId: THREAD, codexHome, ...overrides,
+  });
+  const goodRollout = `${noticeLine}\n`;
+
+  it('records the proof step, with receipts read from the CLI for this message and thread, when every part holds', () => {
+    const { journey, steps, calls } = makeJourney();
+    const reply = judgeCodexProofTurn(journey, input(codexHomeWith(goodRollout)));
+    expect(reply).toContain(`CODEX_RECEIVED_${REAL_SENTINEL}`);
+    expect(calls).toEqual([['message', 'receipts', '--project', project, '--recipient', THREAD, '--message-id', MESSAGE_ID]]);
+    expect(steps.map(step => step.name)).toEqual(['the Codex model fetched the message body and quoted its sentinel (model-visible proof)']);
+    expect(steps[0].detail).toMatchObject({ message_id: MESSAGE_ID, delivery_id: DELIVERY_ID, rollout_notice_lines: 1 });
   });
 
-  it('is what the live Codex path calls, with receipts read from the CLI', () => {
-    const source = fs.readFileSync(path.join(__dirname, '..', '..', 'scripts', 'qa', 'live-journey.mjs'), 'utf8');
-    const run = source.slice(source.indexOf('async function runCodex('), source.indexOf('async function runCodexSessionAutoRegistration('));
-    expect(run).toMatch(/assertCodexProofTurn\(\{[\s\S]*allowedMessage:[\s\S]*receipts:/);
-    expect(run).toMatch(/'message', 'receipts'/);
-    expect(run).not.toMatch(/assertCodexReply\(/);
-    expect(run).toMatch(/appendCodexMessageToolApproval\(/);
-    expect(run).toMatch(/assertCodexRolloutProof\(/);
-    expect(run).toMatch(/env: \{ MEMESH_DIR: journey\.memeshDir, MEMESH_DB_PATH: journey\.dbPath \}/);
+  it('uses the receipts the CLI returns, never ones it made up', () => {
+    const { journey, steps } = makeJourney(RECEIPTS_WITHOUT_INTAKE);
+    expect(() => judgeCodexProofTurn(journey, input(codexHomeWith(goodRollout)))).toThrow(/No intake receipt/);
+    expect(steps).toEqual([]);
+  });
+
+  it('fails on receipts written by another actor or for another recipient', () => {
+    for (const field of ['actor', 'recipient']) {
+      const foreign = RECEIPTS_WITH_INTAKE.map(fact => (fact.receipt_kind === 'intake' ? { ...fact, [field]: 'someone-else' } : fact));
+      const { journey, steps } = makeJourney(foreign);
+      expect(() => judgeCodexProofTurn(journey, input(codexHomeWith(goodRollout)))).toThrow(/No intake receipt/);
+      expect(steps).toEqual([]);
+    }
+  });
+
+  it('fails as a whole when the rollout is absent, lacks the notice, or leaks the sentinel', () => {
+    for (const rollout of [null, '', `${noticeLine.replace(MESSAGE_ID, '00000000-0000-4000-8000-000000000000')}\n`]) {
+      const { journey, steps } = makeJourney();
+      expect(() => judgeCodexProofTurn(journey, input(codexHomeWith(rollout)))).toThrow(/rollout/);
+      expect(steps).toEqual([]);
+    }
+    const leaking = noticeLine.replace('memesh_message_notice', `memesh_message_notice ${REAL_SENTINEL}`);
+    const { journey, steps } = makeJourney();
+    expect(() => judgeCodexProofTurn(journey, input(codexHomeWith(`${leaking}\n`)))).toThrow(/qa_sentinel/);
+    expect(steps).toEqual([]);
+  });
+
+  it('fails when the turn itself is not valid proof, even with good receipts and rollout', () => {
+    const { journey, steps } = makeJourney();
+    const noFetch = codexTurn([`CODEX_RECEIVED_${REAL_SENTINEL} ${MESSAGE_ID} ${DELIVERY_ID}`], {});
+    expect(() => judgeCodexProofTurn(journey, input(codexHomeWith(goodRollout), { turnStdout: noFetch }))).toThrow(/never fetched/);
+    expect(steps).toEqual([]);
+  });
+
+  it('refuses a prompt that names the sentinel (in its real codex-startup-<8hex> form), the message id or the delivery id', () => {
+    for (const leak of [REAL_SENTINEL, MESSAGE_ID, DELIVERY_ID]) {
+      const { journey, steps } = makeJourney();
+      expect(() => judgeCodexProofTurn(journey, input(codexHomeWith(goodRollout), { prompt: `${CODEX_PROOF_PROMPT} ${leak}` })))
+        .toThrow(/names a proof value/);
+      expect(steps).toEqual([]);
+    }
+    expect(() => judgeCodexProofTurn(makeJourney().journey, input(codexHomeWith(goodRollout), { prompt: undefined }))).toThrow(/names a proof value/);
+  });
+
+  it('refuses empty proof values instead of matching everything', () => {
+    for (const name of ['sentinel', 'messageId', 'deliveryId', 'threadId']) {
+      expect(() => judgeCodexProofTurn(makeJourney().journey, input(codexHomeWith(goodRollout), { [name]: '' }))).toThrow(new RegExp(`non-empty ${name}`));
+    }
+  });
+
+  it('the shipped prompt carries none of the real-format proof values', () => {
+    expect(CODEX_PROOF_PROMPT).not.toMatch(/codex-(?:startup|auto-first)-[0-9a-f]{8}/);
+  });
+});
+
+describe('installCodexMessageToolApproval', () => {
+  const server = { command: 'node', args: ['./dist/mcp/server.js'], env_vars: ['MEMESH_DIR', 'MEMESH_DB_PATH', 'MEMESH_PROJECT_ROOT'] };
+  const homes: string[] = [];
+  afterEach(() => { for (const dir of homes.splice(0)) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 }); });
+  const home = () => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-install-')); homes.push(dir); return dir; };
+
+  it('writes the journey directory and database into the server entry and records the limitation', () => {
+    const notes: string[] = [];
+    const codexHome = home();
+    installCodexMessageToolApproval({ memeshDir: '/j/dir', dbPath: '/j/dir/k.db', note: (text: string) => notes.push(text) }, { codexHome, cachePath: '/cache/1.0.0', server });
+    const written = fs.readFileSync(path.join(codexHome, 'config.toml'), 'utf8');
+    expect(written).toContain('env = { MEMESH_DIR = "/j/dir", MEMESH_DB_PATH = "/j/dir/k.db" }');
+    expect(written).toContain('approval_mode = "approve"');
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toMatch(/rewritten config\.toml/);
+  });
+
+  it('throws, and writes nothing, when the journey has no directory or database to pass', () => {
+    for (const journey of [{ note: () => {} }, { memeshDir: '/j', note: () => {} }, { dbPath: '/j/k.db', note: () => {} }]) {
+      const codexHome = home();
+      expect(() => installCodexMessageToolApproval(journey as never, { codexHome, cachePath: '/cache/1.0.0', server })).toThrow(/MEMESH_/);
+      expect(fs.existsSync(path.join(codexHome, 'config.toml'))).toBe(false);
+    }
   });
 });
 
@@ -864,6 +991,20 @@ describe('assertCodexRolloutProof', () => {
   it('fails when a full-envelope memesh_message line carries the sentinel', () => {
     const envelope = JSON.stringify({ message_type: 'memesh_message', delivery_id: DELIVERY_ID, envelope: { message_id: MESSAGE_ID, payload: { qa_sentinel: SENTINEL } } });
     expect(() => assertCodexRolloutProof(`${userLine(noticeJson)}\n${userLine(envelope)}\n`, expected)).toThrow(/already contains the qa_sentinel/);
+  });
+
+  it('fails when compacted history or a non-user message carries a MeMesh message with the sentinel', () => {
+    const envelope = JSON.stringify({ message_type: 'memesh_message', envelope: { payload: { qa_sentinel: SENTINEL } } });
+    const compacted = JSON.stringify({ type: 'compacted', payload: { replacement_history: [{ role: 'user', content: [{ type: 'input_text', text: envelope }] }] } });
+    expect(() => assertCodexRolloutProof(`${userLine(noticeJson)}\n${compacted}\n`, expected)).toThrow(/already contains the qa_sentinel/);
+    for (const role of ['developer', 'system', 'tool']) {
+      expect(() => assertCodexRolloutProof(`${userLine(noticeJson)}\n${userLine(envelope, role)}\n`, expected)).toThrow(/already contains the qa_sentinel/);
+    }
+  });
+
+  it('refuses to look for an empty message id or sentinel', () => {
+    expect(() => assertCodexRolloutProof(`${userLine(noticeJson)}\n`, { messageId: '', sentinel: SENTINEL })).toThrow(/non-empty messageId/);
+    expect(() => assertCodexRolloutProof(`${userLine(noticeJson)}\n`, { messageId: MESSAGE_ID, sentinel: '' })).toThrow(/non-empty sentinel/);
   });
 
   it('ignores the assistant quoting the sentinel and tool output that holds it', () => {
@@ -1675,6 +1816,42 @@ describe('Codex proof turn configuration', () => {
       } finally { cleanup(home, outside); }
     });
 
+    it('refuses a second hard link created to the checked file after the check (fstat link count)', () => {
+      const home = makeDir();
+      try {
+        const config = path.join(home, 'config.toml');
+        fs.writeFileSync(config, 'a = 1\n');
+        expect(() => appendCodexMessageToolApproval({ codexHome: home, toml }, {
+          afterCheck: (file) => { fs.linkSync(file, path.join(home, 'alias.toml')); },
+        })).toThrow(/changed between the check and the open/);
+        expect(fs.readFileSync(config, 'utf8')).toBe('a = 1\n');
+      } finally { cleanup(home); }
+    });
+
+    it('refuses a plain file that appeared after the check where none existed — a new file is created exclusively', () => {
+      const home = makeDir();
+      try {
+        const config = path.join(home, 'config.toml');
+        expect(() => appendCodexMessageToolApproval({ codexHome: home, toml }, {
+          afterCheck: (file) => { fs.writeFileSync(file, 'planted = true\n'); },
+        })).toThrow();
+        expect(fs.readFileSync(config, 'utf8')).toBe('planted = true\n');
+      } finally { cleanup(home); }
+    });
+
+    it('refuses a hard link planted where no config.toml existed yet, and leaves the other file alone', () => {
+      const home = makeDir();
+      const outside = makeDir();
+      try {
+        const target = path.join(outside, 'real-config.toml');
+        fs.writeFileSync(target, 'model = "x"\n');
+        expect(() => appendCodexMessageToolApproval({ codexHome: home, toml }, {
+          afterCheck: (file) => { fs.linkSync(target, file); },
+        })).toThrow();
+        expect(fs.readFileSync(target, 'utf8')).toBe('model = "x"\n');
+      } finally { cleanup(home, outside); }
+    });
+
     it('refuses a file swapped for another one after the check (device and inode must match)', () => {
       const home = makeDir();
       try {
@@ -1725,6 +1902,8 @@ describe('Codex proof turn configuration', () => {
       ['a quoted dotted key', 'mcp_servers."memesh".command = "node"\n'],
       ['the mcp_servers table holding the key', '[mcp_servers]\nmemesh = { command = "node" }\n'],
       ['an inline mcp_servers table', 'mcp_servers = { memesh = { command = "node" } }\n'],
+      ['a quoted mcp_servers table', '["mcp_servers".memesh]\ncommand = "node"\n'],
+      ['a quoted mcp_servers dotted key', '"mcp_servers".memesh.command = "node"\n'],
     ])('refuses a config that already defines the server as %s', (_label, content) => {
       const home = makeDir();
       try {
@@ -1757,9 +1936,8 @@ describe('Codex proof turn configuration', () => {
   });
 
   it('verifies the server entry file in the cache like the other plugin files', () => {
-    const source = fs.readFileSync(path.join(__dirname, '..', '..', 'scripts', 'qa', 'live-journey.mjs'), 'utf8');
-    const list = source.slice(source.indexOf('const CODEX_PLUGIN_CANDIDATE_FILES'), source.indexOf('function fileSha256'));
-    expect(list).toContain("'dist/mcp/server.js'");
+    expect(CODEX_PLUGIN_CANDIDATE_FILES).toContain('dist/mcp/server.js');
+    expect(CODEX_PLUGIN_CANDIDATE_FILES).toContain('.codex-plugin/mcp.json');
   });
 
   it.skipIf(process.platform === 'win32' || !fs.existsSync(path.join(__dirname, '..', '..', 'dist', 'mcp', 'server.js')))(
