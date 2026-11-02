@@ -3,6 +3,7 @@
 // Finish a release in one operation: tag, GitHub Release, npm publish.
 //
 //   node scripts/finish-release.mjs --dry-run    # what it would do, and why it would refuse
+//   node scripts/finish-release.mjs --accept-moved-after-bump   # release non-doc files that moved after the bump
 //   npm run release:finish
 //
 // WHY THIS IS ONE COMMAND
@@ -67,10 +68,12 @@ const args = process.argv.slice(2);
 let dryRun = false;
 let prerelease = false;
 let notesFile = null;
+let acceptMovedAfterBump = false;
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
   if (a === '--dry-run') dryRun = true;
   else if (a === '--prerelease') prerelease = true;
+  else if (a === '--accept-moved-after-bump') acceptMovedAfterBump = true;
   else if (a === '--notes-file') {
     notesFile = args[++i];
     if (!notesFile) {
@@ -79,7 +82,7 @@ for (let i = 0; i < args.length; i++) {
     }
   }
   else if (a === '-h' || a === '--help') {
-    console.log('Usage: node scripts/finish-release.mjs [--dry-run] [--prerelease] [--notes-file <path>]');
+    console.log('Usage: node scripts/finish-release.mjs [--dry-run] [--prerelease] [--notes-file <path>] [--accept-moved-after-bump]');
     process.exit(0);
   } else {
     console.error(`unknown flag: ${a}`);
@@ -150,7 +153,10 @@ const remoteTags =
         .filter(r => r.startsWith('v'));
 
 // The commit that introduced this version string into package.json, and every
-// shipped path that moved after it. "Shipped" is read from package.json's
+// shipped path that moved after it. A moved path is not fatal by itself:
+// documentation only prints a note, anything else needs
+// `--accept-moved-after-bump`, and an uncomputable list always blocks — see
+// checkReleasePreconditions. "Shipped" is read from package.json's
 // `files` (plus package.json and the lockfile) — the same list npm packs and a
 // marketplace install copies — so this guard cannot quietly omit a surface.
 // `--first-parent`: the marketplace reads `main`, so what matters is the
@@ -260,7 +266,7 @@ if (notesFile) {
 
 // --- decide -----------------------------------------------------------------
 
-const { ok, blockers } = checkReleasePreconditions({
+const { ok, blockers, notices } = checkReleasePreconditions({
   branch,
   isClean,
   headSha,
@@ -274,9 +280,11 @@ const { ok, blockers } = checkReleasePreconditions({
   qaPreReleaseStatus,
   liveJourneyCandidates,
   approvedReuse,
+  acceptMovedAfterBump,
 });
 
 console.log(`\nfinish-release: ${tag}`);
+for (const n of notices) console.log(`  note:        ${n}`);
 console.log(`  repo:        ${repoSlug ?? '(gh could not say)'}`);
 console.log(`  branch:      ${branch ?? '(undiscoverable)'}`);
 console.log(`  commit:      ${headSha ? headSha.slice(0, 8) : '(unknown)'}`);

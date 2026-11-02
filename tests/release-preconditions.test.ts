@@ -137,20 +137,62 @@ describe('release preconditions', () => {
     expect(checkReleasePreconditions(ready({ branch: null })).ok).toBe(false);
   });
 
-  it('refuses when shipped files moved after the version bump', () => {
-    // 4.8.2: the bump commit landed, then two fix PRs merged under the same
-    // version. A plugin cache staged in between was named 4.8.2 and never
-    // refreshed — Claude Code keys the cache by version.
-    const r = checkReleasePreconditions(ready({ shippedFilesChangedSinceBump: ['src/storage/graph-repairs.ts', 'dist/storage/graph-repairs.js'] }));
-    const text = r.blockers.join('\n');
-    expect(text).toContain('after package.json was bumped to 4.7.0');
-    expect(text).toContain('src/storage/graph-repairs.ts');
-    expect(text).toContain('next version');
-  });
+  describe('files that moved after the version bump', () => {
+    const code = ['src/storage/graph-repairs.ts', 'dist/storage/graph-repairs.js'];
 
-  it('refuses when the post-bump diff could not be listed at all', () => {
-    const r = checkReleasePreconditions(ready({ shippedFilesChangedSinceBump: null }));
-    expect(r.blockers.join('\n')).toContain('could not list the shipped files');
+    it('documentation only: not a blocker, listed as a note', () => {
+      const r = checkReleasePreconditions(ready({
+        shippedFilesChangedSinceBump: ['docs/platforms/agent-messaging.md', 'README.md', 'README.zh-TW.md', 'LICENSE', 'llms-install.md'],
+      }));
+      expect(r.blockers).toEqual([]);
+      expect(r.ok).toBe(true);
+      expect(r.notices.join('\n')).toContain('docs/platforms/agent-messaging.md');
+    });
+
+    it('AGENTS.md and skills/ change agent behaviour, so they are not documentation', () => {
+      for (const f of ['AGENTS.md', 'skills/memesh/SKILL.md', 'docs-extra/x.md', 'sub/README.md']) {
+        const r = checkReleasePreconditions(ready({ shippedFilesChangedSinceBump: [f] }));
+        expect(r.ok, f).toBe(false);
+      }
+    });
+
+    it('code without the flag: blocked, names the files and both ways forward, never says to bump', () => {
+      const r = checkReleasePreconditions(ready({ shippedFilesChangedSinceBump: code }));
+      const text = r.blockers.join('\n');
+      expect(r.ok).toBe(false);
+      expect(text).toContain('after package.json was bumped to 4.7.0');
+      expect(text).toContain('src/storage/graph-repairs.ts');
+      expect(text).toContain('--accept-moved-after-bump');
+      expect(text).toContain('next version');
+      expect(text).not.toMatch(/bump to the next/i);
+    });
+
+    it('code with the flag: allowed, warns and names the recovery', () => {
+      const r = checkReleasePreconditions(ready({ shippedFilesChangedSinceBump: code, acceptMovedAfterBump: true }));
+      expect(r.blockers).toEqual([]);
+      expect(r.ok).toBe(true);
+      const text = r.notices.join('\n');
+      expect(text).toContain('WARNING');
+      expect(text).toContain('src/storage/graph-repairs.ts');
+      expect(text).toContain('plugin-cache.stale');
+      expect(text).toContain('memesh upgrade-plugin');
+      expect(text).toContain('codex plugin add memesh@pcircle-memesh');
+    });
+
+    it('docs plus code with the flag: the code is warned about, the docs are noted', () => {
+      const r = checkReleasePreconditions(ready({ shippedFilesChangedSinceBump: ['docs/a.md', ...code], acceptMovedAfterBump: true }));
+      expect(r.ok).toBe(true);
+      expect(r.notices.join('\n')).toContain('docs/a.md');
+      expect(r.notices.join('\n')).toContain('WARNING');
+    });
+
+    it('list could not be computed: blocked, and the flag does not override it', () => {
+      for (const acceptMovedAfterBump of [false, true]) {
+        const r = checkReleasePreconditions(ready({ shippedFilesChangedSinceBump: null, acceptMovedAfterBump }));
+        expect(r.ok).toBe(false);
+        expect(r.blockers.join('\n')).toContain('could not list the shipped files');
+      }
+    });
   });
 
   it('refuses on a dirty tree', () => {

@@ -32,6 +32,17 @@ import {
   validateCoreJourneys,
 } from './live-journey-contract.mjs';
 
+// Documentation changes no agent behaviour. AGENTS.md and skills/ do, so they
+// are deliberately not listed here.
+export function isDocumentationPath(file) {
+  return /^docs\//.test(file) || /^(README|LICENSE)[^/]*$/.test(file) || file === 'llms-install.md';
+}
+
+function listFiles(files) {
+  const shown = files.slice(0, 8).join(', ');
+  return files.length > 8 ? `${shown}, … (${files.length} files)` : shown;
+}
+
 /**
  * Every input is tri-state on purpose: `null` means "could not read it", and
  * every `null` blocks. Absence is not evidence — a shallow clone reporting no
@@ -49,7 +60,8 @@ import {
  * @param {string|null}   input.notes         Release body, already resolved.
  * @param {number|null}   input.qaPreReleaseStatus   Exit code of `npm run qa:pre-release`, run by this script (its slowest step may reuse a receipt from an earlier --dry-run of the same tree — see scripts/qa/pre-release.mjs CACHE_ENV_VAR); null if it could not run at all.
  * @param {LiveJourneyCandidate[]} input.liveJourneyCandidates  See `findUsableLiveJourneyReceipt`.
- * @returns {{ok: boolean, blockers: string[]}}
+ * @param {boolean}       [input.acceptMovedAfterBump]  The owner passed --accept-moved-after-bump: non-documentation shipped files that moved after the version bump become a warning. Never overrides a null file list.
+ * @returns {{ok: boolean, blockers: string[], notices: string[]}} `notices` are lines to print, not refusals.
  */
 export function checkReleasePreconditions({
   branch,
@@ -65,30 +77,45 @@ export function checkReleasePreconditions({
   qaPreReleaseStatus,
   liveJourneyCandidates,
   approvedReuse = null,
+  acceptMovedAfterBump = false,
 }) {
   const blockers = [];
+  const notices = [];
   const tag = `v${pkgVersion}`;
 
   // Claude Code keys its plugin cache by version. A machine that auto-updates
   // from the marketplace between the commit that bumped package.json and the
-  // tag gets a cache named `<version>/` built from that earlier tree — and
-  // nothing ever refreshes it, because the version never changes again. For
-  // 4.8.2 that was 19 commits, including the graph repair the release was
-  // for. So: once the version is bumped, the shipped tree must not move.
-  // A fix that lands after the bump needs its own version.
+  // tag gets a cache named `<version>/` built from that earlier tree. That is
+  // recoverable: `memesh doctor` reports `plugin-cache.stale` on such a
+  // machine with the refresh command for its host. So
+  // the gate no longer forces a new version. Documentation that moved after
+  // the bump is only noted; any other shipped file needs the owner's explicit
+  // `--accept-moved-after-bump`; a list that cannot be computed always blocks.
   if (!Array.isArray(shippedFilesChangedSinceBump)) {
     blockers.push(
       `could not list the shipped files changed since package.json was bumped to ${pkgVersion} — ` +
-        'refusing rather than assuming none were (a shallow clone reports this)'
+        'refusing rather than assuming none were (a shallow clone reports this); ' +
+        '--accept-moved-after-bump does not override this'
     );
-  } else if (shippedFilesChangedSinceBump.length > 0) {
-    const shown = shippedFilesChangedSinceBump.slice(0, 8).join(', ');
-    const more = shippedFilesChangedSinceBump.length > 8 ? `, … (${shippedFilesChangedSinceBump.length} files)` : '';
-    blockers.push(
-      `shipped files changed after package.json was bumped to ${pkgVersion} (${shown}${more}) — ` +
-        'plugin caches that already staged this version will never pick them up. Bump to the next ' +
-        'version in its own commit and release that instead'
-    );
+  } else {
+    const moved = shippedFilesChangedSinceBump.filter(f => !isDocumentationPath(f));
+    const docsMoved = shippedFilesChangedSinceBump.filter(isDocumentationPath);
+    if (docsMoved.length > 0) {
+      notices.push(`documentation changed after the version bump (not a blocker): ${listFiles(docsMoved)}`);
+    }
+    if (moved.length > 0 && acceptMovedAfterBump) {
+      notices.push(
+        `WARNING: shipped files changed after package.json was bumped to ${pkgVersion} (${listFiles(moved)}) — ` +
+          'accepted with --accept-moved-after-bump. A machine that already holds an earlier commit under this ' +
+          'version sees `plugin-cache.stale` in `memesh doctor`, which prints the refresh command ' +
+          '(Claude Code: `memesh upgrade-plugin`; Codex: `codex plugin marketplace upgrade pcircle-memesh && codex plugin add memesh@pcircle-memesh`)'
+      );
+    } else if (moved.length > 0) {
+      blockers.push(
+        `shipped files changed after package.json was bumped to ${pkgVersion} (${listFiles(moved)}) — ` +
+          'either pass --accept-moved-after-bump to release them under this version, or leave them for the next version'
+      );
+    }
   }
 
   if (branch !== 'main') {
@@ -191,7 +218,7 @@ export function checkReleasePreconditions({
     }
   }
 
-  return { ok: blockers.length === 0, blockers };
+  return { ok: blockers.length === 0, blockers, notices };
 }
 
 /**

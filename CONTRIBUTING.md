@@ -133,6 +133,15 @@ unless it is on `main`, the tree is clean, local `HEAD` matches `origin/main`,
 reason it refuses is printed at once, so a `--dry-run` tells you the whole list
 rather than the first item.
 
+If shipped files changed after the version was bumped, documentation alone
+(`docs/`, `README*`, `LICENSE`, `llms-install.md`) only prints a note. Any other
+shipped file blocks unless you pass `--accept-moved-after-bump`; the alternative
+is leaving those files for the next version. A machine that already holds an
+earlier commit under the same version sees `plugin-cache.stale` in
+`memesh doctor` and refreshes it with the command doctor prints (`memesh upgrade-plugin` for Claude Code, `codex plugin marketplace upgrade pcircle-memesh && codex plugin add memesh@pcircle-memesh` for Codex). If the list cannot be
+computed (for example a shallow clone), the release is refused and the flag does
+not override that.
+
 If a prerelease exists but npm publication failed, retry its unchanged tag with
 `gh workflow run publish-npm.yml -f release_tag=vX.Y.Z`. This accepts only an
 existing non-draft prerelease and publishes to `next`; it does not move tags or
