@@ -170,7 +170,10 @@ const remoteTags =
 const shippedPaths = shippedPathsFromPackageJson(JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8')));
 const bumpCommits = captureLines('git', ['log', '--first-parent', '--format=%H', '-S', `"version": "${pkgVersion}"`, '--', 'package.json']);
 const bumpCommit = bumpCommits && bumpCommits.length > 0 ? bumpCommits[bumpCommits.length - 1] : null;
-const shippedFilesChangedSinceBump = bumpCommit && shippedPaths
+// A shallow clone lacks the history `git diff` needs and would list nothing,
+// which reads as "no files moved". Only an explicit `false` counts as complete.
+const isShallow = capture('git', ['rev-parse', '--is-shallow-repository']);
+const shippedFilesChangedSinceBump = isShallow === 'false' && bumpCommit && shippedPaths
   ? captureLines('git', ['diff', '--name-only', '--no-renames', `${bumpCommit}..HEAD`, '--', ...shippedPaths])
   : null;
 

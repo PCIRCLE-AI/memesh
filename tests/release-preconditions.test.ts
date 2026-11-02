@@ -232,13 +232,52 @@ describe('release preconditions', () => {
       expect(src).toMatch(/checkReleasePreconditions\(\{[\s\S]*?\n\s+acceptMovedAfterBump,\n\}\);/);
     });
 
+    it('a flag with a value is not the flag', () => {
+      const r = runScript('--accept-moved-after-bump=false');
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('unknown flag');
+    });
+
+    it('the flag does not waive any other blocker', () => {
+      const code = ['dist/a.js'];
+      for (const over of [{ isClean: false }, { branch: 'feature/x' }]) {
+        const r = checkReleasePreconditions(ready({ shippedFilesChangedSinceBump: code, acceptMovedAfterBump: true, ...over }));
+        expect(r.ok, JSON.stringify(over)).toBe(false);
+        expect(r.blockers.length).toBeGreaterThan(0);
+      }
+      expect(src).toMatch(/if \(!ok \|\| blockers\.length > 0\) \{\n\s+console\.error/);
+    });
+
+    it('an incomplete (shallow) history gives no file list, so the gate refuses', () => {
+      expect(src).toMatch(/const isShallow = capture\('git', \['rev-parse', '--is-shallow-repository'\]\);/);
+      expect(src).toMatch(/shippedFilesChangedSinceBump = isShallow === 'false' && bumpCommit && shippedPaths\n\s+\? captureLines\(/);
+      const origin = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-origin-'));
+      const clone = path.join(os.tmpdir(), `memesh-shallow-${process.pid}-${Date.now()}`);
+      const git = (cwd: string, ...a: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...a], { cwd, encoding: 'utf8' }).trim();
+      try {
+        git(origin, 'init', '-q');
+        for (const n of ['one', 'two']) {
+          fs.writeFileSync(path.join(origin, n), n);
+          git(origin, 'add', n);
+          git(origin, 'commit', '-q', '-m', n);
+        }
+        expect(git(origin, 'rev-parse', '--is-shallow-repository')).toBe('false');
+        git(os.tmpdir(), 'clone', '-q', '--depth', '1', `file://${origin}`, clone);
+        expect(git(clone, 'rev-parse', '--is-shallow-repository')).toBe('true');
+        expect(checkReleasePreconditions(ready({ shippedFilesChangedSinceBump: null, acceptMovedAfterBump: true })).ok).toBe(false);
+      } finally {
+        fs.rmSync(origin, { recursive: true, force: true });
+        fs.rmSync(clone, { recursive: true, force: true });
+      }
+    });
+
     it('the notices the gate returns are printed', () => {
       expect(src).toMatch(/\{ ok, blockers, notices \} = checkReleasePreconditions/);
       expect(src).toMatch(/for \(const n of notices\) console\.log\(/);
     });
 
     it('the post-bump diff lists both sides of a rename', () => {
-      expect(src).toContain("'--no-renames'");
+      expect(src).toMatch(/\['diff', '--name-only', '--no-renames', `\$\{bumpCommit\}\.\.HEAD`/);
       const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-rename-'));
       const git = (...a: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...a], { cwd: repo, encoding: 'utf8' }).trim();
       try {
