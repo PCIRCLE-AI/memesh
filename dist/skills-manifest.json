@@ -43,8 +43,8 @@
     },
     {
       "path": "scripts/hooks/_codex-rollout.js",
-      "sha256": "403492b53a934bb59cb9b661f8e6ab77e8d80adfd7e502cc1cf9b34876fc22a6",
-      "bytes": 14599
+      "sha256": "83f4ac3c22ebe9298324a89a981006685f85b37595142a0eb95e887815f86d47",
+      "bytes": 14734
     },
     {
       "path": "scripts/hooks/_generated/agent-message-inbox.js",
@@ -58,8 +58,8 @@
     },
     {
       "path": "scripts/hooks/_generated/bash-edited-paths.js",
-      "sha256": "a3a113c0201670fac2c50bf0d4d001719a22f56c77089ddef3a17803ecd0ed2a",
-      "bytes": 2576
+      "sha256": "3910f03df31ca691fbc1c1d96ada8d20a5d02977d03da106a03d4b0241a9a587",
+      "bytes": 2648
     },
     {
       "path": "scripts/hooks/_generated/briefing-index.js",

@@ -16,6 +16,9 @@ export function basename(p) {
     return parts[parts.length - 1] ?? '';
 }
 const SCRATCH_PREFIXES = ['/dev/', '/tmp/', '/private/tmp/', '/var/folders/', '/private/var/folders/'];
+export function isScratchPath(path) {
+    return SCRATCH_PREFIXES.some(prefix => path.startsWith(prefix));
+}
 export function bashEditedPaths(cmd) {
     if (typeof cmd !== 'string')
         return [];
@@ -31,7 +34,7 @@ export function bashEditedPaths(cmd) {
         let m;
         while ((m = re.exec(cmd)) !== null) {
             const target = m[1];
-            if (target && !SCRATCH_PREFIXES.some(prefix => target.startsWith(prefix)))
+            if (target && !isScratchPath(target))
                 found.add(target);
         }
     }

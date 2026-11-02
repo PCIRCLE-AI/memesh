@@ -57,6 +57,11 @@ export function basename(p: string): string {
  *  macOS reports its temp dirs as /private/tmp and /var/folders. */
 const SCRATCH_PREFIXES = ['/dev/', '/tmp/', '/private/tmp/', '/var/folders/', '/private/var/folders/'];
 
+/** Is `path` a device or scratch location? Callers that list edited files skip these. */
+export function isScratchPath(path: string): boolean {
+  return SCRATCH_PREFIXES.some(prefix => path.startsWith(prefix));
+}
+
 /**
  * File paths a shell command writes in place: heredoc redirection, `cat >`,
  * `tee`, `sed -i`, pathlib `write_text`, `fs.writeFileSync`. Anything
@@ -80,7 +85,7 @@ export function bashEditedPaths(cmd: unknown): string[] {
     let m: RegExpExecArray | null;
     while ((m = re.exec(cmd)) !== null) {
       const target = m[1];
-      if (target && !SCRATCH_PREFIXES.some(prefix => target.startsWith(prefix))) found.add(target);
+      if (target && !isScratchPath(target)) found.add(target);
     }
   }
   return [...found];
