@@ -16,6 +16,8 @@
  */
 import { describe, it, expect } from 'vitest';
 import fs from 'fs';
+import os from 'os';
+import { execFileSync, spawnSync } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import {
@@ -138,11 +140,11 @@ describe('release preconditions', () => {
   });
 
   describe('files that moved after the version bump', () => {
-    const code = ['src/storage/graph-repairs.ts', 'dist/storage/graph-repairs.js'];
+    const code = ['dist/storage/graph-repairs.js', 'hooks/hooks.json', 'package.json'];
 
     it('documentation only: not a blocker, listed as a note', () => {
       const r = checkReleasePreconditions(ready({
-        shippedFilesChangedSinceBump: ['docs/platforms/agent-messaging.md', 'README.md', 'README.zh-TW.md', 'LICENSE', 'llms-install.md'],
+        shippedFilesChangedSinceBump: ['docs/platforms/agent-messaging.md', 'README.md', 'LICENSE', 'llms-install.md'],
       }));
       expect(r.blockers).toEqual([]);
       expect(r.ok).toBe(true);
@@ -150,7 +152,7 @@ describe('release preconditions', () => {
     });
 
     it('AGENTS.md and skills/ change agent behaviour, so they are not documentation', () => {
-      for (const f of ['AGENTS.md', 'skills/memesh/SKILL.md', 'docs-extra/x.md', 'sub/README.md']) {
+      for (const f of ['AGENTS.md', 'skills/memesh/SKILL.md', 'docs-extra/x.md', 'sub/README.md', 'README.mjs', 'LICENSE.txt', 'docs/../skills/x', 'README.md/x']) {
         const r = checkReleasePreconditions(ready({ shippedFilesChangedSinceBump: [f] }));
         expect(r.ok, f).toBe(false);
       }
@@ -161,7 +163,7 @@ describe('release preconditions', () => {
       const text = r.blockers.join('\n');
       expect(r.ok).toBe(false);
       expect(text).toContain('after package.json was bumped to 4.7.0');
-      expect(text).toContain('src/storage/graph-repairs.ts');
+      expect(text).toContain('dist/storage/graph-repairs.js');
       expect(text).toContain('--accept-moved-after-bump');
       expect(text).toContain('next version');
       expect(text).not.toMatch(/bump to the next/i);
@@ -173,10 +175,11 @@ describe('release preconditions', () => {
       expect(r.ok).toBe(true);
       const text = r.notices.join('\n');
       expect(text).toContain('WARNING');
-      expect(text).toContain('src/storage/graph-repairs.ts');
-      expect(text).toContain('plugin-cache.stale');
+      expect(text).toContain('dist/storage/graph-repairs.js');
+      expect(text).toContain('plugin-cache warning');
       expect(text).toContain('memesh upgrade-plugin');
       expect(text).toContain('codex plugin add memesh@pcircle-memesh');
+      expect(text).not.toMatch(/bump to|new version|bump the/i);
     });
 
     it('docs plus code with the flag: the code is warned about, the docs are noted', () => {
@@ -191,6 +194,69 @@ describe('release preconditions', () => {
         const r = checkReleasePreconditions(ready({ shippedFilesChangedSinceBump: null, acceptMovedAfterBump }));
         expect(r.ok).toBe(false);
         expect(r.blockers.join('\n')).toContain('could not list the shipped files');
+        expect(r.blockers.join('\n')).toContain('does not override this');
+      }
+    });
+
+    it('a long list is cut to eight names plus the total', () => {
+      const many = Array.from({ length: 10 }, (_, i) => `dist/f${i}.js`);
+      const text = checkReleasePreconditions(ready({ shippedFilesChangedSinceBump: many })).blockers.join('\n');
+      expect(text).toContain('dist/f7.js');
+      expect(text).not.toContain('dist/f8.js');
+      expect(text).toContain('… (10 files)');
+    });
+  });
+
+  describe('the command line side of the flag', () => {
+    const script = path.join(repoRoot, 'scripts/finish-release.mjs');
+    const src = fs.readFileSync(script, 'utf8').split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+    const runScript = (...args: string[]) => spawnSync('node', [script, ...args], { encoding: 'utf8' });
+
+    it('--help lists the flag and a mistyped flag is refused', () => {
+      const help = runScript('--help');
+      expect(help.status).toBe(0);
+      expect(help.stdout).toContain('--accept-moved-after-bump');
+      const typo = runScript('--accept-moved-after-bumps');
+      expect(typo.status).toBe(1);
+      expect(typo.stderr).toContain('unknown flag');
+    });
+
+    it('the real flag is understood by the parser (it reaches --help instead of "unknown flag")', () => {
+      const r = runScript('--accept-moved-after-bump', '--help');
+      expect(r.status).toBe(0);
+    });
+
+    it('the flag defaults to off, is set only by its own flag, and is handed to the gate', () => {
+      expect(src).toMatch(/let acceptMovedAfterBump = false;/);
+      expect(src).toMatch(/a === '--accept-moved-after-bump'\)\s*acceptMovedAfterBump = true;/);
+      expect(src).toMatch(/checkReleasePreconditions\(\{[\s\S]*?\n\s+acceptMovedAfterBump,\n\}\);/);
+    });
+
+    it('the notices the gate returns are printed', () => {
+      expect(src).toMatch(/\{ ok, blockers, notices \} = checkReleasePreconditions/);
+      expect(src).toMatch(/for \(const n of notices\) console\.log\(/);
+    });
+
+    it('the post-bump diff lists both sides of a rename', () => {
+      expect(src).toContain("'--no-renames'");
+      const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-rename-'));
+      const git = (...a: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...a], { cwd: repo, encoding: 'utf8' }).trim();
+      try {
+        git('init', '-q');
+        fs.mkdirSync(path.join(repo, 'skills'));
+        fs.mkdirSync(path.join(repo, 'docs'));
+        fs.writeFileSync(path.join(repo, 'skills/x'), 'the same body\n'.repeat(20));
+        fs.writeFileSync(path.join(repo, 'package.json'), '{}\n');
+        git('add', '.');
+        git('commit', '-q', '-m', 'bump');
+        const bump = git('rev-parse', 'HEAD');
+        git('mv', 'skills/x', 'docs/y.md');
+        git('commit', '-q', '-m', 'rename');
+        const list = (...extra: string[]) => git('diff', '--name-only', ...extra, `${bump}..HEAD`, '--', 'docs', 'skills').split('\n').filter(Boolean);
+        expect(list()).toEqual(['docs/y.md']);
+        expect(list('--no-renames').sort()).toEqual(['docs/y.md', 'skills/x']);
+      } finally {
+        fs.rmSync(repo, { recursive: true, force: true });
       }
     });
   });
@@ -857,7 +923,7 @@ describe('approved release evidence reuse', () => {
 
   it.each([
     { branch: 'release' }, { isClean: false }, { remoteHeadSha: 'b'.repeat(40) },
-    { qaPreReleaseStatus: 1 }, { shippedFilesChangedSinceBump: ['src/db.ts'] },
+    { qaPreReleaseStatus: 1 }, { shippedFilesChangedSinceBump: ['dist/db.js'] },
   ])('keeps every other release refusal with valid reuse %#', (other) => {
     expect(checkReleasePreconditions(ready({ ...other, liveJourneyCandidates: [], approvedReuse })).ok).toBe(false);
   });

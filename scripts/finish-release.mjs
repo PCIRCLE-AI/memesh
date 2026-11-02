@@ -156,7 +156,9 @@ const remoteTags =
 // shipped path that moved after it. A moved path is not fatal by itself:
 // documentation only prints a note, anything else needs
 // `--accept-moved-after-bump`, and an uncomputable list always blocks — see
-// checkReleasePreconditions. "Shipped" is read from package.json's
+// checkReleasePreconditions. `--no-renames` lists both sides of a rename: a
+// skill renamed onto a documentation path must not hide behind the new name.
+// "Shipped" is read from package.json's
 // `files` (plus package.json and the lockfile) — the same list npm packs and a
 // marketplace install copies — so this guard cannot quietly omit a surface.
 // `--first-parent`: the marketplace reads `main`, so what matters is the
@@ -169,7 +171,7 @@ const shippedPaths = shippedPathsFromPackageJson(JSON.parse(fs.readFileSync(path
 const bumpCommits = captureLines('git', ['log', '--first-parent', '--format=%H', '-S', `"version": "${pkgVersion}"`, '--', 'package.json']);
 const bumpCommit = bumpCommits && bumpCommits.length > 0 ? bumpCommits[bumpCommits.length - 1] : null;
 const shippedFilesChangedSinceBump = bumpCommit && shippedPaths
-  ? captureLines('git', ['diff', '--name-only', `${bumpCommit}..HEAD`, '--', ...shippedPaths])
+  ? captureLines('git', ['diff', '--name-only', '--no-renames', `${bumpCommit}..HEAD`, '--', ...shippedPaths])
   : null;
 
 // Naming the repo proves `gh` exists, is authenticated, and can reach it —

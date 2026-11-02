@@ -32,10 +32,14 @@ import {
   validateCoreJourneys,
 } from './live-journey-contract.mjs';
 
-// Documentation changes no agent behaviour. AGENTS.md and skills/ do, so they
-// are deliberately not listed here.
+// Documentation as the release gate means it: text a reader opens, not text an
+// agent acts on. AGENTS.md and skills/ change agent behaviour, so they are not
+// listed. llms-install.md is read by an installing agent at install time but
+// is only the install guide, so it is treated as documentation. The match is
+// exact: a `..` segment or a near-miss name is not documentation.
 export function isDocumentationPath(file) {
-  return /^docs\//.test(file) || /^(README|LICENSE)[^/]*$/.test(file) || file === 'llms-install.md';
+  if (file.startsWith('docs/')) return !file.split('/').includes('..');
+  return file === 'README.md' || file === 'LICENSE' || file === 'llms-install.md';
 }
 
 function listFiles(files) {
@@ -86,8 +90,8 @@ export function checkReleasePreconditions({
   // Claude Code keys its plugin cache by version. A machine that auto-updates
   // from the marketplace between the commit that bumped package.json and the
   // tag gets a cache named `<version>/` built from that earlier tree. That is
-  // recoverable: `memesh doctor` reports `plugin-cache.stale` on such a
-  // machine with the refresh command for its host. So
+  // recoverable: `memesh doctor` warns about the plugin cache on such a
+  // machine (code `plugin-cache.stale` in --json) with the refresh command for its host. So
   // the gate no longer forces a new version. Documentation that moved after
   // the bump is only noted; any other shipped file needs the owner's explicit
   // `--accept-moved-after-bump`; a list that cannot be computed always blocks.
@@ -107,7 +111,7 @@ export function checkReleasePreconditions({
       notices.push(
         `WARNING: shipped files changed after package.json was bumped to ${pkgVersion} (${listFiles(moved)}) — ` +
           'accepted with --accept-moved-after-bump. A machine that already holds an earlier commit under this ' +
-          'version sees `plugin-cache.stale` in `memesh doctor`, which prints the refresh command ' +
+          'version gets a plugin-cache warning from `memesh doctor`, which prints the refresh command ' +
           '(Claude Code: `memesh upgrade-plugin`; Codex: `codex plugin marketplace upgrade pcircle-memesh && codex plugin add memesh@pcircle-memesh`)'
       );
     } else if (moved.length > 0) {
