@@ -38097,9 +38097,38 @@ function nativeAcceptance(row) {
     accepted_at: sqliteUtcToIso(row.created_at)
   };
 }
-function publicSentMessage(sent, adapter) {
+function intendedSessionNote(session, principal) {
+  return `Session ${session} is not connected now. Only it can take this message in, the next time it runs; no other session of ${principal} will. If it has ended for good, send to ${principal} without intended_session instead.`;
+}
+function principalAvailability(db2, sent) {
+  const ids = sent.intended_session ? [...sessionAliasChain(db2, sent.intended_session)] : [];
+  const live = db2.prepare(`
+    SELECT 1 FROM agent_session_connections
+    WHERE project = ? AND principal_id = ?${ids.length > 0 ? ` AND session_instance_id IN (${ids.map(() => "?").join(", ")})` : ""}
+      AND disconnected_at IS NULL AND lease_expires_at_ms > ?
+    LIMIT 1
+  `).get(sent.project, sent.recipient, ...ids, Date.now()) !== void 0;
+  if (sent.intended_session) {
+    if (live)
+      return ` Session ${sent.intended_session} is connected now.`;
+    const registered = db2.prepare(`
+      SELECT principal_id FROM agent_session_instances
+      WHERE project = ? AND session_instance_id IN (${ids.map(() => "?").join(", ")})
+    `).all(sent.project, ...ids);
+    if (registered.length === 0) {
+      return ` Session ${sent.intended_session} has not registered in this project, so MeMesh cannot tell whether it exists. Only a session with that id can take this message in; no other session of ${sent.recipient} will. Check the id; if it is wrong or the session has ended, send to ${sent.recipient} without intended_session instead.`;
+    }
+    if (!registered.some((row) => row.principal_id === sent.recipient)) {
+      const other = [...new Set(registered.map((row) => row.principal_id))].join(", ");
+      return ` Session ${sent.intended_session} is registered under ${other}, not ${sent.recipient}, so it will not take this message in. Send to ${other}, or send to ${sent.recipient} without intended_session.`;
+    }
+    return ` ${intendedSessionNote(sent.intended_session, sent.recipient)}`;
+  }
+  return live ? ` A session of ${sent.recipient} is connected now.` : ` No session of ${sent.recipient} is connected now; the message waits in the inbox.`;
+}
+function publicSentMessage(sent, adapter, availability = "") {
   const { reused, ...message } = sent;
-  const delivery_note = reused ? "Reused the previous message_id; no new message was created. An unconfirmed notification may be sent again." : adapter ? `${adapter} accepted the notification. This does not mean the model has read or accepted it.` : `Stored in ${sent.recipient}'s inbox. This does not mean the recipient has read or accepted it.`;
+  const delivery_note = reused ? "Reused the previous message_id; no new message was created. An unconfirmed notification may be sent again." : adapter ? `${adapter} accepted the notification. This does not mean the model has read or accepted it.` : `Stored in ${sent.recipient}'s inbox. This does not mean the recipient has read or accepted it.${availability}`;
   return { ...message, delivery_note };
 }
 async function requireExactSessionNativeAcceptance(db2, sent, dependencies) {
@@ -38414,7 +38443,7 @@ function sendPrincipalFallback(db2, message, refused) {
       reason: "recipient_unavailable",
       intended_session_connected: connected,
       ...connected ? {} : {
-        note: `Session ${refused.recipient} is not connected now. Only it can take this message in, the next time it runs; no other session of ${session.principal_id} will. If it has ended for good, send to ${session.principal_id} without intended_session instead.`
+        note: intendedSessionNote(refused.recipient, session.principal_id)
       },
       from: {
         message_id: refused.message_id,
@@ -38463,7 +38492,7 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
         storage_quota_bytes: configuredAgentMessageStorageQuotaBytes()
       });
       if (sent.target_kind !== "session")
-        return publicSentMessage(sent);
+        return publicSentMessage(sent, void 0, principalAvailability(db2, sent));
       if (hasPrincipalFallback(db2, sent, input2.idempotency_key)) {
         return sendPrincipalFallback(db2, message, sent);
       }
@@ -40717,13 +40746,14 @@ var ClaudeTranscriptReader = class {
 
 // dist/core/session-activity.js
 var MAX_BYTES2 = 1024 * 1024;
-function readTail(file2, forbiddenModeBits = 0) {
+var MAX_REGISTRY_BYTES = 64 * 1024;
+function readTail(file2, forbiddenModeBits = 0, refuseOverBytes = Infinity) {
   let fd;
   try {
     fd = fs17.openSync(file2, fs17.constants.O_RDONLY | (fs17.constants.O_NOFOLLOW ?? 0) | (fs17.constants.O_NONBLOCK ?? 0));
     const stat = fs17.fstatSync(fd);
     const named = fs17.lstatSync(file2);
-    if (!stat.isFile() || !named.isFile() || named.dev !== stat.dev || named.ino !== stat.ino || typeof process.getuid === "function" && stat.uid !== process.getuid() || process.platform !== "win32" && (stat.mode & forbiddenModeBits) !== 0)
+    if (!stat.isFile() || named.dev !== stat.dev || named.ino !== stat.ino || typeof process.getuid === "function" && stat.uid !== process.getuid() || process.platform !== "win32" && (stat.mode & forbiddenModeBits) !== 0 || stat.size > refuseOverBytes)
       return void 0;
     const start = Math.max(0, stat.size - MAX_BYTES2);
     const bytes = Buffer.alloc(stat.size - start);
@@ -40752,26 +40782,65 @@ function repoLabel(workspace) {
     return void 0;
   }
 }
-function createClaudeActivity(pid, workspace, claudeDir = process.env.CLAUDE_CONFIG_DIR || path12.join(homeDir(), ".claude")) {
+var defaultClaudeDir = () => process.env.CLAUDE_CONFIG_DIR || path12.join(homeDir(), ".claude");
+var startByPid = /* @__PURE__ */ new Map();
+var unreadableLogged = /* @__PURE__ */ new Set();
+function processStart(pid) {
+  const known = startByPid.get(pid);
+  if (known !== void 0)
+    return known;
+  try {
+    const text = execFileSync3("ps", ["-o", "lstart=", "-p", String(pid)], {
+      encoding: "utf8",
+      timeout: 2e3,
+      stdio: ["ignore", "pipe", "ignore"],
+      env: { ...process.env, TZ: "UTC", LC_ALL: "C" }
+    }).trim();
+    if (!text)
+      return null;
+    if (startByPid.size >= 64)
+      startByPid.clear();
+    startByPid.set(pid, text);
+    return text;
+  } catch (error62) {
+    if (error62.status === 1)
+      return null;
+    if (!unreadableLogged.has(pid)) {
+      unreadableLogged.add(pid);
+      try {
+        process.stderr.write(`[memesh] could not read the start time of process ${pid} (${error62.message.split("\n")[0]}); its Claude session registry file is used without that check
+`);
+      } catch {
+      }
+    }
+    return void 0;
+  }
+}
+function startsMatch(actual, recorded) {
+  const squash = (text) => text.replace(/\s+/g, " ").trim();
+  return squash(actual) === squash(recorded);
+}
+function readClaudeRegistry(pid, claudeDir = defaultClaudeDir()) {
+  try {
+    const value = JSON.parse(readTail(path12.join(claudeDir, "sessions", `${pid}.json`), 18, MAX_REGISTRY_BYTES) ?? "");
+    if (!value || typeof value !== "object" || Array.isArray(value) || value.pid !== pid)
+      return void 0;
+    const { procStart } = value;
+    if (typeof procStart === "string" && process.platform !== "win32") {
+      const actual = processStart(pid);
+      if (actual !== void 0 && (actual === null || !startsMatch(actual, procStart)))
+        return void 0;
+    }
+    return value;
+  } catch {
+  }
+  return void 0;
+}
+function createClaudeActivity(pid, workspace, claudeDir = defaultClaudeDir()) {
   let slug;
   let reader;
   return () => {
-    let registry2;
-    try {
-      const value = JSON.parse(readTail(path12.join(claudeDir, "sessions", `${pid}.json`), 18) ?? "");
-      if (value && typeof value === "object" && !Array.isArray(value))
-        registry2 = value;
-    } catch {
-      registry2 = void 0;
-    }
-    if (registry2) {
-      try {
-        if (registry2.pid !== pid || typeof registry2.cwd !== "string" || fs17.realpathSync(registry2.cwd) !== fs17.realpathSync(workspace))
-          registry2 = void 0;
-      } catch {
-        registry2 = void 0;
-      }
-    }
+    const registry2 = readClaudeRegistry(pid, claudeDir);
     const status = registry2?.status === "busy" || registry2?.status === "idle" ? registry2.status : void 0;
     const title = typeof registry2?.name === "string" ? registry2.name : void 0;
     if (registry2 && typeof registry2.cwd === "string") {
@@ -40782,7 +40851,7 @@ function createClaudeActivity(pid, workspace, claudeDir = process.env.CLAUDE_CON
       }
     }
     const task = typeof registry2?.sessionId === "string" ? reader?.currentTask(registry2.sessionId) : void 0;
-    return formatSessionActivity({ repo: repoLabel(workspace), status, title, task });
+    return formatSessionActivity({ repo: repoLabel(typeof registry2?.cwd === "string" ? registry2.cwd : workspace), status, title, task });
   };
 }
 
@@ -40794,26 +40863,11 @@ function messageNotice(envelope, deliveryId) {
 }
 
 // dist/host-runtime/claude-inbox.js
-function readRegistrySession(workspace) {
-  const root = process.env.CLAUDE_CONFIG_DIR || path13.join(homeDir(), ".claude");
-  const file2 = path13.join(root, "sessions", `${process.ppid}.json`);
-  let fd;
-  try {
-    fd = fs18.openSync(file2, fs18.constants.O_RDONLY | (fs18.constants.O_NOFOLLOW ?? 0) | (fs18.constants.O_NONBLOCK ?? 0));
-    const stat = fs18.fstatSync(fd);
-    const named = fs18.lstatSync(file2);
-    if (!stat.isFile() || !named.isFile() || stat.dev !== named.dev || stat.ino !== named.ino || stat.size > 65536 || typeof process.getuid === "function" && stat.uid !== process.getuid() || process.platform !== "win32" && (stat.mode & 18) !== 0)
-      return void 0;
-    const data = JSON.parse(fs18.readFileSync(fd, "utf8"));
-    if (data.pid !== process.ppid || typeof data.cwd !== "string" || fs18.realpathSync(data.cwd) !== fs18.realpathSync(workspace) || typeof data.sessionId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(data.sessionId))
-      return void 0;
-    return { sessionId: data.sessionId, cwd: data.cwd };
-  } catch {
+function readRegistrySession() {
+  const data = readClaudeRegistry(process.ppid);
+  if (!data || typeof data.cwd !== "string" || typeof data.sessionId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(data.sessionId))
     return void 0;
-  } finally {
-    if (fd !== void 0)
-      fs18.closeSync(fd);
-  }
+  return { sessionId: data.sessionId, cwd: data.cwd };
 }
 function sendNativeNotice(socketPath, content, timeoutMs) {
   return new Promise((resolve, reject) => {
@@ -40946,8 +41000,8 @@ async function startClaudeInboxPresence(rootUris) {
     deliver: createClaudeInboxDeliver({
       socketPath: process.env.CLAUDE_CODE_MESSAGING_TOKEN ? process.env.CLAUDE_CODE_MESSAGING_SOCKET : void 0,
       sessionId: session,
-      reader: () => new ClaudeTranscriptReader(path13.join(process.env.CLAUDE_CONFIG_DIR || path13.join(homeDir(), ".claude"), "projects"), projectTranscriptSlug(workspace ? readRegistrySession(workspace)?.cwd ?? workspace : "")),
-      currentSession: () => workspace ? readRegistrySession(workspace)?.sessionId : void 0
+      reader: () => new ClaudeTranscriptReader(path13.join(defaultClaudeDir(), "projects"), projectTranscriptSlug(readRegistrySession()?.cwd ?? workspace ?? "")),
+      currentSession: () => readRegistrySession()?.sessionId
     }),
     resilience: {
       start_router: () => new Promise((resolve, reject) => {

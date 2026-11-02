@@ -1,6 +1,10 @@
 import { type RouterDelivery, type RouterHostConnection } from './router-client.js';
 import { ClaudeTranscriptReader } from './claude-transcript.js';
 import type { AgentJsonObject } from '../core/agent-messaging.js';
+export declare function readRegistrySession(): {
+    sessionId: string;
+    cwd: string;
+} | undefined;
 export declare function createClaudeInboxDeliver(options: {
     socketPath?: string;
     sessionId: string;

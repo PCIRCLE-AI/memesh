@@ -6,8 +6,14 @@ are not part of a published npm release yet.
 
 ## [Unreleased]
 
+### Changed
+
+- The `delivery_note` of a message sent to a principal now also says whether a session of that recipient is connected at that moment, and that the message waits in the inbox when none is. When the send names one session with `intended_session` or a handle, the note is about that session: if it is not connected, only it can take the message in, the next time it runs. A session id that never registered in the project, or that belongs to another principal, is called out as such. A fallback result carries a separate note about the intended session only when that session is not connected.
+
 ### Fixed
 
+- Claude Code sessions in a separate git worktree can now receive exact-session message notices. Before, the session lookup compared the session's folder with the project root and found nothing, so delivery to a worktree session was refused.
+- `message discover` now shows each Claude Code session's own repository, branch, title and status when sessions run in separate git worktrees. Before, every session in the project showed the main checkout's repository and branch.
 - Codex sessions now produce session insights like Claude sessions do, built from Codex's own record of each command and file change: tool calls, files changed, commands run and failed commands. A failure that Codex printed but did not record as a command is reported too, by a best-effort match that can occasionally miss a failure or count one twice. Previously every Codex session was skipped as too little activity. Files written under the temporary folders (`/tmp`, `/private/tmp`, `/var/folders`) are not remembered as edited files: not those Codex changes with its patch tool, and not shell writes in Codex or Claude sessions. A session insight lists at most 30 edited file names and counts the rest.
 
 ## [4.13.0] — 2026-11-02

@@ -33005,9 +33005,38 @@ function nativeAcceptance(row) {
     accepted_at: sqliteUtcToIso(row.created_at)
   };
 }
-function publicSentMessage(sent, adapter) {
+function intendedSessionNote(session, principal) {
+  return `Session ${session} is not connected now. Only it can take this message in, the next time it runs; no other session of ${principal} will. If it has ended for good, send to ${principal} without intended_session instead.`;
+}
+function principalAvailability(db2, sent) {
+  const ids = sent.intended_session ? [...sessionAliasChain(db2, sent.intended_session)] : [];
+  const live = db2.prepare(`
+    SELECT 1 FROM agent_session_connections
+    WHERE project = ? AND principal_id = ?${ids.length > 0 ? ` AND session_instance_id IN (${ids.map(() => "?").join(", ")})` : ""}
+      AND disconnected_at IS NULL AND lease_expires_at_ms > ?
+    LIMIT 1
+  `).get(sent.project, sent.recipient, ...ids, Date.now()) !== void 0;
+  if (sent.intended_session) {
+    if (live)
+      return ` Session ${sent.intended_session} is connected now.`;
+    const registered = db2.prepare(`
+      SELECT principal_id FROM agent_session_instances
+      WHERE project = ? AND session_instance_id IN (${ids.map(() => "?").join(", ")})
+    `).all(sent.project, ...ids);
+    if (registered.length === 0) {
+      return ` Session ${sent.intended_session} has not registered in this project, so MeMesh cannot tell whether it exists. Only a session with that id can take this message in; no other session of ${sent.recipient} will. Check the id; if it is wrong or the session has ended, send to ${sent.recipient} without intended_session instead.`;
+    }
+    if (!registered.some((row) => row.principal_id === sent.recipient)) {
+      const other = [...new Set(registered.map((row) => row.principal_id))].join(", ");
+      return ` Session ${sent.intended_session} is registered under ${other}, not ${sent.recipient}, so it will not take this message in. Send to ${other}, or send to ${sent.recipient} without intended_session.`;
+    }
+    return ` ${intendedSessionNote(sent.intended_session, sent.recipient)}`;
+  }
+  return live ? ` A session of ${sent.recipient} is connected now.` : ` No session of ${sent.recipient} is connected now; the message waits in the inbox.`;
+}
+function publicSentMessage(sent, adapter, availability = "") {
   const { reused, ...message } = sent;
-  const delivery_note = reused ? "Reused the previous message_id; no new message was created. An unconfirmed notification may be sent again." : adapter ? `${adapter} accepted the notification. This does not mean the model has read or accepted it.` : `Stored in ${sent.recipient}'s inbox. This does not mean the recipient has read or accepted it.`;
+  const delivery_note = reused ? "Reused the previous message_id; no new message was created. An unconfirmed notification may be sent again." : adapter ? `${adapter} accepted the notification. This does not mean the model has read or accepted it.` : `Stored in ${sent.recipient}'s inbox. This does not mean the recipient has read or accepted it.${availability}`;
   return { ...message, delivery_note };
 }
 async function requireExactSessionNativeAcceptance(db2, sent, dependencies) {
@@ -33322,7 +33351,7 @@ function sendPrincipalFallback(db2, message, refused) {
       reason: "recipient_unavailable",
       intended_session_connected: connected,
       ...connected ? {} : {
-        note: `Session ${refused.recipient} is not connected now. Only it can take this message in, the next time it runs; no other session of ${session.principal_id} will. If it has ended for good, send to ${session.principal_id} without intended_session instead.`
+        note: intendedSessionNote(refused.recipient, session.principal_id)
       },
       from: {
         message_id: refused.message_id,
@@ -33371,7 +33400,7 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
         storage_quota_bytes: configuredAgentMessageStorageQuotaBytes()
       });
       if (sent.target_kind !== "session")
-        return publicSentMessage(sent);
+        return publicSentMessage(sent, void 0, principalAvailability(db2, sent));
       if (hasPrincipalFallback(db2, sent, input2.idempotency_key)) {
         return sendPrincipalFallback(db2, message, sent);
       }

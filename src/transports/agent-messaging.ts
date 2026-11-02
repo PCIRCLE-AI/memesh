@@ -178,13 +178,57 @@ function nativeAcceptance(row: HostAcceptRow): AgentJsonObject {
   };
 }
 
-function publicSentMessage(sent: SentAgentMessage, adapter?: string) {
+/** What the sender is told when the one session a message is meant for is not connected. */
+function intendedSessionNote(session: string, principal: string): string {
+  return `Session ${session} is not connected now. Only it can take this message in, the next time it runs; `
+    + `no other session of ${principal} will. If it has ended for good, send to ${principal} `
+    + 'without intended_session instead.';
+}
+
+/**
+ * What a principal send can truthfully say about who can take the message in:
+ * the intended session if one is named (through its /clear aliases), otherwise
+ * whether any session of the recipient holds a live connection right now.
+ */
+function principalAvailability(db: MemeshDatabase, sent: { project: string; recipient: string; intended_session?: string | null }): string {
+  const ids = sent.intended_session ? [...sessionAliasChain(db, sent.intended_session)] : [];
+  const live = db.prepare(`
+    SELECT 1 FROM agent_session_connections
+    WHERE project = ? AND principal_id = ?${ids.length > 0 ? ` AND session_instance_id IN (${ids.map(() => '?').join(', ')})` : ''}
+      AND disconnected_at IS NULL AND lease_expires_at_ms > ?
+    LIMIT 1
+  `).get(sent.project, sent.recipient, ...ids, Date.now()) !== undefined;
+  if (sent.intended_session) {
+    if (live) return ` Session ${sent.intended_session} is connected now.`;
+    // Not connected: say what is known about the id, since a mistyped or foreign id will never take the message in.
+    const registered = db.prepare(`
+      SELECT principal_id FROM agent_session_instances
+      WHERE project = ? AND session_instance_id IN (${ids.map(() => '?').join(', ')})
+    `).all(sent.project, ...ids) as Array<{ principal_id: string }>;
+    if (registered.length === 0) {
+      return ` Session ${sent.intended_session} has not registered in this project, so MeMesh cannot tell whether it exists. `
+        + `Only a session with that id can take this message in; no other session of ${sent.recipient} will. `
+        + `Check the id; if it is wrong or the session has ended, send to ${sent.recipient} without intended_session instead.`;
+    }
+    if (!registered.some((row) => row.principal_id === sent.recipient)) {
+      const other = [...new Set(registered.map((row) => row.principal_id))].join(', ');
+      return ` Session ${sent.intended_session} is registered under ${other}, not ${sent.recipient}, so it will not take this message in. `
+        + `Send to ${other}, or send to ${sent.recipient} without intended_session.`;
+    }
+    return ` ${intendedSessionNote(sent.intended_session, sent.recipient)}`;
+  }
+  return live
+    ? ` A session of ${sent.recipient} is connected now.`
+    : ` No session of ${sent.recipient} is connected now; the message waits in the inbox.`;
+}
+
+function publicSentMessage(sent: SentAgentMessage, adapter?: string, availability = '') {
   const { reused, ...message } = sent;
   const delivery_note = reused
     ? 'Reused the previous message_id; no new message was created. An unconfirmed notification may be sent again.'
     : adapter
       ? `${adapter} accepted the notification. This does not mean the model has read or accepted it.`
-      : `Stored in ${sent.recipient}'s inbox. This does not mean the recipient has read or accepted it.`;
+      : `Stored in ${sent.recipient}'s inbox. This does not mean the recipient has read or accepted it.${availability}`;
   return { ...message, delivery_note };
 }
 
@@ -605,9 +649,7 @@ function sendPrincipalFallback(
       reason: 'recipient_unavailable',
       intended_session_connected: connected,
       ...(connected ? {} : {
-        note: `Session ${refused.recipient} is not connected now. Only it can take this message in, the next time it runs; `
-          + `no other session of ${session.principal_id} will. If it has ended for good, send to ${session.principal_id} `
-          + 'without intended_session instead.',
+        note: intendedSessionNote(refused.recipient, session.principal_id),
       }),
       from: {
         message_id: refused.message_id,
@@ -673,7 +715,7 @@ export async function executeAgentMessageAction(
         notifier: resolved.target_kind === 'session' ? undefined : optionalRouterNotifier(),
         storage_quota_bytes: configuredAgentMessageStorageQuotaBytes(),
       });
-      if (sent.target_kind !== 'session') return publicSentMessage(sent);
+      if (sent.target_kind !== 'session') return publicSentMessage(sent, undefined, principalAvailability(db, sent));
       // A retry of a send that already fell back returns that principal message, with or
       // without the flag, even when the session is back by now; trying the session again
       // would deliver a second copy.

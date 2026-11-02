@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { createClaudeInboxDeliver } from '../../src/host-runtime/claude-inbox.js';
+import { createClaudeInboxDeliver, readRegistrySession } from '../../src/host-runtime/claude-inbox.js';
 import { ClaudeTranscriptReader } from '../../src/host-runtime/claude-transcript.js';
 import type { RouterDelivery } from '../../src/host-runtime/router-client.js';
 
@@ -110,5 +110,35 @@ describe.skipIf(process.platform === 'win32')('Claude inbox native notice', () =
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-push-'));
     try { await expect(createClaudeInboxDeliver({ socketPath: path.join(dir, 'absent'), sessionId: session, reader: new ClaudeTranscriptReader(dir), timeoutMs: 100 })(delivery('principal'))).rejects.toThrow(); }
     finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('Claude inbox session lookup', () => {
+  it('finds the session of a worktree even though the host runs in the main checkout', () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'claude-inbox-wt-')));
+    const saved = process.env.CLAUDE_CONFIG_DIR;
+    try {
+      const worktree = path.join(root, 'wt'); fs.mkdirSync(worktree);
+      const claude = path.join(root, 'claude'); fs.mkdirSync(path.join(claude, 'sessions'), { recursive: true });
+      fs.writeFileSync(path.join(claude, 'sessions', `${process.ppid}.json`), JSON.stringify({ pid: process.ppid, sessionId: session, cwd: worktree, kind: 'interactive', name: 'Alpha', status: 'idle' }), { mode: 0o644 });
+      process.env.CLAUDE_CONFIG_DIR = claude;
+      expect(readRegistrySession()).toEqual({ sessionId: session, cwd: worktree });
+      // A session id that is not a plain id (path pieces, spaces, over 128 characters, or not text) is not used.
+      const registry = path.join(claude, 'sessions', `${process.ppid}.json`);
+      for (const bad of ['../escape', 'has space', 'x'.repeat(129), '', 7]) {
+        fs.writeFileSync(registry, JSON.stringify({ pid: process.ppid, sessionId: bad, cwd: worktree }), { mode: 0o644 });
+        expect(readRegistrySession(), JSON.stringify(bad)).toBeUndefined();
+      }
+      // Nor is a registry whose folder is missing or not text.
+      for (const cwd of [undefined, 5]) {
+        fs.writeFileSync(registry, JSON.stringify({ pid: process.ppid, sessionId: session, cwd }), { mode: 0o644 });
+        expect(readRegistrySession(), JSON.stringify(cwd)).toBeUndefined();
+      }
+      fs.writeFileSync(registry, JSON.stringify({ pid: process.ppid, sessionId: 'x'.repeat(128), cwd: worktree }), { mode: 0o644 });
+      expect(readRegistrySession()?.sessionId).toBe('x'.repeat(128));
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = saved;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

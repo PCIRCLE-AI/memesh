@@ -5,13 +5,14 @@ import { ClaudeTranscriptReader } from '../host-runtime/claude-transcript.js';
 import { projectTranscriptSlug } from './transcript-source.js';
 import { homeDir } from './paths.js';
 const MAX_BYTES = 1024 * 1024;
-function readTail(file, forbiddenModeBits = 0) {
+const MAX_REGISTRY_BYTES = 64 * 1024;
+function readTail(file, forbiddenModeBits = 0, refuseOverBytes = Infinity) {
     let fd;
     try {
         fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
         const stat = fs.fstatSync(fd);
         const named = fs.lstatSync(file);
-        if (!stat.isFile() || !named.isFile() || named.dev !== stat.dev || named.ino !== stat.ino || (typeof process.getuid === 'function' && stat.uid !== process.getuid()) || (process.platform !== 'win32' && (stat.mode & forbiddenModeBits) !== 0))
+        if (!stat.isFile() || named.dev !== stat.dev || named.ino !== stat.ino || (typeof process.getuid === 'function' && stat.uid !== process.getuid()) || (process.platform !== 'win32' && (stat.mode & forbiddenModeBits) !== 0) || stat.size > refuseOverBytes)
             return undefined;
         const start = Math.max(0, stat.size - MAX_BYTES);
         const bytes = Buffer.alloc(stat.size - start);
@@ -71,28 +72,62 @@ function repoLabel(workspace) {
         return undefined;
     }
 }
-export function createClaudeActivity(pid, workspace, claudeDir = process.env.CLAUDE_CONFIG_DIR || path.join(homeDir(), '.claude')) {
+export const defaultClaudeDir = () => process.env.CLAUDE_CONFIG_DIR || path.join(homeDir(), '.claude');
+const startByPid = new Map();
+const unreadableLogged = new Set();
+function processStart(pid) {
+    const known = startByPid.get(pid);
+    if (known !== undefined)
+        return known;
+    try {
+        const text = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
+            encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, TZ: 'UTC', LC_ALL: 'C' },
+        }).trim();
+        if (!text)
+            return null;
+        if (startByPid.size >= 64)
+            startByPid.clear();
+        startByPid.set(pid, text);
+        return text;
+    }
+    catch (error) {
+        if (error.status === 1)
+            return null;
+        if (!unreadableLogged.has(pid)) {
+            unreadableLogged.add(pid);
+            try {
+                process.stderr.write(`[memesh] could not read the start time of process ${pid} (${error.message.split('\n')[0]}); its Claude session registry file is used without that check\n`);
+            }
+            catch { }
+        }
+        return undefined;
+    }
+}
+export function startsMatch(actual, recorded) {
+    const squash = (text) => text.replace(/\s+/g, ' ').trim();
+    return squash(actual) === squash(recorded);
+}
+export function readClaudeRegistry(pid, claudeDir = defaultClaudeDir()) {
+    try {
+        const value = JSON.parse(readTail(path.join(claudeDir, 'sessions', `${pid}.json`), 0o022, MAX_REGISTRY_BYTES) ?? '');
+        if (!value || typeof value !== 'object' || Array.isArray(value) || value.pid !== pid)
+            return undefined;
+        const { procStart } = value;
+        if (typeof procStart === 'string' && process.platform !== 'win32') {
+            const actual = processStart(pid);
+            if (actual !== undefined && (actual === null || !startsMatch(actual, procStart)))
+                return undefined;
+        }
+        return value;
+    }
+    catch { }
+    return undefined;
+}
+export function createClaudeActivity(pid, workspace, claudeDir = defaultClaudeDir()) {
     let slug;
     let reader;
     return () => {
-        let registry;
-        try {
-            const value = JSON.parse(readTail(path.join(claudeDir, 'sessions', `${pid}.json`), 0o022) ?? '');
-            if (value && typeof value === 'object' && !Array.isArray(value))
-                registry = value;
-        }
-        catch {
-            registry = undefined;
-        }
-        if (registry) {
-            try {
-                if (registry.pid !== pid || typeof registry.cwd !== 'string' || fs.realpathSync(registry.cwd) !== fs.realpathSync(workspace))
-                    registry = undefined;
-            }
-            catch {
-                registry = undefined;
-            }
-        }
+        const registry = readClaudeRegistry(pid, claudeDir);
         const status = registry?.status === 'busy' || registry?.status === 'idle' ? registry.status : undefined;
         const title = typeof registry?.name === 'string' ? registry.name : undefined;
         if (registry && typeof registry.cwd === 'string') {
@@ -103,7 +138,7 @@ export function createClaudeActivity(pid, workspace, claudeDir = process.env.CLA
             }
         }
         const task = typeof registry?.sessionId === 'string' ? reader?.currentTask(registry.sessionId) : undefined;
-        return formatSessionActivity({ repo: repoLabel(workspace), status, title, task });
+        return formatSessionActivity({ repo: repoLabel(typeof registry?.cwd === 'string' ? registry.cwd : workspace), status, title, task });
     };
 }
 export function createCodexActivity(session, workspace, dataDir, codexHome = process.env.CODEX_HOME || path.join(homeDir(), '.codex')) {

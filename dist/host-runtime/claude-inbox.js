@@ -9,33 +9,15 @@ import { requirePrivateWritableDirectory } from '../core/file-mode.js';
 import { resolveMcpProject } from '../transports/mcp/project-context.js';
 import { ensureRouterTokenFile } from './config.js';
 import { connectRouterHost } from './router-client.js';
-import { createClaudeActivity } from '../core/session-activity.js';
-import { homeDir } from '../core/paths.js';
+import { createClaudeActivity, defaultClaudeDir, readClaudeRegistry } from '../core/session-activity.js';
 import { projectTranscriptSlug } from '../core/transcript-source.js';
 import { messageNotice } from '../host-adapters/message-notice.js';
 import { ClaudeTranscriptReader } from './claude-transcript.js';
-function readRegistrySession(workspace) {
-    const root = process.env.CLAUDE_CONFIG_DIR || path.join(homeDir(), '.claude');
-    const file = path.join(root, 'sessions', `${process.ppid}.json`);
-    let fd;
-    try {
-        fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
-        const stat = fs.fstatSync(fd);
-        const named = fs.lstatSync(file);
-        if (!stat.isFile() || !named.isFile() || stat.dev !== named.dev || stat.ino !== named.ino || stat.size > 65536 || (typeof process.getuid === 'function' && stat.uid !== process.getuid()) || (process.platform !== 'win32' && (stat.mode & 0o022) !== 0))
-            return undefined;
-        const data = JSON.parse(fs.readFileSync(fd, 'utf8'));
-        if (data.pid !== process.ppid || typeof data.cwd !== 'string' || fs.realpathSync(data.cwd) !== fs.realpathSync(workspace) || typeof data.sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(data.sessionId))
-            return undefined;
-        return { sessionId: data.sessionId, cwd: data.cwd };
-    }
-    catch {
+export function readRegistrySession() {
+    const data = readClaudeRegistry(process.ppid);
+    if (!data || typeof data.cwd !== 'string' || typeof data.sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(data.sessionId))
         return undefined;
-    }
-    finally {
-        if (fd !== undefined)
-            fs.closeSync(fd);
-    }
+    return { sessionId: data.sessionId, cwd: data.cwd };
 }
 function sendNativeNotice(socketPath, content, timeoutMs) {
     return new Promise((resolve, reject) => {
@@ -163,8 +145,8 @@ export async function startClaudeInboxPresence(rootUris) {
         deliver: createClaudeInboxDeliver({
             socketPath: process.env.CLAUDE_CODE_MESSAGING_TOKEN ? process.env.CLAUDE_CODE_MESSAGING_SOCKET : undefined,
             sessionId: session,
-            reader: () => new ClaudeTranscriptReader(path.join(process.env.CLAUDE_CONFIG_DIR || path.join(homeDir(), '.claude'), 'projects'), projectTranscriptSlug(workspace ? readRegistrySession(workspace)?.cwd ?? workspace : '')),
-            currentSession: () => workspace ? readRegistrySession(workspace)?.sessionId : undefined,
+            reader: () => new ClaudeTranscriptReader(path.join(defaultClaudeDir(), 'projects'), projectTranscriptSlug(readRegistrySession()?.cwd ?? workspace ?? '')),
+            currentSession: () => readRegistrySession()?.sessionId,
         }),
         resilience: {
             start_router: () => new Promise((resolve, reject) => {

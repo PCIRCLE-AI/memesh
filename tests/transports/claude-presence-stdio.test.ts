@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import net from 'node:net';
+import { execFileSync } from 'node:child_process';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { ListRootsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
@@ -62,7 +63,7 @@ async function setup() {
       env: {
         HOME: directory, USERPROFILE: directory, MEMESH_DIR: directory,
         MEMESH_DB_PATH: path.join(directory, 'memory.db'), MEMESH_ROUTER_SOCKET: socket,
-        MEMESH_AUTO_UPDATE: '0', PATH: path.dirname(process.execPath),
+        MEMESH_AUTO_UPDATE: '0', PATH: `${path.dirname(process.execPath)}:/bin:/usr/bin`,
         CLAUDE_CODE_SESSION_ID: session, ...extra,
       },
     }));
@@ -84,9 +85,13 @@ describe.skipIf(process.platform === 'win32')('ordinary Claude MCP presence with
   it('delivers a notice through the supplied native socket without Channel', async () => {
     const f = await setup();
     const configDir = path.join(directory, 'claude');
-    const projectDir = path.join(configDir, 'projects', projectTranscriptSlug(f.workspace));
+    // The session lives in a linked worktree: its registry folder is not the project root the MCP host runs in,
+    // and its transcript is kept under the worktree's folder.
+    const worktree = path.join(directory, 'worktree'); fs.mkdirSync(worktree);
+    const projectDir = path.join(configDir, 'projects', projectTranscriptSlug(worktree));
     fs.mkdirSync(projectDir, { recursive: true }); fs.mkdirSync(path.join(configDir, 'sessions'));
-    fs.writeFileSync(path.join(configDir, 'sessions', `${process.pid}.json`), JSON.stringify({ pid: process.pid, cwd: f.workspace, sessionId: session }), { mode: 0o600 });
+    const procStart = execFileSync('ps', ['-o', 'lstart=', '-p', String(process.pid)], { encoding: 'utf8', env: { ...process.env, TZ: 'UTC', LC_ALL: 'C' } }).trim();
+    fs.writeFileSync(path.join(configDir, 'sessions', `${process.pid}.json`), JSON.stringify({ pid: process.pid, cwd: worktree, sessionId: session, procStart }), { mode: 0o600 });
     const transcript = path.join(projectDir, `${session}.jsonl`); fs.writeFileSync(transcript, '');
     const nativePath = path.join(directory, 'n.sock');
     const frames: Array<Record<string, any>> = [];
