@@ -155,6 +155,48 @@ describe('lastAssistantText', () => {
   });
 });
 
+describe('a Codex rollout (rows as the host writes them: response_item rows with a payload)', () => {
+  const message = (role: string, blockType: string, ...texts: string[]) => line({
+    type: 'response_item',
+    payload: { type: 'message', id: 'msg_1', role, status: 'completed', content: texts.map((t) => ({ type: blockType, text: t })) },
+  });
+  const request = (type = 'function_call') => line({ type: 'response_item', payload: { type, call_id: 'c1', name: 'shell', arguments: '{}' } });
+  const output = (value: string) => line({ type: 'response_item', payload: { type: 'function_call_output', call_id: 'c1', output: value } });
+
+  it('reads the newest assistant message row, past requests, outputs, user rows and events', () => {
+    const jsonl = [
+      message('assistant', 'output_text', 'An older message.'),
+      request(),
+      output('ok'),
+      message('assistant', 'output_text', 'The final words, from Codex.'),
+      message('user', 'input_text', 'a later user turn'),
+      request('custom_tool_call'),
+      line({ type: 'event_msg', payload: { type: 'agent_message', message: 'an event, not a message row' } }),
+    ].join('\n');
+    expect(lastAssistantText(jsonl)).toBe('The final words, from Codex.');
+  });
+
+  it('skips an assistant row whose text is only white space, and reads the one before it', () => {
+    expect(lastAssistantText([message('assistant', 'output_text', 'the real answer'), message('assistant', 'output_text', '  \n\t ')].join('\n'))).toBe('the real answer');
+  });
+
+  it('does not take a user row for the answer, even when its block is typed output_text', () => {
+    expect(lastAssistantText([message('assistant', 'output_text', 'the real answer'), message('user', 'output_text', 'a user row')].join('\n'))).toBe('the real answer');
+  });
+
+  it('does not take an assistant block that is not output_text for the answer', () => {
+    expect(lastAssistantText([message('assistant', 'output_text', 'the real answer'), message('assistant', 'input_text', 'an input block')].join('\n'))).toBe('the real answer');
+  });
+
+  it('joins the output_text blocks of one row, and skips an assistant row that carries no text', () => {
+    const jsonl = [
+      message('assistant', 'output_text', 'part one', 'part two'),
+      line({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [], encrypted_content: 'x' } }),
+    ].join('\n');
+    expect(lastAssistantText(jsonl)).toBe('part one\npart two');
+  });
+});
+
 describe('the handoff is one entity per project and nobody else lists it', () => {
   it('is named per project', () => {
     expect(sessionHandoffName('acme')).toBe(`${SESSION_HANDOFF_TYPE}:acme`);

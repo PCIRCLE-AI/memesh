@@ -18,8 +18,8 @@ export declare const TOOL_DEFINITIONS: readonly [{
             action: z.ZodLiteral<"prepare">;
             project: z.ZodString;
             kind: z.ZodEnum<{
-                digest: "digest";
                 transcript: "transcript";
+                digest: "digest";
             }>;
         }, z.core.$strict>, z.ZodObject<{
             result: z.ZodObject<{
@@ -693,6 +693,14 @@ export declare const TOOL_DEFINITIONS: readonly [{
             };
         };
         readonly required: readonly ["action"];
+        readonly additionalProperties: false;
+    };
+}, {
+    readonly name: "private_session";
+    readonly description: "Call this when the user asks not to remember or save this session or conversation, in any words or language. It changes no state: the call itself is the signal (even if its result is an error), and automatic saving stops for the rest of this session. What was saved earlier stays; `forget` removes it. After calling it, write nothing to memory: no `remember` or `learn`, and no writes to the host's own memory files, unless the user later asks you to store something explicitly. A request not to save one thing (a password, one detail) means simply not saving that thing; do not call this tool for it, and do not call it just because the user mentions or discusses this feature.";
+    readonly inputSchema: {
+        readonly type: "object";
+        readonly properties: {};
         readonly additionalProperties: false;
     };
 }];

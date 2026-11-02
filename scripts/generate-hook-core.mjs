@@ -45,6 +45,7 @@ const outDir = resolve(root, 'scripts/hooks/_generated');
 const SOURCES = [
   { from: 'dist/core/paths.js', to: 'core-paths.js', src: 'src/core/paths.ts' },
   { from: 'dist/core/capture-flag.js', to: 'capture-flag.js', src: 'src/core/capture-flag.ts' },
+  { from: 'dist/core/private-session.js', to: 'private-session.js', src: 'src/core/private-session.ts' },
   { from: 'dist/core/title.js', to: 'title.js', src: 'src/core/title.ts' },
   { from: 'dist/core/work-topology.js', to: 'work-topology.js', src: 'src/core/work-topology.ts' },
   { from: 'dist/core/task-state.js', to: 'task-state.js', src: 'src/core/task-state.ts' },
@@ -95,6 +96,10 @@ const SOURCES = [
   // keeps it out of its pools) and pre-edit recall must agree on its type, its
   // entity name and its cleaning rules, so they are one mirrored leaf.
   { from: 'dist/core/session-handoff.js', to: 'session-handoff.js', src: 'src/core/session-handoff.ts' },
+  // How a Codex rollout row reads (a tool request, an assistant message): the
+  // session summary, the remember nudge and the handoff must agree on it, so
+  // there is one definition and the hooks load this copy.
+  { from: 'dist/core/host-transcript.js', to: 'host-transcript.js', src: 'src/core/host-transcript.ts' },
   // The Codex session principal decision (#474 follow-up, cross-host
   // discovery): SessionStart needs the SAME identity `codex-session.ts`
   // registers with the router under, or the hook's address line and the

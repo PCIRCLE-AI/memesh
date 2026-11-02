@@ -30,6 +30,8 @@ import { AUTO_CAPTURE_TAG } from './types.js';
 import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
 import { parseSqliteUtcMs, sqliteUtcToIso } from './time-utils.js';
 import { autoCaptureDecision } from './capture-flag.js';
+import { summarizeNoteHolds } from './note-ingest.js';
+import { decidePrivacy } from './private-session.js';
 import {
   captureLivenessVerdict, parseHookOutcomes, summarizeHookOutcomes, summarizeTypeTrends,
   FAIL_ELIGIBLE_HOOKS, SKIP_REASONS, HOOK_OUTCOMES_FILENAME, NEVER_RAN_GRACE_HOURS, SILENT_HOOK_MIN_RUNS, RECENT_ERROR_RUNS,
@@ -360,6 +362,103 @@ function queryFailedFix(err: unknown): string {
     return 'Another process has the database locked; wait for it to finish, or stop it, then retry.';
   }
   return 'The error is quoted above. Check that ~/.memesh is readable and that the disk is not full.';
+}
+
+/** Where a transcript a hold record names may be, for doctor to read it: the Claude Code and Codex session folders. Anything else is not read. */
+function knownTranscriptPath(file: string | undefined): string | undefined {
+  if (typeof file !== 'string' || file === '') return undefined;
+  let real: string;
+  try { real = fs.realpathSync(file); } catch { return file; } // not there: decidePrivacy reads nothing and answers from the marker alone
+  const roots = [
+    path.join(process.env.CLAUDE_CONFIG_DIR || path.join(homeDir(), '.claude'), 'projects'),
+    ...['sessions', 'archived_sessions'].map((d) => path.join(process.env.CODEX_HOME || path.join(homeDir(), '.codex'), d)),
+  ];
+  for (const root of roots) {
+    let realRoot: string;
+    try { realRoot = fs.realpathSync(root); } catch { continue; }
+    if (real.startsWith(realRoot + path.sep)) return real;
+  }
+  return undefined;
+}
+
+/** What to do about a Hermes private-session marker error: `install-hooks` does not touch the Hermes home. */
+const HERMES_MARKER_FIX = 'Hermes could not keep or read its private-session marker. Check that the memesh-private-sessions folder in the Hermes home is a folder you can read and write, and that Hermes was started with a home folder. This row clears once five later Hermes captures have checked the marker without an error.';
+
+/**
+ * What to do about an error that is about memesh's private-session records
+ * beside the database, not about the hooks: `install-hooks` touches neither,
+ * and the transcript is not the problem.
+ */
+const PRIVATE_FOLDER_FIX = 'The private-sessions folder beside the database cannot be read, so every session is treated as private and nothing is saved. Make it a folder you can read and write again (for example `chmod u+rwx` on it); do not delete it: it is the record of the sessions that asked not to be remembered. This row clears once the hook\'s most recent runs end without an error.';
+const PRIVATE_STATE_ERROR_FIXES: Readonly<Record<string, string>> = Object.freeze({
+  [SKIP_REASONS.privateCheckMarkerUnreadable]: PRIVATE_FOLDER_FIX,
+  [SKIP_REASONS.noteMarkersDirUnreadable]: PRIVATE_FOLDER_FIX,
+});
+
+/** Per session doctor may spend deciding again, and in all. */
+const DOCTOR_PRIVACY_CHECK_MS = 2000;
+const DOCTOR_PRIVACY_TOTAL_MS = 10_000;
+
+/**
+ * The private-session state, when there is something to say: records that
+ * cannot be read (by file name, only as memesh names them), folders that wait
+ * on a held note that could not be read, and sessions whose notes are held
+ * because they could not be checked, with what the one check says about them
+ * NOW. No text is taken from a record: reasons are codes mapped to fixed
+ * sentences (R-I). Deleting a file is offered only as the last step, and
+ * always with what it releases.
+ */
+export function inspectPrivateNoteHolds(now = Date.now()): DoctorCheck | null {
+  const summary = summarizeNoteHolds(now);
+  if (summary.unsettled.length === 0 && summary.damaged.length === 0 && summary.waitingOnUnreadable.length === 0 && summary.unreadableFolders.length === 0) return null;
+  const lines: string[] = [];
+  const fixes: string[] = [];
+  for (const f of summary.unreadableFolders) {
+    lines.push(`the ${f === 'holds' ? 'note-ingest-holds' : 'private-sessions'} folder cannot be read, so no note is imported and what it holds cannot be listed`);
+    fixes.push(`Make ${f === 'holds' ? summary.holdsFolder : summary.markersFolder} a folder you can read and write again; do not delete it, it holds the private-session records.`);
+  }
+  for (const d of summary.damaged) {
+    if (d.folder === 'holds') {
+      lines.push(`the hold record ${d.file} cannot be read, so no note is imported`);
+      fixes.push(`${d.file} in ${summary.holdsFolder} cannot be repaired by hand. Deleting it is the last step and releases the notes it holds: they then import as ordinary notes, so if that session was private its content is stored.`);
+    } else {
+      lines.push(`the private-session marker ${d.file} cannot be read, so no note is imported`);
+      fixes.push(`The session ${d.file} belongs to rebuilds it at its next hook. Only if that session has ended, delete ${d.file} in ${summary.markersFolder}: the notes that session wrote are then imported.`);
+    }
+  }
+  for (const w of summary.waitingOnUnreadable) {
+    lines.push(`${w.notes} note(s) held by ${w.file} could not be read, so the folder they are in waits on every note changed since ${new Date(w.since).toISOString().slice(0, 10)}`);
+    fixes.push('Make the notes folder and its files readable by you again; the wait ends at the next import that can read them.');
+  }
+  const deadline = Date.now() + DOCTOR_PRIVACY_TOTAL_MS;
+  const memesh = getMemeshDirFromDbPath();
+  for (const u of summary.unsettled) {
+    let now2 = '';
+    let settled = false;
+    const transcript = knownTranscriptPath(u.transcript);
+    if (u.transcript !== undefined && transcript === undefined) {
+      now2 = 'the record names a transcript outside the known folders, so it is not read';
+    } else if (Date.now() < deadline) {
+      const state = decidePrivacy({ sessionId: u.session.replace(/\.json$/, ''), transcriptPath: transcript, memeshDir: memesh, deadlineAt: Math.min(deadline, Date.now() + DOCTOR_PRIVACY_CHECK_MS), cacheDir: path.join(memesh, 'private-check-cache') });
+      settled = state.state !== 'unchecked';
+      now2 = state.state === 'no' ? 'it can be checked now and is not private: the next import releases them'
+        : state.state === 'yes' ? 'it is private: the next import holds them for good'
+          : 'it still cannot be checked';
+    }
+    lines.push(`${u.notes} note(s) of ${u.file} are held because the session could not be checked (${u.reasonText}; held since ${new Date(u.since).toISOString().slice(0, 10)})${now2 ? `; ${now2}` : ''}`);
+    if (settled) {
+      // Nothing to do: the next import settles it.
+    } else if (u.kind === 'persistent') {
+      fixes.push(`This reason does not pass on its own. To release the notes anyway, delete ${u.file} in ${summary.holdsFolder}: they then import as ordinary notes, so if the session was private its content is stored.`);
+    } else {
+      fixes.push('This reason can pass on its own: the session is checked again at every import and its notes are let through once it can be checked and is not private.');
+    }
+  }
+  const notes = summary.unsettled.reduce((n, u) => n + u.notes, 0);
+  return createCheck('private-note-holds', 'Notes kept out of memory', 'warn',
+    `${lines.join('; ')}.`,
+    [...new Set(fixes)].join(' '),
+    { params: { sessions: summary.unsettled.length, notes } });
 }
 
 function createCheck(
@@ -1786,7 +1885,9 @@ function inspectCaptureLiveness(
     return {
       check: createCheck('capture-liveness', TITLE, 'warn',
         `${h.hook}: ${h.recentErrors} of its ${newest} most recent runs ended in an error (${h.errors} in its recorded window); the latest was '${h.lastErrorReason}'${day}.`,
-        'The reason says what failed; `memesh doctor --json` has the per-hook figures. This row clears once the hook\'s most recent runs (those its trigger applied to) end without an error. If it keeps failing, run `memesh install-hooks` and restart your agent.',
+        h.hook === 'hermes-private-session'
+          ? HERMES_MARKER_FIX
+          : PRIVATE_STATE_ERROR_FIXES[h.lastErrorReason ?? ''] ?? 'The reason says what failed; `memesh doctor --json` has the per-hook figures. This row clears once the hook\'s most recent runs (those its trigger applied to) end without an error. If it keeps failing, run `memesh install-hooks` and restart your agent.',
         { params: { hook: h.hook } }),
       report,
     };
@@ -3532,6 +3633,8 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   // an empty graph for two days (#327).
   const captureLiveness = withRecordedHosts(inspectCaptureLiveness(openDatabaseImpl, safeCloseDatabaseImpl, readFileSyncImpl, getMemeshDirFromDbPath, captureWired));
   checks.push(captureLiveness.check);
+  const heldNotes = inspectPrivateNoteHolds();
+  if (heldNotes) checks.push(heldNotes);
   // The figures behind the capture-liveness row, surfaced on the result so
   // `--json` carries the evidence and not only the verdict.
   const captureReport = captureLiveness.report;

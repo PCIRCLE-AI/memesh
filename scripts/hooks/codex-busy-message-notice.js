@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import {
   ensurePrivateDir, getDbPath, getMemeshDirFromDbPath, HOOK_BUSY_TIMEOUT_MS,
   hookErrorReason, hookMessageSessionId, isCodexHost, openMemeshDb,
-  recordHookOutcome, resolveMessageRecipient, waitingMessageRefs, writePrivateJson,
+  recordHookOutcome, resolveMessageRecipient, SKIP_REASONS, waitingMessageRefs, writePrivateJson,
 } from './_shared.js';
 import { pruneSessionState, SESSION_ID_RE } from './_stop-notes.js';
 
@@ -66,20 +66,20 @@ process.stdin.on('end', () => {
   const record = (outcome, reason) => recordHookOutcome(process.env, { hook: 'codex-busy-message-notice', outcome, reason, payload });
   try {
     payload = JSON.parse(input);
-    if (!isCodexHost(process.env)) { record('skipped', 'not Codex'); return; }
+    if (!isCodexHost(process.env)) { record('skipped', SKIP_REASONS.busyNoticeNotCodex); return; }
     const sessionId = typeof payload.session_id === 'string' ? payload.session_id : '';
-    if (!SESSION_ID_RE.test(sessionId)) { record('skipped', 'no usable session_id'); return; }
+    if (!SESSION_ID_RE.test(sessionId)) { record('skipped', SKIP_REASONS.busyNoticeNoSessionId); return; }
     const session = hookMessageSessionId(sessionId);
-    if (session.mismatch) { record('skipped', 'session_id_mismatch'); return; }
+    if (session.mismatch) { record('skipped', SKIP_REASONS.busyNoticeSessionMismatch); return; }
     const recipient = resolveMessageRecipient(process.env, undefined, { sessionId, cwd: payload.cwd });
     const dbPath = process.env.MEMESH_DB_PATH ?? getDbPath();
-    if (!recipient || !existsSync(dbPath)) { record('skipped', 'no recipient or database'); return; }
+    if (!recipient || !existsSync(dbPath)) { record('skipped', SKIP_REASONS.busyNoticeNoRecipient); return; }
     const dir = join(getMemeshDirFromDbPath(), 'codex-busy-message-notice');
     const statePath = join(dir, `${sessionId}.json`);
     ensurePrivateDir(dir);
     lockPath = `${statePath}.lock`;
     lock = acquireLock(lockPath);
-    if (!lock) { record('skipped', 'session reminder lock held'); return; }
+    if (!lock) { record('skipped', SKIP_REASONS.busyNoticeLockHeld); return; }
     let state;
     try { state = JSON.parse(readFileSync(statePath, 'utf8')); } catch { state = {}; }
     const seen = new Set(Array.isArray(state.notified) ? state.notified.filter(id => typeof id === 'string') : []);
@@ -94,7 +94,7 @@ process.stdin.on('end', () => {
       refs = waitingMessageRefs(db, recipient, session.sessionId, err => { failed = true; record('error', `inbox: ${hookErrorReason(err)}`); }, true, [...seen]);
     } finally { try { db?.close(); } catch { /* already closed */ } }
     if (failed) return;
-    if (refs.length === 0) { record('skipped', 'no waiting messages'); return; }
+    if (refs.length === 0) { record('skipped', SKIP_REASONS.busyNoticeNothingWaiting); return; }
     pruneSessionState(dir, Date.now());
     const fresh = refs;
     const previous = [...seen];

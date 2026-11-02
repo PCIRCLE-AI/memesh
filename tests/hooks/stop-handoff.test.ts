@@ -192,14 +192,32 @@ describe('Stop hook: the session handoff', () => {
     expect(outcomes().at(-1)?.reason).toMatch(/1 channel message\(s\) could not be read/);
   }, 30_000);
 
-  it('still stores the reply when the transcript cannot be read, and says the quotes were not checked', () => {
+  it('stores nothing when the transcript cannot be read, and says why as an error (it may be a private session)', () => {
     fs.rmSync(transcript);
     fs.mkdirSync(transcript);
     const r = runStop({ last_assistant_message: LONG_ENOUGH });
     expect(r.status).toBe(0);
+    expect(handoffRows().observations).toEqual([]);
+    expect(outcomes().at(-1)).toMatchObject({ outcome: 'skipped', reason: 'the session could not be checked for a private-session call, so nothing is saved' });
+    const all = fs.readFileSync(path.join(home, '.memesh', 'hook-outcomes.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    expect(all).toEqual(expect.arrayContaining([
+      expect.objectContaining({ outcome: 'error', reason: expect.stringContaining('treated as private') }),
+    ]));
+  }, 30_000);
+
+  it('writes the handoff from a Codex rollout when the Stop payload carries no message (rows as Codex writes them)', () => {
+    const row = (payload: object) => JSON.stringify({ type: 'response_item', payload });
+    fs.writeFileSync(transcript, [
+      row({ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'please fix the parser' }] }),
+      row({ type: 'function_call', call_id: 'c1', name: 'shell', arguments: '{}' }),
+      row({ type: 'function_call_output', call_id: 'c1', output: 'ok' }),
+      row({ type: 'message', role: 'assistant', phase: 'final_answer', content: [{ type: 'output_text', text: LONG_ENOUGH }] }),
+    ].join('\n') + '\n');
+    const r = runStop({}, { MEMESH_HOOK_HOST: 'codex' });
+    expect(r.status, r.stderr).toBe(0);
     expect(handoffRows().observations).toEqual([LONG_ENOUGH]);
-    expect(outcomes().at(-1)).toMatchObject({ outcome: 'wrote' });
-    expect(outcomes().at(-1)?.reason).toMatch(/could not be read.*not checked/);
+    expect(outcomes().at(-1)).toMatchObject({ outcome: 'wrote', entity: entityName });
+    expect(outcomes().at(-1)?.reason).toMatch(/from the transcript/);
   }, 30_000);
 
   it('keeps the reply as it is when the transcript holds no agent message', () => {

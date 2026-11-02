@@ -15,7 +15,7 @@ export function homeDir() {
     return os.userInfo().homedir;
 }
 export function memeshDir() {
-    return process.env.MEMESH_DIR ?? path.join(homeDir(), '.memesh');
+    return process.env.MEMESH_DIR || path.join(homeDir(), '.memesh');
 }
 export function getDbPath() {
     return process.env.MEMESH_DB_PATH ?? path.join(memeshDir(), 'knowledge-graph.db');

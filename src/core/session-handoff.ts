@@ -9,6 +9,7 @@
 
 import { parseSqliteUtcMs } from './time-utils.js';
 import { redactMemoryText } from './paths.js';
+import { codexAssistantText } from './host-transcript.js';
 
 export const SESSION_HANDOFF_TYPE = 'session-handoff';
 
@@ -99,8 +100,8 @@ export function cleanHandoffText(raw: string): string {
 }
 
 /**
- * The text of the newest real assistant message in a JSONL transcript tail,
- * or null. Claude Code writes each content block of a message as its own
+ * The text of the newest real assistant message in a JSONL transcript tail
+ * (Claude Code's or Codex's layout), or null. Claude Code writes each content block of a message as its own
  * `assistant` line, and most of them are tool calls — so this walks backwards
  * to the newest line that carries text. Skipped: sub-agent (`isSidechain`)
  * lines, and the synthetic lines Claude Code writes for API errors
@@ -114,6 +115,12 @@ export function lastAssistantText(jsonl: string): string | null {
     if (!line) continue;
     let entry: TranscriptLine | null;
     try { entry = JSON.parse(line) as TranscriptLine | null; } catch { continue; }
+    // A Codex rollout: the newest assistant message row that has text.
+    const codex = codexAssistantText(entry);
+    if (codex !== null) {
+      if (codex.trim()) return codex;
+      continue;
+    }
     if (entry?.type !== 'assistant' || entry.isSidechain === true) continue;
     if (entry.isApiErrorMessage === true || entry.message?.model === '<synthetic>') continue;
     const content = entry.message?.content;

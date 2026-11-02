@@ -3,8 +3,8 @@ export declare const WorkPackageSchema: z.ZodDiscriminatedUnion<[z.ZodObject<{
     action: z.ZodLiteral<"prepare">;
     project: z.ZodString;
     kind: z.ZodEnum<{
-        digest: "digest";
         transcript: "transcript";
+        digest: "digest";
     }>;
 }, z.core.$strict>, z.ZodObject<{
     result: z.ZodObject<{
@@ -256,6 +256,7 @@ export declare const WhySchema: z.ZodObject<{
     project: z.ZodOptional<z.ZodString>;
     limit: z.ZodOptional<z.ZodNumber>;
 }, z.core.$strict>;
+export declare const PrivateSessionSchema: z.ZodObject<{}, z.core.$strict>;
 export declare const UserPatternsSchema: z.ZodObject<{
     categories: z.ZodOptional<z.ZodArray<z.ZodEnum<{
         workflow: "workflow";

@@ -18,6 +18,7 @@ import { spawn, spawnSync, type ChildProcess } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { CAPTURE_HOOKS, FAIL_ELIGIBLE_HOOKS, parseHookOutcomeLine, renderableErrorReason, renderableSkipReason } from '../../src/core/capture-liveness.js';
 
 const repoRoot = path.join(__dirname, '..', '..');
 const CLI_PATH = path.join(repoRoot, 'dist', 'transports', 'cli', 'cli.js');
@@ -103,6 +104,183 @@ describe.skipIf(skipReason !== null)('Hermes MemeshProvider against a real memes
   it('sync_turn never blocks the host on a slow capture; a full queue is logged, not waited on (F4)', () => {
     expect(queue.sync_turn_20_calls_secs).toBeLessThan(1);
     expect(queue.queue_full_warnings).toBeGreaterThan(0);
+  });
+
+  it('memesh_private_session stops capture for that session only, including turns already queued', () => {
+    expect(queue.private_tool_listed).toBe(true);
+    expect(queue.private_reply.success).toBe(true);
+    expect(queue.private_captures).toBe(0);
+    expect(queue.private_compress_text).not.toMatch(/summary here can stay concise/);
+    expect(queue.private_compress_text).toMatch(/private/);
+    expect(queue.control_captures).toBeGreaterThan(0);
+    expect(queue.queued_after_private).toEqual(['a0']);
+  });
+
+  it('after a restart, a turn whose history holds the call is not captured, and neither are the turns after it', () => {
+    expect(queue.restart_turns.with_call).toEqual([]);
+    expect(queue.restart_turns.without_call).toEqual(['capture-turn', 'capture-turn']);
+  });
+
+  it('session-end capture reads the history for the call, with or without the memesh_ prefix', () => {
+    expect(queue.session_end_captures.prefixed).toEqual([]);
+    expect(queue.session_end_captures.bare).toEqual([]);
+    expect(queue.session_end_captures.plain).toEqual(['capture-session']);
+  });
+
+  describe('the private mark survives the new provider instance Hermes starts at /compress, /resume and /branch', () => {
+    it('after /compress: a new instance with the same id and a history with no tool call saves nothing', () => {
+      expect(queue.marker.compress_new_instance_captures).toEqual([]);
+      expect(queue.marker.init_knows_private).toBe(true); // initialize reads the marker
+      expect(queue.marker.late_marker_captures).toEqual([]); // and a marker another instance writes later is honoured
+      expect(queue.marker.file_content).toBe('qa-session'); // only the id, no content
+      expect(queue.marker.file_mode).toBe(0o600);
+    });
+
+    it('after /branch then /compress: the branch marks itself from its history, and stays private', () => {
+      expect(queue.marker.branch_then_compress_captures).toEqual([]);
+    });
+
+    it('/resume of an unrelated old session saves as usual; /resume of one that was private stays private', () => {
+      expect(queue.marker.resume_unrelated_captures).toBeGreaterThan(0);
+      expect(queue.marker.resume_private_captures).toBe(0);
+    });
+
+    it('a compression child writes its own marker; a resume target is not given one', () => {
+      expect(queue.marker.compressed_child_captures).toBe(0);
+      expect(queue.marker.resumed_target_captures).toBeGreaterThan(0);
+    });
+
+    const parsed = (lines: string[]) => lines.map((line) => parseHookOutcomeLine(line));
+    const root = process.getuid?.() === 0;
+
+    it.skipIf(root)('a marker that cannot be written (its folder is read-only) is said so in the reply and recorded, and saving still stops in this process', () => {
+      expect(queue.marker.write_failure_reply).toMatchObject({ success: true, marker_written: false });
+      expect(queue.marker.write_failure_reply.message).toMatch(/saving may start again/);
+      expect(queue.marker.write_failure_captures).toEqual([]);
+      const records = parsed(queue.marker.write_failure_records);
+      expect(records.filter((r) => r?.outcome === 'error')).toEqual([expect.objectContaining({ hook: 'hermes-private-session', host: 'hermes', outcome: 'error', reason: 'the private-session marker could not be written' })]);
+      // Every capture it stopped says so (a skip with the fixed reason), so no exit is silent.
+      expect(records.filter((r) => r?.outcome === 'skipped').map((r) => r?.reason)).toEqual(expect.arrayContaining(['private_session']));
+    });
+
+    it.skipIf(root)('a marker that cannot be read counts as private and is recorded, for this scenario alone', () => {
+      expect(queue.marker.read_failure_captures).toEqual([]);
+      const records = parsed(queue.marker.read_failure_records);
+      expect(records.length).toBeGreaterThan(0);
+      expect(new Set(records.map((r) => r?.reason))).toEqual(new Set(['the private-session marker could not be read']));
+    });
+
+    it('records are in the shape doctor reads: its own hook name, the hermes host, an error, a hex run id', () => {
+      const lines: string[] = queue.marker.records;
+      expect(lines.length).toBeGreaterThan(0);
+      for (const record of parsed(lines)) {
+        expect(record).not.toBeNull();
+        expect(record).toMatchObject({ hook: 'hermes-private-session', host: 'hermes' });
+        expect(['error', 'skipped']).toContain(record?.outcome);
+        expect(record?.run).toMatch(/^[0-9a-f]{8,64}$/);
+        // Doctor quotes a reason only from its closed lists: a sentence the plugin writes that is not on them shows
+        // as "an unlabelled error" or "unrecognised reason" (Q6_17 F7). The plugin's sentences are bound to doctor's here.
+        if (record?.outcome === 'error') expect(renderableErrorReason(record.reason), record.reason).toBe(record.reason);
+        else expect(renderableSkipReason(record?.reason), record?.reason).toBe(record?.reason);
+      }
+      expect(parsed(lines).some((r) => r?.outcome === 'error')).toBe(true);
+      expect(CAPTURE_HOOKS as readonly string[]).toContain('hermes-private-session');
+      expect(FAIL_ELIGIBLE_HOOKS as readonly string[]).not.toContain('hermes-private-session');
+    });
+
+    it('a turn waiting in the queue is skipped when another instance marks the session private on disk (the worker reads the disk)', () => {
+      expect(queue.marker.queued_turn_after_disk_mark).toEqual(['turn-one']);
+    });
+
+    it('a history that shows the call writes the marker, so the next instance of the session saves nothing', () => {
+      expect(queue.marker.history_derived_then_new_instance).toEqual([]);
+    });
+
+    it('a parent that is private only on disk makes its branch private, and the branch writes its own marker', () => {
+      expect(queue.marker.parent_only_on_disk_child_captures).toEqual([]);
+    });
+
+    it('a dangling symlink is a marker (private); a marker that is a symlink is never written through', () => {
+      expect(queue.marker.dangling_marker_captures).toEqual([]);
+      expect(queue.marker.symlink_write_reply).toMatchObject({ marker_written: false });
+      expect(queue.marker.symlink_written_through).toBe(false);
+    });
+
+    it('with no Hermes home nothing is saved, and every capture that stops records the error (it is decided again each time, never remembered as private)', () => {
+      expect(queue.marker.no_home_captures).toEqual([]);
+      const records = parsed(queue.marker.no_home_records);
+      expect(records.length).toBeGreaterThan(1);
+      expect(new Set(records.map((r) => `${r?.outcome}:${r?.reason}`))).toEqual(new Set(['error:the private-session marker could not be kept or read: Hermes gave no home folder']));
+    });
+
+    it('a switch with no reason from a private session saves nothing for the rest of that instance and says why at every capture, but writes no marker: a new instance decides it again (Q6_13 F3)', () => {
+      expect(queue.marker.no_reason_switch_captures).toEqual([]);
+      const records = parsed(queue.marker.no_reason_switch_records);
+      // The switch itself, the turn and the session end: each stops and records the same error.
+      expect(records.filter((r) => r?.outcome === 'error').map((r) => r?.reason)).toEqual(Array(3).fill('Hermes did not say why the session changed, so the new session is treated as private'));
+      expect(queue.marker.no_reason_switch_marker, 'no marker on disk: the guess does not outlive the instance').toBe(false);
+      expect(queue.marker.no_reason_switch_next_instance_captures).toEqual(['capture-turn', 'capture-session']);
+    });
+
+    describe('the S3 redesign', () => {
+      const outcomesOf = (lines: string[]) => parsed(lines).map((r) => `${r?.outcome}:${r?.reason}`);
+      it('an empty session id saves nothing and records the error at every capture that stops (Q6_12 F2)', () => {
+        expect(queue.marker.empty_id_captures).toEqual([]);
+        const records = outcomesOf(queue.marker.empty_id_records);
+        expect(records.length).toBeGreaterThan(0);
+        expect(new Set(records)).toEqual(new Set(['error:the host gave no session id, so whether the session is private cannot be told and nothing is saved']));
+      });
+      it.skipIf(root)('a marker folder unreadable at one turn and readable at the next: the second turn is saved (unchecked is not remembered, H10)', () => {
+        expect(queue.marker.unchecked_then_ok_captures).toEqual(['capture-turn']);
+      });
+      it('a compression switch that says its reason records no guess (H8)', () => {
+        expect(outcomesOf(queue.marker.compress_reason_records).filter((r) => r.includes('did not say why'))).toEqual([]);
+      });
+      it('a healthy instance records once that the session was checked and is not private, so an old error clears in doctor', () => {
+        expect(outcomesOf(queue.marker.healthy_records)).toEqual(['skipped:not a private session']);
+      });
+      it('one instance that checks two ordinary sessions records each of them once (Q6_13 Nit 7)', () => {
+        expect(outcomesOf(queue.marker.healthy_two_sessions_records)).toEqual(['skipped:not a private session', 'skipped:not a private session']);
+      });
+      it('every capture a private session stops leaves a skip record: each turn, the compression and the session end (Q6_13 F2)', () => {
+        expect(queue.marker.private_skip_captures).toEqual([]);
+        expect(outcomesOf(queue.marker.private_skip_records)).toEqual(Array(4).fill('skipped:private_session'));
+      });
+      it('a marker no capture touched for 30 days is removed when an instance starts', () => {
+        expect(queue.marker.prune_left).toEqual(['new-session']);
+      });
+      it('reads an empty MEMESH_DIR as no value, as getMemeshDirFromDbPath does (shared table, Q6_21 F8)', () => {
+        const rows = queue.marker.record_dir_cases as Array<{ name: string; home: boolean }>;
+        expect(rows.length).toBeGreaterThan(0);
+        for (const r of rows) expect(r.home, r.name).toBe(true);
+      });
+      it('records resume_legacy\'s guess in the test\'s own folder, not under the real home (Q6_12 Nit 5)', () => {
+        expect(parsed(queue.marker.records).some((r) => r?.reason === 'Hermes did not say why the session changed, so the new session is treated as private')).toBe(true);
+      });
+      it('decides every case of the shared table the way the TypeScript decider does', () => {
+        for (const c of queue.marker.case_table as Array<{ name: string; state: string; expect: string }>) expect(c.state, c.name).toBe(c.expect);
+      });
+    });
+
+    it('a relative MEMESH_DB_PATH still receives the record', () => {
+      expect(queue.marker.relative_db_record_written).toBe(true);
+    });
+
+    it('a session id that is not a plain token becomes a hashed file name inside the marker folder and never leaves it', () => {
+      const files: string[] = queue.marker.unsafe_id_files;
+      expect(files).toContain('ok-id_1.2');
+      expect(files.filter((name) => /^[0-9a-f]{64}$/.test(name))).toHaveLength(5); // ../x, a/b, .hidden, .. and with:colon
+      expect(queue.marker.unsafe_id_escaped).toEqual([]);
+    });
+  });
+
+  it('a branched or compressed session inherits the private flag in memory, a /resume of an old session and a reset do not', () => {
+    expect(queue.private_after_switch.resume_legacy).toBe(0);
+    expect(queue.private_after_switch.branch).toBe(0);
+    expect(queue.private_after_switch.compression).toBe(0);
+    expect(queue.private_after_switch.reset).toBeGreaterThan(0);
+    // /resume of an old session that was never private is not made private by the one just left.
+    expect(queue.private_after_switch.resume_unrelated).toBeGreaterThan(0);
   });
 
   it('turns still queued at session end are drained; any left after the bounded wait are reported (re-review P1)', () => {

@@ -35,6 +35,8 @@ import {
 import { createCodexState, finishCodex, readCodexRow } from './_codex-rollout.js';
 import { runStopHandoff } from './_stop-handoff.js';
 import { runStopNotes } from './_stop-notes.js';
+import { privacyForHook } from './_private-session.js';
+import { deadlineFor, HOOK_BUDGET_MS } from './_hook-budgets.js';
 // Edited file names from Bash and Edit/Write, under one path-shape rule
 // (#495). Generated from src/core/bash-edited-paths.ts — do not hand-edit.
 import { bashEditedFileNames, editedFileName, isPathShapedFileName, listEditedFiles } from './_generated/bash-edited-paths.js';
@@ -389,6 +391,10 @@ process.stdin.on('end', async () => {
     // writes nothing and runs either way (#324). It used to sit above the
     // JSON parse, which is why the payload is parsed first now.
     const captureEnabled = isAutoCaptureEnabled(process.env);
+    // The agent called private_session: nothing below writes from this session.
+    const privacy = privacyForHook(inputData, 'session-summary', { budgetMs: HOOK_BUDGET_MS.stop.decide });
+    const privateState = privacy.state;
+    const privateSession = privateState !== 'no';
 
     // #324: ingest the project's note directory and decide the
     // "decided things, stored nothing" nudge. Records its own outcomes under
@@ -397,6 +403,8 @@ process.stdin.on('end', async () => {
     const stopProject = inputData.cwd ? getProjectName(inputData.cwd) : undefined;
     const stopNotes = await runStopNotes(inputData, {
       captureEnabled,
+      privacy,
+      deadlineAt: deadlineFor(HOOK_BUDGET_MS.stop.notes),
       project: stopProject,
       metaUrl: import.meta.url,
     });
@@ -406,7 +414,7 @@ process.stdin.on('end', async () => {
     // Keep the agent's last message as the project's handoff. Ahead of the
     // early exits below on purpose: a short or read-only turn is still a place
     // the work stopped, and this records its own outcome under `handoff-capture`.
-    runStopHandoff(inputData, { captureEnabled, project: stopProject });
+    runStopHandoff(inputData, { captureEnabled, privateSession, privateUnchecked: privateState === 'unchecked', project: stopProject });
 
     if (!captureEnabled) {
       record('skipped', SKIP_REASONS.autoCaptureOff);
@@ -424,6 +432,15 @@ process.stdin.on('end', async () => {
     //
     // `post-commit` refuses this exact case and says why: better to miss one
     // capture than to file it under the wrong project. Same rule here.
+    if (privateSession) {
+      // An unchecked transcript already left its own error outcome and is not a
+      // successful run, so it neither stamps the heartbeat nor claims "private".
+      if (privateState === 'yes') {
+        stampHookRunOnly(process.env, 'session-summary');
+        record('skipped', SKIP_REASONS.privateSession);
+      }
+      return exit0();
+    }
     if (!inputData.cwd) {
       try { process.stderr.write(`[memesh session-summary] cwd absent in payload (keys: ${Object.keys(inputData).join(',')}); cannot resolve project, skipping capture\n`); } catch {}
       record('skipped', SKIP_REASONS.cwdAbsent);

@@ -1,4 +1,7 @@
 import { redactSecrets } from './paths.js';
+import { decidePrivacy } from './private-session.js';
+import { getMemeshDirFromDbPath } from './paths.js';
+import { SKIP_REASONS } from './capture-liveness.js';
 import { truncateTitle } from './title.js';
 import { remember } from './operations.js';
 import { bashEditedFileNames, editedFileName, isPathShapedFileName, listEditedFiles } from './bash-edited-paths.js';
@@ -8,7 +11,7 @@ const FILE_WRITE_TOOLS = new Set(['write_file', 'patch', 'edit_file', 'Write', '
 const SHELL_TOOLS = new Set(['terminal', 'shell', 'bash', 'Bash']);
 const KNOWN_READ_ONLY_TOOLS = new Set([
     'read_file', 'search_files', 'list_files', 'web_search', 'web_extract', 'Read', 'Grep', 'Glob',
-    'memesh_recall', 'memesh_remember', 'memesh_forget', 'memory', 'todo',
+    'memesh_recall', 'memesh_remember', 'memesh_forget', 'memesh_private_session', 'memory', 'todo',
 ]);
 function parseArgs(raw) {
     if (raw && typeof raw === 'object' && !Array.isArray(raw))
@@ -167,6 +170,9 @@ export function buildSessionInsights(activity, ctx) {
     return out;
 }
 export function captureChatSession(input) {
+    if (decidePrivacy({ messages: input.messages, memeshDir: getMemeshDirFromDbPath(), deadlineAt: Date.now() + 1000 }).state === 'yes') {
+        return { outcome: 'skipped', reason: SKIP_REASONS.privateSession, written: [], toolCallCount: 0, filesEdited: 0, errorsEncountered: 0, unrecognizedTools: [], toolResultsNonJson: 0 };
+    }
     const activity = activityFromChatMessages(input.messages);
     const counts = {
         toolCallCount: activity.toolCallCount,
