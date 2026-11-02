@@ -16,6 +16,8 @@
  */
 import { describe, it, expect } from 'vitest';
 import fs from 'fs';
+import os from 'os';
+import { execFileSync, spawnSync } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import {
@@ -137,20 +139,165 @@ describe('release preconditions', () => {
     expect(checkReleasePreconditions(ready({ branch: null })).ok).toBe(false);
   });
 
-  it('refuses when shipped files moved after the version bump', () => {
-    // 4.8.2: the bump commit landed, then two fix PRs merged under the same
-    // version. A plugin cache staged in between was named 4.8.2 and never
-    // refreshed — Claude Code keys the cache by version.
-    const r = checkReleasePreconditions(ready({ shippedFilesChangedSinceBump: ['src/storage/graph-repairs.ts', 'dist/storage/graph-repairs.js'] }));
-    const text = r.blockers.join('\n');
-    expect(text).toContain('after package.json was bumped to 4.7.0');
-    expect(text).toContain('src/storage/graph-repairs.ts');
-    expect(text).toContain('next version');
+  describe('files that moved after the version bump', () => {
+    const code = ['dist/storage/graph-repairs.js', 'hooks/hooks.json', 'package.json'];
+
+    it('documentation only: not a blocker, listed as a note', () => {
+      const r = checkReleasePreconditions(ready({
+        shippedFilesChangedSinceBump: ['docs/platforms/agent-messaging.md', 'README.md', 'LICENSE', 'llms-install.md'],
+      }));
+      expect(r.blockers).toEqual([]);
+      expect(r.ok).toBe(true);
+      expect(r.notices.join('\n')).toContain('docs/platforms/agent-messaging.md');
+    });
+
+    it('AGENTS.md and skills/ change agent behaviour, so they are not documentation', () => {
+      for (const f of ['AGENTS.md', 'skills/memesh/SKILL.md', 'docs-extra/x.md', 'sub/README.md', 'README.mjs', 'LICENSE.txt', 'docs/../skills/x', 'README.md/x']) {
+        const r = checkReleasePreconditions(ready({ shippedFilesChangedSinceBump: [f] }));
+        expect(r.ok, f).toBe(false);
+      }
+    });
+
+    it('code without the flag: blocked, names the files and both ways forward, never says to bump', () => {
+      const r = checkReleasePreconditions(ready({ shippedFilesChangedSinceBump: code }));
+      const text = r.blockers.join('\n');
+      expect(r.ok).toBe(false);
+      expect(text).toContain('after package.json was bumped to 4.7.0');
+      expect(text).toContain('dist/storage/graph-repairs.js');
+      expect(text).toContain('--accept-moved-after-bump');
+      expect(text).toContain('next version');
+      expect(text).not.toMatch(/bump to the next/i);
+    });
+
+    it('code with the flag: allowed, warns and names the recovery', () => {
+      const r = checkReleasePreconditions(ready({ shippedFilesChangedSinceBump: code, acceptMovedAfterBump: true }));
+      expect(r.blockers).toEqual([]);
+      expect(r.ok).toBe(true);
+      const text = r.notices.join('\n');
+      expect(text).toContain('WARNING');
+      expect(text).toContain('dist/storage/graph-repairs.js');
+      expect(text).toContain('plugin-cache warning');
+      expect(text).toContain('memesh upgrade-plugin');
+      expect(text).toContain('codex plugin add memesh@pcircle-memesh');
+      expect(text).not.toMatch(/bump to|new version|bump the/i);
+    });
+
+    it('docs plus code with the flag: the code is warned about, the docs are noted', () => {
+      const r = checkReleasePreconditions(ready({ shippedFilesChangedSinceBump: ['docs/a.md', ...code], acceptMovedAfterBump: true }));
+      expect(r.ok).toBe(true);
+      expect(r.notices.join('\n')).toContain('docs/a.md');
+      expect(r.notices.join('\n')).toContain('WARNING');
+    });
+
+    it('list could not be computed: blocked, and the flag does not override it', () => {
+      for (const acceptMovedAfterBump of [false, true]) {
+        const r = checkReleasePreconditions(ready({ shippedFilesChangedSinceBump: null, acceptMovedAfterBump }));
+        expect(r.ok).toBe(false);
+        expect(r.blockers.join('\n')).toContain('could not list the shipped files');
+        expect(r.blockers.join('\n')).toContain('does not override this');
+      }
+    });
+
+    it('a long list is cut to eight names plus the total', () => {
+      const many = Array.from({ length: 10 }, (_, i) => `dist/f${i}.js`);
+      const text = checkReleasePreconditions(ready({ shippedFilesChangedSinceBump: many })).blockers.join('\n');
+      expect(text).toContain('dist/f7.js');
+      expect(text).not.toContain('dist/f8.js');
+      expect(text).toContain('… (10 files)');
+    });
   });
 
-  it('refuses when the post-bump diff could not be listed at all', () => {
-    const r = checkReleasePreconditions(ready({ shippedFilesChangedSinceBump: null }));
-    expect(r.blockers.join('\n')).toContain('could not list the shipped files');
+  describe('the command line side of the flag', () => {
+    const script = path.join(repoRoot, 'scripts/finish-release.mjs');
+    const src = fs.readFileSync(script, 'utf8').split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+    const runScript = (...args: string[]) => spawnSync('node', [script, ...args], { encoding: 'utf8' });
+
+    it('--help lists the flag and a mistyped flag is refused', () => {
+      const help = runScript('--help');
+      expect(help.status).toBe(0);
+      expect(help.stdout).toContain('--accept-moved-after-bump');
+      const typo = runScript('--accept-moved-after-bumps');
+      expect(typo.status).toBe(1);
+      expect(typo.stderr).toContain('unknown flag');
+    });
+
+    it('the real flag is understood by the parser (it reaches --help instead of "unknown flag")', () => {
+      const r = runScript('--accept-moved-after-bump', '--help');
+      expect(r.status).toBe(0);
+    });
+
+    it('the flag defaults to off, is set only by its own flag, and is handed to the gate', () => {
+      expect(src).toMatch(/let acceptMovedAfterBump = false;/);
+      expect(src).toMatch(/a === '--accept-moved-after-bump'\)\s*acceptMovedAfterBump = true;/);
+      expect(src).toMatch(/checkReleasePreconditions\(\{[\s\S]*?\n\s+acceptMovedAfterBump,\n\}\);/);
+    });
+
+    it('a flag with a value is not the flag', () => {
+      const r = runScript('--accept-moved-after-bump=false');
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('unknown flag');
+    });
+
+    it('the flag does not waive any other blocker', () => {
+      const code = ['dist/a.js'];
+      for (const over of [{ isClean: false }, { branch: 'feature/x' }]) {
+        const r = checkReleasePreconditions(ready({ shippedFilesChangedSinceBump: code, acceptMovedAfterBump: true, ...over }));
+        expect(r.ok, JSON.stringify(over)).toBe(false);
+        expect(r.blockers.length).toBeGreaterThan(0);
+      }
+      expect(src).toMatch(/if \(!ok \|\| blockers\.length > 0\) \{\n\s+console\.error/);
+    });
+
+    it('an incomplete (shallow) history gives no file list, so the gate refuses', () => {
+      expect(src).toMatch(/const isShallow = capture\('git', \['rev-parse', '--is-shallow-repository'\]\);/);
+      expect(src).toMatch(/shippedFilesChangedSinceBump = isShallow === 'false' && bumpCommit && shippedPaths\n\s+\? captureLines\(/);
+      const origin = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-origin-'));
+      const clone = path.join(os.tmpdir(), `memesh-shallow-${process.pid}-${Date.now()}`);
+      const git = (cwd: string, ...a: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...a], { cwd, encoding: 'utf8' }).trim();
+      try {
+        git(origin, 'init', '-q');
+        for (const n of ['one', 'two']) {
+          fs.writeFileSync(path.join(origin, n), n);
+          git(origin, 'add', n);
+          git(origin, 'commit', '-q', '-m', n);
+        }
+        expect(git(origin, 'rev-parse', '--is-shallow-repository')).toBe('false');
+        git(os.tmpdir(), 'clone', '-q', '--depth', '1', `file://${origin}`, clone);
+        expect(git(clone, 'rev-parse', '--is-shallow-repository')).toBe('true');
+        expect(checkReleasePreconditions(ready({ shippedFilesChangedSinceBump: null, acceptMovedAfterBump: true })).ok).toBe(false);
+      } finally {
+        fs.rmSync(origin, { recursive: true, force: true });
+        fs.rmSync(clone, { recursive: true, force: true });
+      }
+    });
+
+    it('the notices the gate returns are printed', () => {
+      expect(src).toMatch(/\{ ok, blockers, notices \} = checkReleasePreconditions/);
+      expect(src).toMatch(/for \(const n of notices\) console\.log\(/);
+    });
+
+    it('the post-bump diff lists both sides of a rename', () => {
+      expect(src).toMatch(/\['diff', '--name-only', '--no-renames', `\$\{bumpCommit\}\.\.HEAD`/);
+      const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-rename-'));
+      const git = (...a: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...a], { cwd: repo, encoding: 'utf8' }).trim();
+      try {
+        git('init', '-q');
+        fs.mkdirSync(path.join(repo, 'skills'));
+        fs.mkdirSync(path.join(repo, 'docs'));
+        fs.writeFileSync(path.join(repo, 'skills/x'), 'the same body\n'.repeat(20));
+        fs.writeFileSync(path.join(repo, 'package.json'), '{}\n');
+        git('add', '.');
+        git('commit', '-q', '-m', 'bump');
+        const bump = git('rev-parse', 'HEAD');
+        git('mv', 'skills/x', 'docs/y.md');
+        git('commit', '-q', '-m', 'rename');
+        const list = (...extra: string[]) => git('diff', '--name-only', ...extra, `${bump}..HEAD`, '--', 'docs', 'skills').split('\n').filter(Boolean);
+        expect(list()).toEqual(['docs/y.md']);
+        expect(list('--no-renames').sort()).toEqual(['docs/y.md', 'skills/x']);
+      } finally {
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    });
   });
 
   it('refuses on a dirty tree', () => {
@@ -815,7 +962,7 @@ describe('approved release evidence reuse', () => {
 
   it.each([
     { branch: 'release' }, { isClean: false }, { remoteHeadSha: 'b'.repeat(40) },
-    { qaPreReleaseStatus: 1 }, { shippedFilesChangedSinceBump: ['src/db.ts'] },
+    { qaPreReleaseStatus: 1 }, { shippedFilesChangedSinceBump: ['dist/db.js'] },
   ])('keeps every other release refusal with valid reuse %#', (other) => {
     expect(checkReleasePreconditions(ready({ ...other, liveJourneyCandidates: [], approvedReuse })).ok).toBe(false);
   });
