@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { basename, bashEditedFileNames, bashEditedPaths, isPathShapedFileName, editedFileName } from '../../src/core/bash-edited-paths.js';
+import { basename, bashEditedFileNames, bashEditedPaths, isPathShapedFileName, editedFileName, listEditedFiles, MAX_LISTED_FILES } from '../../src/core/bash-edited-paths.js';
 
 /**
  * #495: a captured token that is not path-shaped (a shell variable, a flag
@@ -64,6 +64,13 @@ describe('bashEditedFileNames (#495 junk-token rejection)', () => {
     expect(bashEditedFileNames('cat > /dev/null')).toEqual([]);
     expect(bashEditedFileNames('tee /tmp/scratch.log')).toEqual([]);
   });
+
+  it('excludes the macOS spellings of the temp directories too', () => {
+    expect(bashEditedFileNames('tee /private/tmp/scratch.log')).toEqual([]);
+    expect(bashEditedFileNames("cat > /var/folders/ab/cd/T/scratch.txt <<'EOF'\nx\nEOF")).toEqual([]);
+    expect(bashEditedFileNames('tee /private/var/folders/ab/cd/T/scratch.log')).toEqual([]);
+    expect(bashEditedFileNames('tee /private/tmpfile-notes.md')).toEqual(['tmpfile-notes.md']);
+  });
 });
 
 describe('isPathShapedFileName', () => {
@@ -122,5 +129,18 @@ describe('editedFileName (an Edit/Write file_path, same rule as the Bash branch)
     expect(editedFileName('/repo/{{cookiecutter.slug}}.py')).toBe('{{cookiecutter.slug}}.py');
     expect(editedFileName('/repo/#scratch#')).toBeNull();
     expect(editedFileName(undefined)).toBeNull();
+  });
+});
+
+describe('listEditedFiles', () => {
+  const names = (n: number) => Array.from({ length: n }, (_, i) => `f${i}.ts`);
+
+  it('lists every name up to the limit and counts the rest beyond it', () => {
+    expect(MAX_LISTED_FILES).toBe(30);
+    expect(listEditedFiles(names(30))).toBe(names(30).join(', '));
+    const over = listEditedFiles(names(31));
+    expect(over).toBe(`${names(30).join(', ')} and 1 more`);
+    expect(over).not.toContain('f30.ts');
+    expect(listEditedFiles(names(1300))).toMatch(/ and 1270 more$/);
   });
 });

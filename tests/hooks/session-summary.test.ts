@@ -763,6 +763,235 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     db.close();
   });
 
+  describe('Codex rollouts', () => {
+    // Real shapes. A tool request is a `custom_tool_call` named exec whose
+    // input is JS calling tools.apply_patch / tools.exec_command; its result
+    // rows start with "Script completed|failed". Codex also records each
+    // command and file change as an event_msg item_completed row, and those
+    // structured rows decide what was edited and what failed.
+    let n = 0;
+    const turn = (code: string, texts: string[] = [], ok = true) => {
+      const call_id = `call_${n++}`;
+      const head = `${ok ? 'Script completed' : 'Script failed'}\nWall time 0.1 seconds\nOutput:\n`;
+      return [
+        { type: 'response_item', payload: { type: 'custom_tool_call', status: 'completed', call_id, name: 'exec', input: code } },
+        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id, output: [head, ...texts].map(text => ({ type: 'input_text', text })) } },
+      ];
+    };
+    const done = (item: object) => ({ type: 'event_msg', payload: { type: 'item_completed', thread_id: 't1', turn_id: 'u1', item } });
+    const command = (cmd: string, exit_code = 0, aggregated_output = '') => done({
+      type: 'CommandExecution', id: `ce${n++}`, command: ['/bin/zsh', '-lc', cmd], cwd: '/repo', source: 'unified_exec_startup',
+      status: exit_code === 0 ? 'completed' : 'failed', aggregated_output, exit_code,
+    });
+    const fileChange = (changes: Record<string, { type: string }>, status = 'completed', stderr = '') => done({
+      type: 'FileChange', id: `fc${n++}`, changes, status, stdout: '', stderr,
+    });
+    const patchCode = (...lines: string[]) =>
+      `const patch = \`*** Begin Patch\n${lines.join('\n')}\n*** End Patch\`;\ntext(await tools.apply_patch(patch));`;
+    const execCode = (cmd: string, key = 'cmd') => `const r = await tools.exec_command({ ${key}: ${JSON.stringify(cmd)}, yield_time_ms: 1000 });\ntext(r.output);`;
+    // The object exec_command returns (real shape), as a script prints it.
+    const jsonResult = (exit_code: number, output: string) =>
+      JSON.stringify({ chunk_id: 'a1b2c3', wall_time_seconds: 0.1, exit_code, original_token_count: 4, output });
+    const noop = () => turn(execCode('echo invented-noop-line'), ['invented-noop-line']);
+
+    const runCodex = (id: string, rows: object[]) => {
+      writeTranscript(rows);
+      runHook({ session_id: id, transcript_path: transcriptPath, cwd: '/repo' });
+      if (!fs.existsSync(dbPath)) return { names: [] as string[], text: '' };
+      const db = openDb();
+      const ents = db.prepare('SELECT id, name FROM entities WHERE name LIKE ?').all(`session-${id}-%`) as Array<{ id: number; name: string }>;
+      const text = ents.flatMap(e => (db.prepare('SELECT content FROM observations WHERE entity_id = ?').all(e.id) as Array<{ content: string }>).map(o => o.content)).join('\n');
+      db.close();
+      return { names: ents.map(e => e.name), text };
+    };
+
+    describe('structured records', () => {
+      it('a completed FileChange add/update is an edited file; a delete is not', () => {
+        const r = runCodex('cx-fc', [
+          ...turn(patchCode('*** Update File: src/invented-auth.ts')), ...noop(), ...noop(),
+          fileChange({ '/repo/src/invented-auth.ts': { type: 'update' }, '/repo/src/invented-new.ts': { type: 'add' }, '/repo/src/invented-gone.ts': { type: 'delete' } }),
+        ]);
+        expect(r.text).toContain('invented-auth.ts');
+        expect(r.text).toContain('invented-new.ts');
+        expect(r.text).not.toContain('invented-gone.ts');
+      });
+
+      it('a failed FileChange is not an edit and is recorded as an error', () => {
+        const r = runCodex('cx-fc-fail', [
+          ...turn(patchCode('*** Update File: src/invented-never.ts')), ...noop(), ...noop(),
+          fileChange({ '/repo/src/invented-never.ts': { type: 'update' } }, 'failed', 'invented patch rejected'),
+          fileChange({ '/repo/src/invented-landed.ts': { type: 'update' } }),
+        ]);
+        expect(r.text).not.toContain('invented-never.ts');
+        expect(r.text).toContain('invented-landed.ts');
+        expect(r.text).toContain('invented patch rejected');
+      });
+
+      it('a patch that was applied still counts when the script then failed', () => {
+        const r = runCodex('cx-fc-then-throw', [
+          ...turn(patchCode('*** Update File: src/invented-applied.ts'), ['Script error:\nError: invented later step threw'], false),
+          fileChange({ '/repo/src/invented-applied.ts': { type: 'update' } }),
+          ...noop(), ...noop(),
+        ]);
+        expect(r.text).toContain('invented-applied.ts');
+        expect(r.text).toContain('invented later step threw');
+      });
+
+      it('a shell edit counts only for a completed command with exit 0', () => {
+        const r = runCodex('cx-sh', [
+          ...turn(execCode("sed -i '' 's/a/b/' src/invented-ok.ts")), command("sed -i '' 's/a/b/' src/invented-ok.ts"),
+          ...turn(execCode("sed -i '' 's/a/b/' src/invented-bad.ts")), command("sed -i '' 's/a/b/' src/invented-bad.ts", 1, 'sed: invented failure'),
+          ...noop(),
+        ]);
+        expect(r.text).toContain('invented-ok.ts');
+        expect(r.text).not.toContain('invented-bad.ts');
+        expect(r.text).toContain('sed: invented failure');
+      });
+
+      it('a scratch file under the macOS temp directories is not an edit', () => {
+        const r = runCodex('cx-scratch', [
+          ...noop(), ...noop(), ...noop(),
+          command("cat > /private/tmp/invented-scratch.txt <<'EOF'\nx\nEOF"),
+          command('tee /var/folders/ab/cd/T/invented-temp.log'),
+          command("cat > src/invented-real.ts <<'EOF'\nx\nEOF"),
+        ]);
+        expect(r.text).toContain('invented-real.ts');
+        expect(r.text).not.toContain('invented-scratch.txt');
+        expect(r.text).not.toContain('invented-temp.log');
+      });
+
+      it('output that merely mentions an error or exit_code is not a failure', () => {
+        const r = runCodex('cx-word', [
+          ...noop(), ...noop(), ...noop(),
+          fileChange({ '/repo/src/invented-edit.ts': { type: 'update' } }),
+          command('cat invented-notes.md', 0, 'this note mentions an error and "exit_code": 1'),
+        ]);
+        expect(r.text).toContain('invented-edit.ts');
+        expect(r.names).not.toContain('session-cx-word-fixes');
+        expect(r.text).not.toContain('Observed');
+      });
+    });
+
+    describe('older rollouts without structured records (fallback)', () => {
+      it('an apply_patch that did not throw is an edit; one that threw is not', () => {
+        const r = runCodex('cx-fb-patch', [
+          ...turn(patchCode('*** Update File: src/invented-fb-ok.ts'), ['ok']),
+          ...turn(patchCode('*** Update File: src/invented-fb-bad.ts'), ['Script error:\nError: invented rejected'], false),
+          ...noop(),
+        ]);
+        expect(r.text).toContain('invented-fb-ok.ts');
+        expect(r.text).not.toContain('invented-fb-bad.ts');
+        expect(r.text).toContain('invented rejected');
+      });
+
+      it('a shell edit counts only when a result reports exit 0; unknown and failed do not', () => {
+        const r = runCodex('cx-fb-sh', [
+          ...turn(patchCode('*** Update File: src/invented-anchor.ts'), ['ok']),
+          ...turn(execCode("sed -i '' 's/a/b/' src/invented-known.ts", '"cmd"'), [jsonResult(0, '')]),
+          ...turn(execCode("sed -i '' 's/a/b/' src/invented-unknown.ts"), ['printed output without a result record']),
+          ...turn(execCode("sed -i '' 's/a/b/' src/invented-failed.ts"), [jsonResult(1, 'sed: invented failure')]),
+        ]);
+        expect(r.text).toContain('invented-known.ts');
+        expect(r.text).not.toContain('invented-unknown.ts');
+        expect(r.text).not.toContain('invented-failed.ts');
+        expect(r.text).toContain('sed: invented failure');
+      });
+
+      it('an aborted or still-running script is not an edit', () => {
+        const aborted = (code: string) => {
+          const call_id = `call_${n++}`;
+          return [
+            { type: 'response_item', payload: { type: 'custom_tool_call', status: 'completed', call_id, name: 'exec', input: code } },
+            { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id, output: 'aborted before dispatch' } },
+          ];
+        };
+        const r = runCodex('cx-fb-unknown', [
+          ...turn(patchCode('*** Update File: src/invented-anchor.ts'), ['ok']),
+          ...aborted(patchCode('*** Update File: src/invented-aborted.ts')),
+          ...turn(execCode("sed -i '' 's/a/b/' src/invented-running.ts"), ['Script running with cell ID invented-cell-1']),
+        ]);
+        expect(r.text).toContain('invented-anchor.ts');
+        expect(r.text).not.toContain('invented-aborted.ts');
+        expect(r.text).not.toContain('invented-running.ts');
+      });
+
+      it('exit_code text inside a printed file is not a failure', () => {
+        const r = runCodex('cx-fb-content', [
+          ...turn(patchCode('*** Update File: src/invented-anchor.ts'), ['ok']),
+          ...turn(execCode('cat invented-source.ts'), ['const sample = {"exit_code": 1, "output": "invented-looks-like-failure"};']),
+          ...noop(),
+        ]);
+        expect(r.names).not.toContain('session-cx-fb-content-fixes');
+        expect(r.text).not.toContain('exited with code');
+      });
+
+      it('a failure that left no structured record is still reported once', () => {
+        const [missingCall, missingOut] = turn(execCode('invented-missing-tool --version'), [jsonResult(127, 'zsh: command not found: invented-missing-tool')]);
+        const [checkCall, checkOut] = turn(execCode('npm run invented-check'), [jsonResult(1, 'invented-check: boom')]);
+        const r = runCodex('cx-fb-127', [
+          ...turn(patchCode('*** Update File: src/invented-anchor.ts')),
+          fileChange({ '/repo/src/invented-anchor.ts': { type: 'update' } }),
+          missingCall!, missingOut!,
+          checkCall!, command('npm run invented-check', 1, 'invented-check: boom'), checkOut!,
+        ]);
+        expect(r.text).toContain('Observed 2 error(s)');
+        expect(r.text).toContain('command not found: invented-missing-tool');
+      });
+    });
+
+    it('a secret in a failed command\'s output is redacted on the way to the stored error', () => {
+      const token = 'gh' + 'p_' + 'b'.repeat(36);
+      const r = runCodex('cx-secret-out', [
+        ...noop(), ...noop(), ...noop(),
+        fileChange({ '/repo/src/invented-edit.ts': { type: 'update' } }),
+        // The token starts near character 80, so the 100-character cut of the stored
+        // error would fall inside it if it were not redacted first.
+        command('curl invented.example', 22, `${'x'.repeat(78)} ${token}`),
+      ]);
+      expect(r.text).toContain('x'.repeat(50));
+      expect(r.text).not.toContain('gh' + 'p_');
+      expect(r.text).not.toContain('b'.repeat(8));
+    });
+
+    it('a secret in a recorded command is redacted in the stored Command line', () => {
+      const token = 'gh' + 'p_' + 'c'.repeat(36);
+      const r = runCodex('cx-secret-cmd', [
+        command(`${'y'.repeat(78)} ${token}`),
+        ...Array.from({ length: 20 }, () => noop()).flat(),
+      ]);
+      expect(r.text).toContain('Command: ' + 'y'.repeat(50));
+      expect(r.text).not.toContain('gh' + 'p_');
+      expect(r.text).not.toContain('c'.repeat(8));
+    });
+
+    it('agent-tool function_call rows count toward the activity guard', () => {
+      const fcall = (i: number) => ({ type: 'response_item', payload: { type: 'function_call', status: 'completed', call_id: `fn${i}`, name: 'wait_agent', arguments: '{}' } });
+      const few = runCodex('cx-few', [fcall(0), fcall(1)]);
+      expect(few.names).toEqual([]);
+      const runs = parseHookOutcomes(fs.readFileSync(path.join(testDir, HOOK_OUTCOMES_FILENAME), 'utf8')).hooks['session-summary'] ?? [];
+      expect(runs[runs.length - 1]!.reason).toBe(SKIP_REASONS.tooLittleActivity);
+      const many = runCodex('cx-many', Array.from({ length: 21 }, (_, i) => fcall(i)));
+      expect(many.text).toContain('Significant session: 21 tool calls');
+    });
+
+    it('the fixes observation lists a few files too, and exactly 30 are all listed', () => {
+      const files = (n: number) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`/repo/src/invented-${String(i).padStart(2, '0')}.ts`, { type: 'update' }]));
+      const many = runCodex('cx-fixes-35', [...noop(), ...noop(), ...noop(), command('npm run invented-check', 1, 'invented-check: boom'), fileChange(files(35))]);
+      expect(many.text).toMatch(/Observed 1 error\(s\) and successful edit tool results for invented-00\.ts.*invented-29\.ts and 5 more/);
+      const exact = runCodex('cx-fixes-30', [...noop(), ...noop(), ...noop(), command('npm run invented-check', 1, 'invented-check: boom'), fileChange(files(30))]);
+      expect(exact.text).toContain('invented-29.ts');
+      expect(exact.text).not.toContain(' more');
+    });
+
+    it('a session that touched many files lists a few and counts the rest', () => {
+      const changes = Object.fromEntries(Array.from({ length: 35 }, (_, i) => [`/repo/src/invented-${String(i).padStart(2, '0')}.ts`, { type: 'update' }]));
+      const r = runCodex('cx-many-files', [...noop(), ...noop(), ...noop(), fileChange(changes)]);
+      expect(r.text).toContain('for 35 file(s): invented-00.ts');
+      expect(r.text).toContain('invented-29.ts and 5 more');
+      expect(r.text).not.toContain('invented-30.ts');
+    });
+  });
+
   it('Scenario: low-signal session (< 3 tool calls) is skipped', () => {
     // This previously claimed to test a `stop_reason === 'user_interrupt'`
     // guard, feeding a stop_reason the Stop payload never carries — so the
