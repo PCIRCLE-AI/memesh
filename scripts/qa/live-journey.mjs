@@ -22,7 +22,8 @@
 //            and reply with the `message_id` and `delivery_id` from the notice
 //            plus the `qa_sentinel` that exists only in the body. That turn may
 //            call only the message tool (receipts/fetch/intake, this message)
-//            and must have run no commands: the sentinel is unforgeable only if
+//            and must have run no command (the one exception is reading the
+//            installed skill file): the sentinel is unforgeable only if
 //            the model could not have read it off disk. The tool is approved
 //            in the task-owned CODEX_HOME's config.toml, nowhere else.
 //   claude — the session's own model must call `intake` on that message. The
@@ -643,12 +644,19 @@ export const CODEX_PROOF_PROMPT = 'A MeMesh message notice is already queued on 
  * server fails to load ("invalid transport"), so the plugin's server definition
  * is repeated here with the verified cache path as its working directory.
  *
- * @param {{cachePath: string, server: {command?: string, args?: string[], env_vars?: string[]}}} input
+ * The journey's own MEMESH_DIR and MEMESH_DB_PATH are written into the server's
+ * `env` table rather than forwarded by name: a server that did not receive them
+ * would open the owner's real ~/.memesh.
+ *
+ * @param {{cachePath: string, server: {command?: string, args?: string[], env_vars?: string[]}, env?: Record<string, string>}} input
  */
 export function buildCodexMessageToolApprovalToml(input) {
   const server = input.server ?? {};
   if (typeof server.command !== 'string' || server.command.length === 0) {
     throw new Error('The plugin MCP definition has no command, so its approval table cannot be reproduced.');
+  }
+  if (typeof input.cachePath !== 'string' || input.cachePath.length === 0) {
+    throw new Error('The verified plugin cache path is missing, so the server working directory cannot be written.');
   }
   const lines = [
     '',
@@ -657,9 +665,51 @@ export function buildCodexMessageToolApprovalToml(input) {
     `args = ${JSON.stringify(server.args ?? [])}`,
     `cwd = ${JSON.stringify(input.cachePath)}`,
   ];
-  if (Array.isArray(server.env_vars)) lines.push(`env_vars = ${JSON.stringify(server.env_vars)}`);
+  const explicitEnv = input.env ?? {};
+  const explicitKeys = Object.keys(explicitEnv);
+  if (explicitKeys.length > 0) {
+    lines.push(`env = { ${explicitKeys.map(key => `${key} = ${JSON.stringify(explicitEnv[key])}`).join(', ')} }`);
+  }
+  const forwarded = (server.env_vars ?? []).filter(name => !explicitKeys.includes(name));
+  if (forwarded.length > 0) lines.push(`env_vars = ${JSON.stringify(forwarded)}`);
   lines.push('', '[mcp_servers.memesh.tools.message]', 'approval_mode = "approve"', '');
   return lines.join('\n');
+}
+
+/**
+ * Append the approval table to the isolated home's config.toml, and only there.
+ *
+ * Refuses a config.toml that is a symlink (the append would land in whatever it
+ * points at, e.g. the owner's real ~/.codex/config.toml), one whose real path
+ * leaves the home, and one that already configures the memesh server. The file
+ * is opened O_NOFOLLOW so a link planted after the check still cannot be followed.
+ *
+ * @param {{codexHome: string, toml: string}} input
+ * @returns {string} the config path that was appended to
+ */
+export function appendCodexMessageToolApproval(input) {
+  const home = fs.realpathSync(input.codexHome);
+  const configPath = path.join(input.codexHome, 'config.toml');
+  let existing = '';
+  let stat = null;
+  try { stat = fs.lstatSync(configPath); } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  if (stat !== null) {
+    if (stat.isSymbolicLink()) {
+      throw new Error(`Refusing to write ${configPath}: it is a symlink, so the approval could land outside the isolated CODEX_HOME.`);
+    }
+    if (!fs.realpathSync(configPath).startsWith(`${home}${path.sep}`)) {
+      throw new Error(`Refusing to write ${configPath}: its real path is outside the isolated CODEX_HOME.`);
+    }
+    existing = fs.readFileSync(configPath, 'utf8');
+  }
+  if (/\[mcp_servers\.memesh[.\]]/.test(existing)) {
+    throw new Error(`Refusing to run: ${configPath} already configures the memesh MCP server; prepare a fresh task-owned CODEX_HOME.`);
+  }
+  const fd = fs.openSync(configPath, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600);
+  try { fs.writeSync(fd, input.toml); } finally { fs.closeSync(fd); }
+  return configPath;
 }
 
 /**
@@ -752,7 +802,7 @@ export function assertCodexRanNoCommands(text, options = {}) {
     throw new Error(
       `The Codex proof turn produced non-answer items (${[...new Set(offending)].join(', ')}). `
       + 'The reply cannot be treated as model-visible proof, because a turn that runs commands could have '
-      + 'read the identifiers off disk instead of out of the envelope.',
+      + 'read the identifiers off disk instead of out of the notice and the fetched message.',
     );
   }
 }
@@ -767,31 +817,36 @@ export function assertCodexRanNoCommands(text, options = {}) {
  * the notice reached the model. The sentinel alone is not: it is the only one
  * of the three a model could in principle guess, which is why the ids matter.
  *
- * @param {{jsonl: string, sentinel: string, messageId: string, deliveryId: string, allowedSkillPath?: string, allowedProject?: string, allowedMessage?: {project: string, recipient: string}}} input
+ * @param {{jsonl: string, sentinel: string, messageId: string, deliveryId: string, allowedSkillPath?: string, allowedProject?: string, allowedMessage: {project: string, recipient: string}}} input
  */
 export function assertCodexReply(input) {
-  const allowedMessage = input.allowedMessage
-    ? { project: input.allowedMessage.project, recipient: input.allowedMessage.recipient, messageId: input.messageId }
-    : undefined;
+  if (!input.allowedMessage?.project || !input.allowedMessage?.recipient) {
+    throw new Error('assertCodexReply needs allowedMessage {project, recipient}: the notice carries no body, so the proof turn must be judged on its message-tool calls.');
+  }
+  const allowedMessage = {
+    project: input.allowedMessage.project,
+    recipient: input.allowedMessage.recipient,
+    messageId: input.messageId,
+  };
   assertCodexRanNoCommands(input.jsonl, {
     allowedSkillPath: input.allowedSkillPath,
     allowedProject: input.allowedProject,
     allowedMessage,
     forbiddenValues: [input.sentinel, input.messageId, input.deliveryId],
   });
-  if (allowedMessage) {
-    // The notice carries no body. A sentinel in the reply is proof only if the
-    // model got it by fetching the body through the message tool.
-    const fetched = parseJsonl(input.jsonl).some(event =>
-      event?.type === 'item.completed' && event.item?.type === 'mcp_tool_call'
-      && event.item.status === 'completed' && event.item.arguments?.action === 'fetch'
-      && isAllowedMessageToolCall(event.item, allowedMessage));
-    if (!fetched) {
-      throw new Error(
-        'The Codex model never fetched the message body through the MeMesh message tool, so its reply cannot be '
-        + 'proof that the notice led it to the body.',
-      );
-    }
+  // The notice carries no body. A sentinel in the reply is proof only if the model fetched the body
+  // through the message tool and recorded intake itself.
+  const completedCalls = parseJsonl(input.jsonl).filter(event =>
+    event?.type === 'item.completed' && event.item?.type === 'mcp_tool_call'
+    && event.item.status === 'completed' && isAllowedMessageToolCall(event.item, allowedMessage));
+  if (!completedCalls.some(event => event.item.arguments.action === 'fetch')) {
+    throw new Error(
+      'The Codex model never fetched the message body through the MeMesh message tool, so its reply cannot be '
+      + 'proof that the notice led it to the body.',
+    );
+  }
+  if (!completedCalls.some(event => event.item.arguments.action === 'intake' && event.item.arguments.intake_state === 'ingested')) {
+    throw new Error('The Codex model fetched the body but never completed an intake call (intake_state ingested) on it.');
   }
   const messages = collectCodexAgentMessages(input.jsonl);
   if (messages.length === 0) throw new Error('Codex produced no agent message on the resume turn.');
@@ -812,6 +867,58 @@ export function assertCodexReply(input) {
     throw new Error(`Codex reply does not quote delivery_id ${input.deliveryId}. Reply was: ${joined}`);
   }
   return joined;
+}
+
+/**
+ * The whole Codex proof turn, judged once: the turn's own events (fetch and
+ * intake through the message tool, no command, correct reply) AND the durable
+ * receipts the recipient session wrote. Either half alone can pass while the
+ * other is false, so the live path calls only this.
+ *
+ * @param {Parameters<typeof assertCodexReply>[0] & {receipts: unknown}} input
+ */
+export function assertCodexProofTurn(input) {
+  const reply = assertCodexReply(input);
+  assertIntakeReceipt(input.receipts, { messageId: input.messageId, actor: input.allowedMessage.recipient });
+  return reply;
+}
+
+/**
+ * The queued notice must not carry the body marker. In the live path the
+ * notice is only visible in the thread's own rollout, so scan its lines: any
+ * line that holds this notice (it names `memesh_message_notice` and the
+ * message_id) must not also hold the sentinel.
+ *
+ * @param {string} rolloutText
+ * @param {{messageId: string, sentinel: string}} expected
+ * @returns {{noticeLines: number}} how many lines held the notice; 0 means the check saw nothing
+ */
+export function assertRolloutNoticeOmitsSentinel(rolloutText, expected) {
+  let noticeLines = 0;
+  for (const line of rolloutText.split('\n')) {
+    if (!line.includes('memesh_message_notice') || !line.includes(expected.messageId)) continue;
+    noticeLines += 1;
+    if (line.includes(expected.sentinel)) {
+      throw new Error('The queued Codex notice already contains the qa_sentinel, so the reply cannot prove the body was fetched.');
+    }
+  }
+  return { noticeLines };
+}
+
+/** @param {string} codexHome @param {string} threadId @returns {string|null} the rollout file of that thread, if Codex wrote one */
+export function findCodexRollout(codexHome, threadId) {
+  const root = path.join(codexHome, 'sessions');
+  const walk = (directory) => {
+    let entries;
+    try { entries = fs.readdirSync(directory, { withFileTypes: true }); } catch { return null; }
+    for (const entry of entries) {
+      const full = path.join(directory, entry.name);
+      if (entry.isDirectory()) { const found = walk(full); if (found) return found; }
+      else if (entry.isFile() && entry.name.endsWith('.jsonl') && entry.name.includes(threadId)) return full;
+    }
+    return null;
+  };
+  return walk(root);
 }
 
 /**
@@ -1320,6 +1427,7 @@ const CODEX_PLUGIN_CANDIDATE_FILES = Object.freeze([
   '.codex-plugin/plugin.json',
   '.codex-plugin/mcp.json',
   'hooks/hooks.json',
+  'dist/mcp/server.js',
   'dist/host-runtime/codex-session.js',
   'dist/host-runtime/router.js',
   'dist/transports/cli/cli.js',
@@ -1979,13 +2087,20 @@ async function runCodex(journey) {
   }
   const candidateCache = assertCandidateCodexPluginCache(codexHome);
   // Approve exactly the message tool, in this task-owned home only, so the proof turn can fetch the body.
-  const codexConfigPath = path.join(codexHome, 'config.toml');
   const pluginServer = JSON.parse(fs.readFileSync(path.join(repoRoot, '.codex-plugin', 'mcp.json'), 'utf8')).mcpServers?.memesh;
-  const existingConfig = fs.existsSync(codexConfigPath) ? fs.readFileSync(codexConfigPath, 'utf8') : '';
-  if (/\[mcp_servers\.memesh[.\]]/.test(existingConfig)) {
-    throw new Error(`Refusing to run: ${codexConfigPath} already configures the memesh MCP server; prepare a fresh task-owned CODEX_HOME.`);
-  }
-  fs.appendFileSync(codexConfigPath, buildCodexMessageToolApprovalToml({ cachePath: candidateCache.cache_path, server: pluginServer }));
+  appendCodexMessageToolApproval({
+    codexHome,
+    toml: buildCodexMessageToolApprovalToml({
+      cachePath: candidateCache.cache_path,
+      server: pluginServer,
+      env: { MEMESH_DIR: journey.memeshDir, MEMESH_DB_PATH: journey.dbPath },
+    }),
+  });
+  journey.note(
+    'The Codex journey runs the memesh MCP server from a rewritten config.toml entry (command and args from the plugin, '
+    + 'working directory set to the verified cache path, MEMESH_DIR and MEMESH_DB_PATH passed explicitly) and auto-approves '
+    + 'only its `message` tool. The plugin\'s own `cwd: "."` resolution and Codex\'s approval prompts are therefore not exercised.',
+  );
   journey.step('candidate MeMesh plugin installed in the isolated Codex home', {
     codex_home: codexHome,
     plugin_version: candidateCache.version,
@@ -2118,7 +2233,11 @@ async function runCodex(journey) {
       + `stdout(tail)=${stdoutTail || '(empty)'}`);
   }
   fs.writeFileSync(path.join(journey.dir, 'codex-resume.jsonl'), second.stdout);
-  const resumedReply = assertCodexReply({
+  const intakeReceipts = journey.cliJson([
+    'message', 'receipts', '--project', journey.project,
+    '--recipient', threadId, '--message-id', startupSent.messageId,
+  ]);
+  const resumedReply = assertCodexProofTurn({
     jsonl: second.stdout,
     sentinel: startupSentinel,
     messageId: startupSent.messageId,
@@ -2126,12 +2245,14 @@ async function runCodex(journey) {
     allowedSkillPath: path.join(candidateCache.cache_path, 'skills', 'memesh', 'SKILL.md'),
     allowedProject: journey.project,
     allowedMessage: { project: journey.project, recipient: threadId },
+    receipts: intakeReceipts,
   });
-  const intakeReceipts = journey.cliJson([
-    'message', 'receipts', '--project', journey.project,
-    '--recipient', threadId, '--message-id', startupSent.messageId,
-  ]);
-  assertIntakeReceipt(intakeReceipts, { messageId: startupSent.messageId, actor: threadId });
+  const rollout = findCodexRollout(codexHome, threadId);
+  const noticeCheck = rollout === null ? { noticeLines: 0 }
+    : assertRolloutNoticeOmitsSentinel(fs.readFileSync(rollout, 'utf8'), { messageId: startupSent.messageId, sentinel: startupSentinel });
+  if (noticeCheck.noticeLines === 0) {
+    journey.note('The queued notice was not found in the Codex rollout, so "the notice carries no sentinel" was not checked in the live run.');
+  }
   journey.step('the Codex model quoted the envelope back (model-visible proof)', {
     message_id: startupSent.messageId,
     delivery_id: startupSent.deliveryId,

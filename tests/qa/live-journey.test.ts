@@ -58,6 +58,9 @@ import {
   awaitSessionDisconnect,
   buildJourneyEnv,
   buildLiveJourneyPayload,
+  appendCodexMessageToolApproval,
+  assertCodexProofTurn,
+  assertRolloutNoticeOmitsSentinel,
   buildCodexMessageToolApprovalToml,
   CODEX_PROOF_PROMPT,
   buildPackedUpgradeReceipt,
@@ -615,141 +618,202 @@ describe('collectCodexAgentMessages', () => {
 });
 
 describe('assertCodexReply', () => {
-  const expected = { sentinel: SENTINEL, messageId: MESSAGE_ID, deliveryId: DELIVERY_ID };
+  const project = 'memesh-live-journey~scope';
+  const allowedMessage = { project, recipient: THREAD };
+  const expected = { sentinel: SENTINEL, messageId: MESSAGE_ID, deliveryId: DELIVERY_ID, allowedProject: project, allowedMessage };
+  const reply = `CODEX_RECEIVED_${SENTINEL} ${MESSAGE_ID} ${DELIVERY_ID}`;
+  const call = (args: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
+    id: 'item_9', type: 'mcp_tool_call', server: 'memesh', tool: 'message', status: 'completed',
+    arguments: { project, recipient: THREAD, message_id: MESSAGE_ID, ...args }, ...extra,
+  });
+  const fetchCall = () => call({ action: 'fetch', target_kind: 'session' });
+  const intakeCall = () => call({ action: 'intake', intake_state: 'ingested', idempotency_key: `intake-${MESSAGE_ID}` });
+  /** A started event followed by its completed event, as `codex exec --json` emits a real tool call. */
+  const startedAndCompleted = (args: Record<string, unknown>) => [
+    { ...call(args, { status: 'in_progress', result: null, error: null }), _event: 'item.started' },
+    { ...call(args, { result: { content: [{ type: 'text', text: '{"ok":true}' }] }, error: null }), _event: 'item.completed' },
+  ];
+  const turn = (messages: string[], items: Record<string, unknown>[]) => [
+    JSON.stringify({ type: 'thread.started', thread_id: THREAD }),
+    JSON.stringify({ type: 'turn.started' }),
+    ...items.map((item) => {
+      const { _event, ...rest } = item as { _event?: string };
+      return JSON.stringify({ type: _event ?? 'item.completed', item: rest });
+    }),
+    ...messages.map((text, index) => JSON.stringify({ type: 'item.completed', item: { id: `m${index}`, type: 'agent_message', text } })),
+    JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1, output_tokens: 1 } }),
+    '',
+  ].join('\n');
+  const check = (items: Record<string, unknown>[], messages = [reply], overrides: Record<string, unknown> = {}) =>
+    assertCodexReply({ jsonl: turn(messages, items), ...expected, ...overrides } as Parameters<typeof assertCodexReply>[0]);
+  const proof = () => [fetchCall(), intakeCall()];
 
-  it('accepts a reply quoting the sentinel and both ids', () => {
-    expect(assertCodexReply({ jsonl: GOOD_REPLY, ...expected }))
-      .toContain(`CODEX_RECEIVED_${SENTINEL}`);
+  it('accepts a reply quoting the sentinel and both ids after fetch and intake', () => {
+    expect(check(proof())).toContain(`CODEX_RECEIVED_${SENTINEL}`);
+  });
+
+  it('accepts receipts, fetch and intake, with started and completed events and result/error fields', () => {
+    const receipts = startedAndCompleted({ action: 'receipts', target_kind: 'session' });
+    const fetched = startedAndCompleted({ action: 'fetch', target_kind: 'session' });
+    const intake = startedAndCompleted({ action: 'intake', intake_state: 'ingested', idempotency_key: 'intake-x' });
+    expect(check([...receipts, ...fetched, ...intake])).toContain(`CODEX_RECEIVED_${SENTINEL}`);
+  });
+
+  it('requires allowedMessage: without it the notice-only proof cannot be judged', () => {
+    const withoutMessage = { jsonl: turn([reply], proof()), sentinel: SENTINEL, messageId: MESSAGE_ID, deliveryId: DELIVERY_ID };
+    expect(() => assertCodexReply(withoutMessage as Parameters<typeof assertCodexReply>[0])).toThrow(/needs allowedMessage/);
+  });
+
+  it('rejects correct ids with NO sentinel — the ids come from the notice, only the sentinel proves the body was read', () => {
+    expect(() => check(proof(), [`CODEX_RECEIVED_ ${MESSAGE_ID} ${DELIVERY_ID}`])).toThrow(/does not contain CODEX_RECEIVED_codex-4f19ab27/);
+    expect(() => check(proof(), [`${MESSAGE_ID} ${DELIVERY_ID}`])).toThrow(/does not contain CODEX_RECEIVED/);
+  });
+
+  it('rejects a reply carrying the WRONG sentinel', () => {
+    expect(() => check(proof(), [`CODEX_RECEIVED_codex-00000000 ${MESSAGE_ID} ${DELIVERY_ID}`])).toThrow(/does not contain CODEX_RECEIVED_codex-4f19ab27/);
   });
 
   it('rejects a reply carrying the WRONG message_id', () => {
-    const wrong = codexTurn([`CODEX_RECEIVED_${SENTINEL} 00000000-0000-4000-8000-000000000000 ${DELIVERY_ID}`]);
-    expect(() => assertCodexReply({ jsonl: wrong, ...expected }))
+    expect(() => check(proof(), [`CODEX_RECEIVED_${SENTINEL} 00000000-0000-4000-8000-000000000000 ${DELIVERY_ID}`]))
       .toThrow(/does not quote message_id b234ba88/);
   });
 
   it('rejects a reply with the sentinel but no ids at all', () => {
-    expect(() => assertCodexReply({ jsonl: codexTurn([`CODEX_RECEIVED_${SENTINEL}`]), ...expected }))
-      .toThrow(/does not quote message_id/);
+    expect(() => check(proof(), [`CODEX_RECEIVED_${SENTINEL}`])).toThrow(/does not quote message_id/);
   });
 
   it('rejects a reply carrying the wrong delivery_id', () => {
-    const wrong = codexTurn([`CODEX_RECEIVED_${SENTINEL} ${MESSAGE_ID} 11111111-1111-4111-8111-111111111111`]);
-    expect(() => assertCodexReply({ jsonl: wrong, ...expected }))
+    expect(() => check(proof(), [`CODEX_RECEIVED_${SENTINEL} ${MESSAGE_ID} 11111111-1111-4111-8111-111111111111`]))
       .toThrow(/does not quote delivery_id/);
   });
 
-  it('rejects an otherwise-perfect reply from a turn that ran a command', () => {
-    const withCommand = codexTurn([`CODEX_RECEIVED_${SENTINEL} ${MESSAGE_ID} ${DELIVERY_ID}`], {
-      extraItems: [{ id: 'item_9', type: 'command_execution', command: 'cat turn1.jsonl', exit_code: 0 }],
-    });
-    expect(() => assertCodexReply({ jsonl: withCommand, ...expected }))
-      .toThrow(/non-answer items \(item:command_execution\)/);
+  it('rejects a reply from a turn that never fetched the body', () => {
+    expect(() => check([intakeCall()])).toThrow(/never fetched/);
+    expect(() => check([])).toThrow(/never fetched/);
+  });
+
+  it('rejects a fetch that did not complete', () => {
+    expect(() => check([call({ action: 'fetch', target_kind: 'session' }, { status: 'failed' }), intakeCall()])).toThrow(/never fetched/);
+    expect(() => check([{ ...fetchCall(), status: 'in_progress', _event: 'item.started' }, intakeCall()])).toThrow(/never fetched/);
+  });
+
+  it('rejects a turn that fetched but never recorded intake', () => {
+    expect(() => check([fetchCall()])).toThrow(/never completed an intake/);
+    expect(() => check([fetchCall(), call({ action: 'intake', intake_state: 'fetched', idempotency_key: 'k' })])).toThrow(/never completed an intake/);
+    expect(() => check([fetchCall(), call({ action: 'intake', intake_state: 'ingested', idempotency_key: 'k' }, { status: 'failed' })]))
+      .toThrow(/never completed an intake/);
+  });
+
+  it('still rejects any command, even when the message tool is allowed', () => {
+    const command = { id: 'item_8', type: 'command_execution', command: 'cat ../memesh/knowledge-graph.db', exit_code: 0 };
+    expect(() => check([...proof(), command])).toThrow(/item:command_execution/);
   });
 
   it('allows only the installed plugin skill auto-load when it contains none of the proof values', () => {
     const skill = '/tmp/plugin/skills/memesh/SKILL.md';
-    const withSkillLoad = codexTurn([`CODEX_RECEIVED_${SENTINEL} ${MESSAGE_ID} ${DELIVERY_ID}`], {
-      extraItems: [{ id: 'item_9', type: 'command_execution', command: `cat ${skill}`, aggregated_output: 'skill text', exit_code: 0 }],
-    });
-    expect(assertCodexReply({ jsonl: withSkillLoad, ...expected, allowedSkillPath: skill }))
-      .toContain(`CODEX_RECEIVED_${SENTINEL}`);
-  });
-
-  it('rejects a skill auto-load whose output contains a proof identifier', () => {
-    const skill = '/tmp/plugin/skills/memesh/SKILL.md';
-    const leaking = codexTurn([`CODEX_RECEIVED_${SENTINEL} ${MESSAGE_ID} ${DELIVERY_ID}`], {
-      extraItems: [{ id: 'item_9', type: 'command_execution', command: `cat ${skill}`, aggregated_output: MESSAGE_ID, exit_code: 0 }],
-    });
-    expect(() => assertCodexReply({ jsonl: leaking, ...expected, allowedSkillPath: skill }))
-      .toThrow(/non-answer items/);
+    const load = { id: 'item_8', type: 'command_execution', command: `cat ${skill}`, aggregated_output: 'skill text', exit_code: 0 };
+    expect(check([...proof(), load], [reply], { allowedSkillPath: skill })).toContain(`CODEX_RECEIVED_${SENTINEL}`);
+    expect(() => check([...proof(), { ...load, aggregated_output: MESSAGE_ID }], [reply], { allowedSkillPath: skill })).toThrow(/non-answer items/);
   });
 
   it('allows only the failed automatic work-package probe when it contains no proof identifier', () => {
-    const project = 'memesh-live-journey~scope';
-    const withProbe = codexTurn([`CODEX_RECEIVED_${SENTINEL} ${MESSAGE_ID} ${DELIVERY_ID}`], {
-      extraItems: [{
-        id: 'item_9', type: 'mcp_tool_call', server: 'memesh', tool: 'work_package', status: 'failed',
-        arguments: { action: 'prepare', kind: 'digest', project },
-      }],
-    });
-    expect(assertCodexReply({ jsonl: withProbe, ...expected, allowedProject: project }))
-      .toContain(`CODEX_RECEIVED_${SENTINEL}`);
+    const probe = { id: 'item_8', type: 'mcp_tool_call', server: 'memesh', tool: 'work_package', status: 'failed', arguments: { action: 'prepare', kind: 'digest', project } };
+    expect(check([...proof(), probe])).toContain(`CODEX_RECEIVED_${SENTINEL}`);
   });
 
-  describe('notice-based proof: the model fetches the body through the message tool', () => {
-    const project = 'memesh-live-journey~scope';
-    const allowedMessage = { project, recipient: THREAD };
-    const reply = `CODEX_RECEIVED_${SENTINEL} ${MESSAGE_ID} ${DELIVERY_ID}`;
-    const call = (args: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
-      id: 'item_9', type: 'mcp_tool_call', server: 'memesh', tool: 'message', status: 'completed',
-      arguments: { project, recipient: THREAD, message_id: MESSAGE_ID, ...args }, ...extra,
-    });
-    const fetchCall = () => call({ action: 'fetch', target_kind: 'session' });
-    const intakeCall = () => call({ action: 'intake', intake_state: 'ingested', idempotency_key: `intake-${MESSAGE_ID}` });
-    const check = (extraItems: Record<string, unknown>[], messages = [reply]) =>
-      assertCodexReply({ jsonl: codexTurn(messages, { extraItems }), ...expected, allowedProject: project, allowedMessage });
+  it('rejects a tool other than the message tool, even with message-shaped arguments', () => {
+    const recall = { id: 'item_8', type: 'mcp_tool_call', server: 'memesh', tool: 'recall', status: 'completed', arguments: { query: 'x' } };
+    expect(() => check([...proof(), recall])).toThrow(/item:mcp_tool_call/);
+    expect(() => check([...proof(), call({ action: 'fetch', target_kind: 'session' }, { tool: 'remember' })])).toThrow(/item:mcp_tool_call/);
+    expect(() => check([...proof(), call({ action: 'fetch', target_kind: 'session' }, { tool: 'work_package' })])).toThrow(/item:mcp_tool_call/);
+  });
 
-    it('accepts receipts, fetch and intake on exactly this message', () => {
-      const receipts = call({ action: 'receipts', target_kind: 'session' });
-      expect(check([receipts, fetchCall(), intakeCall()])).toContain(`CODEX_RECEIVED_${SENTINEL}`);
-    });
+  it('rejects a message tool that belongs to another server', () => {
+    expect(() => check([...proof(), call({ action: 'fetch' }, { server: 'other' })])).toThrow(/item:mcp_tool_call/);
+  });
 
-    it('rejects a reply from a turn that never fetched the body', () => {
-      expect(() => check([intakeCall()])).toThrow(/never fetched/);
-      expect(() => check([])).toThrow(/never fetched/);
-    });
+  it('rejects message actions other than receipts, fetch and intake', () => {
+    expect(() => check([...proof(), call({ action: 'send', sender: 'x' })])).toThrow(/item:mcp_tool_call/);
+    expect(() => check([...proof(), call({ action: 'poll' })])).toThrow(/item:mcp_tool_call/);
+  });
 
-    it('rejects a fetch that did not complete', () => {
-      expect(() => check([call({ action: 'fetch', target_kind: 'session' }, { status: 'failed' })]))
-        .toThrow(/never fetched/);
-    });
+  it('rejects a call about another message, project or recipient', () => {
+    const other = '00000000-0000-4000-8000-000000000000';
+    expect(() => check([...proof(), call({ action: 'fetch', message_id: other })])).toThrow(/item:mcp_tool_call/);
+    expect(() => check([...proof(), call({ action: 'fetch', project: 'another~project' })])).toThrow(/item:mcp_tool_call/);
+    expect(() => check([...proof(), call({ action: 'fetch', recipient: 'someone-else' })])).toThrow(/item:mcp_tool_call/);
+  });
 
-    it('still rejects any command, even when the message tool is allowed', () => {
-      const command = { id: 'item_8', type: 'command_execution', command: 'cat ../memesh/knowledge-graph.db', exit_code: 0 };
-      expect(() => check([fetchCall(), command])).toThrow(/item:command_execution/);
-    });
+  it('rejects a call that targets the principal inbox instead of this session', () => {
+    expect(() => check([...proof(), call({ action: 'fetch', target_kind: 'principal' })])).toThrow(/item:mcp_tool_call/);
+  });
 
-    it('rejects a tool other than the message tool', () => {
-      const recall = { id: 'item_8', type: 'mcp_tool_call', server: 'memesh', tool: 'recall', status: 'completed', arguments: { query: 'x' } };
-      expect(() => check([fetchCall(), recall])).toThrow(/item:mcp_tool_call/);
-    });
-
-    it('rejects a message tool that belongs to another server', () => {
-      expect(() => check([fetchCall(), call({ action: 'fetch' }, { server: 'other' })])).toThrow(/item:mcp_tool_call/);
-    });
-
-    it('rejects message actions other than receipts, fetch and intake', () => {
-      expect(() => check([fetchCall(), call({ action: 'send', sender: 'x' })])).toThrow(/item:mcp_tool_call/);
-      expect(() => check([fetchCall(), call({ action: 'poll' })])).toThrow(/item:mcp_tool_call/);
-    });
-
-    it('rejects a call about another message, project or recipient', () => {
-      const other = '00000000-0000-4000-8000-000000000000';
-      expect(() => check([fetchCall(), call({ action: 'fetch', message_id: other })])).toThrow(/item:mcp_tool_call/);
-      expect(() => check([fetchCall(), call({ action: 'fetch', project: 'another~project' })])).toThrow(/item:mcp_tool_call/);
-      expect(() => check([fetchCall(), call({ action: 'fetch', recipient: 'someone-else' })])).toThrow(/item:mcp_tool_call/);
-    });
-
-    it('rejects a call whose arguments already carry the sentinel', () => {
-      expect(() => check([fetchCall(), call({ action: 'intake', intake_state: 'ingested', idempotency_key: SENTINEL })]))
-        .toThrow(/item:mcp_tool_call/);
-    });
-
-    it('does not allow the message tool unless the caller names the message it may touch', () => {
-      expect(() => assertCodexReply({ jsonl: codexTurn([reply], { extraItems: [fetchCall()] }), ...expected, allowedProject: project }))
-        .toThrow(/item:mcp_tool_call/);
-    });
+  it('rejects a call whose arguments already carry the sentinel or the delivery id', () => {
+    expect(() => check([...proof(), call({ action: 'intake', intake_state: 'ingested', idempotency_key: SENTINEL })])).toThrow(/item:mcp_tool_call/);
+    expect(() => check([...proof(), call({ action: 'intake', intake_state: 'ingested', idempotency_key: DELIVERY_ID })])).toThrow(/item:mcp_tool_call/);
   });
 
   it('rejects NO_ENVELOPE with the reason, not a generic mismatch', () => {
-    expect(() => assertCodexReply({ jsonl: codexTurn(['NO_ENVELOPE']), ...expected }))
-      .toThrow(/not visible to the model/);
+    expect(() => check(proof(), ['NO_ENVELOPE'])).toThrow(/not visible to the model/);
   });
 
   it('rejects a turn that produced no agent message', () => {
-    expect(() => assertCodexReply({ jsonl: '{"type":"turn.completed"}', ...expected }))
-      .toThrow(/no agent message/);
+    expect(() => assertCodexReply({ jsonl: '{"type":"turn.completed"}', ...expected } as Parameters<typeof assertCodexReply>[0]))
+      .toThrow(/never fetched|no agent message/);
+  });
+});
+
+describe('assertCodexProofTurn', () => {
+  const project = 'memesh-live-journey~scope';
+  const allowedMessage = { project, recipient: THREAD };
+  const item = (args: Record<string, unknown>) => ({
+    id: 'i', type: 'mcp_tool_call', server: 'memesh', tool: 'message', status: 'completed',
+    arguments: { project, recipient: THREAD, message_id: MESSAGE_ID, ...args },
+  });
+  const jsonl = codexTurn([`CODEX_RECEIVED_${SENTINEL} ${MESSAGE_ID} ${DELIVERY_ID}`], {
+    extraItems: [item({ action: 'fetch', target_kind: 'session' }), item({ action: 'intake', intake_state: 'ingested', idempotency_key: 'k' })],
+  });
+  const base = { jsonl, sentinel: SENTINEL, messageId: MESSAGE_ID, deliveryId: DELIVERY_ID, allowedProject: project, allowedMessage };
+
+  it('passes when the turn and the durable intake receipt agree', () => {
+    expect(assertCodexProofTurn({ ...base, receipts: RECEIPTS_WITH_INTAKE })).toContain(`CODEX_RECEIVED_${SENTINEL}`);
+  });
+
+  it('fails when the model claims intake but no intake receipt exists', () => {
+    expect(() => assertCodexProofTurn({ ...base, receipts: RECEIPTS_WITHOUT_INTAKE })).toThrow(/No intake receipt/);
+    expect(() => assertCodexProofTurn({ ...base, receipts: [] })).toThrow(/No intake receipt/);
+  });
+
+  it('fails when the receipt belongs to another recipient', () => {
+    expect(() => assertCodexProofTurn({ ...base, allowedMessage: { project, recipient: 'someone-else' }, receipts: RECEIPTS_WITH_INTAKE }))
+      .toThrow();
+  });
+
+  it('is what the live Codex path calls, with receipts read from the CLI', () => {
+    const source = fs.readFileSync(path.join(__dirname, '..', '..', 'scripts', 'qa', 'live-journey.mjs'), 'utf8');
+    const run = source.slice(source.indexOf('async function runCodex('), source.indexOf('async function runCodexSessionAutoRegistration('));
+    expect(run).toMatch(/assertCodexProofTurn\(\{[\s\S]*allowedMessage:[\s\S]*receipts:/);
+    expect(run).toMatch(/'message', 'receipts'/);
+    expect(run).not.toMatch(/assertCodexReply\(/);
+    expect(run).toMatch(/appendCodexMessageToolApproval\(/);
+    expect(run).toMatch(/assertRolloutNoticeOmitsSentinel\(/);
+  });
+});
+
+describe('assertRolloutNoticeOmitsSentinel', () => {
+  const notice = `{"payload":{"message_type":"memesh_message_notice","message_id":"${MESSAGE_ID}","delivery_id":"${DELIVERY_ID}"}}`;
+
+  it('counts the notice lines and accepts a notice without the sentinel', () => {
+    expect(assertRolloutNoticeOmitsSentinel(`${notice}\n{"other":1}\n`, { messageId: MESSAGE_ID, sentinel: SENTINEL })).toEqual({ noticeLines: 1 });
+  });
+
+  it('rejects a notice that carries the sentinel', () => {
+    expect(() => assertRolloutNoticeOmitsSentinel(notice.replace('}}', `,"qa_sentinel":"${SENTINEL}"}}`), { messageId: MESSAGE_ID, sentinel: SENTINEL }))
+      .toThrow(/already contains the qa_sentinel/);
+  });
+
+  it('ignores a later line that holds the sentinel but is not the notice, and reports 0 when no notice is present', () => {
+    expect(assertRolloutNoticeOmitsSentinel(`{"tool_result":"${SENTINEL}"}\n`, { messageId: MESSAGE_ID, sentinel: SENTINEL })).toEqual({ noticeLines: 0 });
   });
 });
 
@@ -1452,13 +1516,16 @@ describe('findLiveCards', () => {
 
 
 describe('Codex proof turn configuration', () => {
-  const server = { command: 'node', args: ['./dist/mcp/server.js'], env_vars: ['MEMESH_DIR', 'MEMESH_DB_PATH'] };
-  const toml = buildCodexMessageToolApprovalToml({ cachePath: '/home/x/.memesh-codex-qa.A1/plugins/cache/p/memesh/9.9.9', server });
+  const server = { command: 'node', args: ['./dist/mcp/server.js'], env_vars: ['MEMESH_DIR', 'MEMESH_DB_PATH', 'MEMESH_PROJECT_ROOT'] };
+  const env = { MEMESH_DIR: '/q/dir', MEMESH_DB_PATH: '/q/dir/k.db' };
+  const toml = buildCodexMessageToolApprovalToml({ cachePath: '/home/x/.memesh-codex-qa.A1/plugins/cache/p/memesh/9.9.9', server, env });
 
-  it('approves exactly the message tool of the memesh server, nothing broader', () => {
-    expect(toml).toContain('[mcp_servers.memesh.tools.message]');
+  it('approves exactly the message tool of the memesh server, directly under its own table', () => {
+    const lines = toml.split('\n');
+    const header = lines.indexOf('[mcp_servers.memesh.tools.message]');
+    expect(header).toBeGreaterThan(0);
+    expect(lines[header + 1]).toBe('approval_mode = "approve"');
     expect(toml.match(/approval_mode/g)).toHaveLength(1);
-    expect(toml).toContain('approval_mode = "approve"');
     expect(toml).not.toMatch(/default_tools_approval_mode/);
     expect(toml).not.toMatch(/approval_policy|sandbox_mode/);
   });
@@ -1467,11 +1534,53 @@ describe('Codex proof turn configuration', () => {
     expect(toml).toContain('[mcp_servers.memesh]');
     expect(toml).toContain('cwd = "/home/x/.memesh-codex-qa.A1/plugins/cache/p/memesh/9.9.9"');
     expect(toml).toContain('args = ["./dist/mcp/server.js"]');
-    expect(toml).toContain('env_vars = ["MEMESH_DIR","MEMESH_DB_PATH"]');
   });
 
-  it('refuses a server definition it cannot reproduce', () => {
+  it('passes the journey directory and database explicitly instead of forwarding them by name', () => {
+    expect(toml).toContain('env = { MEMESH_DIR = "/q/dir", MEMESH_DB_PATH = "/q/dir/k.db" }');
+    expect(toml).toContain('env_vars = ["MEMESH_PROJECT_ROOT"]');
+  });
+
+  it('refuses a server definition or cache path it cannot reproduce', () => {
     expect(() => buildCodexMessageToolApprovalToml({ cachePath: '/c', server: { args: [] } })).toThrow(/command/);
+    expect(() => buildCodexMessageToolApprovalToml({ cachePath: '', server })).toThrow(/cache path/);
+  });
+
+  describe.skipIf(process.platform === 'win32')('writing it into the isolated home', () => {
+    const makeHome = () => fs.mkdtempSync(path.join(os.tmpdir(), 'codex-cfg-'));
+
+    it('appends to a plain config.toml and returns its path', () => {
+      const home = makeHome();
+      try {
+        fs.writeFileSync(path.join(home, 'config.toml'), '[plugins."memesh@x"]\nenabled = true\n');
+        const written = appendCodexMessageToolApproval({ codexHome: home, toml });
+        expect(written).toBe(path.join(home, 'config.toml'));
+        expect(fs.readFileSync(written, 'utf8')).toContain('[mcp_servers.memesh.tools.message]');
+        expect(fs.readFileSync(written, 'utf8')).toContain('enabled = true');
+      } finally { fs.rmSync(home, { recursive: true, force: true }); }
+    });
+
+    it('refuses a config.toml that is a symlink and leaves its target untouched', () => {
+      const home = makeHome();
+      const outside = makeHome();
+      try {
+        const target = path.join(outside, 'real-config.toml');
+        fs.writeFileSync(target, 'model = "x"\n');
+        fs.symlinkSync(target, path.join(home, 'config.toml'));
+        expect(() => appendCodexMessageToolApproval({ codexHome: home, toml })).toThrow(/symlink/);
+        expect(fs.readFileSync(target, 'utf8')).toBe('model = "x"\n');
+      } finally { fs.rmSync(home, { recursive: true, force: true }); fs.rmSync(outside, { recursive: true, force: true }); }
+    });
+
+    it('refuses a config.toml that already configures the memesh server', () => {
+      const home = makeHome();
+      try {
+        fs.writeFileSync(path.join(home, 'config.toml'), '[mcp_servers.memesh]\ncommand = "node"\n');
+        expect(() => appendCodexMessageToolApproval({ codexHome: home, toml })).toThrow(/already configures the memesh MCP server/);
+        fs.writeFileSync(path.join(home, 'config.toml'), '[mcp_servers.memesh.tools.message]\napproval_mode = "prompt"\n');
+        expect(() => appendCodexMessageToolApproval({ codexHome: home, toml })).toThrow(/already configures/);
+      } finally { fs.rmSync(home, { recursive: true, force: true }); }
+    });
   });
 
   it('asks the model to fetch and record intake instead of forbidding every tool', () => {
@@ -1486,4 +1595,42 @@ describe('Codex proof turn configuration', () => {
     expect(CODEX_PROOF_PROMPT).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-/);
     expect(CODEX_PROOF_PROMPT).not.toMatch(/codex-[0-9a-f]{8}/);
   });
+
+  it('verifies the server entry file in the cache like the other plugin files', () => {
+    const source = fs.readFileSync(path.join(__dirname, '..', '..', 'scripts', 'qa', 'live-journey.mjs'), 'utf8');
+    const list = source.slice(source.indexOf('const CODEX_PLUGIN_CANDIDATE_FILES'), source.indexOf('function fileSha256'));
+    expect(list).toContain("'dist/mcp/server.js'");
+  });
+
+  it.skipIf(!fs.existsSync(path.join(__dirname, '..', '..', 'dist', 'mcp', 'server.js')))(
+    'a real server started with that env never creates ~/.memesh, and one without it does', async () => {
+      const { spawn } = await import('node:child_process');
+      const serverJs = path.join(__dirname, '..', '..', 'dist', 'mcp', 'server.js');
+      const probe = async (withEnv: boolean) => {
+        const home = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-home-'));
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-dir-'));
+        try {
+          const child = spawn(process.execPath, [serverJs], {
+            env: { PATH: process.env.PATH ?? '', HOME: home, ...(withEnv ? { MEMESH_DIR: dir, MEMESH_DB_PATH: path.join(dir, 'k.db') } : {}) },
+            stdio: ['pipe', 'pipe', 'ignore'],
+          });
+          const write = (message: unknown) => child.stdin.write(`${JSON.stringify(message)}\n`);
+          write({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 't', version: '1' } } });
+          await new Promise(resolve => setTimeout(resolve, 600));
+          write({ jsonrpc: '2.0', method: 'notifications/initialized' });
+          write({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'message', arguments: { action: 'discover', project: 'p' } } });
+          await new Promise(resolve => setTimeout(resolve, 2500));
+          child.kill();
+          return { realHomeTouched: fs.existsSync(path.join(home, '.memesh')), dirFiles: fs.readdirSync(dir) };
+        } finally {
+          fs.rmSync(home, { recursive: true, force: true });
+          fs.rmSync(dir, { recursive: true, force: true });
+        }
+      };
+      const explicit = await probe(true);
+      expect(explicit.realHomeTouched).toBe(false);
+      expect(explicit.dirFiles).toContain('k.db');
+      const bare = await probe(false);
+      expect(bare.realHomeTouched).toBe(true);
+    }, 30_000);
 });
