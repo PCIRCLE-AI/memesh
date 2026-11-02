@@ -92,6 +92,7 @@ import {
   CLAUDE_MODEL_INTAKE_ARMING_CONFIRMATION,
   CLAUDE_PLUGIN_ISOLATION_CONFIRMATION,
   LIVE_JOURNEY_SCHEMA_VERSION,
+  missingRequiredSteps,
 } from '../lib/live-journey-contract.mjs';
 
 export const PROJECT = 'memesh-live-journey';
@@ -970,7 +971,7 @@ export function assertCodexRolloutProof(rolloutText, expected) {
   }
   let noticeLines = 0;
   for (const line of rolloutText.split('\n')) {
-    if (!line.includes('memesh_message')) continue;
+    if (!line.includes('memesh_message') && !line.includes(expected.sentinel)) continue;
     let entry;
     try { entry = JSON.parse(line); } catch { continue; }
     const payload = entry?.payload;
@@ -982,10 +983,12 @@ export function assertCodexRolloutProof(rolloutText, expected) {
     const text = isCompacted ? line : (Array.isArray(payload.content)
       ? payload.content.map(block => (typeof block?.text === 'string' ? block.text : '')).join('\n')
       : '');
-    if (!text.includes('memesh_message')) continue;
+    // Any user-side message holding the sentinel is a leak — the prompt sent, a queued notice or envelope —
+    // whether or not it looks like a MeMesh message. The fetched body arrives as tool output, not as a message.
     if (text.includes(expected.sentinel)) {
-      throw new Error('A queued MeMesh message in the Codex rollout already contains the qa_sentinel, so the reply cannot prove the body was fetched.');
+      throw new Error('A user-side message in the Codex rollout already contains the qa_sentinel (the prompt, the notice or an envelope), so the reply cannot prove the body was fetched.');
     }
+    if (!text.includes('memesh_message')) continue;
     if (payload?.role === 'user' && text.includes('memesh_message_notice') && text.includes(expected.messageId)) noticeLines += 1;
   }
   if (noticeLines === 0) {
@@ -1008,6 +1011,74 @@ export function findCodexRollout(codexHome, threadId) {
     return null;
   };
   return walk(root);
+}
+
+/**
+ * The resumed proof turn, from its argv to its judgement, as one function with
+ * its two collaborators injectable: start `codex exec ... resume`, let the
+ * caller do its waits while the turn runs, take the finished turn, and judge it.
+ * A failed exit or a failed judgement throws out of here — nothing is caught.
+ *
+ * @param {{dir: string, trackCodexProcess: (child: unknown) => void}} journey also what `judge` reads
+ * @param {{workspace: string, threadId: string, codexHome: string, env: object, skillPath?: string, sentinel: string, messageId: string, deliveryId: string, whileRunning: () => Promise<any>}} input
+ * @param {{exec?: typeof runAsync, judge?: typeof judgeCodexProofTurn}} [deps]
+ * @returns {Promise<{reply: string, during: any}>}
+ */
+export async function runCodexProofTurn(journey, input, deps = {}) {
+  const exec = deps.exec ?? runAsync;
+  const judge = deps.judge ?? judgeCodexProofTurn;
+  const prompt = CODEX_PROOF_PROMPT;
+  const execution = exec('codex', [
+    'exec', '--json', '--skip-git-repo-check', '--dangerously-bypass-hook-trust',
+    '-s', 'read-only', '-C', input.workspace, 'resume', input.threadId, prompt,
+  ], { env: input.env });
+  journey.trackCodexProcess(execution.child);
+  const during = await input.whileRunning();
+
+  const second = await execution.completed;
+  if (second.status !== 0) {
+    // Same stdout/stderr split as the startup call: the real reason lives in the JSON
+    // events on stdout, not necessarily in stderr.
+    const stderrTail = second.stderr.trim().slice(-600);
+    const stdoutTail = second.stdout.trim().slice(-600);
+    throw new Error(`codex exec resume exited ${second.status}: stderr(tail)=${stderrTail || '(empty)'} `
+      + `stdout(tail)=${stdoutTail || '(empty)'}`);
+  }
+  fs.writeFileSync(path.join(journey.dir, 'codex-resume.jsonl'), second.stdout);
+  const reply = judge(journey, {
+    prompt,
+    turnStdout: second.stdout,
+    sentinel: input.sentinel,
+    messageId: input.messageId,
+    deliveryId: input.deliveryId,
+    threadId: input.threadId,
+    codexHome: input.codexHome,
+    skillPath: input.skillPath,
+  });
+  return { reply, during };
+}
+
+/**
+ * Fail a run whose steps do not contain its host's required steps, in order.
+ * Modes with no required list (core-only, automatic registration, claude-inbox)
+ * are skipped, and the reason is returned so the report can say so.
+ *
+ * @param {Array<{name?: string}>} steps
+ * @param {{host?: string|null, mode?: string|null}} options
+ * @returns {{checked: boolean, skippedBecause?: string}}
+ */
+export function checkRequiredJourneySteps(steps, options) {
+  if (options.mode) {
+    return { checked: false, skippedBecause: `Required-step check skipped: mode ${options.mode} has no required step list.` };
+  }
+  const missing = missingRequiredSteps(steps, options.host);
+  if (missing === null) {
+    return { checked: false, skippedBecause: `Required-step check skipped: host ${options.host} has no required step list.` };
+  }
+  if (missing.length > 0) {
+    throw new Error(`The run is missing or has out of order required steps for host ${options.host}: ${missing.join(', ')}`);
+  }
+  return { checked: true };
 }
 
 /**
@@ -2349,59 +2420,47 @@ async function runCodex(journey) {
     native_delivery: startupSent.native,
   });
 
-  const proofPrompt = CODEX_PROOF_PROMPT;
-  const resumedExecution = runAsync('codex', [
-    'exec', '--json', '--skip-git-repo-check', '--dangerously-bypass-hook-trust',
-    '-s', 'read-only', '-C', workspace, 'resume', threadId, proofPrompt,
-  ], { env: codexEnv });
-  journey.trackCodexProcess(resumedExecution.child);
-  const resumedCard = await journey.until(
-    'The candidate Codex plugin resume hook never superseded the startup generation',
-    () => {
-      const current = findLiveCards(journey.discover(), { hostKind: 'codex', sessionId: threadId })[0];
-      return current && current.generation > startupCard.generation ? current : false;
-    },
-    60_000,
-  );
-  journey.trackLiveSession(threadId);
-  journey.step('Codex resume registration superseded the prior generation', {
-    session_id: threadId,
-    old_generation: startupCard.generation,
-    new_generation: resumedCard.generation,
-  });
-  const resumedRenewedCard = await journey.until(
-    'The resumed Codex lease did not renew before its initial expiry',
-    () => {
-      const current = findLiveCards(journey.discover(), { sessionId: threadId })[0];
-      return current && current.lease_expires_at_ms > resumedCard.lease_expires_at_ms ? current : false;
-    },
-    45_000,
-  );
-  journey.step('Codex resumed lease renewed before expiry', {
-    session_id: threadId,
-    initial_lease_expires_at_ms: resumedCard.lease_expires_at_ms,
-    renewed_lease_expires_at_ms: resumedRenewedCard.lease_expires_at_ms,
-  });
-
-  const second = await resumedExecution.completed;
-  if (second.status !== 0) {
-    // Same stdout/stderr split as the startup call above: the real reason lives in the JSON
-    // events on stdout, not necessarily in stderr.
-    const stderrTail = second.stderr.trim().slice(-600);
-    const stdoutTail = second.stdout.trim().slice(-600);
-    throw new Error(`codex exec resume exited ${second.status}: stderr(tail)=${stderrTail || '(empty)'} `
-      + `stdout(tail)=${stdoutTail || '(empty)'}`);
-  }
-  fs.writeFileSync(path.join(journey.dir, 'codex-resume.jsonl'), second.stdout);
-  judgeCodexProofTurn(journey, {
-    prompt: proofPrompt,
-    turnStdout: second.stdout,
+  const { during: { resumedCard } } = await runCodexProofTurn(journey, {
+    workspace,
+    threadId,
+    codexHome,
+    env: codexEnv,
+    skillPath: path.join(candidateCache.cache_path, 'skills', 'memesh', 'SKILL.md'),
     sentinel: startupSentinel,
     messageId: startupSent.messageId,
     deliveryId: startupSent.deliveryId,
-    threadId,
-    codexHome,
-    skillPath: path.join(candidateCache.cache_path, 'skills', 'memesh', 'SKILL.md'),
+    // Runs while the resumed turn is in flight: the plugin's resume hook has to register and renew
+    // its lease for the turn to be a turn of the installed plugin.
+    whileRunning: async () => {
+      const resumedCard = await journey.until(
+        'The candidate Codex plugin resume hook never superseded the startup generation',
+        () => {
+          const current = findLiveCards(journey.discover(), { hostKind: 'codex', sessionId: threadId })[0];
+          return current && current.generation > startupCard.generation ? current : false;
+        },
+        60_000,
+      );
+      journey.trackLiveSession(threadId);
+      journey.step('Codex resume registration superseded the prior generation', {
+        session_id: threadId,
+        old_generation: startupCard.generation,
+        new_generation: resumedCard.generation,
+      });
+      const resumedRenewedCard = await journey.until(
+        'The resumed Codex lease did not renew before its initial expiry',
+        () => {
+          const current = findLiveCards(journey.discover(), { sessionId: threadId })[0];
+          return current && current.lease_expires_at_ms > resumedCard.lease_expires_at_ms ? current : false;
+        },
+        45_000,
+      );
+      journey.step('Codex resumed lease renewed before expiry', {
+        session_id: threadId,
+        initial_lease_expires_at_ms: resumedCard.lease_expires_at_ms,
+        renewed_lease_expires_at_ms: resumedRenewedCard.lease_expires_at_ms,
+      });
+      return { resumedCard };
+    },
   });
 
   const pluginProof = assertInstalledCodexPluginJourney({
@@ -3098,6 +3157,9 @@ async function main() {
     } else if (options.mode === 'codex-session-auto-registration') await runCodexSessionAutoRegistration(journey);
     else if (options.host === 'codex') await runCodex(journey);
     else await runClaude(journey, options.waitMs, options.host === 'claude-inbox');
+    // Before any PASS can be written: a run that skipped a required step fails here, not at release.
+    const stepsCheck = checkRequiredJourneySteps(journey.steps, options);
+    if (stepsCheck.skippedBecause) journey.note(stepsCheck.skippedBecause);
   } catch (error) {
     failure = error instanceof Error ? error.message : String(error);
     journey.steps.push({

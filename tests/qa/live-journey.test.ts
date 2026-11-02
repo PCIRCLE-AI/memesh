@@ -62,6 +62,8 @@ import {
   assertCodexProofTurn,
   assertCodexRolloutProof,
   judgeCodexProofTurn,
+  checkRequiredJourneySteps,
+  runCodexProofTurn,
   installCodexMessageToolApproval,
   CODEX_PLUGIN_CANDIDATE_FILES,
   mcpResultCarries,
@@ -90,6 +92,7 @@ import {
   LIVE_JOURNEY_SCHEMA_VERSION,
   REQUIRED_LIVE_JOURNEY_STEPS,
   REQUIRED_REGISTRATION_EVIDENCE,
+  missingRequiredSteps,
 } from '../../scripts/lib/live-journey-contract.mjs';
 
 const THREAD = '01a05ead-98e8-7091-a770-81f7339d3b29';
@@ -819,6 +822,8 @@ describe('assertCodexProofTurn', () => {
     const foreign = (field: 'actor' | 'recipient') => RECEIPTS_WITH_INTAKE.map(fact => (fact.receipt_kind === 'intake' ? { ...fact, [field]: 'someone-else' } : fact));
     expect(() => assertCodexProofTurn({ ...base, receipts: foreign('actor') })).toThrow(/No intake receipt/);
     expect(() => assertCodexProofTurn({ ...base, receipts: foreign('recipient') })).toThrow(/No intake receipt/);
+    const bothForeign = RECEIPTS_WITH_INTAKE.map(fact => (fact.receipt_kind === 'intake' ? { ...fact, actor: 'someone-else', recipient: 'someone-else' } : fact));
+    expect(() => assertCodexProofTurn({ ...base, receipts: bothForeign })).toThrow(/No intake receipt/);
     expect(assertCodexProofTurn({ ...base, receipts: RECEIPTS_WITH_INTAKE })).toContain(`CODEX_RECEIVED_${SENTINEL}`);
   });
 });
@@ -885,7 +890,11 @@ describe('judgeCodexProofTurn', () => {
     expect(steps).toEqual([]);
   });
 
-  it('fails on receipts written by another actor or for another recipient', () => {
+  it('fails on receipts written by another actor or for another recipient, or by a consistent other session', () => {
+    const consistent = RECEIPTS_WITH_INTAKE.map(fact => (fact.receipt_kind === 'intake' ? { ...fact, actor: 'someone-else', recipient: 'someone-else' } : fact));
+    const { journey: other, steps: otherSteps } = makeJourney(consistent);
+    expect(() => judgeCodexProofTurn(other, input(codexHomeWith(goodRollout)))).toThrow(/No intake receipt/);
+    expect(otherSteps).toEqual([]);
     for (const field of ['actor', 'recipient']) {
       const foreign = RECEIPTS_WITH_INTAKE.map(fact => (fact.receipt_kind === 'intake' ? { ...fact, [field]: 'someone-else' } : fact));
       const { journey, steps } = makeJourney(foreign);
@@ -931,6 +940,177 @@ describe('judgeCodexProofTurn', () => {
 
   it('the shipped prompt carries none of the real-format proof values', () => {
     expect(CODEX_PROOF_PROMPT).not.toMatch(/codex-(?:startup|auto-first)-[0-9a-f]{8}/);
+  });
+});
+
+describe('runCodexProofTurn', () => {
+  const project = 'memesh-live-journey~scope';
+  const REAL_SENTINEL = 'codex-startup-4f19ab27';
+  const tool = (args: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
+    id: 'i', type: 'mcp_tool_call', server: 'memesh', tool: 'message', status: 'completed',
+    arguments: { project, recipient: THREAD, message_id: MESSAGE_ID, ...args }, ...extra,
+  });
+  const goodTurn = codexTurn([`CODEX_RECEIVED_${REAL_SENTINEL} ${MESSAGE_ID} ${DELIVERY_ID}`], {
+    extraItems: [
+      tool({ action: 'fetch', target_kind: 'session' }, { result: { content: [{ type: 'text', text: `{"qa_sentinel":"${REAL_SENTINEL}"}` }] }, error: null }),
+      tool({ action: 'intake', intake_state: 'ingested', idempotency_key: 'k' }),
+    ],
+  });
+  const noticeLine = JSON.stringify({
+    type: 'response_item',
+    payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: JSON.stringify({ message_type: 'memesh_message_notice', message_id: MESSAGE_ID }) }] },
+  });
+  const dirs: string[] = [];
+  afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 }); });
+  const tmp = (prefix: string) => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix)); dirs.push(dir); return dir; };
+
+  function setup(overrides: { status?: number; stdout?: string; withRollout?: boolean } = {}) {
+    const dir = tmp('proof-turn-');
+    const codexHome = tmp('proof-home-');
+    if (overrides.withRollout !== false) {
+      const rolloutDir = path.join(codexHome, 'sessions', '2026', '11', '02');
+      fs.mkdirSync(rolloutDir, { recursive: true });
+      fs.writeFileSync(path.join(rolloutDir, `rollout-x-${THREAD}.jsonl`), `${noticeLine}\n`);
+    }
+    const events: string[] = [];
+    const steps: string[] = [];
+    const cliCalls: string[][] = [];
+    const tracked: unknown[] = [];
+    const journey = {
+      project, dir,
+      trackCodexProcess: (child: unknown) => { events.push('track'); tracked.push(child); },
+      cliJson: (args: string[]) => { cliCalls.push(args); return RECEIPTS_WITH_INTAKE; },
+      step: (name: string) => { steps.push(name); },
+    };
+    const execCalls: Array<{ command: string; args: string[]; options: Record<string, unknown> }> = [];
+    const child = { pid: 1 };
+    const exec = (command: string, args: string[], options: Record<string, unknown>) => {
+      events.push('exec');
+      execCalls.push({ command, args, options });
+      return {
+        child,
+        completed: new Promise((resolve) => { resolve({ status: overrides.status ?? 0, stdout: overrides.stdout ?? goodTurn, stderr: 'boom' }); }),
+      };
+    };
+    const input = {
+      workspace: '/work/space', threadId: THREAD, codexHome, env: { CODEX_HOME: codexHome },
+      skillPath: '/cache/skills/memesh/SKILL.md', sentinel: REAL_SENTINEL, messageId: MESSAGE_ID, deliveryId: DELIVERY_ID,
+      whileRunning: async () => { events.push('while-running'); return { resumedCard: { generation: 2 } }; },
+    };
+    return { journey, input, exec, execCalls, events, steps, cliCalls, tracked, child, dir, codexHome };
+  }
+
+  it('starts the resume exec with the shipped prompt, the real thread, workspace and env, and tracks its process', async () => {
+    const f = setup();
+    await runCodexProofTurn(f.journey, f.input, { exec: f.exec as never });
+    expect(f.execCalls).toHaveLength(1);
+    const { command, args, options } = f.execCalls[0];
+    expect(command).toBe('codex');
+    expect(args.slice(0, 5)).toEqual(['exec', '--json', '--skip-git-repo-check', '--dangerously-bypass-hook-trust', '-s']);
+    expect(args.slice(args.indexOf('-C'))).toEqual(['-C', '/work/space', 'resume', THREAD, CODEX_PROOF_PROMPT]);
+    expect(options).toEqual({ env: { CODEX_HOME: f.codexHome } });
+    expect(f.tracked).toEqual([f.child]);
+  });
+
+  it('runs the caller\'s waits while the turn is in flight, and returns what they produced', async () => {
+    const f = setup();
+    const result = await runCodexProofTurn(f.journey, f.input, { exec: f.exec as never });
+    expect(f.events).toEqual(['exec', 'track', 'while-running']);
+    expect(result.during).toEqual({ resumedCard: { generation: 2 } });
+    expect(result.reply).toContain(`CODEX_RECEIVED_${REAL_SENTINEL}`);
+  });
+
+  it('judges exactly once, with the prompt it sent, the real thread and home, and the turn it received', async () => {
+    const f = setup();
+    const judge = vi.fn(() => 'judged-reply');
+    const result = await runCodexProofTurn(f.journey, f.input, { exec: f.exec as never, judge: judge as never });
+    expect(judge).toHaveBeenCalledTimes(1);
+    const [journeyArg, judged] = judge.mock.calls[0] as unknown as [unknown, Record<string, unknown>];
+    expect(journeyArg).toBe(f.journey);
+    expect(judged.prompt).toBe(f.execCalls[0].args[f.execCalls[0].args.length - 1]);
+    expect(judged).toMatchObject({
+      turnStdout: goodTurn, sentinel: REAL_SENTINEL, messageId: MESSAGE_ID, deliveryId: DELIVERY_ID,
+      threadId: THREAD, codexHome: f.codexHome, skillPath: '/cache/skills/memesh/SKILL.md',
+    });
+    expect(result.reply).toBe('judged-reply');
+  });
+
+  it('keeps the raw turn for the report before judging it', async () => {
+    const f = setup();
+    await runCodexProofTurn(f.journey, f.input, { exec: f.exec as never });
+    expect(fs.readFileSync(path.join(f.dir, 'codex-resume.jsonl'), 'utf8')).toBe(goodTurn);
+  });
+
+  it('runs the real judgement end to end: it records the proof step and reads the receipts of this message', async () => {
+    const f = setup();
+    await runCodexProofTurn(f.journey, f.input, { exec: f.exec as never });
+    expect(f.steps).toEqual(['the Codex model fetched the message body and quoted its sentinel (model-visible proof)']);
+    expect(f.cliCalls).toEqual([['message', 'receipts', '--project', project, '--recipient', THREAD, '--message-id', MESSAGE_ID]]);
+  });
+
+  it('propagates a failed judgement and records no proof step', async () => {
+    const f = setup({ withRollout: false });
+    await expect(runCodexProofTurn(f.journey, f.input, { exec: f.exec as never })).rejects.toThrow(/no rollout file/);
+    expect(f.steps).toEqual([]);
+    const boom = vi.fn(() => { throw new Error('judge said no'); });
+    await expect(runCodexProofTurn(f.journey, f.input, { exec: f.exec as never, judge: boom as never })).rejects.toThrow('judge said no');
+  });
+
+  it('fails on a non-zero exit, with the reason from stdout and stderr, and never judges', async () => {
+    const f = setup({ status: 2, stdout: '{"type":"turn.failed","error":"usage limit"}' });
+    const judge = vi.fn();
+    await expect(runCodexProofTurn(f.journey, f.input, { exec: f.exec as never, judge: judge as never }))
+      .rejects.toThrow(/codex exec resume exited 2.*boom.*usage limit/);
+    expect(judge).not.toHaveBeenCalled();
+  });
+
+  it('propagates a failure of the caller\'s waits without judging', async () => {
+    const f = setup();
+    const judge = vi.fn();
+    const failing = { ...f.input, whileRunning: async () => { throw new Error('lease never renewed'); } };
+    await expect(runCodexProofTurn(f.journey, failing, { exec: f.exec as never, judge: judge as never })).rejects.toThrow('lease never renewed');
+    expect(judge).not.toHaveBeenCalled();
+  });
+});
+
+describe('required journey steps before PASS', () => {
+  const asSteps = (names: readonly string[]) => names.map((name, index) => ({ step: index + 1, name, status: 'PASS' }));
+
+  it('passes a run that has every required step in order, for each host with a list', () => {
+    for (const host of ['codex', 'claude'] as const) {
+      const steps = asSteps(['extra before', ...REQUIRED_LIVE_JOURNEY_STEPS[host], 'extra after']);
+      expect(missingRequiredSteps(steps, host)).toEqual([]);
+      expect(checkRequiredJourneySteps(steps, { host, mode: null })).toEqual({ checked: true });
+    }
+  });
+
+  it('fails a run that lacks any one required step, naming it', () => {
+    for (const host of ['codex', 'claude'] as const) {
+      for (const missing of REQUIRED_LIVE_JOURNEY_STEPS[host]) {
+        const steps = asSteps(REQUIRED_LIVE_JOURNEY_STEPS[host].filter(name => name !== missing));
+        expect(missingRequiredSteps(steps, host)).toEqual([missing]);
+        expect(() => checkRequiredJourneySteps(steps, { host, mode: null })).toThrow(new RegExp(`missing or has out of order required steps for host ${host}.*`));
+      }
+    }
+  });
+
+  it('fails a run whose required steps are out of order', () => {
+    const names = [...REQUIRED_LIVE_JOURNEY_STEPS.codex];
+    [names[2], names[3]] = [names[3], names[2]];
+    expect(missingRequiredSteps(asSteps(names), 'codex')).not.toEqual([]);
+    expect(() => checkRequiredJourneySteps(asSteps(names), { host: 'codex', mode: null })).toThrow(/out of order/);
+  });
+
+  it('does not take one host\'s steps for another\'s', () => {
+    expect(missingRequiredSteps(asSteps(REQUIRED_LIVE_JOURNEY_STEPS.claude), 'codex')).toContain('real Codex thread created');
+    expect(missingRequiredSteps(asSteps(REQUIRED_LIVE_JOURNEY_STEPS.codex), 'claude')).toContain('the Claude model called intake itself (model-visible proof)');
+  });
+
+  it('skips, saying why, for hosts and modes with no required list', () => {
+    expect(missingRequiredSteps([], 'claude-inbox')).toBeNull();
+    expect(checkRequiredJourneySteps([], { host: 'claude-inbox', mode: null })).toMatchObject({ checked: false, skippedBecause: expect.stringMatching(/claude-inbox has no required step list/) });
+    expect(checkRequiredJourneySteps([], { host: null, mode: 'core-only' })).toMatchObject({ checked: false, skippedBecause: expect.stringMatching(/core-only/) });
+    expect(checkRequiredJourneySteps([], { host: null, mode: 'codex-session-auto-registration' })).toMatchObject({ checked: false });
   });
 });
 
@@ -1000,6 +1180,21 @@ describe('assertCodexRolloutProof', () => {
     for (const role of ['developer', 'system', 'tool']) {
       expect(() => assertCodexRolloutProof(`${userLine(noticeJson)}\n${userLine(envelope, role)}\n`, expected)).toThrow(/already contains the qa_sentinel/);
     }
+  });
+
+  it('fails when any user-side message holds the sentinel, even one that is not a MeMesh message (a leak in the prompt)', () => {
+    expect(() => assertCodexRolloutProof(`${userLine(noticeJson)}\n${userLine(`Reply with ${SENTINEL} please`)}\n`, expected))
+      .toThrow(/already contains the qa_sentinel/);
+    expect(() => assertCodexRolloutProof(`${userLine(noticeJson)}\n${userLine(`context ${SENTINEL}`, 'developer')}\n`, expected))
+      .toThrow(/already contains the qa_sentinel/);
+  });
+
+  it('stays quiet on the normal flow: the fetched body is tool output and the reply is the assistant\'s', () => {
+    const toolOutput = JSON.stringify({ type: 'response_item', payload: { type: 'function_call_output', call_id: 'c', output: JSON.stringify({ payload: { qa_sentinel: SENTINEL } }) } });
+    const toolCall = JSON.stringify({ type: 'response_item', payload: { type: 'function_call', name: 'message', arguments: `{"message_id":"${MESSAGE_ID}"}` } });
+    const reply = userLine(`CODEX_RECEIVED_${SENTINEL} ${MESSAGE_ID} ${DELIVERY_ID}`, 'assistant');
+    expect(assertCodexRolloutProof(`${userLine('Fetch the message and reply')}\n${userLine(noticeJson)}\n${toolCall}\n${toolOutput}\n${reply}\n`, expected))
+      .toEqual({ noticeLines: 1 });
   });
 
   it('refuses to look for an empty message id or sentinel', () => {
@@ -1858,7 +2053,8 @@ describe('Codex proof turn configuration', () => {
         const config = path.join(home, 'config.toml');
         fs.writeFileSync(config, 'a = 1\n');
         expect(() => appendCodexMessageToolApproval({ codexHome: home, toml }, {
-          afterCheck: (file) => { fs.rmSync(file); fs.writeFileSync(file, 'b = 2\n'); },
+          // Hold the old file open while its replacement is created, so the new file cannot reuse its inode.
+          afterCheck: (file) => { const held = fs.openSync(file, 'r'); fs.rmSync(file); fs.writeFileSync(file, 'b = 2\n'); fs.closeSync(held); },
         })).toThrow(/changed between the check and the open/);
         expect(fs.readFileSync(config, 'utf8')).toBe('b = 2\n');
       } finally { cleanup(home); }
@@ -1879,7 +2075,7 @@ describe('Codex proof turn configuration', () => {
       } finally { cleanup(home, outside); }
     });
 
-    it('refuses a symlink planted where no config.toml existed yet — only O_NOFOLLOW stops this one', () => {
+    it('refuses a symlink planted where no config.toml existed yet', () => {
       const home = makeDir();
       const outside = makeDir();
       try {
