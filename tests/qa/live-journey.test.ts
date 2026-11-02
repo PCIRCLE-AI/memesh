@@ -58,6 +58,8 @@ import {
   awaitSessionDisconnect,
   buildJourneyEnv,
   buildLiveJourneyPayload,
+  buildCodexMessageToolApprovalToml,
+  CODEX_PROOF_PROMPT,
   buildPackedUpgradeReceipt,
   claudeTrustedIntakePrompt,
   claudeInboxTrustedPrompt,
@@ -673,6 +675,71 @@ describe('assertCodexReply', () => {
     });
     expect(assertCodexReply({ jsonl: withProbe, ...expected, allowedProject: project }))
       .toContain(`CODEX_RECEIVED_${SENTINEL}`);
+  });
+
+  describe('notice-based proof: the model fetches the body through the message tool', () => {
+    const project = 'memesh-live-journey~scope';
+    const allowedMessage = { project, recipient: THREAD };
+    const reply = `CODEX_RECEIVED_${SENTINEL} ${MESSAGE_ID} ${DELIVERY_ID}`;
+    const call = (args: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
+      id: 'item_9', type: 'mcp_tool_call', server: 'memesh', tool: 'message', status: 'completed',
+      arguments: { project, recipient: THREAD, message_id: MESSAGE_ID, ...args }, ...extra,
+    });
+    const fetchCall = () => call({ action: 'fetch', target_kind: 'session' });
+    const intakeCall = () => call({ action: 'intake', intake_state: 'ingested', idempotency_key: `intake-${MESSAGE_ID}` });
+    const check = (extraItems: Record<string, unknown>[], messages = [reply]) =>
+      assertCodexReply({ jsonl: codexTurn(messages, { extraItems }), ...expected, allowedProject: project, allowedMessage });
+
+    it('accepts receipts, fetch and intake on exactly this message', () => {
+      const receipts = call({ action: 'receipts', target_kind: 'session' });
+      expect(check([receipts, fetchCall(), intakeCall()])).toContain(`CODEX_RECEIVED_${SENTINEL}`);
+    });
+
+    it('rejects a reply from a turn that never fetched the body', () => {
+      expect(() => check([intakeCall()])).toThrow(/never fetched/);
+      expect(() => check([])).toThrow(/never fetched/);
+    });
+
+    it('rejects a fetch that did not complete', () => {
+      expect(() => check([call({ action: 'fetch', target_kind: 'session' }, { status: 'failed' })]))
+        .toThrow(/never fetched/);
+    });
+
+    it('still rejects any command, even when the message tool is allowed', () => {
+      const command = { id: 'item_8', type: 'command_execution', command: 'cat ../memesh/knowledge-graph.db', exit_code: 0 };
+      expect(() => check([fetchCall(), command])).toThrow(/item:command_execution/);
+    });
+
+    it('rejects a tool other than the message tool', () => {
+      const recall = { id: 'item_8', type: 'mcp_tool_call', server: 'memesh', tool: 'recall', status: 'completed', arguments: { query: 'x' } };
+      expect(() => check([fetchCall(), recall])).toThrow(/item:mcp_tool_call/);
+    });
+
+    it('rejects a message tool that belongs to another server', () => {
+      expect(() => check([fetchCall(), call({ action: 'fetch' }, { server: 'other' })])).toThrow(/item:mcp_tool_call/);
+    });
+
+    it('rejects message actions other than receipts, fetch and intake', () => {
+      expect(() => check([fetchCall(), call({ action: 'send', sender: 'x' })])).toThrow(/item:mcp_tool_call/);
+      expect(() => check([fetchCall(), call({ action: 'poll' })])).toThrow(/item:mcp_tool_call/);
+    });
+
+    it('rejects a call about another message, project or recipient', () => {
+      const other = '00000000-0000-4000-8000-000000000000';
+      expect(() => check([fetchCall(), call({ action: 'fetch', message_id: other })])).toThrow(/item:mcp_tool_call/);
+      expect(() => check([fetchCall(), call({ action: 'fetch', project: 'another~project' })])).toThrow(/item:mcp_tool_call/);
+      expect(() => check([fetchCall(), call({ action: 'fetch', recipient: 'someone-else' })])).toThrow(/item:mcp_tool_call/);
+    });
+
+    it('rejects a call whose arguments already carry the sentinel', () => {
+      expect(() => check([fetchCall(), call({ action: 'intake', intake_state: 'ingested', idempotency_key: SENTINEL })]))
+        .toThrow(/item:mcp_tool_call/);
+    });
+
+    it('does not allow the message tool unless the caller names the message it may touch', () => {
+      expect(() => assertCodexReply({ jsonl: codexTurn([reply], { extraItems: [fetchCall()] }), ...expected, allowedProject: project }))
+        .toThrow(/item:mcp_tool_call/);
+    });
   });
 
   it('rejects NO_ENVELOPE with the reason, not a generic mismatch', () => {
@@ -1380,5 +1447,43 @@ describe('findLiveCards', () => {
   it('returns nothing for a router answer with no cards array', () => {
     expect(findLiveCards({}, { hostKind: 'claude' })).toEqual([]);
     expect(findLiveCards(null)).toEqual([]);
+  });
+});
+
+
+describe('Codex proof turn configuration', () => {
+  const server = { command: 'node', args: ['./dist/mcp/server.js'], env_vars: ['MEMESH_DIR', 'MEMESH_DB_PATH'] };
+  const toml = buildCodexMessageToolApprovalToml({ cachePath: '/home/x/.memesh-codex-qa.A1/plugins/cache/p/memesh/9.9.9', server });
+
+  it('approves exactly the message tool of the memesh server, nothing broader', () => {
+    expect(toml).toContain('[mcp_servers.memesh.tools.message]');
+    expect(toml.match(/approval_mode/g)).toHaveLength(1);
+    expect(toml).toContain('approval_mode = "approve"');
+    expect(toml).not.toMatch(/default_tools_approval_mode/);
+    expect(toml).not.toMatch(/approval_policy|sandbox_mode/);
+  });
+
+  it('redefines the plugin server with the cache path as its working directory', () => {
+    expect(toml).toContain('[mcp_servers.memesh]');
+    expect(toml).toContain('cwd = "/home/x/.memesh-codex-qa.A1/plugins/cache/p/memesh/9.9.9"');
+    expect(toml).toContain('args = ["./dist/mcp/server.js"]');
+    expect(toml).toContain('env_vars = ["MEMESH_DIR","MEMESH_DB_PATH"]');
+  });
+
+  it('refuses a server definition it cannot reproduce', () => {
+    expect(() => buildCodexMessageToolApprovalToml({ cachePath: '/c', server: { args: [] } })).toThrow(/command/);
+  });
+
+  it('asks the model to fetch and record intake instead of forbidding every tool', () => {
+    expect(CODEX_PROOF_PROMPT).toMatch(/fetch/i);
+    expect(CODEX_PROOF_PROMPT).toMatch(/intake/i);
+    expect(CODEX_PROOF_PROMPT).toMatch(/message tool/i);
+    expect(CODEX_PROOF_PROMPT).not.toMatch(/do not (run commands or )?call tools\.?$/i);
+    expect(CODEX_PROOF_PROMPT).toMatch(/do not run commands/i);
+  });
+
+  it('names no identifier the model could copy instead of fetching', () => {
+    expect(CODEX_PROOF_PROMPT).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-/);
+    expect(CODEX_PROOF_PROMPT).not.toMatch(/codex-[0-9a-f]{8}/);
   });
 });
