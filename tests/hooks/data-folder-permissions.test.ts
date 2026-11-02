@@ -295,6 +295,7 @@ describe('#520: src constructs MemeshDatabase only at known, guarded sites', () 
     const known = [
       "db.ts: const opening = new MemeshDatabase(resolvedPath);",
       "core/doctor.ts: const probe = new MemeshDatabase(':memory:');",
+      "network/store.ts: const db = new MemeshDatabase(dbPath);",
       "core/project-tags.ts: openHandle: (target: string) => MemeshDatabase = (target) => new MemeshDatabase(target, { readOnly: true }),",
       "storage/sqlite.ts: // so `new MemeshDatabase(p)` would throw if the parameter were passed",
     ];

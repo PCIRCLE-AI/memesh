@@ -17,6 +17,33 @@ import type { MemeshDatabase } from './sqlite.js';
 import { insertFtsRow } from './fts-index.js';
 import { parseSqliteUtcMs } from '../core/time-utils.js';
 
+/**
+ * Cross-machine network state. Empty for anyone who never ran `memesh network
+ * create` or `join`. Exported on its own so the network bridge can open the
+ * database with only these tables, without loading anything memory-related.
+ * Invites keep only a token's sha256; the token itself is never stored.
+ */
+export const AGENT_NETWORK_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS agent_network_config (
+  id               INTEGER PRIMARY KEY CHECK (id = 1),
+  network_id       TEXT NOT NULL,
+  owner_id         TEXT NOT NULL,
+  machine_id       TEXT NOT NULL,
+  machine_name     TEXT NOT NULL,
+  person           TEXT NOT NULL,
+  relay_url        TEXT NOT NULL,
+  roster_json      TEXT NOT NULL,
+  roster_signature TEXT NOT NULL,
+  created_at_ms    INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS agent_network_invites (
+  hash          TEXT PRIMARY KEY,
+  expires_at_ms INTEGER NOT NULL,
+  used_at       INTEGER
+);
+`;
+
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS entities (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -346,7 +373,7 @@ CREATE TABLE IF NOT EXISTS hook_runs (
 -- read-only database FILE (measured: "attempt to write a readonly database"
 -- killed recall along with capture). The helper SELECTs first and writes
 -- only when the key is genuinely absent — once per database lifetime.
-`;
+${AGENT_NETWORK_SCHEMA_SQL}`;
 
 // FTS5 virtual table — separate so opens that don't need it stay lean.
 export const FTS_SQL = `

@@ -30280,6 +30280,26 @@ function sqliteUtcToIso(sqliteTimestamp) {
 }
 
 // dist/storage/schema.js
+var AGENT_NETWORK_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS agent_network_config (
+  id               INTEGER PRIMARY KEY CHECK (id = 1),
+  network_id       TEXT NOT NULL,
+  owner_id         TEXT NOT NULL,
+  machine_id       TEXT NOT NULL,
+  machine_name     TEXT NOT NULL,
+  person           TEXT NOT NULL,
+  relay_url        TEXT NOT NULL,
+  roster_json      TEXT NOT NULL,
+  roster_signature TEXT NOT NULL,
+  created_at_ms    INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS agent_network_invites (
+  hash          TEXT PRIMARY KEY,
+  expires_at_ms INTEGER NOT NULL,
+  used_at       INTEGER
+);
+`;
 var SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS entities (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -30609,7 +30629,7 @@ CREATE TABLE IF NOT EXISTS hook_runs (
 -- read-only database FILE (measured: "attempt to write a readonly database"
 -- killed recall along with capture). The helper SELECTs first and writes
 -- only when the key is genuinely absent \u2014 once per database lifetime.
-`;
+${AGENT_NETWORK_SCHEMA_SQL}`;
 var FTS_SQL = `
 CREATE VIRTUAL TABLE IF NOT EXISTS entities_fts USING fts5(
   name, observations, content='',

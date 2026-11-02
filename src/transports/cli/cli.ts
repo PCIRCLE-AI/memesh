@@ -48,6 +48,7 @@ import {
 } from '../../host-runtime/config.js';
 import { pluginHostConfigRoot, versionedPluginCacheRoots } from '../../core/install-channel.js';
 import { shellQuote } from '../../core/file-mode.js';
+import { registerNetworkCommand } from '../../network/command.js';
 import { ZodError } from 'zod';
 
 // DX: every CLI command that touches the DB used to repeat
@@ -3397,6 +3398,8 @@ program
       }
     }
   });
+
+registerNetworkCommand(program, new URL('../../network/', import.meta.url));
 
 // Default action: print help when run with no subcommand — the convention
 // of git/npm/docker, and what a first-time user typing `memesh` to see

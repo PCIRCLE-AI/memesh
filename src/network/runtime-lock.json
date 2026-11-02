@@ -1,0 +1,225 @@
+{
+  "name": "memesh-network-runtime",
+  "version": "1.0.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "memesh-network-runtime",
+      "version": "1.0.0",
+      "dependencies": {
+        "@number0/iroh": "1.2.0"
+      }
+    },
+    "node_modules/@number0/iroh": {
+      "version": "1.2.0",
+      "resolved": "https://registry.npmjs.org/@number0/iroh/-/iroh-1.2.0.tgz",
+      "integrity": "sha512-pZoVnL+8nK4DQG3owF5UQ/LcIjg7m2Ue1oeEUEhLsNt9RHtEFxiASNSPopOdsRfjRimJ/e6zjQ0k3iYE6N1hZQ==",
+      "license": "MIT OR Apache-2.0",
+      "engines": {
+        "node": ">= 20.3.0"
+      },
+      "optionalDependencies": {
+        "@number0/iroh-android-arm-eabi": "1.2.0",
+        "@number0/iroh-android-arm64": "1.2.0",
+        "@number0/iroh-darwin-arm64": "1.2.0",
+        "@number0/iroh-linux-arm-gnueabihf": "1.2.0",
+        "@number0/iroh-linux-arm-musleabihf": "1.2.0",
+        "@number0/iroh-linux-arm64-gnu": "1.2.0",
+        "@number0/iroh-linux-arm64-musl": "1.2.0",
+        "@number0/iroh-linux-x64-gnu": "1.2.0",
+        "@number0/iroh-linux-x64-musl": "1.2.0",
+        "@number0/iroh-win32-arm64-msvc": "1.2.0",
+        "@number0/iroh-win32-x64-msvc": "1.2.0"
+      }
+    },
+    "node_modules/@number0/iroh-android-arm-eabi": {
+      "version": "1.2.0",
+      "resolved": "https://registry.npmjs.org/@number0/iroh-android-arm-eabi/-/iroh-android-arm-eabi-1.2.0.tgz",
+      "integrity": "sha512-T8Hp4G1ewh/7AUI8DBHi596Rlr9zZZzPA3CpN58XSSQBxUEpiqxtZoYmEa3w6QgVw1o5IQrEgAUxLN7ogBtnig==",
+      "cpu": [
+        "arm"
+      ],
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "android"
+      ],
+      "engines": {
+        "node": ">= 10"
+      }
+    },
+    "node_modules/@number0/iroh-android-arm64": {
+      "version": "1.2.0",
+      "resolved": "https://registry.npmjs.org/@number0/iroh-android-arm64/-/iroh-android-arm64-1.2.0.tgz",
+      "integrity": "sha512-etoVzrsoPAij+XhD+BECISJKYUG6eW+XS43I5P4SD+nqAIJ6XnMTy/Brwayuj8ERoRaFLClL8bb++v5883TcrA==",
+      "cpu": [
+        "arm64"
+      ],
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "android"
+      ],
+      "engines": {
+        "node": ">= 10"
+      }
+    },
+    "node_modules/@number0/iroh-darwin-arm64": {
+      "version": "1.2.0",
+      "resolved": "https://registry.npmjs.org/@number0/iroh-darwin-arm64/-/iroh-darwin-arm64-1.2.0.tgz",
+      "integrity": "sha512-91oxmPrYiCnU0APp/Ky0mgNOxaIukQDFUvxth32TDq38vJs0lDX9ppAsWrkCA+4A/kJnAt1hc7YhIKcIGD3xOA==",
+      "cpu": [
+        "arm64"
+      ],
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "darwin"
+      ],
+      "engines": {
+        "node": ">= 10"
+      }
+    },
+    "node_modules/@number0/iroh-linux-arm-gnueabihf": {
+      "version": "1.2.0",
+      "resolved": "https://registry.npmjs.org/@number0/iroh-linux-arm-gnueabihf/-/iroh-linux-arm-gnueabihf-1.2.0.tgz",
+      "integrity": "sha512-PTi5YyxjkLluzVec5Q0NJqRUaYcVT76sZ0SaM10HFGlwlTIniYO7DYUGTLs+XcByUBcE7Ph5xkyvoLmB1mOF4A==",
+      "cpu": [
+        "arm"
+      ],
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": ">= 10"
+      }
+    },
+    "node_modules/@number0/iroh-linux-arm-musleabihf": {
+      "version": "1.2.0",
+      "resolved": "https://registry.npmjs.org/@number0/iroh-linux-arm-musleabihf/-/iroh-linux-arm-musleabihf-1.2.0.tgz",
+      "integrity": "sha512-IwOPvWOEyX6ZMHjctDaZyWVV2kJSXx57DRN2l5Qg/cEQjY5zWO4IMFvjw075IKrQk+VpU6RrEEI++2w2Gci1dA==",
+      "cpu": [
+        "arm"
+      ],
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": ">= 10"
+      }
+    },
+    "node_modules/@number0/iroh-linux-arm64-gnu": {
+      "version": "1.2.0",
+      "resolved": "https://registry.npmjs.org/@number0/iroh-linux-arm64-gnu/-/iroh-linux-arm64-gnu-1.2.0.tgz",
+      "integrity": "sha512-LEenFEMMWLnlyFy8++cYq+s7/nibFgFzs1kGDk7WvFDyxT3U2z0W0+hjENzDiS1iCtH8+zesdDdFxuQtxjJHYg==",
+      "cpu": [
+        "arm64"
+      ],
+      "libc": [
+        "glibc"
+      ],
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": ">= 10"
+      }
+    },
+    "node_modules/@number0/iroh-linux-arm64-musl": {
+      "version": "1.2.0",
+      "resolved": "https://registry.npmjs.org/@number0/iroh-linux-arm64-musl/-/iroh-linux-arm64-musl-1.2.0.tgz",
+      "integrity": "sha512-YgCWpz80VOTJRtAUsTKFgLYtd7tfWwrRCD0uk3/xG4z+AjiY5c49toeDFTJJ/3SF5Q8qmjWGjpcUk6B1E55D4w==",
+      "cpu": [
+        "arm64"
+      ],
+      "libc": [
+        "musl"
+      ],
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": ">= 10"
+      }
+    },
+    "node_modules/@number0/iroh-linux-x64-gnu": {
+      "version": "1.2.0",
+      "resolved": "https://registry.npmjs.org/@number0/iroh-linux-x64-gnu/-/iroh-linux-x64-gnu-1.2.0.tgz",
+      "integrity": "sha512-SkZUe/dqv7J1kY3Af0Cu07ldfdstEDOz6F3yIKwMw/EpabhaE3fvdDbiDQoiMxbwgIiJMspChHRMZeC88Td3QQ==",
+      "cpu": [
+        "x64"
+      ],
+      "libc": [
+        "glibc"
+      ],
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": ">= 10"
+      }
+    },
+    "node_modules/@number0/iroh-linux-x64-musl": {
+      "version": "1.2.0",
+      "resolved": "https://registry.npmjs.org/@number0/iroh-linux-x64-musl/-/iroh-linux-x64-musl-1.2.0.tgz",
+      "integrity": "sha512-UnZHStWdFZgylftmX2IHF+VKkrkbEhK+amkOf7A9Z3JPrqkbF5em3UW3uyDK3qfhcc9Ijc3nnYKxym+BkOLPjQ==",
+      "cpu": [
+        "x64"
+      ],
+      "libc": [
+        "musl"
+      ],
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "linux"
+      ],
+      "engines": {
+        "node": ">= 10"
+      }
+    },
+    "node_modules/@number0/iroh-win32-arm64-msvc": {
+      "version": "1.2.0",
+      "resolved": "https://registry.npmjs.org/@number0/iroh-win32-arm64-msvc/-/iroh-win32-arm64-msvc-1.2.0.tgz",
+      "integrity": "sha512-2srn9OquRffLD1bQiCDRLr3T1yxmc9xc3k4oLgEMWU+lZnaMONRS2r46cTXN1b/bGsSc82TjGCO/urauXZjQcQ==",
+      "cpu": [
+        "arm64"
+      ],
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "win32"
+      ],
+      "engines": {
+        "node": ">= 10"
+      }
+    },
+    "node_modules/@number0/iroh-win32-x64-msvc": {
+      "version": "1.2.0",
+      "resolved": "https://registry.npmjs.org/@number0/iroh-win32-x64-msvc/-/iroh-win32-x64-msvc-1.2.0.tgz",
+      "integrity": "sha512-3ltCadoaZzrRM9OmPcfwPpqwF/DBXlzhwsOIXITtpFEFfRISgvbqyhmMCaiumpyXxFeGTCfpwvUJ40i+sE0sVQ==",
+      "cpu": [
+        "x64"
+      ],
+      "license": "MIT",
+      "optional": true,
+      "os": [
+        "win32"
+      ],
+      "engines": {
+        "node": ">= 10"
+      }
+    }
+  }
+}

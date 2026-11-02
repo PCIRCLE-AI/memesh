@@ -128,8 +128,8 @@
     },
     {
       "path": "scripts/hooks/_generated/schema.js",
-      "sha256": "b993c195b8917773310f8db3f59ccd9f01aa5cda72e064a350d5f2be7b270760",
-      "bytes": 26359
+      "sha256": "99cb4a10046b1fe9ae654b703e7529b328583ae713855d392de802fce2335d8d",
+      "bytes": 26994
     },
     {
       "path": "scripts/hooks/_generated/scoring.js",
