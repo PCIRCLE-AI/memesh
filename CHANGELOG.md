@@ -6,16 +6,19 @@ are not part of a published npm release yet.
 
 ## [Unreleased]
 
+## [4.13.0] — 2026-11-02
+
 ### Added
 
-- Retrieve memories by ID with `recall({ ids: [...] })` or `memesh recall --ids`, within the caller's project scope and existing size limits.
+- Retrieve memories by ID with `recall({ ids: [...] })` or `memesh recall --ids`, within the caller's project scope and existing size limits. HTTP `POST /v1/recall` also accepts `ids`.
 - Retrieving a session-injected memory by ID counts toward ranking like citing it. Each memory is credited once while the session is active, including resumes. After more than a day of inactivity, reinjection may start a new counting window; old transcript entries are not counted again.
 
 ### Changed
 
 - Agent guidance and the remember and learn tool descriptions now say what to record: outcomes and reasons with relevant filenames and numbers, no repeated confirmations, and never secrets or personal data.
-- Memory usage now counts assistant citations and ID retrievals, including sessions with few tool calls. Citation markers inside tool output no longer count as assistant citations. Session usage statistics restart with this release because the counting rules changed.
-- Recall results include a reminder to treat stored content as reference data, and ID retrievals display detected conflicts in terminal output.
+- Memory usage now counts assistant citations and ID retrievals, including sessions with few tool calls. Citation markers inside tool output no longer count as assistant citations. Session usage statistics restart because the counting rules changed. The restart can happen again while an older and a newer version share the same `~/.memesh`. Memory ranking data is not affected.
+- Recall results, including HTTP responses, now carry a `data_notice` field reminding agents to treat stored content as reference data, and ID retrievals display detected conflicts in terminal output.
+- `memesh doctor` renames "Memory citation rate" to "Memory use rate", since it now counts retrievals as well as citations.
 
 ## [4.12.0] — 2026-11-01
 
