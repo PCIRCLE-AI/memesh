@@ -67,7 +67,7 @@ export const REQUIRED_LIVE_JOURNEY_STEPS = Object.freeze({
     'exact-session send accepted by the codex-cli-queue adapter',
     'Codex resume registration superseded the prior generation',
     'Codex resumed lease renewed before expiry',
-    'the Codex model quoted the envelope back (model-visible proof)',
+    'the Codex model fetched the message body and quoted its sentinel (model-visible proof)',
     'companion stopped and the session left the router directory',
     'a send to the stopped session fails closed and the durable row survives',
   ]),

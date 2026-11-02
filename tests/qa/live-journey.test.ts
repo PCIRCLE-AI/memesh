@@ -60,7 +60,8 @@ import {
   buildLiveJourneyPayload,
   appendCodexMessageToolApproval,
   assertCodexProofTurn,
-  assertRolloutNoticeOmitsSentinel,
+  assertCodexRolloutProof,
+  mcpResultCarries,
   buildCodexMessageToolApprovalToml,
   CODEX_PROOF_PROMPT,
   buildPackedUpgradeReceipt,
@@ -626,12 +627,13 @@ describe('assertCodexReply', () => {
     id: 'item_9', type: 'mcp_tool_call', server: 'memesh', tool: 'message', status: 'completed',
     arguments: { project, recipient: THREAD, message_id: MESSAGE_ID, ...args }, ...extra,
   });
-  const fetchCall = () => call({ action: 'fetch', target_kind: 'session' });
+  const body = { content: [{ type: 'text', text: JSON.stringify({ message_id: MESSAGE_ID, payload: { qa_sentinel: SENTINEL } }) }] };
+  const fetchCall = (extra: Record<string, unknown> = {}) => call({ action: 'fetch', target_kind: 'session' }, { result: body, error: null, ...extra });
   const intakeCall = () => call({ action: 'intake', intake_state: 'ingested', idempotency_key: `intake-${MESSAGE_ID}` });
   /** A started event followed by its completed event, as `codex exec --json` emits a real tool call. */
   const startedAndCompleted = (args: Record<string, unknown>) => [
     { ...call(args, { status: 'in_progress', result: null, error: null }), _event: 'item.started' },
-    { ...call(args, { result: { content: [{ type: 'text', text: '{"ok":true}' }] }, error: null }), _event: 'item.completed' },
+    { ...call(args, { result: args.action === 'fetch' ? body : { content: [{ type: 'text', text: '{"ok":true}' }] }, error: null }), _event: 'item.completed' },
   ];
   const turn = (messages: string[], items: Record<string, unknown>[]) => [
     JSON.stringify({ type: 'thread.started', thread_id: THREAD }),
@@ -692,6 +694,33 @@ describe('assertCodexReply', () => {
     expect(() => check([])).toThrow(/never fetched/);
   });
 
+  it('rejects a fetch whose result does not contain the sentinel — the body must have travelled', () => {
+    const empty = fetchCall({ result: { content: [{ type: 'text', text: '{"status":"unavailable"}' }] } });
+    expect(() => check([empty, intakeCall()])).toThrow(/No completed fetch returned the message body/);
+    expect(() => check([fetchCall({ result: null }), intakeCall()])).toThrow(/No completed fetch returned the message body/);
+    expect(() => check([fetchCall({ result: undefined }), intakeCall()])).toThrow(/No completed fetch returned the message body/);
+  });
+
+  it('rejects a fetch that reports an error, even if the sentinel text appears in it', () => {
+    const withSentinel = { content: [{ type: 'text', text: `denied ${SENTINEL}` }] };
+    expect(() => check([fetchCall({ error: { message: 'denied' }, result: withSentinel }), intakeCall()])).toThrow(/No completed fetch returned the message body/);
+    expect(() => check([fetchCall({ result: { ...withSentinel, isError: true } }), intakeCall()])).toThrow(/No completed fetch returned the message body/);
+    expect(() => check([fetchCall({ result: { ...withSentinel, is_error: true } }), intakeCall()])).toThrow(/No completed fetch returned the message body/);
+  });
+
+  it('accepts the body in structured content as well, and a Codex plan item', () => {
+    const structured = fetchCall({ result: { content: [], structuredContent: { payload: { qa_sentinel: SENTINEL } } } });
+    const plan = { id: 'item_1', type: 'todo_list', items: [{ text: 'fetch', completed: false }] };
+    expect(check([plan, structured, intakeCall()])).toContain(`CODEX_RECEIVED_${SENTINEL}`);
+  });
+
+  it('refuses to judge a reply without a sentinel, message id and delivery id to look for', () => {
+    for (const name of ['sentinel', 'messageId', 'deliveryId']) {
+      expect(() => check(proof(), [reply], { [name]: '' })).toThrow(new RegExp(`non-empty ${name}`));
+      expect(() => check(proof(), [reply], { [name]: undefined })).toThrow(new RegExp(`non-empty ${name}`));
+    }
+  });
+
   it('rejects a fetch that did not complete', () => {
     expect(() => check([call({ action: 'fetch', target_kind: 'session' }, { status: 'failed' }), intakeCall()])).toThrow(/never fetched/);
     expect(() => check([{ ...fetchCall(), status: 'in_progress', _event: 'item.started' }, intakeCall()])).toThrow(/never fetched/);
@@ -704,7 +733,7 @@ describe('assertCodexReply', () => {
       .toThrow(/never completed an intake/);
   });
 
-  it('still rejects any command, even when the message tool is allowed', () => {
+  it('rejects a shell command in the turn even though the message tool is allowed', () => {
     const command = { id: 'item_8', type: 'command_execution', command: 'cat ../memesh/knowledge-graph.db', exit_code: 0 };
     expect(() => check([...proof(), command])).toThrow(/item:command_execution/);
   });
@@ -757,9 +786,9 @@ describe('assertCodexReply', () => {
     expect(() => check(proof(), ['NO_ENVELOPE'])).toThrow(/not visible to the model/);
   });
 
-  it('rejects a turn that produced no agent message', () => {
+  it('rejects an empty turn: nothing was fetched, so nothing can be judged', () => {
     expect(() => assertCodexReply({ jsonl: '{"type":"turn.completed"}', ...expected } as Parameters<typeof assertCodexReply>[0]))
-      .toThrow(/never fetched|no agent message/);
+      .toThrow(/never fetched the message body/);
   });
 });
 
@@ -771,7 +800,10 @@ describe('assertCodexProofTurn', () => {
     arguments: { project, recipient: THREAD, message_id: MESSAGE_ID, ...args },
   });
   const jsonl = codexTurn([`CODEX_RECEIVED_${SENTINEL} ${MESSAGE_ID} ${DELIVERY_ID}`], {
-    extraItems: [item({ action: 'fetch', target_kind: 'session' }), item({ action: 'intake', intake_state: 'ingested', idempotency_key: 'k' })],
+    extraItems: [
+      { ...item({ action: 'fetch', target_kind: 'session' }), result: { content: [{ type: 'text', text: `{"payload":{"qa_sentinel":"${SENTINEL}"}}` }] }, error: null },
+      item({ action: 'intake', intake_state: 'ingested', idempotency_key: 'k' }),
+    ],
   });
   const base = { jsonl, sentinel: SENTINEL, messageId: MESSAGE_ID, deliveryId: DELIVERY_ID, allowedProject: project, allowedMessage };
 
@@ -796,24 +828,60 @@ describe('assertCodexProofTurn', () => {
     expect(run).toMatch(/'message', 'receipts'/);
     expect(run).not.toMatch(/assertCodexReply\(/);
     expect(run).toMatch(/appendCodexMessageToolApproval\(/);
-    expect(run).toMatch(/assertRolloutNoticeOmitsSentinel\(/);
+    expect(run).toMatch(/assertCodexRolloutProof\(/);
+    expect(run).toMatch(/env: \{ MEMESH_DIR: journey\.memeshDir, MEMESH_DB_PATH: journey\.dbPath \}/);
   });
 });
 
-describe('assertRolloutNoticeOmitsSentinel', () => {
-  const notice = `{"payload":{"message_type":"memesh_message_notice","message_id":"${MESSAGE_ID}","delivery_id":"${DELIVERY_ID}"}}`;
+describe('assertCodexRolloutProof', () => {
+  const noticeJson = JSON.stringify({ message_type: 'memesh_message_notice', handling: 'x', message_id: MESSAGE_ID, delivery_id: DELIVERY_ID });
+  const userLine = (text: string, role = 'user') => JSON.stringify({
+    timestamp: 't', ordinal: 1, type: 'response_item',
+    payload: { type: 'message', id: 'm', role, content: [{ type: 'input_text', text }] },
+  });
+  const expected = { messageId: MESSAGE_ID, sentinel: SENTINEL };
 
-  it('counts the notice lines and accepts a notice without the sentinel', () => {
-    expect(assertRolloutNoticeOmitsSentinel(`${notice}\n{"other":1}\n`, { messageId: MESSAGE_ID, sentinel: SENTINEL })).toEqual({ noticeLines: 1 });
+  it('counts the user-role notice line and accepts it when it holds no sentinel', () => {
+    expect(assertCodexRolloutProof(`${userLine(noticeJson)}\n${userLine('hello')}\n`, expected)).toEqual({ noticeLines: 1 });
   });
 
-  it('rejects a notice that carries the sentinel', () => {
-    expect(() => assertRolloutNoticeOmitsSentinel(notice.replace('}}', `,"qa_sentinel":"${SENTINEL}"}}`), { messageId: MESSAGE_ID, sentinel: SENTINEL }))
-      .toThrow(/already contains the qa_sentinel/);
+  it('fails when the rollout file is missing — a check that saw nothing proved nothing', () => {
+    expect(() => assertCodexRolloutProof(null, expected)).toThrow(/no rollout file/);
   });
 
-  it('ignores a later line that holds the sentinel but is not the notice, and reports 0 when no notice is present', () => {
-    expect(assertRolloutNoticeOmitsSentinel(`{"tool_result":"${SENTINEL}"}\n`, { messageId: MESSAGE_ID, sentinel: SENTINEL })).toEqual({ noticeLines: 0 });
+  it('fails when the notice is not in the rollout', () => {
+    expect(() => assertCodexRolloutProof(`${userLine('hello')}\n`, expected)).toThrow(/not in the Codex rollout/);
+    expect(() => assertCodexRolloutProof('', expected)).toThrow(/not in the Codex rollout/);
+    const other = noticeJson.replace(MESSAGE_ID, '00000000-0000-4000-8000-000000000000');
+    expect(() => assertCodexRolloutProof(`${userLine(other)}\n`, expected)).toThrow(/not in the Codex rollout/);
+  });
+
+  it('fails when the notice itself carries the sentinel', () => {
+    const leaking = JSON.stringify({ message_type: 'memesh_message_notice', message_id: MESSAGE_ID, qa_sentinel: SENTINEL });
+    expect(() => assertCodexRolloutProof(`${userLine(leaking)}\n`, expected)).toThrow(/already contains the qa_sentinel/);
+  });
+
+  it('fails when a full-envelope memesh_message line carries the sentinel', () => {
+    const envelope = JSON.stringify({ message_type: 'memesh_message', delivery_id: DELIVERY_ID, envelope: { message_id: MESSAGE_ID, payload: { qa_sentinel: SENTINEL } } });
+    expect(() => assertCodexRolloutProof(`${userLine(noticeJson)}\n${userLine(envelope)}\n`, expected)).toThrow(/already contains the qa_sentinel/);
+  });
+
+  it('ignores the assistant quoting the sentinel and tool output that holds it', () => {
+    const reply = userLine(`CODEX_RECEIVED_${SENTINEL} ${MESSAGE_ID} memesh_message_notice`, 'assistant');
+    const toolOut = JSON.stringify({ type: 'response_item', payload: { type: 'function_call_output', output: `memesh_message ${SENTINEL}` } });
+    expect(assertCodexRolloutProof(`${userLine(noticeJson)}\n${reply}\n${toolOut}\nnot json memesh_message\n`, expected)).toEqual({ noticeLines: 1 });
+  });
+});
+
+describe('mcpResultCarries', () => {
+  it('needs a non-empty needle, a result and no error flag', () => {
+    const ok = { result: { content: [{ type: 'text', text: `a ${SENTINEL} b` }] }, error: null };
+    expect(mcpResultCarries(ok, SENTINEL)).toBe(true);
+    expect(mcpResultCarries(ok, '')).toBe(false);
+    expect(mcpResultCarries(ok, 'other')).toBe(false);
+    expect(mcpResultCarries({ ...ok, error: { message: 'x' } }, SENTINEL)).toBe(false);
+    expect(mcpResultCarries({ result: { ...ok.result, isError: true } }, SENTINEL)).toBe(false);
+    expect(mcpResultCarries({}, SENTINEL)).toBe(false);
   });
 });
 
@@ -1542,8 +1610,15 @@ describe('Codex proof turn configuration', () => {
   });
 
   it('refuses a server definition or cache path it cannot reproduce', () => {
-    expect(() => buildCodexMessageToolApprovalToml({ cachePath: '/c', server: { args: [] } })).toThrow(/command/);
-    expect(() => buildCodexMessageToolApprovalToml({ cachePath: '', server })).toThrow(/cache path/);
+    expect(() => buildCodexMessageToolApprovalToml({ cachePath: '/c', server: { args: [] }, env })).toThrow(/command/);
+    expect(() => buildCodexMessageToolApprovalToml({ cachePath: '', server, env })).toThrow(/cache path/);
+  });
+
+  it('will not render a server without the journey directory and database: it would open the real ~/.memesh', () => {
+    const cachePath = '/c';
+    expect(() => buildCodexMessageToolApprovalToml({ cachePath, server } as never)).toThrow(/MEMESH_DIR/);
+    expect(() => buildCodexMessageToolApprovalToml({ cachePath, server, env: { MEMESH_DIR: '/q' } })).toThrow(/MEMESH_DB_PATH/);
+    expect(() => buildCodexMessageToolApprovalToml({ cachePath, server, env: { MEMESH_DIR: '', MEMESH_DB_PATH: '/q/k.db' } })).toThrow(/MEMESH_DIR/);
   });
 
   describe.skipIf(process.platform === 'win32')('writing it into the isolated home', () => {
@@ -1583,6 +1658,91 @@ describe('Codex proof turn configuration', () => {
     });
   });
 
+
+  describe.skipIf(process.platform === 'win32')('refusing a config.toml that is not a plain single file', () => {
+    const makeDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'codex-cfg-'));
+    const cleanup = (...dirs: string[]) => dirs.forEach(dir => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 }));
+
+    it('refuses a hard link and leaves the other name untouched', () => {
+      const home = makeDir();
+      const outside = makeDir();
+      try {
+        const real = path.join(outside, 'real-config.toml');
+        fs.writeFileSync(real, 'model = "x"\n');
+        fs.linkSync(real, path.join(home, 'config.toml'));
+        expect(() => appendCodexMessageToolApproval({ codexHome: home, toml })).toThrow(/single link/);
+        expect(fs.readFileSync(real, 'utf8')).toBe('model = "x"\n');
+      } finally { cleanup(home, outside); }
+    });
+
+    it('refuses a file swapped for another one after the check (device and inode must match)', () => {
+      const home = makeDir();
+      try {
+        const config = path.join(home, 'config.toml');
+        fs.writeFileSync(config, 'a = 1\n');
+        expect(() => appendCodexMessageToolApproval({ codexHome: home, toml }, {
+          afterCheck: (file) => { fs.rmSync(file); fs.writeFileSync(file, 'b = 2\n'); },
+        })).toThrow(/changed between the check and the open/);
+        expect(fs.readFileSync(config, 'utf8')).toBe('b = 2\n');
+      } finally { cleanup(home); }
+    });
+
+    it('refuses a symlink swapped in after the check of an existing file', () => {
+      const home = makeDir();
+      const outside = makeDir();
+      try {
+        const config = path.join(home, 'config.toml');
+        const target = path.join(outside, 'real-config.toml');
+        fs.writeFileSync(config, 'a = 1\n');
+        fs.writeFileSync(target, 'model = "x"\n');
+        expect(() => appendCodexMessageToolApproval({ codexHome: home, toml }, {
+          afterCheck: (file) => { fs.rmSync(file); fs.symlinkSync(target, file); },
+        })).toThrow();
+        expect(fs.readFileSync(target, 'utf8')).toBe('model = "x"\n');
+      } finally { cleanup(home, outside); }
+    });
+
+    it('refuses a symlink planted where no config.toml existed yet — only O_NOFOLLOW stops this one', () => {
+      const home = makeDir();
+      const outside = makeDir();
+      try {
+        const target = path.join(outside, 'real-config.toml');
+        fs.writeFileSync(target, 'model = "x"\n');
+        expect(() => appendCodexMessageToolApproval({ codexHome: home, toml }, {
+          afterCheck: (file) => { fs.symlinkSync(target, file); },
+        })).toThrow();
+        expect(fs.readFileSync(target, 'utf8')).toBe('model = "x"\n');
+      } finally { cleanup(home, outside); }
+    });
+
+    it.each([
+      ['a bare table', '[mcp_servers.memesh]\ncommand = "node"\n'],
+      ['a quoted table name', '[mcp_servers."memesh"]\ncommand = "node"\n'],
+      ['a single-quoted table name', "[mcp_servers.'memesh']\ncommand = \"node\"\n"],
+      ['spaces inside the header', '[ mcp_servers . memesh ]\ncommand = "node"\n'],
+      ['a sub-table only', '[mcp_servers.memesh.tools.message]\napproval_mode = "prompt"\n'],
+      ['a dotted key at the root', 'mcp_servers.memesh.command = "node"\n'],
+      ['a quoted dotted key', 'mcp_servers."memesh".command = "node"\n'],
+      ['the mcp_servers table holding the key', '[mcp_servers]\nmemesh = { command = "node" }\n'],
+      ['an inline mcp_servers table', 'mcp_servers = { memesh = { command = "node" } }\n'],
+    ])('refuses a config that already defines the server as %s', (_label, content) => {
+      const home = makeDir();
+      try {
+        fs.writeFileSync(path.join(home, 'config.toml'), content);
+        expect(() => appendCodexMessageToolApproval({ codexHome: home, toml })).toThrow(/already configures/);
+        expect(fs.readFileSync(path.join(home, 'config.toml'), 'utf8')).toBe(content);
+      } finally { cleanup(home); }
+    });
+
+    it('still appends to a config that only names other MCP servers', () => {
+      const home = makeDir();
+      try {
+        fs.writeFileSync(path.join(home, 'config.toml'), '[mcp_servers.memesh_other]\ncommand = "node"\n');
+        expect(appendCodexMessageToolApproval({ codexHome: home, toml })).toBe(path.join(home, 'config.toml'));
+      } finally { cleanup(home); }
+    });
+  });
+
   it('asks the model to fetch and record intake instead of forbidding every tool', () => {
     expect(CODEX_PROOF_PROMPT).toMatch(/fetch/i);
     expect(CODEX_PROOF_PROMPT).toMatch(/intake/i);
@@ -1602,10 +1762,15 @@ describe('Codex proof turn configuration', () => {
     expect(list).toContain("'dist/mcp/server.js'");
   });
 
-  it.skipIf(!fs.existsSync(path.join(__dirname, '..', '..', 'dist', 'mcp', 'server.js')))(
+  it.skipIf(process.platform === 'win32' || !fs.existsSync(path.join(__dirname, '..', '..', 'dist', 'mcp', 'server.js')))(
     'a real server started with that env never creates ~/.memesh, and one without it does', async () => {
       const { spawn } = await import('node:child_process');
       const serverJs = path.join(__dirname, '..', '..', 'dist', 'mcp', 'server.js');
+      const until = async (done: () => boolean, ms: number) => {
+        const deadline = Date.now() + ms;
+        while (!done() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+        return done();
+      };
       const probe = async (withEnv: boolean) => {
         const home = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-home-'));
         const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-dir-'));
@@ -1614,17 +1779,19 @@ describe('Codex proof turn configuration', () => {
             env: { PATH: process.env.PATH ?? '', HOME: home, ...(withEnv ? { MEMESH_DIR: dir, MEMESH_DB_PATH: path.join(dir, 'k.db') } : {}) },
             stdio: ['pipe', 'pipe', 'ignore'],
           });
+          let out = '';
+          child.stdout.on('data', (chunk) => { out += chunk; });
           const write = (message: unknown) => child.stdin.write(`${JSON.stringify(message)}\n`);
           write({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 't', version: '1' } } });
-          await new Promise(resolve => setTimeout(resolve, 600));
+          expect(await until(() => out.includes('"id":1'), 10_000)).toBe(true);
           write({ jsonrpc: '2.0', method: 'notifications/initialized' });
           write({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'message', arguments: { action: 'discover', project: 'p' } } });
-          await new Promise(resolve => setTimeout(resolve, 2500));
+          expect(await until(() => out.includes('"id":2'), 10_000)).toBe(true);
           child.kill();
           return { realHomeTouched: fs.existsSync(path.join(home, '.memesh')), dirFiles: fs.readdirSync(dir) };
         } finally {
-          fs.rmSync(home, { recursive: true, force: true });
-          fs.rmSync(dir, { recursive: true, force: true });
+          fs.rmSync(home, { recursive: true, force: true, maxRetries: 5 });
+          fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
         }
       };
       const explicit = await probe(true);
@@ -1632,5 +1799,5 @@ describe('Codex proof turn configuration', () => {
       expect(explicit.dirFiles).toContain('k.db');
       const bare = await probe(false);
       expect(bare.realHomeTouched).toBe(true);
-    }, 30_000);
+    }, 40_000);
 });
