@@ -455,7 +455,7 @@ describe('findUsableLiveJourneyReceipt', () => {
   it('refuses a report missing the model-visible success path', () => {
     const report = {
       ...pass,
-      steps: pass.steps.filter(step => step.name !== 'the Codex model quoted the envelope back (model-visible proof)'),
+      steps: pass.steps.filter(step => step.name !== 'the Codex model fetched the message body and quoted its sentinel (model-visible proof)'),
     };
     const r = findUsableLiveJourneyReceipt(
       [{ host: 'codex', path: '.qa/codex-report.json', report, readError: null }],

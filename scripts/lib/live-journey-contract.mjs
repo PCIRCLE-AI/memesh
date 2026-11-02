@@ -56,6 +56,28 @@ export const REQUIRED_REGISTRATION_EVIDENCE = Object.freeze({
   }),
 });
 
+/**
+ * The required steps a report is missing, or has out of order, for a host. One
+ * function for the runner (before it writes PASS) and for the release check, so
+ * the two cannot disagree. A host with no required list (claude-inbox) yields null.
+ *
+ * @param {Array<{name?: string}>} steps
+ * @param {string|null|undefined} host
+ * @returns {string[]|null}
+ */
+export function missingRequiredSteps(steps, host) {
+  const required = host ? REQUIRED_LIVE_JOURNEY_STEPS[host] : undefined;
+  if (required === undefined) return null;
+  let previousIndex = -1;
+  const missing = [];
+  for (const name of required) {
+    const index = steps.findIndex((step, stepIndex) => stepIndex > previousIndex && step?.name === name);
+    if (index === -1) missing.push(name);
+    else previousIndex = index;
+  }
+  return missing;
+}
+
 export const REQUIRED_LIVE_JOURNEY_STEPS = Object.freeze({
   codex: Object.freeze([
     'codex preconditions',
@@ -67,7 +89,7 @@ export const REQUIRED_LIVE_JOURNEY_STEPS = Object.freeze({
     'exact-session send accepted by the codex-cli-queue adapter',
     'Codex resume registration superseded the prior generation',
     'Codex resumed lease renewed before expiry',
-    'the Codex model quoted the envelope back (model-visible proof)',
+    'the Codex model fetched the message body and quoted its sentinel (model-visible proof)',
     'companion stopped and the session left the router directory',
     'a send to the stopped session fails closed and the durable row survives',
   ]),

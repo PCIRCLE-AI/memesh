@@ -27,8 +27,8 @@ import {
   LIVE_JOURNEY_SCHEMA_VERSION,
   LIVE_JOURNEY_MAX_AGE_MS,
   LIVE_JOURNEY_CLOCK_SKEW_MS,
-  REQUIRED_LIVE_JOURNEY_STEPS,
   REQUIRED_REGISTRATION_EVIDENCE,
+  missingRequiredSteps,
   validateCoreJourneys,
 } from './live-journey-contract.mjs';
 
@@ -329,14 +329,7 @@ export function findUsableLiveJourneyReceipt(candidates, headSha, requiredHost =
       reasons.push(`${label}: step ${JSON.stringify(failedStep.name ?? null)} is not PASS`);
       continue;
     }
-    const requiredSteps = REQUIRED_LIVE_JOURNEY_STEPS[report.host];
-    let previousIndex = -1;
-    const missingOrOutOfOrder = [];
-    for (const name of requiredSteps) {
-      const index = report.steps.findIndex((step, stepIndex) => stepIndex > previousIndex && step?.name === name);
-      if (index === -1) missingOrOutOfOrder.push(name);
-      else previousIndex = index;
-    }
+    const missingOrOutOfOrder = missingRequiredSteps(report.steps, report.host) ?? [];
     if (missingOrOutOfOrder.length > 0) {
       reasons.push(`${label}: missing or out-of-order required steps: ${missingOrOutOfOrder.join(', ')}`);
       continue;
