@@ -1997,6 +1997,10 @@ describe('Codex proof turn configuration', () => {
 
   describe.skipIf(process.platform === 'win32')('refusing a config.toml that is not a plain single file', () => {
     const makeDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'codex-cfg-'));
+    /** Open a path and hand back the descriptor: the file stays alive, so its inode cannot be reused, until the caller closes it. */
+    const holdOpen = (file: string): number => fs.openSync(file, 'r');
+    /** Replace whatever is at a path with a new file holding `content`. */
+    const replaceWith = (file: string, content: string): void => { fs.rmSync(file); fs.writeFileSync(file, content); };
     const cleanup = (...dirs: string[]) => dirs.forEach(dir => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 }));
 
     it('refuses a hard link and leaves the other name untouched', () => {
@@ -2052,10 +2056,13 @@ describe('Codex proof turn configuration', () => {
       try {
         const config = path.join(home, 'config.toml');
         fs.writeFileSync(config, 'a = 1\n');
-        expect(() => appendCodexMessageToolApproval({ codexHome: home, toml }, {
-          // Hold the old file open while its replacement is created, so the new file cannot reuse its inode.
-          afterCheck: (file) => { const held = fs.openSync(file, 'r'); fs.rmSync(file); fs.writeFileSync(file, 'b = 2\n'); fs.closeSync(held); },
-        })).toThrow(/changed between the check and the open/);
+        let held: number | null = null;
+        try {
+          expect(() => appendCodexMessageToolApproval({ codexHome: home, toml }, {
+            // Hold the old file open while its replacement is created, so the new file cannot reuse its inode.
+            afterCheck: (file) => { held = holdOpen(file); replaceWith(file, 'b = 2\n'); },
+          })).toThrow(/changed between the check and the open/);
+        } finally { if (held !== null) fs.closeSync(held); }
         expect(fs.readFileSync(config, 'utf8')).toBe('b = 2\n');
       } finally { cleanup(home); }
     });
