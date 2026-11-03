@@ -9,22 +9,26 @@ import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startBridge, stopBridge } from '../../src/network/bridge-control.js';
 import { lockPath, logPath, readStatus, statusPath, type BridgeStatus } from '../../src/network/bridge-state.js';
-import { identityPath, loadIdentity } from '../../src/network/identity.js';
+import { ensureIdentity, identityPath, loadIdentity } from '../../src/network/identity.js';
 import type { Connection, Endpoint, IrohModule } from '../../src/network/iroh-types.js';
-import { encodeLink, parseLink } from '../../src/network/invites.js';
+import { encodeLink, hashToken, parseLink } from '../../src/network/invites.js';
 import { JOIN_REQUEST_MAX_BYTES } from '../../src/network/join-protocol.js';
 import { bridgeUp, createLink, createNetwork, getNetworkStatus as readNetworkStatus, joinNetwork, type JoinedStatus } from '../../src/network/operations.js';
 import { verifyRoster } from '../../src/network/roster.js';
 import { checkRuntime, ensureRuntime, isPlatformSupported } from '../../src/network/runtime.js';
+import { BRIDGE_BUSY_TIMEOUT_MS } from '../../src/network/bridge-serve.js';
 import { openNetworkStore, readConfig, signedRosterOf } from '../../src/network/store.js';
 import {
   EXIT_ALREADY_RUNNING, JOIN_ALPN, NET_ALPN, NetworkError, childEnv, runtimeDir, type NetworkContext,
 } from '../../src/network/types.js';
-import { buildTree, contextFor, installRuntimeOnce, linkRuntime, loadIrohForTest, makeHome, removeTree, type Tree } from './helpers.js';
+import {
+  buildTree, contextFor, installRuntimeOnce, linkRuntime, loadIrohForTest, makeHome, removeTree, writeTtyPreload, type Tree,
+} from './helpers.js';
 
 const lockText = fs.readFileSync(path.resolve(import.meta.dirname, '../../src/network/runtime-lock.json'), 'utf8');
 const supported = isPlatformSupported(lockText, process.platform, process.arch, process.platform === 'linux' ? 'glibc' : null);
 
+const NET_OTHER = 'fedcba9876543210fedcba9876543210';
 const bytes = (value: string | Buffer): number[] => Array.from(Buffer.from(value));
 
 const getNetworkStatus = (ctx: NetworkContext): JoinedStatus => {
@@ -50,8 +54,18 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
     contexts.push(ctx);
     return ctx;
   };
-  const inviteFrom = (ctx: NetworkContext) => createLink(ctx, { includeAddresses: true, ttlHours: 1 });
+  const issuedTokens: string[] = [];
+  const inviteFrom = async (ctx: NetworkContext) => {
+    const result = await createLink(ctx, { includeAddresses: true, ttlHours: 1 });
+    issuedTokens.push(parseLink(result.link).token);
+    return result;
+  };
   const joinWith = (link: string, name: string, ctx = machine()) => joinNetwork(ctx, { link, name, person: 'kt', relay: 'off' });
+  const assertNoIssuedTokenLeaked = (ctx: NetworkContext): void => {
+    expect(issuedTokens.length).toBeGreaterThan(0);
+    const texts = [fs.readFileSync(statusPath(ctx.dataDir), 'utf8'), fs.readFileSync(logPath(ctx.dataDir), 'utf8')];
+    for (const text of texts) for (const token of issuedTokens) expect(text).not.toContain(token);
+  };
   const refusal = async (attempt: Promise<unknown>): Promise<string> => {
     try {
       await attempt;
@@ -77,7 +91,7 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
   };
 
   beforeAll(async () => {
-    tree = await buildTree();
+    tree = await buildTree({ cli: true });
     runtime = installRuntimeOnce(tree);
     iroh = loadIrohForTest(runtime);
     owner = machine();
@@ -152,7 +166,7 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
   });
 
   it('an expired link is refused locally, and by the owner when the local clock is fooled', async () => {
-    const { link } = await createLink(owner, { includeAddresses: true, ttlMs: 1 });
+    const { link } = await createLink(owner, { includeAddresses: true, ttlHours: 1 / 3_600_000 });
     await new Promise((resolve) => setTimeout(resolve, 5));
     expect(await refusal(joinWith(link, 'expired-local'))).toBe('invite_expired');
 
@@ -178,7 +192,7 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
     const identity = loadIdentity(owner.dataDir);
     const unknown = encodeLink(identity, { ...fields, token: randomBytes(32).toString('base64url') });
     expect(await refusal(joinWith(unknown, 'unknown'))).toBe('invite_unknown');
-    const otherNetwork = encodeLink(identity, { ...fields, network_id: 'some-other-network' });
+    const otherNetwork = encodeLink(identity, { ...fields, network_id: NET_OTHER });
     expect(await refusal(joinWith(otherNetwork, 'wrong'))).toBe('wrong_network');
   });
 
@@ -186,6 +200,7 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
     const { link } = await inviteFrom(owner);
     const ctx = machine();
     expect(await refusal(joinWith(link, 'owner', ctx))).toBe('name_taken');
+    assertNoIssuedTokenLeaked(owner);
     expect(await refusal(joinWith(link, 'renamed', ctx))).toBe('joined');
   });
 
@@ -193,30 +208,37 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
     const { link } = await inviteFrom(owner);
     const outcomes = await Promise.all(['race-a', 'race-b', 'race-c'].map((name) => refusal(joinWith(link, name))));
     expect([...outcomes].sort()).toEqual(['invite_used', 'invite_used', 'joined']);
+    assertNoIssuedTokenLeaked(owner);
   });
 
   it('a non-member is closed with no data read', async () => {
     const before = ownerStatus().non_member_refused;
-    const marker = `marker-${randomBytes(8).toString('hex')}`;
+    // It opens no stream at all. A bridge that waited to read from it first would
+    // leave this connection open until its 15 s stream deadline, so the close has to
+    // arrive well before that.
     const connection = await dial(NET_ALPN);
+    const silent = await Promise.race([
+      connection.closed(),
+      new Promise((resolve) => setTimeout(() => resolve('still open'), 5_000)),
+    ]);
+    expect(String(silent)).toMatch(/not_a_member/);
+    await expect.poll(() => ownerStatus().non_member_refused).toBe(before + 1);
+
+    // Data sent regardless goes nowhere and comes back as nothing.
+    const marker = `marker-${randomBytes(8).toString('hex')}`;
+    const pushy = await dial(NET_ALPN);
     let reply: Buffer | null = null;
     let streamError: unknown = null;
     try {
-      const stream = await connection.openBi();
+      const stream = await pushy.openBi();
       await stream.send.writeAll(bytes(marker));
       await stream.send.finish();
       reply = Buffer.from(await stream.recv.readToEnd(1024));
     } catch (err) {
       streamError = err;
     }
-    const reason = await Promise.race([
-      connection.closed(),
-      new Promise((resolve) => setTimeout(() => resolve('still open'), 10_000)),
-    ]);
-    expect(String(reason)).toMatch(/not_a_member/);
     expect(reply).toBeNull();
     expect(streamError).not.toBeNull();
-    await expect.poll(() => ownerStatus().non_member_refused).toBe(before + 1);
     expect(ownerStatus().member_stub_served).toBe(0);
     expect(fs.readFileSync(logPath(owner.dataDir), 'utf8')).not.toContain(marker);
   });
@@ -236,6 +258,7 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
   });
 
   it('an oversized join request is bounded: refused, recorded, and the bridge survives', async () => {
+    const earlierErrorAt = ownerStatus().last_error_at;
     const connection = await dial(JOIN_ALPN);
     const stream = await connection.openBi();
     await stream.send.writeAll(bytes(Buffer.alloc(JOIN_REQUEST_MAX_BYTES + 1, 0x61)));
@@ -246,14 +269,15 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
     ]);
     expect(String(reason)).not.toBe('still open');
     expect(getNetworkStatus(owner).bridge.running).toBe(true);
-    expect(ownerStatus().last_error).toBeTruthy();
+    await expect.poll(() => ownerStatus().last_error_at).not.toBe(earlierErrorAt);
+    expect(ownerStatus().last_error).toMatch(/TooLong/);
     const { link } = await inviteFrom(owner);
     expect(await refusal(joinWith(link, 'after-oversize'))).toBe('joined');
   });
 
   it('one bridge per data dir: a second exits and the first keeps running', async () => {
     const first = getNetworkStatus(owner).bridge.pid;
-    const second = spawnSync(process.execPath, [owner.bridgeEntry, 'serve'], { env: childEnv(owner), encoding: 'utf8', timeout: 30_000 });
+    const second = spawnSync(process.execPath, [owner.bridgeEntry, 'serve', owner.dataDir], { env: childEnv(owner), encoding: 'utf8', timeout: 30_000 });
     expect(second.status).toBe(EXIT_ALREADY_RUNNING);
     expect(getNetworkStatus(owner).bridge.pid).toBe(first);
     expect((await startBridge(owner)).started).toBe(false);
@@ -288,16 +312,217 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
     expect((await startBridge(owner)).started).toBe(true);
   }, 120_000);
 
-  it('a relay that does not answer is recorded, and the bridge keeps serving', async () => {
+  it('a relay that does not answer is recorded, the bridge keeps serving, and a join reports it', async () => {
     const ctx = machine();
     createNetwork(ctx, { name: 'no-relay', person: 'kt', relay: 'http://127.0.0.1:9/' });
     await startBridge(ctx);
     expect(readStatus(ctx.dataDir)?.relay_state).toBe('connecting');
+
+    // A link made without the flag has no addresses in it.
+    const relayOnly = await createLink(ctx, { ttlHours: 1 });
+    expect(parseLink(relayOnly.link).addrs).toBeUndefined();
+    expect(relayOnly.addressesMissing).toBe(false);
+
     await expect.poll(() => readStatus(ctx.dataDir)?.relay_state, { timeout: 40_000, interval: 500 }).toBe('unreachable');
-    expect(readStatus(ctx.dataDir)?.last_error).toMatch(/did not answer/);
+    expect(readStatus(ctx.dataDir)?.last_error).toMatch(/not answering/);
     expect(getNetworkStatus(ctx).bridge.running).toBe(true);
+
+    // This machine's relay is the link's relay, it is down, and there is no other
+    // way: said about this machine, before the invite is touched.
+    const stranded = machine();
+    await expect(joinNetwork(stranded, { link: relayOnly.link, name: 'stranded', person: 'kt' })).rejects.toMatchObject({
+      code: 'relay_unreachable', message: expect.stringMatching(/This machine could not reach its relay.*not used/),
+    });
+    expect(getNetworkStatus(ctx).roster_version).toBe(1);
+
+    // Still serving: a direct connection gets through with the relay down, and the
+    // joiner is told its relay was not reached.
+    const direct = await createLink(ctx, { includeAddresses: true, ttlHours: 1 });
+    const joined = await joinNetwork(machine(), { link: direct.link, name: 'direct-join', person: 'kt' });
+    expect(joined.relayReached).toBe(false);
     await stopBridge(ctx);
-  }, 90_000);
+  }, 180_000);
+
+  it('a --relay that does not answer refuses before using the invite, and stores nothing', async () => {
+    const { link } = await inviteFrom(owner);
+    const ctx = machine();
+    await expect(joinNetwork(ctx, { link, name: 'typo', person: 'kt', relay: 'http://127.0.0.1:9/' })).rejects.toMatchObject({ code: 'relay_unreachable' });
+    expect(readNetworkStatus(ctx).joined).toBe(false);
+    const db = openNetworkStore(owner.dbPath);
+    try {
+      expect(db.prepare('SELECT used_at FROM agent_network_invites WHERE hash = ?').get(hashToken(parseLink(link).token))).toEqual({ used_at: null });
+    } finally {
+      db.close();
+    }
+    expect((await joinWith(link, 'corrected', ctx)).relayReached).toBeNull();
+  }, 120_000);
+
+  it('a relay-only link with --relay off is refused at once, naming why', async () => {
+    const ctx = machine();
+    createNetwork(ctx, { name: 'relay-owner', person: 'kt', relay: 'http://127.0.0.1:9/' });
+    const { link } = await createLink(ctx, { ttlHours: 1 });
+    await expect(joinWith(link, 'cannot')).rejects.toMatchObject({ code: 'invalid_option', message: expect.stringMatching(/--relay off/) });
+    await stopBridge(ctx);
+  });
+
+  it('an owner that closes mid-join gets a separate error saying a retry is safe', async () => {
+    const fakeOwnerHome = makeHome();
+    homes.push(fakeOwnerHome);
+    const fakeOwner = ensureIdentity(path.join(fakeOwnerHome, 'data'));
+    const builder = iroh.Endpoint.builder();
+    builder.applyMinimal();
+    builder.secretKey(bytes(fakeOwner.secret));
+    builder.relayMode(iroh.RelayMode.disabled());
+    builder.alpns([bytes(JOIN_ALPN)]);
+    const endpoint = await builder.bind();
+    endpoints.push(endpoint);
+    await expect.poll(() => endpoint.addr().directAddresses().length, { timeout: 10_000 }).toBeGreaterThan(0);
+    void endpoint.acceptNext().then(async (incoming) => {
+      const accepting = await incoming?.accept();
+      const connection = await accepting?.connect();
+      connection?.close(7n, bytes('\u001b]0;PWNED\u0007'));
+    });
+    const link = encodeLink(fakeOwner, {
+      v: 1, network_id: NET_OTHER, owner_id: fakeOwner.machineId, relay: null,
+      token: randomBytes(32).toString('base64url'), expires_at_ms: Date.now() + 60_000, addrs: endpoint.addr().directAddresses(),
+    });
+    const err = await joinWith(link, 'interrupted').then(() => null, (e: unknown) => e as NetworkError);
+    expect(err?.code).toBe('join_interrupted');
+    expect(err?.message).toMatch(/same link is safe/);
+    expect(err?.message).not.toMatch(/[\u0000-\u001f]/);
+  }, 60_000);
+
+  it('membership and joins use a verified roster; a bad one is recorded and admits nobody', async () => {
+    const ctx = machine();
+    createNetwork(ctx, { name: 'tamper-owner', person: 'kt', relay: 'off' });
+    const member = machine();
+    const first = await createLink(ctx, { includeAddresses: true, ttlHours: 1 });
+    await joinWith(first.link, 'real-member', member);
+
+    const second = await createLink(ctx, { includeAddresses: true, ttlHours: 1 });
+    const db = openNetworkStore(ctx.dbPath);
+    db.prepare('UPDATE agent_network_config SET roster_signature = ?').run(Buffer.alloc(64, 1).toString('base64url'));
+    db.close();
+
+    // The owner's own fault: the joiner hears "internal", the owner's status says why.
+    expect(await refusal(joinWith(second.link, 'after-tamper'))).toBe('internal');
+    expect(readStatus(ctx.dataDir)?.last_error).toMatch(/not signed/);
+
+    const dialOwner = async (): Promise<Connection> => {
+      const builder = iroh.Endpoint.builder();
+      builder.applyMinimal();
+      builder.secretKey(bytes(loadIdentity(member.dataDir).secret));
+      builder.relayMode(iroh.RelayMode.disabled());
+      const endpoint = await builder.bind();
+      endpoints.push(endpoint);
+      const target = new iroh.EndpointAddr(iroh.EndpointId.fromString(loadIdentity(ctx.dataDir).machineId), null, readStatus(ctx.dataDir)?.direct_addresses);
+      return endpoint.connect(target, bytes(NET_ALPN));
+    };
+    const servedBefore = readStatus(ctx.dataDir)?.member_stub_served;
+    const connection = await dialOwner();
+    const reason = await Promise.race([connection.closed(), new Promise((resolve) => setTimeout(() => resolve('still open'), 5_000))]);
+    expect(String(reason)).not.toBe('still open');
+    expect(readStatus(ctx.dataDir)?.member_stub_served).toBe(servedBefore);
+    await stopBridge(ctx);
+  }, 60_000);
+
+  it('a held write lock cannot stop the bridge for long', async () => {
+    const ctx = machine();
+    createNetwork(ctx, { name: 'locked-owner', person: 'kt', relay: 'off' });
+    const { link } = await createLink(ctx, { includeAddresses: true, ttlHours: 1 });
+    const holder = openNetworkStore(ctx.dbPath);
+    holder.exec('BEGIN IMMEDIATE');
+    const started = Date.now();
+    const outcome = await refusal(joinWith(link, 'while-locked'));
+    holder.exec('ROLLBACK');
+    holder.close();
+    expect(outcome).toBe('internal');
+    expect(Date.now() - started).toBeLessThan(BRIDGE_BUSY_TIMEOUT_MS + 12_000);
+    expect(readStatus(ctx.dataDir)?.last_error).toMatch(/locked/);
+    await stopBridge(ctx);
+  }, 60_000);
+
+  it('two starters end with one bridge, and a bridge that lost its lock exits with a record', async () => {
+    const ctx = machine();
+    createNetwork(ctx, { name: 'two-starters', person: 'kt', relay: 'off' });
+    fs.mkdirSync(path.dirname(lockPath(ctx.dataDir)), { recursive: true });
+    fs.writeFileSync(lockPath(ctx.dataDir), `${2 ** 30}\n`);
+    const [a, b] = await Promise.all([startBridge(ctx), startBridge(ctx)]);
+    expect(a.pid).toBe(b.pid);
+    expect(getNetworkStatus(ctx).bridge.pid).toBe(a.pid);
+    expect([a.started, b.started].filter(Boolean).length).toBeLessThanOrEqual(1);
+
+    fs.writeFileSync(lockPath(ctx.dataDir), `${process.pid}\n`);
+    await expect.poll(() => readStatus(ctx.dataDir)?.state, { timeout: 15_000 }).toBe('failed');
+    expect(readStatus(ctx.dataDir)?.last_error).toMatch(/took the network bridge lock/);
+    await expect.poll(() => {
+      try {
+        process.kill(a.pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    }, { timeout: 10_000 }).toBe(false);
+    expect(fs.readFileSync(lockPath(ctx.dataDir), 'utf8').trim()).toBe(String(process.pid));
+    fs.rmSync(lockPath(ctx.dataDir));
+  }, 60_000);
+
+  describe('the bridge\'s early exits leave a record', () => {
+    const expectFailed = async (ctx: NetworkContext, pattern: RegExp): Promise<void> => {
+      const err = await startBridge(ctx).then(() => null, (e: unknown) => e as NetworkError);
+      expect(err?.code).toBe('bridge_failed');
+      expect(err?.message).toMatch(pattern);
+      expect(readStatus(ctx.dataDir)).toMatchObject({ state: 'failed', last_error: expect.stringMatching(pattern) });
+      expect(fs.existsSync(lockPath(ctx.dataDir))).toBe(false);
+    };
+
+    it('database', async () => {
+      const ctx = machine();
+      fs.mkdirSync(ctx.dbPath, { recursive: true });
+      await expectFailed(ctx, /Cannot open the database/);
+    });
+
+    it('not joined', async () => {
+      const ctx = machine();
+      await expectFailed(ctx, /has not joined/);
+    });
+
+    it('identity: wrong size and wrong key', async () => {
+      const ctx = machine();
+      createNetwork(ctx, { name: 'id-owner', person: 'kt', relay: 'off' });
+      fs.writeFileSync(identityPath(ctx.dataDir), Buffer.alloc(31));
+      await expectFailed(ctx, /not a valid machine key/);
+      fs.writeFileSync(identityPath(ctx.dataDir), randomBytes(32));
+      await expectFailed(ctx, /does not match/);
+    });
+
+    it('native', async () => {
+      const ctx = machine();
+      createNetwork(ctx, { name: 'native-owner', person: 'kt', relay: 'off' });
+      fs.rmSync(runtimeDir(ctx.dataDir));
+      await expectFailed(ctx, /Cannot load the networking component/);
+    });
+
+    it('bind', async () => {
+      const ctx = machine();
+      createNetwork(ctx, { name: 'bind-owner', person: 'kt', relay: 'off' });
+      const db = openNetworkStore(ctx.dbPath);
+      db.prepare('UPDATE agent_network_config SET relay_url = ?').run('not a url');
+      db.close();
+      await expectFailed(ctx, /Cannot open a network connection/);
+    });
+
+    it('a failure outside those is caught too, not left as a bare stack', () => {
+      const ctx = machine();
+      // A file where the network folder should be: the lock cannot even be attempted.
+      fs.rmSync(path.dirname(lockPath(ctx.dataDir)), { recursive: true });
+      fs.writeFileSync(path.dirname(lockPath(ctx.dataDir)), 'in the way');
+      const result = spawnSync(process.execPath, [ctx.bridgeEntry, 'serve', ctx.dataDir], { env: childEnv(ctx), encoding: 'utf8', timeout: 30_000 });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toMatch(/could not record it/);
+      expect(result.stderr).not.toMatch(/\n\s+at /);
+    });
+  });
 
   describe('a damaged install', () => {
     const copyRuntime = (ctx: NetworkContext): string => {
@@ -327,13 +552,108 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
 
     it('a missing platform package is explained without the misleading npm message', () => {
       const ctx = machine();
-      fs.mkdirSync(path.dirname(runtimeDir(ctx.dataDir)), { recursive: true });
       const nativePackage = copyRuntime(ctx);
       fs.rmSync(nativePackage, { recursive: true });
       const check = spawnSync(process.execPath, [ctx.bridgeEntry, 'check'], { env: childEnv(ctx), encoding: 'utf8' });
       expect(check.status).toBe(1);
       expect(JSON.parse(check.stdout).reason).toMatch(/missing from the install/);
       expect(check.stdout).not.toMatch(/npm has a bug/);
+    });
+  });
+
+  describe('the real command line, with a terminal', () => {
+    let preload: string;
+    let argvLog: string;
+    const cliFor = (ctx: NetworkContext, args: string[], input?: string) => spawnSync(
+      process.execPath,
+      [`--import=${preload}`, tree.cli, 'network', ...args],
+      {
+        encoding: 'utf8',
+        input,
+        timeout: 120_000,
+        env: { ...ctx.env, ARGV_LOG: argvLog, MEMESH_DIR: undefined, MEMESH_DB_PATH: undefined },
+      },
+    );
+
+    beforeAll(() => {
+      preload = writeTtyPreload(tree.root);
+      argvLog = path.join(tree.root, 'argv.jsonl');
+    });
+
+    it('create, link and join work end to end, the link is prompted for, and it stays out of every argv', async () => {
+      const a = machine();
+      const b = machine();
+      const c = machine();
+      const created = cliFor(a, ['create', '--name', 'cli-a', '--person', 'kt', '--relay', 'off']);
+      expect(created.status).toBe(0);
+      expect(created.stdout).toMatch(/Created a network/);
+
+      const linked = cliFor(a, ['link', '--include-addresses', '--ttl-hours', '1']);
+      expect(linked.status).toBe(0);
+      expect(linked.stderr).toMatch(/Started the network bridge/);
+      const link = linked.stdout.trim();
+      const fields = parseLink(link);
+      expect(fields.addrs?.length).toBeGreaterThan(0);
+
+      const joined = cliFor(b, ['join', '--name', 'cli-b', '--person', 'kt', '--relay', 'off'], `${link}\n`);
+      expect(joined.status).toBe(0);
+      expect(joined.stdout).toMatch(/Joined as kt@cli-b/);
+      expect(joined.stdout + joined.stderr).not.toContain(fields.token);
+      expect(joined.stderr).toMatch(/Paste the invite link/);
+      // Echo off before anything is read, and back on after.
+      expect(joined.stderr.indexOf('RAW:true')).toBeGreaterThanOrEqual(0);
+      expect(joined.stderr.indexOf('RAW:false')).toBeGreaterThan(joined.stderr.indexOf('RAW:true'));
+
+      const again = cliFor(c, ['join', '--name', 'cli-c', '--person', 'kt', '--relay', 'off'], `${link}\n`);
+      expect(again.status).toBe(1);
+      expect(again.stderr).toMatch(/already been used/);
+
+      const argvs = fs.readFileSync(argvLog, 'utf8');
+      expect(argvs).toContain('cli-b');
+      expect(argvs).not.toContain(fields.token);
+      expect(argvs).not.toContain('memesh://');
+
+      const status = cliFor(a, ['status', '--json']);
+      expect(status.status).toBe(0);
+      const view = JSON.parse(status.stdout) as JoinedStatus;
+      expect(view.members.map((member) => member.name)).toEqual(['cli-a', 'cli-b']);
+      expect(status.stdout).not.toContain(fields.token);
+
+      const plain = cliFor(a, ['status']);
+      expect(plain.stdout).toMatch(/Bridge: +running/);
+      expect(plain.stdout).toMatch(/kt@cli-b/);
+      expect(cliFor(a, ['down']).stdout).toMatch(/Stopped the network bridge/);
+      expect(cliFor(a, ['status']).stdout).toMatch(/Bridge: +not running/);
+    }, 180_000);
+
+    it('link without the flag puts no address in the link, and only the link on stdout', () => {
+      const ctx = machine();
+      expect(cliFor(ctx, ['create', '--name', 'cli-relay', '--person', 'kt', '--relay', 'http://127.0.0.1:9/']).status).toBe(0);
+      const linked = cliFor(ctx, ['link']);
+      expect(linked.status).toBe(0);
+      expect(linked.stdout.trim().split('\n').length).toBe(1);
+      expect(parseLink(linked.stdout.trim()).addrs).toBeUndefined();
+      expect(linked.stderr).toMatch(/Single use/);
+      expect(cliFor(ctx, ['down']).status).toBe(0);
+    }, 60_000);
+
+    it('an error from the bridge shows in status, stripped of control characters', () => {
+      const ctx = machine();
+      expect(cliFor(ctx, ['create', '--name', 'cli-status', '--person', 'kt', '--relay', 'off']).status).toBe(0);
+      fs.mkdirSync(path.dirname(statusPath(ctx.dataDir)), { recursive: true });
+      fs.writeFileSync(statusPath(ctx.dataDir), JSON.stringify({ pid: 1, state: 'failed', last_error: 'boom\u001b]0;PWNED\u0007', last_error_at: 'then' }));
+      const status = cliFor(ctx, ['status']);
+      expect(status.stdout).toMatch(/Last error: +boom/);
+      expect(status.stdout).not.toMatch(/\u001b/);
+    });
+
+    it('with only one side a terminal, the real CLI refuses', () => {
+      const ctx = machine();
+      const half = path.join(tree.root, 'half-tty.mjs');
+      fs.writeFileSync(half, 'process.stdin.isTTY = true;\n');
+      const result = spawnSync(process.execPath, [`--import=${half}`, tree.cli, 'network', 'link'], { encoding: 'utf8', env: ctx.env, timeout: 30_000 });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toMatch(/meant for a person/);
     });
   });
 });

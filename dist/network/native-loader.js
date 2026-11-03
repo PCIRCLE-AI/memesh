@@ -1,9 +1,16 @@
+import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
+import { currentLibc, platformPackages } from './runtime-platform.js';
 import { errorMessage } from './types.js';
 export function loadNative(runtimeDirectory) {
+    const lockText = fs.readFileSync(path.join(runtimeDirectory, 'package-lock.json'), 'utf8');
+    const packages = platformPackages(lockText, process.platform, process.arch, currentLibc());
+    if (!packages.some((name) => fs.existsSync(path.join(runtimeDirectory, 'node_modules', name, 'package.json')))) {
+        throw new Error(`the native networking file for ${process.platform}-${process.arch} is missing from the install`);
+    }
     const requireFromRuntime = createRequire(path.join(runtimeDirectory, 'package.json'));
-    return requireFromRuntime('@number0/iroh');
+    return requireFromRuntime(path.join(runtimeDirectory, 'node_modules', '@number0', 'iroh'));
 }
 export function explainLoadFailure(err) {
     const messages = [];
@@ -13,9 +20,12 @@ export function explainLoadFailure(err) {
     const specific = messages.find((message) => /^Unsupported /.test(message));
     if (specific)
         return `this computer is not supported (${specific})`;
-    if (messages.length === 1 && err.code === 'MODULE_NOT_FOUND') {
+    if (messages.length === 1 && ['MODULE_NOT_FOUND', 'ENOENT'].includes(String(err.code))) {
         return 'the networking component is not installed';
     }
+    const absent = messages.find((message) => /is missing from the install$/.test(message));
+    if (absent)
+        return absent;
     const mismatch = messages.find((message) => /version mismatch/.test(message));
     if (mismatch)
         return `the installed networking files do not match each other (${mismatch})`;

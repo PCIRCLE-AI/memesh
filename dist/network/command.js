@@ -5,7 +5,7 @@ import { getDbPath, getMemeshDirFromDbPath } from '../core/paths.js';
 import { stopBridge } from './bridge-control.js';
 import { DEFAULT_INVITE_TTL_HOURS } from './invites.js';
 import { bridgeUp, createLink, createNetwork, getNetworkStatus, joinNetwork } from './operations.js';
-import { NetworkError, errorMessage } from './types.js';
+import { NetworkError, errorMessage, safeForTerminal } from './types.js';
 function contextFrom(networkDistDir) {
     const assetsDir = fileURLToPath(networkDistDir);
     return {
@@ -17,17 +17,55 @@ function contextFrom(networkDistDir) {
 }
 export function assertPersonAtTerminal(command, stdin = process.stdin, stdout = process.stdout) {
     if (!stdin.isTTY || !stdout.isTTY) {
-        throw new NetworkError('needs_person', `\`memesh network ${command}\` needs a person: run it yourself in a terminal. Agents and scripts cannot run it.`);
+        throw new NetworkError('needs_person', `\`memesh network ${command}\` is meant for a person: run it yourself in a terminal. An invite is something one person hands to another, so this does not run from a pipe or a script.`);
     }
 }
+const LINK_INPUT_MAX_CHARS = 16 * 1024;
+export function promptForLink(stdin = process.stdin, stderr = process.stderr) {
+    stderr.write('Paste the invite link (it will not be shown), then press Enter: ');
+    return new Promise((resolve, reject) => {
+        let text = '';
+        const finish = (settle) => {
+            stdin.off('data', onData);
+            stdin.off('end', onEnd);
+            stdin.setRawMode?.(false);
+            stdin.pause();
+            stderr.write('\n');
+            settle();
+        };
+        const onEnd = () => finish(() => resolve(text.trim()));
+        const onData = (chunk) => {
+            for (const character of chunk.toString()) {
+                if (character === '\u0003' || character === '\u0004') {
+                    finish(() => reject(new NetworkError('needs_person', 'Cancelled. Nothing was changed.')));
+                    return;
+                }
+                if (character === '\r' || character === '\n') {
+                    if (text.length === 0)
+                        continue;
+                    finish(() => resolve(text.trim()));
+                    return;
+                }
+                if (character === '\u007f' || character === '\b')
+                    text = text.slice(0, -1);
+                else if (text.length < LINK_INPUT_MAX_CHARS)
+                    text += character;
+            }
+        };
+        stdin.setRawMode?.(true);
+        stdin.on('data', onData);
+        stdin.on('end', onEnd);
+        stdin.resume();
+    });
+}
 const progress = (message) => { process.stderr.write(`${message}\n`); };
-function action(run) {
+export function action(run) {
     return async (...args) => {
         try {
             await run(...args);
         }
         catch (err) {
-            process.stderr.write(`Error: ${errorMessage(err)}\n`);
+            process.stderr.write(`Error: ${safeForTerminal(errorMessage(err))}\n`);
             process.exitCode = 1;
         }
     };
@@ -47,11 +85,16 @@ function printStatus(status) {
         console.log(`  ${member.person}@${member.name}  ${member.machine_id.slice(0, 12)}...  joined ${member.joined_at}`);
     }
     const bridge = status.bridge;
-    console.log(bridge.running
-        ? `Bridge:       running (pid ${bridge.pid}, since ${bridge.started_at}), relay ${bridge.relay_state}`
-        : 'Bridge:       not running. Start it with: memesh network up');
+    if (bridge.cannot_tell) {
+        console.log(`Bridge:       cannot tell. Process ${bridge.pid} holds the lock and could not be confirmed as this bridge.`);
+    }
+    else {
+        console.log(bridge.running
+            ? `Bridge:       running (pid ${bridge.pid}, since ${bridge.started_at}), relay ${bridge.relay_state}`
+            : 'Bridge:       not running. Start it with: memesh network up');
+    }
     if (bridge.last_error)
-        console.log(`Last error:   ${bridge.last_error} (${bridge.last_error_at})`);
+        console.log(`Last error:   ${safeForTerminal(bridge.last_error)} (${bridge.last_error_at})`);
 }
 export function registerNetworkCommand(program, networkDistDir) {
     const network = program
@@ -83,19 +126,28 @@ export function registerNetworkCommand(program, networkDistDir) {
         });
         if (result.bridgeStarted)
             progress(`Started the network bridge (pid ${result.bridgePid}); it answers the link.`);
+        if (result.addressesMissing)
+            progress('No direct addresses were found, so this link has none. It works only through the relay.');
         console.log(result.link);
         progress(`Single use, expires ${new Date(result.expiresAtMs).toISOString()}. Whoever has it can join: send it privately.`);
     }));
     network
-        .command('join <link>')
-        .description('Join a network with an invite link (a person must run this)')
+        .command('join')
+        .description('Join a network with an invite link; it asks for the link (a person must run this)')
+        .argument('[link]', 'Not accepted here: the link would be visible to other processes. It is asked for instead.')
         .requiredOption('--name <machine>', 'A name for this machine')
         .requiredOption('--person <me>', 'Your name')
         .addOption(relayOption)
-        .action(action(async (link, opts) => {
+        .action(action(async (positional, opts) => {
+        if (positional !== undefined) {
+            throw new NetworkError('invalid_option', 'Do not put the invite link on the command line, where other processes and your shell history can read it. Run the command without it and paste the link when asked. Nothing was done.');
+        }
         assertPersonAtTerminal('join');
-        const { roster, member } = await joinNetwork(context(), { ...opts, link, onProgress: progress });
+        const link = await promptForLink();
+        const { roster, member, relayReached } = await joinNetwork(context(), { ...opts, link, onProgress: progress });
         console.log(`Joined as ${member.person}@${member.name}. The network has ${roster.members.length} machines.`);
+        if (relayReached === false)
+            progress('This machine could not reach its relay; the join went directly. Until the relay answers, it can only be reached directly.');
         console.log('Next: memesh network up');
     }));
     network
@@ -121,8 +173,11 @@ export function registerNetworkCommand(program, networkDistDir) {
         .command('down')
         .description('Stop the bridge process')
         .action(action(async () => {
-        const { stopped, pid } = await stopBridge(context());
-        console.log(stopped ? `Stopped the network bridge (pid ${pid}).` : 'The network bridge is not running.');
+        const { stopped, pid, forced } = await stopBridge(context());
+        if (!stopped)
+            console.log('The network bridge is not running.');
+        else
+            console.log(forced ? `The network bridge (pid ${pid}) did not stop when asked and was killed.` : `Stopped the network bridge (pid ${pid}).`);
     }));
 }
 //# sourceMappingURL=command.js.map

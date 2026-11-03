@@ -9,6 +9,9 @@ const SIGNATURE_DOMAIN = 'memesh-roster-v1\n';
 const MAX_MEMBERS = 256;
 // No `/` and no `@`, so `person/handle@machine` splits exactly one way.
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const NETWORK_ID = /^[0-9a-f]{32}$/;
+// The exact form Date#toISOString writes. Date.parse alone also accepts free text in parentheses.
+const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 export const SIGNED_ROSTER_MAX_BYTES = 128 * 1024;
 
@@ -17,10 +20,14 @@ export function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
   if (value !== null && typeof value === 'object') {
     const record = value as Record<string, unknown>;
-    const fields = Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`);
+    const fields = Object.keys(record).filter((key) => record[key] !== undefined).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`);
     return `{${fields.join(',')}}`;
   }
   return JSON.stringify(value);
+}
+
+export function isNetworkId(value: unknown): value is string {
+  return typeof value === 'string' && NETWORK_ID.test(value);
 }
 
 export function assertValidName(kind: 'machine name' | 'person', value: unknown): asserts value is string {
@@ -46,7 +53,7 @@ function parseMember(raw: unknown): RosterMember {
   } catch {
     throw invalid('a member has a bad name or person');
   }
-  if (typeof member.joined_at !== 'string' || !Number.isFinite(Date.parse(member.joined_at))) {
+  if (typeof member.joined_at !== 'string' || !ISO_TIMESTAMP.test(member.joined_at) || !Number.isFinite(Date.parse(member.joined_at))) {
     throw invalid('a member has a bad joined_at');
   }
   return { machine_id: member.machine_id, name: member.name as string, person: member.person as string, joined_at: member.joined_at };
@@ -60,10 +67,9 @@ export function parseRoster(rosterJson: string): Roster {
     throw invalid('it is not JSON');
   }
   if (raw === null || typeof raw !== 'object') throw invalid('it is not an object');
-  if (typeof raw.network_id !== 'string' || raw.network_id.length === 0) throw invalid('no network id');
+  if (!isNetworkId(raw.network_id)) throw invalid('bad network id');
   if (!isMachineId(raw.owner_id)) throw invalid('bad owner id');
   if (!Number.isSafeInteger(raw.version) || (raw.version as number) < 1) throw invalid('bad version');
-  if (!Number.isSafeInteger(raw.invite_epoch) || (raw.invite_epoch as number) < 0) throw invalid('bad invite epoch');
   if (!Array.isArray(raw.members) || raw.members.length > MAX_MEMBERS) throw invalid('bad member list');
   const members = raw.members.map(parseMember);
   const names = new Set(members.map((member) => member.name.toLowerCase()));
@@ -76,12 +82,11 @@ export function parseRoster(rosterJson: string): Roster {
     owner_id: raw.owner_id,
     version: raw.version as number,
     members,
-    invite_epoch: raw.invite_epoch as number,
   };
 }
 
 export function createRoster(networkId: string, owner: RosterMember): Roster {
-  return { network_id: networkId, owner_id: owner.machine_id, version: 1, members: [owner], invite_epoch: 0 };
+  return { network_id: networkId, owner_id: owner.machine_id, version: 1, members: [owner] };
 }
 
 export function signRoster(identity: Identity, roster: Roster): SignedRoster {

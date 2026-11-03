@@ -2,7 +2,9 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { describeChildDeath } from './bridge-control.js';
 import { ensureNetworkDir } from './identity.js';
+import { currentLibc, platformPackages } from './runtime-platform.js';
 import { NetworkError, SINGLE_MACHINE_NOTE, childEnv, runtimeDir } from './types.js';
 const INSTALL_TIMEOUT_MS = 5 * 60_000;
 const CHECK_TIMEOUT_MS = 30_000;
@@ -15,18 +17,8 @@ function assetText(ctx, name) {
         throw new NetworkError('runtime_install_failed', `This MeMesh install is missing ${name}. Reinstall MeMesh. ${SINGLE_MACHINE_NOTE}`);
     }
 }
-function currentLibc() {
-    if (process.platform !== 'linux')
-        return null;
-    process.report.excludeNetwork = true;
-    const header = process.report.getReport();
-    return header.header?.glibcVersionRuntime ? 'glibc' : 'musl';
-}
 export function isPlatformSupported(lockText, platform, arch, libc) {
-    const { packages } = JSON.parse(lockText);
-    return Object.values(packages).some((entry) => entry.os?.includes(platform)
-        && entry.cpu?.includes(arch)
-        && (entry.libc === undefined || libc === null || entry.libc.includes(libc)));
+    return platformPackages(lockText, platform, arch, libc).length > 0;
 }
 function unsupportedMessage(platform, arch) {
     const what = platform === 'darwin' && arch === 'x64'
@@ -60,28 +52,28 @@ export function explainInstallFailure(spawnError, output) {
     }
     return `Could not install the networking component: ${reason}. ${SINGLE_MACHINE_NOTE}`;
 }
-function describeChildDeath(status, signal) {
-    if (signal)
-        return `it crashed with signal ${signal}`;
-    return `it exited with status ${status}`;
-}
-export function checkRuntime(ctx) {
+export function checkRuntime(ctx, timeoutMs = CHECK_TIMEOUT_MS) {
     const result = spawnSync(process.execPath, [ctx.bridgeEntry, 'check'], {
-        env: childEnv(ctx), encoding: 'utf8', timeout: CHECK_TIMEOUT_MS,
+        env: childEnv(ctx), encoding: 'utf8', timeout: timeoutMs,
     });
-    let reason;
     if (result.status === 0)
         return;
-    try {
-        reason = JSON.parse(result.stdout).reason;
+    let reason;
+    if (result.error?.code === 'ETIMEDOUT') {
+        reason = `the check did not finish within ${timeoutMs / 1000} s, so nothing is known about the files; try again when this computer is less busy`;
     }
-    catch {
-        reason = `the networking component could not start: ${describeChildDeath(result.status, result.signal)}, which usually means its native file is damaged`;
+    else {
+        try {
+            reason = JSON.parse(result.stdout).reason;
+        }
+        catch {
+            reason = `the networking component could not start: ${describeChildDeath(result.status, result.signal)}`;
+        }
     }
     throw new NetworkError('runtime_load_failed', `The networking component did not load: ${reason}. ${SINGLE_MACHINE_NOTE}`);
 }
 function runNpmCi(ctx, directory) {
-    const args = ['ci', '--ignore-scripts', '--no-audit', '--no-fund', '--no-update-notifier', '--loglevel=error'];
+    const args = ['ci', '--ignore-scripts', '--include=optional', '--no-audit', '--no-fund', '--no-update-notifier', '--loglevel=error'];
     const options = { cwd: directory, env: childEnv(ctx), encoding: 'utf8', timeout: INSTALL_TIMEOUT_MS };
     const result = process.platform === 'win32'
         ? spawnSync(['npm.cmd', ...args].join(' '), { ...options, shell: true })
@@ -90,14 +82,34 @@ function runNpmCi(ctx, directory) {
         return;
     throw new NetworkError('runtime_install_failed', explainInstallFailure(result.error, `${result.stderr ?? ''}\n${result.stdout ?? ''}`));
 }
+function assertPlatformPackageInstalled(lockText, directory) {
+    const packages = platformPackages(lockText, process.platform, process.arch, currentLibc());
+    if (packages.some((name) => fs.existsSync(path.join(directory, 'node_modules', name, 'package.json'))))
+        return;
+    throw new NetworkError('runtime_install_failed', `Could not install the networking component: the native file for this computer failed to download or did not match its pinned checksum, so it was refused. Try again; if it repeats, your network or npm registry is changing the files. ${SINGLE_MACHINE_NOTE}`);
+}
+function removeFailedInstall(dataDir, directory, created) {
+    fs.rmSync(directory, { recursive: true, force: true });
+    try {
+        if (created.network)
+            fs.rmdirSync(path.dirname(directory));
+        if (created.data)
+            fs.rmdirSync(dataDir);
+    }
+    catch (err) {
+        if (err.code !== 'ENOTEMPTY')
+            throw err;
+    }
+}
 export function ensureRuntime(ctx, options = {}) {
     const lockText = assetText(ctx, 'runtime-lock.json');
     const packageText = assetText(ctx, 'runtime-package.json');
     if (!isPlatformSupported(lockText, process.platform, process.arch, currentLibc())) {
         throw new NetworkError('runtime_unsupported', unsupportedMessage(process.platform, process.arch));
     }
-    ensureNetworkDir(ctx.dataDir);
     const directory = runtimeDir(ctx.dataDir);
+    const created = { network: !fs.existsSync(path.dirname(directory)), data: !fs.existsSync(ctx.dataDir) };
+    ensureNetworkDir(ctx.dataDir);
     const wanted = createHash('sha256').update(lockText).digest('hex');
     const marker = path.join(directory, MARKER);
     if (!options.force && fs.existsSync(marker) && fs.readFileSync(marker, 'utf8').trim() === wanted) {
@@ -114,8 +126,15 @@ export function ensureRuntime(ctx, options = {}) {
     fs.rmSync(marker, { force: true });
     fs.writeFileSync(path.join(directory, 'package.json'), packageText);
     fs.writeFileSync(path.join(directory, 'package-lock.json'), lockText);
-    runNpmCi(ctx, directory);
-    checkRuntime(ctx);
+    try {
+        runNpmCi(ctx, directory);
+        assertPlatformPackageInstalled(lockText, directory);
+        checkRuntime(ctx);
+    }
+    catch (err) {
+        removeFailedInstall(ctx.dataDir, directory, created);
+        throw err;
+    }
     fs.writeFileSync(marker, `${wanted}\n`);
 }
 //# sourceMappingURL=runtime.js.map

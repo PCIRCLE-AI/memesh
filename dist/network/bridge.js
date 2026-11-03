@@ -38,6 +38,7 @@ var SECRET_PATTERN_SOURCES = [
   SENDGRID_KEY,
   "[srp]k_(?:live|test)_[A-Za-z0-9]{16,}",
   "npm_[A-Za-z0-9]{36}",
+  "memesh://join/[A-Za-z0-9_-]{8,}",
   `\\b${SK_KEY}`,
   "Bearer(?:\\s|\\\\[nrt])+[A-Za-z0-9_.\\-]{16,}",
   `(?<![A-Za-z0-9])${NAMED_VALUE}`,
@@ -60,6 +61,7 @@ var JOIN_ALPN = "memesh/join/1";
 var NET_ALPN = "memesh/net/1";
 var RELAY_OFF = "off";
 var EXIT_ALREADY_RUNNING = 3;
+var EXIT_LOCK_UNCONFIRMED = 4;
 var NetworkError = class extends Error {
   code;
   constructor(code, message) {
@@ -212,6 +214,12 @@ function isMachineId(value) {
 function identityPath(dataDir2) {
   return path3.join(networkDir(dataDir2), "identity.key");
 }
+function ensureNetworkDir(dataDir2) {
+  const dir = networkDir(dataDir2);
+  fs2.mkdirSync(dir, { recursive: true, mode: 448 });
+  removeGroupAndOtherAccess(dir);
+  return dir;
+}
 function identityFromSeed(secret) {
   const privateKey = createPrivateKey({ key: Buffer.concat([PKCS8_PREFIX, secret]), format: "der", type: "pkcs8" });
   const spki = createPublicKey(privateKey).export({ format: "der", type: "spki" });
@@ -258,16 +266,21 @@ import { createHash, randomBytes as randomBytes2 } from "node:crypto";
 var SIGNATURE_DOMAIN = "memesh-roster-v1\n";
 var MAX_MEMBERS = 256;
 var NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+var NETWORK_ID = /^[0-9a-f]{32}$/;
+var ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 var SIGNED_ROSTER_MAX_BYTES = 128 * 1024;
 function canonicalJson(value) {
   if (Array.isArray(value))
     return `[${value.map(canonicalJson).join(",")}]`;
   if (value !== null && typeof value === "object") {
     const record = value;
-    const fields = Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`);
+    const fields = Object.keys(record).filter((key) => record[key] !== void 0).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`);
     return `{${fields.join(",")}}`;
   }
   return JSON.stringify(value);
+}
+function isNetworkId(value) {
+  return typeof value === "string" && NETWORK_ID.test(value);
 }
 function assertValidName(kind, value) {
   if (typeof value !== "string" || !NAME.test(value)) {
@@ -289,7 +302,7 @@ function parseMember(raw) {
   } catch {
     throw invalid("a member has a bad name or person");
   }
-  if (typeof member.joined_at !== "string" || !Number.isFinite(Date.parse(member.joined_at))) {
+  if (typeof member.joined_at !== "string" || !ISO_TIMESTAMP.test(member.joined_at) || !Number.isFinite(Date.parse(member.joined_at))) {
     throw invalid("a member has a bad joined_at");
   }
   return { machine_id: member.machine_id, name: member.name, person: member.person, joined_at: member.joined_at };
@@ -303,14 +316,12 @@ function parseRoster(rosterJson) {
   }
   if (raw === null || typeof raw !== "object")
     throw invalid("it is not an object");
-  if (typeof raw.network_id !== "string" || raw.network_id.length === 0)
-    throw invalid("no network id");
+  if (!isNetworkId(raw.network_id))
+    throw invalid("bad network id");
   if (!isMachineId(raw.owner_id))
     throw invalid("bad owner id");
   if (!Number.isSafeInteger(raw.version) || raw.version < 1)
     throw invalid("bad version");
-  if (!Number.isSafeInteger(raw.invite_epoch) || raw.invite_epoch < 0)
-    throw invalid("bad invite epoch");
   if (!Array.isArray(raw.members) || raw.members.length > MAX_MEMBERS)
     throw invalid("bad member list");
   const members = raw.members.map(parseMember);
@@ -326,8 +337,7 @@ function parseRoster(rosterJson) {
     network_id: raw.network_id,
     owner_id: raw.owner_id,
     version: raw.version,
-    members,
-    invite_epoch: raw.invite_epoch
+    members
   };
 }
 function signRoster(identity, roster) {
@@ -380,25 +390,7 @@ function consumeInvite(db, tokenHash, now) {
 import fs3 from "node:fs";
 import path4 from "node:path";
 
-// dist/storage/fts-index.js
-var UNSPACED_SCRIPT_RANGES = [
-  [3585, 3675],
-  [3713, 3807],
-  [6016, 6143],
-  [13312, 19903],
-  [19968, 40959],
-  [63744, 64255],
-  [12352, 12543],
-  [44032, 55215],
-  [65382, 65437],
-  [131072, 262143]
-];
-var UNSPACED_SCRIPT_CLASS = UNSPACED_SCRIPT_RANGES.map(([lo, hi]) => `${String.fromCodePoint(lo)}-${String.fromCodePoint(hi)}`).join("");
-var UNSPACED_SCRIPT_GLOB_RUN3 = `*[${UNSPACED_SCRIPT_CLASS}][${UNSPACED_SCRIPT_CLASS}][${UNSPACED_SCRIPT_CLASS}]*`;
-var UNSPACED_SCRIPT = new RegExp(`[${UNSPACED_SCRIPT_CLASS}]+`, "gu");
-var LONE_UNSPACED_CHAR = new RegExp(`[${UNSPACED_SCRIPT_CLASS}]`, "u");
-
-// dist/storage/schema.js
+// dist/storage/agent-network-schema.js
 var AGENT_NETWORK_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS agent_network_config (
   id               INTEGER PRIMARY KEY CHECK (id = 1),
@@ -419,337 +411,6 @@ CREATE TABLE IF NOT EXISTS agent_network_invites (
   used_at       INTEGER
 );
 `;
-var SCHEMA_SQL = `
-CREATE TABLE IF NOT EXISTS entities (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL UNIQUE,
-  type TEXT NOT NULL,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  metadata JSON
-);
-
-CREATE TABLE IF NOT EXISTS observations (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  entity_id INTEGER NOT NULL,
-  content TEXT NOT NULL,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (entity_id) REFERENCES entities(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS relations (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  from_entity_id INTEGER NOT NULL,
-  to_entity_id INTEGER NOT NULL,
-  relation_type TEXT NOT NULL,
-  metadata JSON,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (from_entity_id) REFERENCES entities(id) ON DELETE CASCADE,
-  FOREIGN KEY (to_entity_id) REFERENCES entities(id) ON DELETE CASCADE,
-  UNIQUE(from_entity_id, to_entity_id, relation_type)
-);
-
-CREATE TABLE IF NOT EXISTS tags (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  entity_id INTEGER NOT NULL,
-  tag TEXT NOT NULL,
-  FOREIGN KEY (entity_id) REFERENCES entities(id) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS idx_tags_entity ON tags(entity_id);
-CREATE INDEX IF NOT EXISTS idx_tags_tag ON tags(tag);
--- The tags dedup DELETE + idx_tags_entity_tag_unique creation live in
--- ensureTagsUniqueIndex(), AFTER this exec \u2014 the DELETE is a one-time
--- migration, and a DML statement in this string made every open start a
--- write transaction even when it deleted nothing (same reader-breaking
--- pattern as the hook_runs_since note below).
-CREATE INDEX IF NOT EXISTS idx_observations_entity ON observations(entity_id);
-CREATE INDEX IF NOT EXISTS idx_relations_from ON relations(from_entity_id);
-CREATE INDEX IF NOT EXISTS idx_relations_to ON relations(to_entity_id);
-CREATE INDEX IF NOT EXISTS idx_entities_type_created ON entities(type, created_at);
-
--- Migration markers and small bits of persistent state.
---
--- This used to be created ad hoc by each helper that needed it \u2014 four inline
--- CREATE TABLE IF NOT EXISTS copies in src/db.ts, none of them visible to
--- schema checks. A column added to one copy would not have been caught. It
--- also meant the hook-side schema had no metadata table at all, so hooks
--- could not participate in migrations even in principle.
-CREATE TABLE IF NOT EXISTS memesh_metadata (
-  key   TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
-
--- Local agent messaging core. Messages are immutable, deliveries identify the
--- authorized recipient, events are the wakeup/catch-up surface, cursors keep
--- the internal sequence opaque, and receipts are append-only facts that remain
--- separate from delivery existence.
-CREATE TABLE IF NOT EXISTS agent_messages (
-  message_id         TEXT PRIMARY KEY,
-  project            TEXT NOT NULL,
-  sender             TEXT NOT NULL,
-  sender_host        TEXT,
-  recipient          TEXT NOT NULL,
-  content_type       TEXT NOT NULL,
-  correlation_id     TEXT,
-  reply_to_message_id TEXT,
-  privacy            TEXT NOT NULL,
-  payload_json       TEXT NOT NULL,
-  -- A tombstone replaces only a terminal payload. The original JSON bytes
-  -- are never reconstructed from these fields; they retain enough identity to
-  -- audit the erasure while the routing and lifecycle tables remain intact.
-  payload_sha256     TEXT,
-  payload_original_bytes INTEGER,
-  payload_tombstoned_at TIMESTAMP,
-  provenance_json    TEXT NOT NULL,
-  created_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS agent_message_deliveries (
-  delivery_id        TEXT PRIMARY KEY,
-  message_id         TEXT NOT NULL,
-  project            TEXT NOT NULL,
-  recipient          TEXT NOT NULL,
-  target_kind        TEXT NOT NULL DEFAULT 'principal' CHECK (target_kind IN ('principal', 'session')),
-  -- #497: the one session a principal delivery is meant for (NULL: every
-  -- session of that principal). Added by migrateEntitiesSchema on older files.
-  intended_session   TEXT,
-  created_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (message_id) REFERENCES agent_messages(message_id) ON DELETE CASCADE,
-  UNIQUE(message_id, project, recipient)
-);
-
-CREATE TABLE IF NOT EXISTS agent_message_events (
-  event_sequence     INTEGER PRIMARY KEY AUTOINCREMENT,
-  event_id           TEXT NOT NULL UNIQUE,
-  message_id         TEXT NOT NULL,
-  delivery_id        TEXT NOT NULL,
-  project            TEXT NOT NULL,
-  recipient          TEXT NOT NULL,
-  event_kind         TEXT NOT NULL,
-  created_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (message_id) REFERENCES agent_messages(message_id) ON DELETE CASCADE,
-  FOREIGN KEY (delivery_id) REFERENCES agent_message_deliveries(delivery_id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS agent_message_idempotency (
-  project            TEXT NOT NULL,
-  sender             TEXT NOT NULL,
-  idempotency_key    TEXT NOT NULL,
-  request_hash       TEXT NOT NULL,
-  message_id         TEXT NOT NULL UNIQUE,
-  created_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (message_id) REFERENCES agent_messages(message_id) ON DELETE CASCADE,
-  PRIMARY KEY(project, sender, idempotency_key)
-);
-
-CREATE TABLE IF NOT EXISTS agent_message_cursors (
-  cursor_token       TEXT PRIMARY KEY,
-  project            TEXT NOT NULL,
-  recipient          TEXT NOT NULL,
-  event_sequence     INTEGER NOT NULL,
-  created_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS agent_message_receipts (
-  receipt_id         TEXT PRIMARY KEY,
-  message_id         TEXT NOT NULL,
-  project            TEXT NOT NULL,
-  recipient          TEXT NOT NULL,
-  receipt_kind       TEXT NOT NULL,
-  actor              TEXT NOT NULL,
-  idempotency_key    TEXT NOT NULL,
-  request_hash       TEXT NOT NULL,
-  detail_json        TEXT NOT NULL,
-  created_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (message_id) REFERENCES agent_messages(message_id) ON DELETE CASCADE,
-  UNIQUE(project, recipient, message_id, receipt_kind, idempotency_key)
-);
-
--- Host-native push identity and lifecycle. A principal is stable, a session
--- instance is ephemeral, and every connection to that session gets a strictly
--- increasing generation. The activation checkpoint is intentionally created
--- at first principal registration: principal-targeted history at or before it
--- is durable inbox history, but is never replayed as a first-time host push.
-CREATE TABLE IF NOT EXISTS agent_principals (
-  project                     TEXT NOT NULL,
-  principal_id                TEXT NOT NULL,
-  activation_event_sequence   INTEGER NOT NULL,
-  created_at                  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY(project, principal_id)
-);
-
-CREATE TABLE IF NOT EXISTS agent_session_instances (
-  project                  TEXT NOT NULL,
-  session_instance_id      TEXT NOT NULL,
-  principal_id             TEXT NOT NULL,
-  adapter_kind             TEXT NOT NULL,
-  last_generation          INTEGER NOT NULL DEFAULT 0,
-  created_at               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY(project, session_instance_id),
-  FOREIGN KEY (project, principal_id) REFERENCES agent_principals(project, principal_id)
-);
-
-CREATE TABLE IF NOT EXISTS agent_session_connections (
-  connection_id            TEXT PRIMARY KEY,
-  project                  TEXT NOT NULL,
-  principal_id             TEXT NOT NULL,
-  session_instance_id      TEXT NOT NULL,
-  generation               INTEGER NOT NULL,
-  adapter_kind             TEXT NOT NULL,
-  router_instance_id       TEXT NOT NULL,
-  lease_expires_at_ms      INTEGER NOT NULL,
-  connected_at             TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  disconnected_at          TIMESTAMP,
-  disconnect_reason        TEXT,
-  UNIQUE(project, session_instance_id, generation),
-  FOREIGN KEY (project, session_instance_id)
-    REFERENCES agent_session_instances(project, session_instance_id)
-);
-
-CREATE TABLE IF NOT EXISTS agent_presence_facts (
-  presence_fact_id          TEXT PRIMARY KEY,
-  project                  TEXT NOT NULL,
-  principal_id             TEXT NOT NULL,
-  session_instance_id      TEXT NOT NULL,
-  connection_id            TEXT NOT NULL,
-  generation               INTEGER NOT NULL,
-  presence_kind            TEXT NOT NULL CHECK (presence_kind IN ('connected', 'heartbeat', 'disconnected', 'superseded')),
-  detail_json              TEXT NOT NULL,
-  created_at               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (connection_id) REFERENCES agent_session_connections(connection_id)
-);
-
--- Dispatch is at-least-once across a crash boundary. delivery_id is the stable
--- adapter dispatch key; attempt_id identifies one invocation. A host_accept is
--- a separate fact and never implies an agent acknowledgement or workflow
--- outcome.
-CREATE TABLE IF NOT EXISTS agent_dispatch_attempts (
-  attempt_id               TEXT PRIMARY KEY,
-  delivery_id              TEXT NOT NULL,
-  project                  TEXT NOT NULL,
-  principal_id             TEXT NOT NULL,
-  session_instance_id      TEXT NOT NULL,
-  connection_id            TEXT NOT NULL,
-  generation               INTEGER NOT NULL,
-  router_instance_id       TEXT NOT NULL,
-  attempt_number           INTEGER NOT NULL,
-  result                   TEXT NOT NULL DEFAULT 'started' CHECK (result IN ('started', 'adapter_returned', 'adapter_rejected', 'adapter_failed', 'stale_generation')),
-  failure_code             TEXT,
-  created_at               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  completed_at             TIMESTAMP,
-  UNIQUE(delivery_id, attempt_number),
-  FOREIGN KEY (delivery_id) REFERENCES agent_message_deliveries(delivery_id) ON DELETE CASCADE,
-  FOREIGN KEY (connection_id) REFERENCES agent_session_connections(connection_id)
-);
-
-CREATE TABLE IF NOT EXISTS agent_host_accepts (
-  host_accept_id           TEXT PRIMARY KEY,
-  attempt_id               TEXT NOT NULL UNIQUE,
-  delivery_id              TEXT NOT NULL UNIQUE,
-  adapter_kind             TEXT NOT NULL,
-  receipt_json             TEXT NOT NULL,
-  created_at               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (attempt_id) REFERENCES agent_dispatch_attempts(attempt_id),
-  FOREIGN KEY (delivery_id) REFERENCES agent_message_deliveries(delivery_id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS agent_ack_facts (
-  ack_fact_id              TEXT PRIMARY KEY,
-  delivery_id              TEXT NOT NULL,
-  host_accept_id           TEXT NOT NULL,
-  actor                    TEXT NOT NULL,
-  idempotency_key          TEXT NOT NULL,
-  request_hash             TEXT NOT NULL,
-  detail_json              TEXT NOT NULL,
-  created_at               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE(delivery_id, actor, idempotency_key),
-  FOREIGN KEY (delivery_id) REFERENCES agent_message_deliveries(delivery_id) ON DELETE CASCADE,
-  FOREIGN KEY (host_accept_id) REFERENCES agent_host_accepts(host_accept_id)
-);
-
-CREATE TABLE IF NOT EXISTS agent_workflow_facts (
-  workflow_fact_id         TEXT PRIMARY KEY,
-  delivery_id              TEXT NOT NULL,
-  actor                    TEXT NOT NULL,
-  workflow_state           TEXT NOT NULL,
-  idempotency_key          TEXT NOT NULL,
-  request_hash             TEXT NOT NULL,
-  detail_json              TEXT NOT NULL,
-  created_at               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE(delivery_id, actor, idempotency_key),
-  FOREIGN KEY (delivery_id) REFERENCES agent_message_deliveries(delivery_id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS agent_retention_facts (
-  retention_fact_id        TEXT PRIMARY KEY,
-  message_id               TEXT NOT NULL,
-  actor                    TEXT NOT NULL,
-  retention_state          TEXT NOT NULL,
-  idempotency_key          TEXT NOT NULL,
-  request_hash             TEXT NOT NULL,
-  detail_json              TEXT NOT NULL,
-  created_at               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE(message_id, actor, idempotency_key),
-  FOREIGN KEY (message_id) REFERENCES agent_messages(message_id) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS idx_agent_message_events_recipient_sequence
-  ON agent_message_events(project, recipient, event_sequence);
-CREATE INDEX IF NOT EXISTS idx_agent_message_deliveries_scope
-  ON agent_message_deliveries(project, recipient, message_id);
-CREATE INDEX IF NOT EXISTS idx_agent_message_receipts_scope
-  ON agent_message_receipts(project, recipient, message_id, created_at);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_message_cursors_unique_scope_sequence
-  ON agent_message_cursors(project, recipient, event_sequence);
-CREATE INDEX IF NOT EXISTS idx_agent_principals_activation
-  ON agent_principals(project, activation_event_sequence);
-CREATE INDEX IF NOT EXISTS idx_agent_session_connections_active
-  ON agent_session_connections(project, principal_id, session_instance_id, lease_expires_at_ms)
-  WHERE disconnected_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_agent_dispatch_attempts_delivery
-  ON agent_dispatch_attempts(delivery_id, attempt_number);
-CREATE INDEX IF NOT EXISTS idx_agent_workflow_facts_delivery_created
-  ON agent_workflow_facts(delivery_id, created_at, workflow_fact_id);
-
--- Proof that a capture hook actually RAN. Nothing else in this schema can
--- give it: every other signal is "a row was written", and "the hook ran and
--- found nothing worth saving" is the healthy case that produces no row at
--- all. So a quiet day and a dead capture loop were byte-identical in the
--- database, and the one doctor message that had to cover both cried wolf on
--- the first and stayed silent on the second.
---
--- Written by the three hooks that hold a read-write handle (Stop, PreCompact,
--- PostToolUse), each calling recordHookRun() at its own SUCCESSFUL exit \u2014
--- after capture, not at open. Stamping at open certified the wrong thing: a
--- hook that opened the database and then died mid-capture looked alive for a
--- day. "Successful" is precise: a completed capture, or a well-formed
--- payload the hook correctly decided not to capture (dedup, low-signal
--- session). A malformed payload (schema-flip shapes) and a write that did
--- not land both leave no stamp \u2014 either would make the heartbeat mask the
--- exact dropout it exists to expose. The recall-side hooks open read-only
--- and deliberately do not appear here: their liveness answers a different
--- question, and giving them a write handle would put a lock acquisition on
--- the SessionStart hot path.
---
--- One row per hook, upserted. It does not grow.
-CREATE TABLE IF NOT EXISTS hook_runs (
-  hook        TEXT PRIMARY KEY,
-  last_run_at TIMESTAMP NOT NULL,
-  run_count   INTEGER NOT NULL DEFAULT 0
-);
-
--- The 'hook_runs_since' metadata key (when this database first became able
--- to record hook runs) is stamped by ensureHookRunsSince() AFTER this exec,
--- NOT here. It used to be an INSERT OR IGNORE in this string, and that made
--- every open \u2014 including opens that only ever read \u2014 start a write
--- transaction: an INSERT statement takes the WAL writer lock even when
--- OR IGNORE ends up changing nothing. Two states regressed from "reads work"
--- to "open throws": a peer holding the writer lock past busy_timeout, and a
--- read-only database FILE (measured: "attempt to write a readonly database"
--- killed recall along with capture). The helper SELECTs first and writes
--- only when the key is genuinely absent \u2014 once per database lifetime.
-${AGENT_NETWORK_SCHEMA_SQL}`;
-var MIGRATION_RETRY_BACKOFF_MS = 24 * 60 * 60 * 1e3;
 
 // dist/storage/sqlite.js
 import { createRequire } from "node:module";
@@ -811,7 +472,7 @@ var MemeshDatabase = class extends DatabaseSync {
 };
 
 // dist/network/store.js
-function openNetworkStore(dbPath) {
+function openNetworkStore(dbPath, options = {}) {
   const dir = path4.dirname(dbPath);
   fs3.mkdirSync(dir, { recursive: true });
   try {
@@ -822,6 +483,8 @@ function openNetworkStore(dbPath) {
   guardDatabaseFiles(dbPath);
   const db = new MemeshDatabase(dbPath);
   try {
+    if (options.busyTimeoutMs !== void 0)
+      db.pragma(`busy_timeout = ${options.busyTimeoutMs}`);
     db.pragma("journal_mode = WAL");
     db.exec(AGENT_NETWORK_SCHEMA_SQL);
   } catch (err) {
@@ -845,6 +508,7 @@ function signedRosterOf(config) {
 // dist/network/join-protocol.js
 var JOIN_REQUEST_MAX_BYTES = 4 * 1024;
 var JOIN_REPLY_MAX_BYTES = SIGNED_ROSTER_MAX_BYTES + 1024;
+var OWNER_SIDE_FAULTS = /* @__PURE__ */ new Set(["roster_invalid", "not_owner", "identity_invalid"]);
 function encodeJoinRequest(request) {
   return Buffer.from(JSON.stringify(request));
 }
@@ -889,18 +553,39 @@ function handleJoinRequest(db, identity, remoteMachineId, bytes, now) {
   try {
     return { ok: true, roster: decide.immediate() };
   } catch (err) {
-    if (err instanceof NetworkError)
+    if (err instanceof NetworkError && !OWNER_SIDE_FAULTS.has(err.code))
       return { ok: false, error: err.code };
     throw new Error(`Join could not be recorded: ${errorMessage(err)}`, { cause: err });
   }
 }
 
 // dist/network/native-loader.js
+import fs4 from "node:fs";
 import { createRequire as createRequire2 } from "node:module";
 import path5 from "node:path";
+
+// dist/network/runtime-platform.js
+function currentLibc() {
+  if (process.platform !== "linux")
+    return null;
+  process.report.excludeNetwork = true;
+  const header = process.report.getReport();
+  return header.header?.glibcVersionRuntime ? "glibc" : "musl";
+}
+function platformPackages(lockText, platform, arch, libc) {
+  const { packages } = JSON.parse(lockText);
+  return Object.entries(packages).filter(([, entry]) => entry.os?.includes(platform) && entry.cpu?.includes(arch) && (entry.libc === void 0 || libc === null || entry.libc.includes(libc))).map(([key]) => key.replace(/^node_modules\//, ""));
+}
+
+// dist/network/native-loader.js
 function loadNative(runtimeDirectory) {
+  const lockText = fs4.readFileSync(path5.join(runtimeDirectory, "package-lock.json"), "utf8");
+  const packages = platformPackages(lockText, process.platform, process.arch, currentLibc());
+  if (!packages.some((name) => fs4.existsSync(path5.join(runtimeDirectory, "node_modules", name, "package.json")))) {
+    throw new Error(`the native networking file for ${process.platform}-${process.arch} is missing from the install`);
+  }
   const requireFromRuntime = createRequire2(path5.join(runtimeDirectory, "package.json"));
-  return requireFromRuntime("@number0/iroh");
+  return requireFromRuntime(path5.join(runtimeDirectory, "node_modules", "@number0", "iroh"));
 }
 function explainLoadFailure(err) {
   const messages = [];
@@ -910,9 +595,12 @@ function explainLoadFailure(err) {
   const specific = messages.find((message) => /^Unsupported /.test(message));
   if (specific)
     return `this computer is not supported (${specific})`;
-  if (messages.length === 1 && err.code === "MODULE_NOT_FOUND") {
+  if (messages.length === 1 && ["MODULE_NOT_FOUND", "ENOENT"].includes(String(err.code))) {
     return "the networking component is not installed";
   }
+  const absent = messages.find((message) => /is missing from the install$/.test(message));
+  if (absent)
+    return absent;
   const mismatch = messages.find((message) => /version mismatch/.test(message));
   if (mismatch)
     return `the installed networking files do not match each other (${mismatch})`;
@@ -928,7 +616,8 @@ function explainLoadFailure(err) {
 // dist/network/bridge-join.js
 var RELAY_ONLINE_DEADLINE_MS = 15e3;
 var CONNECT_DEADLINE_MS = 35e3;
-var REPLY_DEADLINE_MS = 3e4;
+var SEND_DEADLINE_MS = 1e4;
+var REPLY_DEADLINE_MS = 2e4;
 var CLOSE_DEADLINE_MS = 5e3;
 var JOIN_CHILD_INPUT_MAX_BYTES = 16 * 1024;
 async function runJoinClient(dataDir2, input) {
@@ -937,39 +626,45 @@ async function runJoinClient(dataDir2, input) {
   try {
     iroh = loadNative(runtimeDir(dataDir2));
   } catch (err) {
-    return { ok: false, code: "runtime_load_failed", detail: explainLoadFailure(err) };
+    return { ok: false, code: "runtime_load_failed", detail: explainLoadFailure(err), relay_reached: null };
   }
   const endpoint = await bindEndpoint(iroh, identity.secret, input.own_relay, []);
+  let relayReached = null;
   try {
     if (input.own_relay !== RELAY_OFF) {
-      await deadline(endpoint.online(), RELAY_ONLINE_DEADLINE_MS, "reaching the relay").catch(() => void 0);
+      relayReached = await deadline(endpoint.online(), RELAY_ONLINE_DEADLINE_MS, "reaching the relay").then(() => true, () => false);
+      if (!relayReached && (input.own_relay !== input.owner_relay || !input.owner_addrs?.length)) {
+        return { ok: false, code: "relay_unreachable", detail: input.own_relay, relay_reached: false };
+      }
     }
     const target = new iroh.EndpointAddr(iroh.EndpointId.fromString(input.owner_id), input.owner_relay, input.owner_addrs);
     let connection;
     try {
       connection = await deadline(endpoint.connect(target, toBytes(JOIN_ALPN)), CONNECT_DEADLINE_MS, "connecting");
     } catch (err) {
-      return { ok: false, code: "owner_unreachable", detail: errorMessage(err) };
+      return { ok: false, code: "owner_unreachable", detail: errorMessage(err), relay_reached: relayReached };
     }
-    const stream = await connection.openBi();
-    await stream.send.writeAll(toBytes(encodeJoinRequest(input.request)));
-    await stream.send.finish();
-    const reply2 = Buffer.from(await deadline(stream.recv.readToEnd(JOIN_REPLY_MAX_BYTES), REPLY_DEADLINE_MS, "waiting for the reply"));
-    connection.close(0n, toBytes("done"));
-    return { ok: true, reply: reply2.toString("utf8") };
-  } catch (err) {
-    return { ok: false, code: "owner_unreachable", detail: errorMessage(err) };
+    try {
+      const stream = await deadline(connection.openBi(), SEND_DEADLINE_MS, "opening a stream");
+      await deadline(stream.send.writeAll(toBytes(encodeJoinRequest(input.request))), SEND_DEADLINE_MS, "sending the request");
+      await deadline(stream.send.finish(), SEND_DEADLINE_MS, "sending the request");
+      const reply2 = Buffer.from(await deadline(stream.recv.readToEnd(JOIN_REPLY_MAX_BYTES), REPLY_DEADLINE_MS, "waiting for the reply"));
+      connection.close(0n, toBytes("done"));
+      return { ok: true, reply: reply2.toString("utf8"), relay_reached: relayReached };
+    } catch (err) {
+      return { ok: false, code: "join_interrupted", detail: errorMessage(err), relay_reached: relayReached };
+    }
   } finally {
     await deadline(endpoint.close(), CLOSE_DEADLINE_MS, "closing the endpoint").catch(() => void 0);
   }
 }
 
 // dist/network/bridge-serve.js
-import fs5 from "node:fs";
+import fs6 from "node:fs";
 
 // dist/network/bridge-state.js
 import { execFileSync } from "node:child_process";
-import fs4 from "node:fs";
+import fs5 from "node:fs";
 import path6 from "node:path";
 function statusPath(dataDir2) {
   return path6.join(networkDir(dataDir2), "bridge-status.json");
@@ -983,59 +678,154 @@ function logPath(dataDir2) {
 function writeStatus(dataDir2, status) {
   const file = statusPath(dataDir2);
   const temporary = `${file}.tmp-${process.pid}`;
-  fs4.writeFileSync(temporary, `${JSON.stringify(status)}
+  fs5.writeFileSync(temporary, `${JSON.stringify(status)}
 `, { mode: 384 });
-  fs4.renameSync(temporary, file);
+  fs5.renameSync(temporary, file);
 }
-function isBridgeProcess(pid) {
+function isThisBridge(command, dataDir2) {
+  return command.replace(/"/g, "").trimEnd().endsWith(`bridge.js serve ${dataDir2}`);
+}
+function isProcessAlive(pid) {
   try {
     process.kill(pid, 0);
+    return true;
   } catch {
     return false;
   }
-  if (process.platform === "win32")
-    return true;
+}
+function linuxCommandLine(pid) {
   try {
-    const command = execFileSync("ps", ["-ww", "-o", "command=", "-p", String(pid)], { encoding: "utf8", timeout: 5e3 });
-    return /bridge\.js serve/.test(command);
-  } catch (err) {
-    return err.status === void 0;
+    return fs5.readFileSync(`/proc/${pid}/cmdline`).toString("utf8").split("\0").join(" ");
+  } catch {
+    return null;
   }
+}
+function commandLineFrom(program, args) {
+  try {
+    return execFileSync(program, args, { encoding: "utf8", timeout: 5e3, stdio: ["ignore", "pipe", "ignore"] });
+  } catch {
+    return null;
+  }
+}
+function commandLineOf(pid) {
+  if (process.platform === "linux") {
+    const command = linuxCommandLine(pid);
+    if (command !== null)
+      return command;
+  }
+  if (process.platform === "win32") {
+    return commandLineFrom("powershell", [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      `(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine`
+    ]);
+  }
+  return commandLineFrom("ps", ["-ww", "-o", "command=", "-p", String(pid)]);
+}
+function identifyProcess(pid, dataDir2) {
+  if (!isProcessAlive(pid))
+    return "not-bridge";
+  const command = commandLineOf(pid);
+  if (command === null)
+    return isProcessAlive(pid) ? "unknown" : "not-bridge";
+  return isThisBridge(command, dataDir2) ? "bridge" : "not-bridge";
 }
 function readLockPid(dataDir2) {
   try {
-    const pid = Number(fs4.readFileSync(lockPath(dataDir2), "utf8").trim());
+    const pid = Number(fs5.readFileSync(lockPath(dataDir2), "utf8").trim());
     return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
   } catch {
     return null;
   }
 }
-function runningBridgePid(dataDir2) {
-  const pid = readLockPid(dataDir2);
-  return pid !== null && isBridgeProcess(pid) ? pid : null;
+function removeStaleLock(dataDir2, stalePid) {
+  const file = lockPath(dataDir2);
+  const aside = `${file}.stale-${process.pid}`;
+  try {
+    fs5.renameSync(file, aside);
+  } catch (err) {
+    if (err.code === "ENOENT")
+      return false;
+    throw err;
+  }
+  try {
+    const value = Number(fs5.readFileSync(aside, "utf8").trim());
+    const taken = Number.isSafeInteger(value) && value > 0 ? value : null;
+    if (taken === stalePid)
+      return true;
+    try {
+      fs5.linkSync(aside, file);
+    } catch (err) {
+      if (err.code !== "EEXIST")
+        throw err;
+    }
+    return false;
+  } finally {
+    fs5.rmSync(aside, { force: true });
+  }
 }
 async function acquireLock(dataDir2) {
   const file = lockPath(dataDir2);
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
-      fs4.writeFileSync(file, `${process.pid}
+      fs5.writeFileSync(file, `${process.pid}
 `, { flag: "wx", mode: 384 });
     } catch (err) {
       if (err.code !== "EEXIST")
         throw err;
-      if (runningBridgePid(dataDir2) !== null)
-        return false;
-      fs4.rmSync(file, { force: true });
+      const pid = readLockPid(dataDir2);
+      if (pid !== null && pid !== process.pid) {
+        const identity = identifyProcess(pid, dataDir2);
+        if (identity === "bridge")
+          return "held";
+        if (identity === "unknown")
+          return "unconfirmed";
+      }
+      removeStaleLock(dataDir2, pid);
       continue;
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
-    return readLockPid(dataDir2) === process.pid;
+    return readLockPid(dataDir2) === process.pid ? "acquired" : "held";
   }
-  return false;
+  return "held";
 }
 function releaseLock(dataDir2) {
   if (readLockPid(dataDir2) === process.pid)
-    fs4.rmSync(lockPath(dataDir2), { force: true });
+    fs5.rmSync(lockPath(dataDir2), { force: true });
+}
+
+// dist/network/relay-monitor.js
+var RELAY_PING_INTERVAL_MS = 15e3;
+var RELAY_PING_TIMEOUT_MS = 5e3;
+function relayStateOf(signals) {
+  if (signals.reachable === false)
+    return "unreachable";
+  if (signals.online)
+    return "online";
+  return signals.deadlinePassed ? "unreachable" : "connecting";
+}
+function relayComplaint(relayUrl) {
+  return `The relay ${relayUrl} is not answering.`;
+}
+function applyRelayState(status, signals, relayUrl) {
+  const next = relayStateOf(signals);
+  if (next === status.relay_state)
+    return false;
+  status.relay_state = next;
+  if (next === "online" && status.last_error === relayComplaint(relayUrl)) {
+    status.last_error = null;
+    status.last_error_at = null;
+  }
+  return true;
+}
+async function pingRelay(relayUrl, fetchImpl = fetch) {
+  try {
+    const response = await fetchImpl(new URL("ping", relayUrl), { signal: AbortSignal.timeout(RELAY_PING_TIMEOUT_MS) });
+    return response.status === 200;
+  } catch {
+    return false;
+  }
 }
 
 // dist/network/bridge-serve.js
@@ -1043,6 +833,7 @@ var RELAY_ONLINE_DEADLINE_MS2 = 2e4;
 var HANDSHAKE_DEADLINE_MS = 2e4;
 var STREAM_DEADLINE_MS = 15e3;
 var CLOSE_DEADLINE_MS2 = 5e3;
+var BRIDGE_BUSY_TIMEOUT_MS = 3e3;
 var HEARTBEAT_MS = 1e3;
 var STATUS_REFRESH_MS = 3e4;
 var LOG_MAX_BYTES = 1024 * 1024;
@@ -1052,9 +843,9 @@ var MEMBER_STUB_REPLY = JSON.stringify({ ok: false, error: "not_implemented" });
 function appendLog(dataDir2, event, detail = {}) {
   try {
     const file = logPath(dataDir2);
-    if (fs5.existsSync(file) && fs5.statSync(file).size > LOG_MAX_BYTES)
-      fs5.renameSync(file, `${file}.1`);
-    fs5.appendFileSync(file, `${JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), pid: process.pid, event, ...detail })}
+    if (fs6.existsSync(file) && fs6.statSync(file).size > LOG_MAX_BYTES)
+      fs6.renameSync(file, `${file}.1`);
+    fs6.appendFileSync(file, `${JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), pid: process.pid, event, ...detail })}
 `, { mode: 384 });
   } catch {
   }
@@ -1064,9 +855,11 @@ async function serve(dataDir2, dbPath) {
     process.umask(63);
   } catch {
   }
-  if (!await acquireLock(dataDir2)) {
-    appendLog(dataDir2, "exit_already_running");
-    return EXIT_ALREADY_RUNNING;
+  ensureNetworkDir(dataDir2);
+  const lock = await acquireLock(dataDir2);
+  if (lock !== "acquired") {
+    appendLog(dataDir2, lock === "held" ? "exit_already_running" : "exit_lock_unconfirmed");
+    return lock === "held" ? EXIT_ALREADY_RUNNING : EXIT_LOCK_UNCONFIRMED;
   }
   const startedAt = (/* @__PURE__ */ new Date()).toISOString();
   const status = {
@@ -1105,17 +898,19 @@ async function serve(dataDir2, dbPath) {
   };
   publish();
   let db;
+  let config;
   try {
-    db = openNetworkStore(dbPath);
+    db = openNetworkStore(dbPath, { busyTimeoutMs: BRIDGE_BUSY_TIMEOUT_MS });
+    config = readConfig(db);
   } catch (err) {
     return fail("exit_database", `Cannot open the database: ${errorMessage(err)}`);
   }
-  const config = readConfig(db);
   if (!config) {
     db.close();
     return fail("exit_not_joined", "This machine has not joined a network.");
   }
-  const isOwner = config.owner_id === config.machine_id;
+  const { machine_id: machineId, owner_id: ownerId, relay_url: relayUrl } = config;
+  const isOwner = ownerId === machineId;
   let identity;
   try {
     identity = loadIdentity(dataDir2);
@@ -1123,7 +918,7 @@ async function serve(dataDir2, dbPath) {
     db.close();
     return fail("exit_identity", errorMessage(err));
   }
-  if (identity.machineId !== config.machine_id) {
+  if (identity.machineId !== machineId) {
     db.close();
     return fail("exit_identity", "The machine key does not match the one this network was joined with.");
   }
@@ -1136,34 +931,56 @@ async function serve(dataDir2, dbPath) {
   }
   let endpoint;
   try {
-    endpoint = await bindEndpoint(iroh, identity.secret, config.relay_url, isOwner ? [JOIN_ALPN, NET_ALPN] : [NET_ALPN]);
+    endpoint = await bindEndpoint(iroh, identity.secret, relayUrl, isOwner ? [JOIN_ALPN, NET_ALPN] : [NET_ALPN]);
   } catch (err) {
     db.close();
     return fail("exit_bind", `Cannot open a network connection: ${errorMessage(err)}`);
   }
   status.state = "running";
-  status.relay_state = config.relay_url === RELAY_OFF ? "off" : "connecting";
+  status.relay_state = relayUrl === RELAY_OFF ? "off" : "connecting";
   publish();
   appendLog(dataDir2, "running", { relay_state: status.relay_state, owner: isOwner });
-  if (status.relay_state === "connecting") {
-    const online = endpoint.online();
-    online.then(() => {
-      status.relay_state = "online";
-      appendLog(dataDir2, "relay_online");
+  const relaySignals = { online: false, deadlinePassed: false, reachable: null };
+  const refreshRelayState = () => {
+    if (!applyRelayState(status, relaySignals, relayUrl))
+      return;
+    appendLog(dataDir2, "relay_state", { relay_state: status.relay_state });
+    if (status.relay_state === "unreachable")
+      recordError("relay_unreachable", relayComplaint(relayUrl));
+    else
       publish();
+  };
+  const relayTimers = [];
+  if (status.relay_state === "connecting") {
+    endpoint.online().then(() => {
+      relaySignals.online = true;
+      refreshRelayState();
     }, (err) => {
-      status.relay_state = "unreachable";
       recordError("relay_failed", `The relay failed: ${errorMessage(err)}`);
     });
-    setTimeout(() => {
-      if (status.relay_state !== "connecting")
+    relayTimers.push(setTimeout(() => {
+      relaySignals.deadlinePassed = true;
+      refreshRelayState();
+    }, RELAY_ONLINE_DEADLINE_MS2));
+    let pingInFlight = false;
+    relayTimers.push(setInterval(() => {
+      if (pingInFlight)
         return;
-      status.relay_state = "unreachable";
-      recordError("relay_unreachable", `The relay ${config.relay_url} did not answer within ${RELAY_ONLINE_DEADLINE_MS2 / 1e3} s.`);
-    }, RELAY_ONLINE_DEADLINE_MS2);
+      pingInFlight = true;
+      void pingRelay(relayUrl).then((reachable) => {
+        pingInFlight = false;
+        relaySignals.reachable = reachable;
+        refreshRelayState();
+      });
+    }, RELAY_PING_INTERVAL_MS));
   }
   let lastPublished = Date.now();
   const heartbeat = setInterval(() => {
+    if (readLockPid(dataDir2) !== process.pid) {
+      recordError("lock_lost", "Another process took the network bridge lock, so this bridge stopped.");
+      void stop("lock_lost", 1);
+      return;
+    }
     let addresses = null;
     try {
       addresses = endpoint.addr().directAddresses();
@@ -1185,6 +1002,7 @@ async function serve(dataDir2, dbPath) {
       });
     stopping = true;
     clearInterval(heartbeat);
+    relayTimers.forEach(clearTimeout);
     try {
       await deadline(endpoint.close(), CLOSE_DEADLINE_MS2, "closing the endpoint");
     } catch (err) {
@@ -1241,8 +1059,10 @@ async function serve(dataDir2, dbPath) {
   };
   const answerMember = async (connection, remoteId) => {
     const current = readConfig(db);
-    const roster = current ? parseRoster(current.roster_json) : null;
-    if (!roster || !findMember(roster, remoteId)) {
+    if (!current)
+      throw new Error("The network settings are gone from the database.");
+    const roster = verifyRoster(signedRosterOf(current), ownerId, current.network_id);
+    if (!findMember(roster, remoteId)) {
       connection.close(1n, toBytes("not_a_member"));
       status.non_member_refused++;
       appendLog(dataDir2, "non_member_refused", { machine_id: remoteId });
@@ -1304,6 +1124,32 @@ async function serve(dataDir2, dbPath) {
   }
 }
 
+// dist/network/bridge-startup-failure.js
+function recordStartupFailure(dataDir2, message) {
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  try {
+    ensureNetworkDir(dataDir2);
+    writeStatus(dataDir2, {
+      pid: process.pid,
+      started_at: now,
+      updated_at: now,
+      state: "failed",
+      relay_state: "off",
+      last_error: message,
+      last_error_at: now,
+      direct_addresses: [],
+      joins_accepted: 0,
+      joins_refused: 0,
+      non_member_refused: 0,
+      member_stub_served: 0
+    });
+    releaseLock(dataDir2);
+  } catch (err) {
+    process.stderr.write(`The network bridge failed (${message}) and could not record it: ${err.message}
+`);
+  }
+}
+
 // dist/network/bridge.js
 function reply(result) {
   return new Promise((resolve) => {
@@ -1343,13 +1189,18 @@ if (mode === "check") {
     await reply(await runJoinClient(dataDir, input));
     process.exit(0);
   } catch (err) {
-    await reply({ ok: false, code: "internal", detail: errorMessage(err) });
+    await reply({ ok: false, code: "internal", detail: errorMessage(err), relay_reached: null });
     process.exit(1);
   }
-} else if (mode === "serve") {
-  process.exit(await serve(dataDir, getDbPath()));
+} else if (mode === "serve" && process.argv[3] === dataDir) {
+  try {
+    process.exit(await serve(dataDir, getDbPath()));
+  } catch (err) {
+    recordStartupFailure(dataDir, errorMessage(err));
+    process.exit(1);
+  }
 } else {
-  process.stderr.write("Usage: bridge.js check|join|serve\n");
+  process.stderr.write("Usage: bridge.js check | join | serve <data dir>\n");
   process.exit(2);
 }
 //# sourceMappingURL=bridge.js.map

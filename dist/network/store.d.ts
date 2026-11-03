@@ -10,7 +10,10 @@ export interface NetworkConfig {
     roster_json: string;
     roster_signature: string;
 }
-export declare function openNetworkStore(dbPath: string): MemeshDatabase;
+export declare function openNetworkStore(dbPath: string, options?: {
+    busyTimeoutMs?: number;
+}): MemeshDatabase;
+export declare function databaseExists(dbPath: string): boolean;
 export declare function readConfig(db: MemeshDatabase): NetworkConfig | null;
 export declare function insertConfig(db: MemeshDatabase, config: NetworkConfig, now: number): void;
 export declare function saveRoster(db: MemeshDatabase, signed: SignedRoster): void;

@@ -1,5 +1,8 @@
 import fs from 'node:fs';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { spawn } from 'node:child_process';
+import path from 'node:path';
+import { build } from 'esbuild';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ensureIdentity, identityPath, isMachineId, loadIdentity, verifySignature } from '../../src/network/identity.js';
 import { NetworkError } from '../../src/network/types.js';
 import { makeHome, removeTree } from './helpers.js';
@@ -34,9 +37,79 @@ describe('machine identity', () => {
     expect(() => loadIdentity(dataDir)).toThrowError(/not a valid machine key/);
   });
 
+  it('creates the key file with mode 0600 before anything could read it', () => {
+    const writes = vi.spyOn(fs, 'writeFileSync');
+    const modes = vi.spyOn(fs, 'chmodSync');
+    try {
+      ensureIdentity(dataDir);
+      const temporaryWrite = writes.mock.calls.find(([file]) => String(file).includes('identity.key.tmp-'));
+      expect(temporaryWrite?.[2]).toMatchObject({ mode: 0o600, flag: 'wx' });
+      expect(modes.mock.calls.some(([file, mode]) => String(file).includes('identity.key.tmp-') && mode === 0o600)).toBe(true);
+    } finally {
+      writes.mockRestore();
+      modes.mockRestore();
+    }
+  });
+
+  it('makes the network folder private even under an open umask', () => {
+    if (process.platform === 'win32') return;
+    const previous = process.umask(0);
+    try {
+      ensureIdentity(dataDir);
+    } finally {
+      process.umask(previous);
+    }
+    expect(fs.statSync(path.join(dataDir, 'network')).mode & 0o777).toBe(0o700);
+  });
+
+  it('refuses a key that is too long as well as too short', () => {
+    ensureIdentity(dataDir);
+    fs.writeFileSync(identityPath(dataDir), Buffer.alloc(33));
+    expect(() => loadIdentity(dataDir)).toThrowError(expect.objectContaining({ code: 'identity_invalid' }));
+  });
+
+  it('says a machine with no key has not joined', () => {
+    expect(() => loadIdentity(dataDir)).toThrowError(expect.objectContaining({ code: 'not_joined' }));
+  });
+
+  it('never replaces a damaged key: that would silently change the machine\'s identity', () => {
+    ensureIdentity(dataDir);
+    const damaged = Buffer.alloc(31, 5);
+    fs.writeFileSync(identityPath(dataDir), damaged);
+    expect(() => ensureIdentity(dataDir)).toThrowError(expect.objectContaining({ code: 'identity_invalid' }));
+    expect(fs.readFileSync(identityPath(dataDir)).equals(damaged)).toBe(true);
+  });
+
+  it('a public key that is not on the curve is a false, not a throw', () => {
+    const identity = ensureIdentity(dataDir);
+    const message = Buffer.from('m');
+    expect(verifySignature('f'.repeat(64), message, identity.sign(message))).toBe(false);
+    expect(verifySignature('e'.repeat(64), message, 'A'.repeat(86))).toBe(false);
+  });
+
+  it('concurrent creators all end up with one key', async () => {
+    const bundle = path.join(dataDir, 'creator.mjs');
+    await build({
+      entryPoints: [path.resolve(import.meta.dirname, 'fixtures/create-identity.ts')],
+      outfile: bundle, bundle: true, platform: 'node', format: 'esm', logLevel: 'silent',
+    });
+    for (let round = 0; round < 5; round++) {
+      const target = path.join(dataDir, `round-${round}`);
+      const ids = await Promise.all(Array.from({ length: 8 }, () => new Promise<string>((resolve, reject) => {
+        const child = spawn(process.execPath, [bundle, target], { stdio: ['ignore', 'pipe', 'inherit'] });
+        let output = '';
+        child.stdout.setEncoding('utf8').on('data', (chunk: string) => { output += chunk; });
+        child.on('close', (code) => (code === 0 ? resolve(output.trim()) : reject(new Error(`creator exited ${code}`))));
+      })));
+      expect(new Set(ids).size).toBe(1);
+    }
+  }, 60_000);
+
   it('signs what only its own id verifies', () => {
     const identity = ensureIdentity(dataDir);
-    const other = ensureIdentity(makeHome());
+    const otherHome = makeHome();
+    const other = ensureIdentity(otherHome);
+    removeTree(otherHome);
     const message = Buffer.from('hello');
     const signature = identity.sign(message);
     expect(verifySignature(identity.machineId, message, signature)).toBe(true);

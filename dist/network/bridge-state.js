@@ -25,22 +25,55 @@ export function readStatus(dataDir) {
         return null;
     }
 }
-export function isBridgeProcess(pid) {
+function isThisBridge(command, dataDir) {
+    return command.replace(/"/g, '').trimEnd().endsWith(`bridge.js serve ${dataDir}`);
+}
+function isProcessAlive(pid) {
     try {
         process.kill(pid, 0);
+        return true;
     }
     catch {
         return false;
     }
-    if (process.platform === 'win32')
-        return true;
+}
+function linuxCommandLine(pid) {
     try {
-        const command = execFileSync('ps', ['-ww', '-o', 'command=', '-p', String(pid)], { encoding: 'utf8', timeout: 5000 });
-        return /bridge\.js serve/.test(command);
+        return fs.readFileSync(`/proc/${pid}/cmdline`).toString('utf8').split('\0').join(' ');
     }
-    catch (err) {
-        return err.status === undefined;
+    catch {
+        return null;
     }
+}
+function commandLineFrom(program, args) {
+    try {
+        return execFileSync(program, args, { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] });
+    }
+    catch {
+        return null;
+    }
+}
+function commandLineOf(pid) {
+    if (process.platform === 'linux') {
+        const command = linuxCommandLine(pid);
+        if (command !== null)
+            return command;
+    }
+    if (process.platform === 'win32') {
+        return commandLineFrom('powershell', [
+            '-NoProfile', '-NonInteractive', '-Command',
+            `(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine`,
+        ]);
+    }
+    return commandLineFrom('ps', ['-ww', '-o', 'command=', '-p', String(pid)]);
+}
+export function identifyProcess(pid, dataDir) {
+    if (!isProcessAlive(pid))
+        return 'not-bridge';
+    const command = commandLineOf(pid);
+    if (command === null)
+        return isProcessAlive(pid) ? 'unknown' : 'not-bridge';
+    return isThisBridge(command, dataDir) ? 'bridge' : 'not-bridge';
 }
 export function readLockPid(dataDir) {
     try {
@@ -51,9 +84,43 @@ export function readLockPid(dataDir) {
         return null;
     }
 }
-export function runningBridgePid(dataDir) {
+export function bridgeHolder(dataDir) {
     const pid = readLockPid(dataDir);
-    return pid !== null && isBridgeProcess(pid) ? pid : null;
+    if (pid === null)
+        return { kind: 'none' };
+    const identity = identifyProcess(pid, dataDir);
+    if (identity === 'bridge')
+        return { kind: 'bridge', pid };
+    return identity === 'unknown' ? { kind: 'unknown', pid } : { kind: 'none' };
+}
+export function removeStaleLock(dataDir, stalePid) {
+    const file = lockPath(dataDir);
+    const aside = `${file}.stale-${process.pid}`;
+    try {
+        fs.renameSync(file, aside);
+    }
+    catch (err) {
+        if (err.code === 'ENOENT')
+            return false;
+        throw err;
+    }
+    try {
+        const value = Number(fs.readFileSync(aside, 'utf8').trim());
+        const taken = Number.isSafeInteger(value) && value > 0 ? value : null;
+        if (taken === stalePid)
+            return true;
+        try {
+            fs.linkSync(aside, file);
+        }
+        catch (err) {
+            if (err.code !== 'EEXIST')
+                throw err;
+        }
+        return false;
+    }
+    finally {
+        fs.rmSync(aside, { force: true });
+    }
 }
 export async function acquireLock(dataDir) {
     const file = lockPath(dataDir);
@@ -64,15 +131,21 @@ export async function acquireLock(dataDir) {
         catch (err) {
             if (err.code !== 'EEXIST')
                 throw err;
-            if (runningBridgePid(dataDir) !== null)
-                return false;
-            fs.rmSync(file, { force: true });
+            const pid = readLockPid(dataDir);
+            if (pid !== null && pid !== process.pid) {
+                const identity = identifyProcess(pid, dataDir);
+                if (identity === 'bridge')
+                    return 'held';
+                if (identity === 'unknown')
+                    return 'unconfirmed';
+            }
+            removeStaleLock(dataDir, pid);
             continue;
         }
         await new Promise((resolve) => setTimeout(resolve, 100));
-        return readLockPid(dataDir) === process.pid;
+        return readLockPid(dataDir) === process.pid ? 'acquired' : 'held';
     }
-    return false;
+    return 'held';
 }
 export function releaseLock(dataDir) {
     if (readLockPid(dataDir) === process.pid)

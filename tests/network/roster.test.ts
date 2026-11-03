@@ -3,9 +3,11 @@ import { ensureIdentity } from '../../src/network/identity.js';
 import {
   acceptRoster, addMember, assertValidName, canonicalJson, createRoster, parseRoster, signRoster, verifyRoster,
 } from '../../src/network/roster.js';
-import type { RosterMember } from '../../src/network/types.js';
+import type { Roster, RosterMember } from '../../src/network/types.js';
 import { makeHome, removeTree } from './helpers.js';
 
+const NET = '0123456789abcdef0123456789abcdef';
+const OTHER_NET = 'fedcba9876543210fedcba9876543210';
 const homes = [makeHome(), makeHome()];
 afterAll(() => homes.forEach(removeTree));
 const owner = ensureIdentity(homes[0]);
@@ -13,7 +15,7 @@ const stranger = ensureIdentity(homes[1]);
 const member = (name: string, seed: string): RosterMember => ({
   machine_id: seed.repeat(64), name, person: 'kt', joined_at: '2026-11-03T00:00:00.000Z',
 });
-const first = createRoster('net-1', { ...member('owner', '0'), machine_id: owner.machineId });
+const first = createRoster(NET, { ...member('owner', '0'), machine_id: owner.machineId });
 
 describe('roster', () => {
   it('signs canonical JSON: key order does not change the bytes', () => {
@@ -24,28 +26,28 @@ describe('roster', () => {
 
   it('verifies against the expected owner, not the one the document names', () => {
     const signed = signRoster(owner, first);
-    expect(verifyRoster(signed, owner.machineId, 'net-1').version).toBe(1);
+    expect(verifyRoster(signed, owner.machineId, NET).version).toBe(1);
     // A stranger signs a roster that claims the real owner.
     const forged = signRoster(stranger, first);
-    expect(() => verifyRoster(forged, owner.machineId, 'net-1')).toThrowError(/not signed by the network owner/);
-    expect(() => verifyRoster(signed, stranger.machineId, 'net-1')).toThrowError(/not signed by the network owner/);
-    expect(() => verifyRoster(signed, owner.machineId, 'net-2')).toThrowError(/different network/);
+    expect(() => verifyRoster(forged, owner.machineId, NET)).toThrowError(/not signed by the network owner/);
+    expect(() => verifyRoster(signed, stranger.machineId, NET)).toThrowError(/not signed by the network owner/);
+    expect(() => verifyRoster(signed, owner.machineId, OTHER_NET)).toThrowError(/different network/);
   });
 
   it('rejects any change to the signed bytes', () => {
     const signed = signRoster(owner, first);
     const changed = { ...signed, roster_json: signed.roster_json.replace('"version":1', '"version":9') };
-    expect(() => verifyRoster(changed, owner.machineId, 'net-1')).toThrowError(/not signed/);
+    expect(() => verifyRoster(changed, owner.machineId, NET)).toThrowError(/not signed/);
   });
 
   it('never accepts a lower version, and refuses a fork at the same version', () => {
     const v1 = signRoster(owner, first);
     const v2 = signRoster(owner, addMember(first, member('b', '1')));
     const fork = signRoster(owner, addMember(first, member('c', '2')));
-    expect(acceptRoster(v1, v2, owner.machineId, 'net-1').version).toBe(2);
-    expect(acceptRoster(v2, v2, owner.machineId, 'net-1').version).toBe(2);
-    expect(() => acceptRoster(v2, v1, owner.machineId, 'net-1')).toThrowError(/older team list/);
-    expect(() => acceptRoster(v2, fork, owner.machineId, 'net-1')).toThrowError(/differs/);
+    expect(acceptRoster(v1, v2, owner.machineId, NET).version).toBe(2);
+    expect(acceptRoster(v2, v2, owner.machineId, NET).version).toBe(2);
+    expect(() => acceptRoster(v2, v1, owner.machineId, NET)).toThrowError(/older team list/);
+    expect(() => acceptRoster(v2, fork, owner.machineId, NET)).toThrowError(/differs/);
   });
 
   it('keeps machine names unique, ignoring case', () => {
@@ -60,6 +62,35 @@ describe('roster', () => {
     for (const good of ['kt', 'mac-mini', 'A.b_c-9']) expect(() => assertValidName('person', good)).not.toThrow();
     for (const bad of ['a/b', 'a@b', 'a b', '', '-x', '.x', 'a\nb', 'é', 'x'.repeat(65), 42]) {
       expect(() => assertValidName('person', bad)).toThrowError(expect.objectContaining({ code: 'invalid_name' }));
+    }
+  });
+
+  it('a stranger cannot get a roster accepted, with or without one held', () => {
+    const v1 = signRoster(owner, first);
+    const forged = signRoster(stranger, addMember(first, member('intruder', '9')));
+    expect(() => acceptRoster(null, forged, owner.machineId, NET)).toThrowError(/not signed/);
+    expect(() => acceptRoster(v1, forged, owner.machineId, NET)).toThrowError(/not signed/);
+    const corruptHeld = signRoster(stranger, first);
+    const v2 = signRoster(owner, addMember(first, member('b', '1')));
+    expect(() => acceptRoster(corruptHeld, v2, owner.machineId, NET)).toThrowError(/not signed/);
+  });
+
+  it('canonical form skips undefined, so a signed document survives JSON', () => {
+    expect(canonicalJson({ a: undefined, b: 1 })).toBe('{"b":1}');
+    expect(canonicalJson({ a: undefined, b: 1 })).toBe(canonicalJson(JSON.parse(JSON.stringify({ a: undefined, b: 1 }))));
+  });
+
+  it('carries no field nothing reads', () => {
+    expect(Object.keys(first).sort()).toEqual(['members', 'network_id', 'owner_id', 'version']);
+  });
+
+  it('accepts only a hex network id and a strict ISO timestamp', () => {
+    const base = JSON.parse(signRoster(owner, first).roster_json) as Roster;
+    expect(() => parseRoster(JSON.stringify({ ...base, network_id: 'net\u001b]0;PWNED\u0007' }))).toThrowError(/bad network id/);
+    expect(() => parseRoster(JSON.stringify({ ...base, network_id: NET.toUpperCase() }))).toThrowError(/bad network id/);
+    for (const joinedAt of ['Jan 1 2030 (\u001b]52;c;ZXZpbA==\u0007)', '2026-01-01 (\u001b[31mowned)', '1', '2026-13-45T00:00:00.000Z']) {
+      const members = [{ ...base.members[0], joined_at: joinedAt }];
+      expect(() => parseRoster(JSON.stringify({ ...base, members }))).toThrowError(/bad joined_at/);
     }
   });
 

@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { guardDatabaseFiles, removeGroupAndOtherAccess } from '../core/file-mode.js';
-import { AGENT_NETWORK_SCHEMA_SQL } from '../storage/schema.js';
+import { AGENT_NETWORK_SCHEMA_SQL } from '../storage/agent-network-schema.js';
 import { MemeshDatabase } from '../storage/sqlite.js';
 import type { SignedRoster } from './types.js';
 
@@ -21,7 +21,7 @@ export interface NetworkConfig {
   roster_signature: string;
 }
 
-export function openNetworkStore(dbPath: string): MemeshDatabase {
+export function openNetworkStore(dbPath: string, options: { busyTimeoutMs?: number } = {}): MemeshDatabase {
   const dir = path.dirname(dbPath);
   fs.mkdirSync(dir, { recursive: true });
   try { process.umask(0o077); } catch { /* non-POSIX */ }
@@ -29,6 +29,7 @@ export function openNetworkStore(dbPath: string): MemeshDatabase {
   guardDatabaseFiles(dbPath);
   const db = new MemeshDatabase(dbPath);
   try {
+    if (options.busyTimeoutMs !== undefined) db.pragma(`busy_timeout = ${options.busyTimeoutMs}`);
     db.pragma('journal_mode = WAL');
     db.exec(AGENT_NETWORK_SCHEMA_SQL);
   } catch (err) {
@@ -36,6 +37,11 @@ export function openNetworkStore(dbPath: string): MemeshDatabase {
     throw err;
   }
   return db;
+}
+
+/** The saved network settings, without creating a database for someone who has none. */
+export function databaseExists(dbPath: string): boolean {
+  return fs.existsSync(dbPath);
 }
 
 export function readConfig(db: MemeshDatabase): NetworkConfig | null {

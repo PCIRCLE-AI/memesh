@@ -30279,7 +30279,7 @@ function sqliteUtcToIso(sqliteTimestamp) {
   return ms === null ? sqliteTimestamp : new Date(ms).toISOString().replace(".000Z", "Z");
 }
 
-// dist/storage/schema.js
+// dist/storage/agent-network-schema.js
 var AGENT_NETWORK_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS agent_network_config (
   id               INTEGER PRIMARY KEY CHECK (id = 1),
@@ -30300,6 +30300,8 @@ CREATE TABLE IF NOT EXISTS agent_network_invites (
   used_at       INTEGER
 );
 `;
+
+// dist/storage/schema.js
 var SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS entities (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31374,6 +31376,7 @@ var SECRET_PATTERN_SOURCES = [
   SENDGRID_KEY,
   "[srp]k_(?:live|test)_[A-Za-z0-9]{16,}",
   "npm_[A-Za-z0-9]{36}",
+  "memesh://join/[A-Za-z0-9_-]{8,}",
   `\\b${SK_KEY}`,
   "Bearer(?:\\s|\\\\[nrt])+[A-Za-z0-9_.\\-]{16,}",
   `(?<![A-Za-z0-9])${NAMED_VALUE}`,

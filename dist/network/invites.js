@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { isMachineId, verifySignature } from './identity.js';
-import { canonicalJson } from './roster.js';
-import { NetworkError, RELAY_OFF } from './types.js';
+import { parseRelayUrl } from './relay-url.js';
+import { canonicalJson, isNetworkId } from './roster.js';
+import { NetworkError } from './types.js';
 const LINK_PREFIX = 'memesh://join/';
 const LINK_VERSION = 1;
 const LINK_MAX_CHARS = 8192;
@@ -46,15 +47,7 @@ function malformed(detail) {
 function isRelay(value) {
     if (value === null)
         return true;
-    if (typeof value !== 'string' || value === RELAY_OFF)
-        return false;
-    try {
-        const { protocol } = new URL(value);
-        return protocol === 'https:' || protocol === 'http:';
-    }
-    catch {
-        return false;
-    }
+    return typeof value === 'string' && parseRelayUrl(value) === value;
 }
 export function parseLink(text) {
     if (typeof text !== 'string' || !text.startsWith(LINK_PREFIX))
@@ -78,8 +71,8 @@ export function parseLink(text) {
     }
     const { sig, ...fields } = raw;
     const link = fields;
-    if (typeof link.network_id !== 'string' || link.network_id.length === 0)
-        throw malformed('no network id');
+    if (!isNetworkId(link.network_id))
+        throw malformed('bad network id');
     if (!isMachineId(link.owner_id))
         throw malformed('no owner id');
     if (!isRelay(link.relay))

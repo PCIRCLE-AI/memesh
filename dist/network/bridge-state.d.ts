@@ -18,9 +18,21 @@ export declare function lockPath(dataDir: string): string;
 export declare function logPath(dataDir: string): string;
 export declare function writeStatus(dataDir: string, status: BridgeStatus): void;
 export declare function readStatus(dataDir: string): BridgeStatus | null;
-export declare function isBridgeProcess(pid: number): boolean;
+export type ProcessIdentity = 'bridge' | 'not-bridge' | 'unknown';
+export declare function identifyProcess(pid: number, dataDir: string): ProcessIdentity;
 export declare function readLockPid(dataDir: string): number | null;
-export declare function runningBridgePid(dataDir: string): number | null;
-export declare function acquireLock(dataDir: string): Promise<boolean>;
+export type BridgeHolder = {
+    kind: 'none';
+} | {
+    kind: 'bridge';
+    pid: number;
+} | {
+    kind: 'unknown';
+    pid: number;
+};
+export declare function bridgeHolder(dataDir: string): BridgeHolder;
+export declare function removeStaleLock(dataDir: string, stalePid: number | null): boolean;
+export type LockResult = 'acquired' | 'held' | 'unconfirmed';
+export declare function acquireLock(dataDir: string): Promise<LockResult>;
 export declare function releaseLock(dataDir: string): void;
 //# sourceMappingURL=bridge-state.d.ts.map

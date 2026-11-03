@@ -3,16 +3,20 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startBridge } from '../../src/network/bridge-control.js';
-import { explainLoadFailure } from '../../src/network/native-loader.js';
-import { joinNetwork, createNetwork } from '../../src/network/operations.js';
-import { checkRuntime, ensureRuntime, explainInstallFailure, isPlatformSupported } from '../../src/network/runtime.js';
 import { ensureIdentity } from '../../src/network/identity.js';
 import { encodeLink } from '../../src/network/invites.js';
-import { NetworkError, runtimeDir } from '../../src/network/types.js';
+import { explainLoadFailure } from '../../src/network/native-loader.js';
+import { createNetwork, joinNetwork, runJoinChild } from '../../src/network/operations.js';
+import { currentLibc, platformPackages } from '../../src/network/runtime-platform.js';
+import { checkRuntime, ensureRuntime, explainInstallFailure, isPlatformSupported } from '../../src/network/runtime.js';
+import { openNetworkStore, readConfig } from '../../src/network/store.js';
+import { NetworkError, childEnv, runtimeDir } from '../../src/network/types.js';
 import { buildTree, contextFor, makeHome, removeTree, type Tree } from './helpers.js';
+import { startRegistry, type Registry } from './local-registry.js';
 
 const repoRoot = path.resolve(import.meta.dirname, '..', '..');
 const lockText = fs.readFileSync(path.join(repoRoot, 'src/network/runtime-lock.json'), 'utf8');
+const PLATFORM_SUPPORTED = isPlatformSupported(lockText, process.platform, process.arch, currentLibc());
 const failure = async (run: () => unknown): Promise<NetworkError> => {
   try {
     await run();
@@ -81,7 +85,7 @@ describe('explaining failures', () => {
   });
 });
 
-describe('child process failures reach the caller as errors', () => {
+describe.skipIf(process.platform === 'win32' || !PLATFORM_SUPPORTED)('child process failures reach the caller as errors', () => {
   let tree: Tree;
   let home: string;
   const homes: string[] = [];
@@ -112,11 +116,17 @@ describe('child process failures reach the caller as errors', () => {
     fs.mkdirSync(runtimeDir(ctx.dataDir), { recursive: true });
     fs.writeFileSync(path.join(runtimeDir(ctx.dataDir), '.installed-lock-sha256'), `${createHash('sha256').update(lockText).digest('hex')}\n`);
   };
+  const signedLink = (token: string): string => {
+    const ownerHome = makeHome();
+    homes.push(ownerHome);
+    const owner = ensureIdentity(ownerHome);
+    return encodeLink(owner, {
+      v: 1, network_id: '0123456789abcdef0123456789abcdef', owner_id: owner.machineId, relay: 'https://relay.example/', token, expires_at_ms: Date.now() + 60_000,
+    });
+  };
+  const TOKEN = Buffer.alloc(32, 9).toString('base64url');
 
-  // Windows has no signals to die from: process.kill there just ends the process.
-  const posixIt = it.skipIf(process.platform === 'win32');
-
-  posixIt('a crash in the load check is an error naming the signal', async () => {
+  it('a crash in the load check is an error naming the signal', async () => {
     const ctx = { ...newContext(), bridgeEntry: crashingBridge(SEGFAULT) };
     const err = await failure(() => checkRuntime(ctx));
     expect(err.code).toBe('runtime_load_failed');
@@ -124,57 +134,192 @@ describe('child process failures reach the caller as errors', () => {
     expect(err.message).toMatch(/Single-machine MeMesh keeps working/);
   });
 
-  posixIt('a crash while starting the bridge is an error naming the signal', async () => {
+  it('a load check that times out says so, and does not blame the file', async () => {
+    const ctx = { ...newContext(), bridgeEntry: crashingBridge('setTimeout(() => {}, 20000);') };
+    const err = await failure(() => checkRuntime(ctx, 300));
+    expect(err.code).toBe('runtime_load_failed');
+    expect(err.message).toMatch(/did not finish/);
+    expect(err.message).not.toMatch(/damaged/);
+  });
+
+  it('a crash while starting the bridge is an error naming the signal', async () => {
     const ctx = { ...newContext(), bridgeEntry: crashingBridge(SEGFAULT) };
     const err = await failure(() => startBridge(ctx));
     expect(err.code).toBe('bridge_failed');
     expect(err.message).toMatch(/SIGSEGV/);
+    expect(err.message).toMatch(/up --reinstall/);
   });
 
-  posixIt('a crash during join is an error, and the token is not in it', async () => {
+  it('a crash during join is an error without the token or advice a joining machine cannot follow', async () => {
     const ctx = {
       ...newContext(),
       bridgeEntry: crashingBridge(`if (process.argv[2] === 'check') { console.log('{"ok":true}'); } else { process.stdin.resume(); process.stdin.on('end', () => process.kill(process.pid, 'SIGBUS')); setTimeout(() => {}, 5000); }`),
     };
     seedInstalled(ctx);
-    const ownerHome = makeHome();
-    homes.push(ownerHome);
-    const token = Buffer.alloc(32, 9).toString('base64url');
-    const link = encodeLink(ensureIdentity(ownerHome), {
-      v: 1, network_id: 'net-1', owner_id: ensureIdentity(ownerHome).machineId, relay: 'https://relay.example/', token, expires_at_ms: Date.now() + 60_000,
-    });
-    const err = await failure(() => joinNetwork(ctx, { link, name: 'mac', person: 'kt' }));
+    const err = await failure(() => joinNetwork(ctx, { link: signedLink(TOKEN), name: 'mac', person: 'kt' }));
     expect(err.code).toBe('bridge_failed');
     expect(err.message).toMatch(/SIGBUS/);
-    expect(err.message).not.toContain(token);
+    expect(err.message).not.toContain(TOKEN);
+    expect(err.message).not.toMatch(/--reinstall/);
   });
 
-  it('a bridge that exits with an error reports its last error', async () => {
-    const ctx = { ...newContext(), bridgeEntry: crashingBridge('process.exit(7);') };
+  it('the token reaches the child on stdin and is in no child argv', async () => {
+    const log = path.join(home, 'child-argv.json');
+    const ctx = {
+      ...newContext(),
+      bridgeEntry: crashingBridge(`
+import fs from 'node:fs';
+if (process.argv[2] === 'check') { console.log('{"ok":true}'); process.exit(0); }
+let input = ''; process.stdin.setEncoding('utf8');
+process.stdin.on('data', (c) => { input += c; });
+process.stdin.on('end', () => {
+  fs.writeFileSync(${JSON.stringify(log)}, JSON.stringify({ argv: process.argv, input }));
+  console.log(JSON.stringify({ ok: false, code: 'owner_unreachable', detail: 'probe', relay_reached: null }));
+});`),
+    };
+    seedInstalled(ctx);
+    const err = await failure(() => joinNetwork(ctx, { link: signedLink(TOKEN), name: 'mac', person: 'kt' }));
+    expect(err.code).toBe('owner_unreachable');
+    const seen = JSON.parse(fs.readFileSync(log, 'utf8')) as { argv: string[]; input: string };
+    expect(seen.input).toContain(TOKEN);
+    expect(seen.argv.join(' ')).not.toContain(TOKEN);
+  });
+
+  it('a child that goes past the deadline is reported as a timeout, not as damage', async () => {
+    const ctx = { ...newContext(), bridgeEntry: crashingBridge('process.stdin.resume(); setTimeout(() => {}, 20000);') };
+    const err = await failure(() => runJoinChild(ctx, {
+      request: { network_id: 'x', token: TOKEN, name: 'mac', person: 'kt' }, owner_id: 'x', owner_relay: null, owner_addrs: [], own_relay: 'off',
+    }, 300));
+    expect(err.code).toBe('join_timed_out');
+    expect(err.message).toMatch(/did not finish/);
+    expect(err.message).toMatch(/same link is safe/);
+    expect(err.message).not.toMatch(/damaged|--reinstall/);
+  });
+
+  it('a bridge that exits with an error reports its status and its own last error', async () => {
+    const ctx = {
+      ...newContext(),
+      bridgeEntry: crashingBridge(`
+import fs from 'node:fs';
+import path from 'node:path';
+const dir = path.join(process.argv[3], 'network');
+fs.writeFileSync(path.join(dir, 'bridge-status.json'), JSON.stringify({ pid: process.pid, state: 'failed', last_error: 'the actual reason' }));
+process.exit(7);`),
+    };
     const err = await failure(() => startBridge(ctx));
     expect(err.message).toMatch(/status 7/);
+    expect(err.message).toMatch(/the actual reason/);
   });
 
-  it('a corrupted download fails its checksum and installs nothing', async () => {
-    const ctx = newContext();
-    const assets = path.join(ctx.dataDir, 'assets');
-    fs.mkdirSync(assets, { recursive: true });
-    const corrupted = JSON.parse(lockText) as { packages: Record<string, { integrity?: string }> };
-    for (const entry of Object.values(corrupted.packages)) {
-      if (entry.integrity) entry.integrity = `sha512-${Buffer.alloc(64, 1).toString('base64')}`;
-    }
-    fs.writeFileSync(path.join(assets, 'runtime-lock.json'), JSON.stringify(corrupted));
-    fs.copyFileSync(path.join(repoRoot, 'src/network/runtime-package.json'), path.join(assets, 'runtime-package.json'));
-    const err = await failure(() => ensureRuntime({ ...ctx, assetsDir: assets }));
-    expect(err.code).toBe('runtime_install_failed');
-    expect(err.message).toMatch(/pinned checksum/);
-    expect(fs.existsSync(path.join(runtimeDir(ctx.dataDir), '.installed-lock-sha256'))).toBe(false);
-  }, 180_000);
+  it('the child environment cannot point the loader elsewhere', () => {
+    const env = childEnv({ ...newContext(), env: { KEEP: '1', NODE_PATH: '/x', node_path: '/y', NAPI_RS_NATIVE_LIBRARY_PATH: '/z', NAPI_RS_FORCE_WASI: '1' } });
+    expect(Object.keys(env).sort()).toEqual(['KEEP', 'MEMESH_DB_PATH', 'MEMESH_DIR']);
+  });
 
-  it('a missing shipped pin is reported, and no network state appears in the database', async () => {
+  it('a missing shipped pin is reported, and a machine with nothing keeps nothing', async () => {
     const ctx = { ...newContext(), assetsDir: path.join(home, 'nowhere') };
     const err = await failure(() => createNetwork(ctx, { name: 'mac', person: 'kt' }));
     expect(err.code).toBe('runtime_install_failed');
     expect(err.message).toMatch(/Reinstall MeMesh/);
+    expect(fs.existsSync(ctx.dataDir)).toBe(false);
+  });
+
+  describe('installing, against a local registry', () => {
+    let registry: Registry;
+    const platformKey = (): string => platformPackages(lockText, process.platform, process.arch, currentLibc())[0];
+
+    beforeAll(async () => { registry = await startRegistry(platformKey()); });
+    afterAll(() => registry.close());
+
+    const installContext = (lock: string, extraEnv: Record<string, string> = {}) => {
+      const ctx = newContext();
+      const assets = fs.mkdtempSync(path.join(home, 'assets-'));
+      fs.writeFileSync(path.join(assets, 'runtime-lock.json'), lock);
+      fs.copyFileSync(path.join(repoRoot, 'src/network/runtime-package.json'), path.join(assets, 'runtime-package.json'));
+      return {
+        ...ctx,
+        assetsDir: assets,
+        env: { ...ctx.env, HOME: ctx.env?.HOME as string, npm_config_registry: registry.url, npm_config_fetch_retries: '0', npm_config_cache: path.join(home, 'npm-cache'), ...extraEnv },
+      };
+    };
+    const markerOf = (ctx: { dataDir: string }): string => path.join(runtimeDir(ctx.dataDir), '.installed-lock-sha256');
+
+    it('a good download installs, with scripts off, even under omit=optional', async () => {
+      registry.serve('good');
+      const ctx = installContext(registry.lockWith({ wrapper: true, platform: true }), { npm_config_omit: 'optional' });
+      ensureRuntime(ctx);
+      expect(fs.existsSync(markerOf(ctx))).toBe(true);
+      expect(fs.existsSync(path.join(runtimeDir(ctx.dataDir), 'node_modules', platformKey()))).toBe(true);
+      expect(fs.existsSync(path.join(ctx.env.HOME as string, 'POSTINSTALL-RAN'))).toBe(false);
+    }, 120_000);
+
+    it('only the platform package corrupted: npm exits 0, and this still fails, saying why', async () => {
+      registry.serve('platform-garbage');
+      const ctx = installContext(registry.lockWith({ wrapper: true, platform: false }));
+      const err = await failure(() => ensureRuntime(ctx));
+      expect(err.code).toBe('runtime_install_failed');
+      expect(err.message).toMatch(/did not match its pinned checksum/);
+      expect(fs.existsSync(markerOf(ctx))).toBe(false);
+    }, 120_000);
+
+    it('a corrupted main package fails its checksum, leaves nothing, and no config', async () => {
+      registry.serve('all-garbage');
+      const ctx = installContext(lockText);
+      const err = await failure(() => createNetwork(ctx, { name: 'mac', person: 'kt' }));
+      expect(err.code).toBe('runtime_install_failed');
+      expect(err.message).toMatch(/pinned checksum/);
+      expect(fs.existsSync(ctx.dataDir)).toBe(false);
+    }, 120_000);
+
+    it('a failed install on a machine that has a database writes no network settings', async () => {
+      registry.serve('all-garbage');
+      const ctx = installContext(lockText);
+      openNetworkStore(ctx.dbPath).close();
+      const err = await failure(() => createNetwork(ctx, { name: 'mac', person: 'kt' }));
+      expect(err.code).toBe('runtime_install_failed');
+      const db = openNetworkStore(ctx.dbPath);
+      try {
+        expect(readConfig(db)).toBeNull();
+      } finally {
+        db.close();
+      }
+      expect(fs.existsSync(ctx.dbPath)).toBe(true);
+    }, 120_000);
+
+    it('a copy planted in a parent node_modules is not loaded, and no marker is written', async () => {
+      registry.serve('platform-garbage');
+      const ctx = installContext(registry.lockWith({ wrapper: true, platform: false }));
+      const planted = path.join(ctx.env.HOME as string, 'node_modules', platformKey());
+      fs.mkdirSync(planted, { recursive: true });
+      const proof = path.join(ctx.env.HOME as string, 'PLANTED-LOADED');
+      fs.writeFileSync(path.join(planted, 'package.json'), JSON.stringify({ name: platformKey(), version: '9.9.9', main: 'index.js' }));
+      fs.writeFileSync(path.join(planted, 'index.js'), `require('fs').writeFileSync(${JSON.stringify(proof)}, 'x'); module.exports = { Endpoint: { builder() { return {}; } } };`);
+      const err = await failure(() => ensureRuntime(ctx));
+      expect(err.code).toBe('runtime_install_failed');
+      expect(fs.existsSync(proof)).toBe(false);
+      expect(fs.existsSync(markerOf(ctx))).toBe(false);
+
+      // The same at load time, with the install already gone wrong on disk.
+      fs.mkdirSync(path.join(runtimeDir(ctx.dataDir), 'node_modules/@number0/iroh'), { recursive: true });
+      fs.writeFileSync(path.join(runtimeDir(ctx.dataDir), 'package-lock.json'), lockText);
+      fs.writeFileSync(path.join(runtimeDir(ctx.dataDir), 'node_modules/@number0/iroh/index.js'), `module.exports = require(${JSON.stringify(platformKey())});`);
+      const check = await failure(() => checkRuntime(ctx));
+      expect(check.message).toMatch(/missing from the install/);
+      expect(fs.existsSync(proof)).toBe(false);
+    }, 120_000);
+
+    it('resolution stays inside the runtime folder for the main package too', async () => {
+      registry.serve('good');
+      const ctx = installContext(registry.lockWith({ wrapper: true, platform: true }));
+      ensureRuntime(ctx);
+      fs.rmSync(path.join(runtimeDir(ctx.dataDir), 'node_modules/@number0/iroh'), { recursive: true });
+      const planted = path.join(ctx.env.HOME as string, 'node_modules/@number0/iroh');
+      fs.mkdirSync(planted, { recursive: true });
+      const proof = path.join(ctx.env.HOME as string, 'PLANTED-MAIN-LOADED');
+      fs.writeFileSync(path.join(planted, 'index.js'), `require('fs').writeFileSync(${JSON.stringify(proof)}, 'x'); module.exports = { Endpoint: { builder() { return {}; } } };`);
+      const check = await failure(() => checkRuntime(ctx));
+      expect(check.code).toBe('runtime_load_failed');
+      expect(fs.existsSync(proof)).toBe(false);
+    }, 120_000);
   });
 });

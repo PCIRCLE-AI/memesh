@@ -4,17 +4,18 @@
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
-import { startBridge, describeBridgeDeath } from './bridge-control.js';
+import { describeChildDeath, startBridge } from './bridge-control.js';
 import type { JoinChildInput, JoinChildResult } from './bridge-join.js';
-import { readStatus, runningBridgePid, type BridgeStatus } from './bridge-state.js';
+import { bridgeHolder, readStatus, type BridgeStatus } from './bridge-state.js';
 import { ensureIdentity, loadIdentity } from './identity.js';
 import { DEFAULT_INVITE_TTL_HOURS, MAX_INVITE_TTL_HOURS, createInvite, encodeLink, parseLink, type InviteLink } from './invites.js';
 import { parseJoinReply, refusalMessage } from './join-protocol.js';
+import { parseRelayUrl } from './relay-url.js';
 import { acceptRoster, assertValidName, createRoster, findMember, parseRoster, signRoster } from './roster.js';
 import { ensureRuntime, type InstallOptions } from './runtime.js';
-import { insertConfig, openNetworkStore, readConfig, type NetworkConfig } from './store.js';
+import { databaseExists, insertConfig, openNetworkStore, readConfig, type NetworkConfig } from './store.js';
 import {
-  DEFAULT_RELAY_URL, NetworkError, RELAY_OFF, SINGLE_MACHINE_NOTE, childEnv, errorMessage, networkDir,
+  DEFAULT_RELAY_URL, NetworkError, RELAY_OFF, SINGLE_MACHINE_NOTE, childEnv, errorMessage, networkDir, safeForTerminal,
   type NetworkContext, type Roster, type RosterMember,
 } from './types.js';
 
@@ -27,24 +28,23 @@ const HOUR_MS = 3_600_000;
 function resolveRelay(relay: string | undefined, fallback: string): string {
   const value = relay ?? fallback;
   if (value === RELAY_OFF) return RELAY_OFF;
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new NetworkError('invalid_option', `--relay must be an http(s) URL or "off".`);
+  const url = parseRelayUrl(value);
+  if (url === null) {
+    throw new NetworkError('invalid_option', '--relay must be "off", or an https URL with no user name or password (plain http only on this machine\'s loopback address).');
   }
-  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-    throw new NetworkError('invalid_option', `--relay must be an http(s) URL or "off".`);
-  }
-  return url.toString();
+  return url;
 }
 
+const NOT_JOINED = 'This machine is not in a network yet. Run `memesh network create` or `memesh network join`.';
+
 function withConfig<T>(ctx: NetworkContext, use: (db: ReturnType<typeof openNetworkStore>, config: NetworkConfig) => T): T {
+  // Asking must not create: someone who never joined keeps having no database.
+  if (!databaseExists(ctx.dbPath)) throw new NetworkError('not_joined', NOT_JOINED);
   const db = openNetworkStore(ctx.dbPath);
   try {
     const config = readConfig(db);
     if (!config) {
-      throw new NetworkError('not_joined', 'This machine is not in a network yet. Run `memesh network create` or `memesh network join`.');
+      throw new NetworkError('not_joined', NOT_JOINED);
     }
     return use(db, config);
   } finally {
@@ -53,6 +53,7 @@ function withConfig<T>(ctx: NetworkContext, use: (db: ReturnType<typeof openNetw
 }
 
 function refuseIfAlreadyJoined(ctx: NetworkContext): void {
+  if (!databaseExists(ctx.dbPath)) return;
   const db = openNetworkStore(ctx.dbPath);
   try {
     const config = readConfig(db);
@@ -108,14 +109,14 @@ export function createNetwork(ctx: NetworkContext, options: CreateOptions): { co
 
 export interface LinkOptions {
   ttlHours?: number;
-  /** Exact lifetime in ms; used instead of ttlHours by tests of expiry. */
-  ttlMs?: number;
   includeAddresses?: boolean;
 }
 
 export interface LinkResult {
   link: string;
   expiresAtMs: number;
+  /** Direct addresses were asked for and none were found, so the link has none. */
+  addressesMissing: boolean;
   bridgeStarted: boolean;
   bridgePid: number;
 }
@@ -136,7 +137,8 @@ export async function createLink(ctx: NetworkContext, options: LinkOptions = {})
   if (!Number.isFinite(hours) || hours <= 0 || hours > MAX_INVITE_TTL_HOURS) {
     throw new NetworkError('invalid_option', `--ttl-hours must be a number above 0 and at most ${MAX_INVITE_TTL_HOURS}.`);
   }
-  const ttlMs = options.ttlMs ?? hours * HOUR_MS;
+  // Whole milliseconds: a link's expiry must be an integer or `join` refuses the link.
+  const ttlMs = Math.ceil(hours * HOUR_MS);
 
   const config = withConfig(ctx, (_db, stored) => {
     if (stored.owner_id !== stored.machine_id) {
@@ -149,7 +151,7 @@ export async function createLink(ctx: NetworkContext, options: LinkOptions = {})
   }
 
   const bridge = await startBridge(ctx);
-  let addrs: string[] | undefined;
+  let addrs: string[] = [];
   if (options.includeAddresses) {
     addrs = await waitForDirectAddresses(ctx);
     if (addrs.length === 0 && config.relay_url === RELAY_OFF) {
@@ -168,23 +170,33 @@ export async function createLink(ctx: NetworkContext, options: LinkOptions = {})
       relay: config.relay_url === RELAY_OFF ? null : config.relay_url,
       token,
       expires_at_ms: expiresAtMs,
-      ...(addrs ? { addrs } : {}),
+      ...(addrs.length > 0 ? { addrs } : {}),
     };
-    return { link: encodeLink(identity, fields), expiresAtMs, bridgeStarted: bridge.started, bridgePid: bridge.pid };
+    return {
+      link: encodeLink(identity, fields),
+      expiresAtMs,
+      addressesMissing: options.includeAddresses === true && addrs.length === 0,
+      bridgeStarted: bridge.started,
+      bridgePid: bridge.pid,
+    };
   } finally {
     db.close();
   }
 }
 
 /** Run the client half in a child and read its one JSON result. Its death is an error here, not a crash. */
-function runJoinChild(ctx: NetworkContext, input: JoinChildInput): Promise<JoinChildResult> {
+export function runJoinChild(ctx: NetworkContext, input: JoinChildInput, deadlineMs: number = JOIN_CHILD_DEADLINE_MS): Promise<JoinChildResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [ctx.bridgeEntry, 'join'], {
       stdio: ['pipe', 'pipe', 'pipe'], env: childEnv(ctx), windowsHide: true,
     });
     let output = '';
     let lastError = '';
-    const timer = setTimeout(() => child.kill('SIGKILL'), JOIN_CHILD_DEADLINE_MS);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGKILL');
+    }, deadlineMs);
     child.stdout.setEncoding('utf8').on('data', (chunk: string) => {
       if (output.length < JOIN_CHILD_OUTPUT_MAX_BYTES) output += chunk;
     });
@@ -195,10 +207,16 @@ function runJoinChild(ctx: NetworkContext, input: JoinChildInput): Promise<JoinC
     });
     child.on('close', (code, signal) => {
       clearTimeout(timer);
+      if (timedOut) {
+        reject(new NetworkError('join_timed_out', `Joining did not finish within ${Math.round(deadlineMs / 1000)} s and was stopped. Running join again with the same link is safe.`));
+        return;
+      }
       try {
         resolve(JSON.parse(output) as JoinChildResult);
       } catch {
-        reject(new NetworkError('bridge_failed', describeBridgeDeath(code, signal, lastError.trim().split('\n')[0] || null)));
+        const stderrLine = lastError.trim().split('\n')[0];
+        const why = stderrLine ? ` Its last message: ${stderrLine}.` : '';
+        reject(new NetworkError('bridge_failed', `The network component ${describeChildDeath(code, signal)}.${why} Running join again with the same link is safe, and reinstalls its files if they are damaged. ${SINGLE_MACHINE_NOTE}`));
       }
     });
     // A child that died before reading its input surfaces through `close`.
@@ -214,7 +232,15 @@ export interface JoinOptions extends InstallOptions {
   relay?: string;
 }
 
-export async function joinNetwork(ctx: NetworkContext, options: JoinOptions): Promise<{ config: NetworkConfig; roster: Roster; member: RosterMember }> {
+export interface JoinResult {
+  config: NetworkConfig;
+  roster: Roster;
+  member: RosterMember;
+  /** Did this machine reach its own relay? Null when it runs with the relay off. */
+  relayReached: boolean | null;
+}
+
+export async function joinNetwork(ctx: NetworkContext, options: JoinOptions): Promise<JoinResult> {
   const link = parseLink(options.link);
   assertValidName('machine name', options.name);
   assertValidName('person', options.person);
@@ -224,6 +250,9 @@ export async function joinNetwork(ctx: NetworkContext, options: JoinOptions): Pr
   const relay = resolveRelay(options.relay, link.relay ?? RELAY_OFF);
   if (link.relay === null && !link.addrs?.length) {
     throw new NetworkError('link_malformed', 'This invite link has neither a relay nor direct addresses, so it leads nowhere. Ask for a new one.');
+  }
+  if (relay === RELAY_OFF && !link.addrs?.length) {
+    throw new NetworkError('invalid_option', 'This link can only be reached through a relay, so it cannot be used with --relay off. Ask for a link made with --include-addresses.');
   }
   refuseIfAlreadyJoined(ctx);
   ensureRuntime(ctx, options);
@@ -241,10 +270,16 @@ export async function joinNetwork(ctx: NetworkContext, options: JoinOptions): Pr
     own_relay: relay,
   });
   if (!result.ok) {
-    if (result.code === 'owner_unreachable') {
-      throw new NetworkError('owner_unreachable', `Could not reach the network owner's machine (${result.detail}). Its bridge must be running: on that machine, run \`memesh network up\`.`);
+    if (result.code === 'relay_unreachable') {
+      throw new NetworkError('relay_unreachable', `This machine could not reach its relay (${safeForTerminal(result.detail)}). The invite was not used and nothing was saved. Check this machine's connection and the relay address, then try again.`);
     }
-    throw new NetworkError(result.code, `Could not join: ${result.detail}. ${SINGLE_MACHINE_NOTE}`);
+    if (result.code === 'owner_unreachable') {
+      throw new NetworkError('owner_unreachable', `Could not reach the network owner's machine (${safeForTerminal(result.detail)}). Its bridge must be running: on that machine, run \`memesh network up\`. The invite was not used.`);
+    }
+    if (result.code === 'join_interrupted') {
+      throw new NetworkError('join_interrupted', `Reached the network owner's machine, but the join did not finish (${safeForTerminal(result.detail)}). Running join again with the same link is safe.`);
+    }
+    throw new NetworkError(result.code, `Could not join: ${safeForTerminal(result.detail)}. ${SINGLE_MACHINE_NOTE}`);
   }
 
   const reply = parseJoinReply(Buffer.from(result.reply));
@@ -272,7 +307,7 @@ export async function joinNetwork(ctx: NetworkContext, options: JoinOptions): Pr
   } finally {
     db.close();
   }
-  return { config, roster, member };
+  return { config, roster, member, relayReached: result.relay_reached };
 }
 
 /** Starting the bridge needs a network to serve. */
@@ -296,6 +331,8 @@ export interface JoinedStatus {
   members: RosterMember[];
   bridge: {
     running: boolean;
+    /** A live process holds the lock and it could not be confirmed as this bridge. */
+    cannot_tell: boolean;
     pid: number | null;
     started_at: string | null;
     relay_state: BridgeStatus['relay_state'] | null;
@@ -325,9 +362,12 @@ export function getNetworkStatus(ctx: NetworkContext): NetworkStatus {
   if (!config) return { joined: false };
 
   const roster = parseRoster(config.roster_json);
-  const pid = runningBridgePid(ctx.dataDir);
+  const holder = bridgeHolder(ctx.dataDir);
+  const running = holder.kind === 'bridge';
+  const pid = holder.kind === 'none' ? null : holder.pid;
   const status = readStatus(ctx.dataDir);
-  const running = pid !== null;
+  // The status file can be an earlier bridge's: its live fields count only if it is this one's.
+  const current = running && status?.pid === pid ? status : null;
   return {
     joined: true,
     network_id: config.network_id,
@@ -340,14 +380,15 @@ export function getNetworkStatus(ctx: NetworkContext): NetworkStatus {
     members: roster.members,
     bridge: {
       running,
+      cannot_tell: holder.kind === 'unknown',
       pid,
-      started_at: running ? status?.started_at ?? null : null,
-      relay_state: running ? status?.relay_state ?? null : null,
+      started_at: current?.started_at ?? null,
+      relay_state: current?.relay_state ?? null,
       last_error: status?.last_error ?? null,
       last_error_at: status?.last_error_at ?? null,
-      joins_accepted: running ? status?.joins_accepted ?? 0 : 0,
-      joins_refused: running ? status?.joins_refused ?? 0 : 0,
-      non_member_refused: running ? status?.non_member_refused ?? 0 : 0,
+      joins_accepted: current?.joins_accepted ?? 0,
+      joins_refused: current?.joins_refused ?? 0,
+      non_member_refused: current?.non_member_refused ?? 0,
     },
   };
 }

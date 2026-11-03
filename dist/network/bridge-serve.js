@@ -1,16 +1,18 @@
 import fs from 'node:fs';
-import { acquireLock, logPath, releaseLock, writeStatus, } from './bridge-state.js';
+import { acquireLock, logPath, readLockPid, releaseLock, writeStatus, } from './bridge-state.js';
 import { bindEndpoint, deadline, toBytes } from './endpoint.js';
-import { loadIdentity } from './identity.js';
+import { ensureNetworkDir, loadIdentity } from './identity.js';
 import { JOIN_REQUEST_MAX_BYTES, handleJoinRequest } from './join-protocol.js';
 import { explainLoadFailure, loadNative } from './native-loader.js';
-import { findMember, parseRoster } from './roster.js';
-import { openNetworkStore, readConfig } from './store.js';
-import { EXIT_ALREADY_RUNNING, JOIN_ALPN, NET_ALPN, RELAY_OFF, errorMessage, runtimeDir } from './types.js';
+import { RELAY_PING_INTERVAL_MS, applyRelayState, pingRelay, relayComplaint } from './relay-monitor.js';
+import { findMember, verifyRoster } from './roster.js';
+import { openNetworkStore, readConfig, signedRosterOf } from './store.js';
+import { EXIT_ALREADY_RUNNING, EXIT_LOCK_UNCONFIRMED, JOIN_ALPN, NET_ALPN, RELAY_OFF, errorMessage, runtimeDir, } from './types.js';
 const RELAY_ONLINE_DEADLINE_MS = 20_000;
 const HANDSHAKE_DEADLINE_MS = 20_000;
 const STREAM_DEADLINE_MS = 15_000;
 const CLOSE_DEADLINE_MS = 5_000;
+export const BRIDGE_BUSY_TIMEOUT_MS = 3_000;
 const HEARTBEAT_MS = 1_000;
 const STATUS_REFRESH_MS = 30_000;
 const LOG_MAX_BYTES = 1024 * 1024;
@@ -31,9 +33,11 @@ export async function serve(dataDir, dbPath) {
         process.umask(0o077);
     }
     catch { }
-    if (!(await acquireLock(dataDir))) {
-        appendLog(dataDir, 'exit_already_running');
-        return EXIT_ALREADY_RUNNING;
+    ensureNetworkDir(dataDir);
+    const lock = await acquireLock(dataDir);
+    if (lock !== 'acquired') {
+        appendLog(dataDir, lock === 'held' ? 'exit_already_running' : 'exit_lock_unconfirmed');
+        return lock === 'held' ? EXIT_ALREADY_RUNNING : EXIT_LOCK_UNCONFIRMED;
     }
     const startedAt = new Date().toISOString();
     const status = {
@@ -73,18 +77,20 @@ export async function serve(dataDir, dbPath) {
     };
     publish();
     let db;
+    let config;
     try {
-        db = openNetworkStore(dbPath);
+        db = openNetworkStore(dbPath, { busyTimeoutMs: BRIDGE_BUSY_TIMEOUT_MS });
+        config = readConfig(db);
     }
     catch (err) {
         return fail('exit_database', `Cannot open the database: ${errorMessage(err)}`);
     }
-    const config = readConfig(db);
     if (!config) {
         db.close();
         return fail('exit_not_joined', 'This machine has not joined a network.');
     }
-    const isOwner = config.owner_id === config.machine_id;
+    const { machine_id: machineId, owner_id: ownerId, relay_url: relayUrl } = config;
+    const isOwner = ownerId === machineId;
     let identity;
     try {
         identity = loadIdentity(dataDir);
@@ -93,7 +99,7 @@ export async function serve(dataDir, dbPath) {
         db.close();
         return fail('exit_identity', errorMessage(err));
     }
-    if (identity.machineId !== config.machine_id) {
+    if (identity.machineId !== machineId) {
         db.close();
         return fail('exit_identity', 'The machine key does not match the one this network was joined with.');
     }
@@ -107,35 +113,57 @@ export async function serve(dataDir, dbPath) {
     }
     let endpoint;
     try {
-        endpoint = await bindEndpoint(iroh, identity.secret, config.relay_url, isOwner ? [JOIN_ALPN, NET_ALPN] : [NET_ALPN]);
+        endpoint = await bindEndpoint(iroh, identity.secret, relayUrl, isOwner ? [JOIN_ALPN, NET_ALPN] : [NET_ALPN]);
     }
     catch (err) {
         db.close();
         return fail('exit_bind', `Cannot open a network connection: ${errorMessage(err)}`);
     }
     status.state = 'running';
-    status.relay_state = config.relay_url === RELAY_OFF ? 'off' : 'connecting';
+    status.relay_state = relayUrl === RELAY_OFF ? 'off' : 'connecting';
     publish();
     appendLog(dataDir, 'running', { relay_state: status.relay_state, owner: isOwner });
-    if (status.relay_state === 'connecting') {
-        const online = endpoint.online();
-        online.then(() => {
-            status.relay_state = 'online';
-            appendLog(dataDir, 'relay_online');
+    const relaySignals = { online: false, deadlinePassed: false, reachable: null };
+    const refreshRelayState = () => {
+        if (!applyRelayState(status, relaySignals, relayUrl))
+            return;
+        appendLog(dataDir, 'relay_state', { relay_state: status.relay_state });
+        if (status.relay_state === 'unreachable')
+            recordError('relay_unreachable', relayComplaint(relayUrl));
+        else
             publish();
+    };
+    const relayTimers = [];
+    if (status.relay_state === 'connecting') {
+        endpoint.online().then(() => {
+            relaySignals.online = true;
+            refreshRelayState();
         }, (err) => {
-            status.relay_state = 'unreachable';
             recordError('relay_failed', `The relay failed: ${errorMessage(err)}`);
         });
-        setTimeout(() => {
-            if (status.relay_state !== 'connecting')
+        relayTimers.push(setTimeout(() => {
+            relaySignals.deadlinePassed = true;
+            refreshRelayState();
+        }, RELAY_ONLINE_DEADLINE_MS));
+        let pingInFlight = false;
+        relayTimers.push(setInterval(() => {
+            if (pingInFlight)
                 return;
-            status.relay_state = 'unreachable';
-            recordError('relay_unreachable', `The relay ${config.relay_url} did not answer within ${RELAY_ONLINE_DEADLINE_MS / 1000} s.`);
-        }, RELAY_ONLINE_DEADLINE_MS);
+            pingInFlight = true;
+            void pingRelay(relayUrl).then((reachable) => {
+                pingInFlight = false;
+                relaySignals.reachable = reachable;
+                refreshRelayState();
+            });
+        }, RELAY_PING_INTERVAL_MS));
     }
     let lastPublished = Date.now();
     const heartbeat = setInterval(() => {
+        if (readLockPid(dataDir) !== process.pid) {
+            recordError('lock_lost', 'Another process took the network bridge lock, so this bridge stopped.');
+            void stop('lock_lost', 1);
+            return;
+        }
         let addresses = null;
         try {
             addresses = endpoint.addr().directAddresses();
@@ -157,6 +185,7 @@ export async function serve(dataDir, dbPath) {
             await new Promise(() => { });
         stopping = true;
         clearInterval(heartbeat);
+        relayTimers.forEach(clearTimeout);
         try {
             await deadline(endpoint.close(), CLOSE_DEADLINE_MS, 'closing the endpoint');
         }
@@ -214,8 +243,10 @@ export async function serve(dataDir, dbPath) {
     };
     const answerMember = async (connection, remoteId) => {
         const current = readConfig(db);
-        const roster = current ? parseRoster(current.roster_json) : null;
-        if (!roster || !findMember(roster, remoteId)) {
+        if (!current)
+            throw new Error('The network settings are gone from the database.');
+        const roster = verifyRoster(signedRosterOf(current), ownerId, current.network_id);
+        if (!findMember(roster, remoteId)) {
             connection.close(1n, toBytes('not_a_member'));
             status.non_member_refused++;
             appendLog(dataDir, 'non_member_refused', { machine_id: remoteId });

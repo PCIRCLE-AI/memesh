@@ -109,6 +109,7 @@ const SOURCES = [
   // The entity write kernel: the hooks' captureEntity and core's createEntity
   // perform the same row / observations / tags / FTS write through it.
   { from: 'dist/storage/entity-write.js', to: 'entity-write.js', src: 'src/storage/entity-write.ts' },
+  { from: 'dist/storage/agent-network-schema.js', to: 'agent-network-schema.js', src: 'src/storage/agent-network-schema.ts' },
   { from: 'dist/storage/schema.js', to: 'schema.js', src: 'src/storage/schema.ts' },
   // The SQLite driver. A leaf by construction — it imports `node:module` and
   // nothing else — and the hooks need the identical `MemeshDatabase` the rest

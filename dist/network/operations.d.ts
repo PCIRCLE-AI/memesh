@@ -1,3 +1,4 @@
+import type { JoinChildInput, JoinChildResult } from './bridge-join.js';
 import { type BridgeStatus } from './bridge-state.js';
 import { type InstallOptions } from './runtime.js';
 import { type NetworkConfig } from './store.js';
@@ -13,27 +14,30 @@ export declare function createNetwork(ctx: NetworkContext, options: CreateOption
 };
 export interface LinkOptions {
     ttlHours?: number;
-    ttlMs?: number;
     includeAddresses?: boolean;
 }
 export interface LinkResult {
     link: string;
     expiresAtMs: number;
+    addressesMissing: boolean;
     bridgeStarted: boolean;
     bridgePid: number;
 }
 export declare function createLink(ctx: NetworkContext, options?: LinkOptions): Promise<LinkResult>;
+export declare function runJoinChild(ctx: NetworkContext, input: JoinChildInput, deadlineMs?: number): Promise<JoinChildResult>;
 export interface JoinOptions extends InstallOptions {
     link: string;
     name: string;
     person: string;
     relay?: string;
 }
-export declare function joinNetwork(ctx: NetworkContext, options: JoinOptions): Promise<{
+export interface JoinResult {
     config: NetworkConfig;
     roster: Roster;
     member: RosterMember;
-}>;
+    relayReached: boolean | null;
+}
+export declare function joinNetwork(ctx: NetworkContext, options: JoinOptions): Promise<JoinResult>;
 export declare function bridgeUp(ctx: NetworkContext, options?: InstallOptions): Promise<{
     pid: number;
     started: boolean;
@@ -53,6 +57,7 @@ export interface JoinedStatus {
     members: RosterMember[];
     bridge: {
         running: boolean;
+        cannot_tell: boolean;
         pid: number | null;
         started_at: string | null;
         relay_state: BridgeStatus['relay_state'] | null;

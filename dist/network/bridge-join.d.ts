@@ -11,10 +11,12 @@ export interface JoinChildInput {
 export type JoinChildResult = {
     ok: true;
     reply: string;
+    relay_reached: boolean | null;
 } | {
     ok: false;
     code: NetworkErrorCode;
     detail: string;
+    relay_reached: boolean | null;
 };
 export declare function runJoinClient(dataDir: string, input: JoinChildInput): Promise<JoinChildResult>;
 //# sourceMappingURL=bridge-join.d.ts.map

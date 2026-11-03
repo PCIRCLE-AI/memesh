@@ -6,18 +6,14 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { describeChildDeath } from './bridge-control.js';
 import { ensureNetworkDir } from './identity.js';
+import { currentLibc, platformPackages } from './runtime-platform.js';
 import { NetworkError, SINGLE_MACHINE_NOTE, childEnv, runtimeDir, type NetworkContext } from './types.js';
 
 const INSTALL_TIMEOUT_MS = 5 * 60_000;
 const CHECK_TIMEOUT_MS = 30_000;
 const MARKER = '.installed-lock-sha256';
-
-interface LockEntry {
-  os?: string[];
-  cpu?: string[];
-  libc?: string[];
-}
 
 function assetText(ctx: NetworkContext, name: string): string {
   try {
@@ -27,21 +23,9 @@ function assetText(ctx: NetworkContext, name: string): string {
   }
 }
 
-function currentLibc(): string | null {
-  if (process.platform !== 'linux') return null;
-  // Without this the report does a reverse DNS lookup of every open socket.
-  (process.report as { excludeNetwork?: boolean }).excludeNetwork = true;
-  const header = process.report.getReport() as { header?: { glibcVersionRuntime?: string } };
-  return header.header?.glibcVersionRuntime ? 'glibc' : 'musl';
-}
-
 /** Does the lock pin a native package for this computer? */
 export function isPlatformSupported(lockText: string, platform: string, arch: string, libc: string | null): boolean {
-  const { packages } = JSON.parse(lockText) as { packages: Record<string, LockEntry> };
-  return Object.values(packages).some((entry) =>
-    entry.os?.includes(platform)
-    && entry.cpu?.includes(arch)
-    && (entry.libc === undefined || libc === null || entry.libc.includes(libc)));
+  return platformPackages(lockText, platform, arch, libc).length > 0;
 }
 
 function unsupportedMessage(platform: string, arch: string): string {
@@ -73,31 +57,32 @@ export function explainInstallFailure(spawnError: NodeJS.ErrnoException | undefi
   return `Could not install the networking component: ${reason}. ${SINGLE_MACHINE_NOTE}`;
 }
 
-function describeChildDeath(status: number | null, signal: NodeJS.Signals | null): string {
-  if (signal) return `it crashed with signal ${signal}`;
-  return `it exited with status ${status}`;
-}
-
 /**
  * Load the native file in a child. A truncated file can end a process with a
  * signal; here that is a failed result, not a crashed CLI.
  */
-export function checkRuntime(ctx: NetworkContext): void {
+export function checkRuntime(ctx: NetworkContext, timeoutMs: number = CHECK_TIMEOUT_MS): void {
   const result = spawnSync(process.execPath, [ctx.bridgeEntry, 'check'], {
-    env: childEnv(ctx), encoding: 'utf8', timeout: CHECK_TIMEOUT_MS,
+    env: childEnv(ctx), encoding: 'utf8', timeout: timeoutMs,
   });
-  let reason: string;
   if (result.status === 0) return;
-  try {
-    reason = (JSON.parse(result.stdout) as { reason: string }).reason;
-  } catch {
-    reason = `the networking component could not start: ${describeChildDeath(result.status, result.signal)}, which usually means its native file is damaged`;
+  let reason: string;
+  if ((result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') {
+    reason = `the check did not finish within ${timeoutMs / 1000} s, so nothing is known about the files; try again when this computer is less busy`;
+  } else {
+    try {
+      reason = (JSON.parse(result.stdout) as { reason: string }).reason;
+    } catch {
+      reason = `the networking component could not start: ${describeChildDeath(result.status, result.signal)}`;
+    }
   }
   throw new NetworkError('runtime_load_failed', `The networking component did not load: ${reason}. ${SINGLE_MACHINE_NOTE}`);
 }
 
 function runNpmCi(ctx: NetworkContext, directory: string): void {
-  const args = ['ci', '--ignore-scripts', '--no-audit', '--no-fund', '--no-update-notifier', '--loglevel=error'];
+  // --include=optional: the native files are optional packages, and a user's
+  // `omit=optional` npm setting would otherwise install none of them and exit 0.
+  const args = ['ci', '--ignore-scripts', '--include=optional', '--no-audit', '--no-fund', '--no-update-notifier', '--loglevel=error'];
   const options = { cwd: directory, env: childEnv(ctx), encoding: 'utf8', timeout: INSTALL_TIMEOUT_MS } as const;
   // Windows cannot run npm.cmd without a shell. Every word here is a literal from this file.
   const result = process.platform === 'win32'
@@ -108,6 +93,31 @@ function runNpmCi(ctx: NetworkContext, directory: string): void {
     result.error as NodeJS.ErrnoException | undefined,
     `${result.stderr ?? ''}\n${result.stdout ?? ''}`,
   ));
+}
+
+/**
+ * npm treats the native packages as optional: one that fails its checksum or its
+ * download is dropped and npm still exits 0. So success has to be checked here.
+ */
+function assertPlatformPackageInstalled(lockText: string, directory: string): void {
+  const packages = platformPackages(lockText, process.platform, process.arch, currentLibc());
+  if (packages.some((name) => fs.existsSync(path.join(directory, 'node_modules', name, 'package.json')))) return;
+  throw new NetworkError(
+    'runtime_install_failed',
+    `Could not install the networking component: the native file for this computer failed to download or did not match its pinned checksum, so it was refused. Try again; if it repeats, your network or npm registry is changing the files. ${SINGLE_MACHINE_NOTE}`,
+  );
+}
+
+/** Undo what a failed install created, so a failed `create` leaves no trace on a machine that had none. */
+function removeFailedInstall(dataDir: string, directory: string, created: { network: boolean; data: boolean }): void {
+  fs.rmSync(directory, { recursive: true, force: true });
+  try {
+    if (created.network) fs.rmdirSync(path.dirname(directory));
+    if (created.data) fs.rmdirSync(dataDir);
+  } catch (err) {
+    // Something else now lives there (a concurrent command's files): leave it.
+    if ((err as NodeJS.ErrnoException).code !== 'ENOTEMPTY') throw err;
+  }
 }
 
 export interface InstallOptions {
@@ -128,8 +138,9 @@ export function ensureRuntime(ctx: NetworkContext, options: InstallOptions = {})
     throw new NetworkError('runtime_unsupported', unsupportedMessage(process.platform, process.arch));
   }
 
-  ensureNetworkDir(ctx.dataDir);
   const directory = runtimeDir(ctx.dataDir);
+  const created = { network: !fs.existsSync(path.dirname(directory)), data: !fs.existsSync(ctx.dataDir) };
+  ensureNetworkDir(ctx.dataDir);
   const wanted = createHash('sha256').update(lockText).digest('hex');
   const marker = path.join(directory, MARKER);
   if (!options.force && fs.existsSync(marker) && fs.readFileSync(marker, 'utf8').trim() === wanted) {
@@ -146,7 +157,13 @@ export function ensureRuntime(ctx: NetworkContext, options: InstallOptions = {})
   fs.rmSync(marker, { force: true });
   fs.writeFileSync(path.join(directory, 'package.json'), packageText);
   fs.writeFileSync(path.join(directory, 'package-lock.json'), lockText);
-  runNpmCi(ctx, directory);
-  checkRuntime(ctx);
+  try {
+    runNpmCi(ctx, directory);
+    assertPlatformPackageInstalled(lockText, directory);
+    checkRuntime(ctx);
+  } catch (err) {
+    removeFailedInstall(ctx.dataDir, directory, created);
+    throw err;
+  }
   fs.writeFileSync(marker, `${wanted}\n`);
 }

@@ -389,6 +389,8 @@ export const SECRET_PATTERN_SOURCES: readonly string[] = [
   // coverage and makes a quote a hard stop. A length cap was tried instead
   // and rejected: `sk-` + 400 chars redacted the first 204 and published the
   // remaining 200. Measured, not assumed.
+  // A MeMesh invite link: until it is used, whoever holds it can join the network.
+  'memesh://join/[A-Za-z0-9_-]{8,}',
   `\\b${SK_KEY}`,
   // Bearer token. `(?:\\s|\\\\[nrt])+` instead of plain \\s+: the HTTP
   // doctor egress redacts JSON-STRINGIFIED text, where a real newline

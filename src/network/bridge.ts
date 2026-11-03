@@ -1,13 +1,15 @@
 // dist/network/bridge.js: the only process that loads the native transport.
 //
-//   bridge.js check   load the native file once and report (used after install)
-//   bridge.js join    one join as a client; input on stdin, a JSON result on stdout
-//   bridge.js serve   the long-running bridge
+//   bridge.js check               load the native file once and report (used after install)
+//   bridge.js join                one join as a client; input on stdin, a JSON result on stdout
+//   bridge.js serve <data dir>    the long-running bridge; the data dir on its command line
+//                                 is how `down` knows this process belongs to that folder
 
 import path from 'node:path';
 import { getDbPath, getMemeshDirFromDbPath } from '../core/paths.js';
 import { JOIN_CHILD_INPUT_MAX_BYTES, runJoinClient, type JoinChildInput } from './bridge-join.js';
 import { serve } from './bridge-serve.js';
+import { recordStartupFailure } from './bridge-startup-failure.js';
 import { explainLoadFailure, loadNative } from './native-loader.js';
 import { errorMessage, runtimeDir } from './types.js';
 
@@ -51,12 +53,17 @@ if (mode === 'check') {
     process.exit(0);
   } catch (err) {
     // Runs with the token in memory: report the failure's message, never the input.
-    await reply({ ok: false, code: 'internal', detail: errorMessage(err) });
+    await reply({ ok: false, code: 'internal', detail: errorMessage(err), relay_reached: null });
     process.exit(1);
   }
-} else if (mode === 'serve') {
-  process.exit(await serve(dataDir, getDbPath()));
+} else if (mode === 'serve' && process.argv[3] === dataDir) {
+  try {
+    process.exit(await serve(dataDir, getDbPath()));
+  } catch (err) {
+    recordStartupFailure(dataDir, errorMessage(err));
+    process.exit(1);
+  }
 } else {
-  process.stderr.write('Usage: bridge.js check|join|serve\n');
+  process.stderr.write('Usage: bridge.js check | join | serve <data dir>\n');
   process.exit(2);
 }

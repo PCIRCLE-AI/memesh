@@ -4,6 +4,7 @@ import { readConfig, saveRoster, signedRosterOf } from './store.js';
 import { NetworkError, errorMessage } from './types.js';
 export const JOIN_REQUEST_MAX_BYTES = 4 * 1024;
 export const JOIN_REPLY_MAX_BYTES = SIGNED_ROSTER_MAX_BYTES + 1024;
+const OWNER_SIDE_FAULTS = new Set(['roster_invalid', 'not_owner', 'identity_invalid']);
 export function encodeJoinRequest(request) {
     return Buffer.from(JSON.stringify(request));
 }
@@ -50,11 +51,23 @@ export function handleJoinRequest(db, identity, remoteMachineId, bytes, now) {
         return { ok: true, roster: decide.immediate() };
     }
     catch (err) {
-        if (err instanceof NetworkError)
+        if (err instanceof NetworkError && !OWNER_SIDE_FAULTS.has(err.code))
             return { ok: false, error: err.code };
         throw new Error(`Join could not be recorded: ${errorMessage(err)}`, { cause: err });
     }
 }
+const REFUSALS = new Map([
+    ['invite_used', 'This invite link has already been used. Ask for a new one.'],
+    ['invite_expired', 'This invite link has expired. Ask for a new one.'],
+    ['invite_unknown', 'The network owner does not recognise this invite link. Ask for a new one.'],
+    ['name_taken', 'That machine name is already in this network. Run join again with a different --name; the link still works.'],
+    ['wrong_network', 'This link is for a different network than the machine it reached.'],
+    ['invalid_name', 'The network owner refused that machine name or person.'],
+    ['bad_request', "The network owner's machine could not read the request. Update MeMesh on both machines."],
+    ['roster_full', 'That network has no room for another machine.'],
+    ['internal', "The network owner's machine could not record the join. Its `memesh network status` shows why. Trying again with the same link is safe."],
+    ['unknown_refusal', 'The network owner refused the join for a reason this version of MeMesh does not know.'],
+]);
 export function parseJoinReply(bytes) {
     let raw;
     try {
@@ -66,23 +79,13 @@ export function parseJoinReply(bytes) {
     if (raw?.ok === true && raw.roster !== null && typeof raw.roster === 'object') {
         return { ok: true, roster: raw.roster };
     }
-    if (raw?.ok === false && typeof raw.error === 'string') {
-        return { ok: false, error: raw.error };
+    if (raw?.ok === false) {
+        const code = raw.error;
+        return { ok: false, error: REFUSALS.has(code) ? code : 'unknown_refusal' };
     }
     throw new NetworkError('bad_request', "The network owner's machine sent a reply that could not be read.");
 }
-const REFUSALS = {
-    invite_used: 'This invite link has already been used. Ask for a new one.',
-    invite_expired: 'This invite link has expired. Ask for a new one.',
-    invite_unknown: 'The network owner does not recognise this invite link. Ask for a new one.',
-    name_taken: 'That machine name is already in this network. Run join again with a different --name; the link still works.',
-    wrong_network: 'This link is for a different network than the machine it reached.',
-    invalid_name: 'The network owner refused that machine name or person.',
-    not_owner: 'The machine this link points to no longer owns that network.',
-    roster_full: 'That network has no room for another machine.',
-    internal: "The network owner's machine could not record the join. Try again.",
-};
 export function refusalMessage(code) {
-    return REFUSALS[code] ?? `The network owner refused the join (${code}).`;
+    return REFUSALS.get(code) ?? REFUSALS.get('unknown_refusal');
 }
 //# sourceMappingURL=join-protocol.js.map

@@ -5,7 +5,8 @@ import { explainLoadFailure, loadNative } from './native-loader.js';
 import { JOIN_ALPN, RELAY_OFF, errorMessage, runtimeDir } from './types.js';
 const RELAY_ONLINE_DEADLINE_MS = 15_000;
 const CONNECT_DEADLINE_MS = 35_000;
-const REPLY_DEADLINE_MS = 30_000;
+const SEND_DEADLINE_MS = 10_000;
+const REPLY_DEADLINE_MS = 20_000;
 const CLOSE_DEADLINE_MS = 5_000;
 export const JOIN_CHILD_INPUT_MAX_BYTES = 16 * 1024;
 export async function runJoinClient(dataDir, input) {
@@ -15,12 +16,16 @@ export async function runJoinClient(dataDir, input) {
         iroh = loadNative(runtimeDir(dataDir));
     }
     catch (err) {
-        return { ok: false, code: 'runtime_load_failed', detail: explainLoadFailure(err) };
+        return { ok: false, code: 'runtime_load_failed', detail: explainLoadFailure(err), relay_reached: null };
     }
     const endpoint = await bindEndpoint(iroh, identity.secret, input.own_relay, []);
+    let relayReached = null;
     try {
         if (input.own_relay !== RELAY_OFF) {
-            await deadline(endpoint.online(), RELAY_ONLINE_DEADLINE_MS, 'reaching the relay').catch(() => undefined);
+            relayReached = await deadline(endpoint.online(), RELAY_ONLINE_DEADLINE_MS, 'reaching the relay').then(() => true, () => false);
+            if (!relayReached && (input.own_relay !== input.owner_relay || !input.owner_addrs?.length)) {
+                return { ok: false, code: 'relay_unreachable', detail: input.own_relay, relay_reached: false };
+            }
         }
         const target = new iroh.EndpointAddr(iroh.EndpointId.fromString(input.owner_id), input.owner_relay, input.owner_addrs);
         let connection;
@@ -28,17 +33,19 @@ export async function runJoinClient(dataDir, input) {
             connection = await deadline(endpoint.connect(target, toBytes(JOIN_ALPN)), CONNECT_DEADLINE_MS, 'connecting');
         }
         catch (err) {
-            return { ok: false, code: 'owner_unreachable', detail: errorMessage(err) };
+            return { ok: false, code: 'owner_unreachable', detail: errorMessage(err), relay_reached: relayReached };
         }
-        const stream = await connection.openBi();
-        await stream.send.writeAll(toBytes(encodeJoinRequest(input.request)));
-        await stream.send.finish();
-        const reply = Buffer.from(await deadline(stream.recv.readToEnd(JOIN_REPLY_MAX_BYTES), REPLY_DEADLINE_MS, 'waiting for the reply'));
-        connection.close(0n, toBytes('done'));
-        return { ok: true, reply: reply.toString('utf8') };
-    }
-    catch (err) {
-        return { ok: false, code: 'owner_unreachable', detail: errorMessage(err) };
+        try {
+            const stream = await deadline(connection.openBi(), SEND_DEADLINE_MS, 'opening a stream');
+            await deadline(stream.send.writeAll(toBytes(encodeJoinRequest(input.request))), SEND_DEADLINE_MS, 'sending the request');
+            await deadline(stream.send.finish(), SEND_DEADLINE_MS, 'sending the request');
+            const reply = Buffer.from(await deadline(stream.recv.readToEnd(JOIN_REPLY_MAX_BYTES), REPLY_DEADLINE_MS, 'waiting for the reply'));
+            connection.close(0n, toBytes('done'));
+            return { ok: true, reply: reply.toString('utf8'), relay_reached: relayReached };
+        }
+        catch (err) {
+            return { ok: false, code: 'join_interrupted', detail: errorMessage(err), relay_reached: relayReached };
+        }
     }
     finally {
         await deadline(endpoint.close(), CLOSE_DEADLINE_MS, 'closing the endpoint').catch(() => undefined);

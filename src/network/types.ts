@@ -10,8 +10,10 @@ export const RELAY_OFF = 'off';
 
 /** The bridge's exit status when another bridge already holds the data dir. */
 export const EXIT_ALREADY_RUNNING = 3;
+/** The bridge's exit status when a live process holds the lock and it cannot tell whose. */
+export const EXIT_LOCK_UNCONFIRMED = 4;
 
-export const SINGLE_MACHINE_NOTE = 'Single-machine MeMesh keeps working; nothing else was changed.';
+export const SINGLE_MACHINE_NOTE = 'Single-machine MeMesh keeps working.';
 
 export type NetworkErrorCode =
   | 'invite_used'
@@ -24,6 +26,7 @@ export type NetworkErrorCode =
   | 'not_owner'
   | 'roster_full'
   | 'internal'
+  | 'unknown_refusal'
   | 'link_malformed'
   | 'link_tampered'
   | 'link_version'
@@ -35,10 +38,14 @@ export type NetworkErrorCode =
   | 'needs_person'
   | 'invalid_option'
   | 'owner_unreachable'
+  | 'relay_unreachable'
+  | 'join_interrupted'
+  | 'join_timed_out'
   | 'runtime_unsupported'
   | 'runtime_install_failed'
   | 'runtime_load_failed'
-  | 'bridge_failed';
+  | 'bridge_failed'
+  | 'bridge_unconfirmed';
 
 /** An expected failure with a sentence for a person. Messages never carry a token. */
 export class NetworkError extends Error {
@@ -62,7 +69,6 @@ export interface Roster {
   owner_id: string;
   version: number;
   members: RosterMember[];
-  invite_epoch: number;
 }
 
 /** The exact signed bytes travel with the signature: a roster is never re-serialised to verify. */
@@ -91,9 +97,23 @@ export function runtimeDir(dataDir: string): string {
   return path.join(networkDir(dataDir), 'runtime');
 }
 
-/** A child resolves the same data dir and database as the parent, whatever the parent inherited. */
+/**
+ * A child resolves the same data dir and database as the parent, whatever the
+ * parent inherited. NODE_PATH and NAPI_RS_* are dropped: either one can point the
+ * loader at a native file the pinned checksums never covered.
+ */
 export function childEnv(ctx: NetworkContext): NodeJS.ProcessEnv {
-  return { ...(ctx.env ?? process.env), MEMESH_DIR: ctx.dataDir, MEMESH_DB_PATH: ctx.dbPath };
+  const inherited = Object.entries(ctx.env ?? process.env).filter(([key]) => {
+    const name = key.toUpperCase();
+    return name !== 'NODE_PATH' && !name.startsWith('NAPI_RS_');
+  });
+  return { ...Object.fromEntries(inherited), MEMESH_DIR: ctx.dataDir, MEMESH_DB_PATH: ctx.dbPath };
+}
+
+/** Nothing a link, a reply or a peer supplied may move the cursor or write to the terminal. */
+export function safeForTerminal(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ');
 }
 
 export function errorMessage(err: unknown): string {

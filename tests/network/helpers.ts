@@ -72,6 +72,19 @@ export function loadIrohForTest(runtime: string): IrohModule {
   return createRequire(path.join(runtime, 'package.json'))('@number0/iroh') as IrohModule;
 }
 
+/** Starts node with stdin and stdout claiming to be a terminal, as the real CLI path needs. */
+export function writeTtyPreload(directory: string): string {
+  const preload = path.join(directory, 'tty-preload.mjs');
+  fs.writeFileSync(preload, `
+import fs from 'node:fs';
+process.stdin.isTTY = true;
+process.stdout.isTTY = true;
+process.stdin.setRawMode = (on) => { process.stderr.write('RAW:' + on + '\\n'); return process.stdin; };
+if (process.env.ARGV_LOG) fs.appendFileSync(process.env.ARGV_LOG, JSON.stringify(process.argv) + '\\n');
+`);
+  return preload;
+}
+
 export function removeTree(target: string): void {
   fs.rmSync(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }

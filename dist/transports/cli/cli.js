@@ -3781,6 +3781,34 @@ var init_time_utils = __esm({
   }
 });
 
+// dist/storage/agent-network-schema.js
+var AGENT_NETWORK_SCHEMA_SQL;
+var init_agent_network_schema = __esm({
+  "dist/storage/agent-network-schema.js"() {
+    "use strict";
+    AGENT_NETWORK_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS agent_network_config (
+  id               INTEGER PRIMARY KEY CHECK (id = 1),
+  network_id       TEXT NOT NULL,
+  owner_id         TEXT NOT NULL,
+  machine_id       TEXT NOT NULL,
+  machine_name     TEXT NOT NULL,
+  person           TEXT NOT NULL,
+  relay_url        TEXT NOT NULL,
+  roster_json      TEXT NOT NULL,
+  roster_signature TEXT NOT NULL,
+  created_at_ms    INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS agent_network_invites (
+  hash          TEXT PRIMARY KEY,
+  expires_at_ms INTEGER NOT NULL,
+  used_at       INTEGER
+);
+`;
+  }
+});
+
 // dist/storage/schema.js
 function safeAlter(db2, sql) {
   try {
@@ -3971,32 +3999,13 @@ function ftsIndexIsCurrent(db2) {
   }
   return row !== void 0 && /^\d+$/.test(row.value) && Number(row.value) >= FTS_SEGMENTATION_VERSION;
 }
-var AGENT_NETWORK_SCHEMA_SQL, SCHEMA_SQL, FTS_SQL, MIGRATION_RETRY_BACKOFF_MS, FTS_SEGMENTATION_VERSION, FTS_REBUILD_PAGE_SIZE;
+var SCHEMA_SQL, FTS_SQL, MIGRATION_RETRY_BACKOFF_MS, FTS_SEGMENTATION_VERSION, FTS_REBUILD_PAGE_SIZE;
 var init_schema = __esm({
   "dist/storage/schema.js"() {
     "use strict";
     init_fts_index();
     init_time_utils();
-    AGENT_NETWORK_SCHEMA_SQL = `
-CREATE TABLE IF NOT EXISTS agent_network_config (
-  id               INTEGER PRIMARY KEY CHECK (id = 1),
-  network_id       TEXT NOT NULL,
-  owner_id         TEXT NOT NULL,
-  machine_id       TEXT NOT NULL,
-  machine_name     TEXT NOT NULL,
-  person           TEXT NOT NULL,
-  relay_url        TEXT NOT NULL,
-  roster_json      TEXT NOT NULL,
-  roster_signature TEXT NOT NULL,
-  created_at_ms    INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS agent_network_invites (
-  hash          TEXT PRIMARY KEY,
-  expires_at_ms INTEGER NOT NULL,
-  used_at       INTEGER
-);
-`;
+    init_agent_network_schema();
     SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS entities (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -4441,12 +4450,12 @@ function topologyLine(entity, maxChars) {
   const snippet = entity.snippet?.trim();
   const given = (title || snippet || "").replace(/~[0-9a-f]{32}\b/g, "");
   const handle = Number.isInteger(entity.id) && entity.id > 0 ? ` [mem:${entity.id}]` : "";
-  const unconfirmed = entity.unconfirmedDays ? ` (unconfirmed ${entity.unconfirmedDays} days: re-check before relying)` : "";
+  const unconfirmed2 = entity.unconfirmedDays ? ` (unconfirmed ${entity.unconfirmedDays} days: re-check before relying)` : "";
   const reason = entity.why ? `${WHY_PREFIX}${entity.why}` : "";
   const noReason = entity.why === null ? " (no reason recorded)" : "";
   const text = reason && isWhyText(given) ? "" : given || (reason ? "" : `${entity.type} memory`);
-  const room = Math.max(8, maxChars - handle.length - unconfirmed.length - noReason.length);
-  return stripControlChars(`- [${entity.type}] ${lineBody(text, reason, room)}${noReason}${unconfirmed}${handle}`);
+  const room = Math.max(8, maxChars - handle.length - unconfirmed2.length - noReason.length);
+  return stripControlChars(`- [${entity.type}] ${lineBody(text, reason, room)}${noReason}${unconfirmed2}${handle}`);
 }
 function lineBody(text, reason, room) {
   if (!reason)
@@ -5342,6 +5351,7 @@ var init_paths = __esm({
       SENDGRID_KEY,
       "[srp]k_(?:live|test)_[A-Za-z0-9]{16,}",
       "npm_[A-Za-z0-9]{36}",
+      "memesh://join/[A-Za-z0-9_-]{8,}",
       `\\b${SK_KEY}`,
       "Bearer(?:\\s|\\\\[nrt])+[A-Za-z0-9_.\\-]{16,}",
       `(?<![A-Za-z0-9])${NAMED_VALUE}`,
@@ -67999,7 +68009,8 @@ import path15 from "node:path";
 var DEFAULT_RELAY_URL = "https://relay.memesh.ai/";
 var RELAY_OFF = "off";
 var EXIT_ALREADY_RUNNING = 3;
-var SINGLE_MACHINE_NOTE = "Single-machine MeMesh keeps working; nothing else was changed.";
+var EXIT_LOCK_UNCONFIRMED = 4;
+var SINGLE_MACHINE_NOTE = "Single-machine MeMesh keeps working.";
 var NetworkError = class extends Error {
   code;
   constructor(code, message) {
@@ -68015,7 +68026,14 @@ function runtimeDir(dataDir) {
   return path15.join(networkDir(dataDir), "runtime");
 }
 function childEnv(ctx) {
-  return { ...ctx.env ?? process.env, MEMESH_DIR: ctx.dataDir, MEMESH_DB_PATH: ctx.dbPath };
+  const inherited = Object.entries(ctx.env ?? process.env).filter(([key]) => {
+    const name = key.toUpperCase();
+    return name !== "NODE_PATH" && !name.startsWith("NAPI_RS_");
+  });
+  return { ...Object.fromEntries(inherited), MEMESH_DIR: ctx.dataDir, MEMESH_DB_PATH: ctx.dbPath };
+}
+function safeForTerminal(text) {
+  return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
 }
 function errorMessage2(err) {
   return err instanceof Error ? err.message : String(err);
@@ -68031,6 +68049,13 @@ function lockPath(dataDir) {
 function logPath(dataDir) {
   return path16.join(networkDir(dataDir), "bridge.log");
 }
+function writeStatus(dataDir, status) {
+  const file2 = statusPath(dataDir);
+  const temporary = `${file2}.tmp-${process.pid}`;
+  fs18.writeFileSync(temporary, `${JSON.stringify(status)}
+`, { mode: 384 });
+  fs18.renameSync(temporary, file2);
+}
 function readStatus(dataDir) {
   try {
     return JSON.parse(fs18.readFileSync(statusPath(dataDir), "utf8"));
@@ -68038,20 +68063,54 @@ function readStatus(dataDir) {
     return null;
   }
 }
-function isBridgeProcess(pid) {
+function isThisBridge(command, dataDir) {
+  return command.replace(/"/g, "").trimEnd().endsWith(`bridge.js serve ${dataDir}`);
+}
+function isProcessAlive(pid) {
   try {
     process.kill(pid, 0);
+    return true;
   } catch {
     return false;
   }
-  if (process.platform === "win32")
-    return true;
+}
+function linuxCommandLine(pid) {
   try {
-    const command = execFileSync5("ps", ["-ww", "-o", "command=", "-p", String(pid)], { encoding: "utf8", timeout: 5e3 });
-    return /bridge\.js serve/.test(command);
-  } catch (err) {
-    return err.status === void 0;
+    return fs18.readFileSync(`/proc/${pid}/cmdline`).toString("utf8").split("\0").join(" ");
+  } catch {
+    return null;
   }
+}
+function commandLineFrom(program3, args) {
+  try {
+    return execFileSync5(program3, args, { encoding: "utf8", timeout: 5e3, stdio: ["ignore", "pipe", "ignore"] });
+  } catch {
+    return null;
+  }
+}
+function commandLineOf(pid) {
+  if (process.platform === "linux") {
+    const command = linuxCommandLine(pid);
+    if (command !== null)
+      return command;
+  }
+  if (process.platform === "win32") {
+    return commandLineFrom("powershell", [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      `(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine`
+    ]);
+  }
+  return commandLineFrom("ps", ["-ww", "-o", "command=", "-p", String(pid)]);
+}
+function identifyProcess(pid, dataDir) {
+  if (!isProcessAlive(pid))
+    return "not-bridge";
+  const command = commandLineOf(pid);
+  if (command === null)
+    return isProcessAlive(pid) ? "unknown" : "not-bridge";
+  return isThisBridge(command, dataDir) ? "bridge" : "not-bridge";
 }
 function readLockPid(dataDir) {
   try {
@@ -68061,9 +68120,14 @@ function readLockPid(dataDir) {
     return null;
   }
 }
-function runningBridgePid(dataDir) {
+function bridgeHolder(dataDir) {
   const pid = readLockPid(dataDir);
-  return pid !== null && isBridgeProcess(pid) ? pid : null;
+  if (pid === null)
+    return { kind: "none" };
+  const identity = identifyProcess(pid, dataDir);
+  if (identity === "bridge")
+    return { kind: "bridge", pid };
+  return identity === "unknown" ? { kind: "unknown", pid } : { kind: "none" };
 }
 
 // dist/network/identity.js
@@ -68147,98 +68211,166 @@ function verifySignature(machineId, message, signature) {
 // dist/network/bridge-control.js
 var START_DEADLINE_MS = 2e4;
 var STOP_DEADLINE_MS = 1e4;
+var KILL_DEADLINE_MS = 3e3;
 var POLL_MS = 100;
+var CRASH_SIGNALS = /* @__PURE__ */ new Set(["SIGSEGV", "SIGBUS", "SIGILL", "SIGABRT"]);
 var sleep = (ms) => new Promise((resolve2) => setTimeout(resolve2, ms));
+function describeChildDeath(code, signal) {
+  if (signal === null)
+    return `exited with status ${code}`;
+  return CRASH_SIGNALS.has(signal) ? `crashed with signal ${signal}, which usually means its native file is damaged` : `was stopped by signal ${signal}`;
+}
 function describeBridgeDeath(code, signal, lastError) {
-  const how = signal ? `crashed with signal ${signal}, which usually means its native file is damaged` : `exited with status ${code}`;
   const why = lastError ? ` Its last error: ${lastError}.` : "";
-  return `The network bridge ${how}.${why} To reinstall its files, run: memesh network up --reinstall. ${SINGLE_MACHINE_NOTE}`;
+  return `The network bridge ${describeChildDeath(code, signal)}.${why} To reinstall its files, run: memesh network up --reinstall. ${SINGLE_MACHINE_NOTE}`;
 }
-function watchExit(child) {
-  let exit = null;
-  child.once("exit", (code, signal) => {
-    exit = { code, signal };
-  });
-  child.once("error", (error62) => {
-    exit = { code: null, signal: null, error: error62 };
-  });
-  return () => exit;
+function unconfirmed(pid) {
+  return new NetworkError("bridge_unconfirmed", `Process ${pid} holds the network bridge lock, and MeMesh could not confirm whether it is this data folder's bridge. Nothing was started or stopped. If it is not a bridge, remove ${pid} from the lock by stopping that process yourself.`);
 }
-async function startBridge(ctx) {
-  const running = runningBridgePid(ctx.dataDir);
-  if (running !== null)
-    return { pid: running, started: false };
+function spawnBridge(ctx) {
   ensureNetworkDir(ctx.dataDir);
   const log = fs20.openSync(logPath(ctx.dataDir), "a", 384);
-  let child;
   try {
-    child = spawn2(process.execPath, [ctx.bridgeEntry, "serve"], {
+    const child = spawn2(process.execPath, [ctx.bridgeEntry, "serve", ctx.dataDir], {
       detached: true,
       stdio: ["ignore", log, log],
       env: childEnv(ctx),
       windowsHide: true
     });
+    let exit = null;
+    child.once("exit", (code, signal) => {
+      exit = { code, signal };
+    });
+    child.once("error", (error62) => {
+      exit = { code: null, signal: null, error: error62 };
+    });
+    return { child, exited: () => exit };
   } finally {
     fs20.closeSync(log);
   }
-  const exited = watchExit(child);
+}
+async function startBridge(ctx) {
   const giveUpAt = Date.now() + START_DEADLINE_MS;
-  while (Date.now() < giveUpAt) {
-    const status = readStatus(ctx.dataDir);
-    const mine = status?.pid === child.pid;
-    if (mine && status?.state === "running") {
-      child.unref();
-      return { pid: child.pid, started: true };
+  let mine = null;
+  for (; ; ) {
+    const holder = bridgeHolder(ctx.dataDir);
+    if (holder.kind === "unknown") {
+      mine?.child.kill("SIGKILL");
+      throw unconfirmed(holder.pid);
     }
-    const exit = exited();
-    if (exit) {
-      if (exit.code === EXIT_ALREADY_RUNNING) {
-        const winner = runningBridgePid(ctx.dataDir);
-        if (winner !== null)
-          return { pid: winner, started: false };
-      }
+    const status = readStatus(ctx.dataDir);
+    if (holder.kind === "bridge" && status?.pid === holder.pid && status.state === "running") {
+      mine?.child.unref();
+      return { pid: holder.pid, started: mine?.child.pid === holder.pid };
+    }
+    const exit = mine?.exited();
+    if (exit && mine) {
       if (exit.error)
         throw new NetworkError("bridge_failed", `The network bridge could not start: ${exit.error.message}. ${SINGLE_MACHINE_NOTE}`);
-      throw new NetworkError("bridge_failed", describeBridgeDeath(exit.code, exit.signal, mine ? status?.last_error : null));
+      if (exit.code === EXIT_LOCK_UNCONFIRMED)
+        throw unconfirmed(readLockPid(ctx.dataDir) ?? 0);
+      if (exit.code !== EXIT_ALREADY_RUNNING) {
+        throw new NetworkError("bridge_failed", describeBridgeDeath(exit.code, exit.signal, status?.pid === mine.child.pid ? status?.last_error ?? null : null));
+      }
+      mine = null;
+    }
+    if (holder.kind === "none" && !mine)
+      mine = spawnBridge(ctx);
+    if (Date.now() >= giveUpAt) {
+      mine?.child.kill("SIGKILL");
+      throw new NetworkError("bridge_failed", `The network bridge did not start within ${START_DEADLINE_MS / 1e3} s. ${SINGLE_MACHINE_NOTE}`);
     }
     await sleep(POLL_MS);
   }
-  child.kill("SIGKILL");
-  throw new NetworkError("bridge_failed", `The network bridge did not start within ${START_DEADLINE_MS / 1e3} s. ${SINGLE_MACHINE_NOTE}`);
 }
-async function stopBridge(ctx) {
-  const pid = runningBridgePid(ctx.dataDir);
-  if (pid === null)
-    return { stopped: false, pid: null };
-  process.kill(pid, "SIGTERM");
-  const giveUpAt = Date.now() + STOP_DEADLINE_MS;
+function sendSignal(pid, signal) {
+  try {
+    process.kill(pid, signal);
+  } catch (err) {
+    if (err.code !== "ESRCH")
+      throw err;
+  }
+}
+async function waitUntilGone(pid, dataDir, ms) {
+  const giveUpAt = Date.now() + ms;
   while (Date.now() < giveUpAt) {
-    if (runningBridgePid(ctx.dataDir) !== pid)
-      return { stopped: true, pid };
+    if (identifyProcess(pid, dataDir) === "not-bridge")
+      return true;
     await sleep(POLL_MS);
   }
-  process.kill(pid, "SIGKILL");
-  await sleep(POLL_MS);
-  return { stopped: true, pid };
+  return identifyProcess(pid, dataDir) === "not-bridge";
+}
+async function stopBridge(ctx) {
+  const holder = bridgeHolder(ctx.dataDir);
+  if (holder.kind === "none")
+    return { stopped: false, pid: null, forced: false };
+  if (holder.kind === "unknown")
+    throw unconfirmed(holder.pid);
+  const { pid } = holder;
+  sendSignal(pid, "SIGTERM");
+  let forced = false;
+  if (!await waitUntilGone(pid, ctx.dataDir, STOP_DEADLINE_MS)) {
+    forced = true;
+    sendSignal(pid, "SIGKILL");
+    if (!await waitUntilGone(pid, ctx.dataDir, KILL_DEADLINE_MS)) {
+      throw new NetworkError("bridge_failed", `The network bridge (pid ${pid}) did not exit after being killed. It is still holding its lock.`);
+    }
+  }
+  if (readLockPid(ctx.dataDir) === pid)
+    fs20.rmSync(lockPath(ctx.dataDir), { force: true });
+  const status = readStatus(ctx.dataDir);
+  if (status?.pid === pid && status.state !== "stopped") {
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    writeStatus(ctx.dataDir, {
+      ...status,
+      state: "stopped",
+      updated_at: now,
+      ...forced ? { last_error: "The bridge did not stop when asked and was killed.", last_error_at: now } : {}
+    });
+  }
+  return { stopped: true, pid, forced };
 }
 
 // dist/network/invites.js
 import { createHash as createHash11, randomBytes as randomBytes6 } from "node:crypto";
 
+// dist/network/relay-url.js
+var LOOPBACK_HOST = /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])$/;
+function parseRelayUrl(value) {
+  let url2;
+  try {
+    url2 = new URL(value);
+  } catch {
+    return null;
+  }
+  if (url2.username !== "" || url2.password !== "")
+    return null;
+  if (url2.protocol === "https:")
+    return url2.toString();
+  if (url2.protocol === "http:" && LOOPBACK_HOST.test(url2.hostname))
+    return url2.toString();
+  return null;
+}
+
 // dist/network/roster.js
 var SIGNATURE_DOMAIN = "memesh-roster-v1\n";
 var MAX_MEMBERS = 256;
 var NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+var NETWORK_ID = /^[0-9a-f]{32}$/;
+var ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 var SIGNED_ROSTER_MAX_BYTES = 128 * 1024;
 function canonicalJson(value) {
   if (Array.isArray(value))
     return `[${value.map(canonicalJson).join(",")}]`;
   if (value !== null && typeof value === "object") {
     const record2 = value;
-    const fields = Object.keys(record2).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record2[key])}`);
+    const fields = Object.keys(record2).filter((key) => record2[key] !== void 0).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record2[key])}`);
     return `{${fields.join(",")}}`;
   }
   return JSON.stringify(value);
+}
+function isNetworkId(value) {
+  return typeof value === "string" && NETWORK_ID.test(value);
 }
 function assertValidName(kind, value) {
   if (typeof value !== "string" || !NAME.test(value)) {
@@ -68260,7 +68392,7 @@ function parseMember(raw) {
   } catch {
     throw invalid("a member has a bad name or person");
   }
-  if (typeof member.joined_at !== "string" || !Number.isFinite(Date.parse(member.joined_at))) {
+  if (typeof member.joined_at !== "string" || !ISO_TIMESTAMP.test(member.joined_at) || !Number.isFinite(Date.parse(member.joined_at))) {
     throw invalid("a member has a bad joined_at");
   }
   return { machine_id: member.machine_id, name: member.name, person: member.person, joined_at: member.joined_at };
@@ -68274,14 +68406,12 @@ function parseRoster(rosterJson) {
   }
   if (raw === null || typeof raw !== "object")
     throw invalid("it is not an object");
-  if (typeof raw.network_id !== "string" || raw.network_id.length === 0)
-    throw invalid("no network id");
+  if (!isNetworkId(raw.network_id))
+    throw invalid("bad network id");
   if (!isMachineId(raw.owner_id))
     throw invalid("bad owner id");
   if (!Number.isSafeInteger(raw.version) || raw.version < 1)
     throw invalid("bad version");
-  if (!Number.isSafeInteger(raw.invite_epoch) || raw.invite_epoch < 0)
-    throw invalid("bad invite epoch");
   if (!Array.isArray(raw.members) || raw.members.length > MAX_MEMBERS)
     throw invalid("bad member list");
   const members2 = raw.members.map(parseMember);
@@ -68297,12 +68427,11 @@ function parseRoster(rosterJson) {
     network_id: raw.network_id,
     owner_id: raw.owner_id,
     version: raw.version,
-    members: members2,
-    invite_epoch: raw.invite_epoch
+    members: members2
   };
 }
 function createRoster(networkId, owner) {
-  return { network_id: networkId, owner_id: owner.machine_id, version: 1, members: [owner], invite_epoch: 0 };
+  return { network_id: networkId, owner_id: owner.machine_id, version: 1, members: [owner] };
 }
 function signRoster(identity, roster) {
   const rosterJson = canonicalJson(roster);
@@ -68368,14 +68497,7 @@ function malformed(detail) {
 function isRelay(value) {
   if (value === null)
     return true;
-  if (typeof value !== "string" || value === RELAY_OFF)
-    return false;
-  try {
-    const { protocol } = new URL(value);
-    return protocol === "https:" || protocol === "http:";
-  } catch {
-    return false;
-  }
+  return typeof value === "string" && parseRelayUrl(value) === value;
 }
 function parseLink(text) {
   if (typeof text !== "string" || !text.startsWith(LINK_PREFIX))
@@ -68398,8 +68520,8 @@ function parseLink(text) {
   }
   const { sig, ...fields } = raw;
   const link = fields;
-  if (typeof link.network_id !== "string" || link.network_id.length === 0)
-    throw malformed("no network id");
+  if (!isNetworkId(link.network_id))
+    throw malformed("bad network id");
   if (!isMachineId(link.owner_id))
     throw malformed("no owner id");
   if (!isRelay(link.relay))
@@ -68427,11 +68549,11 @@ import fs23 from "node:fs";
 
 // dist/network/store.js
 init_file_mode();
-init_schema();
+init_agent_network_schema();
 init_sqlite();
 import fs21 from "node:fs";
 import path18 from "node:path";
-function openNetworkStore(dbPath) {
+function openNetworkStore(dbPath, options = {}) {
   const dir = path18.dirname(dbPath);
   fs21.mkdirSync(dir, { recursive: true });
   try {
@@ -68442,6 +68564,8 @@ function openNetworkStore(dbPath) {
   guardDatabaseFiles(dbPath);
   const db2 = new MemeshDatabase(dbPath);
   try {
+    if (options.busyTimeoutMs !== void 0)
+      db2.pragma(`busy_timeout = ${options.busyTimeoutMs}`);
     db2.pragma("journal_mode = WAL");
     db2.exec(AGENT_NETWORK_SCHEMA_SQL);
   } catch (err) {
@@ -68449,6 +68573,9 @@ function openNetworkStore(dbPath) {
     throw err;
   }
   return db2;
+}
+function databaseExists(dbPath) {
+  return fs21.existsSync(dbPath);
 }
 function readConfig2(db2) {
   const row = db2.prepare(`SELECT network_id, owner_id, machine_id, machine_name, person, relay_url, roster_json, roster_signature
@@ -68464,6 +68591,18 @@ function insertConfig(db2, config2, now) {
 // dist/network/join-protocol.js
 var JOIN_REQUEST_MAX_BYTES = 4 * 1024;
 var JOIN_REPLY_MAX_BYTES = SIGNED_ROSTER_MAX_BYTES + 1024;
+var REFUSALS = /* @__PURE__ */ new Map([
+  ["invite_used", "This invite link has already been used. Ask for a new one."],
+  ["invite_expired", "This invite link has expired. Ask for a new one."],
+  ["invite_unknown", "The network owner does not recognise this invite link. Ask for a new one."],
+  ["name_taken", "That machine name is already in this network. Run join again with a different --name; the link still works."],
+  ["wrong_network", "This link is for a different network than the machine it reached."],
+  ["invalid_name", "The network owner refused that machine name or person."],
+  ["bad_request", "The network owner's machine could not read the request. Update MeMesh on both machines."],
+  ["roster_full", "That network has no room for another machine."],
+  ["internal", "The network owner's machine could not record the join. Its `memesh network status` shows why. Trying again with the same link is safe."],
+  ["unknown_refusal", "The network owner refused the join for a reason this version of MeMesh does not know."]
+]);
 function parseJoinReply(bytes) {
   let raw;
   try {
@@ -68474,24 +68613,14 @@ function parseJoinReply(bytes) {
   if (raw?.ok === true && raw.roster !== null && typeof raw.roster === "object") {
     return { ok: true, roster: raw.roster };
   }
-  if (raw?.ok === false && typeof raw.error === "string") {
-    return { ok: false, error: raw.error };
+  if (raw?.ok === false) {
+    const code = raw.error;
+    return { ok: false, error: REFUSALS.has(code) ? code : "unknown_refusal" };
   }
   throw new NetworkError("bad_request", "The network owner's machine sent a reply that could not be read.");
 }
-var REFUSALS = {
-  invite_used: "This invite link has already been used. Ask for a new one.",
-  invite_expired: "This invite link has expired. Ask for a new one.",
-  invite_unknown: "The network owner does not recognise this invite link. Ask for a new one.",
-  name_taken: "That machine name is already in this network. Run join again with a different --name; the link still works.",
-  wrong_network: "This link is for a different network than the machine it reached.",
-  invalid_name: "The network owner refused that machine name or person.",
-  not_owner: "The machine this link points to no longer owns that network.",
-  roster_full: "That network has no room for another machine.",
-  internal: "The network owner's machine could not record the join. Try again."
-};
 function refusalMessage(code) {
-  return REFUSALS[code] ?? `The network owner refused the join (${code}).`;
+  return REFUSALS.get(code) ?? REFUSALS.get("unknown_refusal");
 }
 
 // dist/network/runtime.js
@@ -68499,6 +68628,21 @@ import { spawnSync } from "node:child_process";
 import { createHash as createHash12 } from "node:crypto";
 import fs22 from "node:fs";
 import path19 from "node:path";
+
+// dist/network/runtime-platform.js
+function currentLibc() {
+  if (process.platform !== "linux")
+    return null;
+  process.report.excludeNetwork = true;
+  const header = process.report.getReport();
+  return header.header?.glibcVersionRuntime ? "glibc" : "musl";
+}
+function platformPackages(lockText, platform, arch, libc) {
+  const { packages } = JSON.parse(lockText);
+  return Object.entries(packages).filter(([, entry]) => entry.os?.includes(platform) && entry.cpu?.includes(arch) && (entry.libc === void 0 || libc === null || entry.libc.includes(libc))).map(([key]) => key.replace(/^node_modules\//, ""));
+}
+
+// dist/network/runtime.js
 var INSTALL_TIMEOUT_MS = 5 * 6e4;
 var CHECK_TIMEOUT_MS = 3e4;
 var MARKER = ".installed-lock-sha256";
@@ -68509,16 +68653,8 @@ function assetText(ctx, name) {
     throw new NetworkError("runtime_install_failed", `This MeMesh install is missing ${name}. Reinstall MeMesh. ${SINGLE_MACHINE_NOTE}`);
   }
 }
-function currentLibc() {
-  if (process.platform !== "linux")
-    return null;
-  process.report.excludeNetwork = true;
-  const header = process.report.getReport();
-  return header.header?.glibcVersionRuntime ? "glibc" : "musl";
-}
 function isPlatformSupported(lockText, platform, arch, libc) {
-  const { packages } = JSON.parse(lockText);
-  return Object.values(packages).some((entry) => entry.os?.includes(platform) && entry.cpu?.includes(arch) && (entry.libc === void 0 || libc === null || entry.libc.includes(libc)));
+  return platformPackages(lockText, platform, arch, libc).length > 0;
 }
 function unsupportedMessage(platform, arch) {
   const what = platform === "darwin" && arch === "x64" ? "This Intel Mac is not supported; cross-machine messaging on a Mac needs Apple Silicon" : `This computer (${platform}, ${arch}) is not supported by cross-machine messaging`;
@@ -68544,29 +68680,28 @@ function explainInstallFailure(spawnError, output2) {
   }
   return `Could not install the networking component: ${reason}. ${SINGLE_MACHINE_NOTE}`;
 }
-function describeChildDeath(status, signal) {
-  if (signal)
-    return `it crashed with signal ${signal}`;
-  return `it exited with status ${status}`;
-}
-function checkRuntime(ctx) {
+function checkRuntime(ctx, timeoutMs = CHECK_TIMEOUT_MS) {
   const result = spawnSync(process.execPath, [ctx.bridgeEntry, "check"], {
     env: childEnv(ctx),
     encoding: "utf8",
-    timeout: CHECK_TIMEOUT_MS
+    timeout: timeoutMs
   });
-  let reason;
   if (result.status === 0)
     return;
-  try {
-    reason = JSON.parse(result.stdout).reason;
-  } catch {
-    reason = `the networking component could not start: ${describeChildDeath(result.status, result.signal)}, which usually means its native file is damaged`;
+  let reason;
+  if (result.error?.code === "ETIMEDOUT") {
+    reason = `the check did not finish within ${timeoutMs / 1e3} s, so nothing is known about the files; try again when this computer is less busy`;
+  } else {
+    try {
+      reason = JSON.parse(result.stdout).reason;
+    } catch {
+      reason = `the networking component could not start: ${describeChildDeath(result.status, result.signal)}`;
+    }
   }
   throw new NetworkError("runtime_load_failed", `The networking component did not load: ${reason}. ${SINGLE_MACHINE_NOTE}`);
 }
 function runNpmCi(ctx, directory) {
-  const args = ["ci", "--ignore-scripts", "--no-audit", "--no-fund", "--no-update-notifier", "--loglevel=error"];
+  const args = ["ci", "--ignore-scripts", "--include=optional", "--no-audit", "--no-fund", "--no-update-notifier", "--loglevel=error"];
   const options = { cwd: directory, env: childEnv(ctx), encoding: "utf8", timeout: INSTALL_TIMEOUT_MS };
   const result = process.platform === "win32" ? spawnSync(["npm.cmd", ...args].join(" "), { ...options, shell: true }) : spawnSync("npm", args, options);
   if (result.status === 0 && !result.error)
@@ -68574,14 +68709,33 @@ function runNpmCi(ctx, directory) {
   throw new NetworkError("runtime_install_failed", explainInstallFailure(result.error, `${result.stderr ?? ""}
 ${result.stdout ?? ""}`));
 }
+function assertPlatformPackageInstalled(lockText, directory) {
+  const packages = platformPackages(lockText, process.platform, process.arch, currentLibc());
+  if (packages.some((name) => fs22.existsSync(path19.join(directory, "node_modules", name, "package.json"))))
+    return;
+  throw new NetworkError("runtime_install_failed", `Could not install the networking component: the native file for this computer failed to download or did not match its pinned checksum, so it was refused. Try again; if it repeats, your network or npm registry is changing the files. ${SINGLE_MACHINE_NOTE}`);
+}
+function removeFailedInstall(dataDir, directory, created) {
+  fs22.rmSync(directory, { recursive: true, force: true });
+  try {
+    if (created.network)
+      fs22.rmdirSync(path19.dirname(directory));
+    if (created.data)
+      fs22.rmdirSync(dataDir);
+  } catch (err) {
+    if (err.code !== "ENOTEMPTY")
+      throw err;
+  }
+}
 function ensureRuntime(ctx, options = {}) {
   const lockText = assetText(ctx, "runtime-lock.json");
   const packageText = assetText(ctx, "runtime-package.json");
   if (!isPlatformSupported(lockText, process.platform, process.arch, currentLibc())) {
     throw new NetworkError("runtime_unsupported", unsupportedMessage(process.platform, process.arch));
   }
-  ensureNetworkDir(ctx.dataDir);
   const directory = runtimeDir(ctx.dataDir);
+  const created = { network: !fs22.existsSync(path19.dirname(directory)), data: !fs22.existsSync(ctx.dataDir) };
+  ensureNetworkDir(ctx.dataDir);
   const wanted = createHash12("sha256").update(lockText).digest("hex");
   const marker = path19.join(directory, MARKER);
   if (!options.force && fs22.existsSync(marker) && fs22.readFileSync(marker, "utf8").trim() === wanted) {
@@ -68597,8 +68751,14 @@ function ensureRuntime(ctx, options = {}) {
   fs22.rmSync(marker, { force: true });
   fs22.writeFileSync(path19.join(directory, "package.json"), packageText);
   fs22.writeFileSync(path19.join(directory, "package-lock.json"), lockText);
-  runNpmCi(ctx, directory);
-  checkRuntime(ctx);
+  try {
+    runNpmCi(ctx, directory);
+    assertPlatformPackageInstalled(lockText, directory);
+    checkRuntime(ctx);
+  } catch (err) {
+    removeFailedInstall(ctx.dataDir, directory, created);
+    throw err;
+  }
   fs22.writeFileSync(marker, `${wanted}
 `);
 }
@@ -68612,23 +68772,21 @@ function resolveRelay(relay, fallback) {
   const value = relay ?? fallback;
   if (value === RELAY_OFF)
     return RELAY_OFF;
-  let url2;
-  try {
-    url2 = new URL(value);
-  } catch {
-    throw new NetworkError("invalid_option", `--relay must be an http(s) URL or "off".`);
+  const url2 = parseRelayUrl(value);
+  if (url2 === null) {
+    throw new NetworkError("invalid_option", `--relay must be "off", or an https URL with no user name or password (plain http only on this machine's loopback address).`);
   }
-  if (url2.protocol !== "https:" && url2.protocol !== "http:") {
-    throw new NetworkError("invalid_option", `--relay must be an http(s) URL or "off".`);
-  }
-  return url2.toString();
+  return url2;
 }
+var NOT_JOINED = "This machine is not in a network yet. Run `memesh network create` or `memesh network join`.";
 function withConfig(ctx, use) {
+  if (!databaseExists(ctx.dbPath))
+    throw new NetworkError("not_joined", NOT_JOINED);
   const db2 = openNetworkStore(ctx.dbPath);
   try {
     const config2 = readConfig2(db2);
     if (!config2) {
-      throw new NetworkError("not_joined", "This machine is not in a network yet. Run `memesh network create` or `memesh network join`.");
+      throw new NetworkError("not_joined", NOT_JOINED);
     }
     return use(db2, config2);
   } finally {
@@ -68636,6 +68794,8 @@ function withConfig(ctx, use) {
   }
 }
 function refuseIfAlreadyJoined(ctx) {
+  if (!databaseExists(ctx.dbPath))
+    return;
   const db2 = openNetworkStore(ctx.dbPath);
   try {
     const config2 = readConfig2(db2);
@@ -68696,7 +68856,7 @@ async function createLink(ctx, options = {}) {
   if (!Number.isFinite(hours) || hours <= 0 || hours > MAX_INVITE_TTL_HOURS) {
     throw new NetworkError("invalid_option", `--ttl-hours must be a number above 0 and at most ${MAX_INVITE_TTL_HOURS}.`);
   }
-  const ttlMs = options.ttlMs ?? hours * HOUR_MS;
+  const ttlMs = Math.ceil(hours * HOUR_MS);
   const config2 = withConfig(ctx, (_db, stored) => {
     if (stored.owner_id !== stored.machine_id) {
       throw new NetworkError("not_owner", "Only the machine that created the network can make invite links.");
@@ -68707,7 +68867,7 @@ async function createLink(ctx, options = {}) {
     throw new NetworkError("invalid_option", "This network runs with the relay off, so a link needs --include-addresses or the other machine has no way to reach this one.");
   }
   const bridge = await startBridge(ctx);
-  let addrs;
+  let addrs = [];
   if (options.includeAddresses) {
     addrs = await waitForDirectAddresses(ctx);
     if (addrs.length === 0 && config2.relay_url === RELAY_OFF) {
@@ -68725,14 +68885,20 @@ async function createLink(ctx, options = {}) {
       relay: config2.relay_url === RELAY_OFF ? null : config2.relay_url,
       token,
       expires_at_ms: expiresAtMs,
-      ...addrs ? { addrs } : {}
+      ...addrs.length > 0 ? { addrs } : {}
     };
-    return { link: encodeLink(identity, fields), expiresAtMs, bridgeStarted: bridge.started, bridgePid: bridge.pid };
+    return {
+      link: encodeLink(identity, fields),
+      expiresAtMs,
+      addressesMissing: options.includeAddresses === true && addrs.length === 0,
+      bridgeStarted: bridge.started,
+      bridgePid: bridge.pid
+    };
   } finally {
     db2.close();
   }
 }
-function runJoinChild(ctx, input2) {
+function runJoinChild(ctx, input2, deadlineMs = JOIN_CHILD_DEADLINE_MS) {
   return new Promise((resolve2, reject) => {
     const child = spawn3(process.execPath, [ctx.bridgeEntry, "join"], {
       stdio: ["pipe", "pipe", "pipe"],
@@ -68741,7 +68907,11 @@ function runJoinChild(ctx, input2) {
     });
     let output2 = "";
     let lastError = "";
-    const timer = setTimeout(() => child.kill("SIGKILL"), JOIN_CHILD_DEADLINE_MS);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, deadlineMs);
     child.stdout.setEncoding("utf8").on("data", (chunk) => {
       if (output2.length < JOIN_CHILD_OUTPUT_MAX_BYTES)
         output2 += chunk;
@@ -68755,10 +68925,16 @@ function runJoinChild(ctx, input2) {
     });
     child.on("close", (code, signal) => {
       clearTimeout(timer);
+      if (timedOut) {
+        reject(new NetworkError("join_timed_out", `Joining did not finish within ${Math.round(deadlineMs / 1e3)} s and was stopped. Running join again with the same link is safe.`));
+        return;
+      }
       try {
         resolve2(JSON.parse(output2));
       } catch {
-        reject(new NetworkError("bridge_failed", describeBridgeDeath(code, signal, lastError.trim().split("\n")[0] || null)));
+        const stderrLine = lastError.trim().split("\n")[0];
+        const why = stderrLine ? ` Its last message: ${stderrLine}.` : "";
+        reject(new NetworkError("bridge_failed", `The network component ${describeChildDeath(code, signal)}.${why} Running join again with the same link is safe, and reinstalls its files if they are damaged. ${SINGLE_MACHINE_NOTE}`));
       }
     });
     child.stdin.on("error", () => void 0);
@@ -68776,6 +68952,9 @@ async function joinNetwork(ctx, options) {
   if (link.relay === null && !link.addrs?.length) {
     throw new NetworkError("link_malformed", "This invite link has neither a relay nor direct addresses, so it leads nowhere. Ask for a new one.");
   }
+  if (relay === RELAY_OFF && !link.addrs?.length) {
+    throw new NetworkError("invalid_option", "This link can only be reached through a relay, so it cannot be used with --relay off. Ask for a link made with --include-addresses.");
+  }
   refuseIfAlreadyJoined(ctx);
   ensureRuntime(ctx, options);
   const identity = ensureIdentity(ctx.dataDir);
@@ -68790,10 +68969,16 @@ async function joinNetwork(ctx, options) {
     own_relay: relay
   });
   if (!result.ok) {
-    if (result.code === "owner_unreachable") {
-      throw new NetworkError("owner_unreachable", `Could not reach the network owner's machine (${result.detail}). Its bridge must be running: on that machine, run \`memesh network up\`.`);
+    if (result.code === "relay_unreachable") {
+      throw new NetworkError("relay_unreachable", `This machine could not reach its relay (${safeForTerminal(result.detail)}). The invite was not used and nothing was saved. Check this machine's connection and the relay address, then try again.`);
     }
-    throw new NetworkError(result.code, `Could not join: ${result.detail}. ${SINGLE_MACHINE_NOTE}`);
+    if (result.code === "owner_unreachable") {
+      throw new NetworkError("owner_unreachable", `Could not reach the network owner's machine (${safeForTerminal(result.detail)}). Its bridge must be running: on that machine, run \`memesh network up\`. The invite was not used.`);
+    }
+    if (result.code === "join_interrupted") {
+      throw new NetworkError("join_interrupted", `Reached the network owner's machine, but the join did not finish (${safeForTerminal(result.detail)}). Running join again with the same link is safe.`);
+    }
+    throw new NetworkError(result.code, `Could not join: ${safeForTerminal(result.detail)}. ${SINGLE_MACHINE_NOTE}`);
   }
   const reply = parseJoinReply(Buffer.from(result.reply));
   if (!reply.ok)
@@ -68819,7 +69004,7 @@ async function joinNetwork(ctx, options) {
   } finally {
     db2.close();
   }
-  return { config: config2, roster, member };
+  return { config: config2, roster, member, relayReached: result.relay_reached };
 }
 async function bridgeUp(ctx, options = {}) {
   withConfig(ctx, () => void 0);
@@ -68842,9 +69027,11 @@ function getNetworkStatus(ctx) {
   if (!config2)
     return { joined: false };
   const roster = parseRoster(config2.roster_json);
-  const pid = runningBridgePid(ctx.dataDir);
+  const holder = bridgeHolder(ctx.dataDir);
+  const running = holder.kind === "bridge";
+  const pid = holder.kind === "none" ? null : holder.pid;
   const status = readStatus(ctx.dataDir);
-  const running = pid !== null;
+  const current = running && status?.pid === pid ? status : null;
   return {
     joined: true,
     network_id: config2.network_id,
@@ -68857,14 +69044,15 @@ function getNetworkStatus(ctx) {
     members: roster.members,
     bridge: {
       running,
+      cannot_tell: holder.kind === "unknown",
       pid,
-      started_at: running ? status?.started_at ?? null : null,
-      relay_state: running ? status?.relay_state ?? null : null,
+      started_at: current?.started_at ?? null,
+      relay_state: current?.relay_state ?? null,
       last_error: status?.last_error ?? null,
       last_error_at: status?.last_error_at ?? null,
-      joins_accepted: running ? status?.joins_accepted ?? 0 : 0,
-      joins_refused: running ? status?.joins_refused ?? 0 : 0,
-      non_member_refused: running ? status?.non_member_refused ?? 0 : 0
+      joins_accepted: current?.joins_accepted ?? 0,
+      joins_refused: current?.joins_refused ?? 0,
+      non_member_refused: current?.non_member_refused ?? 0
     }
   };
 }
@@ -68881,8 +69069,46 @@ function contextFrom(networkDistDir) {
 }
 function assertPersonAtTerminal(command, stdin = process.stdin, stdout = process.stdout) {
   if (!stdin.isTTY || !stdout.isTTY) {
-    throw new NetworkError("needs_person", `\`memesh network ${command}\` needs a person: run it yourself in a terminal. Agents and scripts cannot run it.`);
+    throw new NetworkError("needs_person", `\`memesh network ${command}\` is meant for a person: run it yourself in a terminal. An invite is something one person hands to another, so this does not run from a pipe or a script.`);
   }
+}
+var LINK_INPUT_MAX_CHARS = 16 * 1024;
+function promptForLink(stdin = process.stdin, stderr = process.stderr) {
+  stderr.write("Paste the invite link (it will not be shown), then press Enter: ");
+  return new Promise((resolve2, reject) => {
+    let text = "";
+    const finish = (settle2) => {
+      stdin.off("data", onData);
+      stdin.off("end", onEnd);
+      stdin.setRawMode?.(false);
+      stdin.pause();
+      stderr.write("\n");
+      settle2();
+    };
+    const onEnd = () => finish(() => resolve2(text.trim()));
+    const onData = (chunk) => {
+      for (const character of chunk.toString()) {
+        if (character === "" || character === "") {
+          finish(() => reject(new NetworkError("needs_person", "Cancelled. Nothing was changed.")));
+          return;
+        }
+        if (character === "\r" || character === "\n") {
+          if (text.length === 0)
+            continue;
+          finish(() => resolve2(text.trim()));
+          return;
+        }
+        if (character === "\x7F" || character === "\b")
+          text = text.slice(0, -1);
+        else if (text.length < LINK_INPUT_MAX_CHARS)
+          text += character;
+      }
+    };
+    stdin.setRawMode?.(true);
+    stdin.on("data", onData);
+    stdin.on("end", onEnd);
+    stdin.resume();
+  });
 }
 var progress = (message) => {
   process.stderr.write(`${message}
@@ -68893,7 +69119,7 @@ function action(run) {
     try {
       await run(...args);
     } catch (err) {
-      process.stderr.write(`Error: ${errorMessage2(err)}
+      process.stderr.write(`Error: ${safeForTerminal(errorMessage2(err))}
 `);
       process.exitCode = 1;
     }
@@ -68914,9 +69140,13 @@ function printStatus(status) {
     console.log(`  ${member.person}@${member.name}  ${member.machine_id.slice(0, 12)}...  joined ${member.joined_at}`);
   }
   const bridge = status.bridge;
-  console.log(bridge.running ? `Bridge:       running (pid ${bridge.pid}, since ${bridge.started_at}), relay ${bridge.relay_state}` : "Bridge:       not running. Start it with: memesh network up");
+  if (bridge.cannot_tell) {
+    console.log(`Bridge:       cannot tell. Process ${bridge.pid} holds the lock and could not be confirmed as this bridge.`);
+  } else {
+    console.log(bridge.running ? `Bridge:       running (pid ${bridge.pid}, since ${bridge.started_at}), relay ${bridge.relay_state}` : "Bridge:       not running. Start it with: memesh network up");
+  }
   if (bridge.last_error)
-    console.log(`Last error:   ${bridge.last_error} (${bridge.last_error_at})`);
+    console.log(`Last error:   ${safeForTerminal(bridge.last_error)} (${bridge.last_error_at})`);
 }
 function registerNetworkCommand(program3, networkDistDir) {
   const network = program3.command("network").description("Connect this machine to other machines for agent messages. Memory is never shared.");
@@ -68935,13 +69165,21 @@ function registerNetworkCommand(program3, networkDistDir) {
     });
     if (result.bridgeStarted)
       progress(`Started the network bridge (pid ${result.bridgePid}); it answers the link.`);
+    if (result.addressesMissing)
+      progress("No direct addresses were found, so this link has none. It works only through the relay.");
     console.log(result.link);
     progress(`Single use, expires ${new Date(result.expiresAtMs).toISOString()}. Whoever has it can join: send it privately.`);
   }));
-  network.command("join <link>").description("Join a network with an invite link (a person must run this)").requiredOption("--name <machine>", "A name for this machine").requiredOption("--person <me>", "Your name").addOption(relayOption).action(action(async (link, opts) => {
+  network.command("join").description("Join a network with an invite link; it asks for the link (a person must run this)").argument("[link]", "Not accepted here: the link would be visible to other processes. It is asked for instead.").requiredOption("--name <machine>", "A name for this machine").requiredOption("--person <me>", "Your name").addOption(relayOption).action(action(async (positional, opts) => {
+    if (positional !== void 0) {
+      throw new NetworkError("invalid_option", "Do not put the invite link on the command line, where other processes and your shell history can read it. Run the command without it and paste the link when asked. Nothing was done.");
+    }
     assertPersonAtTerminal("join");
-    const { roster, member } = await joinNetwork(context(), { ...opts, link, onProgress: progress });
+    const link = await promptForLink();
+    const { roster, member, relayReached } = await joinNetwork(context(), { ...opts, link, onProgress: progress });
     console.log(`Joined as ${member.person}@${member.name}. The network has ${roster.members.length} machines.`);
+    if (relayReached === false)
+      progress("This machine could not reach its relay; the join went directly. Until the relay answers, it can only be reached directly.");
     console.log("Next: memesh network up");
   }));
   network.command("status").description("Show this machine, the member list and the bridge").option("--json", "Print JSON").action(action((opts) => {
@@ -68956,8 +69194,11 @@ function registerNetworkCommand(program3, networkDistDir) {
     console.log(started ? `Started the network bridge (pid ${pid}).` : `The network bridge is already running (pid ${pid}).`);
   }));
   network.command("down").description("Stop the bridge process").action(action(async () => {
-    const { stopped, pid } = await stopBridge(context());
-    console.log(stopped ? `Stopped the network bridge (pid ${pid}).` : "The network bridge is not running.");
+    const { stopped, pid, forced } = await stopBridge(context());
+    if (!stopped)
+      console.log("The network bridge is not running.");
+    else
+      console.log(forced ? `The network bridge (pid ${pid}) did not stop when asked and was killed.` : `Stopped the network bridge (pid ${pid}).`);
   }));
 }
 
