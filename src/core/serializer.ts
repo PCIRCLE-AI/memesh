@@ -3,7 +3,7 @@
 // Extracted from operations.ts for single-responsibility
 // =============================================================================
 
-import { getDatabase } from '../db.js';
+import { explainReadOnlyRefusal, getDatabase } from '../db.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { storedText } from '../storage/entity-write.js';
 import { truncateTitle } from './title.js';
@@ -1107,6 +1107,10 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean })
         if (outcome.overwritten) overwritten++;
       }
     } catch (err) {
+      // A write refused because the data folder is read-only is not a problem with this entity: every entity will be
+      // refused the same way. Stop, and let the caller report it (naming the folder and the fix) as the failure it is,
+      // instead of "imported 0" with a list of per-entity errors that look like bad input.
+      if (explainReadOnlyRefusal(err) !== null) throw err;
       errors.push(`${entity.name}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }

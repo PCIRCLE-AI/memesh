@@ -30,6 +30,7 @@ import {
   memeshDir as memeshHomeDir,
   parseHookOutcomes,
   hookErrorReason,
+  hookCaughtReason,
   recordHookOutcome,
   summarizeHookOutcomes,
   HOOK_OUTCOMES_FILENAME,
@@ -40,6 +41,7 @@ import {
   finalizeUpdatePromptClaim,
   readUpdatePromptClaim,
   readUpdateCheckCache,
+  readUpdateCheckCacheState,
   resolveUpdateNotice,
   shouldRefreshUpdateCache,
   claimJustUpgradedMarker,
@@ -230,12 +232,28 @@ const UPDATE_BANNER_THROTTLE_MS = 24 * 60 * 60 * 1000;
 const CHECK_FAILED_BANNER_THROTTLE_MS = 24 * 60 * 60 * 1000;
 
 /**
+ * Every update-banner / update-check path that returns without doing its job leaves a line in hook-outcomes.jsonl
+ * (#360): a silence nobody can explain looks the same as a check that never ran.
+ */
+function withheldUpdateWarning(why) {
+  record({ outcome: 'notified', reason: `update warning withheld: ${why}` });
+}
+
+function updateCheckNotStarted(why) {
+  record({ outcome: 'notified', reason: `update check not started: ${why}` });
+}
+
+function recordCaught(what, err) {
+  record({ outcome: 'error', reason: `${what}: ${hookCaughtReason(err)}` });
+}
+
+/**
  * Banner lines for the two update states that are NOT a consent prompt:
  * JUST_UPGRADED (said once, then the receipt is consumed) and CHECK_FAILED
  * (unknown is not "up to date"; throttled to once a day). Everything else
  * returns [] so the caller falls through to its consent/banner logic.
  */
-function updateNoticeBanner(installedVersion, cache) {
+function updateNoticeBanner(installedVersion, cache, cacheState) {
   if (!installedVersion) return { kind: 'UNKNOWN_VERSION', lines: [] };
   const notice = resolveUpdateNotice({
     dir: memeshHomeDir(), currentVersion: installedVersion, cache, updateCheckEnabled: isUpdateCheckEnabled(),
@@ -250,31 +268,118 @@ function updateNoticeBanner(installedVersion, cache) {
       lines: [`✅ MeMesh upgraded ${claimed.from} → ${claimed.to}. Hosts already running keep the old version until they restart; this session's hooks and MCP server pick up ${claimed.to} on the next start.`],
     };
   }
-  if (notice.kind === 'CHECK_FAILED') return { kind: notice.kind, lines: buildCheckFailedBanner(installedVersion, notice.reason) };
+  if (notice.kind === 'CHECK_FAILED') {
+    // No check has ever run for this version and there is no cache file at all:
+    // the first session that can start one (see buildCheckFailedBanner). A cache
+    // file that is THERE but cannot be read is not that: a check ran, its record
+    // is broken, and the banner says so instead of "no check has completed".
+    const unreadable = cacheState.status === 'unreadable';
+    const firstRun = notice.attempted === false && cacheState.status === 'missing';
+    let reason = notice.reason;
+    if (unreadable) {
+      reason = `the update-check cache is unreadable: ${cacheState.reason}`;
+      record({ outcome: 'error', reason: `update-check cache present but unreadable: ${cacheState.reason}` });
+    }
+    return { kind: notice.kind, lines: buildCheckFailedBanner(installedVersion, reason, firstRun) };
+  }
   return { kind: notice.kind, lines: [] };
+}
+
+/**
+ * The two once-per-version markers are keyed by the installed version, so each upgrade would leave a pair behind
+ * for good. Whenever a marker is written, the markers of OLDER versions are removed: nothing reads them any more.
+ * Never a marker of a newer (or unrelated) version: two installs of different versions can share one ~/.memesh (a
+ * plugin and an npm global), and each would otherwise delete the other's once-a-day throttle on every session,
+ * turning "once a day" into "every session". A version that is not strictly older, or not a version at all, is kept.
+ */
+function pruneOlderVersionMarkers(fs, dir, versionTag) {
+  let names;
+  try {
+    names = fs.readdirSync(dir);
+  } catch (err) {
+    recordCaught('update banner: old version markers cannot be listed', err);
+    return;
+  }
+  for (const name of names) {
+    const match = /^(?:update-check-first-session|last-check-failed-banner)\.(.+)\.lock$/.exec(name);
+    if (!match || match[1] === versionTag || !isStrictlyOlder(match[1], versionTag)) continue;
+    try {
+      fs.unlinkSync(join(dir, name));
+    } catch (err) {
+      // A peer that removed it first is fine; anything else (a folder in its place, no permission) is a reason.
+      if (err?.code !== 'ENOENT') {
+        recordCaught('update banner: old version marker cannot be removed', err);
+      }
+    }
+  }
+}
+
+/**
+ * True when this is the one silent session of `currentVersion` (see buildCheckFailedBanner), and says why in
+ * hook-outcomes.jsonl. False when the banner should speak.
+ */
+function claimSilentFirstSession(fs, dir, versionTag, currentVersion) {
+  if (!existsSync(dbPath)) {
+    withheldUpdateWarning(`no database yet, so no update check can have been tried (${currentVersion})`);
+    return true;
+  }
+  try {
+    // `wx`: the claim and the check that nobody holds it are one step, so
+    // two sessions starting together cannot both stay silent, and a name
+    // that is already taken in any form (a link, a folder) is not claimed.
+    fs.writeFileSync(join(dir, `update-check-first-session.${versionTag}.lock`), String(Date.now()), { mode: 0o600, flag: 'wx' });
+  } catch (err) {
+    // EEXIST: an earlier session used the one silent session. Anything else:
+    // the marker cannot be recorded, so speak rather than hide the warning.
+    if (err?.code !== 'EEXIST') recordCaught('update banner: first-session marker cannot be written', err);
+    return false;
+  }
+  pruneOlderVersionMarkers(fs, dir, versionTag);
+  withheldUpdateWarning(`first session of ${currentVersion} that has a database; the check starts now`);
+  return true;
 }
 
 /**
  * The update status is UNKNOWN (no completed check, or the registry lookup
  * failed and the last good answer is older than a day). Silence here would
  * read as "up to date", so say it — once a day per installed version.
+ *
+ * The one exception is the very first session of an installed version (#540):
+ * "could not confirm" would be a warning about something that has not been tried
+ * yet. Two cases, both silent:
+ *  - There is no database yet. THIS hook does not start the check before a
+ *    database exists (see runPostBannerUpdateTasks: starting it earlier races
+ *    the database's own creation), so as far as it knows nothing has been tried.
+ *    (The CLI and the MCP server do start a check without a database; when one
+ *    has run, its cache exists and this case does not apply.) The silence lasts
+ *    until a database exists and costs nothing: no marker is written.
+ *  - The first session that has a database. It starts the check itself, right
+ *    after this banner. It is silent once per installed version; if the next
+ *    session still has nothing, the banner speaks as usual.
+ * If the once-per-version marker cannot be written, the banner speaks: a warning
+ * that may repeat is better than one that is hidden for a reason nobody sees.
  */
-function buildCheckFailedBanner(currentVersion, reason) {
-  try {
-    const fs = require('fs');
-    const dir = memeshHomeDir();
-    try { ensurePrivateDir(dir); } catch { /* best-effort */ }
-    const versionTag = /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : 'unknown';
-    const markerPath = join(dir, `last-check-failed-banner.${versionTag}.lock`);
-    let stat;
-    try { stat = fs.statSync(markerPath); } catch { stat = null; }
-    if (stat && Date.now() - stat.mtimeMs < CHECK_FAILED_BANNER_THROTTLE_MS) return [];
-    try {
-      fs.writeFileSync(markerPath, String(Date.now()), { mode: 0o600 });
-      try { fs.chmodSync(markerPath, 0o600); } catch { /* non-POSIX */ }
-    } catch { /* best-effort */ }
-  } catch {
+function buildCheckFailedBanner(currentVersion, reason, firstRun = false) {
+  const fs = require('fs');
+  const dir = memeshHomeDir();
+  try { ensurePrivateDir(dir); } catch (err) { recordCaught('update banner: memesh folder', err); }
+  const versionTag = /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : 'unknown';
+  if (firstRun && claimSilentFirstSession(fs, dir, versionTag, currentVersion)) return [];
+  const markerPath = join(dir, `last-check-failed-banner.${versionTag}.lock`);
+  let stat;
+  try { stat = fs.statSync(markerPath); } catch { stat = null; }
+  // Only a file is a marker; a folder of that name is not one, and writing
+  // over it below fails loudly instead of silencing the warning for a day.
+  if (stat && stat.isFile() && Date.now() - stat.mtimeMs < CHECK_FAILED_BANNER_THROTTLE_MS) {
+    withheldUpdateWarning('already shown within the last day for this version');
     return [];
+  }
+  try {
+    fs.writeFileSync(markerPath, String(Date.now()), { mode: 0o600 });
+    try { fs.chmodSync(markerPath, 0o600); } catch { /* non-POSIX */ }
+    pruneOlderVersionMarkers(fs, dir, versionTag);
+  } catch (err) {
+    recordCaught('update banner: throttle marker cannot be written, the warning may repeat', err);
   }
   return [`ℹ️  MeMesh could not confirm whether an update exists (${reason}). Update status is unknown, not current — run \`memesh status\` to retry.`];
 }
@@ -498,11 +603,15 @@ function pluginUpgradeLine(pluginRoot) {
 // (24h) to stay accurate.
 const FRESH_CHECK_THROTTLE_MS = 5 * 60 * 1000;
 
+
 function spawnFreshUpdateCheck(installedVersion) {
   try {
     const pluginRoot = resolvePluginRoot(import.meta.url);
     const cliPath = join(pluginRoot, 'dist/transports/cli/cli.js');
-    if (!existsSync(cliPath)) return false;
+    if (!existsSync(cliPath)) {
+      updateCheckNotStarted('this install has no dist/transports/cli/cli.js to run it with');
+      return false;
+    }
     const fs = require('fs');
     // memeshHomeDir(), not join(homedir(), '.memesh') — same reasoning as
     // the banner marker above: marker and cache must share a directory.
@@ -551,14 +660,21 @@ function spawnFreshUpdateCheck(installedVersion) {
       // multiple processes may race the unlink but only one can
       // win the subsequent O_EXCL.
       let stat;
-      try { stat = fs.statSync(markerPath); } catch { return false; }
+      try { stat = fs.statSync(markerPath); } catch {
+        updateCheckNotStarted('the refresh marker could not be inspected');
+        return false;
+      }
       if (Date.now() - stat.mtimeMs < FRESH_CHECK_THROTTLE_MS) {
+        updateCheckNotStarted('another session started one within the last 5 minutes');
         return false;
       }
       try { fs.unlinkSync(markerPath); } catch { /* peer already removed */ }
       result = claim();
     }
-    if (result !== 'won') return false;
+    if (result !== 'won') {
+      updateCheckNotStarted('the refresh marker could not be claimed');
+      return false;
+    }
     const child = spawn(
       process.execPath,
       [cliPath, 'status'],
@@ -616,24 +732,37 @@ function runPostBannerUpdateTasks() {
     // harmless update notice into "memories not loaded". The next session
     // after the first capture will refresh the cache once the database is
     // fully established; consent itself was already emitted above.
-    if (!existsSync(dbPath)) return;
+    if (!existsSync(dbPath)) {
+      updateCheckNotStarted('there is no database yet');
+      return;
+    }
     let installedVersion = null;
     try {
       const pluginRoot = resolvePluginRoot(import.meta.url);
       const pkg = JSON.parse(readFileSync(join(pluginRoot, 'package.json'), 'utf8'));
       installedVersion = typeof pkg.version === 'string' ? pkg.version : null;
-    } catch { /* best-effort */ }
-    if (!installedVersion) return;
+    } catch { /* best-effort: said below */ }
+    if (!installedVersion) {
+      updateCheckNotStarted('the installed version could not be read from package.json');
+      return;
+    }
     // Auto-update spawn moved to Stop hook (v4.1.4) to avoid TOCTOU race
     // where npm install -g overwrites dist/ while peer hooks are still reading it.
     // Two TTLs (update-notice.ts): a current answer is re-verified hourly, a
     // known upgrade is not re-fetched for 12h; a failed or missing check is
     // always retried. "Never ask again" also stops the background refresh.
-    if (!isUpdateCheckEnabled()) return;
-    if (!shouldRefreshUpdateCache(installedVersion, readUpdateCheckCache(installedVersion))) return;
+    if (!isUpdateCheckEnabled()) {
+      updateCheckNotStarted('update checks are turned off');
+      return;
+    }
+    if (!shouldRefreshUpdateCache(installedVersion, readUpdateCheckCache(installedVersion))) {
+      updateCheckNotStarted('the cached answer is still fresh');
+      return;
+    }
     spawnFreshUpdateCheck(installedVersion);
-  } catch {
-    // Best-effort — never crash the hook on a network or fs hiccup.
+  } catch (err) {
+    // Never crash the hook on a network or fs hiccup, and never leave it without a trace.
+    recordCaught('update check not started', err);
   }
 }
 
@@ -783,10 +912,11 @@ function combineWithBanner(baseMessage, { skipUpdateBanner = false } = {}) {
     const pkg = JSON.parse(readFileSync(join(pluginRoot, 'package.json'), 'utf8'));
     const installedVersion = typeof pkg.version === 'string' ? pkg.version : null;
     livenessVersion = installedVersion;
-    const cache = readUpdateCheckCache(installedVersion);
+    const cacheState = readUpdateCheckCacheState(installedVersion);
+    const cache = cacheState.cache;
     if (installedVersion) {
       const deprecation = buildDeprecationBanner(installedVersion, cache);
-      const notice = updateNoticeBanner(installedVersion, cache);
+      const notice = updateNoticeBanner(installedVersion, cache, cacheState);
       if (deprecation.length > 0) {
         lines = deprecation;
       } else if (notice.lines.length > 0) {
@@ -797,8 +927,9 @@ function combineWithBanner(baseMessage, { skipUpdateBanner = false } = {}) {
           installedVersion, cache, () => detectInstallChannelHook(pluginRoot));
       }
     }
-  } catch {
-    // Best-effort — fall through to base message only.
+  } catch (err) {
+    // Never crash the hook, and never lose the update banner without a trace: fall through to the base message only.
+    recordCaught('update banner could not be built', err);
   }
   // The capture-liveness line rides the same single systemMessage as every
   // other banner — stdout must stay one JSON document.
@@ -869,6 +1000,9 @@ process.stdin.on('end', async () => {
   // able to lead with this warning too, or a capture-dead session that ALSO
   // hits a recall error silently drops the more important half of the story.
   let captureWarning = null;
+  // The warning promises recall works. The catch below, where it did not, takes
+  // that promise back before the message goes out.
+  const RECALL_STILL_WORKS = ' (recall still works)';
   const withCaptureWarning = (msg) => {
     if (!captureWarning) return msg;
     // The populated-database path prepends an update banner ahead of the
@@ -1104,7 +1238,7 @@ process.stdin.on('end', async () => {
     // withCaptureWarning (hoisted above) demotes it instead of contradicting
     // it one line later.
     captureWarning = unwritable
-      ? `◉ MeMesh cannot write to ${unwritable} — memories will NOT be saved this session (recall still works). Run 'memesh doctor'.`
+      ? `◉ MeMesh cannot write to ${unwritable} — memories will NOT be saved this session${RECALL_STILL_WORKS}. Run 'memesh doctor'.`
       : null;
 
     // After the writability probe on purpose: recording an outcome creates
@@ -1639,15 +1773,17 @@ process.stdin.on('end', async () => {
         const pluginRoot = resolvePluginRoot(import.meta.url);
         const pkg = JSON.parse(readFileSync(join(pluginRoot, 'package.json'), 'utf8'));
         installedVersion = typeof pkg.version === 'string' ? pkg.version : null;
-      } catch {
-        // Best-effort — without the version we can't compare to cache.
+      } catch (err) {
+        // Without the version the cache cannot be compared, so no update banner this session: say so.
+        recordCaught('update banner skipped, installed version unreadable', err);
       }
-      const updateCache = readUpdateCheckCache(installedVersion);
+      const updateCacheState = readUpdateCheckCacheState(installedVersion);
+      const updateCache = updateCacheState.cache;
       let bannerLines = [];
       let updateConsentContext = null;
       if (installedVersion) {
         const deprecation = buildDeprecationBanner(installedVersion, updateCache);
-        const notice = updateNoticeBanner(installedVersion, updateCache);
+        const notice = updateNoticeBanner(installedVersion, updateCache, updateCacheState);
         if (deprecation.length > 0) {
           bannerLines = deprecation;
         } else if (notice.lines.length > 0) {
@@ -1785,6 +1921,7 @@ process.stdin.on('end', async () => {
       // Through output(), like every other emit: the gate proves "every
       // stdout write lies inside output()", and output() records exactly one
       // outcome — here an error, not the default `wrote`.
+      if (captureWarning) captureWarning = captureWarning.replace(RECALL_STILL_WORKS, '');
       output(
         withChannelFlagWarning(withRecipientRejectionWarning(withAddressLine(withCaptureWarning(`MeMesh: memories not loaded this session (${err?.message || 'unknown error'}) — everything else works; run \`memesh doctor\` if this repeats.`)))),
         recipientRejectionLine ?? addressLine ?? null,

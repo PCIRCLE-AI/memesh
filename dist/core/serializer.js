@@ -1,4 +1,4 @@
-import { getDatabase } from '../db.js';
+import { explainReadOnlyRefusal, getDatabase } from '../db.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { storedText } from '../storage/entity-write.js';
 import { truncateTitle } from './title.js';
@@ -398,6 +398,8 @@ export function importMemories(args, options) {
             }
         }
         catch (err) {
+            if (explainReadOnlyRefusal(err) !== null)
+                throw err;
             errors.push(`${entity.name}: ${err instanceof Error ? err.message : String(err)}`);
         }
     }

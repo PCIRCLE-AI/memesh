@@ -5,6 +5,7 @@ import { createHash } from 'crypto';
 import { execFileSync, spawnSync } from 'child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { formatDoctorReport, hoursSince, runDoctor as runDoctorImpl } from '../../src/core/doctor.js';
+import { manifestScope } from '../../src/core/manifest-scope.js';
 import { formatUpdateCheckStatus, type UpdateCheck } from '../../src/core/version-check.js';
 
 /** Keep filesystem discovery confined to explicit test fixtures. */
@@ -151,6 +152,14 @@ function createPackageRoot(root = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-
     },
   });
 
+  // The rest of what a complete package holds in the skills manifest's covered scope (src/core/manifest-scope.ts):
+  // doctor treats a missing wiring file or `skills/` folder as a failure, so the fixture carries them.
+  writeJson(path.join(root, '.codex-plugin', 'mcp.json'), { mcpServers: { memesh: { command: 'memesh-mcp' } } });
+  writeJson(path.join(root, '.codex-plugin', 'plugin.json'), { name: 'memesh', version: '4.1.4' });
+  fs.writeFileSync(path.join(root, 'hooks', 'native-memory.js'), '#!/usr/bin/env node\n');
+  fs.mkdirSync(path.join(root, 'skills', 'memesh'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'skills', 'memesh', 'SKILL.md'), '# memesh\n');
+
   for (const file of [
     'scripts/hooks/pre-edit-recall.js',
     'scripts/hooks/session-start.js',
@@ -168,15 +177,9 @@ function createPackageRoot(root = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-
   // F4: doctor verifies dist/skills-manifest.json. The fixture must
   // include one matching the on-disk hook stubs, otherwise the new
   // skills-manifest check fires and the overall status downgrades.
-  const tracked = [
-    'scripts/hooks/pre-edit-recall.js',
-    'scripts/hooks/session-start.js',
-    'scripts/hooks/post-commit.js',
-    'scripts/hooks/session-summary.js',
-    'scripts/hooks/pre-compact.js',
-    'hooks/hooks.json',
-    '.claude-plugin/mcp.json',
-  ];
+  // Everything in the covered scope that the fixture holds: the manifest has to list all of it, or doctor (which now
+  // compares the manifest with what is on disk) calls the fixture tampered.
+  const tracked = manifestScope(root).files;
   const entries = tracked.map(rel => {
     const buf = fs.readFileSync(path.join(root, rel));
     return {
@@ -543,8 +546,9 @@ describe('doctor', () => {
     tempRoots.push(memeshDir);
     const originalMemeshDir = process.env.MEMESH_DIR;
     process.env.MEMESH_DIR = memeshDir;
-    // No install.json pre-seeded: getInstallRecord() lazily creates one
-    // with created_at = now, which IS the fresh-install shape.
+    // No install.json: doctor does not create one. With no record, the age is the age of the installed
+    // package itself, and this one was put on disk a moment ago.
+    fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({ name: '@pcircle/memesh', version: '4.7.1' }));
 
     const result = await runDoctor({
       packageRoot,
@@ -566,6 +570,78 @@ describe('doctor', () => {
 
     const updateCheck = result.checks.find((check) => check.id === 'update-status');
     expect(updateCheck?.status, `a fresh install should not warn: ${updateCheck?.summary}`).toBe('pass');
+    expect(fs.existsSync(path.join(memeshDir, 'install.json')), 'doctor created install.json').toBe(false);
+  });
+
+  /**
+   * The update-status row on an install with NO install.json, where how long ago the package was installed is
+   * the only age there is. `birthMsAgo` is what the (injected) file system says about package.json; `null` makes
+   * the lookup fail, as a permission problem would.
+   */
+  async function updateStatusWithNoInstallRecord(birthMsAgo: number | null, ctimeOnly = false) {
+    const packageRoot = createPackageRoot();
+    const memeshDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-doctor-age-'));
+    tempRoots.push(packageRoot, memeshDir);
+    fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({ name: '@pcircle/memesh', version: '4.7.1' }));
+    const originalMemeshDir = process.env.MEMESH_DIR;
+    process.env.MEMESH_DIR = memeshDir;
+    try {
+      const result = await runDoctor({
+        packageRoot,
+        packageVersion: '4.7.1',
+        openDatabaseImpl: () => makeDatabase() as never,
+        closeDatabaseImpl: () => undefined,
+        getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
+        getUpdateCheckImpl: async () => null,
+        getCurrentInstallChannelImpl: () => 'npm-global',
+        getInstallChannelSupportImpl: () => ({
+          channel: 'npm-global', label: 'npm global', canSelfUpdate: true,
+          recommendedCommand: 'memesh update', guidance: '',
+        }),
+        nativeBindingProbeImpl: () => ({ ok: true }),
+        statSyncImpl: ((target: fs.PathLike, ...rest: unknown[]) => {
+          if (String(target).endsWith(`${path.sep}package.json`) && String(target).startsWith(packageRoot)) {
+            if (birthMsAgo === null) throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+            const at = Date.now() - birthMsAgo;
+            return ctimeOnly ? { birthtimeMs: 0, ctimeMs: at } : { birthtimeMs: at, ctimeMs: Date.now() };
+          }
+          return (fs.statSync as (...a: unknown[]) => unknown)(target, ...rest);
+        }) as unknown as typeof fs.statSync,
+      });
+      expect(fs.existsSync(path.join(memeshDir, 'install.json')), 'doctor created install.json').toBe(false);
+      return result.checks.find((check) => check.id === 'update-status');
+    } finally {
+      if (originalMemeshDir === undefined) delete process.env.MEMESH_DIR;
+      else process.env.MEMESH_DIR = originalMemeshDir;
+    }
+  }
+  const HOUR = 60 * 60 * 1000;
+
+  it('with no install record, a package installed 30 days ago and never update-checked WARNS (it is no longer new)', async () => {
+    const check = await updateStatusWithNoInstallRecord(30 * 24 * HOUR);
+    expect(check?.status, check?.summary).toBe('warn');
+    expect(check?.summary).not.toContain('Installed recently');
+  });
+
+  it('with no install record, a package installed an hour ago passes: the basis is how long ago this version was installed', async () => {
+    const check = await updateStatusWithNoInstallRecord(HOUR);
+    expect(check?.status, check?.summary).toBe('pass');
+    expect(check?.summary).toContain('Installed recently');
+  });
+
+  it('with no install record, a file system without a birth time falls back to the inode change time', async () => {
+    expect((await updateStatusWithNoInstallRecord(HOUR, true))?.status).toBe('pass');
+    expect((await updateStatusWithNoInstallRecord(30 * 24 * HOUR, true))?.status).toBe('warn');
+  });
+
+  it('with no install record and an install age that cannot be read, doctor cannot tell, so it WARNS rather than hiding the warning', async () => {
+    const check = await updateStatusWithNoInstallRecord(null);
+    expect(check?.status, check?.summary).toBe('warn');
+  });
+
+  it('an install age in the future (a clock that moved) is "cannot tell", not "recent"', async () => {
+    const check = await updateStatusWithNoInstallRecord(-3 * HOUR);
+    expect(check?.status, check?.summary).toBe('warn');
   });
 
   it.each([
@@ -1008,11 +1084,137 @@ describe('doctor', () => {
     });
   });
 
-  it('warns (not fails) when manifest is missing — source-checkout case (F4)', async () => {
+  /** The skills-manifest row for a package root, on the given install channel. */
+  async function manifestRow(packageRoot: string, channel: 'npm-global' | 'source-checkout' | 'plugin-marketplace' | 'npm-local' | 'unknown' = 'npm-global') {
+    const result = await runDoctor({
+      packageRoot,
+      packageVersion: '4.0.3',
+      openDatabaseImpl: () => makeDatabase() as never,
+      closeDatabaseImpl: () => undefined,
+      getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
+      getUpdateCheckImpl: async () => makeUpdateCheck(),
+      getCurrentInstallChannelImpl: () => channel,
+      getInstallChannelSupportImpl: () => ({
+        channel, label: channel, canSelfUpdate: channel === 'npm-global',
+        recommendedCommand: 'memesh update', guidance: 'This installation can be updated directly from MeMesh.',
+      }),
+    });
+    return result.checks.find((c) => c.id === 'skills-manifest');
+  }
+
+  it('warns (not fails) when manifest is missing on a source checkout — it builds on demand (F4)', async () => {
     const packageRoot = createPackageRoot();
     tempRoots.push(packageRoot);
     fs.rmSync(path.join(packageRoot, 'dist', 'skills-manifest.json'));
+    expect(await manifestRow(packageRoot, 'source-checkout')).toMatchObject({ status: 'warn', code: 'skills-manifest.missing-dev' });
+  });
 
+  it.each(['npm-global', 'npm-local', 'plugin-marketplace', 'unknown'] as const)('FAILS when the manifest is missing on a packaged install (%s): deleting it must not turn the check into a shrug', async (channel) => {
+    const packageRoot = createPackageRoot();
+    tempRoots.push(packageRoot);
+    fs.rmSync(path.join(packageRoot, 'dist', 'skills-manifest.json'));
+    const row = await manifestRow(packageRoot, channel);
+    expect(row).toMatchObject({ status: 'fail', code: 'skills-manifest.missing' });
+    expect(row?.summary).not.toContain('normal for source checkouts');
+  });
+
+  it('an entry taken out of the manifest does not hide a change to that file: the file is in scope on disk, so it is reported', async () => {
+    const packageRoot = createPackageRoot();
+    tempRoots.push(packageRoot);
+    const manifestPath = path.join(packageRoot, 'dist', 'skills-manifest.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as { entries: Array<{ path: string }> };
+    manifest.entries = manifest.entries.filter((e) => e.path !== 'scripts/hooks/session-start.js');
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+    fs.appendFileSync(path.join(packageRoot, 'scripts/hooks/session-start.js'), '// EVIL OVERLAY\n');
+    const row = await manifestRow(packageRoot);
+    expect(row).toMatchObject({ status: 'fail', code: 'skills-manifest.verify-failed' });
+    expect(row?.summary).toContain('not in the manifest: scripts/hooks/session-start.js');
+  });
+
+  it('a hook file and a SKILL.md that the manifest does not list are reported, not ignored', async () => {
+    const packageRoot = createPackageRoot();
+    tempRoots.push(packageRoot);
+    fs.writeFileSync(path.join(packageRoot, 'scripts/hooks/extra-probe.js'), '// extra\n');
+    fs.mkdirSync(path.join(packageRoot, 'skills', 'extra-probe'), { recursive: true });
+    fs.writeFileSync(path.join(packageRoot, 'skills', 'extra-probe', 'SKILL.md'), '# extra\n');
+    const row = await manifestRow(packageRoot);
+    expect(row?.status).toBe('fail');
+    expect(row?.summary).toContain('not in the manifest');
+    expect(row?.summary).toContain('extra-probe');
+    expect(row?.summary).toMatch(/2 not in the manifest/);
+  });
+
+  it('a clean package passes and says how many files the scan expected, so a shrunken manifest cannot look healthy', async () => {
+    const packageRoot = createPackageRoot();
+    tempRoots.push(packageRoot);
+    const row = await manifestRow(packageRoot);
+    const expected = manifestScope(packageRoot).files.length;
+    expect(row).toMatchObject({ status: 'pass' });
+    expect(row?.summary).toContain(`${expected} skill / hook files match`);
+    expect(row?.summary).toContain(`${expected} files are in the covered scope on disk, none unlisted`);
+  });
+
+  it('FAILS when a required location is gone and its manifest entries were removed with it', async () => {
+    // Deleting the whole skills/ folder and the two entries that listed it leaves nothing listed and nothing on
+    // disk to compare: the scan has to say the folder (and a wiring file) are required and absent.
+    const packageRoot = createPackageRoot();
+    tempRoots.push(packageRoot);
+    fs.rmSync(path.join(packageRoot, 'skills'), { recursive: true });
+    fs.rmSync(path.join(packageRoot, 'hooks', 'native-memory.js'));
+    const manifestPath = path.join(packageRoot, 'dist', 'skills-manifest.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as { entries: Array<{ path: string }> };
+    manifest.entries = manifest.entries.filter((e) => !e.path.startsWith('skills/') && e.path !== 'hooks/native-memory.js');
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+    const row = await manifestRow(packageRoot);
+    expect(row).toMatchObject({ status: 'fail', code: 'skills-manifest.verify-failed' });
+    expect(row?.summary).toContain('skills/ (required, not found)');
+    expect(row?.summary).toContain('hooks/native-memory.js (required, not found)');
+  });
+
+  it('a .DS_Store that Finder left in skills/ (npm pack never ships one) does not fail a healthy install', async () => {
+    const packageRoot = createPackageRoot();
+    tempRoots.push(packageRoot);
+    fs.writeFileSync(path.join(packageRoot, 'skills', '.DS_Store'), 'finder');
+    fs.writeFileSync(path.join(packageRoot, 'skills', 'memesh', '._SKILL.md'), 'appledouble');
+    expect(await manifestRow(packageRoot)).toMatchObject({ status: 'pass' });
+  });
+
+  it.skipIf(process.platform === 'win32')('a symbolic link in a covered place fails, however it is made: a file link and a folder link', async () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-doctor-outside-'));
+    tempRoots.push(outside);
+    fs.writeFileSync(path.join(outside, 'EVIL.md'), '# evil\n');
+    const fileLink = createPackageRoot();
+    tempRoots.push(fileLink);
+    fs.symlinkSync(path.join(outside, 'EVIL.md'), path.join(fileLink, 'skills', 'memesh', 'EVIL.md'));
+    const fileRow = await manifestRow(fileLink);
+    expect(fileRow).toMatchObject({ status: 'fail', code: 'skills-manifest.verify-failed' });
+    expect(fileRow?.summary).toContain('skills/memesh/EVIL.md (symbolic link)');
+
+    const folderLink = createPackageRoot();
+    tempRoots.push(folderLink);
+    fs.symlinkSync(outside, path.join(folderLink, 'skills', 'evil2'));
+    const folderRow = await manifestRow(folderLink);
+    expect(folderRow).toMatchObject({ status: 'fail', code: 'skills-manifest.verify-failed' });
+    expect(folderRow?.summary).toContain('skills/evil2 (symbolic link)');
+  });
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('a covered folder that cannot be read fails: unknown contents are not empty contents', async () => {
+    const packageRoot = createPackageRoot();
+    tempRoots.push(packageRoot);
+    const locked = path.join(packageRoot, 'skills', 'memesh');
+    fs.chmodSync(locked, 0o000);
+    try {
+      expect(() => fs.readdirSync(locked), 'the folder is readable: this test would prove nothing').toThrow();
+      const row = await manifestRow(packageRoot);
+      expect(row).toMatchObject({ status: 'fail' });
+      expect(row?.summary).toContain('skills/memesh/ (cannot be read)');
+    } finally {
+      fs.chmodSync(locked, 0o755);
+    }
+  });
+
+  /** The skills-manifest row, with the file reader replaced: a way to prove doctor never reads what it must not. */
+  async function manifestRowReading(packageRoot: string, readFileSyncImpl: typeof fs.readFileSync) {
     const result = await runDoctor({
       packageRoot,
       packageVersion: '4.0.3',
@@ -1022,14 +1224,194 @@ describe('doctor', () => {
       getUpdateCheckImpl: async () => makeUpdateCheck(),
       getCurrentInstallChannelImpl: () => 'npm-global',
       getInstallChannelSupportImpl: () => ({
-        channel: 'npm-global', label: 'npm global', canSelfUpdate: true,
-        recommendedCommand: 'memesh update', guidance: '',
+        channel: 'npm-global', label: 'npm-global', canSelfUpdate: true,
+        recommendedCommand: 'memesh update', guidance: 'This installation can be updated directly from MeMesh.',
       }),
+      readFileSyncImpl,
+    });
+    return result.checks.find((c) => c.id === 'skills-manifest');
+  }
+
+  describe.skipIf(process.platform === 'win32')('a covered folder that is itself a symbolic link, or a link on the way to a covered file', () => {
+    const linkTo = (packageRoot: string, rel: string) => {
+      const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-doctor-outside-'));
+      tempRoots.push(outside);
+      const real = path.join(packageRoot, rel);
+      fs.cpSync(real, outside, { recursive: true });
+      fs.rmSync(real, { recursive: true });
+      fs.symlinkSync(outside, real);
+    };
+
+    it.each([['skills'], ['scripts'], ['hooks'], ['.claude-plugin']])('%s/ replaced by a link to a copy with the same contents fails', async (folder) => {
+      const packageRoot = createPackageRoot();
+      tempRoots.push(packageRoot);
+      linkTo(packageRoot, folder);
+      const row = await manifestRow(packageRoot);
+      expect(row, `${folder} as a link passed the integrity check`).toMatchObject({ status: 'fail', code: 'skills-manifest.verify-failed' });
+      expect(row?.summary).toContain(`${folder} (symbolic link)`);
     });
 
-    expect(result.checks.find((c) => c.id === 'skills-manifest')).toMatchObject({
-      status: 'warn',
+    it('a wiring file replaced by a link to an identical file fails', async () => {
+      const packageRoot = createPackageRoot();
+      tempRoots.push(packageRoot);
+      const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-doctor-outside-'));
+      tempRoots.push(outside);
+      const target = path.join(packageRoot, 'hooks', 'native-memory.js');
+      fs.copyFileSync(target, path.join(outside, 'native-memory.js'));
+      fs.rmSync(target);
+      fs.symlinkSync(path.join(outside, 'native-memory.js'), target);
+      const row = await manifestRow(packageRoot);
+      expect(row).toMatchObject({ status: 'fail' });
+      expect(row?.summary).toContain('hooks/native-memory.js (symbolic link)');
     });
+  });
+
+  it('a folder named like something npm pack leaves out (skills/CVS/) fails, even though a FILE with that name would not', async () => {
+    const packageRoot = createPackageRoot();
+    tempRoots.push(packageRoot);
+    fs.mkdirSync(path.join(packageRoot, 'skills', 'CVS'));
+    fs.writeFileSync(path.join(packageRoot, 'skills', 'CVS', 'SKILL.md'), '# a skill nobody listed\n');
+    const row = await manifestRow(packageRoot);
+    expect(row).toMatchObject({ status: 'fail' });
+    expect(row?.summary).toContain('skills/CVS/ (a folder npm pack never ships)');
+  });
+
+  it('a FILE named like what npm pack leaves out (skills/memesh/.git, CVS) is not a finding', async () => {
+    const packageRoot = createPackageRoot();
+    tempRoots.push(packageRoot);
+    for (const name of ['.git', 'CVS', '.svn']) fs.writeFileSync(path.join(packageRoot, 'skills', 'memesh', name), 'x');
+    expect(await manifestRow(packageRoot)).toMatchObject({ status: 'pass' });
+  });
+
+  describe.skipIf(process.platform === 'win32')('a named pipe where a file belongs', () => {
+    const makePipe = (target: string) => {
+      const made = spawnSync('mkfifo', [target]);
+      expect(made.status, 'mkfifo is not available: this test would prove nothing').toBe(0);
+    };
+
+    it('in place of a listed file: reported as not a regular file, and never read (a read would block for ever)', async () => {
+      const packageRoot = createPackageRoot();
+      tempRoots.push(packageRoot);
+      const target = path.join(packageRoot, 'scripts', 'hooks', 'session-start.js');
+      fs.rmSync(target);
+      makePipe(target);
+      const readPaths: string[] = [];
+      const guarded = ((file: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+        if (String(file) === target) throw new Error('doctor read a named pipe: it would have blocked');
+        readPaths.push(String(file));
+        return (fs.readFileSync as (...a: unknown[]) => unknown)(file, ...rest);
+      }) as unknown as typeof fs.readFileSync;
+      const row = await manifestRowReading(packageRoot, guarded);
+      expect(readPaths.length, 'the reader was never used').toBeGreaterThan(0);
+      expect(row).toMatchObject({ status: 'fail' });
+      expect(row?.summary).toContain('scripts/hooks/session-start.js (not a regular file)');
+    });
+
+    it('that the manifest does not list: reported as not a file', async () => {
+      const packageRoot = createPackageRoot();
+      tempRoots.push(packageRoot);
+      makePipe(path.join(packageRoot, 'skills', 'memesh', 'PIPE.md'));
+      const row = await manifestRow(packageRoot);
+      expect(row).toMatchObject({ status: 'fail' });
+      expect(row?.summary).toContain('skills/memesh/PIPE.md (not a file)');
+    });
+  });
+
+  /**
+   * The update-status row on an install whose age comes from `install.json`, with the update check result chosen by
+   * the caller. `installJson` is written as given (a string is written as is, to be able to damage it); `null`
+   * writes none.
+   */
+  async function updateStatusFromInstallJson(installJson: unknown, update: UpdateCheck | null = null) {
+    const packageRoot = createPackageRoot();
+    const memeshDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-doctor-installjson-'));
+    tempRoots.push(packageRoot, memeshDir);
+    fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({ name: '@pcircle/memesh', version: '4.7.1' }));
+    if (installJson !== null) {
+      fs.writeFileSync(path.join(memeshDir, 'install.json'), typeof installJson === 'string' ? installJson : JSON.stringify(installJson));
+    }
+    const originalMemeshDir = process.env.MEMESH_DIR;
+    process.env.MEMESH_DIR = memeshDir;
+    try {
+      const result = await runDoctor({
+        packageRoot,
+        packageVersion: '4.7.1',
+        openDatabaseImpl: () => makeDatabase() as never,
+        closeDatabaseImpl: () => undefined,
+        getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
+        getUpdateCheckImpl: async () => update,
+        getCurrentInstallChannelImpl: () => 'npm-global',
+        getInstallChannelSupportImpl: () => ({
+          channel: 'npm-global', label: 'npm global', canSelfUpdate: true,
+          recommendedCommand: 'memesh update', guidance: '',
+        }),
+        nativeBindingProbeImpl: () => ({ ok: true }),
+      });
+      return { update: result.checks.find((check) => check.id === 'update-status'), id: result.checks.find((check) => check.id === 'install_id') };
+    } finally {
+      if (originalMemeshDir === undefined) delete process.env.MEMESH_DIR;
+      else process.env.MEMESH_DIR = originalMemeshDir;
+    }
+  }
+  const installJsonAt = (msAgo: number) => ({ install_id: '0b6d0a52-6a5c-4f3e-9d5e-1f2a3b4c5d6e', created_at: new Date(Date.now() - msAgo).toISOString(), schema_version: 1 });
+
+  it('with an install.json, an install made an hour ago passes: the grace period is measured from its created_at', async () => {
+    const { update } = await updateStatusFromInstallJson(installJsonAt(HOUR));
+    expect(update?.status, update?.summary).toBe('pass');
+    expect(update?.summary).toContain('Installed recently');
+  });
+
+  it('with an install.json, an install made 30 days ago and never update-checked WARNS', async () => {
+    const { update } = await updateStatusFromInstallJson(installJsonAt(30 * 24 * HOUR));
+    expect(update?.status, update?.summary).toBe('warn');
+  });
+
+  it('an install.json whose created_at is in the future is "cannot tell", not "recent": it WARNS', async () => {
+    const { update } = await updateStatusFromInstallJson(installJsonAt(-3 * HOUR));
+    expect(update?.status, update?.summary).toBe('warn');
+  });
+
+  it('an install.json with no created_at is "cannot tell", not "created now": it WARNS, and the Install ID row invents no time', async () => {
+    const { update, id } = await updateStatusFromInstallJson({ install_id: '0b6d0a52-6a5c-4f3e-9d5e-1f2a3b4c5d6e' });
+    expect(update?.status, update?.summary).toBe('warn');
+    expect(id?.summary).toContain('0b6d0a52-6a5c-4f3e-9d5e-1f2a3b4c5d6e');
+    expect(id?.summary, 'a creation time was made up').not.toContain('created ');
+  });
+
+  it('an install.json that cannot be used is said to exist and be unusable, not "no install ID yet"; the update status warns', async () => {
+    const { update, id } = await updateStatusFromInstallJson('{not json');
+    expect(update?.status, update?.summary).toBe('warn');
+    expect(id?.summary).toContain('exists but cannot be used');
+    expect(id?.summary).toContain('not valid JSON');
+    expect(id?.summary).not.toContain('No install ID yet');
+  });
+
+  it('the Install ID row says that memesh feedback includes the ID by default, and how to leave it out', async () => {
+    const { id } = await updateStatusFromInstallJson(installJsonAt(HOUR));
+    expect(id?.summary).toContain('--no-diagnostics');
+    expect(id?.summary, 'the row still describes a checkbox the CLI does not have').not.toMatch(/checkbox/i);
+  });
+
+  it('the update status "unavailable" branch (no attempt, no error yet) passes on a fresh install and warns on an old one', async () => {
+    const unavailable = () => makeUpdateCheck({
+      latestVersion: null, checkSucceeded: false, freshness: 'unavailable', lastSuccessfulCheckAt: null,
+      lastAttemptAt: null, lastError: null,
+    });
+    const fresh = await updateStatusFromInstallJson(installJsonAt(HOUR), unavailable());
+    expect(fresh.update?.status, fresh.update?.summary).toBe('pass');
+    expect(fresh.update?.summary).toContain('Installed recently');
+    const old = await updateStatusFromInstallJson(installJsonAt(30 * 24 * HOUR), unavailable());
+    expect(old.update?.status, old.update?.summary).toBe('warn');
+  });
+
+  it('on tampering, the fix carries the install channel\'s own sentence', async () => {
+    const packageRoot = createPackageRoot();
+    tempRoots.push(packageRoot);
+    fs.appendFileSync(path.join(packageRoot, 'scripts/hooks/session-start.js'), '// EVIL\n');
+    const row = await manifestRow(packageRoot, 'npm-global');
+    expect(row?.status).toBe('fail');
+    expect(row?.fix).toContain('Reinstall the package:');
+    expect(row?.fix).toContain('This installation can be updated directly from MeMesh.');
   });
 
   it('escalates the update-status check to FAIL when the installed version is deprecated', async () => {
@@ -2460,6 +2842,7 @@ describe('Install ID (doctor sub-check)', () => {
       expect(check).toBeDefined();
       expect(check.summary).toContain(path.join(customMemeshDir, 'install.json'));
       expect(check.summary).not.toContain('~/.memesh');
+      expect(fs.existsSync(path.join(customMemeshDir, 'install.json')), 'doctor created install.json').toBe(false);
     } finally {
       if (original === undefined) delete process.env.MEMESH_DIR;
       else process.env.MEMESH_DIR = original;
@@ -4348,9 +4731,9 @@ describe('doctor rows that had no assertion', () => {
   }
 
   /**
-   * An isolated MEMESH_DIR. Not optional for these rows: `getInstallRecord()`
-   * CREATES `install.json` when it is absent, so without this the install_id
-   * cases would write into the developer's own `~/.memesh`.
+   * An isolated MEMESH_DIR. Not optional for these rows: they read, and assert
+   * on, the install record, which must come from here and not from the
+   * developer's own `~/.memesh`.
    */
   function isolateMemeshDir(): string {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-doctor-rows-'));
@@ -4764,6 +5147,10 @@ describe('doctor rows that had no assertion', () => {
       const packageRoot = createPackageRoot();
       tempRoots.push(packageRoot);
       const dir = isolateMemeshDir();
+      // Doctor reads the record, it does not make one: this is the id a `memesh feedback` run left behind.
+      fs.writeFileSync(path.join(dir, 'install.json'), JSON.stringify({
+        install_id: '0b6d0a52-6a5c-4f3e-9d5e-1f2a3b4c5d6e', created_at: '2026-01-01T00:00:00.000Z', schema_version: 1,
+      }));
 
       const check = row(await runDoctorImpl(options(packageRoot)), 'install_id');
       expect(check.informational, 'a row that only echoes a stored value counted as a verification').toBe(true);
@@ -4773,6 +5160,20 @@ describe('doctor rows that had no assertion', () => {
       expect(check.summary).toContain(stored.install_id);
       expect(check.summary, 'the privacy sentence is the reason this row exists')
         .toContain('Never transmitted automatically');
+    });
+
+    it('with no install.json, says there is no ID yet and where `memesh feedback` will create it, and creates nothing', async () => {
+      const packageRoot = createPackageRoot();
+      tempRoots.push(packageRoot);
+      const dir = isolateMemeshDir();
+
+      const check = row(await runDoctorImpl(options(packageRoot)), 'install_id');
+      expect(check.informational).toBe(true);
+      expect(check.summary).toContain('No install ID yet');
+      expect(check.summary).toContain('memesh feedback');
+      expect(check.summary).toContain(path.join(dir, 'install.json'));
+      expect(check.summary, 'an ID was invented').not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-/);
+      expect(fs.existsSync(path.join(dir, 'install.json')), 'doctor created install.json').toBe(false);
     });
   });
 });

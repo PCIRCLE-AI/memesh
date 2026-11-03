@@ -1,11 +1,10 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { MemeshDatabase } from '../storage/sqlite.js';
 import { getDatabase, openInitialisedDatabase } from '../db.js';
 import { AGENT_MESSAGE_PROJECT_TABLES } from './agent-scope-id.js';
-import { guardDatabaseFiles } from './file-mode.js';
+import { guardDatabaseFiles, hasPagesWaiting, immutableAddress } from './file-mode.js';
 export function listProjectTags(db) {
     const conn = db ?? getDatabase();
     const rows = conn.prepare("SELECT tag, COUNT(*) c FROM tags WHERE tag LIKE 'project:%' GROUP BY tag ORDER BY c DESC, tag ASC").all();
@@ -197,16 +196,9 @@ export function openReadOnlyForPreview(dbPath, openHandle = (target) => new Meme
         return open(dbPath);
     }
     catch (err) {
-        let realPath = dbPath;
-        try {
-            realPath = fs.realpathSync(dbPath);
-        }
-        catch { }
-        const wal = `${realPath}-wal`;
-        const hasWal = fs.existsSync(wal) && fs.statSync(wal).size > 0;
-        if (hasWal || !/readonly|unable to open/i.test(err instanceof Error ? err.message : String(err)))
+        if (hasPagesWaiting(dbPath) || !/readonly|unable to open/i.test(err instanceof Error ? err.message : String(err)))
             throw err;
-        return open(`${pathToFileURL(dbPath).href}?immutable=1`);
+        return open(immutableAddress(dbPath));
     }
 }
 //# sourceMappingURL=project-tags.js.map

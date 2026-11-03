@@ -462,6 +462,24 @@ describe('Feature: #519 the read-only preview falls back to immutable only when 
     expect(f.targets).toHaveLength(1);
   }));
 
+  it('does not retry when a rollback journal holds a half-done transaction: an immutable read would show it as committed', () => inTempDir((dir) => {
+    const db = path.join(dir, 'a.db');
+    fs.writeFileSync(db, '');
+    fs.writeFileSync(`${db}-journal`, Buffer.alloc(512, 1));
+    const f = failing('attempt to write a readonly database');
+    expect(() => openReadOnlyForPreview(db, f.open)).toThrow('attempt to write a readonly database');
+    expect(f.targets).toHaveLength(1);
+  }));
+
+  it('retries as immutable when the rollback journal is empty: it holds nothing to roll back', () => inTempDir((dir) => {
+    const db = path.join(dir, 'a.db');
+    fs.writeFileSync(db, '');
+    fs.writeFileSync(`${db}-journal`, '');
+    const f = failing('attempt to write a readonly database');
+    expect(openReadOnlyForPreview(db, f.open)).toBe(stub);
+    expect(f.targets).toHaveLength(2);
+  }));
+
   it('finds the write-ahead log beside the real file when given a symlink', () => inTempDir((dir) => {
     const db = path.join(dir, 'real.db');
     const link = path.join(dir, 'link.db');

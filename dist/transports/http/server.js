@@ -3,7 +3,7 @@ import express from 'express';
 import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
 import { randomBytes, timingSafeEqual } from 'crypto';
-import { openDatabase, closeDatabase, getDatabase, } from '../../db.js';
+import { openDatabase, closeDatabase, getDatabase, failureMessage, } from '../../db.js';
 import { remember, recallWithConflicts, forget, exportMemories, importMemories, learn, shownEntity, } from '../../core/operations.js';
 import { KnowledgeGraph } from '../../knowledge-graph.js';
 import { MEMORY_DATA_NOTICE } from '../../core/work-topology.js';
@@ -337,7 +337,7 @@ function sendError(res, err, fallbackStatus, fallbackCode) {
     res.status(fallbackStatus).json({
         success: false,
         errorCode: fallbackCode,
-        error: err instanceof Error ? err.message : String(err),
+        error: failureMessage(err),
     });
 }
 function zodErrorText(error) {

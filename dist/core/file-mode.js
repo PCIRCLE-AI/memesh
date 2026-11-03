@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { pathToFileURL } from 'url';
 export function shellQuote(value) {
     const word = value.startsWith('-') ? `./${value}` : value;
     return `'${word.replace(/'/g, `'\\''`)}'`;
@@ -44,6 +45,30 @@ export function databaseFiles(dbPath) {
     }
     catch { }
     return [real, `${real}-wal`, `${real}-shm`];
+}
+export function holdsBytes(file) {
+    try {
+        return fs.statSync(file).size > 0;
+    }
+    catch {
+        return false;
+    }
+}
+export function isWritable(target) {
+    try {
+        fs.accessSync(target, fs.constants.W_OK);
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
+export function hasPagesWaiting(dbPath) {
+    const [real, wal] = databaseFiles(dbPath);
+    return holdsBytes(wal) || holdsBytes(`${real}-journal`);
+}
+export function immutableAddress(file) {
+    return `${pathToFileURL(file).href}?immutable=1`;
 }
 export function guardDatabaseFiles(dbPath) {
     for (const target of databaseFiles(dbPath))

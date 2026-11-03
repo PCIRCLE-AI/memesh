@@ -1334,12 +1334,70 @@ describe('HTTP Transport: Startup validation', () => {
       }
     }
 
-    it('read-only folder: prints the chmod, not the reset advice', () => {
+    it('read-only folder with pages waiting in a -wal: refuses to start, prints the chmod, not the reset advice', () => {
       let dirName = '';
-      const out = startupOutput((dir) => { dirName = dir; fs.chmodSync(dir, 0o500); });
+      const out = startupOutput((dir, dbPath) => {
+        dirName = dir;
+        fs.writeFileSync(`${dbPath}-wal`, Buffer.alloc(64, 1), { mode: 0o600 });
+        fs.chmodSync(dir, 0o500);
+      });
       expect(out).toContain(`Fix: Run: chmod u+w ${shellQuote(dirName)}`);
       // `mv` as a command word: the random temp-folder suffix can end in `mv` before a space (`…-oH0Bmv is read-only`).
       expect(out).not.toMatch(/Backup and reset|(?:^|\s)mv |Quick fix/);
+    });
+
+    it('read-only folder, nothing pending in a -wal: the server STARTS and serves reads; a write is refused naming the folder and the chmod', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "memesh-http-ro-it's-"));
+      const dbPath = path.join(dir, 'test.db');
+      const previousDbPath = process.env.MEMESH_DB_PATH;
+      closeDatabase();
+      openDatabase(dbPath);
+      getDatabase().prepare("INSERT INTO entities (name, type) VALUES ('ro-http-seed', 'note')").run();
+      closeDatabase();
+      for (const s of ['-wal', '-shm']) fs.rmSync(`${dbPath}${s}`, { force: true });
+      fs.chmodSync(dir, 0o500);
+      process.env.MEMESH_DB_PATH = dbPath;
+      const stderr: string[] = [];
+      const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => { stderr.push(String(chunk)); return true; });
+      let started: ReturnType<typeof app.listen> | undefined;
+      try {
+        started = startServer('127.0.0.1', 0);
+        spy.mockRestore();
+        expect(stderr.join(''), 'the open said nothing about the read-only folder').toContain(`chmod u+w ${shellQuote(dir)}`);
+        const health = await req('GET', '/v1/health');
+        expect(health.status).toBe(200);
+        expect(health.body.data.entity_count, 'the stored memory was not readable').toBeGreaterThan(0);
+        const refused = await req('POST', '/v1/remember', { name: 'ro-http-new', type: 'note' });
+        expect(refused.status).toBeGreaterThanOrEqual(400);
+        expect(refused.body.success).toBe(false);
+        expect(refused.body.error, 'the refusal does not name the folder').toContain(dir);
+        expect(refused.body.error).toContain(`chmod u+w ${shellQuote(dir)}`);
+        // An import is refused as a whole, not reported as "imported 0" with per-entity errors that look like bad input.
+        const importRefused = await req('POST', '/v1/import', {
+          data: {
+            version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+            entities: [{ name: 'ro-http-imported', type: 'note', namespace: 'personal', observations: ['bundle text'], tags: [], relations: [] }],
+          },
+          merge_strategy: 'append',
+        });
+        expect(importRefused.body.success, `an import into a read-only folder was reported as a success: ${JSON.stringify(importRefused.body)}`).toBe(false);
+        expect(importRefused.body.error).toContain(dir);
+        expect(importRefused.body.error).toContain(`chmod u+w ${shellQuote(dir)}`);
+        // The user follows the advice. The running server notices: no restart, and writes work.
+        fs.chmodSync(dir, 0o700);
+        const accepted = await req('POST', '/v1/remember', { name: 'ro-http-after-the-fix', type: 'note' });
+        expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
+        expect(accepted.body.success).toBe(true);
+      } finally {
+        spy.mockRestore();
+        if (started?.listening) await new Promise<void>((resolve) => { started!.close(() => resolve()); });
+        closeDatabase();
+        if (previousDbPath === undefined) delete process.env.MEMESH_DB_PATH;
+        else process.env.MEMESH_DB_PATH = previousDbPath;
+        for (const p of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`, dir]) { try { fs.chmodSync(p, 0o700); } catch { /* gone */ } }
+        fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+        openDatabase(path.join(tmpDir, 'test.db'));
+      }
     });
 
     it('a -wal with fewer owner permissions: prints the chmod, not the reset advice', () => {

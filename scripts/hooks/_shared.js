@@ -2,7 +2,7 @@ import { appendFileSync, closeSync, constants as fsConstants, existsSync, fstatS
 import { createHash, randomBytes } from 'crypto';
 import { spawn } from 'child_process';
 import { MemeshDatabase } from './_generated/sqlite.js';
-import { guardDatabaseFiles, ownerWriteCommand, removeGroupAndOtherAccess } from './_generated/file-mode.js';
+import { databaseFiles, guardDatabaseFiles, hasPagesWaiting, immutableAddress, isWritable, ownerWriteCommand, removeGroupAndOtherAccess } from './_generated/file-mode.js';
 import { dirname, join } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 
@@ -938,7 +938,38 @@ export function unreadMessageLines(env = process.env, recordFailure, onRecipient
 export function openMemeshDb(dbPath, options) {
   try { process.umask(0o077); } catch { /* non-POSIX */ }
   guardDatabaseFiles(dbPath);
-  return new MemeshDatabase(dbPath, options);
+  return new MemeshDatabase(readTarget(dbPath, options), options);
+}
+
+/**
+ * What to hand SQLite for a read-only open. A plain read-only open of a WAL
+ * database needs a -shm, and a folder the process cannot write to cannot give
+ * it one: the open fails with "attempt to write a readonly database" and the
+ * session loads no memories. With no -wal file, or one with nothing in it,
+ * and no rollback journal holding a half-done transaction, there is nothing
+ * uncommitted or uncheckpointed a reader could get wrong, so such a database
+ * is read as `immutable=1`: no locks, no sidecars, exactly the file's
+ * contents. Pages in a -wal, or a -journal with bytes in it, would be skipped
+ * or misread by that, so the plain open (and its honest failure) is kept. So
+ * is a database whose -wal AND -shm both exist (a process has it open: a plain
+ * read-only open reads through the -shm, an immutable one would never see what
+ * that process writes next), and a writable folder is never read as immutable.
+ * The same rule as `openDatabase` in src/db.ts.
+ */
+export function readTarget(dbPath, options) {
+  if (!options?.readOnly) return dbPath;
+  try {
+    const [real, wal, shm] = databaseFiles(dbPath);
+    // Pages waiting in a -wal or a hot journal: keep the plain open and its honest failure.
+    if (hasPagesWaiting(dbPath)) return dbPath;
+    // Both sidecars present: some process has the database open right now. A plain read-only open works (it
+    // reads the -wal through the -shm); an immutable one would never see what that process writes next.
+    if (existsSync(wal) && existsSync(shm)) return dbPath;
+    if (isWritable(dirname(real))) return dbPath;
+    return immutableAddress(real);
+  } catch {
+    return dbPath;
+  }
 }
 
 export function openHookDb(env = process.env, opts = {}) {
@@ -1297,6 +1328,17 @@ export function hookErrorReason(err) {
   const label = (value) => (typeof value === 'string' && /^[A-Za-z][\w-]{0,39}$/.test(value) ? value : null);
   const e = err && typeof err === 'object' ? err : null;
   return `uncaught ${label(e?.code) ?? label(e?.name) ?? 'error'}`;
+}
+
+/**
+ * The reason string for an error the hook CAUGHT and handled: the bare code or name (`EACCES`, `SyntaxError`),
+ * never the message, which can carry a local path. `hookErrorReason` prefixes "uncaught", which is true only
+ * for the last-resort catch at the end of a hook; a handled failure must not be recorded as one.
+ */
+export function hookCaughtReason(err) {
+  const label = (value) => (typeof value === 'string' && /^[A-Za-z][\w-]{0,39}$/.test(value) ? value : null);
+  const e = err && typeof err === 'object' ? err : null;
+  return label(e?.code) ?? label(e?.name) ?? 'error';
 }
 
 /**
@@ -2172,31 +2214,51 @@ export function isTrustedForAutoContext(rawMetadata) {
 // ─── Auto-update shared helpers ─────────────────────────────────────────────
 // Shared between SessionStart and Stop hooks for auto-update coordination.
 
-export function readUpdateCheckCache(installedVersion) {
+/**
+ * Read the update-check cache and say WHAT was found, not only whether
+ * something was:
+ *  - `{ status: 'missing' }`    no cache file (nothing has been checked here)
+ *  - `{ status: 'unreadable' }` the file is there but could not be read or is
+ *                               not a JSON object; `reason` says why
+ *  - `{ status: 'ok', cache }`  a cache object
+ * A damaged cache and an absent one used to both answer `null`, so a banner
+ * could not tell "never checked" from "checked, and the record is broken".
+ */
+export function readUpdateCheckCacheState(installedVersion) {
+  let cachePath;
   if (process.env.MEMESH_UPDATE_CHECK_PATH) {
-    try {
-      const overridePath = process.env.MEMESH_UPDATE_CHECK_PATH;
-      if (!existsSync(overridePath)) return null;
-      const parsed = JSON.parse(readFileSync(overridePath, 'utf8'));
-      if (!parsed || typeof parsed !== 'object') return null;
-      return parsed;
-    } catch {
-      return null;
-    }
+    cachePath = process.env.MEMESH_UPDATE_CHECK_PATH;
+  } else {
+    const versionTag = typeof installedVersion === 'string'
+      && /^[0-9A-Za-z.+-]+$/.test(installedVersion)
+      ? installedVersion
+      : 'unknown';
+    cachePath = join(memeshDir(), `update-check.${versionTag}.json`);
   }
-  const versionTag = typeof installedVersion === 'string'
-    && /^[0-9A-Za-z.+-]+$/.test(installedVersion)
-    ? installedVersion
-    : 'unknown';
-  const cachePath = join(memeshDir(), `update-check.${versionTag}.json`);
+  // Read directly, no existsSync first: a file replaced between the two calls answered "unreadable: ENOENT"
+  // for a cache that was simply not there at that instant. Absent is absent whenever it is noticed.
+  let raw;
   try {
-    if (!existsSync(cachePath)) return null;
-    const parsed = JSON.parse(readFileSync(cachePath, 'utf8'));
-    if (!parsed || typeof parsed !== 'object') return null;
-    return parsed;
-  } catch {
-    return null;
+    raw = readFileSync(cachePath, 'utf8');
+  } catch (err) {
+    if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') return { status: 'missing', cache: null };
+    // The code only, not the message: the message carries the full local path of the file.
+    return { status: 'unreadable', cache: null, reason: hookCaughtReason(err) };
   }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { status: 'unreadable', cache: null, reason: 'it is not valid JSON' };
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { status: 'unreadable', cache: null, reason: 'it does not hold a JSON object' };
+  }
+  return { status: 'ok', cache: parsed };
+}
+
+export function readUpdateCheckCache(installedVersion) {
+  return readUpdateCheckCacheState(installedVersion).cache;
 }
 
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)(?:[-+].+)?$/;

@@ -32601,6 +32601,7 @@ var COMPRESS_INTERVAL_MS = 24 * 60 * 60 * 1e3;
 
 // dist/core/file-mode.js
 import fs2 from "fs";
+import { pathToFileURL } from "url";
 function shellQuote(value) {
   const word = value.startsWith("-") ? `./${value}` : value;
   return `'${word.replace(/'/g, `'\\''`)}'`;
@@ -32640,6 +32641,24 @@ function databaseFiles(dbPath) {
   } catch {
   }
   return [real, `${real}-wal`, `${real}-shm`];
+}
+function holdsBytes(file2) {
+  try {
+    return fs2.statSync(file2).size > 0;
+  } catch {
+    return false;
+  }
+}
+function isWritable(target) {
+  try {
+    fs2.accessSync(target, fs2.constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function immutableAddress(file2) {
+  return `${pathToFileURL(file2).href}?immutable=1`;
 }
 function guardDatabaseFiles(dbPath) {
   for (const target of databaseFiles(dbPath))
@@ -33141,12 +33160,23 @@ function isBoilerplateObservation(text) {
 
 // dist/db.js
 var db = null;
+var readOnlyFolder = null;
+var retiredHandles = [];
+function folderWriteFix(dir) {
+  const notYours = belongsToAnotherUser(fs3.statSync(dir));
+  return { notYours, fix: notYours ? "Point MEMESH_DB_PATH at a database you own, in a folder you own." : `chmod u+w ${shellQuote(dir)}` };
+}
 function openDatabase(dbPath, opts = {}) {
   if (db)
     return db;
   const resolvedPath = dbPath ?? getDbPath();
+  if (resolvedPath === ":memory:") {
+    db = openInitialisedDatabase(resolvedPath, opts);
+    return db;
+  }
   const dir = path2.dirname(resolvedPath);
-  fs3.mkdirSync(dir, { recursive: true });
+  if (!opts.readOnly)
+    fs3.mkdirSync(dir, { recursive: true });
   try {
     process.umask(63);
   } catch {
@@ -33156,19 +33186,42 @@ function openDatabase(dbPath, opts = {}) {
   removeGroupAndOtherAccess(dir);
   guardDatabaseFiles(resolvedPath);
   const missing = sidecars.filter((file2) => !fs3.existsSync(file2)).map((file2) => file2.slice(realPath.length));
-  let folderWritable = true;
-  try {
-    fs3.accessSync(realDir, fs3.constants.W_OK);
-  } catch {
-    folderWritable = false;
+  const folderWritable = isWritable(realDir);
+  if (!folderWritable && !fs3.existsSync(realPath) && !opts.readOnly) {
+    const { notYours, fix } = folderWriteFix(realDir);
+    throw Object.assign(new Error(`MeMesh: ${realDir} is read-only and holds no database yet, so one cannot be created there. ` + (notYours ? `${realDir} belongs to another user, so you cannot make it writable. ${fix}` : `Make the folder writable: ${fix}`)), { fix });
   }
   if (missing.length > 0 && !folderWritable && fs3.existsSync(realPath)) {
-    const notYours = belongsToAnotherUser(fs3.statSync(realDir));
-    const fix = notYours ? "Point MEMESH_DB_PATH at a database you own, in a folder you own." : `chmod u+w ${shellQuote(realDir)}`;
-    throw Object.assign(new Error(`MeMesh: ${realDir} is read-only and ${path2.basename(realPath)} has no ${missing.join(" or ")} file there, so it cannot be opened without writing to the folder. ` + (notYours ? `${realDir} belongs to another user, so you cannot make it writable. ${fix}` : `Copy the database to a writable folder and point MEMESH_DB_PATH at the copy, or make the folder writable: ${fix}`)), { fix });
+    const wal = `${realPath}-wal`;
+    const journal = `${realPath}-journal`;
+    const walHoldsPages = holdsBytes(wal);
+    const hotJournal = holdsBytes(journal);
+    const { notYours, fix } = folderWriteFix(realDir);
+    if (walHoldsPages || hotJournal) {
+      const why = hotJournal ? `${path2.basename(realPath)} has an unfinished transaction (${path2.basename(journal)}) that can only be rolled back by writing to the folder` : `${path2.basename(realPath)} has no ${missing.join(" or ")} file there, so it cannot be opened without writing to the folder`;
+      throw Object.assign(new Error(`MeMesh: ${realDir} is read-only and ${why}. ` + (notYours ? `${realDir} belongs to another user, so you cannot make it writable. ${fix}` : `Copy the database to a writable folder and point MEMESH_DB_PATH at the copy, or make the folder writable: ${fix}`)), { fix });
+    }
+    db = openInitialisedDatabase(resolvedPath, opts, { immutableFile: realPath, readOnly: opts.readOnly });
+    const reason = `${realDir} is read-only, so ${path2.basename(realPath)} is open for reads only and writes are refused`;
+    readOnlyFolder = {
+      note: `${reason}. ${notYours ? fix : `To write to it again, run: ${fix}`}`,
+      reason,
+      fix,
+      dir: realDir,
+      dbPath: resolvedPath,
+      requested: opts.readOnly === true
+    };
+    if (!opts.readOnly) {
+      try {
+        process.stderr.write(`MeMesh: ${readOnlyFolder.note}
+`);
+      } catch {
+      }
+    }
+    return db;
   }
-  db = openInitialisedDatabase(resolvedPath, opts);
-  const writeBack = ownerWriteCommand(resolvedPath);
+  db = openInitialisedDatabase(resolvedPath, opts, { readOnly: opts.readOnly });
+  const writeBack = opts.readOnly ? void 0 : ownerWriteCommand(resolvedPath);
   if (writeBack) {
     try {
       process.stderr.write(`MeMesh: ${resolvedPath} is read-only, so it is open for reads only and writes will be refused. To write to it again, ${writeBack}
@@ -33178,8 +33231,10 @@ function openDatabase(dbPath, opts = {}) {
   }
   return db;
 }
-function openInitialisedDatabase(resolvedPath, opts = {}) {
-  const opening = new MemeshDatabase(resolvedPath);
+function openInitialisedDatabase(resolvedPath, opts = {}, mode = {}) {
+  const opening = mode.immutableFile ? new MemeshDatabase(immutableAddress(mode.immutableFile), { readOnly: true }) : new MemeshDatabase(resolvedPath, mode.readOnly ? { readOnly: true } : void 0);
+  if (mode.readOnly)
+    return opening;
   try {
     if (opts.busyTimeoutMs !== void 0) {
       opening.pragma(`busy_timeout = ${opts.busyTimeoutMs}`);
@@ -33435,14 +33490,58 @@ function backfillTitles(db2) {
   } });
 }
 function closeDatabase() {
+  for (const retired of retiredHandles.splice(0)) {
+    try {
+      retired.close();
+    } catch {
+    }
+  }
   if (db) {
     db.close();
     db = null;
+  }
+  readOnlyFolder = null;
+}
+function explainReadOnlyRefusal(err) {
+  if (readOnlyFolder === null)
+    return null;
+  return /readonly database|SQLITE_READONLY/i.test(err instanceof Error ? err.message : String(err)) ? readOnlyFolder.note : null;
+}
+function failureMessage(err) {
+  return explainReadOnlyRefusal(err) ?? (err instanceof Error ? err.message : String(err));
+}
+function reopenIfFolderWritable() {
+  const state = readOnlyFolder;
+  if (!state || state.requested || !db)
+    return;
+  if (!isWritable(state.dir))
+    return;
+  const old = db;
+  db = null;
+  readOnlyFolder = null;
+  try {
+    openDatabase(state.dbPath);
+    retiredHandles.push(old);
+    try {
+      process.stderr.write(`MeMesh: ${state.dir} is writable again, so the database was reopened for reading and writing.
+`);
+    } catch {
+    }
+  } catch (err) {
+    db = old;
+    readOnlyFolder = state;
+    try {
+      process.stderr.write(`MeMesh: ${state.dir} is writable again but the database could not be reopened (${err instanceof Error ? err.message : String(err)}); still read-only.
+`);
+    } catch {
+    }
   }
 }
 function getDatabase() {
   if (!db)
     throw new Error("Database not opened");
+  if (readOnlyFolder)
+    reopenIfFolderWritable();
   return db;
 }
 
@@ -34162,6 +34261,8 @@ function importMemories(args, options) {
           overwritten++;
       }
     } catch (err) {
+      if (explainReadOnlyRefusal(err) !== null)
+        throw err;
       errors.push(`${entity.name}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
@@ -39789,7 +39890,7 @@ ${paragraph.text}`)
     }
     return fail(`Unknown tool: ${name}`);
   } catch (err) {
-    return fail(`Tool "${name}" failed: ${err instanceof Error ? err.message : String(err)}`);
+    return fail(`Tool "${name}" failed: ${failureMessage(err)}`);
   }
 }
 

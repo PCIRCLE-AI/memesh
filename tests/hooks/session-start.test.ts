@@ -2131,8 +2131,11 @@ describe('SessionStart: the session handoff leads the injected context (#434 ste
     expect(out.context).not.toContain('ONLY-HANDOFF');
     expect(out.banner).toMatch(/no memories/);
     const records = fs.readFileSync(path.join(dir, 'hook-outcomes.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
-    expect(records.filter((r) => r.hook === 'session-start').at(-1)?.reason).toMatch(/session handoff not shown \(expired\)/);
-    expect(records.filter((r) => r.hook === 'session-start').at(-1)?.reason).not.toContain('ONLY-HANDOFF');
+    // The session's own record is not always the last line any more: the background update check that runs after
+    // the output now records why it was not started (#360). Pick the record that says why the handoff was not shown.
+    const handoffRecord = records.filter((r) => r.hook === 'session-start' && /session handoff not shown/.test(r.reason ?? '')).at(-1);
+    expect(handoffRecord?.reason).toMatch(/session handoff not shown \(expired\)/);
+    expect(handoffRecord?.reason).not.toContain('ONLY-HANDOFF');
     // Another project's handoff only.
     seed((db) => {
       db.prepare("DELETE FROM entities WHERE type = 'session-handoff'").run();

@@ -4,19 +4,30 @@ import fs from 'fs';
 import { runAutoDecay } from './core/lifecycle.js';
 import { computeSignalScore } from './core/signal-scorer.js';
 import { getDbPath } from './core/paths.js';
-import { belongsToAnotherUser, databaseFiles, guardDatabaseFiles, ownerWriteCommand, removeGroupAndOtherAccess, shellQuote } from './core/file-mode.js';
+import { belongsToAnotherUser, databaseFiles, guardDatabaseFiles, holdsBytes, immutableAddress, isWritable, ownerWriteCommand, removeGroupAndOtherAccess, shellQuote } from './core/file-mode.js';
 import { insertFtsRow, joinIndexedObservations, removeFromFts } from './storage/fts-index.js';
 import { canonicalizeLessonTypes, dedupeObservations, dropArchivedIndexRows, removeJunkFileTags, repairFusedLessonShellHistory, retractZeroEditClaims, splitFusedLessons } from './storage/graph-repairs.js';
 import { SCHEMA_SQL, FTS_SQL, safeAlter, migrateEntitiesSchema, ensureTagsUniqueIndex, ensureHookRunsSince, ensureFtsSegmentation, ftsIndexIsCurrent, rebuildFtsIndex, runOnceMigration, isTransientDbError, FTS_SEGMENTATION_VERSION, } from './storage/schema.js';
 export { runOnceMigration, FTS_SEGMENTATION_VERSION };
 import { truncateTitle, isBoilerplateObservation } from './core/title.js';
 let db = null;
+let readOnlyFolder = null;
+const retiredHandles = [];
+function folderWriteFix(dir) {
+    const notYours = belongsToAnotherUser(fs.statSync(dir));
+    return { notYours, fix: notYours ? 'Point MEMESH_DB_PATH at a database you own, in a folder you own.' : `chmod u+w ${shellQuote(dir)}` };
+}
 export function openDatabase(dbPath, opts = {}) {
     if (db)
         return db;
     const resolvedPath = dbPath ?? getDbPath();
+    if (resolvedPath === ':memory:') {
+        db = openInitialisedDatabase(resolvedPath, opts);
+        return db;
+    }
     const dir = path.dirname(resolvedPath);
-    fs.mkdirSync(dir, { recursive: true });
+    if (!opts.readOnly)
+        fs.mkdirSync(dir, { recursive: true });
     try {
         process.umask(0o077);
     }
@@ -26,24 +37,47 @@ export function openDatabase(dbPath, opts = {}) {
     removeGroupAndOtherAccess(dir);
     guardDatabaseFiles(resolvedPath);
     const missing = sidecars.filter((file) => !fs.existsSync(file)).map((file) => file.slice(realPath.length));
-    let folderWritable = true;
-    try {
-        fs.accessSync(realDir, fs.constants.W_OK);
-    }
-    catch {
-        folderWritable = false;
+    const folderWritable = isWritable(realDir);
+    if (!folderWritable && !fs.existsSync(realPath) && !opts.readOnly) {
+        const { notYours, fix } = folderWriteFix(realDir);
+        throw Object.assign(new Error(`MeMesh: ${realDir} is read-only and holds no database yet, so one cannot be created there. ` +
+            (notYours ? `${realDir} belongs to another user, so you cannot make it writable. ${fix}` : `Make the folder writable: ${fix}`)), { fix });
     }
     if (missing.length > 0 && !folderWritable && fs.existsSync(realPath)) {
-        const notYours = belongsToAnotherUser(fs.statSync(realDir));
-        const fix = notYours ? 'Point MEMESH_DB_PATH at a database you own, in a folder you own.' : `chmod u+w ${shellQuote(realDir)}`;
-        throw Object.assign(new Error(`MeMesh: ${realDir} is read-only and ${path.basename(realPath)} has no ${missing.join(' or ')} file there, ` +
-            'so it cannot be opened without writing to the folder. ' +
-            (notYours
-                ? `${realDir} belongs to another user, so you cannot make it writable. ${fix}`
-                : `Copy the database to a writable folder and point MEMESH_DB_PATH at the copy, or make the folder writable: ${fix}`)), { fix });
+        const wal = `${realPath}-wal`;
+        const journal = `${realPath}-journal`;
+        const walHoldsPages = holdsBytes(wal);
+        const hotJournal = holdsBytes(journal);
+        const { notYours, fix } = folderWriteFix(realDir);
+        if (walHoldsPages || hotJournal) {
+            const why = hotJournal
+                ? `${path.basename(realPath)} has an unfinished transaction (${path.basename(journal)}) that can only be rolled back by writing to the folder`
+                : `${path.basename(realPath)} has no ${missing.join(' or ')} file there, so it cannot be opened without writing to the folder`;
+            throw Object.assign(new Error(`MeMesh: ${realDir} is read-only and ${why}. ` +
+                (notYours
+                    ? `${realDir} belongs to another user, so you cannot make it writable. ${fix}`
+                    : `Copy the database to a writable folder and point MEMESH_DB_PATH at the copy, or make the folder writable: ${fix}`)), { fix });
+        }
+        db = openInitialisedDatabase(resolvedPath, opts, { immutableFile: realPath, readOnly: opts.readOnly });
+        const reason = `${realDir} is read-only, so ${path.basename(realPath)} is open for reads only and writes are refused`;
+        readOnlyFolder = {
+            note: `${reason}. ${notYours ? fix : `To write to it again, run: ${fix}`}`,
+            reason,
+            fix,
+            dir: realDir,
+            dbPath: resolvedPath,
+            requested: opts.readOnly === true,
+        };
+        if (!opts.readOnly) {
+            try {
+                process.stderr.write(`MeMesh: ${readOnlyFolder.note}\n`);
+            }
+            catch { }
+        }
+        return db;
     }
-    db = openInitialisedDatabase(resolvedPath, opts);
-    const writeBack = ownerWriteCommand(resolvedPath);
+    db = openInitialisedDatabase(resolvedPath, opts, { readOnly: opts.readOnly });
+    const writeBack = opts.readOnly ? undefined : ownerWriteCommand(resolvedPath);
     if (writeBack) {
         try {
             process.stderr.write(`MeMesh: ${resolvedPath} is read-only, so it is open for reads only and writes will be refused. ` +
@@ -53,8 +87,12 @@ export function openDatabase(dbPath, opts = {}) {
     }
     return db;
 }
-export function openInitialisedDatabase(resolvedPath, opts = {}) {
-    const opening = new MemeshDatabase(resolvedPath);
+export function openInitialisedDatabase(resolvedPath, opts = {}, mode = {}) {
+    const opening = mode.immutableFile
+        ? new MemeshDatabase(immutableAddress(mode.immutableFile), { readOnly: true })
+        : new MemeshDatabase(resolvedPath, mode.readOnly ? { readOnly: true } : undefined);
+    if (mode.readOnly)
+        return opening;
     try {
         if (opts.busyTimeoutMs !== undefined) {
             opening.pragma(`busy_timeout = ${opts.busyTimeoutMs}`);
@@ -336,14 +374,60 @@ function backfillTitles(db) {
         } });
 }
 export function closeDatabase() {
+    for (const retired of retiredHandles.splice(0)) {
+        try {
+            retired.close();
+        }
+        catch { }
+    }
     if (db) {
         db.close();
         db = null;
+    }
+    readOnlyFolder = null;
+}
+export function explainReadOnlyRefusal(err) {
+    if (readOnlyFolder === null)
+        return null;
+    return /readonly database|SQLITE_READONLY/i.test(err instanceof Error ? err.message : String(err)) ? readOnlyFolder.note : null;
+}
+export function failureMessage(err) {
+    return explainReadOnlyRefusal(err) ?? (err instanceof Error ? err.message : String(err));
+}
+export function readOnlyFolderState() {
+    return readOnlyFolder;
+}
+function reopenIfFolderWritable() {
+    const state = readOnlyFolder;
+    if (!state || state.requested || !db)
+        return;
+    if (!isWritable(state.dir))
+        return;
+    const old = db;
+    db = null;
+    readOnlyFolder = null;
+    try {
+        openDatabase(state.dbPath);
+        retiredHandles.push(old);
+        try {
+            process.stderr.write(`MeMesh: ${state.dir} is writable again, so the database was reopened for reading and writing.\n`);
+        }
+        catch { }
+    }
+    catch (err) {
+        db = old;
+        readOnlyFolder = state;
+        try {
+            process.stderr.write(`MeMesh: ${state.dir} is writable again but the database could not be reopened (${err instanceof Error ? err.message : String(err)}); still read-only.\n`);
+        }
+        catch { }
     }
 }
 export function getDatabase() {
     if (!db)
         throw new Error('Database not opened');
+    if (readOnlyFolder)
+        reopenIfFolderWritable();
     return db;
 }
 export function isDatabaseOpen() {

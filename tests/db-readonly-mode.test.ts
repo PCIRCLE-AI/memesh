@@ -10,8 +10,10 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { createRequire } from 'node:module';
-import { closeDatabase, openDatabase } from '../src/db.js';
+import { DatabaseSync } from 'node:sqlite';
+import { closeDatabase, explainReadOnlyRefusal, getDatabase, openDatabase, readOnlyFolderState } from '../src/db.js';
 import { MemeshDatabase } from '../src/storage/sqlite.js';
+import { leaveHotJournal } from './helpers/hot-journal.js';
 import { belongsToAnotherUser, ownerWriteCommand, SIDECAR_PERMISSIONS_CODE } from '../src/core/file-mode.js';
 
 const posix = process.platform !== 'win32';
@@ -199,32 +201,60 @@ describe('Feature: #520 a read-only snapshot folder is read, never made writable
     expectNoOwnerWrite();
   });
 
-  for (const missing of ['-shm', '-wal']) {
-    it.skipIf(!posix || process.getuid?.() === 0)(`without its ${missing} file, which the folder cannot create, it fails loudly and nothing is made writable`, () => {
-      fs.rmSync(`${dbPath}${missing}`);
-      makeReadOnly();
-      // Names the folder and a way out, not SQLite's bare "unable to open".
-      let message = '';
-      try { openDatabase(dbPath); } catch (err) { message = String(err); }
-      expect(message).toContain(dir);
-      expect(message).toMatch(/read-only/);
-      expect(message).toContain('MEMESH_DB_PATH');
-      expect(fs.existsSync(`${dbPath}${missing}`)).toBe(false);
-      expectNoOwnerWrite();
-    });
-  }
+  it.skipIf(!posix || process.getuid?.() === 0)('without its -shm file, while the -wal holds pages the folder cannot take in, it fails loudly and nothing is made writable', () => {
+    // The -wal holds a row the main file does not: reading without it would silently drop that row, so there is
+    // no immutable fallback for this state.
+    fs.rmSync(`${dbPath}-shm`);
+    expect(fs.statSync(`${dbPath}-wal`).size).toBeGreaterThan(0);
+    makeReadOnly();
+    // Names the folder and a way out, not SQLite's bare "unable to open".
+    let message = '';
+    try { openDatabase(dbPath); } catch (err) { message = String(err); }
+    expect(message).toContain(dir);
+    expect(message).toMatch(/read-only/);
+    expect(message).toContain('MEMESH_DB_PATH');
+    expect(fs.existsSync(`${dbPath}-shm`)).toBe(false);
+    expectNoOwnerWrite();
+  });
 
-  it.skipIf(!posix || process.getuid?.() === 0)('with neither -wal nor -shm it fails loudly and nothing is made writable', () => {
-    // A WAL database cannot be read without creating its -shm file, and the
-    // folder refuses that. Opening it used to "work" only by making the
-    // folder and the file writable again — the defect itself.
+  it.skipIf(!posix || process.getuid?.() === 0)('an EMPTY -wal holds no pages to miss: with no -shm the folder-unwritable database opens for reading, like one with no -wal', () => {
     fs.rmSync(`${dbPath}-wal`);
     fs.rmSync(`${dbPath}-shm`);
+    fs.writeFileSync(`${dbPath}-wal`, '');
+    expect(fs.statSync(`${dbPath}-wal`).size).toBe(0);
     makeReadOnly();
-    expect(() => openDatabase(dbPath)).toThrow(/readonly|read-only/i);
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const db = openDatabase(dbPath);
+    vi.restoreAllMocks();
+    expect((db.prepare('SELECT name FROM entities ORDER BY name').all() as Array<{ name: string }>).map((r) => r.name)).toContain('snapshot-row');
+    expect(() => db.prepare("INSERT INTO entities (name, type) VALUES ('should-not-land', 'note')").run()).toThrow(/readonly/i);
+    expect(fs.existsSync(`${dbPath}-shm`), 'a -shm was created').toBe(false);
     expectNoOwnerWrite();
-    expect(fs.statSync(dbPath).mode & 0o400).toBeGreaterThan(0);
   });
+
+  // No -wal at all: no pages are waiting there, so a read-only folder is read as an immutable file. Reading works;
+  // every write is refused; nothing is made writable and no sidecar is created. (What the removed -wal held is
+  // not in the file, which is what a snapshot without its -wal is.)
+  for (const [label, remove] of [['-wal only', ['-wal']], ['neither -wal nor -shm', ['-wal', '-shm']]] as const) {
+    it.skipIf(!posix || process.getuid?.() === 0)(`without ${label} it opens for reading only: a write is refused, nothing is made writable, and the open says why`, () => {
+      for (const suffix of remove) fs.rmSync(`${dbPath}${suffix}`);
+      makeReadOnly();
+      const written: string[] = [];
+      vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => { written.push(String(chunk)); return true; });
+      const db = openDatabase(dbPath);
+      vi.restoreAllMocks();
+      expect((db.prepare('SELECT name FROM entities ORDER BY name').all() as Array<{ name: string }>).map((r) => r.name)).toContain('snapshot-row');
+      expect(() => db.prepare("INSERT INTO entities (name, type) VALUES ('should-not-land', 'note')").run()).toThrow(/readonly/i);
+      closeDatabase();
+      const said = written.join('');
+      expect(said).toContain(dir);
+      expect(said).toMatch(/read-only/);
+      expect(said).toContain(`chmod u+w '${dir}'`);
+      for (const suffix of ['-wal', '-shm']) expect(fs.existsSync(`${dbPath}${suffix}`), `${suffix} was created`).toBe(!remove.includes(suffix as never));
+      expectNoOwnerWrite();
+      expect(fs.statSync(dbPath).mode & 0o400).toBeGreaterThan(0);
+    });
+  }
 });
 
 describe('Feature: #520 permission hardening covers every file, every outcome', () => {
@@ -477,18 +507,23 @@ describe('Feature: #520 permission hardening covers every file, every outcome', 
     }
   });
 
-  it.skipIf(!posix || process.getuid?.() === 0)('a symlinked database whose REAL folder is read-only and holds no -wal/-shm is refused, naming the real folder', () => {
+  it.skipIf(!posix || process.getuid?.() === 0)('a symlinked database whose REAL folder is read-only and holds no -wal/-shm opens for reading, and the open names the real folder', () => {
     for (const s of ['-wal', '-shm']) fs.rmSync(`${dbPath}${s}`, { force: true });
     const linkDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-db-link-rw-'));
     const link = path.join(linkDir, 'kg.db');
     fs.symlinkSync(dbPath, link);
     const realDir = path.dirname(fs.realpathSync(dbPath));
     fs.chmodSync(dir, 0o500);
+    const written: string[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => { written.push(String(chunk)); return true; });
     try {
-      let error: (Error & { fix?: string }) | undefined;
-      try { openDatabase(link); } catch (err) { error = err as Error & { fix?: string }; }
-      expect(error?.message).toContain(`MeMesh: ${realDir} is read-only`);
-      expect(error?.fix).toBe(`chmod u+w '${realDir}'`);
+      const db = openDatabase(link);
+      vi.restoreAllMocks();
+      expect(db.prepare('SELECT count(*) AS n FROM entities').get()).toBeDefined();
+      closeDatabase();
+      const said = written.join('');
+      expect(said).toContain(`MeMesh: ${realDir} is read-only`);
+      expect(said).toContain(`chmod u+w '${realDir}'`);
       expect(mode(dir)).toBe(0o500);
     } finally {
       fs.chmodSync(dir, 0o700);
@@ -530,22 +565,24 @@ describe('Feature: #520 permission hardening covers every file, every outcome', 
     }
   });
 
-  it.skipIf(!posix || process.getuid?.() === 0)('a database in a folder that belongs to another user is refused with a way out, not a chmod the owner cannot run', () => {
+  it.skipIf(!posix || process.getuid?.() === 0)('a file in a folder that belongs to another user is never chmodded or written: it is opened read-only and fails as what it is', () => {
     // /etc/hosts: an existing file in a root-owned folder this user cannot
     // write to, and with no -wal/-shm beside it. Never run as root: the guard
-    // would then really change /etc.
+    // would then really change /etc. It is not a database, so the read-only open fails with SQLite's own
+    // "not a database": no chmod is attempted or suggested, and nothing under /etc is touched. (The line that
+    // tells the owner to point MEMESH_DB_PATH elsewhere is covered by the getuid-stub test below, which can use a
+    // real database.)
     const linkDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-db-link-other-'));
     const link = path.join(linkDir, 'kg.db');
     fs.symlinkSync('/etc/hosts', link);
-    const realDir = path.dirname(fs.realpathSync(link));
+    const before = fs.statSync('/etc/hosts').mode;
     vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     try {
-      let error: (Error & { fix?: string }) | undefined;
-      try { openDatabase(link); } catch (err) { error = err as Error & { fix?: string }; }
-      expect(error?.message).toContain(`${realDir} belongs to another user`);
-      expect(error?.message).toContain('Point MEMESH_DB_PATH at a database you own, in a folder you own.');
-      expect(error?.message).not.toContain('chmod u+w');
-      expect(error?.fix).not.toContain('chmod');
+      let error: Error | undefined;
+      try { openDatabase(link); } catch (err) { error = err as Error; }
+      expect(error?.message).toMatch(/not a database/);
+      expect(error?.message).not.toContain('chmod');
+      expect(fs.statSync('/etc/hosts').mode).toBe(before);
     } finally {
       fs.rmSync(linkDir, { recursive: true, force: true });
     }
@@ -651,5 +688,171 @@ describe('Feature: #520 a database made read-only and then restored', () => {
     const db = openDatabase(dbPath);
     db.prepare("INSERT INTO entities (name, type) VALUES ('after-restore', 'note')").run();
     expect(db.prepare("SELECT count(*) AS n FROM entities WHERE name = 'after-restore'").get()).toEqual({ n: 1 });
+  });
+});
+
+describe('Feature: #540 a database in a folder that cannot be written', () => {
+  let dir: string;
+  let dbPath: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-readonly-folder-'));
+    dbPath = path.join(dir, 'knowledge-graph.db');
+    openDatabase(dbPath).prepare("INSERT INTO entities (name, type) VALUES ('seed-row', 'note')").run();
+    closeDatabase();
+    for (const s of ['-wal', '-shm']) fs.rmSync(`${dbPath}${s}`, { force: true });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    try { fs.chmodSync(dir, 0o700); } catch { /* gone */ }
+    try { closeDatabase(); } catch { /* not open */ }
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+
+  const names = (db: MemeshDatabase) => (db.prepare('SELECT name FROM entities ORDER BY name').all() as Array<{ name: string }>).map((r) => r.name);
+  const quiet = () => vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+  it.skipIf(!posix || process.getuid?.() === 0)('a rollback journal a crash left behind is never skipped: the open refuses, and says how to let it be rolled back', () => {
+    leaveHotJournal(dbPath);
+    fs.chmodSync(dir, 0o500);
+    let error: (Error & { fix?: string }) | undefined;
+    try { openDatabase(dbPath); } catch (err) { error = err as Error & { fix?: string }; }
+    expect(error, 'the half-done transaction was read as if it had been committed').toBeDefined();
+    expect(error?.message).toContain('unfinished transaction');
+    expect(error?.message).toContain('-journal');
+    expect(error?.fix).toBe(`chmod u+w '${dir}'`);
+    expect(fs.readdirSync(dir).filter((f) => f.endsWith('-wal') || f.endsWith('-shm'))).toEqual([]);
+  });
+
+  it.skipIf(!posix || process.getuid?.() === 0)('a rollback-mode database with no journal is read as it is', () => {
+    const conv = new DatabaseSync(dbPath);
+    conv.exec('PRAGMA journal_mode = DELETE');
+    conv.close();
+    expect(fs.existsSync(`${dbPath}-journal`)).toBe(false);
+    fs.chmodSync(dir, 0o500);
+    quiet();
+    expect(names(openDatabase(dbPath))).toEqual(['seed-row']);
+  });
+
+  it.skipIf(!posix || process.getuid?.() === 0)('a long-running process notices that the folder became writable: it reopens, sees what others wrote, and can write', () => {
+    fs.chmodSync(dir, 0o500);
+    const stderr = quiet();
+    const first = openDatabase(dbPath);
+    expect(names(first)).toEqual(['seed-row']);
+    expect(readOnlyFolderState()?.fix).toBe(`chmod u+w '${dir}'`);
+    expect(() => first.prepare("INSERT INTO entities (name, type) VALUES ('while-locked', 'note')").run()).toThrow(/readonly/i);
+
+    // The user follows the advice; another process writes.
+    fs.chmodSync(dir, 0o700);
+    const peer = new MemeshDatabase(dbPath);
+    peer.prepare("INSERT INTO entities (name, type) VALUES ('written-by-a-peer', 'note')").run();
+    peer.close();
+
+    const second = getDatabase();
+    expect(second, 'the read-only handle was kept although the folder is writable').not.toBe(first);
+    expect(names(second)).toEqual(['seed-row', 'written-by-a-peer']);
+    second.prepare("INSERT INTO entities (name, type) VALUES ('after-the-fix', 'note')").run();
+    expect(names(getDatabase())).toContain('after-the-fix');
+    expect(readOnlyFolderState()).toBeNull();
+    expect(stderr.mock.calls.map((c) => String(c[0])).join('')).toContain('writable again');
+  });
+
+  it.skipIf(!posix || process.getuid?.() === 0)('it keeps serving reads, and says why, when the folder is writable again but the database cannot be reopened', () => {
+    fs.chmodSync(dir, 0o500);
+    const stderr = quiet();
+    const first = openDatabase(dbPath);
+    fs.chmodSync(dir, 0o700);
+    // A -wal that holds pages with no -shm: opening for writing is fine, but to block the reopen, make the file unreadable.
+    fs.chmodSync(dbPath, 0o000);
+    try {
+      expect(getDatabase()).toBe(first);
+      expect(stderr.mock.calls.map((c) => String(c[0])).join('')).toContain('could not be reopened');
+      expect(readOnlyFolderState()).not.toBeNull();
+    } finally {
+      fs.chmodSync(dbPath, 0o600);
+    }
+  });
+
+  it.skipIf(!posix || process.getuid?.() === 0)('closing the database forgets that it was opened read-only', () => {
+    fs.chmodSync(dir, 0o500);
+    quiet();
+    openDatabase(dbPath);
+    expect(readOnlyFolderState()).not.toBeNull();
+    expect(explainReadOnlyRefusal(new Error('attempt to write a readonly database'))).toContain('read-only');
+    closeDatabase();
+    expect(readOnlyFolderState(), 'the state of the closed database is still reported').toBeNull();
+    expect(explainReadOnlyRefusal(new Error('attempt to write a readonly database'))).toBeNull();
+  });
+
+  it.skipIf(!posix)('an in-memory database leaves the working folder alone', () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-memory-cwd-'));
+    fs.chmodSync(cwd, 0o755);
+    const previous = process.cwd();
+    try {
+      process.chdir(cwd);
+      openDatabase(':memory:');
+      closeDatabase();
+      expect(fs.statSync(cwd).mode & 0o777, 'the working folder lost its group/other access').toBe(0o755);
+      expect(fs.readdirSync(cwd)).toEqual([]);
+    } finally {
+      process.chdir(previous);
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(!posix)('a caller that asked for a read-only open is not told, on stderr, that the file is read-only', () => {
+    fs.chmodSync(dbPath, 0o444);
+    const stderr = quiet();
+    openDatabase(dbPath, { readOnly: true });
+    closeDatabase();
+    expect(stderr.mock.calls.map((c) => String(c[0])).join('')).toBe('');
+    openDatabase(dbPath);
+    expect(stderr.mock.calls.map((c) => String(c[0])).join(''), 'an ordinary open should still say it').toContain('is read-only');
+  });
+
+  it.skipIf(!posix)('a folder that belongs to someone else: the note points at MEMESH_DB_PATH, not at a chmod the owner cannot run', () => {
+    fs.chmodSync(dir, 0o500);
+    vi.spyOn(process, 'getuid').mockReturnValue(fs.statSync(dir).uid + 1);
+    const stderr = quiet();
+    openDatabase(dbPath);
+    const written = stderr.mock.calls.map((c) => String(c[0])).join('');
+    expect(written).toContain('Point MEMESH_DB_PATH at a database you own, in a folder you own.');
+    expect(written).not.toContain('chmod u+w');
+    expect(readOnlyFolderState()?.note).not.toContain('chmod u+w');
+  });
+
+  it.skipIf(!posix || process.getuid?.() === 0)('with no database yet in a folder that cannot be written, the refusal names the folder and the fix', () => {
+    const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-empty-readonly-'));
+    fs.chmodSync(empty, 0o500);
+    try {
+      let error: (Error & { fix?: string }) | undefined;
+      try { openDatabase(path.join(empty, 'knowledge-graph.db')); } catch (err) { error = err as Error & { fix?: string }; }
+      expect(error?.message).toContain('holds no database yet');
+      expect(error?.message).toContain(empty);
+      expect(error?.fix).toBe(`chmod u+w '${empty}'`);
+      expect(fs.readdirSync(empty)).toEqual([]);
+    } finally {
+      fs.chmodSync(empty, 0o700);
+      fs.rmSync(empty, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(!posix || process.getuid?.() === 0)('a caller that asked for a read-only open of a read-only folder is not told on stderr, but can ask what state it is in', () => {
+    fs.chmodSync(dir, 0o500);
+    const stderr = quiet();
+    expect(names(openDatabase(dbPath, { readOnly: true }))).toEqual(['seed-row']);
+    expect(stderr.mock.calls.map((c) => String(c[0])).join(''), 'a diagnostic was told on stderr what it reports itself').toBe('');
+    expect(readOnlyFolderState()?.fix).toBe(`chmod u+w '${dir}'`);
+    // ... and it is never reopened for writing behind its back, even when the folder becomes writable.
+    const handle = getDatabase();
+    fs.chmodSync(dir, 0o700);
+    expect(getDatabase(), 'a diagnostic\'s read-only handle was swapped for a writable one').toBe(handle);
+  });
+
+  it.skipIf(!posix)('a read-only open of a path that does not exist creates nothing, not even its folder', () => {
+    const missing = path.join(dir, 'not-yet', 'knowledge-graph.db');
+    expect(() => openDatabase(missing, { readOnly: true })).toThrow();
+    expect(fs.existsSync(path.join(dir, 'not-yet')), 'a read-only open created a folder').toBe(false);
   });
 });

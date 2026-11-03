@@ -11,7 +11,7 @@ import type { ElicitRequestFormParams, ElicitResult } from '@modelcontextprotoco
 import { editMemoryInteractively } from '../../core/native-memory-editor.js';
 import { remember, recallForAgent, forget, exportMemories, importMemories, learn } from '../../core/operations.js';
 import { agentRecallEnvelope } from '../../core/recall-agent-view.js';
-import { getDatabase } from '../../db.js';
+import { failureMessage, getDatabase } from '../../db.js';
 import { executeWorkPackage } from '../../core/dreamer.js';
 import { computePatterns } from '../../core/patterns.js';
 import { assembleBriefing } from '../../core/briefing.js';
@@ -1025,6 +1025,6 @@ async function handleToolInner(
     }
     return fail(`Unknown tool: ${name}`);
   } catch (err) {
-    return fail(`Tool "${name}" failed: ${err instanceof Error ? err.message : String(err)}`);
+    return fail(`Tool "${name}" failed: ${failureMessage(err)}`);
   }
 }
