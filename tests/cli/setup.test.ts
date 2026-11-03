@@ -24,22 +24,31 @@ afterEach(() => {
 });
 
 // A PATH that carries node (so the CLI itself runs) but none of the host
-// CLIs — claude/codex/gemini all read as absent.
-const bareEnv = () => ({
-  ...process.env,
-  HOME: home,
-  USERPROFILE: home,
-  PATH: path.dirname(process.execPath),
-});
+// CLIs — claude/codex/gemini all read as absent. CODEX_HOME and
+// CLAUDE_CONFIG_DIR relocate the hosts' config directories and would make a
+// host "present" on a machine that has them set (Codex sets CODEX_HOME for
+// everything it runs), so they are removed rather than inherited.
+const bareEnv = () => {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+    PATH: path.dirname(process.execPath),
+  };
+  delete env.CODEX_HOME;
+  delete env.CLAUDE_CONFIG_DIR;
+  return env;
+};
 
 const run = (args: string[], env = bareEnv()) =>
   spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', env });
 
 describe('memesh setup --check', () => {
-  it('exits 0 on a machine with no hosts at all', () => {
+  it('exits 1 on a machine with no hosts at all, and says no host was found (#528)', () => {
     const r = run(['setup', '--check']);
-    expect(r.status).toBe(0);
+    expect(r.status).toBe(1);
     expect(r.stdout).toContain('not found');
+    expect(r.stderr).toContain('No supported agent host was found');
   });
 
   it('exits 1 when Claude Code exists but nothing is wired, and writes NOTHING', () => {
@@ -68,6 +77,39 @@ describe('memesh setup --check', () => {
 });
 
 describe('memesh setup (wiring)', () => {
+  it('Codex config directory but no codex command: does not claim everything is wired, and exits 1 (#528)', () => {
+    // Present but impossible to probe: nothing was wired and nothing was verified.
+    fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
+    const r = run(['setup']);
+    expect(r.stdout).toContain('cannot probe MCP registration');
+    expect(r.stdout).toContain('Nothing to wire automatically — see the lines above.');
+    expect(r.stdout).not.toContain('Everything present is wired');
+    expect(r.status).toBe(1);
+    expect(fs.readdirSync(path.join(home, '.codex'))).toEqual([]);
+
+    // --check gives the same verdict: unknown is not "wired".
+    const check = run(['setup', '--check']);
+    expect(check.status).toBe(1);
+    expect(check.stdout).toContain('cannot probe MCP registration');
+  });
+
+  it('hooks wired but the claude command not on PATH: the closing line says what was NOT checked and how to check it, never "Everything present is wired" (exit 0)', () => {
+    fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+    expect(run(['setup', '--yes']).status).toBe(0); // wires the hooks
+    const again = run(['setup', '--yes']);          // nothing left to wire, one part unknown
+    expect(again.status).toBe(0);
+    expect(again.stdout).toContain('❓ Claude Code');
+    expect(again.stdout).toContain('Everything that could be checked is wired. Not checked: Claude Code (claude CLI not on PATH — cannot probe MCP registration).');
+    expect(again.stdout).toContain('put the command on PATH and run `memesh setup --check` again');
+    expect(again.stdout).not.toContain('Everything present is wired');
+
+    // --check says the same, and also exits 0
+    const check = run(['setup', '--check']);
+    expect(check.status).toBe(0);
+    expect(check.stdout).toContain('Everything that could be checked is wired. Not checked: Claude Code');
+    expect(check.stdout).not.toContain('Everything present is wired');
+  });
+
   it('non-interactive without --yes: prints the plan, changes nothing, exits 1', () => {
     fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
     const r = run(['setup']);

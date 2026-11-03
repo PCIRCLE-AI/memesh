@@ -82,6 +82,9 @@ type MessageRouterStatusProbe = {
     active_registrations?: number;
     detail?: string;
 };
+export type HostFixState = 'claude' | 'no-host' | 'codex' | 'gemini';
+export declare function hostFixState(wiringCode: string | undefined, codexHere: boolean): HostFixState;
+export declare function withHostFix(check: DoctorCheck, state: HostFixState): DoctorCheck;
 export declare function hoursSince(sqliteTimestamp: string): number | null;
 export declare function satisfiesMinimumNodeRange(version: string, range: string): boolean | null;
 export declare function inspectNodeRuntime(packageRoot: string, existsSyncImpl: typeof fs.existsSync, readFileSyncImpl: typeof fs.readFileSync, nodeVersion?: string, moduleAbi?: string, hasNodeSqliteImpl?: () => boolean): DoctorCheck;

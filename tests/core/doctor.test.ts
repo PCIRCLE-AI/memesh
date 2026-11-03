@@ -4,8 +4,48 @@ import path from 'path';
 import { createHash } from 'crypto';
 import { execFileSync, spawnSync } from 'child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { formatDoctorReport, hoursSince, runDoctor as runDoctorImpl } from '../../src/core/doctor.js';
+import { formatDoctorReport, hoursSince, runDoctor as runDoctorImpl, hostFixState, withHostFix } from '../../src/core/doctor.js';
 import { formatUpdateCheckStatus, type UpdateCheck } from '../../src/core/version-check.js';
+
+// "Is the codex command on PATH" is answered by the real machine PATH otherwise: a developer box with Codex installed would change
+// what these fixtures mean. Each test that needs it says so.
+const presence = vi.hoisted(() => ({ codexOnPath: false, claudeOnPath: false, geminiOnPath: false }));
+vi.mock('../../src/core/host-presence.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../../src/core/host-presence.js')>();
+  return {
+    ...original,
+    isOnPath: (tool: string) => (tool === 'codex' ? presence.codexOnPath : tool === 'claude' ? presence.claudeOnPath : tool === 'gemini' ? presence.geminiOnPath : original.isOnPath(tool)),
+  };
+});
+
+/**
+ * Run `fn` on a machine that has exactly these agents: a host is "here" through
+ * its configuration directory (Claude Code, Codex) or its command (Gemini CLI),
+ * and the ambient CLAUDE_CONFIG_DIR / CODEX_HOME of whoever runs the suite
+ * (inside Codex, CODEX_HOME is set) never leaks into the fixture.
+ */
+async function withHosts<T>(hosts: { claude?: boolean; codex?: boolean; gemini?: boolean }, fn: () => Promise<T>): Promise<T> {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-hosts-'));
+  tempRoots.push(base);
+  const dirFor = (name: string, here: boolean | undefined) => {
+    const dir = path.join(base, here ? name : `no-such-${name}`);
+    if (here) fs.mkdirSync(dir);
+    return dir;
+  };
+  const saved = { claude: process.env.CLAUDE_CONFIG_DIR, codex: process.env.CODEX_HOME };
+  process.env.CLAUDE_CONFIG_DIR = dirFor('claude', hosts.claude);
+  process.env.CODEX_HOME = dirFor('codex', hosts.codex);
+  presence.codexOnPath = false;
+  presence.claudeOnPath = false;
+  presence.geminiOnPath = hosts.gemini === true;
+  try {
+    return await fn();
+  } finally {
+    presence.geminiOnPath = false;
+    if (saved.claude === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = saved.claude;
+    if (saved.codex === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = saved.codex;
+  }
+}
 
 /** Keep filesystem discovery confined to explicit test fixtures. */
 function runDoctor(options: Parameters<typeof runDoctorImpl>[0]) {
@@ -392,6 +432,9 @@ describe('doctor', () => {
       scope: 'user',
       settings_path: settingsPath,
     });
+    // Hooks that have run leave an outcome record; without one, capture-liveness
+    // (rightly) warns that they ran and recorded nothing.
+    fs.writeFileSync(path.join(memeshDir, 'hook-outcomes.jsonl'), `${JSON.stringify({ hook: 'session-start', run: 'r1', at: new Date().toISOString(), host: 'claude-code', outcome: 'notified' })}\n`);
     const originalMemeshDir = process.env.MEMESH_DIR;
     process.env.MEMESH_DIR = memeshDir;
 
@@ -1306,15 +1349,158 @@ describe('doctor', () => {
     }
     const original = process.env.MEMESH_DIR;
     process.env.MEMESH_DIR = memeshDir;
+    // Claude Code is "on this machine" for these fixtures: its config directory exists.
+    const originalClaude = process.env.CLAUDE_CONFIG_DIR;
+    const claudeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-claude-cfg-'));
+    tempRoots.push(claudeDir);
+    process.env.CLAUDE_CONFIG_DIR = claudeDir;
     return {
       memeshDir,
       settingsPath,
       restoreEnv: () => {
         if (original === undefined) delete process.env.MEMESH_DIR;
         else process.env.MEMESH_DIR = original;
+        if (originalClaude === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+        else process.env.CLAUDE_CONFIG_DIR = originalClaude;
       },
     };
   }
+
+  it('hook-wiring: a Codex-only machine is not told to connect to Claude Code (#528)', async () => {
+    const wiring = await wiringWith({ claude: 'absent', codexDir: 'present', codexOnPath: false });
+    expect(wiring?.status).toBe('pass');
+    expect(wiring?.summary).toContain('Claude Code was not found on this machine (Codex is)');
+    expect(wiring?.code).toBe('hook-wiring.no-claude-code');
+    // A Codex-only machine must not be sent to `install-hooks`, and `doctor --fix` acts only on a fixId.
+    expect(wiring?.fix).toBeUndefined();
+    expect(wiring?.fixId).toBeUndefined();
+  });
+
+  async function wiringWith(env: { claude: 'present' | 'absent'; codexDir: 'present' | 'absent'; codexOnPath: boolean; claudeOnPath?: boolean; geminiOnPath?: boolean }) {
+    const packageRoot = createPackageRoot();
+    tempRoots.push(packageRoot);
+    const memesh = setupMemeshDir({});
+    const savedClaude = process.env.CLAUDE_CONFIG_DIR;
+    const savedCodex = process.env.CODEX_HOME;
+    process.env.CLAUDE_CONFIG_DIR = env.claude === 'present' ? memesh.memeshDir : path.join(memesh.memeshDir, 'no-such-claude-dir');
+    process.env.CODEX_HOME = env.codexDir === 'present' ? memesh.memeshDir : path.join(memesh.memeshDir, 'no-such-codex-dir');
+    presence.codexOnPath = env.codexOnPath;
+    presence.claudeOnPath = env.claudeOnPath ?? false;
+    presence.geminiOnPath = env.geminiOnPath ?? false;
+    try {
+      const result = await runDoctor({
+        packageRoot,
+        packageVersion: '4.1.4',
+        openDatabaseImpl: () => makeDatabase(0) as never,
+        closeDatabaseImpl: () => undefined,
+        getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
+        getUpdateCheckImpl: async () => makeUpdateCheck(),
+        getCurrentInstallChannelImpl: () => 'npm-global',
+        getInstallChannelSupportImpl: () => ({
+          channel: 'npm-global', label: 'npm global', canSelfUpdate: true,
+          recommendedCommand: 'memesh update',
+          guidance: 'This installation can be updated directly from MeMesh.',
+        }),
+        installedPluginsPathImpl: path.join(packageRoot, 'no-such-registry.json'),
+      });
+      return result.checks.find((check) => check.id === 'hook-wiring');
+    } finally {
+      presence.codexOnPath = false;
+      presence.claudeOnPath = false;
+      presence.geminiOnPath = false;
+      if (savedClaude === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = savedClaude;
+      if (savedCodex === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = savedCodex;
+      memesh.restoreEnv();
+    }
+  }
+
+  it('hook-wiring: a Codex-only machine counts as not capture-wired, so the never-ran verdict cannot turn into a FAIL (#528)', async () => {
+    const wiring = await wiringWith({ claude: 'absent', codexDir: 'present', codexOnPath: false });
+    expect(wiring).toMatchObject({ status: 'pass', code: 'hook-wiring.no-claude-code', params: { captureWired: 0 } });
+    expect(wiring?.fix).toBeUndefined();
+    expect(wiring?.fixId).toBeUndefined();
+  });
+
+  it('hook-wiring: a Gemini-only machine counts as a host the way memesh setup judges it, and is not sent to install-hooks (#528)', async () => {
+    const wiring = await wiringWith({ claude: 'absent', codexDir: 'absent', codexOnPath: false, geminiOnPath: true });
+    expect(wiring).toMatchObject({ status: 'pass', code: 'hook-wiring.no-claude-code', params: { captureWired: 0 } });
+    expect(wiring?.summary).toContain('Claude Code was not found on this machine (Gemini CLI is)');
+    // Not "no agent host", and not the install-hooks warning that `doctor --fix` would act on.
+    expect(wiring?.summary).not.toContain('No agent host was found');
+    expect(wiring?.fix).toBeUndefined();
+    expect(wiring?.fixId).toBeUndefined();
+  });
+
+  it('hook-wiring: Gemini does not hide a Claude Code that is here and unwired (#528)', async () => {
+    const wiring = await wiringWith({ claude: 'present', codexDir: 'absent', codexOnPath: false, geminiOnPath: true });
+    expect(wiring).toMatchObject({ status: 'warn', code: 'hook-wiring.no-marker', fixId: 'install-hooks' });
+  });
+
+  it('hook-wiring: with both hosts present and no marker, the warning stays (#528)', async () => {
+    const wiring = await wiringWith({ claude: 'present', codexDir: 'present', codexOnPath: false });
+    expect(wiring).toMatchObject({ status: 'warn', code: 'hook-wiring.no-marker' });
+  });
+
+  it('hook-wiring: Codex counts as present by its command alone, the way memesh setup judges it (#528)', async () => {
+    const byCommand = await wiringWith({ claude: 'absent', codexDir: 'absent', codexOnPath: true });
+    expect(byCommand).toMatchObject({ status: 'pass', code: 'hook-wiring.no-claude-code' });
+    const byDirectory = await wiringWith({ claude: 'absent', codexDir: 'present', codexOnPath: false });
+    expect(byDirectory).toMatchObject({ status: 'pass', code: 'hook-wiring.no-claude-code' });
+    const neither = await wiringWith({ claude: 'absent', codexDir: 'absent', codexOnPath: false });
+    expect(neither).toMatchObject({ status: 'warn', code: 'hook-wiring.no-host' });
+    expect(neither?.fixId).toBeUndefined();
+    expect(`${neither?.summary} ${neither?.fix}`).not.toContain('install-hooks');
+    // The message names all three hosts setup looks for.
+    expect(neither?.summary).toContain('Claude Code, Codex and Gemini CLI');
+    expect(neither?.fix).toContain('Install Claude Code or Codex (or Gemini CLI)');
+  });
+
+  it('hook-wiring: a freshly installed Claude Code (no ~/.claude yet, the command is on PATH) is not called "not found" because Codex is also here (#528)', async () => {
+    const wiring = await wiringWith({ claude: 'absent', codexDir: 'present', codexOnPath: true, claudeOnPath: true });
+    expect(wiring).toMatchObject({ status: 'warn', code: 'hook-wiring.no-marker' });
+    expect(wiring?.fix).toContain('memesh install-hooks');
+    // The control: without the claude command the same machine is Codex-only.
+    expect(await wiringWith({ claude: 'absent', codexDir: 'present', codexOnPath: true, claudeOnPath: false })).toMatchObject({ status: 'pass', code: 'hook-wiring.no-claude-code' });
+  });
+
+  it('hook-wiring: the Codex-only sentence does not claim a check that does not exist (#528)', async () => {
+    const wiring = await wiringWith({ claude: 'absent', codexDir: 'present', codexOnPath: false });
+    expect(wiring?.summary).not.toContain('covered by its own checks');
+    expect(wiring?.summary).toContain('does not check Codex');
+    // It points only at a row that is always in the report. The Codex session-setup row
+    // exists only when a Codex plugin cache is found, so naming it sent people to a row that may not be there.
+    expect(wiring?.summary).toContain('Capture liveness row');
+    expect(wiring?.summary).not.toContain('session-setup');
+  });
+
+  it('hook-wiring: the row the Codex-only sentence points at is in the report (#528)', async () => {
+    const packageRoot = createPackageRoot();
+    tempRoots.push(packageRoot);
+    const result = await withHosts({ codex: true }, () => runDoctor({
+      packageRoot,
+      packageVersion: '4.1.4',
+      openDatabaseImpl: () => makeDatabase(0) as never,
+      closeDatabaseImpl: () => undefined,
+      getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
+      getUpdateCheckImpl: async () => makeUpdateCheck(),
+      getCurrentInstallChannelImpl: () => 'npm-global',
+      getInstallChannelSupportImpl: () => ({
+        channel: 'npm-global', label: 'npm global', canSelfUpdate: true,
+        recommendedCommand: 'memesh update',
+        guidance: 'This installation can be updated directly from MeMesh.',
+      }),
+      installedPluginsPathImpl: path.join(packageRoot, 'no-such-registry.json'),
+    }));
+    expect(result.checks.find((c) => c.id === 'hook-wiring')?.code).toBe('hook-wiring.no-claude-code');
+    expect(result.checks.find((c) => c.id === 'capture-liveness')).toBeDefined();
+  });
+
+  it('hook-wiring: a machine with neither Claude Code nor Codex still gets the warning (#528)', async () => {
+    const wiring = await wiringWith({ claude: 'absent', codexDir: 'absent', codexOnPath: false });
+    expect(wiring).toMatchObject({ status: 'warn', code: 'hook-wiring.no-host' });
+  });
 
   it('hook-wiring: PASS with no marker when this IS a plugin-marketplace install', async () => {
     // The other half of the C1 fix. `install-hooks` never runs on the plugin
@@ -2126,6 +2312,64 @@ describe('doctor', () => {
     expect(activity.code).toBe('hook-activity.not-wired');
   });
 
+  // The call site of withHostFix for this row: testing the function alone cannot see a runDoctor
+  // that stops passing the row through it (#528).
+  describe('hook-activity: the fix follows the agent this machine has (#528)', () => {
+    const neverRan = (packageRoot: string) => ({
+      ...hookActivityDoctorArgs(packageRoot, makeDatabase(0, { hookRuns: null, trackingSinceHours: 200 })),
+      existsSyncImpl: noMarker,
+    });
+    const staleUnconfirmed = (packageRoot: string) => ({
+      ...hookActivityDoctorArgs(packageRoot, makeDatabase(0, { hookRuns: [{ hook: 'session-summary', hoursAgo: 96 }], recentClaudeCodeWrites: 0 })),
+      existsSyncImpl: noMarker,
+    });
+    const activityOn = async (hosts: Parameters<typeof withHosts>[0], args: (packageRoot: string) => Parameters<typeof runDoctorImpl>[0]) => {
+      const packageRoot = createPackageRoot();
+      tempRoots.push(packageRoot);
+      return withHosts(hosts, async () => {
+        const { activity, result } = await activityCheck(args(packageRoot));
+        return { activity, wiring: result.checks.find((c) => c.id === 'hook-wiring')! };
+      });
+    };
+
+    it('no agent host: the "never ran" row sends the person to memesh setup, not to install-hooks', async () => {
+      const { activity, wiring } = await activityOn({}, neverRan);
+      expect(wiring.code).toBe('hook-wiring.no-host');
+      expect(activity.code).toBe('hook-activity.not-wired');
+      expect(activity.fix).toContain('memesh setup');
+      expect(activity.fix).not.toContain('install-hooks');
+      expect(activity.fixId).toBeUndefined();
+    });
+
+    it('Codex only: the "never ran" and the "stopped, unconfirmed" rows both name the Codex refresh command', async () => {
+      const notWired = await activityOn({ codex: true }, neverRan);
+      expect(notWired.wiring.code).toBe('hook-wiring.no-claude-code');
+      expect(notWired.activity.code).toBe('hook-activity.not-wired');
+      expect(notWired.activity.fix).toContain('codex plugin add memesh@pcircle-memesh');
+      expect(notWired.activity.fix).not.toContain('install-hooks');
+      const stopped = await activityOn({ codex: true }, staleUnconfirmed);
+      expect(stopped.activity.code).toBe('hook-activity.stale-unconfirmed');
+      expect(stopped.activity.fix).toContain('codex plugin add memesh@pcircle-memesh');
+      expect(stopped.activity.fix).not.toContain('install-hooks');
+    });
+
+    it('Gemini only: no install-hooks and no Codex command', async () => {
+      const { activity, wiring } = await activityOn({ gemini: true }, neverRan);
+      expect(wiring.code).toBe('hook-wiring.no-claude-code');
+      expect(activity.fix).toContain('MCP server only');
+      expect(activity.fix).not.toContain('install-hooks');
+      expect(activity.fix).not.toContain('codex plugin add');
+    });
+
+    it('Claude Code here (control): the same rows keep install-hooks', async () => {
+      const notWired = await activityOn({ claude: true }, neverRan);
+      expect(notWired.activity.fix).toContain('install-hooks');
+      expect(notWired.activity.fix).not.toContain('codex plugin add');
+      const stopped = await activityOn({ claude: true }, staleUnconfirmed);
+      expect(stopped.activity.fix).toContain('install-hooks');
+    });
+  });
+
   it('hook-activity: env-disabled capture gets its OWN message — doctor cannot vouch for the agent\'s env', async () => {
     // Deliberately off is not a failure — but the env var is per-process:
     // doctor seeing MEMESH_AUTO_CAPTURE=false in ITS shell says nothing
@@ -2335,6 +2579,58 @@ describe('doctor', () => {
 // inside the marker object literal at construction time, so this is just
 // a dummy stand-in we overwrite immediately after.
 function env_settingsPathPlaceholder(): string { return ''; }
+
+describe('withHostFix: the one place a row\'s hook fix is chosen (#528)', () => {
+  const row = (status: 'pass' | 'warn' | 'fail', fix?: string, fixId?: 'install-hooks') => ({ id: 'hook-activity', label: 'Hook activity', status, summary: 's', fix, fixId });
+  const advice = 'Run `memesh install-hooks` and restart your agent.';
+
+  it('no agent host: the row gets the setup next step, which names all three hosts, instead of install-hooks', () => {
+    const fixed = withHostFix(row('warn', advice), 'no-host');
+    expect(fixed.fix).toContain('memesh setup');
+    expect(fixed.fix).toContain('Gemini CLI');
+    expect(fixed.fix).not.toContain('install-hooks');
+  });
+
+  it('Codex only: the row gets the Codex plugin refresh command, never install-hooks', () => {
+    const fixed = withHostFix(row('fail', advice), 'codex');
+    expect(fixed.fix).toContain('codex plugin marketplace upgrade pcircle-memesh && codex plugin add memesh@pcircle-memesh');
+    expect(fixed.fix).not.toContain('install-hooks');
+  });
+
+  it('Gemini only: the row says there is no hook to install and gives no command', () => {
+    const fixed = withHostFix(row('warn', advice), 'gemini');
+    expect(fixed.fix).toContain('MCP server only');
+    expect(fixed.fix).not.toContain('install-hooks');
+    expect(fixed.fix).not.toContain('codex plugin add');
+  });
+
+  it('a rewritten row loses its fixId, so --fix cannot act on it', () => {
+    for (const state of ['no-host', 'codex', 'gemini'] as const) {
+      expect(withHostFix(row('warn', advice, 'install-hooks'), state).fixId).toBeUndefined();
+    }
+  });
+
+  it('leaves the row alone when Claude Code is here, when the row passes, and when its fix names something else', () => {
+    const withAdvice = row('warn', 'Run `memesh install-hooks`.');
+    expect(withHostFix(withAdvice, 'claude')).toBe(withAdvice);
+    for (const state of ['no-host', 'codex', 'gemini'] as const) {
+      const passing = row('pass', 'Run `memesh install-hooks`.');
+      expect(withHostFix(passing, state)).toBe(passing);
+      const other = row('warn', 'Run `memesh doctor --json`.');
+      expect(withHostFix(other, state)).toBe(other);
+      const noFix = row('warn');
+      expect(withHostFix(noFix, state)).toBe(noFix);
+    }
+  });
+
+  it('the state is read off the hook-wiring row: Gemini-only is told apart from Codex only through whether Codex is here', () => {
+    expect(hostFixState('hook-wiring.no-host', false)).toBe('no-host');
+    expect(hostFixState('hook-wiring.no-claude-code', true)).toBe('codex');
+    expect(hostFixState('hook-wiring.no-claude-code', false)).toBe('gemini');
+    expect(hostFixState('hook-wiring.no-marker', true)).toBe('claude');
+    expect(hostFixState(undefined, false)).toBe('claude');
+  });
+});
 
 describe('README locale parity (doctor sub-check)', () => {
   function buildReadme(h2Count: number, title = 'MeMesh'): string {

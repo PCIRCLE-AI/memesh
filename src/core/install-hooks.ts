@@ -104,6 +104,10 @@ export interface InstallResult {
   pruned: number;
   conflicts: Array<{ event: string; matcher: string; existingCount: number }>;
   markerPath: string;
+  /** Whether settings.json was written by this run (false when nothing needed to change). */
+  settingsWritten: boolean;
+  /** Whether the install marker was written by this run. */
+  markerWritten: boolean;
   // When non-null, install-hooks detected an active plugin-runtime install
   // and refused to write. Callers (CLI / dashboard) should surface this
   // to the user with the `--force-over-plugin` escape hatch. `null` means
@@ -194,17 +198,46 @@ function writeSettingsSync(targetPath: string, data: string): void {
   fs.writeFileSync(targetPath, data, 'utf8');
 }
 
+const isJsonObject = (v: unknown): v is Record<string, unknown> =>
+  v !== null && typeof v === 'object' && !Array.isArray(v);
+
+/** Every refusal reads the same: which file, what is wrong, and that nothing was changed. */
+const refuse = (p: string, what: string): Error =>
+  new Error(`settings file at ${p}${what}; refusing to modify`);
+
+/**
+ * The merge below reads `{ matcher?, hooks: [{ _memesh? }] }` per event, and a
+ * file of any other shape would fail there with a TypeError after the citation
+ * rule was already written. Nothing has been written when this throws.
+ */
+function assertHooksShape(hooks: unknown, p: string): void {
+  if (!isJsonObject(hooks)) throw refuse(p, ': "hooks" is not an object');
+  for (const [event, entries] of Object.entries(hooks)) {
+    if (!Array.isArray(entries)) throw refuse(p, `: hooks.${event} is not a list`);
+    entries.forEach((entry, i) => {
+      const where = `hooks.${event}[${i}]`;
+      if (!isJsonObject(entry)) throw refuse(p, `: ${where} is not an object`);
+      if (!Array.isArray(entry.hooks)) throw refuse(p, `: ${where}.hooks is not a list`);
+      entry.hooks.forEach((h: unknown, j: number) => {
+        if (!isJsonObject(h)) throw refuse(p, `: ${where}.hooks[${j}] is not an object`);
+      });
+    });
+  }
+}
+
 function readSettings(p: string): ClaudeSettings {
   if (!fs.existsSync(p)) return {};
+  let parsed: unknown;
   try {
-    const raw = fs.readFileSync(p, 'utf8');
-    return JSON.parse(raw) as ClaudeSettings;
+    parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
   } catch {
-    // Malformed settings — bail loudly. We refuse to overwrite a
-    // file we can't parse: the user's existing config matters more
-    // than our convenience.
-    throw new Error(`settings file at ${p} is not valid JSON; refusing to modify`);
+    // We refuse to overwrite a file we can't parse: the user's existing config
+    // matters more than our convenience.
+    throw refuse(p, ' is not valid JSON');
   }
+  if (!isJsonObject(parsed)) throw refuse(p, ' is not a JSON object');
+  if (parsed.hooks !== undefined) assertHooksShape(parsed.hooks, p);
+  return parsed as ClaudeSettings;
 }
 
 function backupSettings(settingsPath: string): string | null {
@@ -226,7 +259,18 @@ function loadPluginHooks(pluginRoot: string): HooksByEvent {
   if (!fs.existsSync(manifestPath)) {
     throw new Error(`plugin hooks manifest not found at ${manifestPath}`);
   }
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as PluginHooksManifest;
+  const damaged = () => new Error(
+    `memesh's own hooks file at ${manifestPath} is damaged and cannot be read; reinstall memesh and run install-hooks again`,
+  );
+  let manifest: PluginHooksManifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as PluginHooksManifest;
+  } catch {
+    throw damaged();
+  }
+  if (manifest === null || typeof manifest !== 'object' || manifest.hooks === null || typeof manifest.hooks !== 'object') {
+    throw damaged();
+  }
   const out: HooksByEvent = {};
   for (const [event, entries] of Object.entries(manifest.hooks)) {
     out[event] = entries.map((entry) => ({
@@ -276,9 +320,9 @@ export function installHooks(opts: InstallOptions): InstallResult {
   // twice — but nothing in the plugin runtime writes a rules file, so a
   // plugin user would never get the citation contract at all. Skipping it
   // there is how the whole ROI signal stayed at zero for plugin installs.
-  const citationRule = opts.dryRun
+  const writeRule = () => (opts.dryRun
     ? { path: citationRulePath(opts.scope, homeDir(), cwd), action: 'unchanged' as const }
-    : writeCitationRule(opts.scope, homeDir(), cwd);
+    : writeCitationRule(opts.scope, homeDir(), cwd));
 
   // Detect existing Claude Code plugin install BEFORE doing any work.
   // If `/plugin install memesh@pcircle-memesh` already wired the hooks
@@ -290,6 +334,7 @@ export function installHooks(opts: InstallOptions): InstallResult {
   // they want both surfaces.
   const pluginRuntime = detectPluginRuntime(opts.installedPluginsPathImpl);
   if (pluginRuntime && !opts.forceOverPlugin) {
+    const citationRule = writeRule();
     return {
       settingsPath,
       backupPath: null,
@@ -301,11 +346,16 @@ export function installHooks(opts: InstallOptions): InstallResult {
       markerPath: path.join(memeshDir(), MARKER_FILE),
       pluginRuntimeDetected: pluginRuntime,
       citationRule,
+      settingsWritten: false,
+      markerWritten: false,
     };
   }
 
   const desired = loadPluginHooks(opts.pluginRoot);
+  // Read (and validated, down to each entry's shape) BEFORE anything is written:
+  // a refusal must leave every file as it was, the citation rule included.
   const settings = readSettings(settingsPath);
+  const citationRule = writeRule();
   const existing = settings.hooks ?? {};
 
   let added = 0;
@@ -338,7 +388,6 @@ export function installHooks(opts: InstallOptions): InstallResult {
       entries.map((e) => `${event}\u0000${e.matcher ?? '*'}`)),
   );
   for (const [event, entries] of Object.entries(existing)) {
-    if (!Array.isArray(entries)) continue;
     const kept = entries.filter(
       (e) => !(isMemeshEntry(e) && !desiredKeys.has(`${event}\u0000${e.matcher ?? '*'}`)),
     );
@@ -381,30 +430,39 @@ export function installHooks(opts: InstallOptions): InstallResult {
 
   const markerPath = path.join(memeshDir(), MARKER_FILE);
   let backupPath: string | null = null;
+  let settingsWritten = false;
+  let markerWritten = false;
 
-  if (!opts.dryRun && (added > 0 || skipped > 0)) {
-    backupPath = backupSettings(settingsPath);
-    settings.hooks = existing;
-    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
-    writeSettingsSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
-    // Marker — doctor reads this to confirm hooks are wired AND
-    // know which scope/path so it can verify they still match.
-    fs.mkdirSync(path.dirname(markerPath), { recursive: true });
-    fs.writeFileSync(
-      markerPath,
-      JSON.stringify(
-        {
-          installed_at: new Date().toISOString(),
-          version: opts.pluginVersion,
-          plugin_root: opts.pluginRoot,
-          scope: opts.scope,
-          settings_path: settingsPath,
-        },
-        null,
-        2,
-      ) + '\n',
-      'utf8',
-    );
+  // An install that changes nothing writes nothing: no new settings backup,
+  // no rewrite of settings.json, and no new marker — the marker's mtime is
+  // what doctor's "hooks were just wired" grace period is measured from, so
+  // refreshing it on every run kept extending that grace.
+  if (!opts.dryRun) {
+    if (added > 0 || pruned > 0) {
+      backupPath = backupSettings(settingsPath);
+      settings.hooks = existing;
+      fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+      writeSettingsSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+      settingsWritten = true;
+    }
+    const marker = {
+      version: opts.pluginVersion,
+      plugin_root: opts.pluginRoot,
+      scope: opts.scope,
+      settings_path: settingsPath,
+    };
+    const current = readInstallMarker();
+    const markerCurrent = current !== null
+      && (Object.keys(marker) as Array<keyof typeof marker>).every((key) => current[key] === marker[key]);
+    // The marker says "hooks are wired here": write it when settings.json was
+    // changed, or when it is missing or describes a different install.
+    if (settingsWritten || !markerCurrent) {
+      // Marker — doctor reads this to confirm hooks are wired AND
+      // know which scope/path so it can verify they still match.
+      fs.mkdirSync(path.dirname(markerPath), { recursive: true });
+      fs.writeFileSync(markerPath, JSON.stringify({ installed_at: new Date().toISOString(), ...marker }, null, 2) + '\n', 'utf8');
+      markerWritten = true;
+    }
   }
 
   return {
@@ -417,6 +475,8 @@ export function installHooks(opts: InstallOptions): InstallResult {
     pruned,
     conflicts,
     markerPath,
+    settingsWritten,
+    markerWritten,
   };
 }
 

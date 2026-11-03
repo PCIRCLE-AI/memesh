@@ -16,7 +16,8 @@
  * Each case asserts the honest verdict AND its opposite, so a doctor that
  * simply stopped emitting the row would fail here rather than pass.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { pathWithout, removePathMirrors } from '../helpers/path-without.js';
+import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
 import { execFileSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
@@ -27,14 +28,19 @@ const CLI_PATH = path.join(__dirname, '..', '..', 'dist', 'transports', 'cli', '
 
 let home: string;
 
+afterAll(removePathMirrors);
+
 function runCli(args: string[]): { stdout: string; stderr: string; exitCode: number } {
   // Keep this throwaway-HOME test isolated from unrelated credential-shaped
   // variables in the developer's shell, even though current MeMesh ignores them.
-  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home };
-  for (const key of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OLLAMA_HOST']) delete env[key];
+  // The machine under test has no agent host unless a case makes one: not on PATH (the helper leaves
+  // every other command, `node` included, where it was), and not through the variables that move
+  // Claude Code's or Codex's configuration directory, which a developer shell may well set.
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home, PATH: pathWithout(['codex', 'claude', 'gemini']) };
+  for (const key of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OLLAMA_HOST', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME']) delete env[key];
 
   try {
-    const stdout = execFileSync('node', [CLI_PATH, ...args], { encoding: 'utf8', env });
+    const stdout = execFileSync(process.execPath, [CLI_PATH, ...args], { encoding: 'utf8', env });
     return { stdout, stderr: '', exitCode: 0 };
   } catch (err: unknown) {
     const e = err as { stdout?: Buffer; stderr?: Buffer; status?: number };
@@ -67,7 +73,10 @@ describe('doctor: hooks wired (C1)', () => {
     const manifest = path.join(__dirname, '..', '..', '.claude-plugin', 'plugin.json');
     expect(fs.existsSync(manifest), 'the shipped plugin manifest moved; this test is now vacuous').toBe(true);
 
-    // Fresh HOME → no install-hooks marker → nothing is wired.
+    // Fresh HOME with Claude Code's directory (a machine with no agent host at all
+    // gets its own answer, pinned in no-host-d14.test.ts) → no install-hooks
+    // marker → nothing is wired.
+    fs.mkdirSync(path.join(home, '.claude'));
     const wiring = doctorCheck('hook-wiring');
     expect(wiring.status, 'doctor reports wired hooks on an install where nothing is wired').toBe('warn');
     expect(wiring.summary).toMatch(/not connected to Claude Code/i);

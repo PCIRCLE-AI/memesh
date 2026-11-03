@@ -1,14 +1,17 @@
 import fs from 'fs';
 import path from 'path';
 import { detectPluginRuntime, settingsHaveMemeshHooks } from './install-hooks.js';
+import { pluginHostConfigRoot } from './install-channel.js';
+import { claudeCodePresent, codexPresent, geminiPresent } from './host-presence.js';
 function inspectClaudeCode(seams) {
-    const claudeDir = path.join(seams.home(), '.claude');
-    const present = fs.existsSync(claudeDir);
+    const relocated = seams.claudeConfigDir ? seams.claudeConfigDir() : process.env.CLAUDE_CONFIG_DIR;
+    const claudeDir = relocated ? path.resolve(relocated) : path.join(seams.home(), '.claude');
+    const present = claudeCodePresent(fs.existsSync, seams.isOnPath, claudeDir);
     const status = {
         host: 'claude-code',
         title: 'Claude Code',
         present,
-        presenceDetail: claudeDir,
+        presenceDetail: fs.existsSync(claudeDir) ? claudeDir : present ? 'claude on PATH' : `claude on PATH, or ${claudeDir}`,
         wired: null,
         wiredDetail: '',
         actions: [],
@@ -40,7 +43,7 @@ function inspectClaudeCode(seams) {
     if (!hooksWired) {
         status.actions.push({
             kind: 'install-hooks',
-            label: 'Wire the session hooks into ~/.claude/settings.json (backs the file up first)',
+            label: `Wire the session hooks into ${path.join(claudeDir, 'settings.json')} (backs the file up first)`,
         });
     }
     if (mcpWired === false) {
@@ -54,21 +57,29 @@ function inspectClaudeCode(seams) {
     return status;
 }
 function inspectCodex(seams) {
-    const present = seams.isOnPath('codex');
+    const onPath = seams.isOnPath('codex');
+    const codexDir = pluginHostConfigRoot('codex');
+    const present = codexPresent(fs.existsSync, seams.isOnPath);
     const status = {
         host: 'codex',
         title: 'Codex CLI',
         present,
-        presenceDetail: 'codex on PATH',
+        presenceDetail: onPath ? 'codex on PATH' : present ? codexDir : `codex on PATH, or ${codexDir}`,
         wired: null,
         wiredDetail: present ? '' : 'not on this machine — nothing to wire',
         actions: [],
     };
     if (!present)
         return status;
+    if (!onPath) {
+        status.wiredDetail = 'Codex\'s config directory exists but the codex command is not on PATH — cannot probe MCP registration';
+        status.unprobed = true;
+        return status;
+    }
     const probe = seams.run('codex', ['mcp', 'get', 'memesh']);
     if (probe.status === null) {
         status.wiredDetail = 'codex mcp get failed to run — could not determine';
+        status.unprobed = true;
     }
     else {
         status.wired = probe.status === 0;
@@ -85,7 +96,7 @@ function inspectCodex(seams) {
     return status;
 }
 function inspectGemini(seams) {
-    const present = seams.isOnPath('gemini');
+    const present = geminiPresent(seams.isOnPath);
     const status = {
         host: 'gemini',
         title: 'Gemini CLI',
@@ -121,7 +132,23 @@ function inspectGemini(seams) {
 export function inspectHosts(seams) {
     return [inspectClaudeCode(seams), inspectCodex(seams), inspectGemini(seams)];
 }
+export function unverifiedHosts(statuses) {
+    return statuses.filter((s) => s.present && s.wired === null && !s.unprobed);
+}
+export function wiredClosing(statuses) {
+    const unverified = unverifiedHosts(statuses);
+    if (unverified.length === 0)
+        return 'Everything present is wired. Nothing to do.';
+    const what = unverified.map((s) => `${s.title} (${s.wiredDetail.split('; ').pop()})`).join(' and ');
+    return `Everything that could be checked is wired. Not checked: ${what}. To check it, put the command on PATH and run \`memesh setup --check\` again.`;
+}
 export function allWired(statuses) {
-    return statuses.every((s) => !s.present || (s.actions.length === 0 && s.wired !== false));
+    return statuses.every((s) => !s.present || (s.actions.length === 0 && s.wired !== false && !s.unprobed));
+}
+export function noHostMessage(statuses) {
+    if (statuses.length === 0 || statuses.some((s) => s.present))
+        return null;
+    const looked = statuses.map((s) => `  - ${s.title}: ${s.presenceDetail}`).join('\n');
+    return `No supported agent host was found on this machine, so memesh changed nothing and connected to nothing. Looked for:\n${looked}\n\nInstall Claude Code or Codex (or Gemini CLI), then run \`memesh setup\` again.`;
 }
 //# sourceMappingURL=setup.js.map

@@ -15,6 +15,7 @@ import { readConfig, updateConfig } from '../../core/config.js';
 import { SESSION_LIMIT_MIN, SESSION_LIMIT_MAX, resolveSessionLimit } from '../../core/session-limit.js';
 import { updateNoticeForEntryPoint } from '../../core/update-entrypoint.js';
 import { removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
+import { isOnPath } from '../../core/host-presence.js';
 import { getAgentRouterSocketPath, getDbPath, getProjectName, homeDir, redactSecrets, redactUserPaths } from '../../core/paths.js';
 import { agentScopeIdRejection, canonicalAgentScopeId, projectScopeRejection } from '../../core/agent-scope-id.js';
 import { NAMESPACES } from '../../core/types.js';
@@ -29,7 +30,7 @@ import { captureChatTurn } from '../../core/turn-signal.js';
 import {
   DELEGATION_VERDICTS, DelegationInputError, ENVELOPE_MAX_BYTES, recordDelegation, setDelegationVerdict,
 } from '../../core/delegation.js';
-import { inspectHosts, allWired, type SetupSeams, type HostStatus } from '../../core/setup.js';
+import { inspectHosts, allWired, noHostMessage, unverifiedHosts, wiredClosing, type SetupSeams, type HostStatus } from '../../core/setup.js';
 import { installHooks } from '../../core/install-hooks.js';
 import { getTaskState, setTaskState, TaskStateUnreadableError } from '../../core/task-state-store.js';
 import { TASK_STATE_FIELDS, taskStateLines, type TaskStateField } from '../../core/task-state.js';
@@ -245,29 +246,6 @@ function memories(n: number): string {
  */
 export function isPromptAbort(err: unknown): boolean {
   return err instanceof Error && err.name === 'AbortError';
-}
-
-/**
- * True when `tool` resolves to an executable on the current PATH — the same
- * question the upgrade script's `command -v` checks ask, answered up front so
- * a missing prerequisite is one plain sentence before anything runs, not a
- * mid-run death. Windows executables carry a PATHEXT extension (`npm.cmd`,
- * not `npm`), so each extension is tried there.
- */
-function isOnPath(tool: string): boolean {
-  const exts = process.platform === 'win32'
-    ? (process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean)
-    : [''];
-  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
-    if (!dir) continue;
-    for (const ext of exts) {
-      try {
-        fs.accessSync(path.join(dir, tool + ext), fs.constants.X_OK);
-        return true;
-      } catch { /* not in this dir — keep looking */ }
-    }
-  }
-  return false;
 }
 
 /** Write a host config once, without a check-then-create race. */
@@ -1730,8 +1708,18 @@ program
 
     let statuses = inspectHosts(seams);
 
+    // No host at all is not "Everything present is wired": nothing was wired,
+    // and exit 0 would tell a script (and the person) that the install worked.
+    const noHost = noHostMessage(statuses);
+    if (noHost) {
+      render(statuses);
+      console.error(`\n${noHost}`);
+      process.exit(1);
+    }
+
     if (opts.check) {
       render(statuses);
+      if (allWired(statuses) && unverifiedHosts(statuses).length > 0) console.log(`\n${wiredClosing(statuses)}`);
       process.exit(allWired(statuses) ? 0 : 1);
     }
 
@@ -1739,7 +1727,7 @@ program
     if (pending.length === 0) {
       render(statuses);
       console.log(allWired(statuses)
-        ? '\nEverything present is wired. Nothing to do.'
+        ? `\n${wiredClosing(statuses)}`
         : '\nNothing to wire automatically — see the lines above.');
       process.exit(allWired(statuses) ? 0 : 1);
     }
@@ -2667,6 +2655,10 @@ program
         },
         'plugin-cache-refresh': (check) => refreshPluginCache(packageRoot, pluginHostFromDoctorCheck(check)).output || 'plugin cache refreshed',
       };
+      // Say why the hook wiring is left alone: with no agent host installed,
+      // writing Claude Code's settings would configure a program that is not there.
+      const noHost = result.checks.find((c) => c.code === 'hook-wiring.no-host');
+      if (noHost) console.log(`Skipped: hook wiring. ${noHost.summary} ${noHost.fix ?? ''}`.trim());
       const fixable = result.checks.filter((c) => c.fixId && (c.status === 'warn' || c.status === 'fail'));
       if (fixable.length === 0) {
         console.log('Nothing on the --fix whitelist to apply.');
@@ -2964,21 +2956,18 @@ program
       }
       console.log(`${opts.dryRun ? '[dry-run] ' : ''}Settings: ${result.settingsPath}`);
       console.log(`${opts.dryRun ? '[dry-run] Would add ' : 'Added '}${result.added} hook entr${result.added === 1 ? 'y' : 'ies'}, ${opts.dryRun ? 'would skip ' : 'skipped '}${result.skipped} already-installed.`);
+      // "No file was written" is only true when the citation contract did not need writing either.
+      const ruleWritten = result.citationRule.action !== 'unchanged' && result.citationRule.action !== 'foreign-file';
+      if (!opts.dryRun && !(result.settingsWritten || result.markerWritten || ruleWritten)) {
+        console.log('Nothing needed to change — no file was written.');
+      }
       if (result.pruned > 0) {
         console.log(`${opts.dryRun ? '[dry-run] Would remove ' : 'Removed '}${result.pruned} retired memesh hook entr${result.pruned === 1 ? 'y' : 'ies'} no longer shipped by this version.`);
       }
       if (result.backupPath) console.log(`Backup: ${result.backupPath}`);
-      // `installHooks` writes this marker whenever settings.json itself was
-      // written (added > 0 || skipped > 0, and not a dry-run) — the same
-      // condition as the settings write itself, NOT the same as the backup
-      // above: `backupSettings` returns null on a fresh install with no
-      // pre-existing settings.json to back up, so gating on `backupPath`
-      // would have hidden this line on exactly the install where a user
-      // most needs to know a new file appeared. Reported for the same
-      // reason the settings path and backup are: a file this command
-      // writes to disk should not be a surprise the user only discovers
-      // via `memesh doctor` or by reading the source.
-      if (!opts.dryRun && (result.added > 0 || result.skipped > 0)) {
+      // Gated on the marker really being written, not on the backup: `backupSettings` returns
+      // null on a fresh install with no settings.json, which is exactly when a new file appeared.
+      if (!opts.dryRun && result.markerWritten) {
         console.log(`Marker: ${result.markerPath}`);
       }
       // The citation contract's fate, reported on BOTH exits. `foreign-file`
@@ -3002,10 +2991,17 @@ program
           console.log(`  - ${c.event} (matcher: ${c.matcher}) — ${c.existingCount} non-memesh hook command${c.existingCount === 1 ? '' : 's'} preserved`);
         }
       }
-      if (!opts.dryRun) {
+      if (!opts.dryRun && result.settingsWritten) {
         console.log('');
         console.log('Restart Claude Code (or open a new session) for hooks to take effect.');
         console.log('Verify with: memesh doctor');
+      } else if (!opts.dryRun && ruleWritten) {
+        // settings.json is unchanged, so the hooks already in place need no restart; only the new rule file does.
+        console.log('');
+        console.log('Open a new Claude Code session for the citation contract to take effect. Verify with: memesh doctor');
+      } else if (!opts.dryRun) {
+        console.log('');
+        console.log('Nothing to restart. Verify with: memesh doctor');
       }
     } catch (err) {
       console.error(`install-hooks failed: ${err instanceof Error ? err.message : String(err)}`);

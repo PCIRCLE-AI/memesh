@@ -3,7 +3,8 @@
  * fixId-tagged prescriptions; the verdict comes from a fresh doctor run, not
  * from trusting the fixes. Fixture HOME throughout — never the real one.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { pathWithout, removePathMirrors } from '../helpers/path-without.js';
+import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
 import { spawnSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
@@ -14,27 +15,43 @@ const CLI = path.resolve('dist/transports/cli/cli.js');
 
 let home: string;
 
+afterAll(removePathMirrors);
+
 beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-docfix-'));
 });
 
 afterEach(() => {
+  ambientPath = undefined;
   fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
-const env = () => ({
-  ...process.env,
-  HOME: home,
-  USERPROFILE: home,
-  // No MEMESH_DIR override: memeshDir derives from HOME, and the hook-wiring
-  // registry consult derives from HOME too — one fixture, both aligned.
-});
+// The PATH the fixture starts from. A case that needs to prove the fixture hides an agent
+// command puts a fake one on it.
+let ambientPath: string | undefined;
+
+const env = () => {
+  const e: NodeJS.ProcessEnv = {
+    ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+    // "a fresh machine" has no agent on it, whatever this developer box has
+    PATH: pathWithout(['codex', 'claude', 'gemini'], ambientPath ?? process.env.PATH),
+    // No MEMESH_DIR override: memeshDir derives from HOME, and the hook-wiring
+    // registry consult derives from HOME too — one fixture, both aligned.
+  };
+  // The variables that move an agent's configuration directory are the developer shell's, not the fixture's.
+  delete e.CLAUDE_CONFIG_DIR;
+  delete e.CODEX_HOME;
+  return e;
+};
 
 const run = (args: string[]) =>
   spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', env: env() });
 
 describe('memesh doctor --fix', () => {
   it('refuses to change anything non-interactively without --yes', () => {
+    fs.mkdirSync(path.join(home, '.claude')); // Claude Code is here, so there is a fix to refuse
     const r = run(['doctor', '--fix']);
     expect(r.status).toBe(1);
     expect(r.stderr).toContain('--yes');
@@ -42,7 +59,26 @@ describe('memesh doctor --fix', () => {
     expect(fs.existsSync(path.join(home, '.claude', 'settings.json'))).toBe(false);
   });
 
-  it('wires the hooks on a fresh HOME and shows the check flipping warn → pass', () => {
+  it.skipIf(process.platform === 'win32')('does not mistake a claude command on the developer\'s PATH for Claude Code being here: on an empty machine --fix wires nothing', () => {
+    // The fixture hides the command. If it stopped doing that, this machine would count as having
+    // Claude Code and `--fix` would write ~/.claude/settings.json: the assertion is red on any
+    // developer box, whether or not it has Claude Code installed.
+    const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-docfix-bin-'));
+    try {
+      fs.writeFileSync(path.join(fakeBin, 'claude'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      ambientPath = `${fakeBin}${path.delimiter}${process.env.PATH ?? ''}`;
+      const r = run(['doctor', '--fix', '--yes']);
+      expect(r.stdout).toContain('Skipped: hook wiring. No agent host was found');
+      expect(fs.existsSync(path.join(home, '.claude'))).toBe(false);
+    } finally {
+      fs.rmSync(fakeBin, { recursive: true, force: true });
+    }
+  });
+
+  it('wires the hooks when Claude Code is here but not wired, and shows the check flipping warn → pass', () => {
+    // Claude Code's directory exists. On a machine with no agent host at all `--fix`
+    // wires nothing (pinned in no-host-d14.test.ts).
+    fs.mkdirSync(path.join(home, '.claude'));
     const r = run(['doctor', '--fix', '--yes']);
 
     // The fix really landed: settings.json carries the _memesh markers and

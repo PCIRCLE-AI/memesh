@@ -18,6 +18,7 @@ import { getAgentRouterSocketPath, getDbPath, getMemeshDirFromDbPath, homeDir, m
 import { findProjectIdentitySplits } from './project-identity-split.js';
 import { AGENT_ROUTER_SOCKET_PATH_MAX_BYTES } from './agent-router.js';
 import { detectPluginRuntime, readInstallMarker } from './install-hooks.js';
+import { claudeCodePresent, codexPresent, geminiPresent, isOnPath } from './host-presence.js';
 import { UNSPACED_SCRIPT_GLOB_RUN3 } from '../storage/fts-index.js';
 import { MemeshDatabase } from '../storage/sqlite.js';
 import { AUTO_CAPTURE_TAG } from './types.js';
@@ -407,6 +408,16 @@ function inspectHookWiring(existsSyncImpl, readFileSyncImpl, memeshDir, installC
         if (detectPluginRuntime(installedPluginsPath)) {
             return createCheck('hook-wiring', 'Hooks wired into Claude Code', 'pass', 'Wired via the Claude Code plugin runtime (found in installed_plugins.json). This copy is not the one doing the capturing — the plugin manages the hooks.');
         }
+        const claudeHere = claudeCodePresent(existsSyncImpl, isOnPath);
+        const codexHere = codexPresent(existsSyncImpl, isOnPath);
+        const geminiHere = geminiPresent(isOnPath);
+        if (!claudeHere && (codexHere || geminiHere)) {
+            const hostName = codexHere ? 'Codex' : 'Gemini CLI';
+            return createCheck('hook-wiring', 'Hooks wired into Claude Code', 'pass', `Claude Code was not found on this machine (${hostName} is), so there are no Claude Code hooks to wire. This row does not check ${hostName}'s own hooks; the Capture liveness row shows whether any hook has recorded a result.`, undefined, { code: 'hook-wiring.no-claude-code', params: { captureWired: 0 } });
+        }
+        if (!claudeHere && !codexHere && !geminiHere) {
+            return createCheck('hook-wiring', 'Hooks wired into Claude Code', 'warn', 'No agent host was found on this machine (looked for Claude Code, Codex and Gemini CLI: their commands on PATH, and the Claude Code and Codex configuration directories), so memesh has nothing to connect to yet.', NO_HOST_NEXT_STEP, { code: 'hook-wiring.no-host' });
+        }
         return createCheck('hook-wiring', 'Hooks wired into Claude Code', 'warn', 'memesh is not connected to Claude Code yet, so nothing gets remembered automatically from your sessions.', 'Run `memesh install-hooks` once to connect it, then `memesh doctor` to confirm.', { code: 'hook-wiring.no-marker' }, 'install-hooks');
     }
     const parsed = parseJsonFile(markerPath, readFileSyncImpl);
@@ -595,6 +606,22 @@ function archivedHandoffCheck(title, runs, name) {
     }
     return createCheck('capture-liveness', title, 'warn', summary, 'To turn it back on, find its exact name with `memesh recall session-handoff --include-archived`, then remember anything under that name with type session-handoff; the next Stop replaces it.', { code: 'capture-liveness.handoff-archived-unnamed', params: { runs } });
 }
+const NO_HOST_NEXT_STEP = 'Install Claude Code or Codex (or Gemini CLI), then run `memesh setup` to connect memesh to it.';
+const CODEX_NEXT_STEP = `Refresh the Codex plugin (\`${PLUGIN_REFRESH_COMMANDS.codex}\`), restart Codex, start one session, and re-run \`memesh doctor\`. If you just updated, start a session first — the records begin on the next hook run.`;
+const GEMINI_NEXT_STEP = 'Gemini CLI connects to memesh as an MCP server only, so there are no memesh hooks to install on this machine.';
+export function hostFixState(wiringCode, codexHere) {
+    if (wiringCode === 'hook-wiring.no-host')
+        return 'no-host';
+    if (wiringCode === 'hook-wiring.no-claude-code')
+        return codexHere ? 'codex' : 'gemini';
+    return 'claude';
+}
+export function withHostFix(check, state) {
+    if (state === 'claude' || check.status === 'pass' || !check.fix?.includes('install-hooks'))
+        return check;
+    const fix = state === 'no-host' ? NO_HOST_NEXT_STEP : state === 'codex' ? CODEX_NEXT_STEP : GEMINI_NEXT_STEP;
+    return { ...check, fix, fixId: undefined };
+}
 function withRecordedHosts(result) {
     if (!result.report)
         return result;
@@ -722,7 +749,7 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
             report,
         };
     }
-    if (hooks.length === 0 && captureWired && stampedCount > 0
+    if (hooks.length === 0 && stampedCount > 0
         && measuringHours !== null && measuringHours > NEVER_RAN_GRACE_HOURS) {
         const lastHeartbeat = newestHeartbeatHours === null ? null : Math.round(newestHeartbeatHours);
         return {
@@ -1632,9 +1659,11 @@ export async function runDoctor(options) {
     if (probeHttp) {
         checks.push(await inspectHttpProbe(httpBaseUrl, fetchImpl));
     }
+    const hostState = hostFixState(wiring.code, codexPresent(existsSyncImpl, isOnPath));
+    const finalChecks = checks.map((check) => withHostFix(check, hostState));
     return {
-        status: summarizeOverallStatus(checks),
-        checks,
+        status: summarizeOverallStatus(finalChecks),
+        checks: finalChecks,
         ...(captureReport ? { capture: captureReport } : {}),
     };
 }

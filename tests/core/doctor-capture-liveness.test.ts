@@ -3,7 +3,7 @@ import { removeTempDir } from '../helpers/temp-dir.js';
 import { spawnSync } from 'child_process';
 import os from 'os';
 import path from 'path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runDoctor as runDoctorImpl, formatDoctorReport } from '../../src/core/doctor.js';
 import {
   CAPTURE_HOOKS, HOOK_OUTCOMES_FILENAME, NOT_TRIGGERED_SKIP_REASONS, SILENT_ELIGIBLE_HOOKS,
@@ -16,6 +16,17 @@ import { closeDatabase, getDatabase, openDatabase } from '../../src/db.js';
 import { AUTO_CAPTURE_TAG } from '../../src/core/types.js';
 import { getProjectName } from '../../src/core/paths.js';
 import type { InstallChannel } from '../../src/core/install-channel.js';
+
+// "Is the codex command on PATH" is answered by the real machine PATH otherwise: a developer box with Codex installed would change
+// what these fixtures mean. Each test that needs it says so.
+const presence = vi.hoisted(() => ({ codexOnPath: false, claudeOnPath: false, geminiOnPath: false }));
+vi.mock('../../src/core/host-presence.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../../src/core/host-presence.js')>();
+  return {
+    ...original,
+    isOnPath: (tool: string) => (tool === 'codex' ? presence.codexOnPath : tool === 'claude' ? presence.claudeOnPath : tool === 'gemini' ? presence.geminiOnPath : original.isOnPath(tool)),
+  };
+});
 
 /**
  * The three capture-liveness verdicts, pinned by fixtures (#327).
@@ -32,6 +43,7 @@ const tempRoots: string[] = [];
 const savedEnv: Array<[string, string | undefined]> = [];
 
 afterEach(() => {
+  presence.geminiOnPath = false;
   for (const [key, value] of savedEnv.splice(0)) {
     if (value === undefined) delete process.env[key]; else process.env[key] = value;
   }
@@ -43,6 +55,24 @@ afterEach(() => {
 function setEnv(key: string, value: string | undefined) {
   savedEnv.push([key, process.env[key]]);
   if (value === undefined) delete process.env[key]; else process.env[key] = value;
+}
+
+/**
+ * A machine that has exactly these agents: Claude Code and Codex through their configuration
+ * directories, Gemini CLI through its command. The ambient CLAUDE_CONFIG_DIR / CODEX_HOME of whoever runs
+ * the suite (inside Codex, CODEX_HOME is set) never leaks into the fixture. Restored by afterEach.
+ */
+function pinHosts(hosts: { claude?: boolean; codex?: boolean; gemini?: boolean }) {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-hosts-'));
+  tempRoots.push(base);
+  const dirFor = (name: string, here: boolean | undefined) => {
+    const dir = path.join(base, here ? name : `no-such-${name}`);
+    if (here) fs.mkdirSync(dir);
+    return dir;
+  };
+  setEnv('CLAUDE_CONFIG_DIR', dirFor('claude', hosts.claude));
+  setEnv('CODEX_HOME', dirFor('codex', hosts.codex));
+  presence.geminiOnPath = hosts.gemini === true;
 }
 
 function makeUpdateCheck(): UpdateCheck {
@@ -531,6 +561,11 @@ describe('doctor: capture-liveness', () => {
     });
 
     it('any other silent hook keeps its reinstall advice', async () => {
+      // Claude Code must be here for the advice to be install-hooks: a machine with no
+      // agent host is told to install one first (#528). Pinned, not left to the machine's own state.
+      const claudeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-claude-home-'));
+      tempRoots.push(claudeHome);
+      setEnv('CLAUDE_CONFIG_DIR', claudeHome);
       memeshDirWith([...skips('session-summary', 6, SKIP_REASONS.tooLittleActivity)]);
       const result = await run();
       const check = result.checks.find((c) => c.id === 'capture-liveness')!;
@@ -596,6 +631,30 @@ describe('doctor: capture-liveness', () => {
     expect(check.status).not.toBe('fail');
     expect(check.code).toBe('capture-liveness.not-wired');
     expect(result.capture?.status).not.toBe('FAIL');
+  });
+
+  it('the "never ran, nothing wired" row follows the agent this machine has: setup / Codex refresh / no hook / install-hooks (#528)', async () => {
+    const neverRan = async (hosts: Parameters<typeof pinHosts>[0]) => {
+      pinHosts(hosts);
+      memeshDirWith(skips('post-commit', 6, SKIP_REASONS.commitLineMissing));
+      const result = await run({ stampedHooks: [] });
+      return { check: result.checks.find((c) => c.id === 'capture-liveness')!, wiring: result.checks.find((c) => c.id === 'hook-wiring')! };
+    };
+    const none = await neverRan({});
+    expect(none.wiring.code).toBe('hook-wiring.no-host');
+    expect(none.check.code).toBe('capture-liveness.not-wired');
+    expect(none.check.fix).toContain('memesh setup');
+    expect(none.check.fix).not.toContain('install-hooks');
+    const codex = await neverRan({ codex: true });
+    expect(codex.check.code).toBe('capture-liveness.not-wired');
+    expect(codex.check.fix).toContain('codex plugin add memesh@pcircle-memesh');
+    expect(codex.check.fix).not.toContain('install-hooks');
+    const gemini = await neverRan({ gemini: true });
+    expect(gemini.check.fix).toContain('MCP server only');
+    expect(gemini.check.fix).not.toContain('install-hooks');
+    const claude = await neverRan({ claude: true });
+    expect(claude.check.code).toBe('capture-liveness.not-wired');
+    expect(claude.check.fix).toContain('install-hooks');
   });
 
   it('never-ran with auto-capture entities landing is version skew, not death', async () => {
@@ -752,6 +811,72 @@ describe('doctor: capture-liveness on a real database', () => {
     expect(check.code).toBe('capture-liveness.no-records');
     expect(check.params?.hours).toBe(100);
     expect(result.capture?.status).toBe('PASS_WITH_CONCERNS');
+  });
+
+  it('hooks that stamped for days but recorded nothing warn even when no capture hook is confirmed wired (#528)', async () => {
+    // This used to read "normal right after an upgrade" whenever wiring could not be
+    // confirmed — which is exactly when the heartbeats prove something IS running.
+    memeshDirWith([]);
+    seed({ stamped: [['session-summary', 100], ['post-commit', 100]], sinceHours: 720, commitsHoursAgo: [] });
+    const result = await real('npm-global');
+    const check = result.checks.find((c) => c.id === 'capture-liveness')!;
+    expect(check.status).toBe('warn');
+    expect(check.code).toBe('capture-liveness.no-records');
+  });
+
+  it('on a Codex-only machine the no-records warning names the Codex refresh command, never Claude Code\'s fix (#528)', async () => {
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-codex-home-'));
+    tempRoots.push(codexHome);
+    setEnv('CLAUDE_CONFIG_DIR', path.join(codexHome, 'no-such-claude-dir'));
+    setEnv('CODEX_HOME', codexHome);
+    memeshDirWith([]);
+    seed({ stamped: [['session-summary', 100], ['post-commit', 100]], sinceHours: 720, commitsHoursAgo: [] });
+    const result = await real('npm-global');
+    const check = result.checks.find((c) => c.id === 'capture-liveness')!;
+    expect(check.code).toBe('capture-liveness.no-records');
+    expect(check.fix).toContain('codex plugin add memesh@pcircle-memesh');
+    expect(check.fix).not.toContain('install-hooks');
+    expect(check.fix).not.toContain('/plugin update');
+    // And the wiring row it follows is the Codex-only one, which keeps "never ran" from becoming a FAIL.
+    expect(result.checks.find((c) => c.id === 'hook-wiring')).toMatchObject({ code: 'hook-wiring.no-claude-code' });
+  });
+
+  it('on a machine with no agent host the no-records warning gets the setup next step, not install-hooks (#528)', async () => {
+    pinHosts({});
+    memeshDirWith([]);
+    seed({ stamped: [['session-summary', 100], ['post-commit', 100]], sinceHours: 720, commitsHoursAgo: [] });
+    const result = await real('npm-global');
+    const check = result.checks.find((c) => c.id === 'capture-liveness')!;
+    expect(check.code).toBe('capture-liveness.no-records');
+    expect(result.checks.find((c) => c.id === 'hook-wiring')?.code).toBe('hook-wiring.no-host');
+    expect(check.fix).toBe('Install Claude Code or Codex (or Gemini CLI), then run `memesh setup` to connect memesh to it.');
+    expect(check.fixId).toBeUndefined();
+  });
+
+  it('on a Gemini-only machine the no-records warning names no install-hooks and no Codex command (#528)', async () => {
+    pinHosts({ gemini: true });
+    memeshDirWith([]);
+    seed({ stamped: [['session-summary', 100], ['post-commit', 100]], sinceHours: 720, commitsHoursAgo: [] });
+    const result = await real('npm-global');
+    const check = result.checks.find((c) => c.id === 'capture-liveness')!;
+    expect(check.code).toBe('capture-liveness.no-records');
+    expect(check.fix).toContain('MCP server only');
+    expect(check.fix).not.toContain('install-hooks');
+    expect(check.fix).not.toContain('codex plugin add');
+  });
+
+  it('with Claude Code present the same warning keeps Claude Code\'s fix (control for the Codex-only case) (#528)', async () => {
+    const claudeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-claude-home-'));
+    tempRoots.push(claudeHome);
+    setEnv('CLAUDE_CONFIG_DIR', claudeHome);
+    setEnv('CODEX_HOME', path.join(claudeHome, 'no-such-codex-dir'));
+    memeshDirWith([]);
+    seed({ stamped: [['session-summary', 100], ['post-commit', 100]], sinceHours: 720, commitsHoursAgo: [] });
+    const result = await real('npm-global');
+    const check = result.checks.find((c) => c.id === 'capture-liveness')!;
+    expect(check.code).toBe('capture-liveness.no-records');
+    expect(check.fix).toContain('install-hooks');
+    expect(check.fix).not.toContain('codex plugin add');
   });
 
   it('no outcome records inside the grace is still the ordinary post-upgrade state', async () => {

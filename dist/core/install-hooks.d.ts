@@ -22,6 +22,8 @@ export interface InstallResult {
         existingCount: number;
     }>;
     markerPath: string;
+    settingsWritten: boolean;
+    markerWritten: boolean;
     pluginRuntimeDetected?: {
         installPath: string;
         version: string;
