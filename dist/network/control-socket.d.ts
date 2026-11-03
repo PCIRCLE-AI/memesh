@@ -12,6 +12,13 @@ export type BridgeProbe = {
 };
 export declare function probeBridge(dataDir: string, deadlineMs?: number): Promise<BridgeProbe>;
 export declare function askBridgeToStop(dataDir: string): Promise<boolean>;
+interface FileIdentity {
+    dev: number;
+    ino: number;
+}
+export declare function identityOf(file: string): FileIdentity | null;
+export declare function takeOverStaleLock(lock: string, judged: FileIdentity): void;
+export declare function removeStaleSocket(target: string, judged: FileIdentity | null): void;
 export interface ControlHandlers {
     isReady(): boolean;
     stop(): void;
@@ -19,6 +26,7 @@ export interface ControlHandlers {
 }
 export type ControlHold = {
     kind: 'held';
+    stillOurs(): boolean;
     close(): void;
 } | {
     kind: 'already-running';
@@ -26,4 +34,5 @@ export type ControlHold = {
     kind: 'holder-unresponsive';
 };
 export declare function holdControlSocket(dataDir: string, handlers: ControlHandlers): Promise<ControlHold>;
+export {};
 //# sourceMappingURL=control-socket.d.ts.map

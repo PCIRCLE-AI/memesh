@@ -1,9 +1,11 @@
 // The bridge's local control socket. Whoever holds the listen IS the bridge: the
 // operating system gives it to one process at a time, so nobody has to judge
 // another process by its command line. A bridge is known by answering here with
-// this data dir's name, and it stops when asked here. Nothing signals a pid.
+// this data dir's name, and it stops when asked here. Nothing signals a pid. Every
+// request carries a token from a private file: a named pipe has no file mode, so on
+// Windows another local user may reach the pipe, and they get nothing without it.
 
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
@@ -13,7 +15,7 @@ import { NetworkError, networkDir } from './types.js';
 const SOCKET_PATH_MAX_BYTES = 103;
 const PROBE_DEADLINE_MS = 4_000;
 const REQUEST_DEADLINE_MS = 2_000;
-const REQUEST_MAX_BYTES = 256;
+const REQUEST_MAX_BYTES = 512;
 const REPLY_MAX_BYTES = 8 * 1024;
 const STARTUP_LOCK_WAIT_MS = 5_000;
 const STARTUP_LOCK_STALE_MS = 30_000;
@@ -53,10 +55,55 @@ export type BridgeProbe =
   | { kind: 'not-running' }
   | { kind: 'unresponsive' };
 
+function tokenPath(dataDir: string): string {
+  return path.join(networkDir(dataDir), 'control.token');
+}
+
+const TOKEN_FORMAT = /^[0-9a-f]{64}$/;
+
+/**
+ * The data dir's control token, created once and kept. It is not per bind: a loser
+ * must never overwrite what the holder compares against, and two starters both
+ * reading one file cannot disagree. A crash leaves it valid, so a restart just uses it.
+ */
+function ensureControlToken(dataDir: string): string {
+  const file = tokenPath(dataDir);
+  const existing = readControlToken(dataDir);
+  if (existing !== null) return existing;
+  const temporary = `${file}.tmp-${process.pid}`;
+  fs.writeFileSync(temporary, randomBytes(32).toString('hex'), { mode: 0o600 });
+  try {
+    fs.chmodSync(temporary, 0o600);
+    // A damaged file is replaced; an intact one a concurrent starter just made is kept.
+    if (fs.existsSync(file) && readControlToken(dataDir) === null) fs.rmSync(file, { force: true });
+    fs.linkSync(temporary, file);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
+  return readControlToken(dataDir) as string;
+}
+
+function readControlToken(dataDir: string): string | null {
+  try {
+    const token = fs.readFileSync(tokenPath(dataDir), 'utf8');
+    return TOKEN_FORMAT.test(token) ? token : null;
+  } catch {
+    return null;
+  }
+}
+
+function tokensMatch(given: unknown, expected: string): boolean {
+  if (typeof given !== 'string') return false;
+  const left = createHash('sha256').update(given).digest();
+  return timingSafeEqual(left, createHash('sha256').update(expected).digest());
+}
+
 function parseReply(line: string, dataDir: string): Reply | null {
   try {
     const reply = JSON.parse(line) as Partial<Reply> | null;
-    const valid = Number.isSafeInteger(reply?.pid) && typeof reply?.ready === 'boolean';
+    const valid = Number.isSafeInteger(reply?.pid) && (reply?.pid as number) > 0 && typeof reply?.ready === 'boolean';
     return valid && reply?.data_dir === dataDirIdentity(dataDir) ? reply as Reply : null;
   } catch {
     return null;
@@ -74,7 +121,7 @@ function request(dataDir: string, op: 'hello' | 'stop', deadlineMs: number): Pro
       resolve(result);
     };
     const timer = setTimeout(() => finish(null), deadlineMs);
-    socket.once('connect', () => socket.write(`${JSON.stringify({ op })}\n`));
+    socket.once('connect', () => socket.write(`${JSON.stringify({ op, token: readControlToken(dataDir) })}\n`));
     socket.on('data', (chunk) => {
       text += chunk.toString('utf8');
       if (text.length > REPLY_MAX_BYTES) finish(null);
@@ -103,18 +150,64 @@ export async function askBridgeToStop(dataDir: string): Promise<boolean> {
   return reply !== null && reply !== 'not-running';
 }
 
+interface FileIdentity { dev: number; ino: number }
+
+export function identityOf(file: string): FileIdentity | null {
+  try {
+    const { dev, ino } = fs.lstatSync(file);
+    return { dev, ino };
+  } catch {
+    return null;
+  }
+}
+
+const sameFile = (a: FileIdentity | null, b: FileIdentity | null): boolean => a !== null && b !== null && a.dev === b.dev && a.ino === b.ino;
+
+/**
+ * Clear a lock judged stale, but only that lock. Judging takes time and another
+ * starter may have replaced it meanwhile, so the file is moved aside (atomic) and
+ * looked at: if it is not the one judged, it goes straight back. For the moment it
+ * is aside a third starter can get in, which is why a holder re-checks its lock
+ * before it touches the socket.
+ */
+export function takeOverStaleLock(lock: string, judged: FileIdentity): void {
+  const aside = `${lock}.stale-${process.pid}`;
+  try {
+    fs.renameSync(lock, aside);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw err;
+  }
+  try {
+    if (sameFile(identityOf(aside), judged)) return;
+    fs.linkSync(aside, lock);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+  } finally {
+    fs.rmSync(aside, { force: true });
+  }
+}
+
 /** Only one starter may judge and replace a stale socket at a time, or one could remove another's fresh one. */
-async function withStartupLock<T>(dataDir: string, use: () => Promise<T>): Promise<T> {
+async function withStartupLock<T>(dataDir: string, use: (holdsLock: () => boolean) => Promise<T>): Promise<T> {
   const lock = path.join(networkDir(dataDir), 'bridge.sock.startup.lock');
   const giveUpAt = Date.now() + STARTUP_LOCK_WAIT_MS;
+  let mine: FileIdentity;
   for (;;) {
     try {
-      fs.writeFileSync(lock, `${process.pid}\n`, { flag: 'wx', mode: 0o600 });
+      // The identity comes from the open file: a starter clearing a stale lock can
+      // have this one moved aside for an instant, so the path is not reliable yet.
+      const fd = fs.openSync(lock, 'wx', 0o600);
+      const { dev, ino } = fs.fstatSync(fd);
+      mine = { dev, ino };
+      fs.writeSync(fd, `${process.pid}\n`);
+      fs.closeSync(fd);
       break;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
-      if (startupLockIsStale(lock)) {
-        fs.rmSync(lock, { force: true });
+      const judged = identityOf(lock);
+      if (judged !== null && startupLockIsStale(lock)) {
+        takeOverStaleLock(lock, judged);
         continue;
       }
       if (Date.now() >= giveUpAt) throw new Error('Another network bridge is starting and did not finish.', { cause: err });
@@ -122,9 +215,9 @@ async function withStartupLock<T>(dataDir: string, use: () => Promise<T>): Promi
     }
   }
   try {
-    return await use();
+    return await use(() => sameFile(identityOf(lock), mine));
   } finally {
-    fs.rmSync(lock, { force: true });
+    if (sameFile(identityOf(lock), mine)) fs.rmSync(lock, { force: true });
   }
 }
 
@@ -156,8 +249,10 @@ function listen(server: net.Server, target: string): Promise<'listening' | 'in-u
   });
 }
 
-function removeStaleSocket(target: string): void {
+/** Remove the file the probe judged, not whatever is there by now. Already gone is fine. */
+export function removeStaleSocket(target: string, judged: FileIdentity | null): void {
   if (process.platform === 'win32') return; // A pipe nobody holds is simply gone.
+  if (!sameFile(identityOf(target), judged)) return;
   if (!fs.lstatSync(target).isSocket()) {
     throw new Error(`${target} exists and is not a socket, so the network bridge cannot use it.`);
   }
@@ -170,16 +265,17 @@ export interface ControlHandlers {
   onProblem(message: string): void;
 }
 
-function parseOp(line: string): 'hello' | 'stop' | null {
+function parseOp(line: string, token: string): 'hello' | 'stop' | null {
   try {
-    const { op } = JSON.parse(line) as { op?: unknown };
-    return op === 'hello' || op === 'stop' ? op : null;
+    const request = JSON.parse(line) as { op?: unknown; token?: unknown };
+    if (!tokensMatch(request.token, token)) return null;
+    return request.op === 'hello' || request.op === 'stop' ? request.op : null;
   } catch {
     return null;
   }
 }
 
-function serveConnection(socket: net.Socket, identity: string, handlers: ControlHandlers): void {
+function serveConnection(socket: net.Socket, identity: string, token: string, handlers: ControlHandlers): void {
   let text = '';
   socket.setTimeout(REQUEST_DEADLINE_MS, () => socket.destroy());
   socket.on('error', (err) => handlers.onProblem(`Control connection failed: ${err.message}`));
@@ -191,7 +287,7 @@ function serveConnection(socket: net.Socket, identity: string, handlers: Control
     }
     const newline = text.indexOf('\n');
     if (newline === -1) return;
-    const op = parseOp(text.slice(0, newline));
+    const op = parseOp(text.slice(0, newline), token);
     if (op === null) {
       socket.destroy();
       return;
@@ -204,7 +300,12 @@ function serveConnection(socket: net.Socket, identity: string, handlers: Control
 }
 
 export type ControlHold =
-  | { kind: 'held'; close(): void }
+  | {
+    kind: 'held';
+    /** Is the socket path still the file this process bound? On Windows a pipe has no file: always. */
+    stillOurs(): boolean;
+    close(): void;
+  }
   | { kind: 'already-running' }
   | { kind: 'holder-unresponsive' };
 
@@ -217,18 +318,37 @@ export async function holdControlSocket(dataDir: string, handlers: ControlHandle
   assertControlPathFits(dataDir);
   const identity = dataDirIdentity(dataDir);
   const target = controlPath(dataDir);
-  const server = net.createServer((socket) => serveConnection(socket, identity, handlers));
-  server.on('error', (err) => handlers.onProblem(`Control socket failed: ${err.message}`));
-  return withStartupLock(dataDir, async () => {
-    for (let attempt = 0; attempt < 3; attempt++) {
-      if ((await listen(server, target)) === 'listening') {
-        return { kind: 'held', close: () => { server.close(); } };
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const held = await withStartupLock(dataDir, async (holdsLock): Promise<ControlHold | 'lost-the-lock'> => {
+      const token = ensureControlToken(dataDir);
+      const server = net.createServer((socket) => serveConnection(socket, identity, token, handlers));
+      server.on('error', (err) => handlers.onProblem(`Control socket failed: ${err.message}`));
+      for (let tries = 0; tries < 3; tries++) {
+        if ((await listen(server, target)) === 'listening') return heldBy(server, target);
+        const judged = identityOf(target);
+        const probe = await probeBridge(dataDir);
+        if (probe.kind === 'running') return { kind: 'already-running' };
+        if (probe.kind === 'unresponsive') return { kind: 'holder-unresponsive' };
+        if (!holdsLock()) return 'lost-the-lock';
+        removeStaleSocket(target, judged);
       }
-      const probe = await probeBridge(dataDir);
-      if (probe.kind === 'running') return { kind: 'already-running' };
-      if (probe.kind === 'unresponsive') return { kind: 'holder-unresponsive' };
-      removeStaleSocket(target);
-    }
-    throw new Error('The network bridge control socket stayed in use.');
-  });
+      throw new Error('The network bridge control socket stayed in use.');
+    });
+    if (held !== 'lost-the-lock') return held;
+  }
+  throw new Error('Another network bridge kept taking over the start.');
+}
+
+function heldBy(server: net.Server, target: string): ControlHold {
+  const bound = identityOf(target);
+  const stillOurs = (): boolean => process.platform === 'win32' || sameFile(identityOf(target), bound);
+  return {
+    kind: 'held',
+    stillOurs,
+    close: () => {
+      // Closing unlinks the path by name, whoever's file it is now. A newer bridge's stays.
+      if (stillOurs()) server.close();
+      else server.unref();
+    },
+  };
 }

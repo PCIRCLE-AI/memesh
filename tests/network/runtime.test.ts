@@ -7,7 +7,7 @@ import { ensureIdentity } from '../../src/network/identity.js';
 import { encodeLink } from '../../src/network/invites.js';
 import { explainLoadFailure } from '../../src/network/native-loader.js';
 import { createNetwork, joinNetwork, runJoinChild } from '../../src/network/operations.js';
-import { currentLibc, platformPackages } from '../../src/network/runtime-platform.js';
+import { currentLibc, nativeFileName, platformPackage } from '../../src/network/runtime-platform.js';
 import { checkRuntime, ensureRuntime, explainInstallFailure, isPlatformSupported } from '../../src/network/runtime.js';
 import { openNetworkStore, readConfig } from '../../src/network/store.js';
 import { NetworkError, childEnv, runtimeDir } from '../../src/network/types.js';
@@ -56,6 +56,44 @@ describe('the shipped pin', () => {
     expect(isPlatformSupported(lockText, 'linux', 'x64', 'musl')).toBe(true);
     expect(isPlatformSupported(lockText, 'linux', 'ppc64', 'glibc')).toBe(false);
     expect(isPlatformSupported(lockText, 'win32', 'x64', null)).toBe(true);
+  });
+});
+
+describe('which native file is this computer\'s', () => {
+  it('picks the package, including the two 32-bit ARM ones the lock does not separate by libc', () => {
+    const cases: Array<[string, string, string | null, string | null]> = [
+      ['linux', 'arm', 'glibc', 'iroh-linux-arm-gnueabihf'],
+      ['linux', 'arm', 'musl', 'iroh-linux-arm-musleabihf'],
+      ['linux', 'x64', 'glibc', 'iroh-linux-x64-gnu'],
+      ['linux', 'x64', 'musl', 'iroh-linux-x64-musl'],
+      ['linux', 'arm64', 'glibc', 'iroh-linux-arm64-gnu'],
+      ['linux', 'arm64', 'musl', 'iroh-linux-arm64-musl'],
+      ['darwin', 'arm64', null, 'iroh-darwin-arm64'],
+      ['win32', 'x64', null, 'iroh-win32-x64-msvc'],
+      ['win32', 'arm64', null, 'iroh-win32-arm64-msvc'],
+      ['darwin', 'x64', null, null],
+      ['linux', 'ppc64', 'glibc', null],
+    ];
+    for (const [platform, arch, libc, expected] of cases) {
+      const name = platformPackage(lockText, platform, arch, libc);
+      expect({ platform, arch, libc, name: name?.split('/').pop() ?? null }).toEqual({ platform, arch, libc, name: expected });
+    }
+  });
+
+  it('names the file every pinned tarball really holds', () => {
+    // Read from each tarball with `npm pack` + `tar tzf` for 1.2.0.
+    const measured = [
+      'android-arm-eabi', 'android-arm64', 'darwin-arm64', 'linux-arm-gnueabihf', 'linux-arm-musleabihf',
+      'linux-arm64-gnu', 'linux-arm64-musl', 'linux-x64-gnu', 'linux-x64-musl', 'win32-arm64-msvc', 'win32-x64-msvc',
+    ];
+    const lock = JSON.parse(lockText) as { packages: Record<string, { os?: string[] }> };
+    const pinned = Object.entries(lock.packages).filter(([, entry]) => entry.os).map(([key]) => key.replace('node_modules/', ''));
+    expect(pinned.length).toBe(measured.length);
+    for (const name of pinned) {
+      const suffix = (name.split('/').pop() as string).replace(/^iroh-/, '');
+      expect(measured).toContain(suffix);
+      expect(nativeFileName(name)).toBe(`iroh.${suffix}.node`);
+    }
   });
 });
 
@@ -247,7 +285,7 @@ process.exit(7);`),
 
   describe('installing, against a local registry', () => {
     let registry: Registry;
-    const platformKey = (): string => platformPackages(lockText, process.platform, process.arch, currentLibc())[0];
+    const platformKey = (): string => platformPackage(lockText, process.platform, process.arch, currentLibc()) as string;
 
     beforeAll(async () => { registry = await startRegistry(platformKey()); });
     afterAll(() => registry.close());
@@ -265,9 +303,11 @@ process.exit(7);`),
     };
     const markerOf = (ctx: { dataDir: string }): string => path.join(runtimeDir(ctx.dataDir), '.installed-lock-sha256');
 
+    const OK_CHECK = "console.log('{\"ok\":true}');";
+
     it('a good download installs, with scripts off, even under omit=optional', async () => {
       registry.serve('good');
-      const ctx = installContext(registry.lockWith({ wrapper: true, platform: true }), { npm_config_omit: 'optional' });
+      const ctx = { ...installContext(registry.lockWith({ wrapper: true, platform: true }), { npm_config_omit: 'optional' }), bridgeEntry: crashingBridge(OK_CHECK) };
       ensureRuntime(ctx);
       expect(fs.existsSync(markerOf(ctx))).toBe(true);
       expect(fs.existsSync(path.join(runtimeDir(ctx.dataDir), 'node_modules', platformKey()))).toBe(true);
@@ -306,6 +346,48 @@ process.exit(7);`),
       }
       expect(fs.existsSync(ctx.dbPath)).toBe(true);
     }, 120_000);
+
+    it('pinned package missing, a planted copy in a parent node_modules: not loaded, no marker', async () => {
+      registry.serve('platform-garbage');
+      const ctx = installContext(registry.lockWith({ wrapper: true, platform: false }));
+      const home = ctx.env.HOME;
+      const planted = path.join(home, 'node_modules', platformKey());
+      const proof = path.join(home, 'PLANTED-LOADED');
+      fs.mkdirSync(planted, { recursive: true });
+      const body = `require('fs').writeFileSync(${JSON.stringify(proof)}, 'x'); module.exports = { Endpoint: { builder() { return {}; } } };`;
+      fs.writeFileSync(path.join(planted, 'package.json'), JSON.stringify({ name: platformKey(), version: '9.9.9', main: 'index.js' }));
+      fs.writeFileSync(path.join(planted, 'index.js'), body);
+      fs.writeFileSync(path.join(planted, nativeFileName(platformKey())), body);
+      const err = await failure(() => ensureRuntime(ctx));
+      expect(err.code).toBe('runtime_install_failed');
+      expect(fs.existsSync(proof)).toBe(false);
+      expect(fs.existsSync(markerOf(ctx))).toBe(false);
+
+      // And at load time, with the install already gone wrong on disk.
+      fs.mkdirSync(runtimeDir(ctx.dataDir), { recursive: true });
+      fs.writeFileSync(path.join(runtimeDir(ctx.dataDir), 'package-lock.json'), lockText);
+      const check = await failure(() => checkRuntime(ctx));
+      expect(check.message).toMatch(/missing from the install/);
+      expect(fs.existsSync(proof)).toBe(false);
+    }, 120_000);
+
+    it('a symlink out of the runtime folder is refused, for the package or the file', async () => {
+      const ctx = newContext();
+      const runtime = runtimeDir(ctx.dataDir);
+      fs.mkdirSync(path.join(runtime, 'node_modules', path.dirname(platformKey())), { recursive: true });
+      fs.writeFileSync(path.join(runtime, 'package-lock.json'), lockText);
+      const outside = path.join(ctx.env?.HOME as string, 'outside');
+      fs.mkdirSync(outside);
+      fs.writeFileSync(path.join(outside, nativeFileName(platformKey())), 'not native');
+      const inside = path.join(runtime, 'node_modules', platformKey());
+      fs.symlinkSync(outside, inside);
+      expect((await failure(() => checkRuntime(ctx))).message).toMatch(/points outside the install/);
+
+      fs.rmSync(inside);
+      fs.mkdirSync(inside);
+      fs.symlinkSync(path.join(outside, nativeFileName(platformKey())), path.join(inside, nativeFileName(platformKey())));
+      expect((await failure(() => checkRuntime(ctx))).message).toMatch(/points outside the install/);
+    });
 
     it('a cleanup that fails does not replace the install\'s real error', async () => {
       registry.serve('all-garbage');

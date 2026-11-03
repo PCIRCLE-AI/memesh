@@ -17,4 +17,7 @@ export function platformPackage(lockText, platform, arch, libc) {
     const names = platformPackages(lockText, platform, arch, libc);
     return names.find((name) => name.includes('musl') === (libc === 'musl')) ?? names[0] ?? null;
 }
+export function nativeFileName(packageName) {
+    return `${packageName.split('/').pop().replace(/^iroh-/, 'iroh.')}.node`;
+}
 //# sourceMappingURL=runtime-platform.js.map

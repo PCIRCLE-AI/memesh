@@ -17,4 +17,5 @@ export declare function statusPath(dataDir: string): string;
 export declare function logPath(dataDir: string): string;
 export declare function writeStatus(dataDir: string, status: BridgeStatus): void;
 export declare function readStatus(dataDir: string): BridgeStatus | null;
+export declare function reportedPid(status: BridgeStatus | null): number | null;
 //# sourceMappingURL=bridge-state.d.ts.map

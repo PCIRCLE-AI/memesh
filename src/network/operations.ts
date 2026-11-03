@@ -6,7 +6,7 @@ import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import { describeChildDeath, startBridge } from './bridge-control.js';
 import type { JoinChildInput, JoinChildResult } from './bridge-join.js';
-import { readStatus, type BridgeStatus } from './bridge-state.js';
+import { readStatus, reportedPid, type BridgeStatus } from './bridge-state.js';
 import { assertControlPathFits, probeBridge } from './control-socket.js';
 import { ensureIdentity, loadIdentity } from './identity.js';
 import { DEFAULT_INVITE_TTL_HOURS, MAX_INVITE_TTL_HOURS, createInvite, encodeLink, parseLink, type InviteLink } from './invites.js';
@@ -393,7 +393,7 @@ export async function getNetworkStatus(ctx: NetworkContext): Promise<NetworkStat
       running,
       unresponsive: probe.kind === 'unresponsive',
       // When it does not answer, its own earlier status is all there is to go on.
-      pid: running ? probe.pid : probe.kind === 'unresponsive' ? status?.pid ?? null : null,
+      pid: running ? probe.pid : probe.kind === 'unresponsive' ? reportedPid(status) : null,
       started_at: current?.started_at ?? null,
       relay_state: current?.relay_state ?? null,
       last_error: status?.last_error ?? null,

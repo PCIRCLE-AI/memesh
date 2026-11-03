@@ -43,7 +43,6 @@ export function promptForLink(
   stdin: NodeJS.ReadStream = process.stdin,
   stderr: NodeJS.WritableStream = process.stderr,
 ): Promise<string> {
-  stderr.write('Paste the invite link (it will not be shown), then press Enter: ');
   return new Promise((resolve, reject) => {
     let text = '';
     const finish = (settle: () => void): void => {
@@ -70,10 +69,13 @@ export function promptForLink(
         else if (text.length < LINK_INPUT_MAX_CHARS) text += character;
       }
     };
+    // Echo goes off before the prompt shows: a link pasted the moment the prompt
+    // appears would otherwise be printed by the terminal itself.
     stdin.setRawMode?.(true);
     stdin.on('data', onData);
     stdin.on('end', onEnd);
     stdin.resume();
+    stderr.write('Paste the invite link (it will not be shown), then press Enter: ');
   });
 }
 
@@ -108,7 +110,7 @@ function printStatus(status: NetworkStatus): void {
   }
   const bridge = status.bridge;
   if (bridge.unresponsive) {
-    console.log(`Bridge:       not answering. ${bridge.pid === null ? 'Its process id is not known.' : `Its last recorded process id is ${bridge.pid}.`} End it with your system's tools if it stays this way.`);
+    console.log(`Bridge:       not answering. ${bridge.pid === null ? 'Its process id is not known.' : `The process id it last reported is ${bridge.pid}; check that it really is the bridge first.`} End it with your system's tools if it stays this way.`);
   } else {
     console.log(bridge.running
       ? `Bridge:       running (pid ${bridge.pid}, since ${bridge.started_at}), relay ${bridge.relay_state}`

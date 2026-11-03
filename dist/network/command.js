@@ -22,7 +22,6 @@ export function assertPersonAtTerminal(command, stdin = process.stdin, stdout = 
 }
 const LINK_INPUT_MAX_CHARS = 16 * 1024;
 export function promptForLink(stdin = process.stdin, stderr = process.stderr) {
-    stderr.write('Paste the invite link (it will not be shown), then press Enter: ');
     return new Promise((resolve, reject) => {
         let text = '';
         const finish = (settle) => {
@@ -56,6 +55,7 @@ export function promptForLink(stdin = process.stdin, stderr = process.stderr) {
         stdin.on('data', onData);
         stdin.on('end', onEnd);
         stdin.resume();
+        stderr.write('Paste the invite link (it will not be shown), then press Enter: ');
     });
 }
 const progress = (message) => { process.stderr.write(`${message}\n`); };
@@ -86,7 +86,7 @@ function printStatus(status) {
     }
     const bridge = status.bridge;
     if (bridge.unresponsive) {
-        console.log(`Bridge:       not answering. ${bridge.pid === null ? 'Its process id is not known.' : `Its last recorded process id is ${bridge.pid}.`} End it with your system's tools if it stays this way.`);
+        console.log(`Bridge:       not answering. ${bridge.pid === null ? 'Its process id is not known.' : `The process id it last reported is ${bridge.pid}; check that it really is the bridge first.`} End it with your system's tools if it stays this way.`);
     }
     else {
         console.log(bridge.running

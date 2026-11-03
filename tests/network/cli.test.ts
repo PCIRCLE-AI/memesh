@@ -169,6 +169,20 @@ describe('memesh network, as a person or script runs it', () => {
       finished(terminal);
     });
 
+    it('turns echo off before the prompt appears, so an instant paste is never shown', async () => {
+      const terminal = new FakeTerminal();
+      let rawWhenPrompted: boolean[] | null = null;
+      const stderr = new EventEmitter() as unknown as NodeJS.WritableStream;
+      (stderr as unknown as { write: () => boolean }).write = () => {
+        rawWhenPrompted ??= [...terminal.raw];
+        return true;
+      };
+      const answer = promptForLink(terminal as unknown as NodeJS.ReadStream, stderr);
+      expect(rawWhenPrompted).toEqual([true]);
+      terminal.emit('data', 'abc\r');
+      await answer;
+    });
+
     it('trims what was pasted, ignores a leading newline, and handles backspace', async () => {
       const terminal = new FakeTerminal();
       const answer = prompt(terminal);

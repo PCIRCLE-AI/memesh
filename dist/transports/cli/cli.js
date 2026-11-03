@@ -64886,7 +64886,7 @@ __export(server_exports, {
   isLoopbackRequest: () => isLoopbackRequest,
   startServer: () => startServer
 });
-import { randomBytes as randomBytes8, timingSafeEqual } from "crypto";
+import { randomBytes as randomBytes9, timingSafeEqual as timingSafeEqual2 } from "crypto";
 import fs29 from "fs";
 import path26 from "path";
 import { fileURLToPath as fileURLToPath3 } from "url";
@@ -64903,19 +64903,19 @@ function loadOrCreateRemoteToken() {
     return { token: Buffer.from(fromEnv, "utf8"), freshlyCreated: false };
   }
   const dir = memeshDir2();
-  const tokenPath = path26.join(dir, "remote-token");
+  const tokenPath2 = path26.join(dir, "remote-token");
   fs29.mkdirSync(dir, { recursive: true });
   removeGroupAndOtherAccess(dir);
-  const generated = randomBytes8(32).toString("hex");
+  const generated = randomBytes9(32).toString("hex");
   try {
-    const fd = fs29.openSync(tokenPath, fs29.constants.O_WRONLY | fs29.constants.O_CREAT | fs29.constants.O_EXCL, 384);
+    const fd = fs29.openSync(tokenPath2, fs29.constants.O_WRONLY | fs29.constants.O_CREAT | fs29.constants.O_EXCL, 384);
     try {
       fs29.writeFileSync(fd, generated + "\n");
     } finally {
       fs29.closeSync(fd);
     }
     try {
-      fs29.chmodSync(tokenPath, 384);
+      fs29.chmodSync(tokenPath2, 384);
     } catch {
     }
     return { token: Buffer.from(generated, "utf8"), freshlyCreated: true };
@@ -64923,11 +64923,11 @@ function loadOrCreateRemoteToken() {
     if (err?.code !== "EEXIST")
       throw err;
   }
-  const value = fs29.readFileSync(tokenPath, "utf8").trim();
+  const value = fs29.readFileSync(tokenPath2, "utf8").trim();
   if (value.length < 16) {
-    throw new Error(`Existing ${tokenPath} is too short (<16 chars). Delete it and restart memesh-http to regenerate.`);
+    throw new Error(`Existing ${tokenPath2} is too short (<16 chars). Delete it and restart memesh-http to regenerate.`);
   }
-  removeGroupAndOtherAccess(tokenPath);
+  removeGroupAndOtherAccess(tokenPath2);
   return { token: Buffer.from(value, "utf8"), freshlyCreated: false };
 }
 function constantTimeEquals(a, b) {
@@ -64936,7 +64936,7 @@ function constantTimeEquals(a, b) {
   const bPad = Buffer.alloc(max);
   a.copy(aPad);
   b.copy(bPad);
-  const eq = timingSafeEqual(aPad, bPad);
+  const eq = timingSafeEqual2(aPad, bPad);
   return eq && a.length === b.length;
 }
 function sameSiteOnly(req, res, next) {
@@ -65125,12 +65125,12 @@ function startServer(host = HOST, port = PORT, opts) {
     remoteToken = token;
     if (freshlyCreated) {
       const dir = memeshDir2();
-      const tokenPath = path26.join(dir, "remote-token");
+      const tokenPath2 = path26.join(dir, "remote-token");
       process.stderr.write(`
 MeMesh HTTP: bearer token generated for remote access.
-  Token file: ${tokenPath} (mode 600)
+  Token file: ${tokenPath2} (mode 600)
   Use header: Authorization: Bearer <token>
-  Rotate by deleting ${tokenPath} and restarting.
+  Rotate by deleting ${tokenPath2} and restarting.
   Override: set MEMESH_REMOTE_TOKEN.
 
 `);
@@ -68049,9 +68049,13 @@ function readStatus(dataDir) {
     return null;
   }
 }
+function reportedPid(status) {
+  const pid = status?.pid;
+  return typeof pid === "number" && Number.isSafeInteger(pid) && pid > 0 ? pid : null;
+}
 
 // dist/network/control-socket.js
-import { createHash as createHash11 } from "node:crypto";
+import { createHash as createHash11, randomBytes as randomBytes5, timingSafeEqual } from "node:crypto";
 import fs19 from "node:fs";
 import net2 from "node:net";
 import path17 from "node:path";
@@ -68079,10 +68083,22 @@ function dataDirIdentity(dataDir) {
     return dataDir;
   }
 }
+function tokenPath(dataDir) {
+  return path17.join(networkDir(dataDir), "control.token");
+}
+var TOKEN_FORMAT = /^[0-9a-f]{64}$/;
+function readControlToken(dataDir) {
+  try {
+    const token = fs19.readFileSync(tokenPath(dataDir), "utf8");
+    return TOKEN_FORMAT.test(token) ? token : null;
+  } catch {
+    return null;
+  }
+}
 function parseReply(line, dataDir) {
   try {
     const reply = JSON.parse(line);
-    const valid = Number.isSafeInteger(reply?.pid) && typeof reply?.ready === "boolean";
+    const valid = Number.isSafeInteger(reply?.pid) && reply?.pid > 0 && typeof reply?.ready === "boolean";
     return valid && reply?.data_dir === dataDirIdentity(dataDir) ? reply : null;
   } catch {
     return null;
@@ -68098,7 +68114,7 @@ function request(dataDir, op, deadlineMs) {
       resolve2(result);
     };
     const timer = setTimeout(() => finish(null), deadlineMs);
-    socket.once("connect", () => socket.write(`${JSON.stringify({ op })}
+    socket.once("connect", () => socket.write(`${JSON.stringify({ op, token: readControlToken(dataDir) })}
 `));
     socket.on("data", (chunk) => {
       text += chunk.toString("utf8");
@@ -68130,7 +68146,7 @@ async function askBridgeToStop(dataDir) {
 
 // dist/network/identity.js
 init_file_mode();
-import { createPrivateKey, createPublicKey, randomBytes as randomBytes5, sign, verify } from "node:crypto";
+import { createPrivateKey, createPublicKey, randomBytes as randomBytes6, sign, verify } from "node:crypto";
 import fs20 from "node:fs";
 import path18 from "node:path";
 var SEED_BYTES = 32;
@@ -68178,7 +68194,7 @@ function ensureIdentity(dataDir) {
   const file2 = identityPath(dataDir);
   if (!fs20.existsSync(file2)) {
     const temporary = `${file2}.tmp-${process.pid}`;
-    fs20.writeFileSync(temporary, randomBytes5(SEED_BYTES), { mode: 384, flag: "wx" });
+    fs20.writeFileSync(temporary, randomBytes6(SEED_BYTES), { mode: 384, flag: "wx" });
     try {
       fs20.chmodSync(temporary, 384);
       fs20.linkSync(temporary, file2);
@@ -68219,9 +68235,9 @@ function describeChildDeath(code, signal) {
   return CRASH_SIGNALS.has(signal) ? `crashed with signal ${signal}, which usually means its native file is damaged` : `was stopped by signal ${signal}`;
 }
 function howToStop(ctx) {
-  const pid = readStatus(ctx.dataDir)?.pid;
-  const named = pid ? ` Its last recorded process id is ${pid}.` : "";
-  return `${named} To stop it yourself, end that process with your system's tools, then run this again.`;
+  const pid = reportedPid(readStatus(ctx.dataDir));
+  const named = pid ? ` The process id the bridge last reported is ${pid}; check that it really is the bridge first.` : "";
+  return `${named} To stop it yourself, end it with your system's tools, then run this again.`;
 }
 function unresponsive(ctx) {
   return new NetworkError("bridge_unresponsive", `Something holds the network bridge's control socket and did not answer. MeMesh will not touch a process it cannot identify.${howToStop(ctx)}`);
@@ -68306,7 +68322,7 @@ async function stopBridge(ctx) {
 }
 
 // dist/network/invites.js
-import { createHash as createHash12, randomBytes as randomBytes6 } from "node:crypto";
+import { createHash as createHash12, randomBytes as randomBytes7 } from "node:crypto";
 
 // dist/network/relay-url.js
 var LOOPBACK_HOST = /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])$/;
@@ -68453,7 +68469,7 @@ function hashToken(token) {
   return createHash12("sha256").update(token).digest("hex");
 }
 function createInvite(db2, ttlMs, now) {
-  const token = randomBytes6(TOKEN_BYTES).toString("base64url");
+  const token = randomBytes7(TOKEN_BYTES).toString("base64url");
   const expiresAtMs = now + ttlMs;
   db2.prepare("INSERT INTO agent_network_invites (hash, expires_at_ms, used_at) VALUES (?, ?, NULL)").run(hashToken(token), expiresAtMs);
   return { token, expiresAtMs };
@@ -68518,7 +68534,7 @@ function parseLink(text) {
 
 // dist/network/operations.js
 import { spawn as spawn3 } from "node:child_process";
-import { randomBytes as randomBytes7 } from "node:crypto";
+import { randomBytes as randomBytes8 } from "node:crypto";
 import fs24 from "node:fs";
 
 // dist/network/store.js
@@ -68791,7 +68807,7 @@ function createNetwork(ctx, options) {
   ensureRuntime(ctx, options);
   const identity = ensureIdentity(ctx.dataDir);
   const now = Date.now();
-  const networkId = randomBytes7(16).toString("hex");
+  const networkId = randomBytes8(16).toString("hex");
   const roster = createRoster(networkId, {
     machine_id: identity.machineId,
     name: options.name,
@@ -69027,7 +69043,7 @@ async function getNetworkStatus(ctx) {
     bridge: {
       running,
       unresponsive: probe.kind === "unresponsive",
-      pid: running ? probe.pid : probe.kind === "unresponsive" ? status?.pid ?? null : null,
+      pid: running ? probe.pid : probe.kind === "unresponsive" ? reportedPid(status) : null,
       started_at: current?.started_at ?? null,
       relay_state: current?.relay_state ?? null,
       last_error: status?.last_error ?? null,
@@ -69056,7 +69072,6 @@ function assertPersonAtTerminal(command, stdin = process.stdin, stdout = process
 }
 var LINK_INPUT_MAX_CHARS = 16 * 1024;
 function promptForLink(stdin = process.stdin, stderr = process.stderr) {
-  stderr.write("Paste the invite link (it will not be shown), then press Enter: ");
   return new Promise((resolve2, reject) => {
     let text = "";
     const finish = (settle2) => {
@@ -69090,6 +69105,7 @@ function promptForLink(stdin = process.stdin, stderr = process.stderr) {
     stdin.on("data", onData);
     stdin.on("end", onEnd);
     stdin.resume();
+    stderr.write("Paste the invite link (it will not be shown), then press Enter: ");
   });
 }
 var progress = (message) => {
@@ -69123,7 +69139,7 @@ function printStatus(status) {
   }
   const bridge = status.bridge;
   if (bridge.unresponsive) {
-    console.log(`Bridge:       not answering. ${bridge.pid === null ? "Its process id is not known." : `Its last recorded process id is ${bridge.pid}.`} End it with your system's tools if it stays this way.`);
+    console.log(`Bridge:       not answering. ${bridge.pid === null ? "Its process id is not known." : `The process id it last reported is ${bridge.pid}; check that it really is the bridge first.`} End it with your system's tools if it stays this way.`);
   } else {
     console.log(bridge.running ? `Bridge:       running (pid ${bridge.pid}, since ${bridge.started_at}), relay ${bridge.relay_state}` : "Bridge:       not running. Start it with: memesh network up");
   }

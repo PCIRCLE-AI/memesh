@@ -1,5 +1,5 @@
 // The control socket, starting and stopping, with stand-in bridges: no native file.
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -7,7 +7,7 @@ import path from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { startBridge, stopBridge } from '../../src/network/bridge-control.js';
 import { readStatus, statusPath, writeStatus } from '../../src/network/bridge-state.js';
-import { controlPath, holdControlSocket, probeBridge } from '../../src/network/control-socket.js';
+import { controlPath, holdControlSocket, identityOf, probeBridge, removeStaleSocket, takeOverStaleLock } from '../../src/network/control-socket.js';
 import { ensureIdentity, ensureNetworkDir } from '../../src/network/identity.js';
 import { parseLink } from '../../src/network/invites.js';
 import { bridgeUp, createLink, createNetwork, getNetworkStatus } from '../../src/network/operations.js';
@@ -121,6 +121,10 @@ describe.skipIf(process.platform === 'win32')('the bridge control socket', () =>
         expect(await probeBridge(ctx.dataDir)).toEqual({ kind: 'unresponsive' });
         reply.current = `${JSON.stringify({ data_dir: fs.realpathSync(ctx.dataDir) })}\n`;
         expect(await probeBridge(ctx.dataDir)).toEqual({ kind: 'unresponsive' });
+        for (const pid of [-5, 0, 1.5]) {
+          reply.current = `${JSON.stringify({ data_dir: fs.realpathSync(ctx.dataDir), pid, ready: true })}\n`;
+          expect(await probeBridge(ctx.dataDir)).toEqual({ kind: 'unresponsive' });
+        }
       } finally {
         server.close();
       }
@@ -135,15 +139,25 @@ describe.skipIf(process.platform === 'win32')('the bridge control socket', () =>
       expect(await stopBridge(weird)).toEqual({ stopped: true, pid: child.pid });
     });
 
-    it('another spelling of the same folder is the same bridge', async () => {
+    it('a real symlink to the folder is the same bridge', async () => {
       const child = await startFake('running');
-      const spelled = path.join(path.dirname(ctx.dataDir), '.', path.basename(ctx.dataDir), 'network', '..');
-      expect(await probeBridge(spelled)).toEqual({ kind: 'running', pid: child.pid, ready: true });
+      const linked = path.join(home, 'via-link');
+      fs.symlinkSync(ctx.dataDir, linked);
+      expect(linked).not.toBe(ctx.dataDir);
+      expect(await probeBridge(linked)).toEqual({ kind: 'running', pid: child.pid, ready: true });
     });
   });
 
   describe('holding the socket', () => {
     const handlers = { isReady: () => true, stop: () => {}, onProblem: () => {} };
+    /** Send raw bytes to the socket and return everything that came back. */
+    const raw = (text: string): Promise<string> => new Promise((resolve) => {
+      let received = '';
+      const socket = net.createConnection(controlPath(ctx.dataDir), () => socket.write(text));
+      socket.on('data', (chunk) => { received += chunk.toString(); });
+      socket.on('error', () => resolve(received));
+      socket.on('close', () => resolve(received));
+    });
 
     it('takes a free socket in a private folder, and removes it on close', async () => {
       ensureNetworkDir(ctx.dataDir);
@@ -197,18 +211,159 @@ describe.skipIf(process.platform === 'win32')('the bridge control socket', () =>
       return expect(probeBridge(dataDir)).resolves.toEqual({ kind: 'not-running' });
     });
 
-    it('junk on the socket is dropped, and the bridge goes on answering', async () => {
-      const held = await holdControlSocket(ctx.dataDir, handlers);
+    it('junk on the socket is dropped: nothing is stopped, and the bridge goes on answering', async () => {
+      const stop = vi.fn();
+      const held = await holdControlSocket(ctx.dataDir, { ...handlers, stop });
       if (held.kind !== 'held') throw new Error(held.kind);
-      for (const junk of ['nonsense\n', '{"op":"format"}\n', 'x'.repeat(4096)]) {
-        await new Promise<void>((resolve) => {
-          const socket = net.createConnection(controlPath(ctx.dataDir), () => socket.write(junk));
-          socket.on('error', () => resolve());
-          socket.on('close', () => resolve());
-        });
+      const token = fs.readFileSync(path.join(ctx.dataDir, 'network/control.token'), 'utf8');
+      for (const junk of ['nonsense\n', `{"op":"format","token":"${token}"}\n`, 'x'.repeat(4096)]) {
+        await raw(junk);
       }
+      expect(stop).not.toHaveBeenCalled();
       expect(await probeBridge(ctx.dataDir)).toMatchObject({ kind: 'running', pid: process.pid });
       held.close();
+    });
+
+    it('without the token a request gets no data dir, no pid and no action', async () => {
+      const stop = vi.fn();
+      const held = await holdControlSocket(ctx.dataDir, { ...handlers, stop });
+      if (held.kind !== 'held') throw new Error(held.kind);
+      const token = fs.readFileSync(path.join(ctx.dataDir, 'network/control.token'), 'utf8');
+      expect(token).toMatch(/^[0-9a-f]{64}$/);
+      expect(fs.statSync(path.join(ctx.dataDir, 'network/control.token')).mode & 0o777).toBe(0o600);
+      for (const request of [{ op: 'stop' }, { op: 'hello' }, { op: 'stop', token: 'f'.repeat(64) }, { op: 'hello', token: 'f'.repeat(64) }, { op: 'stop', token: 123 }, { op: 'stop', token: token.slice(1) }]) {
+        expect(await raw(`${JSON.stringify(request)}\n`)).toBe('');
+      }
+      expect(stop).not.toHaveBeenCalled();
+      // The right one does get an answer, which is what makes the empties above mean something.
+      const reply = JSON.parse(await raw(`${JSON.stringify({ op: 'hello', token })}\n`)) as { pid: number };
+      expect(reply.pid).toBe(process.pid);
+      await raw(`${JSON.stringify({ op: 'stop', token })}\n`);
+      await expect.poll(() => stop.mock.calls.length).toBe(1);
+      held.close();
+    });
+
+    it('a token file left by a crash, or one that is damaged, does not stop a restart', async () => {
+      await leaveStaleSocket(ctx);
+      const file = path.join(ctx.dataDir, 'network/control.token');
+      fs.writeFileSync(file, 'b'.repeat(64), { mode: 0o600 });
+      const first = await holdControlSocket(ctx.dataDir, handlers);
+      if (first.kind !== 'held') throw new Error(first.kind);
+      expect(await probeBridge(ctx.dataDir)).toMatchObject({ kind: 'running', pid: process.pid });
+      first.close();
+      await expect.poll(() => fs.existsSync(controlPath(ctx.dataDir))).toBe(false);
+
+      fs.writeFileSync(file, 'not a token', { mode: 0o600 });
+      const second = await holdControlSocket(ctx.dataDir, handlers);
+      if (second.kind !== 'held') throw new Error(second.kind);
+      expect(await probeBridge(ctx.dataDir)).toMatchObject({ kind: 'running', pid: process.pid });
+      expect(fs.readFileSync(file, 'utf8')).toMatch(/^[0-9a-f]{64}$/);
+      second.close();
+    });
+
+    it('a holder knows when its path is gone or replaced, and its close leaves the newer socket alone', async () => {
+      const older = await holdControlSocket(ctx.dataDir, handlers);
+      if (older.kind !== 'held') throw new Error(older.kind);
+      expect(older.stillOurs()).toBe(true);
+      fs.rmSync(controlPath(ctx.dataDir));
+      expect(older.stillOurs()).toBe(false);
+      const newer = await holdControlSocket(ctx.dataDir, handlers);
+      if (newer.kind !== 'held') throw new Error(newer.kind);
+      expect(older.stillOurs()).toBe(false);
+      expect(newer.stillOurs()).toBe(true);
+      older.close();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(fs.existsSync(controlPath(ctx.dataDir))).toBe(true);
+      expect(await probeBridge(ctx.dataDir)).toMatchObject({ kind: 'running' });
+      newer.close();
+    });
+
+    it('a stale socket is removed only if it is still the file that was judged', async () => {
+      await leaveStaleSocket(ctx);
+      const target = controlPath(ctx.dataDir);
+      const judged = identityOf(target);
+      if (!judged) throw new Error('no socket');
+      removeStaleSocket(target, { dev: judged.dev, ino: judged.ino + 1000000 });
+      expect(fs.existsSync(target)).toBe(true);
+      removeStaleSocket(target, judged);
+      expect(fs.existsSync(target)).toBe(false);
+      removeStaleSocket(target, judged); // Already gone is fine.
+    });
+
+    it('a lock moved aside for an instant by another starter is still recognised and released', async () => {
+      const lock = `${controlPath(ctx.dataDir)}.startup.lock`;
+      const realOpen = fs.openSync;
+      const realClose = fs.closeSync;
+      let aside = false;
+      // What a starter clearing a stale lock does: this lock is away as its owner looks at it.
+      const open = vi.spyOn(fs, 'openSync').mockImplementation(((file: string, flags: string, mode: number) => {
+        const fd = realOpen(file, flags, mode);
+        if (file === lock) {
+          fs.renameSync(lock, `${lock}.aside`);
+          aside = true;
+        }
+        return fd;
+      }) as typeof fs.openSync);
+      const close = vi.spyOn(fs, 'closeSync').mockImplementation(((fd: number) => {
+        realClose(fd);
+        if (aside) {
+          fs.renameSync(`${lock}.aside`, lock);
+          aside = false;
+        }
+      }) as typeof fs.closeSync);
+      try {
+        const held = await holdControlSocket(ctx.dataDir, handlers);
+        expect(held.kind).toBe('held');
+        if (held.kind === 'held') held.close();
+      } finally {
+        open.mockRestore();
+        close.mockRestore();
+      }
+      // Left behind, it would name a live process and block every later start for 5 s.
+      expect(fs.existsSync(lock)).toBe(false);
+    });
+
+    it('a starter that lost its startup lock does not touch the socket', async () => {
+      await leaveStaleSocket(ctx);
+      const target = controlPath(ctx.dataDir);
+      const lock = `${target}.startup.lock`;
+      const realLstat = fs.lstatSync;
+      let done = false;
+      // Right after it finds the socket in use, another starter takes the lock over.
+      const stat = vi.spyOn(fs, 'lstatSync').mockImplementation(((file: string) => {
+        if (file === target && !done) {
+          done = true;
+          fs.writeFileSync(`${lock}.other`, `${process.pid}\n`, { mode: 0o600 });
+          fs.renameSync(`${lock}.other`, lock);
+        }
+        return realLstat(file);
+      }) as typeof fs.lstatSync);
+      try {
+        await expect(holdControlSocket(ctx.dataDir, handlers)).rejects.toThrowError(/is starting/);
+      } finally {
+        stat.mockRestore();
+      }
+      expect(done).toBe(true);
+      expect(fs.lstatSync(target).isSocket()).toBe(true);
+      expect(fs.existsSync(lock)).toBe(true);
+      fs.rmSync(lock);
+    }, 20_000);
+
+    it('taking over a stale startup lock leaves a lock another starter just took', () => {
+      const lock = `${controlPath(ctx.dataDir)}.startup.lock`;
+      fs.writeFileSync(lock, '111\n');
+      const judged = identityOf(lock);
+      if (!judged) throw new Error('no lock');
+      takeOverStaleLock(lock, judged);
+      expect(fs.existsSync(lock)).toBe(false);
+
+      fs.writeFileSync(lock, '222\n');
+      const fresh = identityOf(lock);
+      takeOverStaleLock(lock, { dev: judged.dev, ino: judged.ino + 1000000 });
+      expect(fs.readFileSync(lock, 'utf8')).toBe('222\n');
+      expect(identityOf(lock)).toEqual(fresh);
+      expect(fs.readdirSync(path.dirname(lock)).filter((name) => name.includes('.stale-'))).toEqual([]);
+      fs.rmSync(lock);
     });
   });
 
@@ -298,6 +453,16 @@ describe.skipIf(process.platform === 'win32')('the bridge control socket', () =>
       await expect(bridgeUp(ctx, { force: true })).rejects.toMatchObject({ message: expect.stringMatching(/Stop it first/) });
       expect(alive(child.pid as number)).toBe(true);
     });
+
+    it('--reinstall against a holder that does not answer refuses too, and leaves the files alone', async () => {
+      seedJoined(ctx);
+      await startFake('silent');
+      const keep = path.join(ctx.dataDir, 'network/runtime/KEEP');
+      fs.mkdirSync(path.dirname(keep), { recursive: true });
+      fs.writeFileSync(keep, 'x');
+      await expect(bridgeUp(ctx, { force: true })).rejects.toMatchObject({ message: expect.stringMatching(/Stop it first/) });
+      expect(fs.existsSync(keep)).toBe(true);
+    }, 30_000);
   });
 
   describe('status', () => {
@@ -306,6 +471,26 @@ describe.skipIf(process.platform === 'win32')('the bridge control socket', () =>
       const child = await startFake('silent');
       const status = await getNetworkStatus(ctx);
       expect(status.joined && status.bridge).toMatchObject({ running: false, unresponsive: true, pid: child.pid });
+    });
+
+    it('the real CLI says not answering, and calls the pid what it is', async () => {
+      seedJoined(ctx);
+      const child = await startFake('silent');
+      const { MEMESH_DIR: _dir, MEMESH_DB_PATH: _db, ...env } = process.env;
+      const result = spawnSync(process.execPath, [tree.cli, 'network', 'status'], { encoding: 'utf8', env: { ...env, HOME: home, USERPROFILE: home }, timeout: 30_000 });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toMatch(/Bridge: +not answering/);
+      expect(result.stdout).toContain(`last reported is ${child.pid}; check that it really is the bridge`);
+    }, 40_000);
+
+    it.each([['"abc"'], ['-5'], ['0'], ['1.5'], ['"1; rm -rf /"'], ['null']])('a status file claiming pid %s prints no pid', async (claimed) => {
+      seedJoined(ctx);
+      await startFake('silent');
+      const raw = JSON.parse(fs.readFileSync(statusPath(ctx.dataDir), 'utf8')) as Record<string, unknown>;
+      fs.writeFileSync(statusPath(ctx.dataDir), JSON.stringify({ ...raw, pid: JSON.parse(claimed) as unknown }));
+      const status = await getNetworkStatus(ctx);
+      expect(status.joined && status.bridge).toMatchObject({ unresponsive: true, pid: null });
+      await expect(stopBridge(ctx)).rejects.toMatchObject({ message: expect.not.stringMatching(/last reported is/) });
     });
 
     it('ignores live fields from a status file whose pid is not the one that answered', async () => {

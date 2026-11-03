@@ -580,23 +580,31 @@ function platformPackage(lockText, platform, arch, libc) {
   const names = platformPackages(lockText, platform, arch, libc);
   return names.find((name) => name.includes("musl") === (libc === "musl")) ?? names[0] ?? null;
 }
+function nativeFileName(packageName) {
+  return `${packageName.split("/").pop().replace(/^iroh-/, "iroh.")}.node`;
+}
 
 // dist/network/native-loader.js
 function loadNative(runtimeDirectory) {
   const lockText = fs4.readFileSync(path5.join(runtimeDirectory, "package-lock.json"), "utf8");
   const name = platformPackage(lockText, process.platform, process.arch, currentLibc());
-  const directory = path5.join(runtimeDirectory, "node_modules", name ?? "none");
-  let main;
+  const missing = `the native networking file for ${process.platform}-${process.arch} is missing from the install`;
+  if (name === null)
+    throw new Error(missing);
+  let file;
   try {
-    main = JSON.parse(fs4.readFileSync(path5.join(directory, "package.json"), "utf8")).main;
+    file = fs4.realpathSync(path5.join(runtimeDirectory, "node_modules", name, nativeFileName(name)));
   } catch {
-    throw new Error(`the native networking file for ${process.platform}-${process.arch} is missing from the install`);
+    throw new Error(missing);
   }
-  return createRequire2(path5.join(runtimeDirectory, "package.json"))(path5.join(directory, main));
+  if (!file.startsWith(fs4.realpathSync(runtimeDirectory) + path5.sep)) {
+    throw new Error("the native networking file points outside the install, so it was not loaded");
+  }
+  return createRequire2(path5.join(runtimeDirectory, "package.json"))(file);
 }
 function explainLoadFailure(err) {
   const message = errorMessage(err).split("\n")[0];
-  if (/is missing from the install$/.test(message))
+  if (/is missing from the install$|points outside the install/.test(message))
     return message;
   if (err.code === "ENOENT")
     return "the networking component is not installed";
@@ -670,14 +678,14 @@ function writeStatus(dataDir2, status) {
 }
 
 // dist/network/control-socket.js
-import { createHash as createHash2 } from "node:crypto";
+import { createHash as createHash2, randomBytes as randomBytes3, timingSafeEqual } from "node:crypto";
 import fs6 from "node:fs";
 import net from "node:net";
 import path7 from "node:path";
 var SOCKET_PATH_MAX_BYTES = 103;
 var PROBE_DEADLINE_MS = 4e3;
 var REQUEST_DEADLINE_MS = 2e3;
-var REQUEST_MAX_BYTES = 256;
+var REQUEST_MAX_BYTES = 512;
 var REPLY_MAX_BYTES = 8 * 1024;
 var STARTUP_LOCK_WAIT_MS = 5e3;
 var STARTUP_LOCK_STALE_MS = 3e4;
@@ -702,10 +710,48 @@ function dataDirIdentity(dataDir2) {
     return dataDir2;
   }
 }
+function tokenPath(dataDir2) {
+  return path7.join(networkDir(dataDir2), "control.token");
+}
+var TOKEN_FORMAT = /^[0-9a-f]{64}$/;
+function ensureControlToken(dataDir2) {
+  const file = tokenPath(dataDir2);
+  const existing = readControlToken(dataDir2);
+  if (existing !== null)
+    return existing;
+  const temporary = `${file}.tmp-${process.pid}`;
+  fs6.writeFileSync(temporary, randomBytes3(32).toString("hex"), { mode: 384 });
+  try {
+    fs6.chmodSync(temporary, 384);
+    if (fs6.existsSync(file) && readControlToken(dataDir2) === null)
+      fs6.rmSync(file, { force: true });
+    fs6.linkSync(temporary, file);
+  } catch (err) {
+    if (err.code !== "EEXIST")
+      throw err;
+  } finally {
+    fs6.rmSync(temporary, { force: true });
+  }
+  return readControlToken(dataDir2);
+}
+function readControlToken(dataDir2) {
+  try {
+    const token = fs6.readFileSync(tokenPath(dataDir2), "utf8");
+    return TOKEN_FORMAT.test(token) ? token : null;
+  } catch {
+    return null;
+  }
+}
+function tokensMatch(given, expected) {
+  if (typeof given !== "string")
+    return false;
+  const left = createHash2("sha256").update(given).digest();
+  return timingSafeEqual(left, createHash2("sha256").update(expected).digest());
+}
 function parseReply(line, dataDir2) {
   try {
     const reply2 = JSON.parse(line);
-    const valid = Number.isSafeInteger(reply2?.pid) && typeof reply2?.ready === "boolean";
+    const valid = Number.isSafeInteger(reply2?.pid) && reply2?.pid > 0 && typeof reply2?.ready === "boolean";
     return valid && reply2?.data_dir === dataDirIdentity(dataDir2) ? reply2 : null;
   } catch {
     return null;
@@ -721,7 +767,7 @@ function request(dataDir2, op, deadlineMs) {
       resolve(result);
     };
     const timer = setTimeout(() => finish(null), deadlineMs);
-    socket.once("connect", () => socket.write(`${JSON.stringify({ op })}
+    socket.once("connect", () => socket.write(`${JSON.stringify({ op, token: readControlToken(dataDir2) })}
 `));
     socket.on("data", (chunk) => {
       text += chunk.toString("utf8");
@@ -746,19 +792,54 @@ async function probeBridge(dataDir2, deadlineMs = PROBE_DEADLINE_MS) {
     return { kind: "not-running" };
   return reply2 === null ? { kind: "unresponsive" } : { kind: "running", pid: reply2.pid, ready: reply2.ready };
 }
+function identityOf(file) {
+  try {
+    const { dev, ino } = fs6.lstatSync(file);
+    return { dev, ino };
+  } catch {
+    return null;
+  }
+}
+var sameFile = (a, b) => a !== null && b !== null && a.dev === b.dev && a.ino === b.ino;
+function takeOverStaleLock(lock, judged) {
+  const aside = `${lock}.stale-${process.pid}`;
+  try {
+    fs6.renameSync(lock, aside);
+  } catch (err) {
+    if (err.code === "ENOENT")
+      return;
+    throw err;
+  }
+  try {
+    if (sameFile(identityOf(aside), judged))
+      return;
+    fs6.linkSync(aside, lock);
+  } catch (err) {
+    if (err.code !== "EEXIST")
+      throw err;
+  } finally {
+    fs6.rmSync(aside, { force: true });
+  }
+}
 async function withStartupLock(dataDir2, use) {
   const lock = path7.join(networkDir(dataDir2), "bridge.sock.startup.lock");
   const giveUpAt = Date.now() + STARTUP_LOCK_WAIT_MS;
+  let mine;
   for (; ; ) {
     try {
-      fs6.writeFileSync(lock, `${process.pid}
-`, { flag: "wx", mode: 384 });
+      const fd = fs6.openSync(lock, "wx", 384);
+      const { dev, ino } = fs6.fstatSync(fd);
+      mine = { dev, ino };
+      fs6.writeSync(fd, `${process.pid}
+`);
+      fs6.closeSync(fd);
       break;
     } catch (err) {
       if (err.code !== "EEXIST")
         throw err;
-      if (startupLockIsStale(lock)) {
-        fs6.rmSync(lock, { force: true });
+      const judged = identityOf(lock);
+      if (judged !== null && startupLockIsStale(lock)) {
+        takeOverStaleLock(lock, judged);
         continue;
       }
       if (Date.now() >= giveUpAt)
@@ -767,9 +848,10 @@ async function withStartupLock(dataDir2, use) {
     }
   }
   try {
-    return await use();
+    return await use(() => sameFile(identityOf(lock), mine));
   } finally {
-    fs6.rmSync(lock, { force: true });
+    if (sameFile(identityOf(lock), mine))
+      fs6.rmSync(lock, { force: true });
   }
 }
 function startupLockIsStale(lock) {
@@ -800,23 +882,27 @@ function listen(server, target) {
     server.listen(target);
   });
 }
-function removeStaleSocket(target) {
+function removeStaleSocket(target, judged) {
   if (process.platform === "win32")
+    return;
+  if (!sameFile(identityOf(target), judged))
     return;
   if (!fs6.lstatSync(target).isSocket()) {
     throw new Error(`${target} exists and is not a socket, so the network bridge cannot use it.`);
   }
   fs6.unlinkSync(target);
 }
-function parseOp(line) {
+function parseOp(line, token) {
   try {
-    const { op } = JSON.parse(line);
-    return op === "hello" || op === "stop" ? op : null;
+    const request2 = JSON.parse(line);
+    if (!tokensMatch(request2.token, token))
+      return null;
+    return request2.op === "hello" || request2.op === "stop" ? request2.op : null;
   } catch {
     return null;
   }
 }
-function serveConnection(socket, identity, handlers) {
+function serveConnection(socket, identity, token, handlers) {
   let text = "";
   socket.setTimeout(REQUEST_DEADLINE_MS, () => socket.destroy());
   socket.on("error", (err) => handlers.onProblem(`Control connection failed: ${err.message}`));
@@ -829,7 +915,7 @@ function serveConnection(socket, identity, handlers) {
     const newline = text.indexOf("\n");
     if (newline === -1)
       return;
-    const op = parseOp(text.slice(0, newline));
+    const op = parseOp(text.slice(0, newline), token);
     if (op === null) {
       socket.destroy();
       return;
@@ -846,24 +932,44 @@ async function holdControlSocket(dataDir2, handlers) {
   assertControlPathFits(dataDir2);
   const identity = dataDirIdentity(dataDir2);
   const target = controlPath(dataDir2);
-  const server = net.createServer((socket) => serveConnection(socket, identity, handlers));
-  server.on("error", (err) => handlers.onProblem(`Control socket failed: ${err.message}`));
-  return withStartupLock(dataDir2, async () => {
-    for (let attempt = 0; attempt < 3; attempt++) {
-      if (await listen(server, target) === "listening") {
-        return { kind: "held", close: () => {
-          server.close();
-        } };
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const held = await withStartupLock(dataDir2, async (holdsLock) => {
+      const token = ensureControlToken(dataDir2);
+      const server = net.createServer((socket) => serveConnection(socket, identity, token, handlers));
+      server.on("error", (err) => handlers.onProblem(`Control socket failed: ${err.message}`));
+      for (let tries = 0; tries < 3; tries++) {
+        if (await listen(server, target) === "listening")
+          return heldBy(server, target);
+        const judged = identityOf(target);
+        const probe = await probeBridge(dataDir2);
+        if (probe.kind === "running")
+          return { kind: "already-running" };
+        if (probe.kind === "unresponsive")
+          return { kind: "holder-unresponsive" };
+        if (!holdsLock())
+          return "lost-the-lock";
+        removeStaleSocket(target, judged);
       }
-      const probe = await probeBridge(dataDir2);
-      if (probe.kind === "running")
-        return { kind: "already-running" };
-      if (probe.kind === "unresponsive")
-        return { kind: "holder-unresponsive" };
-      removeStaleSocket(target);
+      throw new Error("The network bridge control socket stayed in use.");
+    });
+    if (held !== "lost-the-lock")
+      return held;
+  }
+  throw new Error("Another network bridge kept taking over the start.");
+}
+function heldBy(server, target) {
+  const bound = identityOf(target);
+  const stillOurs = () => process.platform === "win32" || sameFile(identityOf(target), bound);
+  return {
+    kind: "held",
+    stillOurs,
+    close: () => {
+      if (stillOurs())
+        server.close();
+      else
+        server.unref();
     }
-    throw new Error("The network bridge control socket stayed in use.");
-  });
+  };
 }
 
 // dist/network/relay-monitor.js
@@ -1063,6 +1169,10 @@ async function serve(dataDir2, dbPath) {
   }
   let lastPublished = Date.now();
   const heartbeat = setInterval(() => {
+    if (!control.stillOurs()) {
+      void abandon();
+      return;
+    }
     let addresses = null;
     try {
       addresses = endpoint.addr().directAddresses();
@@ -1099,6 +1209,20 @@ async function serve(dataDir2, dbPath) {
     }
     control.close();
     process.exit(exitCode);
+  };
+  const abandon = async () => {
+    if (stopping)
+      return;
+    stopping = true;
+    clearInterval(heartbeat);
+    relayTimers.forEach(clearTimeout);
+    appendLog(dataDir2, "control_socket_lost", { detail: "The control socket path is gone or replaced, so this bridge is exiting." });
+    await deadline(endpoint.close(), CLOSE_DEADLINE_MS2, "closing the endpoint").catch(() => void 0);
+    try {
+      db.close();
+    } catch {
+    }
+    process.exit(1);
   };
   requestStop = () => {
     void stop("asked over the control socket", 0);

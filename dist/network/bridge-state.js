@@ -21,4 +21,8 @@ export function readStatus(dataDir) {
         return null;
     }
 }
+export function reportedPid(status) {
+    const pid = status?.pid;
+    return typeof pid === 'number' && Number.isSafeInteger(pid) && pid > 0 ? pid : null;
+}
 //# sourceMappingURL=bridge-state.js.map

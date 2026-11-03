@@ -30,3 +30,8 @@ export function platformPackage(lockText: string, platform: string, arch: string
   const names = platformPackages(lockText, platform, arch, libc);
   return names.find((name) => name.includes('musl') === (libc === 'musl')) ?? names[0] ?? null;
 }
+
+/** The native file inside a platform package: a fixed name, checked against every tarball the lock pins. */
+export function nativeFileName(packageName: string): string {
+  return `${(packageName.split('/').pop() as string).replace(/^iroh-/, 'iroh.')}.node`;
+}

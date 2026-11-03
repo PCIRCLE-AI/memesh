@@ -19,11 +19,19 @@ const status = (state) => {
   fs.renameSync(`${file}.tmp`, file);
 };
 status(ready ? 'running' : 'starting');
+const tokenFile = path.join(network, 'control.token');
+if (!fs.existsSync(tokenFile)) fs.writeFileSync(tokenFile, 'a'.repeat(64), { mode: 0o600 });
+const token = fs.readFileSync(tokenFile, 'utf8');
 const server = net.createServer((socket) => {
   socket.on('error', () => {});
   socket.on('data', (chunk) => {
     if (mode === 'silent') return;
-    const { op } = JSON.parse(chunk.toString());
+    const request = JSON.parse(chunk.toString());
+    if (request.token !== token) {
+      socket.destroy();
+      return;
+    }
+    const { op } = request;
     socket.end(`${JSON.stringify({ data_dir: fs.realpathSync(dataDir), pid: process.pid, ready })}\n`);
     if (op === 'stop' && mode !== 'ignore-stop') {
       server.close();

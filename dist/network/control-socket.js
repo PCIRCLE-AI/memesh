@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
@@ -6,7 +6,7 @@ import { NetworkError, networkDir } from './types.js';
 const SOCKET_PATH_MAX_BYTES = 103;
 const PROBE_DEADLINE_MS = 4_000;
 const REQUEST_DEADLINE_MS = 2_000;
-const REQUEST_MAX_BYTES = 256;
+const REQUEST_MAX_BYTES = 512;
 const REPLY_MAX_BYTES = 8 * 1024;
 const STARTUP_LOCK_WAIT_MS = 5_000;
 const STARTUP_LOCK_STALE_MS = 30_000;
@@ -32,10 +32,51 @@ function dataDirIdentity(dataDir) {
         return dataDir;
     }
 }
+function tokenPath(dataDir) {
+    return path.join(networkDir(dataDir), 'control.token');
+}
+const TOKEN_FORMAT = /^[0-9a-f]{64}$/;
+function ensureControlToken(dataDir) {
+    const file = tokenPath(dataDir);
+    const existing = readControlToken(dataDir);
+    if (existing !== null)
+        return existing;
+    const temporary = `${file}.tmp-${process.pid}`;
+    fs.writeFileSync(temporary, randomBytes(32).toString('hex'), { mode: 0o600 });
+    try {
+        fs.chmodSync(temporary, 0o600);
+        if (fs.existsSync(file) && readControlToken(dataDir) === null)
+            fs.rmSync(file, { force: true });
+        fs.linkSync(temporary, file);
+    }
+    catch (err) {
+        if (err.code !== 'EEXIST')
+            throw err;
+    }
+    finally {
+        fs.rmSync(temporary, { force: true });
+    }
+    return readControlToken(dataDir);
+}
+function readControlToken(dataDir) {
+    try {
+        const token = fs.readFileSync(tokenPath(dataDir), 'utf8');
+        return TOKEN_FORMAT.test(token) ? token : null;
+    }
+    catch {
+        return null;
+    }
+}
+function tokensMatch(given, expected) {
+    if (typeof given !== 'string')
+        return false;
+    const left = createHash('sha256').update(given).digest();
+    return timingSafeEqual(left, createHash('sha256').update(expected).digest());
+}
 function parseReply(line, dataDir) {
     try {
         const reply = JSON.parse(line);
-        const valid = Number.isSafeInteger(reply?.pid) && typeof reply?.ready === 'boolean';
+        const valid = Number.isSafeInteger(reply?.pid) && reply?.pid > 0 && typeof reply?.ready === 'boolean';
         return valid && reply?.data_dir === dataDirIdentity(dataDir) ? reply : null;
     }
     catch {
@@ -52,7 +93,7 @@ function request(dataDir, op, deadlineMs) {
             resolve(result);
         };
         const timer = setTimeout(() => finish(null), deadlineMs);
-        socket.once('connect', () => socket.write(`${JSON.stringify({ op })}\n`));
+        socket.once('connect', () => socket.write(`${JSON.stringify({ op, token: readControlToken(dataDir) })}\n`));
         socket.on('data', (chunk) => {
             text += chunk.toString('utf8');
             if (text.length > REPLY_MAX_BYTES)
@@ -80,19 +121,58 @@ export async function askBridgeToStop(dataDir) {
     const reply = await request(dataDir, 'stop', PROBE_DEADLINE_MS);
     return reply !== null && reply !== 'not-running';
 }
+export function identityOf(file) {
+    try {
+        const { dev, ino } = fs.lstatSync(file);
+        return { dev, ino };
+    }
+    catch {
+        return null;
+    }
+}
+const sameFile = (a, b) => a !== null && b !== null && a.dev === b.dev && a.ino === b.ino;
+export function takeOverStaleLock(lock, judged) {
+    const aside = `${lock}.stale-${process.pid}`;
+    try {
+        fs.renameSync(lock, aside);
+    }
+    catch (err) {
+        if (err.code === 'ENOENT')
+            return;
+        throw err;
+    }
+    try {
+        if (sameFile(identityOf(aside), judged))
+            return;
+        fs.linkSync(aside, lock);
+    }
+    catch (err) {
+        if (err.code !== 'EEXIST')
+            throw err;
+    }
+    finally {
+        fs.rmSync(aside, { force: true });
+    }
+}
 async function withStartupLock(dataDir, use) {
     const lock = path.join(networkDir(dataDir), 'bridge.sock.startup.lock');
     const giveUpAt = Date.now() + STARTUP_LOCK_WAIT_MS;
+    let mine;
     for (;;) {
         try {
-            fs.writeFileSync(lock, `${process.pid}\n`, { flag: 'wx', mode: 0o600 });
+            const fd = fs.openSync(lock, 'wx', 0o600);
+            const { dev, ino } = fs.fstatSync(fd);
+            mine = { dev, ino };
+            fs.writeSync(fd, `${process.pid}\n`);
+            fs.closeSync(fd);
             break;
         }
         catch (err) {
             if (err.code !== 'EEXIST')
                 throw err;
-            if (startupLockIsStale(lock)) {
-                fs.rmSync(lock, { force: true });
+            const judged = identityOf(lock);
+            if (judged !== null && startupLockIsStale(lock)) {
+                takeOverStaleLock(lock, judged);
                 continue;
             }
             if (Date.now() >= giveUpAt)
@@ -101,10 +181,11 @@ async function withStartupLock(dataDir, use) {
         }
     }
     try {
-        return await use();
+        return await use(() => sameFile(identityOf(lock), mine));
     }
     finally {
-        fs.rmSync(lock, { force: true });
+        if (sameFile(identityOf(lock), mine))
+            fs.rmSync(lock, { force: true });
     }
 }
 function startupLockIsStale(lock) {
@@ -136,24 +217,28 @@ function listen(server, target) {
         server.listen(target);
     });
 }
-function removeStaleSocket(target) {
+export function removeStaleSocket(target, judged) {
     if (process.platform === 'win32')
+        return;
+    if (!sameFile(identityOf(target), judged))
         return;
     if (!fs.lstatSync(target).isSocket()) {
         throw new Error(`${target} exists and is not a socket, so the network bridge cannot use it.`);
     }
     fs.unlinkSync(target);
 }
-function parseOp(line) {
+function parseOp(line, token) {
     try {
-        const { op } = JSON.parse(line);
-        return op === 'hello' || op === 'stop' ? op : null;
+        const request = JSON.parse(line);
+        if (!tokensMatch(request.token, token))
+            return null;
+        return request.op === 'hello' || request.op === 'stop' ? request.op : null;
     }
     catch {
         return null;
     }
 }
-function serveConnection(socket, identity, handlers) {
+function serveConnection(socket, identity, token, handlers) {
     let text = '';
     socket.setTimeout(REQUEST_DEADLINE_MS, () => socket.destroy());
     socket.on('error', (err) => handlers.onProblem(`Control connection failed: ${err.message}`));
@@ -166,7 +251,7 @@ function serveConnection(socket, identity, handlers) {
         const newline = text.indexOf('\n');
         if (newline === -1)
             return;
-        const op = parseOp(text.slice(0, newline));
+        const op = parseOp(text.slice(0, newline), token);
         if (op === null) {
             socket.destroy();
             return;
@@ -182,21 +267,43 @@ export async function holdControlSocket(dataDir, handlers) {
     assertControlPathFits(dataDir);
     const identity = dataDirIdentity(dataDir);
     const target = controlPath(dataDir);
-    const server = net.createServer((socket) => serveConnection(socket, identity, handlers));
-    server.on('error', (err) => handlers.onProblem(`Control socket failed: ${err.message}`));
-    return withStartupLock(dataDir, async () => {
-        for (let attempt = 0; attempt < 3; attempt++) {
-            if ((await listen(server, target)) === 'listening') {
-                return { kind: 'held', close: () => { server.close(); } };
+    for (let attempt = 0; attempt < 5; attempt++) {
+        const held = await withStartupLock(dataDir, async (holdsLock) => {
+            const token = ensureControlToken(dataDir);
+            const server = net.createServer((socket) => serveConnection(socket, identity, token, handlers));
+            server.on('error', (err) => handlers.onProblem(`Control socket failed: ${err.message}`));
+            for (let tries = 0; tries < 3; tries++) {
+                if ((await listen(server, target)) === 'listening')
+                    return heldBy(server, target);
+                const judged = identityOf(target);
+                const probe = await probeBridge(dataDir);
+                if (probe.kind === 'running')
+                    return { kind: 'already-running' };
+                if (probe.kind === 'unresponsive')
+                    return { kind: 'holder-unresponsive' };
+                if (!holdsLock())
+                    return 'lost-the-lock';
+                removeStaleSocket(target, judged);
             }
-            const probe = await probeBridge(dataDir);
-            if (probe.kind === 'running')
-                return { kind: 'already-running' };
-            if (probe.kind === 'unresponsive')
-                return { kind: 'holder-unresponsive' };
-            removeStaleSocket(target);
-        }
-        throw new Error('The network bridge control socket stayed in use.');
-    });
+            throw new Error('The network bridge control socket stayed in use.');
+        });
+        if (held !== 'lost-the-lock')
+            return held;
+    }
+    throw new Error('Another network bridge kept taking over the start.');
+}
+function heldBy(server, target) {
+    const bound = identityOf(target);
+    const stillOurs = () => process.platform === 'win32' || sameFile(identityOf(target), bound);
+    return {
+        kind: 'held',
+        stillOurs,
+        close: () => {
+            if (stillOurs())
+                server.close();
+            else
+                server.unref();
+        },
+    };
 }
 //# sourceMappingURL=control-socket.js.map

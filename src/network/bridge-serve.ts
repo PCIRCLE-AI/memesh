@@ -188,6 +188,10 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
   // This timer also publishes direct addresses as they appear after bind.
   let lastPublished = Date.now();
   const heartbeat = setInterval(() => {
+    if (!control.stillOurs()) {
+      void abandon();
+      return;
+    }
     let addresses: string[] | null = null;
     try {
       addresses = endpoint.addr().directAddresses();
@@ -219,6 +223,19 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
     try { db.close(); } catch { /* exiting */ }
     control.close();
     process.exit(exitCode);
+  };
+  // The socket path is gone or someone else's, so this process can no longer be
+  // reached or stopped, and another bridge may be serving. It leaves at once, and
+  // leaves status and the path alone: those may belong to that other bridge now.
+  const abandon = async (): Promise<void> => {
+    if (stopping) return;
+    stopping = true;
+    clearInterval(heartbeat);
+    relayTimers.forEach(clearTimeout);
+    appendLog(dataDir, 'control_socket_lost', { detail: 'The control socket path is gone or replaced, so this bridge is exiting.' });
+    await deadline(endpoint.close(), CLOSE_DEADLINE_MS, 'closing the endpoint').catch(() => undefined);
+    try { db.close(); } catch { /* exiting */ }
+    process.exit(1);
   };
   requestStop = () => { void stop('asked over the control socket', 0); };
   for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) {

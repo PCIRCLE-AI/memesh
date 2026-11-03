@@ -9,7 +9,7 @@ import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startBridge, stopBridge } from '../../src/network/bridge-control.js';
 import { logPath, readStatus, statusPath, type BridgeStatus } from '../../src/network/bridge-state.js';
-import { controlPath } from '../../src/network/control-socket.js';
+import { controlPath, probeBridge } from '../../src/network/control-socket.js';
 import { ensureIdentity, identityPath, loadIdentity } from '../../src/network/identity.js';
 import type { Connection, Endpoint, IrohModule } from '../../src/network/iroh-types.js';
 import { encodeLink, hashToken, parseLink } from '../../src/network/invites.js';
@@ -467,6 +467,88 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
     await stopBridge(ctx);
   }, 120_000);
 
+  it('the socket file removed under a live bridge: it exits with a record, untouched status, and a new one serves', async () => {
+    const ctx = machine();
+    createNetwork(ctx, { name: 'lost-socket', person: 'kt', relay: 'off' });
+    const first = await startBridge(ctx);
+    fs.rmSync(controlPath(ctx.dataDir));
+    const second = await startBridge(ctx);
+    expect(second.started).toBe(true);
+    expect(second.pid).not.toBe(first.pid);
+    const isAlive = (pid: number): boolean => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    await expect.poll(() => isAlive(first.pid), { timeout: 8_000 }).toBe(false);
+    expect(fs.readFileSync(logPath(ctx.dataDir), 'utf8')).toContain('control_socket_lost');
+    // The old one touched neither the newer bridge's status nor its socket.
+    expect(readStatus(ctx.dataDir)).toMatchObject({ pid: second.pid, state: 'running', last_error: null });
+    expect((await getNetworkStatus(ctx)).bridge).toMatchObject({ running: true, pid: second.pid });
+    const token = fs.readFileSync(path.join(path.dirname(controlPath(ctx.dataDir)), 'control.token'), 'utf8');
+    expect(token.length).toBe(64);
+    expect(await stopBridge(ctx)).toEqual({ stopped: true, pid: second.pid });
+    expect(isAlive(second.pid)).toBe(false);
+    for (const text of [fs.readFileSync(logPath(ctx.dataDir), 'utf8'), fs.readFileSync(statusPath(ctx.dataDir), 'utf8')]) {
+      expect(text).not.toContain(token);
+    }
+  }, 60_000);
+
+  it('stale startup lock, stale socket and 8 real bridges: every round settles to one holder that answers', async () => {
+    // Each layer has its own deterministic test in control-socket.test.ts. This is the
+    // end-to-end check, kept short for CI; 1000 rounds settled when it was introduced.
+    const rounds = 20;
+    const settleMs = 2_500;
+    const ctx = machine();
+    createNetwork(ctx, { name: 'stress', person: 'kt', relay: 'off' });
+    const lock = `${controlPath(ctx.dataDir)}.startup.lock`;
+    const unsettled: string[] = [];
+    const doubleHeld: string[] = [];
+    let settled = 0;
+    for (let round = 0; round < rounds; round++) {
+      // A socket file nobody holds, and a lock from a process that is gone.
+      const staleSocket = spawnSync(process.execPath, ['-e', `require('net').createServer().listen(${JSON.stringify(controlPath(ctx.dataDir))}, () => process.kill(process.pid, 'SIGKILL'));`]);
+      expect(staleSocket.signal).toBe('SIGKILL');
+      fs.writeFileSync(lock, `${2 ** 30}\n`, { mode: 0o600 });
+      const children = Array.from({ length: 8 }, () => spawn(process.execPath, [ctx.bridgeEntry, 'serve'], { env: childEnv(ctx), stdio: 'ignore' }));
+      const started = Date.now();
+      let holder: number | null = null;
+      for (;;) {
+        const live = children.filter((child) => child.exitCode === null && child.signalCode === null);
+        const probe = await probeBridge(ctx.dataDir, 500);
+        if (live.length === 1 && probe.kind === 'running' && probe.ready && probe.pid === live[0].pid) {
+          holder = probe.pid;
+          break;
+        }
+        if (Date.now() - started > settleMs) {
+          // Report how late it was, and what it looked like, rather than only that it was late.
+          const lockText = fs.existsSync(lock) ? fs.readFileSync(lock, 'utf8').trim() : 'none';
+          while (Date.now() - started < 20_000 && !(await probeBridge(ctx.dataDir, 500) as { ready?: boolean }).ready) {
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          }
+          unsettled.push(`round ${round}: ${live.length} alive, probe ${JSON.stringify(probe)}, lock ${lockText}, answered after ${Date.now() - started} ms`);
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      if (holder !== null) settled++;
+      // Losing is exit 3. Anything else means two got as far as holding the socket, and the heartbeat had to clean up.
+      const held = children.filter((child) => child.pid !== holder && child.exitCode !== EXIT_ALREADY_RUNNING).map((child) => child.exitCode ?? child.signalCode);
+      if (held.length > 0) doubleHeld.push(`round ${round}: ${JSON.stringify(held)}`);
+      await stopBridge(ctx).catch(() => undefined);
+      for (const child of children) child.kill('SIGKILL');
+      await Promise.all(children.map((child) => (child.exitCode === null && child.signalCode === null ? new Promise((resolve) => { child.once('exit', resolve); }) : null)));
+      fs.rmSync(controlPath(ctx.dataDir), { force: true });
+    }
+    if (process.env.STRESS_LOG_DIR) fs.writeFileSync(path.join(process.env.STRESS_LOG_DIR, 'memesh-stress-result.txt'), `rounds ${rounds} settled ${settled} double-held ${doubleHeld.length}\n${unsettled.join('\n')}\n${doubleHeld.join('\n')}\n`);
+    expect(unsettled).toEqual([]);
+    expect(doubleHeld).toEqual([]);
+    expect(settled).toBe(rounds);
+  }, 590_000);
+
   it('a data dir with a space, a quote and non-ASCII works under a C locale, with the real bridge', async () => {
     const home = makeHome();
     homes.push(home);
@@ -600,11 +682,10 @@ http.createServer((req, res) => { console.log(req.url); res.statusCode = status;
     it('start waits until the bridge is really accepting, not just holding its socket', async () => {
       const ctx = machine();
       createNetwork(ctx, { name: 'slow-native', person: 'kt', relay: 'off' });
-      const nativePackage = copyRuntime(ctx);
-      const manifest = path.join(nativePackage, 'package.json');
-      const { main } = JSON.parse(fs.readFileSync(manifest, 'utf8')) as { main: string };
-      fs.writeFileSync(path.join(nativePackage, 'slow.js'), `const until = Date.now() + 2500; while (Date.now() < until); module.exports = require('./${main}');`);
-      fs.writeFileSync(manifest, JSON.stringify({ name: 'slow', version: '1.2.0', main: 'slow.js' }));
+      // The native load comes after the socket is held and before the bridge is ready.
+      const preload = path.join(ctx.dataDir, 'slow-dlopen.cjs');
+      fs.writeFileSync(preload, `const real = process.dlopen; process.dlopen = function (...args) { const until = Date.now() + 2500; while (Date.now() < until); return real.apply(this, args); };`);
+      ctx.env = { ...ctx.env, NODE_OPTIONS: `--require=${preload}` };
       const started = await startBridge(ctx);
       expect(started.started).toBe(true);
       expect(readStatus(ctx.dataDir)).toMatchObject({ pid: started.pid, state: 'running' });

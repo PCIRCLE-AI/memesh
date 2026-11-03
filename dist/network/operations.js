@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import { describeChildDeath, startBridge } from './bridge-control.js';
-import { readStatus } from './bridge-state.js';
+import { readStatus, reportedPid } from './bridge-state.js';
 import { assertControlPathFits, probeBridge } from './control-socket.js';
 import { ensureIdentity, loadIdentity } from './identity.js';
 import { DEFAULT_INVITE_TTL_HOURS, MAX_INVITE_TTL_HOURS, createInvite, encodeLink, parseLink } from './invites.js';
@@ -305,7 +305,7 @@ export async function getNetworkStatus(ctx) {
         bridge: {
             running,
             unresponsive: probe.kind === 'unresponsive',
-            pid: running ? probe.pid : probe.kind === 'unresponsive' ? status?.pid ?? null : null,
+            pid: running ? probe.pid : probe.kind === 'unresponsive' ? reportedPid(status) : null,
             started_at: current?.started_at ?? null,
             relay_state: current?.relay_state ?? null,
             last_error: status?.last_error ?? null,

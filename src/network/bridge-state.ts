@@ -45,3 +45,9 @@ export function readStatus(dataDir: string): BridgeStatus | null {
     return null;
   }
 }
+
+/** The pid the bridge last reported, only if the file really holds one. */
+export function reportedPid(status: BridgeStatus | null): number | null {
+  const pid: unknown = status?.pid;
+  return typeof pid === 'number' && Number.isSafeInteger(pid) && pid > 0 ? pid : null;
+}

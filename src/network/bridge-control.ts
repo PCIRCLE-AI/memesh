@@ -4,7 +4,7 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
-import { logPath, readStatus } from './bridge-state.js';
+import { logPath, readStatus, reportedPid } from './bridge-state.js';
 import { askBridgeToStop, assertControlPathFits, probeBridge } from './control-socket.js';
 import { ensureNetworkDir } from './identity.js';
 import {
@@ -28,9 +28,9 @@ export function describeChildDeath(code: number | null, signal: NodeJS.Signals |
 }
 
 function howToStop(ctx: NetworkContext): string {
-  const pid = readStatus(ctx.dataDir)?.pid;
-  const named = pid ? ` Its last recorded process id is ${pid}.` : '';
-  return `${named} To stop it yourself, end that process with your system's tools, then run this again.`;
+  const pid = reportedPid(readStatus(ctx.dataDir));
+  const named = pid ? ` The process id the bridge last reported is ${pid}; check that it really is the bridge first.` : '';
+  return `${named} To stop it yourself, end it with your system's tools, then run this again.`;
 }
 
 function unresponsive(ctx: NetworkContext): NetworkError {
