@@ -278,6 +278,10 @@ export const CAPTURE_HOOKS = [
   // and writes no memory, so it is UNCLASSIFIED_SKIP_HOOKS, not
   // SILENT_ELIGIBLE_HOOKS.
   'stop-message-gate',
+  // UserPromptSubmit: the memories a prompt is strongly about, injected beside
+  // it (scripts/hooks/prompt-recall.js). Fires on every prompt and correctly
+  // injects on few of them, and writes no memory.
+  'prompt-recall',
 ] as const;
 
 /**
@@ -397,6 +401,16 @@ export const SKIP_REASONS = {
    */
   candidateWindowTruncated: 'more candidates may exist than the search window examined',
   noPromptIntent: 'the prompt carried no remember intent and no update decision',
+  // prompt-recall
+  promptEmpty: 'the prompt held no text',
+  promptRecallOff: 'prompt recall is turned off (promptRecall is false)',
+  /** The agent called the `private_session` tool: nothing is searched and nothing is injected. */
+  promptPrivateSession: 'private_session: the agent marked this session private, so no memory was searched or shown',
+  /** The private-session marker could not be read, so nothing is shown (fail closed). */
+  promptPrivacyUnreadable: 'private_session_unreadable: whether this session is private could not be read, so no memory was shown',
+  promptNoTerms: 'the prompt held no word distinctive enough to search for',
+  promptNoMatch: 'no stored memory matched the prompt strongly enough',
+  promptAlreadyShown: 'the memories that matched were already shown in this session',
   // note-ingest (#324)
   noMemoryDir: 'no Claude Code memory directory for this project',
   noNoteChanged: 'no note file changed since the last ingestion',
@@ -626,6 +640,7 @@ export const UNCLASSIFIED_SKIP_HOOKS = [
   'decision-nudge',
   'guard-check',
   'stop-message-gate',
+  'prompt-recall',
 ] as const;
 
 /**

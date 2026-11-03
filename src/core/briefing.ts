@@ -27,6 +27,7 @@
 import { getDatabase } from '../db.js';
 import { getProjectName } from './paths.js';
 import { readConfig } from './config.js';
+import { resolveSessionLimit } from './session-limit.js';
 import { readRepoState, repoStateLines } from './repo-state.js';
 import { getTaskState, TaskStateUnreadableError } from './task-state-store.js';
 import { recipientEverSeen, unreadDeliveryCount, unreadInboxLines } from './agent-message-inbox.js';
@@ -56,8 +57,6 @@ import {
   resolveBriefingLevel,
   type BriefingLevel,
 } from './briefing-level.js';
-
-const PROJECT_LIMIT = 30;
 
 export interface BriefingResult {
   project: string;
@@ -131,7 +130,8 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
   // same discipline the SessionStart hook applies via its outcome record
   // (this module has no equivalent JSONL channel, so stderr is the honest
   // substitute; a CLI/MCP process never mixes stderr into its stdout JSON).
-  const resolvedLevel = resolveBriefingLevel(process.env.MEMESH_BRIEFING, readConfig().briefing);
+  const config = readConfig();
+  const resolvedLevel = resolveBriefingLevel(process.env.MEMESH_BRIEFING, config.briefing);
   if (resolvedLevel.invalid) {
     const { source, value } = resolvedLevel.invalid;
     try {
@@ -208,8 +208,10 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
   // project said it was about to do. Exact project, active, and through the
   // same trust gate as every other memory. Every pool below comes from the
   // one selection the hook also runs.
+  // The same limit the SessionStart hook resolves (env, then config, then the
+  // default), so the two surfaces cannot show different sets for one project.
   const pools = selectBriefingPools(db, projectName, {
-    projectLimit: PROJECT_LIMIT,
+    projectLimit: resolveSessionLimit(process.env.MEMESH_SESSION_LIMIT, config.sessionLimit).value,
     global: policy.global,
     foreign: policy.foreign,
   });
@@ -267,12 +269,18 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
   // INJECTED block when the level includes it.
   const now = Date.now();
   const { candidates: indexCandidates, truncated } = readIndexCandidates(db, projectName);
+  // The injected index lists the durable memories the ranked block does not
+  // already print; the standalone `index` below stays the full catalog.
+  const shownAbove = new Set(lines.flatMap((line) => {
+    const match = line.match(/ \[mem:(\d{1,10})\]$/);
+    return match ? [Number(match[1])] : [];
+  }));
   const index = buildBriefingIndex(indexCandidates, projectName, now, { truncated });
   // The injected index gets what the block left of the shared budget; the
   // standalone `index` above keeps its own caps (`memesh briefing --index`).
   const used = lines.length === 0 ? 0 : joinedLength(lines) + 2;
   const indexLines = policy.index
-    ? buildBriefingIndex(indexCandidates, projectName, now, { truncated, maxChars: DEFAULT_TOPOLOGY_BUDGET.maxChars - used }).lines
+    ? buildBriefingIndex(indexCandidates, projectName, now, { truncated, maxChars: DEFAULT_TOPOLOGY_BUDGET.maxChars - used, exclude: shownAbove }).lines
     : [];
   const block = withRepo.length > 0 && indexLines.length > 0
     ? [...withRepo, '', ...indexLines]

@@ -1,6 +1,7 @@
 import { getDatabase } from '../db.js';
 import { getProjectName } from './paths.js';
 import { readConfig } from './config.js';
+import { resolveSessionLimit } from './session-limit.js';
 import { readRepoState, repoStateLines } from './repo-state.js';
 import { getTaskState, TaskStateUnreadableError } from './task-state-store.js';
 import { recipientEverSeen, unreadDeliveryCount, unreadInboxLines } from './agent-message-inbox.js';
@@ -12,7 +13,6 @@ import { buildBriefingIndex, injectedIndexReserve, } from './briefing-index.js';
 import { DEFAULT_TOPOLOGY_BUDGET, assembleTopologyBlock, boundTaskStateLines, buildReferenceContext, hasBriefingContent, joinedLength, jsonStringLiteral, projectLabel, } from './work-topology.js';
 import { readIndexCandidates, readSnippets, selectBriefingPools, toTopologyEntity } from './briefing-pools.js';
 import { briefingLevelPolicy, resolveBriefingLevel, } from './briefing-level.js';
-const PROJECT_LIMIT = 30;
 export function readBriefingIndex(db, projectName, now = Date.now()) {
     const { candidates, truncated } = readIndexCandidates(db, projectName);
     return buildBriefingIndex(candidates, projectName, now, { truncated });
@@ -20,7 +20,8 @@ export function readBriefingIndex(db, projectName, now = Date.now()) {
 export function assembleBriefing(project, recipient) {
     const projectName = project ?? getProjectName();
     const db = getDatabase();
-    const resolvedLevel = resolveBriefingLevel(process.env.MEMESH_BRIEFING, readConfig().briefing);
+    const config = readConfig();
+    const resolvedLevel = resolveBriefingLevel(process.env.MEMESH_BRIEFING, config.briefing);
     if (resolvedLevel.invalid) {
         const { source, value } = resolvedLevel.invalid;
         try {
@@ -50,7 +51,7 @@ export function assembleBriefing(project, recipient) {
         ? recipientEverSeen(db, canonicalAgentScopeId(projectName), inboxRecipient)
         : undefined;
     const pools = selectBriefingPools(db, projectName, {
-        projectLimit: PROJECT_LIMIT,
+        projectLimit: resolveSessionLimit(process.env.MEMESH_SESSION_LIMIT, config.sessionLimit).value,
         global: policy.global,
         foreign: policy.foreign,
     });
@@ -75,10 +76,14 @@ export function assembleBriefing(project, recipient) {
         : lines;
     const now = Date.now();
     const { candidates: indexCandidates, truncated } = readIndexCandidates(db, projectName);
+    const shownAbove = new Set(lines.flatMap((line) => {
+        const match = line.match(/ \[mem:(\d{1,10})\]$/);
+        return match ? [Number(match[1])] : [];
+    }));
     const index = buildBriefingIndex(indexCandidates, projectName, now, { truncated });
     const used = lines.length === 0 ? 0 : joinedLength(lines) + 2;
     const indexLines = policy.index
-        ? buildBriefingIndex(indexCandidates, projectName, now, { truncated, maxChars: DEFAULT_TOPOLOGY_BUDGET.maxChars - used }).lines
+        ? buildBriefingIndex(indexCandidates, projectName, now, { truncated, maxChars: DEFAULT_TOPOLOGY_BUDGET.maxChars - used, exclude: shownAbove }).lines
         : [];
     const block = withRepo.length > 0 && indexLines.length > 0
         ? [...withRepo, '', ...indexLines]

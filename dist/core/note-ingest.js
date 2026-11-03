@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { createHash } from 'crypto';
+import { noteDirId } from './note-dirs.js';
 import { getDatabase } from '../db.js';
 import { remember } from './operations.js';
 import { sanitizeNoteText, splitObservations, NOTE_DEFAULT_TYPE, NOTE_MAX_OBSERVATIONS } from './note-derive.js';
@@ -104,7 +105,7 @@ export function ingestNoteDirectory(opts) {
     const realDir = fs.realpathSync(opts.dir);
     if (!fs.statSync(realDir).isDirectory())
         throw new Error(`not a directory: ${opts.dir}`);
-    const dirId = createHash('sha256').update(realDir).digest('hex').slice(0, 16);
+    const dirId = noteDirId(realDir);
     const { files, symlinks } = discover(realDir);
     const presentRels = new Set(files.map((abs) => relPath(realDir, abs)));
     const result = {
@@ -398,7 +399,9 @@ export function ingestNoteDirectory(opts) {
             observations: owner.observations,
             ...(existing ? { project } : { tags: [NOTE_FILE_TAG, ...(opts.project ? [`project:${opts.project}`] : [])] }),
             replace: true,
-            trustOverride: 'untrusted',
+            trustOverride: opts.trusted ? 'trusted' : 'untrusted',
+            reinforceConfidence: false,
+            reasonOptional: true,
             provenanceOverride: {
                 source: 'note-file',
                 note_path: owner.rel,

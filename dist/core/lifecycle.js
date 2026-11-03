@@ -1,5 +1,6 @@
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { dropEntityFromIndexes } from '../storage/entity-index.js';
+import { AUTO_CAPTURE_TAG } from './types.js';
 const DECAY_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const STALE_THRESHOLD_DAYS = 30;
 const DECAY_FACTOR = 0.9;
@@ -140,6 +141,78 @@ export function compressWeeklyNoise(db) {
     }
     db.prepare("INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES ('last_noise_compress_at', ?)").run(new Date().toISOString());
     return { compressed: totalCompressed, weeksProcessed };
+}
+export const AUTO_ARCHIVE_TYPES = ['commit', 'session-insight', 'session-summary'];
+export const AUTO_ARCHIVE_UNUSED_DAYS = 14;
+const AUTO_ARCHIVE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const AUTO_ARCHIVE_RECORDED_IDS = 100;
+export const AUTO_ARCHIVE_AT_KEY = 'last_auto_archive_at';
+export const AUTO_ARCHIVE_RUN_KEY = 'last_auto_archive_run';
+export function archiveUnusedAutoCaptured(db, now = new Date()) {
+    const last = db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(AUTO_ARCHIVE_AT_KEY);
+    if (last && now.getTime() - new Date(last.value).getTime() < AUTO_ARCHIVE_INTERVAL_MS)
+        return null;
+    const cols = new Set(db.prepare('PRAGMA table_info(entities)').all().map((c) => c.name));
+    const judgeable = cols.has('status') && cols.has('recall_hits') && cols.has('last_accessed_at');
+    const cutoff = new Date(now.getTime() - AUTO_ARCHIVE_UNUSED_DAYS * 24 * 60 * 60 * 1000).toISOString();
+    const types = [...AUTO_ARCHIVE_TYPES];
+    const typeList = types.map(() => '?').join(',');
+    const old = `e.status = 'active' AND e.type IN (${typeList})
+    AND EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?)
+    AND julianday(e.created_at) < julianday(?)
+    AND (e.last_accessed_at IS NULL OR julianday(e.last_accessed_at) < julianday(?))
+    AND COALESCE((SELECT MAX(julianday(o.created_at)) FROM observations o WHERE o.entity_id = e.id), 0) < julianday(?)`;
+    const params = [...types, AUTO_CAPTURE_TAG, cutoff, cutoff, cutoff];
+    const run = db.transaction(() => {
+        const result = {
+            at: now.toISOString(), unusedDays: AUTO_ARCHIVE_UNUSED_DAYS, archived: 0, byType: {}, keptCited: 0, ids: [],
+        };
+        if (judgeable) {
+            result.keptCited = db.prepare(`SELECT COUNT(*) AS c FROM entities e WHERE ${old} AND COALESCE(e.recall_hits, 0) > 0`).get(...params).c;
+            const rows = db.prepare(`SELECT e.id, e.name, e.type FROM entities e WHERE ${old} AND COALESCE(e.recall_hits, 0) = 0 ORDER BY e.id`).all(...params);
+            const mark = JSON.stringify({ at: result.at, rule: 'unused', days: AUTO_ARCHIVE_UNUSED_DAYS });
+            const archiveOne = db.prepare(`UPDATE entities SET status = 'archived',
+           metadata = CASE WHEN metadata IS NULL THEN json_object('auto_archive', json(?))
+                           WHEN json_valid(metadata) THEN json_set(metadata, '$.auto_archive', json(?))
+                           ELSE metadata END
+         WHERE id = ?`);
+            for (const row of rows) {
+                dropEntityFromIndexes(db, row.id, row.name);
+                archiveOne.run(mark, mark, row.id);
+                result.archived++;
+                result.byType[row.type] = (result.byType[row.type] ?? 0) + 1;
+                if (result.ids.length < AUTO_ARCHIVE_RECORDED_IDS)
+                    result.ids.push(row.id);
+            }
+        }
+        const put = db.prepare('INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)');
+        put.run(AUTO_ARCHIVE_RUN_KEY, JSON.stringify(result));
+        put.run(AUTO_ARCHIVE_AT_KEY, result.at);
+        return result;
+    });
+    return run.immediate();
+}
+export class AutoArchiveRecordUnreadable extends Error {
+    constructor(detail) {
+        super(`the automatic archive's run record is unreadable: ${detail}`);
+        this.name = 'AutoArchiveRecordUnreadable';
+    }
+}
+export function readLastAutoArchiveRun(db) {
+    const row = db.prepare(`SELECT value FROM memesh_metadata WHERE key = '${AUTO_ARCHIVE_RUN_KEY}'`).get();
+    if (!row)
+        return null;
+    let parsed;
+    try {
+        parsed = JSON.parse(row.value);
+    }
+    catch (err) {
+        throw new AutoArchiveRecordUnreadable(err instanceof Error ? err.message : String(err));
+    }
+    if (typeof parsed?.at !== 'string' || !Number.isInteger(parsed.archived)) {
+        throw new AutoArchiveRecordUnreadable('missing "at" or "archived"');
+    }
+    return parsed;
 }
 export { PRESERVED_TYPES, NOISE_TYPES };
 //# sourceMappingURL=lifecycle.js.map

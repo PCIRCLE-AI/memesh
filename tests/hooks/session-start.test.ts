@@ -624,24 +624,49 @@ describe('Feature: Session Start Hook', () => {
     const ins = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)');
     const obs = db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)');
     const tag = db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)');
-    const d = ins.run('idx-decision', 'decision').lastInsertRowid as number;
-    obs.run(d, 'Keep the index capped at forty lines');
-    tag.run(d, projTag('indexproj'));
+    const older = ins.run('idx-decision-older', 'decision').lastInsertRowid as number;
+    obs.run(older, 'Keep the index capped at forty lines');
+    tag.run(older, projTag('indexproj'));
+    const newer = ins.run('idx-decision-newer', 'decision').lastInsertRowid as number;
+    obs.run(newer, 'Keep the ranked block short');
+    tag.run(newer, projTag('indexproj'));
     const c = ins.run('commit-idx', 'commit').lastInsertRowid as number;
     obs.run(c, 'chore: bump the lockfile');
     tag.run(c, projTag('indexproj'));
     db.close();
 
-    const output = runHook({ cwd: '/tmp/indexproj' }, STANDARD);
+    // A window of one: the newest decision is in the ranked block, so the index
+    // lists the other one — and only that one.
+    const output = runHook({ cwd: '/tmp/indexproj' }, { ...STANDARD, MEMESH_SESSION_LIMIT: '1' });
     const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
     // The heading names the project by its label; the hashed id stays in the tag.
     const section = injected.split('Index of durable memories for "indexproj" (newest first):')[1];
     expect(section, 'index section present').toBeDefined();
-    expect(section).toContain(`- [decision] Keep the index capped at forty lines (no reason recorded) [mem:${d}]`);
+    expect(section).toContain(`- [decision] Keep the index capped at forty lines (no reason recorded) [mem:${older}]`);
+    expect(section, 'a memory the ranked block already prints is not listed twice').not.toContain('Keep the ranked block short');
     expect(section).not.toContain('bump the lockfile');
     expect(section).toMatch(/\(index cost: 1 line, \d+ bytes ≈ \d+ tokens; cap 40 lines \/ 3072 bytes\)/);
     const session = readLatestSessionFile();
-    expect(session!.entityIds).toContain(d);
+    expect(session!.entityIds).toContain(older);
+  });
+
+  it('#409: when the ranked block prints every durable memory, the index says so instead of listing them again', () => {
+    const db = createTestDb();
+    const ins = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)');
+    const obs = db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)');
+    const tag = db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)');
+    const d = ins.run('only-decision', 'decision').lastInsertRowid as number;
+    obs.run(d, 'The only durable memory');
+    tag.run(d, projTag('indexall'));
+    db.close();
+
+    const output = runHook({ cwd: '/tmp/indexall' }, STANDARD);
+    const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
+    const [ranked, section] = injected.split('Index of durable memories for "indexall" (newest first):');
+    expect(ranked.match(new RegExp(`\\[mem:${d}\\]`, 'g'))).toHaveLength(1);
+    expect(section).not.toContain(`[mem:${d}]`);
+    expect(section).toContain('Every durable memory for "indexall" is already listed above.');
+    expect(section).not.toContain('No durable memories');
   });
 
   it('#323: a memory shown ONLY through the index is recorded as injected, so citing it is credited', () => {
@@ -694,9 +719,11 @@ describe('Feature: Session Start Hook', () => {
     add('archived', 'archived', 'personal', 'scopeproj', 'Archived project decision');
     add('global', 'active', 'global', 'scopeproj', 'Global tagged decision');
     add('foreign', 'active', 'personal', 'foreignproj', 'Other project decision');
+    // Newest, so a window of one gives it the ranked block and leaves `kept` to the index.
+    add('kept-newest', 'active', 'personal', 'scopeproj', 'Newest project decision');
     db.close();
 
-    const output = runHook({ cwd: '/tmp/scopeproj' }, STANDARD);
+    const output = runHook({ cwd: '/tmp/scopeproj' }, { ...STANDARD, MEMESH_SESSION_LIMIT: '1' });
     const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
     const section = injected.split('Index of durable memories for')[1] ?? '';
     expect(section).toContain(`Kept project decision (no reason recorded) [mem:${kept}]`);
@@ -1193,7 +1220,8 @@ syncBuiltinESMExports();
   // to keep the OLDEST of such a tie, and the lesson query had no ORDER BY at all,
   // so a new session never saw the newest memories.
   describe('Scenario: equal scores resolve newest-first (#401)', () => {
-    const seedTied = (db: Database, count: number, type = 'commit', prefix = 'tied') => {
+    // A knowledge-layer type: commits are mechanical capture and take none of the project's slots.
+    const seedTied = (db: Database, count: number, type = 'note', prefix = 'tied') => {
       for (let i = 1; i <= count; i++) {
         db.prepare("INSERT INTO entities (name, type, confidence, status) VALUES (?, ?, 0.9, 'active')").run(`${prefix}-${i}`, type);
         db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(i, `observation ${i}`);

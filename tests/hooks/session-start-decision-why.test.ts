@@ -46,7 +46,7 @@ afterEach(() => {
 function runHook(): string {
   const out = execFileSync(process.execPath, [hookPath], {
     input: JSON.stringify({ cwd: dir }),
-    env: { PATH: process.env.PATH ?? '', HOME: root, USERPROFILE: root, MEMESH_DB_PATH: dbPath, MEMESH_AUTO_UPDATE: '0', MEMESH_BRIEFING: 'standard' },
+    env: { PATH: process.env.PATH ?? '', HOME: root, USERPROFILE: root, MEMESH_DB_PATH: dbPath, MEMESH_AUTO_UPDATE: '0', MEMESH_BRIEFING: 'standard', ...(process.env.MEMESH_SESSION_LIMIT ? { MEMESH_SESSION_LIMIT: process.env.MEMESH_SESSION_LIMIT } : {}) },
     encoding: 'utf8',
     timeout: 15000,
   });
@@ -58,26 +58,37 @@ const decisionLines = (text: string): string[] => text.split('\n').filter((l) =>
 describe('SessionStart: a decision is shown with its reason and its age', () => {
   it('the ranked block and the index carry the reason, the missing reason and the age note, as `briefing` does', () => {
     const project = mirrorProjectName(dir);
+    // A window of one: the newest decision is the ranked block, and the other
+    // two reach the block only through the index, which lists what the ranked
+    // block does not print.
+    const previousLimit = process.env.MEMESH_SESSION_LIMIT;
+    process.env.MEMESH_SESSION_LIMIT = '1';
     openDatabase(dbPath);
-    remember({ name: 'fresh-choice', type: 'decision', title: 'Keep the cache layer', observations: ['Keep the cache layer'], why: 'the API is rate limited; revisit if the vendor lifts the limit', project });
-    new KnowledgeGraph(getDatabase()).createEntity('bare-choice', 'decision', { observations: ['Use tabs'], tags: [`project:${project}`], trustOverride: 'trusted', title: 'Use tabs' });
     // An architecture_decision is not in the decision layer: its age comes from its observations.
     remember({ name: 'old-choice', type: 'architecture_decision', title: 'Queue it', observations: ['Queue it'], why: 'buffers bursts; revisit if flat', project });
     getDatabase().prepare("UPDATE observations SET created_at = datetime('now', '-40 days') WHERE entity_id = (SELECT id FROM entities WHERE name = 'old-choice')").run();
     getDatabase().prepare("UPDATE entities SET created_at = datetime('now', '-40 days'), last_accessed_at = NULL WHERE name = 'old-choice'").run();
+    new KnowledgeGraph(getDatabase()).createEntity('bare-choice', 'decision', { observations: ['Use tabs'], tags: [`project:${project}`], trustOverride: 'trusted', title: 'Use tabs' });
+    getDatabase().prepare("UPDATE observations SET created_at = datetime('now', '-1 hours') WHERE entity_id = (SELECT id FROM entities WHERE name = 'bare-choice')").run();
+    getDatabase().prepare("UPDATE entities SET created_at = datetime('now', '-1 hours') WHERE name = 'bare-choice'").run();
+    remember({ name: 'fresh-choice', type: 'decision', title: 'Keep the cache layer', observations: ['Keep the cache layer'], why: 'the API is rate limited; revisit if the vendor lifts the limit', project });
     const briefing = assembleBriefing(project).text;
     closeDatabase();
 
-    const context = runHook();
+    let context: string;
+    try {
+      context = runHook();
+    } finally {
+      if (previousLimit === undefined) delete process.env.MEMESH_SESSION_LIMIT; else process.env.MEMESH_SESSION_LIMIT = previousLimit;
+    }
     const [ranked, index] = context.split('Index of durable memories for');
     expect(index, 'the hook printed no index').toBeTruthy();
-    for (const part of [ranked, index]) {
-      expect(part).toMatch(/- \[decision\] Keep the cache layer — Why: the API is rate limited; revisit if the vendor lifts the limit \[mem:\d+\]/);
-      expect(part).toMatch(/- \[decision\] Use tabs \(no reason recorded\) \[mem:\d+\]/);
-      expect(part).toMatch(/- \[architecture_decision\] Queue it — Why: buffers bursts; revisit if flat \(unconfirmed 40 days: re-check before relying\) \[mem:\d+\]/);
-    }
-    // The same lines, in the same order, as the briefing prints.
-    expect(decisionLines(context)).toHaveLength(6);
+    expect(ranked).toMatch(/- \[decision\] Keep the cache layer — Why: the API is rate limited; revisit if the vendor lifts the limit \[mem:\d+\]/);
+    expect(index).not.toContain('Keep the cache layer');
+    expect(index).toMatch(/- \[decision\] Use tabs \(no reason recorded\) \[mem:\d+\]/);
+    expect(index).toMatch(/- \[architecture_decision\] Queue it — Why: buffers bursts; revisit if flat \(unconfirmed 40 days: re-check before relying\) \[mem:\d+\]/);
+    // Nothing is printed twice, and the same lines come in the same order as the briefing prints.
+    expect(decisionLines(context)).toHaveLength(3);
     expect(decisionLines(context)).toEqual(decisionLines(briefing));
   });
 });

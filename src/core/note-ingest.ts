@@ -35,6 +35,7 @@
 import fs from 'fs';
 import path from 'path';
 import { createHash } from 'crypto';
+import { noteDirId } from './note-dirs.js';
 import { getDatabase } from '../db.js';
 import { remember } from './operations.js';
 import { sanitizeNoteText, splitObservations, NOTE_DEFAULT_TYPE, NOTE_MAX_OBSERVATIONS } from './note-derive.js';
@@ -48,6 +49,13 @@ const SKIPPED_DIRS = new Set(['.git', 'node_modules']);
 
 export interface NoteIngestOptions {
   dir: string;
+  /**
+   * Whether the memories this run writes are trusted (injected into sessions
+   * unasked, like any memory an agent stores). Never defaulted: the Stop hook
+   * passes true for the person's own memory folder, and `memesh import --notes`
+   * passes true only with `--trust`.
+   */
+  trusted: boolean;
   /** Adds a `project:<name>` tag to every ingested memory when given. */
   project?: string;
   maxFiles?: number;
@@ -245,7 +253,7 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
   const maxBytes = opts.maxBytes ?? NOTE_FILE_MAX_BYTES;
   const realDir = fs.realpathSync(opts.dir);
   if (!fs.statSync(realDir).isDirectory()) throw new Error(`not a directory: ${opts.dir}`);
-  const dirId = createHash('sha256').update(realDir).digest('hex').slice(0, 16);
+  const dirId = noteDirId(realDir);
 
   const { files, symlinks } = discover(realDir);
   const presentRels = new Set(files.map((abs) => relPath(realDir, abs)));
@@ -623,9 +631,15 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
       observations: owner.observations,
       ...(existing ? { project } : { tags: [NOTE_FILE_TAG, ...(opts.project ? [`project:${opts.project}`] : [])] }),
       replace: true,
-      // Same stance as the JSON importer: text from a file is not a trusted
-      // re-assertion and must not lift confidence.
-      trustOverride: 'untrusted',
+      // Trust is the caller's decision (`opts.trusted`): the person's own
+      // memory folder is trusted like an agent's `remember`; any other folder
+      // stays untrusted unless the person said `--trust`. Trusted or not, a
+      // file read again is not a new confirmation, so it never lifts
+      // confidence, and a decision note may lack a `why`: both keep the
+      // behaviour they had while every note was untrusted.
+      trustOverride: opts.trusted ? 'trusted' : 'untrusted',
+      reinforceConfidence: false,
+      reasonOptional: true,
       provenanceOverride: {
         source: 'note-file',
         note_path: owner.rel,

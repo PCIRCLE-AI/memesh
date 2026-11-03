@@ -96,7 +96,7 @@ Claude Code 的收件提醒不需設定 Channel：沒有自訂身分時，hooks 
 
 ---
 
-插件共有 10 個 hook 指令。「記住這件事」提醒支援 5 種語言。
+插件共有 11 個 hook 指令。「記住這件事」提醒支援 5 種語言。當你的提問明確與已存的記憶有關時，最多三條記憶（標題與 `[mem:id]`）會跟著提問一起送出；可用 `memesh config set promptRecall false` 關閉。
 記憶介面在 Claude Code／Claude Desktop Code 使用 MeMesh Mod，Codex 使用 MCP／原生表單；不再提供獨立 Web Dashboard。
 
 排序權重：相關性 30%、新近程度 25%、使用頻率 18%、信心 17%、回憶影響 10%。詳見[架構說明](docs/ARCHITECTURE.md)。

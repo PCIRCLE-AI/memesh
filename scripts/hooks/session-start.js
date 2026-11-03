@@ -1188,6 +1188,7 @@ process.stdin.on('end', async () => {
     // pre-read from this readonly handle before it closes. Defaults to
     // true so any early exit still lets the epilogue's own throttle decide.
     let noiseCompressDue = true;
+    let autoArchiveDue = true;
     try {
       // Check if tables exist (db may exist but be empty)
       const tableCheck = db.prepare(
@@ -1435,8 +1436,14 @@ process.stdin.on('end', async () => {
         indexLines = [];
       } else try {
         const { candidates, truncated } = readIndexCandidates(db, projectName);
+        // The ranked block already prints some durable memories; the index lists the rest.
+        const shownAbove = new Set(memoryLines.flatMap((line) => {
+          const match = line.match(/ \[mem:(\d{1,10})\]$/);
+          return match ? [Number(match[1])] : [];
+        }));
         const index = buildBriefingIndex(candidates, projectName, Date.now(), {
           truncated,
+          exclude: shownAbove,
           // One shared cap: the index gets what the block above left of it.
           maxChars: DEFAULT_TOPOLOGY_BUDGET.maxChars
             - (memoryLines.length ? joinedLength(memoryLines) + 2 : 0),
@@ -1723,17 +1730,17 @@ process.stdin.on('end', async () => {
       // migration-chain open (WAL writer lock) that must stay off the
       // SessionStart hot path. Missing table / any error ⇒ due (the full
       // path owns schema creation).
-      noiseCompressDue = (() => {
+      const dueSince = (key) => {
         try {
-          const row = db.prepare(
-            "SELECT value FROM memesh_metadata WHERE key = 'last_noise_compress_at'"
-          ).get();
+          const row = db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(key);
           if (!row) return true;
           return Date.now() - new Date(row.value).getTime() >= 24 * 60 * 60 * 1000;
         } catch {
           return true;
         }
-      })();
+      };
+      noiseCompressDue = dueSince('last_noise_compress_at');
+      autoArchiveDue = dueSince('last_auto_archive_at');
     } finally {
       db.close();
     }
@@ -1741,7 +1748,7 @@ process.stdin.on('end', async () => {
     // Opens a separate read-write connection via the core module.
     // Throttled to once per 24h inside compressWeeklyNoise().
     try {
-      if (noiseCompressDue) {
+      if (noiseCompressDue || autoArchiveDue) {
       // F5: derive pluginRoot strictly from this file's location.
       // See `resolvePluginRoot` for the full reasoning.
       const pluginRoot = resolvePluginRoot(import.meta.url);
@@ -1756,6 +1763,19 @@ process.stdin.on('end', async () => {
         // in doctor, not in the dashboard. Nothing to opt into: it runs at
         // most once a day and stays silent when it compresses nothing.
         const noise = lifecycleMod.compressWeeklyNoise(dbMod.getDatabase());
+        // Auto-captured commits and session rollups nobody used for 14 days.
+        // Throttled and recorded inside (memesh_metadata, shown by `memesh
+        // doctor`); this line only makes a run that did something visible.
+        const unused = lifecycleMod.archiveUnusedAutoCaptured(dbMod.getDatabase());
+        if (unused && unused.archived > 0) {
+          try {
+            process.stderr.write(
+              `[memesh] archived ${unused.archived} auto-captured memor${unused.archived === 1 ? 'y' : 'ies'} `
+              + `not used for ${unused.unusedDays} days `
+              + `(recover with \`memesh recall --include-archived\`; \`memesh doctor\` shows the last run)\n`,
+            );
+          } catch { /* stderr gone */ }
+        }
         if (noise && noise.compressed > 0) {
           try {
             process.stderr.write(

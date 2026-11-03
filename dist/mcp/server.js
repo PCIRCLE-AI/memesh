@@ -33,9 +33,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 
-// node_modules/ajv/dist/compile/codegen/code.js
+// ../../../node_modules/ajv/dist/compile/codegen/code.js
 var require_code = __commonJS({
-  "node_modules/ajv/dist/compile/codegen/code.js"(exports) {
+  "../../../node_modules/ajv/dist/compile/codegen/code.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.regexpCode = exports.getEsmExportName = exports.getProperty = exports.safeStringify = exports.stringify = exports.strConcat = exports.addCodeArg = exports.str = exports._ = exports.nil = exports._Code = exports.Name = exports.IDENTIFIER = exports._CodeOrName = void 0;
@@ -187,9 +187,9 @@ var require_code = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/codegen/scope.js
+// ../../../node_modules/ajv/dist/compile/codegen/scope.js
 var require_scope = __commonJS({
-  "node_modules/ajv/dist/compile/codegen/scope.js"(exports) {
+  "../../../node_modules/ajv/dist/compile/codegen/scope.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.ValueScope = exports.ValueScopeName = exports.Scope = exports.varKinds = exports.UsedValueState = void 0;
@@ -332,9 +332,9 @@ var require_scope = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/codegen/index.js
+// ../../../node_modules/ajv/dist/compile/codegen/index.js
 var require_codegen = __commonJS({
-  "node_modules/ajv/dist/compile/codegen/index.js"(exports) {
+  "../../../node_modules/ajv/dist/compile/codegen/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.or = exports.and = exports.not = exports.CodeGen = exports.operators = exports.varKinds = exports.ValueScopeName = exports.ValueScope = exports.Scope = exports.Name = exports.regexpCode = exports.stringify = exports.getProperty = exports.nil = exports.strConcat = exports.str = exports._ = void 0;
@@ -1052,9 +1052,9 @@ var require_codegen = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/util.js
+// ../../../node_modules/ajv/dist/compile/util.js
 var require_util = __commonJS({
-  "node_modules/ajv/dist/compile/util.js"(exports) {
+  "../../../node_modules/ajv/dist/compile/util.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.checkStrictMode = exports.getErrorPath = exports.Type = exports.useFunc = exports.setEvaluated = exports.evaluatedPropsToName = exports.mergeEvaluated = exports.eachItem = exports.unescapeJsonPointer = exports.escapeJsonPointer = exports.escapeFragment = exports.unescapeFragment = exports.schemaRefOrVal = exports.schemaHasRulesButRef = exports.schemaHasRules = exports.checkUnknownRules = exports.alwaysValidSchema = exports.toHash = void 0;
@@ -1219,9 +1219,9 @@ var require_util = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/names.js
+// ../../../node_modules/ajv/dist/compile/names.js
 var require_names = __commonJS({
-  "node_modules/ajv/dist/compile/names.js"(exports) {
+  "../../../node_modules/ajv/dist/compile/names.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -1258,9 +1258,9 @@ var require_names = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/errors.js
+// ../../../node_modules/ajv/dist/compile/errors.js
 var require_errors = __commonJS({
-  "node_modules/ajv/dist/compile/errors.js"(exports) {
+  "../../../node_modules/ajv/dist/compile/errors.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.extendErrors = exports.resetErrorsCount = exports.reportExtraError = exports.reportError = exports.keyword$DataError = exports.keywordError = void 0;
@@ -1380,9 +1380,9 @@ var require_errors = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/validate/boolSchema.js
+// ../../../node_modules/ajv/dist/compile/validate/boolSchema.js
 var require_boolSchema = __commonJS({
-  "node_modules/ajv/dist/compile/validate/boolSchema.js"(exports) {
+  "../../../node_modules/ajv/dist/compile/validate/boolSchema.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.boolOrEmptySchema = exports.topBoolOrEmptySchema = void 0;
@@ -1431,9 +1431,9 @@ var require_boolSchema = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/rules.js
+// ../../../node_modules/ajv/dist/compile/rules.js
 var require_rules = __commonJS({
-  "node_modules/ajv/dist/compile/rules.js"(exports) {
+  "../../../node_modules/ajv/dist/compile/rules.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.getRules = exports.isJSONType = void 0;
@@ -1462,9 +1462,9 @@ var require_rules = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/validate/applicability.js
+// ../../../node_modules/ajv/dist/compile/validate/applicability.js
 var require_applicability = __commonJS({
-  "node_modules/ajv/dist/compile/validate/applicability.js"(exports) {
+  "../../../node_modules/ajv/dist/compile/validate/applicability.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.shouldUseRule = exports.shouldUseGroup = exports.schemaHasRulesForType = void 0;
@@ -1485,9 +1485,9 @@ var require_applicability = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/validate/dataType.js
+// ../../../node_modules/ajv/dist/compile/validate/dataType.js
 var require_dataType = __commonJS({
-  "node_modules/ajv/dist/compile/validate/dataType.js"(exports) {
+  "../../../node_modules/ajv/dist/compile/validate/dataType.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.reportTypeError = exports.checkDataTypes = exports.checkDataType = exports.coerceAndCheckDataType = exports.getJSONTypes = exports.getSchemaTypes = exports.DataType = void 0;
@@ -1669,9 +1669,9 @@ var require_dataType = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/validate/defaults.js
+// ../../../node_modules/ajv/dist/compile/validate/defaults.js
 var require_defaults = __commonJS({
-  "node_modules/ajv/dist/compile/validate/defaults.js"(exports) {
+  "../../../node_modules/ajv/dist/compile/validate/defaults.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.assignDefaults = void 0;
@@ -1706,9 +1706,9 @@ var require_defaults = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/code.js
+// ../../../node_modules/ajv/dist/vocabularies/code.js
 var require_code2 = __commonJS({
-  "node_modules/ajv/dist/vocabularies/code.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/code.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.validateUnion = exports.validateArray = exports.usePattern = exports.callValidateCode = exports.schemaProperties = exports.allSchemaProperties = exports.noPropertyInData = exports.propertyInData = exports.isOwnProperty = exports.hasPropFunc = exports.reportMissingProp = exports.checkMissingProp = exports.checkReportMissingProp = void 0;
@@ -1839,9 +1839,9 @@ var require_code2 = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/validate/keyword.js
+// ../../../node_modules/ajv/dist/compile/validate/keyword.js
 var require_keyword = __commonJS({
-  "node_modules/ajv/dist/compile/validate/keyword.js"(exports) {
+  "../../../node_modules/ajv/dist/compile/validate/keyword.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.validateKeywordUsage = exports.validSchemaType = exports.funcKeywordCode = exports.macroKeywordCode = void 0;
@@ -1957,9 +1957,9 @@ var require_keyword = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/validate/subschema.js
+// ../../../node_modules/ajv/dist/compile/validate/subschema.js
 var require_subschema = __commonJS({
-  "node_modules/ajv/dist/compile/validate/subschema.js"(exports) {
+  "../../../node_modules/ajv/dist/compile/validate/subschema.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.extendSubschemaMode = exports.extendSubschemaData = exports.getSubschema = void 0;
@@ -2040,9 +2040,9 @@ var require_subschema = __commonJS({
   }
 });
 
-// node_modules/fast-deep-equal/index.js
+// ../../../node_modules/fast-deep-equal/index.js
 var require_fast_deep_equal = __commonJS({
-  "node_modules/fast-deep-equal/index.js"(exports, module) {
+  "../../../node_modules/fast-deep-equal/index.js"(exports, module) {
     "use strict";
     module.exports = function equal(a, b) {
       if (a === b) return true;
@@ -2075,9 +2075,9 @@ var require_fast_deep_equal = __commonJS({
   }
 });
 
-// node_modules/json-schema-traverse/index.js
+// ../../../node_modules/json-schema-traverse/index.js
 var require_json_schema_traverse = __commonJS({
-  "node_modules/json-schema-traverse/index.js"(exports, module) {
+  "../../../node_modules/json-schema-traverse/index.js"(exports, module) {
     "use strict";
     var traverse = module.exports = function(schema, opts, cb) {
       if (typeof opts == "function") {
@@ -2163,9 +2163,9 @@ var require_json_schema_traverse = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/resolve.js
+// ../../../node_modules/ajv/dist/compile/resolve.js
 var require_resolve = __commonJS({
-  "node_modules/ajv/dist/compile/resolve.js"(exports) {
+  "../../../node_modules/ajv/dist/compile/resolve.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.getSchemaRefs = exports.resolveUrl = exports.normalizeId = exports._getFullPath = exports.getFullPath = exports.inlineRef = void 0;
@@ -2319,9 +2319,9 @@ var require_resolve = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/validate/index.js
+// ../../../node_modules/ajv/dist/compile/validate/index.js
 var require_validate = __commonJS({
-  "node_modules/ajv/dist/compile/validate/index.js"(exports) {
+  "../../../node_modules/ajv/dist/compile/validate/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.getData = exports.KeywordCxt = exports.validateFunctionCode = void 0;
@@ -2827,9 +2827,9 @@ var require_validate = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/runtime/validation_error.js
+// ../../../node_modules/ajv/dist/runtime/validation_error.js
 var require_validation_error = __commonJS({
-  "node_modules/ajv/dist/runtime/validation_error.js"(exports) {
+  "../../../node_modules/ajv/dist/runtime/validation_error.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var ValidationError = class extends Error {
@@ -2843,9 +2843,9 @@ var require_validation_error = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/ref_error.js
+// ../../../node_modules/ajv/dist/compile/ref_error.js
 var require_ref_error = __commonJS({
-  "node_modules/ajv/dist/compile/ref_error.js"(exports) {
+  "../../../node_modules/ajv/dist/compile/ref_error.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var resolve_1 = require_resolve();
@@ -2860,9 +2860,9 @@ var require_ref_error = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/compile/index.js
+// ../../../node_modules/ajv/dist/compile/index.js
 var require_compile = __commonJS({
-  "node_modules/ajv/dist/compile/index.js"(exports) {
+  "../../../node_modules/ajv/dist/compile/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.resolveSchema = exports.getCompilingSchema = exports.resolveRef = exports.compileSchema = exports.SchemaEnv = void 0;
@@ -3084,9 +3084,9 @@ var require_compile = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/refs/data.json
+// ../../../node_modules/ajv/dist/refs/data.json
 var require_data = __commonJS({
-  "node_modules/ajv/dist/refs/data.json"(exports, module) {
+  "../../../node_modules/ajv/dist/refs/data.json"(exports, module) {
     module.exports = {
       $id: "https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/data.json#",
       description: "Meta-schema for $data reference (JSON AnySchema extension proposal)",
@@ -3103,9 +3103,9 @@ var require_data = __commonJS({
   }
 });
 
-// node_modules/fast-uri/lib/utils.js
+// ../../../node_modules/fast-uri/lib/utils.js
 var require_utils = __commonJS({
-  "node_modules/fast-uri/lib/utils.js"(exports, module) {
+  "../../../node_modules/fast-uri/lib/utils.js"(exports, module) {
     "use strict";
     var isUUID = RegExp.prototype.test.bind(/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/iu);
     var isIPv4 = RegExp.prototype.test.bind(/^(?:(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)$/u);
@@ -3229,8 +3229,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path15) {
-      let input2 = path15;
+    function removeDotSegments(path16) {
+      let input2 = path16;
       const output2 = [];
       let nextSlash = -1;
       let len = 0;
@@ -3416,9 +3416,9 @@ var require_utils = __commonJS({
   }
 });
 
-// node_modules/fast-uri/lib/schemes.js
+// ../../../node_modules/fast-uri/lib/schemes.js
 var require_schemes = __commonJS({
-  "node_modules/fast-uri/lib/schemes.js"(exports, module) {
+  "../../../node_modules/fast-uri/lib/schemes.js"(exports, module) {
     "use strict";
     var { isUUID } = require_utils();
     var URN_REG = /([\da-z][\d\-a-z]{0,31}):((?:[\w!$'()*+,\-.:;=@]|%[\da-f]{2})+)/iu;
@@ -3482,8 +3482,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path15, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path15 && path15 !== "/" ? path15 : void 0;
+        const [path16, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path16 && path16 !== "/" ? path16 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -3626,9 +3626,9 @@ var require_schemes = __commonJS({
   }
 });
 
-// node_modules/fast-uri/index.js
+// ../../../node_modules/fast-uri/index.js
 var require_fast_uri = __commonJS({
-  "node_modules/fast-uri/index.js"(exports, module) {
+  "../../../node_modules/fast-uri/index.js"(exports, module) {
     "use strict";
     var { normalizeIPv6, removeDotSegments, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, escapePreservingEscapes, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require_utils();
     var { SCHEMES, getSchemeHandler } = require_schemes();
@@ -3938,9 +3938,9 @@ var require_fast_uri = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/runtime/uri.js
+// ../../../node_modules/ajv/dist/runtime/uri.js
 var require_uri = __commonJS({
-  "node_modules/ajv/dist/runtime/uri.js"(exports) {
+  "../../../node_modules/ajv/dist/runtime/uri.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var uri = require_fast_uri();
@@ -3949,9 +3949,9 @@ var require_uri = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/core.js
+// ../../../node_modules/ajv/dist/core.js
 var require_core = __commonJS({
-  "node_modules/ajv/dist/core.js"(exports) {
+  "../../../node_modules/ajv/dist/core.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.CodeGen = exports.Name = exports.nil = exports.stringify = exports.str = exports._ = exports.KeywordCxt = void 0;
@@ -4560,9 +4560,9 @@ var require_core = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/core/id.js
+// ../../../node_modules/ajv/dist/vocabularies/core/id.js
 var require_id = __commonJS({
-  "node_modules/ajv/dist/vocabularies/core/id.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/core/id.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var def = {
@@ -4575,9 +4575,9 @@ var require_id = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/core/ref.js
+// ../../../node_modules/ajv/dist/vocabularies/core/ref.js
 var require_ref = __commonJS({
-  "node_modules/ajv/dist/vocabularies/core/ref.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/core/ref.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.callRef = exports.getValidate = void 0;
@@ -4697,9 +4697,9 @@ var require_ref = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/core/index.js
+// ../../../node_modules/ajv/dist/vocabularies/core/index.js
 var require_core2 = __commonJS({
-  "node_modules/ajv/dist/vocabularies/core/index.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/core/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var id_1 = require_id();
@@ -4718,9 +4718,9 @@ var require_core2 = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/limitNumber.js
+// ../../../node_modules/ajv/dist/vocabularies/validation/limitNumber.js
 var require_limitNumber = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/limitNumber.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/validation/limitNumber.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -4750,9 +4750,9 @@ var require_limitNumber = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/multipleOf.js
+// ../../../node_modules/ajv/dist/vocabularies/validation/multipleOf.js
 var require_multipleOf = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/multipleOf.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/validation/multipleOf.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -4778,9 +4778,9 @@ var require_multipleOf = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/runtime/ucs2length.js
+// ../../../node_modules/ajv/dist/runtime/ucs2length.js
 var require_ucs2length = __commonJS({
-  "node_modules/ajv/dist/runtime/ucs2length.js"(exports) {
+  "../../../node_modules/ajv/dist/runtime/ucs2length.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     function ucs2length(str) {
@@ -4804,9 +4804,9 @@ var require_ucs2length = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/limitLength.js
+// ../../../node_modules/ajv/dist/vocabularies/validation/limitLength.js
 var require_limitLength = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/limitLength.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/validation/limitLength.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -4836,9 +4836,9 @@ var require_limitLength = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/pattern.js
+// ../../../node_modules/ajv/dist/vocabularies/validation/pattern.js
 var require_pattern = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/pattern.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/validation/pattern.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -4873,9 +4873,9 @@ var require_pattern = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/limitProperties.js
+// ../../../node_modules/ajv/dist/vocabularies/validation/limitProperties.js
 var require_limitProperties = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/limitProperties.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/validation/limitProperties.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -4902,9 +4902,9 @@ var require_limitProperties = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/required.js
+// ../../../node_modules/ajv/dist/vocabularies/validation/required.js
 var require_required = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/required.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/validation/required.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -4984,9 +4984,9 @@ var require_required = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/limitItems.js
+// ../../../node_modules/ajv/dist/vocabularies/validation/limitItems.js
 var require_limitItems = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/limitItems.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/validation/limitItems.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5013,9 +5013,9 @@ var require_limitItems = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/runtime/equal.js
+// ../../../node_modules/ajv/dist/runtime/equal.js
 var require_equal = __commonJS({
-  "node_modules/ajv/dist/runtime/equal.js"(exports) {
+  "../../../node_modules/ajv/dist/runtime/equal.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var equal = require_fast_deep_equal();
@@ -5024,9 +5024,9 @@ var require_equal = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/uniqueItems.js
+// ../../../node_modules/ajv/dist/vocabularies/validation/uniqueItems.js
 var require_uniqueItems = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/uniqueItems.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/validation/uniqueItems.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var dataType_1 = require_dataType();
@@ -5091,9 +5091,9 @@ var require_uniqueItems = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/const.js
+// ../../../node_modules/ajv/dist/vocabularies/validation/const.js
 var require_const = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/const.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/validation/const.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5120,9 +5120,9 @@ var require_const = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/enum.js
+// ../../../node_modules/ajv/dist/vocabularies/validation/enum.js
 var require_enum = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/enum.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/validation/enum.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5169,9 +5169,9 @@ var require_enum = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/validation/index.js
+// ../../../node_modules/ajv/dist/vocabularies/validation/index.js
 var require_validation = __commonJS({
-  "node_modules/ajv/dist/vocabularies/validation/index.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/validation/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var limitNumber_1 = require_limitNumber();
@@ -5207,9 +5207,9 @@ var require_validation = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/additionalItems.js
+// ../../../node_modules/ajv/dist/vocabularies/applicator/additionalItems.js
 var require_additionalItems = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/additionalItems.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/applicator/additionalItems.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.validateAdditionalItems = void 0;
@@ -5260,9 +5260,9 @@ var require_additionalItems = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/items.js
+// ../../../node_modules/ajv/dist/vocabularies/applicator/items.js
 var require_items = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/items.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/applicator/items.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.validateTuple = void 0;
@@ -5317,9 +5317,9 @@ var require_items = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/prefixItems.js
+// ../../../node_modules/ajv/dist/vocabularies/applicator/prefixItems.js
 var require_prefixItems = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/prefixItems.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/applicator/prefixItems.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var items_1 = require_items();
@@ -5334,9 +5334,9 @@ var require_prefixItems = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/items2020.js
+// ../../../node_modules/ajv/dist/vocabularies/applicator/items2020.js
 var require_items2020 = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/items2020.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/applicator/items2020.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5369,9 +5369,9 @@ var require_items2020 = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/contains.js
+// ../../../node_modules/ajv/dist/vocabularies/applicator/contains.js
 var require_contains = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/contains.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/applicator/contains.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5463,9 +5463,9 @@ var require_contains = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/dependencies.js
+// ../../../node_modules/ajv/dist/vocabularies/applicator/dependencies.js
 var require_dependencies = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/dependencies.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/applicator/dependencies.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.validateSchemaDeps = exports.validatePropertyDeps = exports.error = void 0;
@@ -5557,9 +5557,9 @@ var require_dependencies = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/propertyNames.js
+// ../../../node_modules/ajv/dist/vocabularies/applicator/propertyNames.js
 var require_propertyNames = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/propertyNames.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/applicator/propertyNames.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5600,9 +5600,9 @@ var require_propertyNames = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/additionalProperties.js
+// ../../../node_modules/ajv/dist/vocabularies/applicator/additionalProperties.js
 var require_additionalProperties = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/additionalProperties.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/applicator/additionalProperties.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -5706,9 +5706,9 @@ var require_additionalProperties = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/properties.js
+// ../../../node_modules/ajv/dist/vocabularies/applicator/properties.js
 var require_properties = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/properties.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/applicator/properties.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var validate_1 = require_validate();
@@ -5764,9 +5764,9 @@ var require_properties = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/patternProperties.js
+// ../../../node_modules/ajv/dist/vocabularies/applicator/patternProperties.js
 var require_patternProperties = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/patternProperties.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/applicator/patternProperties.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -5838,9 +5838,9 @@ var require_patternProperties = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/not.js
+// ../../../node_modules/ajv/dist/vocabularies/applicator/not.js
 var require_not = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/not.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/applicator/not.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var util_1 = require_util();
@@ -5869,9 +5869,9 @@ var require_not = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/anyOf.js
+// ../../../node_modules/ajv/dist/vocabularies/applicator/anyOf.js
 var require_anyOf = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/anyOf.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/applicator/anyOf.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var code_1 = require_code2();
@@ -5886,9 +5886,9 @@ var require_anyOf = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/oneOf.js
+// ../../../node_modules/ajv/dist/vocabularies/applicator/oneOf.js
 var require_oneOf = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/oneOf.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/applicator/oneOf.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -5944,9 +5944,9 @@ var require_oneOf = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/allOf.js
+// ../../../node_modules/ajv/dist/vocabularies/applicator/allOf.js
 var require_allOf = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/allOf.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/applicator/allOf.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var util_1 = require_util();
@@ -5971,9 +5971,9 @@ var require_allOf = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/if.js
+// ../../../node_modules/ajv/dist/vocabularies/applicator/if.js
 var require_if = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/if.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/applicator/if.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -6040,9 +6040,9 @@ var require_if = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/thenElse.js
+// ../../../node_modules/ajv/dist/vocabularies/applicator/thenElse.js
 var require_thenElse = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/thenElse.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/applicator/thenElse.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var util_1 = require_util();
@@ -6058,9 +6058,9 @@ var require_thenElse = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/applicator/index.js
+// ../../../node_modules/ajv/dist/vocabularies/applicator/index.js
 var require_applicator = __commonJS({
-  "node_modules/ajv/dist/vocabularies/applicator/index.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/applicator/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var additionalItems_1 = require_additionalItems();
@@ -6106,9 +6106,9 @@ var require_applicator = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/format/format.js
+// ../../../node_modules/ajv/dist/vocabularies/format/format.js
 var require_format = __commonJS({
-  "node_modules/ajv/dist/vocabularies/format/format.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/format/format.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -6196,9 +6196,9 @@ var require_format = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/format/index.js
+// ../../../node_modules/ajv/dist/vocabularies/format/index.js
 var require_format2 = __commonJS({
-  "node_modules/ajv/dist/vocabularies/format/index.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/format/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var format_1 = require_format();
@@ -6207,9 +6207,9 @@ var require_format2 = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/metadata.js
+// ../../../node_modules/ajv/dist/vocabularies/metadata.js
 var require_metadata = __commonJS({
-  "node_modules/ajv/dist/vocabularies/metadata.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/metadata.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.contentVocabulary = exports.metadataVocabulary = void 0;
@@ -6230,9 +6230,9 @@ var require_metadata = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/draft7.js
+// ../../../node_modules/ajv/dist/vocabularies/draft7.js
 var require_draft7 = __commonJS({
-  "node_modules/ajv/dist/vocabularies/draft7.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/draft7.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var core_1 = require_core2();
@@ -6252,9 +6252,9 @@ var require_draft7 = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/discriminator/types.js
+// ../../../node_modules/ajv/dist/vocabularies/discriminator/types.js
 var require_types = __commonJS({
-  "node_modules/ajv/dist/vocabularies/discriminator/types.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/discriminator/types.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.DiscrError = void 0;
@@ -6266,9 +6266,9 @@ var require_types = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/vocabularies/discriminator/index.js
+// ../../../node_modules/ajv/dist/vocabularies/discriminator/index.js
 var require_discriminator = __commonJS({
-  "node_modules/ajv/dist/vocabularies/discriminator/index.js"(exports) {
+  "../../../node_modules/ajv/dist/vocabularies/discriminator/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var codegen_1 = require_codegen();
@@ -6371,9 +6371,9 @@ var require_discriminator = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/refs/json-schema-draft-07.json
+// ../../../node_modules/ajv/dist/refs/json-schema-draft-07.json
 var require_json_schema_draft_07 = __commonJS({
-  "node_modules/ajv/dist/refs/json-schema-draft-07.json"(exports, module) {
+  "../../../node_modules/ajv/dist/refs/json-schema-draft-07.json"(exports, module) {
     module.exports = {
       $schema: "http://json-schema.org/draft-07/schema#",
       $id: "http://json-schema.org/draft-07/schema#",
@@ -6528,9 +6528,9 @@ var require_json_schema_draft_07 = __commonJS({
   }
 });
 
-// node_modules/ajv/dist/ajv.js
+// ../../../node_modules/ajv/dist/ajv.js
 var require_ajv = __commonJS({
-  "node_modules/ajv/dist/ajv.js"(exports, module) {
+  "../../../node_modules/ajv/dist/ajv.js"(exports, module) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.MissingRefError = exports.ValidationError = exports.CodeGen = exports.Name = exports.nil = exports.stringify = exports.str = exports._ = exports.KeywordCxt = exports.Ajv = void 0;
@@ -6598,9 +6598,9 @@ var require_ajv = __commonJS({
   }
 });
 
-// node_modules/ajv-formats/dist/formats.js
+// ../../../node_modules/ajv-formats/dist/formats.js
 var require_formats = __commonJS({
-  "node_modules/ajv-formats/dist/formats.js"(exports) {
+  "../../../node_modules/ajv-formats/dist/formats.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.formatNames = exports.fastFormats = exports.fullFormats = void 0;
@@ -6801,9 +6801,9 @@ var require_formats = __commonJS({
   }
 });
 
-// node_modules/ajv-formats/dist/limit.js
+// ../../../node_modules/ajv-formats/dist/limit.js
 var require_limit = __commonJS({
-  "node_modules/ajv-formats/dist/limit.js"(exports) {
+  "../../../node_modules/ajv-formats/dist/limit.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.formatLimitDefinition = void 0;
@@ -6873,9 +6873,9 @@ var require_limit = __commonJS({
   }
 });
 
-// node_modules/ajv-formats/dist/index.js
+// ../../../node_modules/ajv-formats/dist/index.js
 var require_dist = __commonJS({
-  "node_modules/ajv-formats/dist/index.js"(exports, module) {
+  "../../../node_modules/ajv-formats/dist/index.js"(exports, module) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var formats_1 = require_formats();
@@ -6902,12 +6902,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f;
     };
-    function addFormats(ajv, list, fs20, exportName) {
+    function addFormats(ajv, list, fs21, exportName) {
       var _a3;
       var _b;
       (_a3 = (_b = ajv.opts.code).formats) !== null && _a3 !== void 0 ? _a3 : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs20[f]);
+        ajv.addFormat(f, fs21[f]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -6916,10 +6916,10 @@ var require_dist = __commonJS({
 });
 
 // dist/mcp/server.js
-import fs19 from "fs";
-import path14 from "path";
+import fs20 from "fs";
+import path15 from "path";
 
-// node_modules/zod/v4/core/index.js
+// ../../../node_modules/zod/v4/core/index.js
 var core_exports2 = {};
 __export(core_exports2, {
   $ZodAny: () => $ZodAny,
@@ -7236,7 +7236,7 @@ __export(core_exports2, {
   withParser: () => withParser
 });
 
-// node_modules/zod/v4/core/util.js
+// ../../../node_modules/zod/v4/core/util.js
 var util_exports = {};
 __export(util_exports, {
   BIGINT_FORMAT_RANGES: () => BIGINT_FORMAT_RANGES,
@@ -7473,10 +7473,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path15) {
-  if (!path15)
+function getElementAtPath(obj, path16) {
+  if (!path16)
     return obj;
-  return path15.reduce((acc, key) => acc?.[key], obj);
+  return path16.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -7816,11 +7816,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path15, issues) {
+function prefixIssues(path16, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path15);
+    iss.path.unshift(path16);
     return iss;
   });
 }
@@ -8092,7 +8092,7 @@ function constantCatch(value) {
   return fn;
 }
 
-// node_modules/zod/v4/core/core.js
+// ../../../node_modules/zod/v4/core/core.js
 var _a;
 var NEVER = /* @__PURE__ */ Object.freeze({
   status: "aborted"
@@ -8214,7 +8214,7 @@ function config(newConfig) {
   return globalConfig;
 }
 
-// node_modules/zod/v4/core/errors.js
+// ../../../node_modules/zod/v4/core/errors.js
 function _getMessage() {
   const internals = this._zod;
   internals.message ?? (internals.message = JSON.stringify(internals.def, jsonStringifyReplacer, 2));
@@ -8282,16 +8282,16 @@ function flattenError(error62, mapper = (issue2) => issue2.message) {
 }
 function formatError(error62, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error63, path15 = []) => {
+  const processError = (error63, path16 = []) => {
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path15, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path16, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path15, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path16, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path15, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path16, ...issue2.path]);
       } else {
-        const fullpath = [...path15, ...issue2.path];
+        const fullpath = [...path16, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -8330,17 +8330,17 @@ function formatError(error62, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error62, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error63, path15 = []) => {
+  const processError = (error63, path16 = []) => {
     var _a3;
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path15, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path16, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path15, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path16, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path15, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path16, ...issue2.path]);
       } else {
-        const fullpath = [...path15, ...issue2.path];
+        const fullpath = [...path16, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -8379,8 +8379,8 @@ function treeifyError(error62, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path15 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path15) {
+  const path16 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path16) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -8406,7 +8406,7 @@ function prettifyError(error62) {
   return lines.join("\n");
 }
 
-// node_modules/zod/v4/core/parse.js
+// ../../../node_modules/zod/v4/core/parse.js
 function finalizeParams(callee, params) {
   return { callee: params?.callee ?? callee, Err: params?.Err };
 }
@@ -8566,7 +8566,7 @@ var _safeDecodeAsync = (_Err) => async (schema, value, _ctx) => {
 };
 var safeDecodeAsync = /* @__PURE__ */ _safeDecodeAsync($ZodRealError);
 
-// node_modules/zod/v4/core/regexes.js
+// ../../../node_modules/zod/v4/core/regexes.js
 var regexes_exports = {};
 __export(regexes_exports, {
   anyString: () => anyString,
@@ -8738,7 +8738,7 @@ var sha512_hex = /^[0-9a-fA-F]{128}$/;
 var sha512_base64 = /* @__PURE__ */ fixedBase64(86, "==");
 var sha512_base64url = /* @__PURE__ */ fixedBase64url(86);
 
-// node_modules/zod/v4/core/checks.js
+// ../../../node_modules/zod/v4/core/checks.js
 var $ZodCheck = /* @__PURE__ */ $constructor("$ZodCheck", (inst, def) => {
   var _a3;
   inst._zod ?? (inst._zod = {});
@@ -9214,7 +9214,7 @@ var $ZodCheckOverwrite = /* @__PURE__ */ $constructor("$ZodCheckOverwrite", (ins
   };
 });
 
-// node_modules/zod/v4/core/doc.js
+// ../../../node_modules/zod/v4/core/doc.js
 var Doc = class {
   constructor(args = [], closed = {}) {
     this.content = [];
@@ -9255,14 +9255,14 @@ ${content.join("\n")}
   }
 };
 
-// node_modules/zod/v4/core/versions.js
+// ../../../node_modules/zod/v4/core/versions.js
 var version = {
   major: 4,
   minor: 6,
   patch: 6
 };
 
-// node_modules/zod/v4/core/schemas.js
+// ../../../node_modules/zod/v4/core/schemas.js
 var $ZodType = /* @__PURE__ */ $constructor("$ZodType", (inst, def) => {
   var _a3;
   inst ?? (inst = {});
@@ -11704,7 +11704,7 @@ function handleRefineResult(result, payload, input2, inst) {
   }
 }
 
-// node_modules/zod/v4/core/memoizer.js
+// ../../../node_modules/zod/v4/core/memoizer.js
 var $ZodCyclicError = class extends Error {
   constructor() {
     super(`Cannot parse a reference cycle that closes through a transform`);
@@ -11981,7 +11981,7 @@ function isBackEdge(ctx, value) {
   return backEdges !== void 0 && isRef(value) && backEdges.has(value);
 }
 
-// node_modules/zod/v4/locales/index.js
+// ../../../node_modules/zod/v4/locales/index.js
 var locales_exports = {};
 __export(locales_exports, {
   ar: () => ar_default,
@@ -12049,7 +12049,7 @@ __export(locales_exports, {
   zhTW: () => zh_TW_default
 });
 
-// node_modules/zod/v4/locales/ar.js
+// ../../../node_modules/zod/v4/locales/ar.js
 var error = () => {
   const Sizable = {
     string: { unit: "\u062D\u0631\u0641", verb: "\u0623\u0646 \u064A\u062D\u0648\u064A" },
@@ -12161,7 +12161,7 @@ function ar_default() {
   };
 }
 
-// node_modules/zod/v4/locales/az.js
+// ../../../node_modules/zod/v4/locales/az.js
 var error2 = () => {
   const Sizable = {
     string: { unit: "simvol", verb: "olmal\u0131d\u0131r" },
@@ -12272,7 +12272,7 @@ function az_default() {
   };
 }
 
-// node_modules/zod/v4/locales/be.js
+// ../../../node_modules/zod/v4/locales/be.js
 function getBelarusianPlural(count, one, few, many) {
   const absCount = Math.abs(count);
   const lastDigit = absCount % 10;
@@ -12441,7 +12441,7 @@ function be_default() {
   };
 }
 
-// node_modules/zod/v4/locales/bg.js
+// ../../../node_modules/zod/v4/locales/bg.js
 var error4 = () => {
   const Sizable = {
     string: { unit: "\u0441\u0438\u043C\u0432\u043E\u043B\u0430", verb: "\u0434\u0430 \u0441\u044A\u0434\u044A\u0440\u0436\u0430" },
@@ -12567,7 +12567,7 @@ function bg_default() {
   };
 }
 
-// node_modules/zod/v4/locales/bn.js
+// ../../../node_modules/zod/v4/locales/bn.js
 var error5 = () => {
   const Sizable = {
     string: { unit: "\u0985\u0995\u09CD\u09B7\u09B0", verb: "\u09A5\u09BE\u0995\u09A4\u09C7 \u09B9\u09AC\u09C7" },
@@ -12681,7 +12681,7 @@ function bn_default() {
   };
 }
 
-// node_modules/zod/v4/locales/ca.js
+// ../../../node_modules/zod/v4/locales/ca.js
 var error6 = () => {
   const Sizable = {
     string: { unit: "car\xE0cters", verb: "contenir" },
@@ -12795,7 +12795,7 @@ function ca_default() {
   };
 }
 
-// node_modules/zod/v4/locales/ckb.js
+// ../../../node_modules/zod/v4/locales/ckb.js
 var error7 = () => {
   const Sizable = {
     string: { unit: "\u067E\u06CC\u062A", verb: "\u0628\u06CE\u062A" },
@@ -12928,7 +12928,7 @@ function ckb_default() {
   };
 }
 
-// node_modules/zod/v4/locales/cs.js
+// ../../../node_modules/zod/v4/locales/cs.js
 var error8 = () => {
   const Sizable = {
     string: { unit: "znak\u016F", verb: "m\xEDt" },
@@ -13045,7 +13045,7 @@ function cs_default() {
   };
 }
 
-// node_modules/zod/v4/locales/da.js
+// ../../../node_modules/zod/v4/locales/da.js
 var error9 = () => {
   const Sizable = {
     string: { unit: "tegn", verb: "havde" },
@@ -13166,7 +13166,7 @@ function da_default() {
   };
 }
 
-// node_modules/zod/v4/locales/de.js
+// ../../../node_modules/zod/v4/locales/de.js
 var error10 = () => {
   const Sizable = {
     string: { unit: "Zeichen", verb: "zu haben" },
@@ -13280,7 +13280,7 @@ function de_default() {
   };
 }
 
-// node_modules/zod/v4/locales/el.js
+// ../../../node_modules/zod/v4/locales/el.js
 var error11 = () => {
   const Sizable = {
     string: { unit: "\u03C7\u03B1\u03C1\u03B1\u03BA\u03C4\u03AE\u03C1\u03B5\u03C2", verb: "\u03BD\u03B1 \u03AD\u03C7\u03B5\u03B9" },
@@ -13393,7 +13393,7 @@ function el_default() {
   };
 }
 
-// node_modules/zod/v4/locales/en.js
+// ../../../node_modules/zod/v4/locales/en.js
 var error12 = () => {
   const Sizable = {
     string: { unit: "characters", verb: "to have" },
@@ -13518,7 +13518,7 @@ function en_default() {
   };
 }
 
-// node_modules/zod/v4/locales/eo.js
+// ../../../node_modules/zod/v4/locales/eo.js
 var error13 = () => {
   const Sizable = {
     string: { unit: "karaktrojn", verb: "havi" },
@@ -13633,7 +13633,7 @@ function eo_default() {
   };
 }
 
-// node_modules/zod/v4/locales/es.js
+// ../../../node_modules/zod/v4/locales/es.js
 var error14 = () => {
   const Sizable = {
     string: { unit: "caracteres", verb: "tener" },
@@ -13770,7 +13770,7 @@ function es_default() {
   };
 }
 
-// node_modules/zod/v4/locales/fa.js
+// ../../../node_modules/zod/v4/locales/fa.js
 var error15 = () => {
   const Sizable = {
     string: { unit: "\u06A9\u0627\u0631\u0627\u06A9\u062A\u0631", verb: "\u062F\u0627\u0634\u062A\u0647 \u0628\u0627\u0634\u062F" },
@@ -13890,7 +13890,7 @@ function fa_default() {
   };
 }
 
-// node_modules/zod/v4/locales/fi.js
+// ../../../node_modules/zod/v4/locales/fi.js
 var error16 = () => {
   const Sizable = {
     string: { unit: "merkki\xE4", subject: "merkkijonon" },
@@ -14008,7 +14008,7 @@ function fi_default() {
   };
 }
 
-// node_modules/zod/v4/locales/fr.js
+// ../../../node_modules/zod/v4/locales/fr.js
 var error17 = () => {
   const Sizable = {
     string: { unit: "caract\xE8res", verb: "avoir" },
@@ -14138,7 +14138,7 @@ function fr_default() {
   };
 }
 
-// node_modules/zod/v4/locales/fr-CA.js
+// ../../../node_modules/zod/v4/locales/fr-CA.js
 var error18 = () => {
   const Sizable = {
     string: { unit: "caract\xE8res", verb: "avoir" },
@@ -14251,7 +14251,7 @@ function fr_CA_default() {
   };
 }
 
-// node_modules/zod/v4/locales/gu.js
+// ../../../node_modules/zod/v4/locales/gu.js
 var error19 = () => {
   const Sizable = {
     string: { unit: "\u0A85\u0A95\u0ACD\u0AB7\u0AB0", verb: "\u0AB9\u0ACB\u0AB5\u0ABE \u0A9C\u0ACB\u0A88\u0A8F" },
@@ -14365,7 +14365,7 @@ function gu_default() {
   };
 }
 
-// node_modules/zod/v4/locales/he.js
+// ../../../node_modules/zod/v4/locales/he.js
 var error20 = () => {
   const TypeNames = {
     string: { label: "\u05DE\u05D7\u05E8\u05D5\u05D6\u05EA", gender: "f" },
@@ -14567,7 +14567,7 @@ function he_default() {
   };
 }
 
-// node_modules/zod/v4/locales/hi.js
+// ../../../node_modules/zod/v4/locales/hi.js
 var error21 = () => {
   const Sizable = {
     string: { unit: "\u0905\u0915\u094D\u0937\u0930", verb: "\u0930\u0916\u0928\u0947 \u0915\u0947 \u0932\u093F\u090F" },
@@ -14679,7 +14679,7 @@ function hi_default() {
   };
 }
 
-// node_modules/zod/v4/locales/hr.js
+// ../../../node_modules/zod/v4/locales/hr.js
 var error22 = () => {
   const Sizable = {
     string: { unit: "znakova", verb: "imati" },
@@ -14806,7 +14806,7 @@ function hr_default() {
   };
 }
 
-// node_modules/zod/v4/locales/hu.js
+// ../../../node_modules/zod/v4/locales/hu.js
 var error23 = () => {
   const Sizable = {
     string: { unit: "karakter", verb: "legyen" },
@@ -14920,7 +14920,7 @@ function hu_default() {
   };
 }
 
-// node_modules/zod/v4/locales/hy.js
+// ../../../node_modules/zod/v4/locales/hy.js
 function getArmenianPlural(count, one, many) {
   return Math.abs(count) === 1 ? one : many;
 }
@@ -15079,7 +15079,7 @@ function hy_default() {
   };
 }
 
-// node_modules/zod/v4/locales/id.js
+// ../../../node_modules/zod/v4/locales/id.js
 var error25 = () => {
   const Sizable = {
     string: { unit: "karakter", verb: "memiliki" },
@@ -15191,7 +15191,7 @@ function id_default() {
   };
 }
 
-// node_modules/zod/v4/locales/is.js
+// ../../../node_modules/zod/v4/locales/is.js
 var error26 = () => {
   const Sizable = {
     string: { unit: "stafi", verb: "a\xF0 hafa" },
@@ -15306,7 +15306,7 @@ function is_default() {
   };
 }
 
-// node_modules/zod/v4/locales/it.js
+// ../../../node_modules/zod/v4/locales/it.js
 var error27 = () => {
   const Sizable = {
     string: { unit: "caratteri", verb: "avere" },
@@ -15420,7 +15420,7 @@ function it_default() {
   };
 }
 
-// node_modules/zod/v4/locales/ja.js
+// ../../../node_modules/zod/v4/locales/ja.js
 var error28 = () => {
   const Sizable = {
     string: { unit: "\u6587\u5B57", verb: "\u3067\u3042\u308B" },
@@ -15533,7 +15533,7 @@ function ja_default() {
   };
 }
 
-// node_modules/zod/v4/locales/ka.js
+// ../../../node_modules/zod/v4/locales/ka.js
 var error29 = () => {
   const Sizable = {
     string: { unit: "\u10E1\u10D8\u10DB\u10D1\u10DD\u10DA\u10DD", verb: "\u10E3\u10DC\u10D3\u10D0 \u10E8\u10D4\u10D8\u10EA\u10D0\u10D5\u10D3\u10D4\u10E1" },
@@ -15651,7 +15651,7 @@ function ka_default() {
   };
 }
 
-// node_modules/zod/v4/locales/km.js
+// ../../../node_modules/zod/v4/locales/km.js
 var error30 = () => {
   const Sizable = {
     string: { unit: "\u178F\u17BD\u17A2\u1780\u17D2\u179F\u179A", verb: "\u1782\u17BD\u179A\u1798\u17B6\u1793" },
@@ -15767,12 +15767,12 @@ function km_default() {
   };
 }
 
-// node_modules/zod/v4/locales/kh.js
+// ../../../node_modules/zod/v4/locales/kh.js
 function kh_default() {
   return km_default();
 }
 
-// node_modules/zod/v4/locales/kn.js
+// ../../../node_modules/zod/v4/locales/kn.js
 var error31 = () => {
   const Sizable = {
     string: { unit: "\u0C85\u0C95\u0CCD\u0CB7\u0CB0\u0C97\u0CB3\u0CC1", verb: "\u0CB9\u0CCA\u0C82\u0CA6\u0CB2\u0CC1" },
@@ -15888,7 +15888,7 @@ function kn_default() {
   };
 }
 
-// node_modules/zod/v4/locales/ko.js
+// ../../../node_modules/zod/v4/locales/ko.js
 var error32 = () => {
   const Sizable = {
     string: { unit: "\uBB38\uC790", verb: "to have" },
@@ -16005,7 +16005,7 @@ function ko_default() {
   };
 }
 
-// node_modules/zod/v4/locales/lt.js
+// ../../../node_modules/zod/v4/locales/lt.js
 var capitalizeFirstCharacter = (text) => {
   return text.charAt(0).toUpperCase() + text.slice(1);
 };
@@ -16213,7 +16213,7 @@ function lt_default() {
   };
 }
 
-// node_modules/zod/v4/locales/mk.js
+// ../../../node_modules/zod/v4/locales/mk.js
 var error34 = () => {
   const Sizable = {
     string: { unit: "\u0437\u043D\u0430\u0446\u0438", verb: "\u0434\u0430 \u0438\u043C\u0430\u0430\u0442" },
@@ -16328,7 +16328,7 @@ function mk_default() {
   };
 }
 
-// node_modules/zod/v4/locales/ms.js
+// ../../../node_modules/zod/v4/locales/ms.js
 var error35 = () => {
   const Sizable = {
     string: { unit: "aksara", verb: "mempunyai" },
@@ -16441,7 +16441,7 @@ function ms_default() {
   };
 }
 
-// node_modules/zod/v4/locales/ne.js
+// ../../../node_modules/zod/v4/locales/ne.js
 var error36 = () => {
   const Sizable = {
     string: { unit: "\u0905\u0915\u094D\u0937\u0930", verb: "\u0939\u0941\u0928\u0941\u092A\u0930\u094D\u091B" },
@@ -16553,7 +16553,7 @@ function ne_default() {
   };
 }
 
-// node_modules/zod/v4/locales/nl.js
+// ../../../node_modules/zod/v4/locales/nl.js
 var error37 = () => {
   const Sizable = {
     string: { unit: "tekens", verb: "heeft" },
@@ -16669,7 +16669,7 @@ function nl_default() {
   };
 }
 
-// node_modules/zod/v4/locales/nn.js
+// ../../../node_modules/zod/v4/locales/nn.js
 var error38 = () => {
   const Sizable = {
     string: { unit: "teikn", verb: "\xE5 ha" },
@@ -16783,7 +16783,7 @@ function nn_default() {
   };
 }
 
-// node_modules/zod/v4/locales/no.js
+// ../../../node_modules/zod/v4/locales/no.js
 var error39 = () => {
   const Sizable = {
     string: { unit: "tegn", verb: "\xE5 ha" },
@@ -16897,7 +16897,7 @@ function no_default() {
   };
 }
 
-// node_modules/zod/v4/locales/ota.js
+// ../../../node_modules/zod/v4/locales/ota.js
 var error40 = () => {
   const Sizable = {
     string: { unit: "harf", verb: "olmal\u0131d\u0131r" },
@@ -17012,7 +17012,7 @@ function ota_default() {
   };
 }
 
-// node_modules/zod/v4/locales/ps.js
+// ../../../node_modules/zod/v4/locales/ps.js
 var error41 = () => {
   const Sizable = {
     string: { unit: "\u062A\u0648\u06A9\u064A", verb: "\u0648\u0644\u0631\u064A" },
@@ -17132,7 +17132,7 @@ function ps_default() {
   };
 }
 
-// node_modules/zod/v4/locales/pl.js
+// ../../../node_modules/zod/v4/locales/pl.js
 var error42 = () => {
   const Sizable = {
     string: { unit: "znak\xF3w", verb: "mie\u0107" },
@@ -17247,7 +17247,7 @@ function pl_default() {
   };
 }
 
-// node_modules/zod/v4/locales/pt.js
+// ../../../node_modules/zod/v4/locales/pt.js
 var error43 = () => {
   const Sizable = {
     string: { unit: "caracteres" },
@@ -17391,7 +17391,7 @@ function pt_default() {
   };
 }
 
-// node_modules/zod/v4/locales/pt-BR.js
+// ../../../node_modules/zod/v4/locales/pt-BR.js
 var error44 = () => {
   const Sizable = {
     string: { unit: "caracteres" },
@@ -17536,7 +17536,7 @@ function pt_BR_default() {
   };
 }
 
-// node_modules/zod/v4/locales/ro.js
+// ../../../node_modules/zod/v4/locales/ro.js
 var error45 = () => {
   const Sizable = {
     string: { unit: "caractere", verb: "s\u0103 aib\u0103" },
@@ -17659,7 +17659,7 @@ function ro_default() {
   };
 }
 
-// node_modules/zod/v4/locales/ru.js
+// ../../../node_modules/zod/v4/locales/ru.js
 function getRussianPlural(count, one, few, many) {
   const absCount = Math.abs(count);
   const lastDigit = absCount % 10;
@@ -17828,7 +17828,7 @@ function ru_default() {
   };
 }
 
-// node_modules/zod/v4/locales/sk.js
+// ../../../node_modules/zod/v4/locales/sk.js
 var error47 = () => {
   const Sizable = {
     string: { unit: "znakov", verb: "ma\u0165" },
@@ -17945,7 +17945,7 @@ function sk_default() {
   };
 }
 
-// node_modules/zod/v4/locales/sl.js
+// ../../../node_modules/zod/v4/locales/sl.js
 var error48 = () => {
   const Sizable = {
     string: { unit: "znakov", verb: "imeti" },
@@ -18060,7 +18060,7 @@ function sl_default() {
   };
 }
 
-// node_modules/zod/v4/locales/sv.js
+// ../../../node_modules/zod/v4/locales/sv.js
 var error49 = () => {
   const Sizable = {
     string: { unit: "tecken", verb: "att ha" },
@@ -18176,7 +18176,7 @@ function sv_default() {
   };
 }
 
-// node_modules/zod/v4/locales/ta.js
+// ../../../node_modules/zod/v4/locales/ta.js
 var error50 = () => {
   const Sizable = {
     string: { unit: "\u0B8E\u0BB4\u0BC1\u0BA4\u0BCD\u0BA4\u0BC1\u0B95\u0BCD\u0B95\u0BB3\u0BCD", verb: "\u0B95\u0BCA\u0BA3\u0BCD\u0B9F\u0BBF\u0BB0\u0BC1\u0B95\u0BCD\u0B95 \u0BB5\u0BC7\u0BA3\u0BCD\u0B9F\u0BC1\u0BAE\u0BCD" },
@@ -18292,7 +18292,7 @@ function ta_default() {
   };
 }
 
-// node_modules/zod/v4/locales/tg.js
+// ../../../node_modules/zod/v4/locales/tg.js
 var error51 = () => {
   const Sizable = {
     string: { unit: "\u0430\u043B\u043E\u043C\u0430\u0442", verb: "\u0434\u043E\u0448\u0442\u0430 \u0431\u043E\u0448\u0430\u0434" },
@@ -18409,7 +18409,7 @@ function tg_default() {
   };
 }
 
-// node_modules/zod/v4/locales/th.js
+// ../../../node_modules/zod/v4/locales/th.js
 var error52 = () => {
   const Sizable = {
     string: { unit: "\u0E15\u0E31\u0E27\u0E2D\u0E31\u0E01\u0E29\u0E23", verb: "\u0E04\u0E27\u0E23\u0E21\u0E35" },
@@ -18525,7 +18525,7 @@ function th_default() {
   };
 }
 
-// node_modules/zod/v4/locales/tk.js
+// ../../../node_modules/zod/v4/locales/tk.js
 var error53 = () => {
   const Sizable = {
     string: { unit: "simwol", verb: "bolmaly" },
@@ -18633,7 +18633,7 @@ function tk_default() {
   };
 }
 
-// node_modules/zod/v4/locales/tr.js
+// ../../../node_modules/zod/v4/locales/tr.js
 var error54 = () => {
   const Sizable = {
     string: { unit: "karakter", verb: "olmal\u0131" },
@@ -18744,7 +18744,7 @@ function tr_default() {
   };
 }
 
-// node_modules/zod/v4/locales/uk.js
+// ../../../node_modules/zod/v4/locales/uk.js
 var error55 = () => {
   const Sizable = {
     string: { unit: "\u0441\u0438\u043C\u0432\u043E\u043B\u0456\u0432", verb: "\u043C\u0430\u0442\u0438\u043C\u0435" },
@@ -18858,12 +18858,12 @@ function uk_default() {
   };
 }
 
-// node_modules/zod/v4/locales/ua.js
+// ../../../node_modules/zod/v4/locales/ua.js
 function ua_default() {
   return uk_default();
 }
 
-// node_modules/zod/v4/locales/ur.js
+// ../../../node_modules/zod/v4/locales/ur.js
 var error56 = () => {
   const Sizable = {
     string: { unit: "\u062D\u0631\u0648\u0641", verb: "\u06C1\u0648\u0646\u0627" },
@@ -18979,7 +18979,7 @@ function ur_default() {
   };
 }
 
-// node_modules/zod/v4/locales/uz.js
+// ../../../node_modules/zod/v4/locales/uz.js
 var error57 = () => {
   const Sizable = {
     string: { unit: "belgi", verb: "bo\u2018lishi kerak" },
@@ -19093,7 +19093,7 @@ function uz_default() {
   };
 }
 
-// node_modules/zod/v4/locales/vi.js
+// ../../../node_modules/zod/v4/locales/vi.js
 var error58 = () => {
   const Sizable = {
     string: { unit: "k\xFD t\u1EF1", verb: "c\xF3" },
@@ -19207,7 +19207,7 @@ function vi_default() {
   };
 }
 
-// node_modules/zod/v4/locales/zh-CN.js
+// ../../../node_modules/zod/v4/locales/zh-CN.js
 var error59 = () => {
   const Sizable = {
     string: { unit: "\u5B57\u7B26", verb: "\u5305\u542B" },
@@ -19322,7 +19322,7 @@ function zh_CN_default() {
   };
 }
 
-// node_modules/zod/v4/locales/zh-TW.js
+// ../../../node_modules/zod/v4/locales/zh-TW.js
 var error60 = () => {
   const Sizable = {
     string: { unit: "\u5B57\u5143", verb: "\u64C1\u6709" },
@@ -19435,7 +19435,7 @@ function zh_TW_default() {
   };
 }
 
-// node_modules/zod/v4/locales/yo.js
+// ../../../node_modules/zod/v4/locales/yo.js
 var error61 = () => {
   const Sizable = {
     string: { unit: "\xE0mi", verb: "n\xED" },
@@ -19548,7 +19548,7 @@ function yo_default() {
   };
 }
 
-// node_modules/zod/v4/core/registries.js
+// ../../../node_modules/zod/v4/core/registries.js
 var _a2;
 var $output = /* @__PURE__ */ Symbol("ZodOutput");
 var $input = /* @__PURE__ */ Symbol("ZodInput");
@@ -19598,7 +19598,7 @@ function registry() {
 (_a2 = globalThis).__zod_globalRegistry ?? (_a2.__zod_globalRegistry = registry());
 var globalRegistry = globalThis.__zod_globalRegistry;
 
-// node_modules/zod/v4/core/compile.js
+// ../../../node_modules/zod/v4/core/compile.js
 var INVALID = /* @__PURE__ */ Symbol.for("zod.compile.invalid");
 var FALLBACK_FLAG = /* @__PURE__ */ Symbol.for("zod.compile.fallback");
 var ZodCompileAsyncError = class extends Error {
@@ -21208,7 +21208,7 @@ function generateTransformCheck(doc, ctx, schema, accessor) {
   return accessor;
 }
 
-// node_modules/zod/v4/core/api.js
+// ../../../node_modules/zod/v4/core/api.js
 function snapshotChecks(def) {
   if (def.checks)
     def.checks = [...def.checks];
@@ -22267,7 +22267,7 @@ function _stringFormat(Class2, format, fnOrRegex, _params = {}) {
   return inst;
 }
 
-// node_modules/zod/v4/core/to-json-schema.js
+// ../../../node_modules/zod/v4/core/to-json-schema.js
 function assignProps(target, ...sources) {
   for (const source of sources) {
     for (const key of Reflect.ownKeys(source)) {
@@ -22797,7 +22797,7 @@ var createStandardJSONSchemaMethod = (schema, io, processors = {}) => (params) =
   return finalize(ctx, schema);
 };
 
-// node_modules/zod/v4/core/json-schema-processors.js
+// ../../../node_modules/zod/v4/core/json-schema-processors.js
 var narrowMin = (agg, key, value) => {
   if (agg[key] === void 0 || value > agg[key])
     agg[key] = value;
@@ -23545,7 +23545,7 @@ function toJSONSchema(input2, params) {
   return finalize(ctx, input2);
 }
 
-// node_modules/zod/v4/core/json-schema-generator.js
+// ../../../node_modules/zod/v4/core/json-schema-generator.js
 var JSONSchemaGenerator = class {
   /** @deprecated Access via ctx instead */
   get metadataRegistry() {
@@ -23623,10 +23623,10 @@ var JSONSchemaGenerator = class {
   }
 };
 
-// node_modules/zod/v4/core/json-schema.js
+// ../../../node_modules/zod/v4/core/json-schema.js
 var json_schema_exports = {};
 
-// node_modules/zod/v4/core/visit.js
+// ../../../node_modules/zod/v4/core/visit.js
 var RESOLVING = /* @__PURE__ */ Symbol("z.visit/resolving");
 function visit(schema, fnOrHandlers) {
   const fn = typeof fnOrHandlers === "function" ? fnOrHandlers : (node2, rewritten) => {
@@ -23781,7 +23781,7 @@ function visit(schema, fnOrHandlers) {
   return run(schema);
 }
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-compat.js
+// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-compat.js
 function isZ4Schema(s) {
   const schema = s;
   return !!schema._zod;
@@ -23844,7 +23844,7 @@ function getLiteralValue(schema) {
   return void 0;
 }
 
-// node_modules/zod/v4/classic/external.js
+// ../../../node_modules/zod/v4/classic/external.js
 var external_exports = {};
 __export(external_exports, {
   $brand: () => $brand,
@@ -24107,7 +24107,7 @@ __export(external_exports, {
   xor: () => xor
 });
 
-// node_modules/zod/v4/classic/schemas.js
+// ../../../node_modules/zod/v4/classic/schemas.js
 var schemas_exports2 = {};
 __export(schemas_exports2, {
   ZodAny: () => ZodAny,
@@ -24288,7 +24288,7 @@ __export(schemas_exports2, {
   xor: () => xor
 });
 
-// node_modules/zod/v4/classic/checks.js
+// ../../../node_modules/zod/v4/classic/checks.js
 var checks_exports2 = {};
 __export(checks_exports2, {
   endsWith: () => _endsWith,
@@ -24323,7 +24323,7 @@ __export(checks_exports2, {
   uppercase: () => _uppercase
 });
 
-// node_modules/zod/v4/classic/errors.js
+// ../../../node_modules/zod/v4/classic/errors.js
 var _installedErrorProtos = /* @__PURE__ */ new WeakSet([Object.prototype, Error.prototype]);
 function _lazyMethod(proto, key, make) {
   Object.defineProperty(proto, key, {
@@ -24369,7 +24369,7 @@ var ZodRealError = /* @__PURE__ */ $constructor("ZodError", initializer2, void 0
   Parent: Error
 });
 
-// node_modules/zod/v4/classic/parse.js
+// ../../../node_modules/zod/v4/classic/parse.js
 var parse2 = /* @__PURE__ */ _parse(ZodRealError);
 var parseAsync2 = /* @__PURE__ */ _parseAsync(ZodRealError);
 var safeParse3 = /* @__PURE__ */ _safeParse(ZodRealError);
@@ -24383,7 +24383,7 @@ var safeDecode2 = /* @__PURE__ */ _safeDecode(ZodRealError);
 var safeEncodeAsync2 = /* @__PURE__ */ _safeEncodeAsync(ZodRealError);
 var safeDecodeAsync2 = /* @__PURE__ */ _safeDecodeAsync(ZodRealError);
 
-// node_modules/zod/v4/classic/schemas.js
+// ../../../node_modules/zod/v4/classic/schemas.js
 function _ensureDefaultLocale() {
   if (!globalConfig.localeError)
     config(en_default());
@@ -25848,7 +25848,7 @@ function preprocess(fn, schema) {
   });
 }
 
-// node_modules/zod/v4/classic/compat.js
+// ../../../node_modules/zod/v4/classic/compat.js
 var ZodIssueCode = {
   invalid_type: "invalid_type",
   too_big: "too_big",
@@ -25874,7 +25874,7 @@ var ZodFirstPartyTypeKind;
 /* @__PURE__ */ (function(ZodFirstPartyTypeKind2) {
 })(ZodFirstPartyTypeKind || (ZodFirstPartyTypeKind = {}));
 
-// node_modules/zod/v4/classic/iso.js
+// ../../../node_modules/zod/v4/classic/iso.js
 var iso_exports = {};
 __export(iso_exports, {
   ZodISODate: () => ZodISODate,
@@ -25899,7 +25899,7 @@ function duration2(params) {
   return _isoDuration(ZodISODuration, params);
 }
 
-// node_modules/zod/v4/classic/from-json-schema.js
+// ../../../node_modules/zod/v4/classic/from-json-schema.js
 var z = {
   ...schemas_exports2,
   ...checks_exports2,
@@ -25999,13 +25999,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path15 = ref.slice(1).split("/").filter(Boolean);
-  if (path15.length === 0) {
+  const path16 = ref.slice(1).split("/").filter(Boolean);
+  if (path16.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path15[0] === defsKey) {
-    const key = path15[1] === void 0 ? void 0 : decodeJSONPointerSegment(path15[1]);
+  if (path16[0] === defsKey) {
+    const key = path16[1] === void 0 ? void 0 : decodeJSONPointerSegment(path16[1]);
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -26632,7 +26632,7 @@ function fromJSONSchema(schema, params) {
   return convertSchema(normalized, ctx);
 }
 
-// node_modules/zod/v4/classic/deep-partial.js
+// ../../../node_modules/zod/v4/classic/deep-partial.js
 function deepPartial(schema) {
   return visit(schema, {
     object: (s) => s.partial(),
@@ -26644,7 +26644,7 @@ function deepPartial(schema) {
   });
 }
 
-// node_modules/zod/v4/classic/in-out.js
+// ../../../node_modules/zod/v4/classic/in-out.js
 function withChecks(side, checks) {
   if (!checks?.length)
     return side;
@@ -26674,7 +26674,7 @@ function output(schema) {
   });
 }
 
-// node_modules/zod/v4/classic/coerce.js
+// ../../../node_modules/zod/v4/classic/coerce.js
 var coerce_exports = {};
 __export(coerce_exports, {
   bigint: () => bigint3,
@@ -26699,7 +26699,7 @@ function date4(params) {
   return _coercedDate(ZodDate, params);
 }
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
+// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
 var LATEST_PROTOCOL_VERSION = "2025-11-25";
 var SUPPORTED_PROTOCOL_VERSIONS = [LATEST_PROTOCOL_VERSION, "2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"];
 var RELATED_TASK_META_KEY = "io.modelcontextprotocol/related-task";
@@ -28218,15 +28218,15 @@ var UrlElicitationRequiredError = class extends McpError {
   }
 };
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/interfaces.js
+// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/interfaces.js
 function isTerminal(status) {
   return status === "completed" || status === "failed" || status === "cancelled";
 }
 
-// node_modules/zod-to-json-schema/dist/esm/parsers/string.js
+// ../../../node_modules/zod-to-json-schema/dist/esm/parsers/string.js
 var ALPHA_NUMERIC = new Set("ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvxyz0123456789");
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-json-schema-compat.js
+// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-json-schema-compat.js
 function getMethodLiteral(schema) {
   const shape = getObjectShape(schema);
   const methodSchema = shape?.method;
@@ -28247,7 +28247,7 @@ function parseWithCompat(schema, data) {
   return result.data;
 }
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/shared/protocol.js
+// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/shared/protocol.js
 var DEFAULT_REQUEST_TIMEOUT_MSEC = 6e4;
 var Protocol = class {
   constructor(_options) {
@@ -29201,7 +29201,7 @@ function mergeCapabilities(base, additional) {
   return result;
 }
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/validation/ajv-provider.js
+// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/validation/ajv-provider.js
 var import_ajv = __toESM(require_ajv(), 1);
 var import_ajv_formats = __toESM(require_dist(), 1);
 function createDefaultAjvInstance() {
@@ -29269,7 +29269,7 @@ var AjvJsonSchemaValidator = class {
   }
 };
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/server.js
+// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/server.js
 var ExperimentalServerTasks = class {
   constructor(_server) {
     this._server = _server;
@@ -29482,7 +29482,7 @@ var ExperimentalServerTasks = class {
   }
 };
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/helpers.js
+// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/helpers.js
 function assertToolsCallTaskCapability(requests, method, entityName) {
   if (!requests) {
     throw new Error(`${entityName} does not support task creation (required for ${method})`);
@@ -29517,7 +29517,7 @@ function assertClientRequestTaskCapability(requests, method, entityName) {
   }
 }
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/server/index.js
+// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/server/index.js
 var Server = class extends Protocol {
   /**
    * Initializes this server with the given name and version information.
@@ -29888,10 +29888,10 @@ var Server = class extends Protocol {
   }
 };
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
+// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
 import process2 from "node:process";
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/shared/stdio.js
+// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/shared/stdio.js
 var STDIO_DEFAULT_MAX_BUFFER_SIZE = 10 * 1024 * 1024;
 var ReadBuffer = class {
   constructor(options) {
@@ -29928,7 +29928,7 @@ function serializeMessage(message) {
   return JSON.stringify(message) + "\n";
 }
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
+// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
 var StdioServerTransport = class {
   constructor(_stdin = process2.stdin, _stdout = process2.stdout, options) {
     this._stdin = _stdin;
@@ -30022,8 +30022,8 @@ var { DatabaseSync } = loadNodeSqlite();
 var BUSY_TIMEOUT_MS = 3e4;
 var MemeshDatabase = class extends DatabaseSync {
   #depth = 0;
-  constructor(path15, options = {}) {
-    super(path15, options);
+  constructor(path16, options = {}) {
+    super(path16, options);
     this.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
   }
   pragma(statement) {
@@ -30058,8 +30058,8 @@ var MemeshDatabase = class extends DatabaseSync {
 };
 
 // dist/db.js
-import path2 from "path";
-import fs3 from "fs";
+import path3 from "path";
+import fs4 from "fs";
 
 // dist/knowledge-graph.js
 import { createHash as createHash2 } from "node:crypto";
@@ -31169,7 +31169,7 @@ function hasBriefingContent(lines) {
   return lines.length > 0;
 }
 function buildReferenceContext(memoryLines) {
-  const safeLines = memoryLines.map((line) => stripControlChars(String(line ?? "").replace(/[\s\u0085\u001c-\u001e]+/g, " ")).trim());
+  const safeLines = memoryLines.map((line) => stripControlChars(String(line ?? "").replace(/[\s\u0085\u001c-\u001e]+/g, " ")).replace(/</g, "&lt;").trim());
   let longestRun = 0;
   for (const line of safeLines) {
     for (const run of line.match(/`+/g) ?? []) {
@@ -31194,7 +31194,7 @@ function jsonStringLiteral(value) {
   return JSON.stringify(String(value)).replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
 }
 function stripControlChars(s) {
-  return s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]+/g, " ");
+  return s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u061c\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]+/g, " ");
 }
 
 // dist/core/project-attribution.js
@@ -32569,6 +32569,9 @@ var KnowledgeGraph = class {
   }
 };
 
+// dist/core/types.js
+var NAMESPACES = ["personal", "team", "global"];
+
 // dist/core/lifecycle.js
 var DECAY_INTERVAL_MS = 24 * 60 * 60 * 1e3;
 var STALE_THRESHOLD_DAYS = 30;
@@ -32598,6 +32601,7 @@ function runAutoDecay(db2) {
   return { decayed: Number(result.changes) };
 }
 var COMPRESS_INTERVAL_MS = 24 * 60 * 60 * 1e3;
+var AUTO_ARCHIVE_INTERVAL_MS = 24 * 60 * 60 * 1e3;
 
 // dist/core/file-mode.js
 import fs2 from "fs";
@@ -32748,8 +32752,8 @@ function isPathShapedFileName(name) {
   return true;
 }
 var SCRATCH_PREFIXES = ["/dev/", "/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/"];
-function isScratchPath(path15) {
-  return SCRATCH_PREFIXES.some((prefix) => path15.startsWith(prefix));
+function isScratchPath(path16) {
+  return SCRATCH_PREFIXES.some((prefix) => path16.startsWith(prefix));
 }
 function bashEditedPaths(cmd) {
   if (typeof cmd !== "string")
@@ -33119,6 +33123,74 @@ function removeJunkFileTags(db2) {
   });
   return removed;
 }
+var OWN_NOTE_TRUST_KEY = "own_note_folder_trust_v1";
+function trustOwnNoteFolderMemories(conn, ownDirIds) {
+  if (ownDirIds.size === 0)
+    return 0;
+  const rows = conn.prepare(`SELECT e.id, e.metadata FROM entities e
+      WHERE json_valid(e.metadata)
+        AND json_extract(e.metadata, '$.trust') = 'untrusted'
+        AND json_extract(e.metadata, '$.provenance.source') = 'note-file'
+        AND EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = 'source:note-file')`).all();
+  const set2 = conn.prepare("UPDATE entities SET metadata = json_set(metadata, '$.trust', 'trusted') WHERE id = ?");
+  let changed = 0;
+  for (const row of rows) {
+    let dirId;
+    try {
+      dirId = JSON.parse(row.metadata).provenance?.note_dir_id;
+    } catch {
+      continue;
+    }
+    if (typeof dirId !== "string" || !ownDirIds.has(dirId))
+      continue;
+    set2.run(row.id);
+    changed += 1;
+  }
+  return changed;
+}
+function repairOwnNoteFolderTrust(db2, ownDirIds) {
+  let changed = -1;
+  runOnceMigration(db2, {
+    key: OWN_NOTE_TRUST_KEY,
+    version: 1,
+    describe: "own note folder trust",
+    migrate: (conn) => {
+      changed = trustOwnNoteFolderMemories(conn, ownDirIds);
+      if (changed > 0)
+        note(`${changed} note memor${changed === 1 ? "y" : "ies"} from your own memory folders are now trusted, so sessions can be shown them.`);
+    }
+  });
+  return changed;
+}
+
+// dist/core/note-dirs.js
+import fs3 from "fs";
+import path2 from "path";
+import { createHash as createHash4 } from "crypto";
+function noteDirId(realDir) {
+  return createHash4("sha256").update(realDir).digest("hex").slice(0, 16);
+}
+function ownMemoryDirIds(env = process.env) {
+  const claudeHome = env.CLAUDE_CONFIG_DIR && path2.isAbsolute(env.CLAUDE_CONFIG_DIR) ? env.CLAUDE_CONFIG_DIR : path2.join(homeDir(), ".claude");
+  const projects = path2.join(claudeHome, "projects");
+  const ids = /* @__PURE__ */ new Set();
+  let names;
+  try {
+    names = fs3.readdirSync(projects);
+  } catch {
+    return ids;
+  }
+  for (const name of names) {
+    const memory = path2.join(projects, name, "memory");
+    try {
+      if (!fs3.lstatSync(memory).isDirectory())
+        continue;
+      ids.add(noteDirId(fs3.realpathSync(memory)));
+    } catch {
+    }
+  }
+  return ids;
+}
 
 // dist/core/title.js
 var TITLE_MAX_LENGTH = 200;
@@ -33145,27 +33217,27 @@ function openDatabase(dbPath, opts = {}) {
   if (db)
     return db;
   const resolvedPath = dbPath ?? getDbPath();
-  const dir = path2.dirname(resolvedPath);
-  fs3.mkdirSync(dir, { recursive: true });
+  const dir = path3.dirname(resolvedPath);
+  fs4.mkdirSync(dir, { recursive: true });
   try {
     process.umask(63);
   } catch {
   }
   const [realPath, ...sidecars] = databaseFiles(resolvedPath);
-  const realDir = path2.dirname(realPath);
+  const realDir = path3.dirname(realPath);
   removeGroupAndOtherAccess(dir);
   guardDatabaseFiles(resolvedPath);
-  const missing = sidecars.filter((file2) => !fs3.existsSync(file2)).map((file2) => file2.slice(realPath.length));
+  const missing = sidecars.filter((file2) => !fs4.existsSync(file2)).map((file2) => file2.slice(realPath.length));
   let folderWritable = true;
   try {
-    fs3.accessSync(realDir, fs3.constants.W_OK);
+    fs4.accessSync(realDir, fs4.constants.W_OK);
   } catch {
     folderWritable = false;
   }
-  if (missing.length > 0 && !folderWritable && fs3.existsSync(realPath)) {
-    const notYours = belongsToAnotherUser(fs3.statSync(realDir));
+  if (missing.length > 0 && !folderWritable && fs4.existsSync(realPath)) {
+    const notYours = belongsToAnotherUser(fs4.statSync(realDir));
     const fix = notYours ? "Point MEMESH_DB_PATH at a database you own, in a folder you own." : `chmod u+w ${shellQuote(realDir)}`;
-    throw Object.assign(new Error(`MeMesh: ${realDir} is read-only and ${path2.basename(realPath)} has no ${missing.join(" or ")} file there, so it cannot be opened without writing to the folder. ` + (notYours ? `${realDir} belongs to another user, so you cannot make it writable. ${fix}` : `Copy the database to a writable folder and point MEMESH_DB_PATH at the copy, or make the folder writable: ${fix}`)), { fix });
+    throw Object.assign(new Error(`MeMesh: ${realDir} is read-only and ${path3.basename(realPath)} has no ${missing.join(" or ")} file there, so it cannot be opened without writing to the folder. ` + (notYours ? `${realDir} belongs to another user, so you cannot make it writable. ${fix}` : `Copy the database to a writable folder and point MEMESH_DB_PATH at the copy, or make the folder writable: ${fix}`)), { fix });
   }
   db = openInitialisedDatabase(resolvedPath, opts);
   const writeBack = ownerWriteCommand(resolvedPath);
@@ -33247,6 +33319,7 @@ function migrateToCurrentSchema(db2) {
     }
   }
   backfillAcceptedProposalTrust(db2);
+  repairOwnNoteFolderTrust(db2, ownMemoryDirIds());
   dedupeObservations(db2);
   retractZeroEditClaims(db2);
   removeJunkFileTags(db2);
@@ -33447,11 +33520,11 @@ function getDatabase() {
 }
 
 // dist/transports/mcp/handlers.js
-import fs12 from "node:fs";
+import fs13 from "node:fs";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // dist/core/native-memory-editor.js
-import { createHash as createHash5 } from "node:crypto";
+import { createHash as createHash6 } from "node:crypto";
 
 // dist/storage/memory-mutation.js
 function projectOwnershipRefusal(db2, name, project) {
@@ -33577,7 +33650,7 @@ function inferErrorPattern(error62) {
 }
 
 // dist/core/note-derive.js
-import { createHash as createHash4 } from "crypto";
+import { createHash as createHash5 } from "crypto";
 var NOTE_OBSERVATION_MAX_CHARS = 1e4;
 var NOTE_MAX_OBSERVATIONS = 100;
 var NOTE_MAX_CHARS = 2e4;
@@ -33627,7 +33700,7 @@ function deriveNote(raw) {
   const title = truncateTitle(titleSource) || "note";
   const body = splitObservations(rest);
   const observations = title === firstLine && body.length > 0 ? body : [...splitObservations(firstLine), ...body];
-  const digest = createHash4("sha256").update(text).digest("hex").slice(0, 8);
+  const digest = createHash5("sha256").update(text).digest("hex").slice(0, 8);
   const name = `${slugify2(title) || NOTE_DEFAULT_TYPE}-${digest}`;
   return { text, title, observations, name };
 }
@@ -33803,12 +33876,10 @@ function boundReplacedHistory(history) {
   return out;
 }
 
-// dist/core/types.js
-var NAMESPACES = ["personal", "team", "global"];
-
 // dist/core/serializer.js
 var IMPORTABLE_METADATA_KEYS = /* @__PURE__ */ new Set([
   "title_source",
+  "auto_archive",
   "source_kind",
   "source",
   "cluster_key",
@@ -34310,7 +34381,7 @@ function rememberInTransaction(args, derived2, typeGiven, db2, kg) {
   if (entityType === void 0) {
     throw new Error(`\`replace\` on "${args.name}": there is no memory named "${args.name}" to inherit a type from, so this call would create one with no type \u2014 pass \`type\` to create it.`);
   }
-  if (DECISION_TYPES.has(entityType) && (!existing || args.replace) && args.trustOverride !== "untrusted" && !(args.observations ?? []).some((o) => o.startsWith(WHY_PREFIX))) {
+  if (DECISION_TYPES.has(entityType) && (!existing || args.replace) && args.trustOverride !== "untrusted" && args.reasonOptional !== true && !(args.observations ?? []).some((o) => o.startsWith(WHY_PREFIX))) {
     throw new Error(`MeMesh did not store this ${entityType}: ${/^[aeiou]/i.test(entityType) ? "an" : "a"} ${entityType} needs \`why\` \u2014 the reason for it and what would make it stop holding (for example: "Postgres is too heavy to deploy for one user; revisit if we add a hosted tier"). Pass \`why\`, or an observation that starts with "Why: ".`);
   }
   let replacedVersion;
@@ -34362,7 +34433,7 @@ function rememberInTransaction(args, derived2, typeGiven, db2, kg) {
     }
   }
   if (stampLocalMetadata)
-    kg.updateEntityMetadata(args.name, (current) => buildLocalMetadata(current, {
+    kg.updateEntityMetadata(args.name, (current) => args.trustOverride === void 0 && current.trust === "untrusted" ? current : buildLocalMetadata(current, {
       trust: args.trustOverride,
       provenance: {
         ...args.sourceHost && !existing ? { source_host: args.sourceHost } : {},
@@ -34553,7 +34624,7 @@ async function editMemoryInteractively(name, project, sourceHost, ask, expectedR
         throw new Error("metadata_unreadable: The original metadata was left unchanged.");
       }
     }
-    const revision = createHash5("sha256").update(JSON.stringify([
+    const revision = createHash6("sha256").update(JSON.stringify([
       entity.id,
       entity.title,
       entity.type,
@@ -34614,12 +34685,12 @@ async function editMemoryInteractively(name, project, sourceHost, ask, expectedR
 }
 
 // dist/core/dreamer.js
-import { createHash as createHash8 } from "node:crypto";
+import { createHash as createHash9 } from "node:crypto";
 
 // dist/core/transcript-source.js
-import fs4 from "fs";
-import { createHash as createHash6 } from "node:crypto";
-import path3 from "path";
+import fs5 from "fs";
+import { createHash as createHash7 } from "node:crypto";
+import path4 from "path";
 var MAX_TRANSCRIPT_SOURCE_BYTES = 8 * 1024 * 1024;
 var MAX_TRANSCRIPT_SCAN_BYTES = 16 * 1024 * 1024;
 var MAX_TRANSCRIPT_CANDIDATES = 256;
@@ -34629,10 +34700,10 @@ function readTranscriptSnapshot(transcriptPath, expected) {
 function readTranscriptSnapshotWithin(transcriptPath, expected, aggregateBytesRemaining) {
   let fd;
   try {
-    fd = fs4.openSync(transcriptPath, fs4.constants.O_RDONLY | fs4.constants.O_NOFOLLOW);
-    if (fs4.lstatSync(transcriptPath).isSymbolicLink())
+    fd = fs5.openSync(transcriptPath, fs5.constants.O_RDONLY | fs5.constants.O_NOFOLLOW);
+    if (fs5.lstatSync(transcriptPath).isSymbolicLink())
       return { snapshot: null, aggregateLimitExceeded: false };
-    const before = fs4.fstatSync(fd, { bigint: true });
+    const before = fs5.fstatSync(fd, { bigint: true });
     const sizeBytes = Number(before.size);
     if (!before.isFile() || sizeBytes < 0 || sizeBytes > MAX_TRANSCRIPT_SOURCE_BYTES) {
       return { snapshot: null, aggregateLimitExceeded: false };
@@ -34652,16 +34723,16 @@ function readTranscriptSnapshotWithin(transcriptPath, expected, aggregateBytesRe
     const bytes = Buffer.allocUnsafe(sizeBytes);
     let offset = 0;
     while (offset < bytes.length) {
-      const count = fs4.readSync(fd, bytes, offset, bytes.length - offset, offset);
+      const count = fs5.readSync(fd, bytes, offset, bytes.length - offset, offset);
       if (count === 0)
         return { snapshot: null, aggregateLimitExceeded: false };
       offset += count;
     }
-    const after = fs4.fstatSync(fd, { bigint: true });
+    const after = fs5.fstatSync(fd, { bigint: true });
     if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) {
       return { snapshot: null, aggregateLimitExceeded: false };
     }
-    const contentHash = createHash6("sha256").update(bytes).digest("hex");
+    const contentHash = createHash7("sha256").update(bytes).digest("hex");
     if (expected && contentHash !== expected.contentHash)
       return { snapshot: null, aggregateLimitExceeded: false };
     return { snapshot: { bytes, contentHash, ...identity }, aggregateLimitExceeded: false };
@@ -34670,7 +34741,7 @@ function readTranscriptSnapshotWithin(transcriptPath, expected, aggregateBytesRe
   } finally {
     if (fd !== void 0) {
       try {
-        fs4.closeSync(fd);
+        fs5.closeSync(fd);
       } catch {
       }
     }
@@ -34680,7 +34751,7 @@ function claudeProjectsDir() {
   const override = process.env.CLAUDE_PROJECTS_DIR;
   if (override && override.trim() !== "")
     return override;
-  return path3.join(homeDir(), ".claude", "projects");
+  return path4.join(homeDir(), ".claude", "projects");
 }
 function projectTranscriptSlug(cwd) {
   return cwd.replace(/[^a-zA-Z0-9]/g, "-");
@@ -34709,10 +34780,10 @@ function recordedCwd(text) {
   }
 }
 function sameProjectPath(a, b) {
-  if (path3.normalize(a) === path3.normalize(b))
+  if (path4.normalize(a) === path4.normalize(b))
     return true;
   try {
-    if (fs4.realpathSync(a) === fs4.realpathSync(b))
+    if (fs5.realpathSync(a) === fs5.realpathSync(b))
       return true;
   } catch {
   }
@@ -34727,13 +34798,13 @@ function scanTranscripts(opts) {
   const windowDays = opts.windowDays ?? 3;
   const now = opts.now ?? /* @__PURE__ */ new Date();
   const cutoffMs = now.getTime() - windowDays * 864e5;
-  const dir = path3.join(claudeProjectsDir(), projectTranscriptSlug(cwd));
+  const dir = path4.join(claudeProjectsDir(), projectTranscriptSlug(cwd));
   let names;
   try {
-    const dirStat = fs4.lstatSync(dir);
+    const dirStat = fs5.lstatSync(dir);
     if (dirStat.isSymbolicLink() || !dirStat.isDirectory())
       return [];
-    names = fs4.readdirSync(dir).filter((name) => name.endsWith(".jsonl")).sort();
+    names = fs5.readdirSync(dir).filter((name) => name.endsWith(".jsonl")).sort();
   } catch {
     return [];
   }
@@ -34746,7 +34817,7 @@ function scanTranscripts(opts) {
   for (const name of names) {
     let stat;
     try {
-      stat = fs4.lstatSync(path3.join(dir, name));
+      stat = fs5.lstatSync(path4.join(dir, name));
     } catch {
       opts.onSkip?.("unreadable", 1);
       continue;
@@ -34767,7 +34838,7 @@ function scanTranscripts(opts) {
   const sessions = [];
   let bytesRead = 0;
   for (const name of eligibleNames) {
-    const full = path3.join(dir, name);
+    const full = path4.join(dir, name);
     const read = readTranscriptSnapshotWithin(full, void 0, MAX_TRANSCRIPT_SCAN_BYTES - bytesRead);
     if (read.aggregateLimitExceeded) {
       opts.onSkip?.("scan_too_large", eligibleNames.length);
@@ -34876,7 +34947,7 @@ function parseVisibleConversation(transcript) {
 }
 
 // dist/core/product-improvements.js
-import { createHash as createHash7 } from "node:crypto";
+import { createHash as createHash8 } from "node:crypto";
 var PRODUCT_IMPROVEMENT_KIND = "product_improvement";
 function clean(label, value, max) {
   const normalized = value.replace(/\s+/g, " ").trim();
@@ -34990,7 +35061,7 @@ function stageProductImprovement(db2, input2) {
       success_criteria: successCriteria,
       priority
     };
-    const digest = createHash7("sha256").update(JSON.stringify(canonical)).digest("hex");
+    const digest = createHash8("sha256").update(JSON.stringify(canonical)).digest("hex");
     const clusterKey = `product-improvement:${digest}`;
     const existing = db2.prepare(`SELECT id, project, source_ids, proposed_digest, status, reason, created_at, reviewed_at
        FROM dream_proposals
@@ -35196,7 +35267,7 @@ function executeWorkPackage(db2, input2, context = {}) {
   const execute = () => {
     const project = input2.action === "prepare" ? input2.project : input2.ref.project;
     const kind = input2.action === "prepare" ? input2.kind : input2.ref.kind;
-    const hash2 = (value) => createHash8("sha256").update(JSON.stringify(value)).digest("hex");
+    const hash2 = (value) => createHash9("sha256").update(JSON.stringify(value)).digest("hex");
     if (input2.action !== "prepare") {
       const submitted = input2.action === "submit" ? input2.result : void 0;
       if (submitted && holdsSecret([submitted.name, ...submitted.observations, ...submitted.tags])) {
@@ -35441,13 +35512,80 @@ function computePatterns(db2, categories) {
 }
 
 // dist/core/config.js
-import fs5 from "fs";
-import path4 from "path";
+import fs6 from "fs";
+import path5 from "path";
+
+// dist/core/session-limit.js
+var SESSION_LIMIT_MIN = 1;
+var SESSION_LIMIT_MAX = 100;
+var SESSION_LIMIT_DEFAULT = 10;
+function isSessionLimitInRange(n) {
+  return Number.isInteger(n) && n >= SESSION_LIMIT_MIN && n <= SESSION_LIMIT_MAX;
+}
+function classify(n) {
+  if (!Number.isInteger(n))
+    return "invalid";
+  if (isSessionLimitInRange(n))
+    return "valid";
+  return n > SESSION_LIMIT_MAX ? "above" : "below";
+}
+function causeText(kind) {
+  if (kind === "above")
+    return `above max ${SESSION_LIMIT_MAX}`;
+  if (kind === "below")
+    return `below min ${SESSION_LIMIT_MIN}`;
+  return "not a whole number";
+}
+function shortCauseText(kind) {
+  if (kind === "above")
+    return `above ${SESSION_LIMIT_MAX}`;
+  if (kind === "below")
+    return `below ${SESSION_LIMIT_MIN}`;
+  return "not a whole number";
+}
+function envDisplayValue(envRaw, parsed) {
+  return Number.isNaN(parsed) ? envRaw : String(parsed);
+}
+function resolveSessionLimit(envRaw, configValue) {
+  const adjustments = [];
+  if (envRaw !== void 0) {
+    const n = Number(envRaw);
+    const kind = classify(n);
+    if (kind === "valid")
+      return { value: n, effectiveSource: "env", adjustments: [] };
+    adjustments.push({
+      source: "env",
+      raw: JSON.stringify(envRaw),
+      displayValue: envDisplayValue(envRaw, n),
+      cause: causeText(kind),
+      shortCause: shortCauseText(kind)
+    });
+    if (kind === "above")
+      return { value: SESSION_LIMIT_MAX, effectiveSource: "env", adjustments };
+  }
+  if (typeof configValue === "number") {
+    const kind = classify(configValue);
+    if (kind === "valid")
+      return { value: configValue, effectiveSource: "config", adjustments };
+    adjustments.push({
+      source: "config",
+      raw: String(configValue),
+      displayValue: String(configValue),
+      cause: causeText(kind),
+      shortCause: shortCauseText(kind)
+    });
+    if (kind === "above")
+      return { value: SESSION_LIMIT_MAX, effectiveSource: "config", adjustments };
+  }
+  return { value: SESSION_LIMIT_DEFAULT, effectiveSource: "default", adjustments };
+}
+
+// dist/core/config.js
 function configDir() {
   return memeshDir();
 }
 function configFilePath() {
-  return path4.join(configDir(), "config.json");
+  return path5.join(configDir(), "config.json");
 }
 var lastConfigReadWarning = null;
 function warnUnreadable(p, detail) {
@@ -35463,10 +35601,10 @@ function warnUnreadable(p, detail) {
 }
 function readRawConfigResult() {
   const p = configFilePath();
-  if (!fs5.existsSync(p))
+  if (!fs6.existsSync(p))
     return { raw: {}, state: "absent" };
   try {
-    const parsed = JSON.parse(fs5.readFileSync(p, "utf8"));
+    const parsed = JSON.parse(fs6.readFileSync(p, "utf8"));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       throw new Error("top-level JSON value is not an object");
     }
@@ -35488,6 +35626,8 @@ function selectConfig(raw) {
   }
   if (typeof raw.updateCheck === "boolean")
     config2.updateCheck = raw.updateCheck;
+  if (typeof raw.promptRecall === "boolean")
+    config2.promptRecall = raw.promptRecall;
   if (typeof raw.setupCompleted === "boolean")
     config2.setupCompleted = raw.setupCompleted;
   if (raw.briefing !== void 0)
@@ -35504,8 +35644,8 @@ function readConfig() {
 
 // dist/core/repo-state.js
 import { execFileSync as execFileSync2 } from "child_process";
-import fs6 from "fs";
-import path5 from "path";
+import fs7 from "fs";
+import path6 from "path";
 var GIT_TIMEOUT_MS = 5e3;
 function tryGit2(cwd, args) {
   try {
@@ -35520,7 +35660,7 @@ function tryGit2(cwd, args) {
 }
 function declaredVersionOf(repoRoot) {
   try {
-    const raw = fs6.readFileSync(path5.join(repoRoot, "package.json"), "utf8");
+    const raw = fs7.readFileSync(path6.join(repoRoot, "package.json"), "utf8");
     const version2 = JSON.parse(raw).version;
     return typeof version2 === "string" && version2.length > 0 ? version2 : null;
   } catch {
@@ -36141,6 +36281,9 @@ function indexHeading(projectName2) {
 function indexEmptyLine(projectName2) {
   return `- No durable memories (decisions, lessons, patterns, references) for ${jsonStringLiteral(projectLabel(projectName2))} yet.`;
 }
+function indexAllShownLine(projectName2) {
+  return `- Every durable memory for ${jsonStringLiteral(projectLabel(projectName2))} is already listed above.`;
+}
 function moreLine(n, truncated) {
   return `- ${n}${truncated ? "+" : ""} more \u2014 memesh recall --tag "project:\u2026"`;
 }
@@ -36167,7 +36310,8 @@ function buildBriefingIndex(candidates, projectName2, now, options = {}) {
   const truncated = options.truncated === true;
   const charAllowance = typeof options.maxChars === "number" ? options.maxChars : Infinity;
   const cutoff = now - INDEX_STALE_DAYS * DAY_MS;
-  const eligible = candidates.filter((c) => isIndexableType(c.type) && candidateIsAutoInjectable(c.metadata)).slice().sort(compareIndexCandidates);
+  const listable = candidates.filter((c) => isIndexableType(c.type) && candidateIsAutoInjectable(c.metadata));
+  const eligible = listable.filter((c) => !options.exclude?.has(c.id)).sort(compareIndexCandidates);
   const current = [];
   let older = 0;
   for (const c of eligible) {
@@ -36179,7 +36323,7 @@ function buildBriefingIndex(candidates, projectName2, now, options = {}) {
   }
   const heading = indexHeading(projectName2);
   if (current.length === 0 && older === 0) {
-    const closed2 = closeWithFooter([heading, indexEmptyLine(projectName2)], 0);
+    const closed2 = closeWithFooter([heading, listable.length > 0 ? indexAllShownLine(projectName2) : indexEmptyLine(projectName2)], 0);
     return { ...closed2, shown: 0, more: 0, older: 0, truncated, ids: [] };
   }
   const reserve = sectionBytes([
@@ -36222,6 +36366,8 @@ var LESSON_POOL_LIMIT = 50;
 var LESSON_LIMIT = 5;
 var RECENT_LIMIT = 5;
 var NO_PROJECT_LIMIT = 5;
+var ACTIVITY_LIMIT = 3;
+var EVIDENCE_TYPE_LIST = [...EVIDENCE_LAYER_TYPES];
 var SCORING_COLUMNS = ["access_count", "last_accessed_at", "confidence", "recall_hits", "recall_misses"];
 function entityColumns(db2) {
   const names = new Set(db2.prepare("PRAGMA table_info(entities)").all().map((c) => c.name));
@@ -36251,6 +36397,7 @@ function parseMetadata(raw) {
 var active = (cols) => cols.status ? " AND e.status = 'active'" : "";
 var nonGlobal = (cols) => cols.namespace ? " AND (e.namespace IS NULL OR e.namespace <> 'global')" : "";
 var NO_PROJECT_TAG2 = "NOT EXISTS (SELECT 1 FROM tags pt WHERE pt.entity_id = e.id AND pt.tag LIKE 'project:%')";
+var HOST_SCOPED_TAG = "EXISTS (SELECT 1 FROM tags ht WHERE ht.entity_id = e.id AND (ht.tag LIKE 'platform:%' OR ht.tag LIKE 'agent:%'))";
 var titleCol = (cols) => cols.title ? "e.title" : "NULL AS title";
 var candidateColumns = (cols) => [
   "e.id",
@@ -36308,23 +36455,31 @@ function selectBriefingPools(db2, projectName2, options) {
   const handoffTrusted = !!handoffRead && trustedForAutoContext(handoffRead.metadata);
   const projectRows = db2.prepare(`SELECT DISTINCT ${columns}
      FROM entities e JOIN tags t ON t.entity_id = e.id
-     WHERE t.tag = ?${active(cols)} AND e.type <> ?${nonGlobal(cols)}
+     WHERE t.tag = ?${active(cols)} AND e.type <> ? AND e.type NOT IN (${EVIDENCE_TYPE_LIST.map(() => "?").join(",")})${nonGlobal(cols)}
      ORDER BY e.id DESC
-     LIMIT ?`).all(projectTag, SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP);
+     LIMIT ?`).all(projectTag, SESSION_HANDOFF_TYPE, ...EVIDENCE_TYPE_LIST, TOPOLOGY_CANDIDATE_CAP);
   const decisions = guarded("decisions", [], () => db2.prepare(`SELECT DISTINCT ${columns}, ${RECENCY_SQL} AS recency
      FROM entities e JOIN tags t ON t.entity_id = e.id
      WHERE t.tag = ?${active(cols)}${nonGlobal(cols)}
        AND e.type IN (${DECISION_LAYER_TYPES.map(() => "?").join(",")})
      ORDER BY recency IS NULL, recency DESC, e.id DESC
      LIMIT ?`).all(projectTag, ...DECISION_LAYER_TYPES, TOPOLOGY_CANDIDATE_CAP).map(toPoolRow).filter((row) => trustedForAutoContext(row.metadata)), options.onError);
-  const project = prioritizeDecisions(decisions, selectPool(projectRows, TOPOLOGY_CANDIDATE_CAP), options.projectLimit);
+  const activity = selectPool(db2.prepare(`SELECT DISTINCT ${columns}
+     FROM entities e JOIN tags t ON t.entity_id = e.id
+     WHERE t.tag = ?${active(cols)} AND e.type = 'commit'${nonGlobal(cols)}
+     ORDER BY e.id DESC
+     LIMIT ?`).all(projectTag, TOPOLOGY_CANDIDATE_CAP), ACTIVITY_LIMIT);
+  const project = [
+    ...prioritizeDecisions(decisions, selectPool(projectRows, TOPOLOGY_CANDIDATE_CAP), options.projectLimit),
+    ...activity
+  ];
   const lessonRows = guarded("lessons", [], () => db2.prepare(`SELECT DISTINCT ${columns}
      FROM entities e JOIN tags t ON t.entity_id = e.id
      WHERE e.type IN (${LESSON_TYPE_LIST.map(() => "?").join(", ")})${active(cols)}${nonGlobal(cols)} AND t.tag = ?
      ORDER BY e.id DESC
      LIMIT ${LESSON_POOL_LIMIT}`).all(...LESSON_TYPE_LIST, projectTag).map(toPoolRow).filter((row) => trustedForAutoContext(row.metadata)), options.onError);
   const noProject = selectPool(db2.prepare(`SELECT ${columns} FROM entities e
-     WHERE ${NO_PROJECT_TAG2} AND e.type <> ?${active(cols)}${nonGlobal(cols)}
+     WHERE ${NO_PROJECT_TAG2} AND NOT ${HOST_SCOPED_TAG} AND e.type <> ?${active(cols)}${nonGlobal(cols)}
      ORDER BY e.id DESC
      LIMIT ?`).all(SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP), NO_PROJECT_LIMIT);
   const global = options.global && cols.namespace ? selectPool(db2.prepare(`SELECT ${columns} FROM entities e
@@ -36332,9 +36487,9 @@ function selectBriefingPools(db2, projectName2, options) {
        ORDER BY e.id DESC
        LIMIT ?`).all(TOPOLOGY_CANDIDATE_CAP), GLOBAL_TOPOLOGY_LIMIT) : [];
   const recent = options.foreign ? selectPool(db2.prepare(`SELECT ${columns} FROM entities e
-       WHERE NOT ${NO_PROJECT_TAG2} AND e.type <> ?${active(cols)}${nonGlobal(cols)}
+       WHERE NOT ${NO_PROJECT_TAG2} AND e.type <> ? AND e.type NOT IN (${EVIDENCE_TYPE_LIST.map(() => "?").join(",")})${active(cols)}${nonGlobal(cols)}
        ORDER BY e.id DESC
-       LIMIT ?`).all(SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP), RECENT_LIMIT) : [];
+       LIMIT ?`).all(SESSION_HANDOFF_TYPE, ...EVIDENCE_TYPE_LIST, TOPOLOGY_CANDIDATE_CAP), RECENT_LIMIT) : [];
   return {
     handoff: handoffTrusted ? handoffRead : void 0,
     handoffHidden: handoffRead && !handoffTrusted ? "untrusted" : void 0,
@@ -36508,11 +36663,11 @@ function briefingLevelPolicy(level) {
 }
 
 // dist/core/briefing.js
-var PROJECT_LIMIT = 30;
 function assembleBriefing(project, recipient) {
   const projectName2 = project ?? getProjectName();
   const db2 = getDatabase();
-  const resolvedLevel = resolveBriefingLevel(process.env.MEMESH_BRIEFING, readConfig().briefing);
+  const config2 = readConfig();
+  const resolvedLevel = resolveBriefingLevel(process.env.MEMESH_BRIEFING, config2.briefing);
   if (resolvedLevel.invalid) {
     const { source, value } = resolvedLevel.invalid;
     try {
@@ -36538,7 +36693,7 @@ function assembleBriefing(project, recipient) {
   const unreadCount = unreadDeliveryCount(db2, canonicalAgentScopeId(projectName2), inboxRecipient, hostSessionFromEnv());
   const everSeen = inboxRecipient !== void 0 && unreadCount === 0 ? recipientEverSeen(db2, canonicalAgentScopeId(projectName2), inboxRecipient) : void 0;
   const pools = selectBriefingPools(db2, projectName2, {
-    projectLimit: PROJECT_LIMIT,
+    projectLimit: resolveSessionLimit(process.env.MEMESH_SESSION_LIMIT, config2.sessionLimit).value,
     global: policy.global,
     foreign: policy.foreign
   });
@@ -36561,9 +36716,13 @@ function assembleBriefing(project, recipient) {
   const withRepo = lines.length > 0 && repoLines.length > 0 ? [...repoLines, "", ...lines] : lines;
   const now = Date.now();
   const { candidates: indexCandidates, truncated } = readIndexCandidates(db2, projectName2);
+  const shownAbove = new Set(lines.flatMap((line) => {
+    const match = line.match(/ \[mem:(\d{1,10})\]$/);
+    return match ? [Number(match[1])] : [];
+  }));
   const index = buildBriefingIndex(indexCandidates, projectName2, now, { truncated });
   const used = lines.length === 0 ? 0 : joinedLength(lines) + 2;
-  const indexLines = policy.index ? buildBriefingIndex(indexCandidates, projectName2, now, { truncated, maxChars: DEFAULT_TOPOLOGY_BUDGET.maxChars - used }).lines : [];
+  const indexLines = policy.index ? buildBriefingIndex(indexCandidates, projectName2, now, { truncated, maxChars: DEFAULT_TOPOLOGY_BUDGET.maxChars - used, exclude: shownAbove }).lines : [];
   const block = withRepo.length > 0 && indexLines.length > 0 ? [...withRepo, "", ...indexLines] : [...withRepo, ...indexLines];
   const empty = !hasBriefingContent(block);
   return {
@@ -36579,14 +36738,14 @@ function assembleBriefing(project, recipient) {
 }
 
 // dist/transports/agent-messaging.js
-import { createHash as createHash11, randomUUID as randomUUID4 } from "node:crypto";
+import { createHash as createHash12, randomUUID as randomUUID4 } from "node:crypto";
 
 // dist/core/agent-messaging.js
-import { createHash as createHash10, randomBytes, randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash11, randomBytes, randomUUID as randomUUID2 } from "node:crypto";
 
 // dist/core/agent-message-storage.js
-import { createHash as createHash9, randomUUID } from "node:crypto";
-import fs7 from "node:fs";
+import { createHash as createHash10, randomUUID } from "node:crypto";
+import fs8 from "node:fs";
 var TERMINAL_WORKFLOW_STATES = /* @__PURE__ */ new Set(["completed", "cancelled", "rejected"]);
 var AgentMessageStorageError = class extends Error {
   code;
@@ -37373,7 +37532,7 @@ function parseJsonObjectOrValue(json2) {
   return parsed;
 }
 function hashCanonical(value) {
-  return createHash10("sha256").update(stableStringify(value)).digest("hex");
+  return createHash11("sha256").update(stableStringify(value)).digest("hex");
 }
 function stableStringify(value) {
   if (value === null)
@@ -37799,9 +37958,9 @@ var MessageSchema = external_exports.discriminatedUnion("action", [
 
 // dist/core/agent-router.js
 import { randomUUID as randomUUID3 } from "node:crypto";
-import fs8 from "node:fs";
+import fs9 from "node:fs";
 import net from "node:net";
-import path6 from "node:path";
+import path7 from "node:path";
 
 // dist/core/semver.js
 var SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
@@ -38034,7 +38193,7 @@ function isNewerVersion(candidate, current) {
   return a !== null && b !== null && compareSemVerPrecedence(a, b) > 0;
 }
 function validateSocketPath(socketPath) {
-  if (typeof socketPath !== "string" || !path6.isAbsolute(socketPath) || Buffer.byteLength(socketPath) > AGENT_ROUTER_SOCKET_PATH_MAX_BYTES) {
+  if (typeof socketPath !== "string" || !path7.isAbsolute(socketPath) || Buffer.byteLength(socketPath) > AGENT_ROUTER_SOCKET_PATH_MAX_BYTES) {
     throw new AgentRouterProtocolError("invalid_socket_path", `Router socket path must be absolute and at most ${AGENT_ROUTER_SOCKET_PATH_MAX_BYTES} bytes.`);
   }
   return socketPath;
@@ -38362,7 +38521,7 @@ function parseStoredObject(raw, label) {
   throw new AgentMessagingError(`Invalid stored JSON object in ${label}.`);
 }
 function principalFallbackKey(idempotencyKey) {
-  return `principal-fallback:${createHash11("sha256").update(idempotencyKey).digest("hex")}`;
+  return `principal-fallback:${createHash12("sha256").update(idempotencyKey).digest("hex")}`;
 }
 function hasPrincipalFallback(db2, sent, idempotencyKey) {
   return db2.prepare(`
@@ -38538,14 +38697,14 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
 }
 
 // dist/core/update-entrypoint.js
-import fs11 from "fs";
-import path9 from "path";
+import fs12 from "fs";
+import path10 from "path";
 import { spawn } from "child_process";
 import { fileURLToPath } from "url";
 
 // dist/core/version-check.js
-import fs9 from "fs";
-import path7 from "path";
+import fs10 from "fs";
+import path8 from "path";
 var STALE_AFTER_MS = 24 * 60 * 60 * 1e3;
 function isUpdateAvailable(currentVersion, latestVersion) {
   if (latestVersion === null)
@@ -38562,7 +38721,7 @@ function getUpdateCheckPath(updateCheckPath, currentVersion) {
   if (process.env.MEMESH_UPDATE_CHECK_PATH)
     return process.env.MEMESH_UPDATE_CHECK_PATH;
   const versionTag = currentVersion && /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : "unknown";
-  return path7.join(memeshDir(), `update-check.${versionTag}.json`);
+  return path8.join(memeshDir(), `update-check.${versionTag}.json`);
 }
 function parseIsoDate(value) {
   if (!value)
@@ -38638,9 +38797,9 @@ function parseStoredUpdateCheck(raw) {
 function readStoredUpdateCheck(updateCheckPath, currentVersion) {
   try {
     const targetPath = getUpdateCheckPath(updateCheckPath, currentVersion);
-    if (!fs9.existsSync(targetPath))
+    if (!fs10.existsSync(targetPath))
       return null;
-    return parseStoredUpdateCheck(JSON.parse(fs9.readFileSync(targetPath, "utf8")));
+    return parseStoredUpdateCheck(JSON.parse(fs10.readFileSync(targetPath, "utf8")));
   } catch {
     return null;
   }
@@ -38653,8 +38812,8 @@ function getLastUpdateCheck(currentVersion, options = {}) {
 }
 
 // dist/core/update-notice.js
-import fs10 from "fs";
-import path8 from "path";
+import fs11 from "fs";
+import path9 from "path";
 var UP_TO_DATE_REFRESH_MS = 60 * 60 * 1e3;
 var UPGRADE_AVAILABLE_REFRESH_MS = 12 * 60 * 60 * 1e3;
 var ANSWER_VALID_MS = 24 * 60 * 60 * 1e3;
@@ -38664,7 +38823,7 @@ var JUST_UPGRADED_FILE = "just-upgraded.json";
 function staleRunningProcessNotice(runningVersion, packageJsonPath3) {
   let onDisk;
   try {
-    onDisk = JSON.parse(fs10.readFileSync(packageJsonPath3, "utf8")).version;
+    onDisk = JSON.parse(fs11.readFileSync(packageJsonPath3, "utf8")).version;
   } catch {
     return null;
   }
@@ -38701,16 +38860,16 @@ function parseIso(value) {
 }
 function readJson(file2) {
   try {
-    if (!fs10.existsSync(file2))
+    if (!fs11.existsSync(file2))
       return null;
-    const parsed = JSON.parse(fs10.readFileSync(file2, "utf8"));
+    const parsed = JSON.parse(fs11.readFileSync(file2, "utf8"));
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
   }
 }
 function readSnooze(dir) {
-  const raw = readJson(path8.join(dir, SNOOZE_FILE));
+  const raw = readJson(path9.join(dir, SNOOZE_FILE));
   if (!raw)
     return null;
   const { target, level, since } = raw;
@@ -38728,7 +38887,7 @@ function snoozeExpiresAt(state) {
   return since + duration3;
 }
 function readJustUpgradedMarker(dir) {
-  const raw = readJson(path8.join(dir, JUST_UPGRADED_FILE));
+  const raw = readJson(path9.join(dir, JUST_UPGRADED_FILE));
   if (!raw)
     return null;
   const { from, to, at } = raw;
@@ -38738,21 +38897,21 @@ function readJustUpgradedMarker(dir) {
 }
 function clearJustUpgradedMarker(dir) {
   try {
-    fs10.unlinkSync(path8.join(dir, JUST_UPGRADED_FILE));
+    fs11.unlinkSync(path9.join(dir, JUST_UPGRADED_FILE));
   } catch {
   }
 }
 function claimJustUpgradedMarker(dir) {
-  const file2 = path8.join(dir, JUST_UPGRADED_FILE);
+  const file2 = path9.join(dir, JUST_UPGRADED_FILE);
   const taken = `${file2}.claimed-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
   try {
-    fs10.renameSync(file2, taken);
+    fs11.renameSync(file2, taken);
   } catch {
     return null;
   }
   const raw = readJson(taken);
   try {
-    fs10.unlinkSync(taken);
+    fs11.unlinkSync(taken);
   } catch {
   }
   if (!raw)
@@ -38848,31 +39007,31 @@ function formatUpdateNoticeLine(notice) {
   }
 }
 function recentHookNoticeExists(dir, currentVersion, latestVersion, now = /* @__PURE__ */ new Date()) {
-  const claims = path9.join(dir, "update-prompt-claims");
+  const claims = path10.join(dir, "update-prompt-claims");
   let names;
   try {
-    names = fs11.readdirSync(claims);
+    names = fs12.readdirSync(claims);
   } catch {
     return false;
   }
   for (const name of names) {
     if (!name.endsWith(".json"))
       continue;
-    const file2 = path9.join(claims, name);
+    const file2 = path10.join(claims, name);
     let fd = null;
     try {
-      fd = fs11.openSync(file2, "r");
-      const stat = fs11.fstatSync(fd);
+      fd = fs12.openSync(file2, "r");
+      const stat = fs12.fstatSync(fd);
       if (now.getTime() - stat.mtimeMs > RECENT_HOOK_NOTICE_MS)
         continue;
-      const value = JSON.parse(fs11.readFileSync(fd, "utf8"));
+      const value = JSON.parse(fs12.readFileSync(fd, "utf8"));
       if (value.decision === "emitted" && value.currentVersion === currentVersion && (latestVersion === null || value.latestVersion === latestVersion))
         return true;
     } catch {
     } finally {
       if (fd !== null)
         try {
-          fs11.closeSync(fd);
+          fs12.closeSync(fd);
         } catch {
         }
     }
@@ -38881,7 +39040,7 @@ function recentHookNoticeExists(dir, currentVersion, latestVersion, now = /* @__
 }
 function updateCheckEnabledIn(dir) {
   try {
-    const raw = JSON.parse(fs11.readFileSync(path9.join(dir, "config.json"), "utf8"));
+    const raw = JSON.parse(fs12.readFileSync(path10.join(dir, "config.json"), "utf8"));
     return raw.updateCheck !== false;
   } catch {
     return true;
@@ -38889,34 +39048,34 @@ function updateCheckEnabledIn(dir) {
 }
 function cliThrottled(dir, currentVersion, now) {
   const tag = /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : "unknown";
-  const marker = path9.join(dir, `last-cli-update-notice.${tag}.lock`);
+  const marker = path10.join(dir, `last-cli-update-notice.${tag}.lock`);
   let fd = null;
   try {
     try {
-      fd = fs11.openSync(marker, "r+");
+      fd = fs12.openSync(marker, "r+");
     } catch (err) {
       const code = err.code;
       if (code !== "ENOENT") {
         return true;
       }
-      fs11.mkdirSync(dir, { recursive: true, mode: 448 });
+      fs12.mkdirSync(dir, { recursive: true, mode: 448 });
       try {
-        fd = fs11.openSync(marker, "wx", 384);
+        fd = fs12.openSync(marker, "wx", 384);
       } catch (raceErr) {
         if (raceErr.code === "EEXIST")
           return true;
         throw raceErr;
       }
-      fs11.writeSync(fd, String(now.getTime()));
+      fs12.writeSync(fd, String(now.getTime()));
       return false;
     }
-    const stat = fs11.fstatSync(fd);
+    const stat = fs12.fstatSync(fd);
     if (now.getTime() - stat.mtimeMs < CLI_NOTICE_THROTTLE_MS)
       return true;
-    fs11.ftruncateSync(fd, 0);
-    fs11.writeSync(fd, String(now.getTime()), 0);
+    fs12.ftruncateSync(fd, 0);
+    fs12.writeSync(fd, String(now.getTime()), 0);
     try {
-      fs11.fchmodSync(fd, 384);
+      fs12.fchmodSync(fd, 384);
     } catch {
     }
     return false;
@@ -38925,7 +39084,7 @@ function cliThrottled(dir, currentVersion, now) {
   } finally {
     if (fd !== null)
       try {
-        fs11.closeSync(fd);
+        fs12.closeSync(fd);
       } catch {
       }
   }
@@ -38935,8 +39094,8 @@ function spawnCacheRefresh(dir, currentVersion, now) {
   const claim2 = `${process.pid}-${now.getTime()}`;
   const failed = (error62) => {
     try {
-      if (marker && fs11.readFileSync(marker, "utf8") === claim2)
-        fs11.unlinkSync(marker);
+      if (marker && fs12.readFileSync(marker, "utf8") === claim2)
+        fs12.unlinkSync(marker);
     } catch {
     }
     const code = error62?.code;
@@ -38945,25 +39104,25 @@ function spawnCacheRefresh(dir, currentVersion, now) {
   };
   try {
     const modulePath = fileURLToPath(import.meta.url);
-    const bundledCli = path9.basename(modulePath) === "cli.js" && path9.basename(path9.dirname(modulePath)) === "cli" && path9.basename(path9.dirname(path9.dirname(modulePath))) === "transports";
+    const bundledCli = path10.basename(modulePath) === "cli.js" && path10.basename(path10.dirname(modulePath)) === "cli" && path10.basename(path10.dirname(path10.dirname(modulePath))) === "transports";
     const helperUrl = new URL(bundledCli ? "../../core/version-check.js" : "../core/version-check.js", import.meta.url);
-    if (!fs11.existsSync(fileURLToPath(helperUrl)))
+    if (!fs12.existsSync(fileURLToPath(helperUrl)))
       return false;
     const tag = /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : "unknown";
-    marker = path9.join(dir, `last-fresh-refresh.${tag}.lock`);
+    marker = path10.join(dir, `last-fresh-refresh.${tag}.lock`);
     try {
-      if (now.getTime() - fs11.statSync(marker).mtimeMs < FRESH_CHECK_THROTTLE_MS)
+      if (now.getTime() - fs12.statSync(marker).mtimeMs < FRESH_CHECK_THROTTLE_MS)
         return false;
-      fs11.unlinkSync(marker);
+      fs12.unlinkSync(marker);
     } catch {
     }
-    fs11.mkdirSync(dir, { recursive: true, mode: 448 });
+    fs12.mkdirSync(dir, { recursive: true, mode: 448 });
     try {
-      const fd = fs11.openSync(marker, "wx", 384);
+      const fd = fs12.openSync(marker, "wx", 384);
       try {
-        fs11.writeSync(fd, claim2);
+        fs12.writeSync(fd, claim2);
       } finally {
-        fs11.closeSync(fd);
+        fs12.closeSync(fd);
       }
     } catch {
       return false;
@@ -39031,7 +39190,7 @@ function updateNoticeForEntryPoint(input2) {
     const dir = input2.dir ?? memeshDir();
     const updateCheckEnabled = input2.updateCheckEnabled ?? updateCheckEnabledIn(dir);
     const tag = /^[0-9A-Za-z.+-]+$/.test(input2.currentVersion) ? input2.currentVersion : "unknown";
-    const cache = getLastUpdateCheck(input2.currentVersion, { now, updateCheckPath: path9.join(dir, `update-check.${tag}.json`) });
+    const cache = getLastUpdateCheck(input2.currentVersion, { now, updateCheckPath: path10.join(dir, `update-check.${tag}.json`) });
     if (updateCheckEnabled && shouldRefreshUpdateCache(input2.currentVersion, cache, now)) {
       (input2.refresh ?? spawnCacheRefresh)(dir, input2.currentVersion, now);
     }
@@ -39090,8 +39249,8 @@ function resolveTranscriptWorkspace(project, rootUris) {
       const parsed = new URL(uri);
       if (parsed.protocol !== "file:")
         continue;
-      const root = fs12.realpathSync(fileURLToPath2(parsed));
-      if (!fs12.statSync(root).isDirectory() || getProjectName(root) !== project)
+      const root = fs13.realpathSync(fileURLToPath2(parsed));
+      if (!fs13.statSync(root).isDirectory() || getProjectName(root) !== project)
         continue;
       matches.add(root);
     } catch {
@@ -39463,8 +39622,8 @@ function fail(message) {
   return { content: [{ type: "text", text: message }], isError: true };
 }
 function formatIssue(issue2) {
-  const path15 = issue2.path.join(".");
-  return path15 ? `${path15}: ${issue2.message}` : issue2.message;
+  const path16 = issue2.path.join(".");
+  return path16 ? `${path16}: ${issue2.message}` : issue2.message;
 }
 function stripNullProps(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value))
@@ -39503,7 +39662,7 @@ function normalizeClientHost(name) {
 }
 var packageVersion = (() => {
   try {
-    return JSON.parse(fs12.readFileSync(new URL("../../../package.json", import.meta.url), "utf8")).version ?? "0.0.0";
+    return JSON.parse(fs13.readFileSync(new URL("../../../package.json", import.meta.url), "utf8")).version ?? "0.0.0";
   } catch {
     return "0.0.0";
   }
@@ -39794,13 +39953,13 @@ ${paragraph.text}`)
 }
 
 // dist/transports/mcp/project-context.js
-import fs13 from "node:fs";
-import path10 from "node:path";
+import fs14 from "node:fs";
+import path11 from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 function existingDirectory(candidate) {
   try {
-    const real = fs13.realpathSync(candidate);
-    return fs13.statSync(real).isDirectory() ? real : null;
+    const real = fs14.realpathSync(candidate);
+    return fs14.statSync(real).isDirectory() ? real : null;
   } catch {
     return null;
   }
@@ -39834,7 +39993,7 @@ function resolveMcpProject(launchRoot, rootUris) {
     fromRoots.add(getProjectName(directory));
   }
   if (launchRoot !== void 0) {
-    const directory = path10.isAbsolute(launchRoot) ? existingDirectory(launchRoot) : null;
+    const directory = path11.isAbsolute(launchRoot) ? existingDirectory(launchRoot) : null;
     if (!directory) {
       return {
         error: "workspace_unavailable",
@@ -39866,15 +40025,15 @@ function resolveMcpProject(launchRoot, rootUris) {
 }
 
 // dist/host-runtime/claude-inbox.js
-import path13 from "node:path";
+import path14 from "node:path";
 import { spawn as spawn3 } from "node:child_process";
 import { fileURLToPath as fileURLToPath5 } from "node:url";
-import fs18 from "node:fs";
+import fs19 from "node:fs";
 import net3 from "node:net";
 
 // dist/host-runtime/config.js
 import { randomBytes as randomBytes2 } from "node:crypto";
-import fs14 from "node:fs";
+import fs15 from "node:fs";
 var MAX_ROUTER_TOKEN_FILE_BYTES = 8 * 1024;
 var SECURE_LOCAL_HOST_RUNTIME_UNSUPPORTED = "The secure local host runtime is not supported on Windows.";
 function assertSecureLocalHostRuntimeSupported() {
@@ -39889,7 +40048,7 @@ function readTokenFile(tokenFile) {
 function ensureRouterTokenFile(tokenFile) {
   assertSecureLocalHostRuntimeSupported();
   try {
-    fs14.writeFileSync(tokenFile, `${randomBytes2(32).toString("hex")}
+    fs15.writeFileSync(tokenFile, `${randomBytes2(32).toString("hex")}
 `, { mode: 384, flag: "wx" });
   } catch (error62) {
     if (error62.code !== "EEXIST")
@@ -39905,12 +40064,12 @@ function requiredString(value, field) {
 }
 function readOwnerPrivateFile(file2, label, maxBytes) {
   assertSecureLocalHostRuntimeSupported();
-  if (typeof fs14.constants.O_NOFOLLOW !== "number") {
+  if (typeof fs15.constants.O_NOFOLLOW !== "number") {
     throw new Error(`This platform cannot safely reject a symlink ${label}.`);
   }
-  const descriptor = fs14.openSync(file2, fs14.constants.O_RDONLY | fs14.constants.O_NOFOLLOW | fs14.constants.O_NONBLOCK);
+  const descriptor = fs15.openSync(file2, fs15.constants.O_RDONLY | fs15.constants.O_NOFOLLOW | fs15.constants.O_NONBLOCK);
   try {
-    const stat = fs14.fstatSync(descriptor);
+    const stat = fs15.fstatSync(descriptor);
     if (!stat.isFile())
       throw new Error(`The ${label} must be an owner-private regular file.`);
     assertOwnerPrivate(stat, label);
@@ -39919,7 +40078,7 @@ function readOwnerPrivateFile(file2, label, maxBytes) {
     const content = Buffer.allocUnsafe(maxBytes + 1);
     let bytesRead = 0;
     while (bytesRead < content.length) {
-      const chunkBytes = fs14.readSync(descriptor, content, bytesRead, content.length - bytesRead, null);
+      const chunkBytes = fs15.readSync(descriptor, content, bytesRead, content.length - bytesRead, null);
       if (chunkBytes === 0)
         break;
       bytesRead += chunkBytes;
@@ -39928,7 +40087,7 @@ function readOwnerPrivateFile(file2, label, maxBytes) {
       throw new Error(`The ${label} exceeds its ${maxBytes}-byte limit.`);
     return content.subarray(0, bytesRead).toString("utf8");
   } finally {
-    fs14.closeSync(descriptor);
+    fs15.closeSync(descriptor);
   }
 }
 function assertOwnerPrivate(stat, label) {
@@ -39942,7 +40101,7 @@ function assertOwnerPrivate(stat, label) {
 // dist/host-runtime/router-client.js
 import { spawn as spawn2 } from "node:child_process";
 import { randomUUID as randomUUID5 } from "node:crypto";
-import fs15 from "node:fs";
+import fs16 from "node:fs";
 import net2 from "node:net";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
@@ -40398,7 +40557,7 @@ function waitForSocketConnect(socket) {
   });
 }
 function assertPrivateRouterSocket(socketPath) {
-  const stat = fs15.lstatSync(socketPath);
+  const stat = fs16.lstatSync(socketPath);
   if (!stat.isSocket() || (stat.mode & 63) !== 0) {
     throw new Error("The router socket must be owner-private.");
   }
@@ -40499,13 +40658,13 @@ function isRecord(value) {
 }
 
 // dist/core/session-activity.js
-import fs17 from "node:fs";
-import path12 from "node:path";
+import fs18 from "node:fs";
+import path13 from "node:path";
 import { execFileSync as execFileSync3 } from "node:child_process";
 
 // dist/host-runtime/claude-transcript.js
-import fs16 from "node:fs";
-import path11 from "node:path";
+import fs17 from "node:fs";
+import path12 from "node:path";
 var MAX_BYTES = 1024 * 1024;
 var ClaudeTranscriptReader = class {
   projectsDir;
@@ -40525,12 +40684,12 @@ var ClaudeTranscriptReader = class {
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(session))
       return void 0;
     try {
-      for (const entry of fs16.readdirSync(this.projectsDir, { withFileTypes: true })) {
+      for (const entry of fs17.readdirSync(this.projectsDir, { withFileTypes: true })) {
         if (!entry.isDirectory() || this.projectSlug !== void 0 && entry.name !== this.projectSlug)
           continue;
-        const candidate = path11.join(this.projectsDir, entry.name, `${session}.jsonl`);
+        const candidate = path12.join(this.projectsDir, entry.name, `${session}.jsonl`);
         try {
-          if (fs16.lstatSync(candidate).isFile())
+          if (fs17.lstatSync(candidate).isFile())
             return candidate;
         } catch {
         }
@@ -40545,21 +40704,21 @@ var ClaudeTranscriptReader = class {
       return void 0;
     let fd;
     try {
-      if (!fs16.lstatSync(path11.dirname(file2)).isDirectory())
+      if (!fs17.lstatSync(path12.dirname(file2)).isDirectory())
         return void 0;
-      fd = fs16.openSync(file2, fs16.constants.O_RDONLY | (fs16.constants.O_NOFOLLOW ?? 0) | (fs16.constants.O_NONBLOCK ?? 0));
-      const stat = fs16.fstatSync(fd);
-      const named = fs16.lstatSync(file2);
+      fd = fs17.openSync(file2, fs17.constants.O_RDONLY | (fs17.constants.O_NOFOLLOW ?? 0) | (fs17.constants.O_NONBLOCK ?? 0));
+      const stat = fs17.fstatSync(fd);
+      const named = fs17.lstatSync(file2);
       if (!stat.isFile() || !named.isFile() || stat.dev !== named.dev || stat.ino !== named.ino || typeof process.getuid === "function" && stat.uid !== process.getuid())
         return void 0;
       const last = Buffer.alloc(1);
-      const discardPartial = stat.size > 0 && fs16.readSync(fd, last, 0, 1, stat.size - 1) === 1 && last[0] !== 10;
+      const discardPartial = stat.size > 0 && fs17.readSync(fd, last, 0, 1, stat.size - 1) === 1 && last[0] !== 10;
       return { session, file: file2, dev: stat.dev, ino: stat.ino, offset: stat.size, pending: Buffer.alloc(0), discardPartial };
     } catch {
       return void 0;
     } finally {
       if (fd !== void 0)
-        fs16.closeSync(fd);
+        fs17.closeSync(fd);
     }
   }
   readNew(session, mark) {
@@ -40567,15 +40726,15 @@ var ClaudeTranscriptReader = class {
       return void 0;
     let fd;
     try {
-      if (!fs16.lstatSync(path11.dirname(mark.file)).isDirectory())
+      if (!fs17.lstatSync(path12.dirname(mark.file)).isDirectory())
         return void 0;
-      fd = fs16.openSync(mark.file, fs16.constants.O_RDONLY | (fs16.constants.O_NOFOLLOW ?? 0) | (fs16.constants.O_NONBLOCK ?? 0));
-      const stat = fs16.fstatSync(fd);
-      const named = fs16.lstatSync(mark.file);
+      fd = fs17.openSync(mark.file, fs17.constants.O_RDONLY | (fs17.constants.O_NOFOLLOW ?? 0) | (fs17.constants.O_NONBLOCK ?? 0));
+      const stat = fs17.fstatSync(fd);
+      const named = fs17.lstatSync(mark.file);
       if (!stat.isFile() || !named.isFile() || stat.dev !== mark.dev || stat.ino !== mark.ino || named.dev !== stat.dev || named.ino !== stat.ino || typeof process.getuid === "function" && stat.uid !== process.getuid() || stat.size < mark.offset || stat.size - mark.offset > MAX_BYTES)
         return void 0;
       const buffer = Buffer.alloc(stat.size - mark.offset);
-      const n = fs16.readSync(fd, buffer, 0, buffer.length, mark.offset);
+      const n = fs17.readSync(fd, buffer, 0, buffer.length, mark.offset);
       mark.offset += n;
       let bytes = Buffer.concat([mark.pending, buffer.subarray(0, n)]);
       if (bytes.length > MAX_BYTES)
@@ -40598,7 +40757,7 @@ var ClaudeTranscriptReader = class {
       return void 0;
     } finally {
       if (fd !== void 0)
-        fs16.closeSync(fd);
+        fs17.closeSync(fd);
     }
   }
   currentTask(session) {
@@ -40615,11 +40774,11 @@ var ClaudeTranscriptReader = class {
       return void 0;
     let fd;
     try {
-      if (!fs16.lstatSync(path11.dirname(this.file)).isDirectory())
+      if (!fs17.lstatSync(path12.dirname(this.file)).isDirectory())
         return void 0;
-      fd = fs16.openSync(this.file, fs16.constants.O_RDONLY | (fs16.constants.O_NOFOLLOW ?? 0) | (fs16.constants.O_NONBLOCK ?? 0));
-      const stat = fs16.fstatSync(fd);
-      const named = fs16.lstatSync(this.file);
+      fd = fs17.openSync(this.file, fs17.constants.O_RDONLY | (fs17.constants.O_NOFOLLOW ?? 0) | (fs17.constants.O_NONBLOCK ?? 0));
+      const stat = fs17.fstatSync(fd);
+      const named = fs17.lstatSync(this.file);
       if (!stat.isFile() || !named.isFile() || stat.dev !== named.dev || stat.ino !== named.ino || typeof process.getuid === "function" && stat.uid !== process.getuid())
         return void 0;
       const identity = `${stat.dev}:${stat.ino}`;
@@ -40630,7 +40789,7 @@ var ClaudeTranscriptReader = class {
       }
       const start = this.offset;
       const buffer = Buffer.alloc(stat.size - start);
-      const n = fs16.readSync(fd, buffer, 0, buffer.length, this.offset);
+      const n = fs17.readSync(fd, buffer, 0, buffer.length, this.offset);
       this.offset += n;
       let bytes = Buffer.concat([this.pending, buffer.subarray(0, n)]);
       if (start > 0 && start === stat.size - MAX_BYTES) {
@@ -40656,7 +40815,7 @@ var ClaudeTranscriptReader = class {
       return void 0;
     } finally {
       if (fd !== void 0)
-        fs16.closeSync(fd);
+        fs17.closeSync(fd);
     }
   }
   reset() {
@@ -40720,21 +40879,21 @@ var MAX_BYTES2 = 1024 * 1024;
 function readTail(file2, forbiddenModeBits = 0) {
   let fd;
   try {
-    fd = fs17.openSync(file2, fs17.constants.O_RDONLY | (fs17.constants.O_NOFOLLOW ?? 0) | (fs17.constants.O_NONBLOCK ?? 0));
-    const stat = fs17.fstatSync(fd);
-    const named = fs17.lstatSync(file2);
+    fd = fs18.openSync(file2, fs18.constants.O_RDONLY | (fs18.constants.O_NOFOLLOW ?? 0) | (fs18.constants.O_NONBLOCK ?? 0));
+    const stat = fs18.fstatSync(fd);
+    const named = fs18.lstatSync(file2);
     if (!stat.isFile() || !named.isFile() || named.dev !== stat.dev || named.ino !== stat.ino || typeof process.getuid === "function" && stat.uid !== process.getuid() || process.platform !== "win32" && (stat.mode & forbiddenModeBits) !== 0)
       return void 0;
     const start = Math.max(0, stat.size - MAX_BYTES2);
     const bytes = Buffer.alloc(stat.size - start);
-    const n = fs17.readSync(fd, bytes, 0, bytes.length, start);
+    const n = fs18.readSync(fd, bytes, 0, bytes.length, start);
     const text = bytes.subarray(0, n).toString("utf8");
     return start ? text.slice(text.indexOf("\n") + 1) : text;
   } catch {
     return void 0;
   } finally {
     if (fd !== void 0)
-      fs17.closeSync(fd);
+      fs18.closeSync(fd);
   }
 }
 function formatSessionActivity(fields) {
@@ -40747,18 +40906,18 @@ function formatSessionActivity(fields) {
 function repoLabel(workspace) {
   try {
     const value = execFileSync3("git", ["rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD"], { cwd: workspace, encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim().split("\n");
-    return value.length === 2 && value[0] && value[1] ? `${path12.basename(value[0])}@${value[1]}` : void 0;
+    return value.length === 2 && value[0] && value[1] ? `${path13.basename(value[0])}@${value[1]}` : void 0;
   } catch {
     return void 0;
   }
 }
-function createClaudeActivity(pid, workspace, claudeDir = process.env.CLAUDE_CONFIG_DIR || path12.join(homeDir(), ".claude")) {
+function createClaudeActivity(pid, workspace, claudeDir = process.env.CLAUDE_CONFIG_DIR || path13.join(homeDir(), ".claude")) {
   let slug;
   let reader;
   return () => {
     let registry2;
     try {
-      const value = JSON.parse(readTail(path12.join(claudeDir, "sessions", `${pid}.json`), 18) ?? "");
+      const value = JSON.parse(readTail(path13.join(claudeDir, "sessions", `${pid}.json`), 18) ?? "");
       if (value && typeof value === "object" && !Array.isArray(value))
         registry2 = value;
     } catch {
@@ -40766,7 +40925,7 @@ function createClaudeActivity(pid, workspace, claudeDir = process.env.CLAUDE_CON
     }
     if (registry2) {
       try {
-        if (registry2.pid !== pid || typeof registry2.cwd !== "string" || fs17.realpathSync(registry2.cwd) !== fs17.realpathSync(workspace))
+        if (registry2.pid !== pid || typeof registry2.cwd !== "string" || fs18.realpathSync(registry2.cwd) !== fs18.realpathSync(workspace))
           registry2 = void 0;
       } catch {
         registry2 = void 0;
@@ -40778,7 +40937,7 @@ function createClaudeActivity(pid, workspace, claudeDir = process.env.CLAUDE_CON
       const currentSlug = projectTranscriptSlug(registry2.cwd);
       if (currentSlug !== slug) {
         slug = currentSlug;
-        reader = new ClaudeTranscriptReader(path12.join(claudeDir, "projects"), slug);
+        reader = new ClaudeTranscriptReader(path13.join(claudeDir, "projects"), slug);
       }
     }
     const task = typeof registry2?.sessionId === "string" ? reader?.currentTask(registry2.sessionId) : void 0;
@@ -40795,24 +40954,24 @@ function messageNotice(envelope, deliveryId) {
 
 // dist/host-runtime/claude-inbox.js
 function readRegistrySession(workspace) {
-  const root = process.env.CLAUDE_CONFIG_DIR || path13.join(homeDir(), ".claude");
-  const file2 = path13.join(root, "sessions", `${process.ppid}.json`);
+  const root = process.env.CLAUDE_CONFIG_DIR || path14.join(homeDir(), ".claude");
+  const file2 = path14.join(root, "sessions", `${process.ppid}.json`);
   let fd;
   try {
-    fd = fs18.openSync(file2, fs18.constants.O_RDONLY | (fs18.constants.O_NOFOLLOW ?? 0) | (fs18.constants.O_NONBLOCK ?? 0));
-    const stat = fs18.fstatSync(fd);
-    const named = fs18.lstatSync(file2);
+    fd = fs19.openSync(file2, fs19.constants.O_RDONLY | (fs19.constants.O_NOFOLLOW ?? 0) | (fs19.constants.O_NONBLOCK ?? 0));
+    const stat = fs19.fstatSync(fd);
+    const named = fs19.lstatSync(file2);
     if (!stat.isFile() || !named.isFile() || stat.dev !== named.dev || stat.ino !== named.ino || stat.size > 65536 || typeof process.getuid === "function" && stat.uid !== process.getuid() || process.platform !== "win32" && (stat.mode & 18) !== 0)
       return void 0;
-    const data = JSON.parse(fs18.readFileSync(fd, "utf8"));
-    if (data.pid !== process.ppid || typeof data.cwd !== "string" || fs18.realpathSync(data.cwd) !== fs18.realpathSync(workspace) || typeof data.sessionId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(data.sessionId))
+    const data = JSON.parse(fs19.readFileSync(fd, "utf8"));
+    if (data.pid !== process.ppid || typeof data.cwd !== "string" || fs19.realpathSync(data.cwd) !== fs19.realpathSync(workspace) || typeof data.sessionId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(data.sessionId))
       return void 0;
     return { sessionId: data.sessionId, cwd: data.cwd };
   } catch {
     return void 0;
   } finally {
     if (fd !== void 0)
-      fs18.closeSync(fd);
+      fs19.closeSync(fd);
   }
 }
 function sendNativeNotice(socketPath, content, timeoutMs) {
@@ -40822,7 +40981,7 @@ function sendNativeNotice(socketPath, content, timeoutMs) {
       return;
     }
     try {
-      const stat = fs18.lstatSync(socketPath);
+      const stat = fs19.lstatSync(socketPath);
       if (!stat.isSocket() || (stat.mode & 63) !== 0 || typeof process.getuid === "function" && stat.uid !== process.getuid())
         throw new Error("Claude native inbox is unavailable.");
     } catch {
@@ -40925,7 +41084,7 @@ async function startClaudeInboxPresence(rootUris) {
     return void 0;
   const dataDir = getMemeshDirFromDbPath();
   requirePrivateWritableDirectory(dataDir, "the local router keeps its lifecycle state there");
-  const token = ensureRouterTokenFile(path13.join(dataDir, "agent-router.token"));
+  const token = ensureRouterTokenFile(path14.join(dataDir, "agent-router.token"));
   let workspace = process.env.MEMESH_PROJECT_ROOT ?? process.env.CLAUDE_PROJECT_DIR;
   if (!workspace && rootUris?.length === 1) {
     try {
@@ -40946,7 +41105,7 @@ async function startClaudeInboxPresence(rootUris) {
     deliver: createClaudeInboxDeliver({
       socketPath: process.env.CLAUDE_CODE_MESSAGING_TOKEN ? process.env.CLAUDE_CODE_MESSAGING_SOCKET : void 0,
       sessionId: session,
-      reader: () => new ClaudeTranscriptReader(path13.join(process.env.CLAUDE_CONFIG_DIR || path13.join(homeDir(), ".claude"), "projects"), projectTranscriptSlug(workspace ? readRegistrySession(workspace)?.cwd ?? workspace : "")),
+      reader: () => new ClaudeTranscriptReader(path14.join(process.env.CLAUDE_CONFIG_DIR || path14.join(homeDir(), ".claude"), "projects"), projectTranscriptSlug(workspace ? readRegistrySession(workspace)?.cwd ?? workspace : "")),
       currentSession: () => workspace ? readRegistrySession(workspace)?.sessionId : void 0
     }),
     resilience: {
@@ -40967,8 +41126,8 @@ async function startClaudeInboxPresence(rootUris) {
 }
 
 // dist/mcp/server.js
-var packageJsonPath2 = path14.resolve(path14.dirname(fileURLToPath6(import.meta.url)), "../../package.json");
-var packageVersion2 = JSON.parse(fs19.readFileSync(packageJsonPath2, "utf8")).version ?? "0.0.0";
+var packageJsonPath2 = path15.resolve(path15.dirname(fileURLToPath6(import.meta.url)), "../../package.json");
+var packageVersion2 = JSON.parse(fs20.readFileSync(packageJsonPath2, "utf8")).version ?? "0.0.0";
 configureVersionSource(packageVersion2, packageJsonPath2);
 var server = new Server({ name: "memesh", version: packageVersion2 }, { capabilities: { tools: {} } });
 var presence;

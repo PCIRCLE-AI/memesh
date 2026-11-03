@@ -59,7 +59,7 @@ describe('ingestNoteDirectory', () => {
       'sub/c.md': note('note_c', 'Gamma fact', 'fact', 'Gamma body.'),
       'MEMORY.md': '- [index](a.md) — no frontmatter here',
     });
-    const r = ingestNoteDirectory({ dir, project: 'proj' });
+    const r = ingestNoteDirectory({ trusted: false, dir, project: 'proj' });
     expect(r.created).toHaveLength(3);
     expect(r.created.sort()).toEqual(['note_a', 'note_b', 'note_c']);
     expect(r.skipped).toEqual([{ path: 'MEMORY.md', reason: expect.stringMatching(/no frontmatter/) }]);
@@ -84,11 +84,11 @@ describe('ingestNoteDirectory', () => {
       'a.md': note('note_a', 'Alpha', 'decision', 'alpha one'),
       'b.md': note('note_b', 'Beta', 'lesson', 'beta one'),
     });
-    ingestNoteDirectory({ dir });
+    ingestNoteDirectory({ trusted: false, dir });
     fs.writeFileSync(path.join(dir, 'a.md'), note('note_a', 'Alpha', 'decision', 'alpha two'));
     fs.writeFileSync(path.join(dir, 'b.md'), note('note_b', 'Beta', 'lesson', 'beta two'));
     fs.writeFileSync(path.join(dir, 'c.md'), note('note_c', 'Gamma', 'decision', 'gamma one'));
-    const second = ingestNoteDirectory({ dir, project: 'proj' });
+    const second = ingestNoteDirectory({ trusted: false, dir, project: 'proj' });
     expect(second.replaced.sort()).toEqual(['note_a', 'note_b']);
     expect(second.created).toEqual(['note_c']);
     expect(kg().getEntity('note_a')!.observations).toEqual(['alpha two']);
@@ -96,7 +96,7 @@ describe('ingestNoteDirectory', () => {
     expect(kg().getEntity('note_a')!.tags.filter((t) => t.startsWith('project:'))).toEqual([]);
     expect(kg().getEntity('note_b')!.tags.filter((t) => t.startsWith('project:'))).toEqual([]);
     expect(kg().getEntity('note_c')!.tags).toContain('project:proj');
-    expect(ingestNoteDirectory({ dir, project: 'proj' })).toMatchObject({ created: [], replaced: [], unchanged: 3 });
+    expect(ingestNoteDirectory({ trusted: false, dir, project: 'proj' })).toMatchObject({ created: [], replaced: [], unchanged: 3 });
   });
 
   it('an edited note whose memory already belongs to two projects is updated, keeps both, and does not stop the run', () => {
@@ -104,7 +104,7 @@ describe('ingestNoteDirectory', () => {
       'a.md': note('note_a', 'Alpha', 'decision', 'alpha one'),
       'b.md': note('note_b', 'Beta', 'lesson', 'beta one'),
     });
-    ingestNoteDirectory({ dir, project: 'A' });
+    ingestNoteDirectory({ trusted: false, dir, project: 'A' });
     // An older memory that two projects share, last seen missing.
     const db = getDatabase();
     const id = (db.prepare('SELECT id FROM entities WHERE name = ?').get('note_a') as { id: number }).id;
@@ -113,7 +113,7 @@ describe('ingestNoteDirectory', () => {
 
     fs.writeFileSync(path.join(dir, 'a.md'), note('note_a', 'Alpha', 'decision', 'alpha two'));
     fs.writeFileSync(path.join(dir, 'b.md'), note('note_b', 'Beta', 'lesson', 'beta two'));
-    const r = ingestNoteDirectory({ dir, project: 'A' });
+    const r = ingestNoteDirectory({ trusted: false, dir, project: 'A' });
     expect(r.skipped).toEqual([]);
     expect(r.replaced.sort()).toEqual(['note_a', 'note_b']);
     const a = kg().getEntity('note_a')!;
@@ -132,14 +132,14 @@ describe('ingestNoteDirectory', () => {
       'a.md': note('note_a', 'Alpha', 'decision', 'alpha one'),
       'b.md': note('note_b', 'Beta', 'lesson', 'beta one'),
     });
-    ingestNoteDirectory({ dir, project: 'A' });
+    ingestNoteDirectory({ trusted: false, dir, project: 'A' });
     const db = getDatabase();
     const id = (db.prepare('SELECT id FROM entities WHERE name = ?').get('note_a') as { id: number }).id;
     db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, 'project:B');
 
     fs.writeFileSync(path.join(dir, 'a.md'), note('note_a', 'Alpha', 'decision', 'alpha two'));
     fs.writeFileSync(path.join(dir, 'b.md'), note('note_b', 'Beta', 'lesson', 'beta two'));
-    const r = ingestNoteDirectory({ dir, project: 'C' });
+    const r = ingestNoteDirectory({ trusted: false, dir, project: 'C' });
     expect(r.skipped).toEqual([{ path: 'a.md', reason: expect.stringContaining('belongs to several projects (A, B)') }]);
     expect(r.refusedNow).toBe(1);
     expect(r.replaced).toEqual(['note_b']);
@@ -147,11 +147,11 @@ describe('ingestNoteDirectory', () => {
     expect(kg().getEntity('note_b')!.observations).toEqual(['beta two']);
 
     // The same refusal again is not news, but the file is still read:
-    const again = ingestNoteDirectory({ dir, project: 'C' });
+    const again = ingestNoteDirectory({ trusted: false, dir, project: 'C' });
     expect(again.skipped).toHaveLength(1);
     expect(again.refusedNow).toBe(0);
     // so a run of a project it belongs to updates it, file unchanged since.
-    const member = ingestNoteDirectory({ dir, project: 'A' });
+    const member = ingestNoteDirectory({ trusted: false, dir, project: 'A' });
     expect(member.replaced).toEqual(['note_a']);
     expect(kg().getEntity('note_a')!.observations).toEqual(['alpha two']);
   });
@@ -161,12 +161,12 @@ describe('ingestNoteDirectory', () => {
       'a.md': note('note_a', 'Alpha', 'decision', 'old alpha text'),
       'b.md': note('note_b', 'Beta', 'lesson', 'beta text'),
     });
-    ingestNoteDirectory({ dir });
-    const again = ingestNoteDirectory({ dir });
+    ingestNoteDirectory({ trusted: false, dir });
+    const again = ingestNoteDirectory({ trusted: false, dir });
     expect(again).toMatchObject({ created: [], replaced: [], unchanged: 2 });
 
     fs.writeFileSync(path.join(dir, 'a.md'), note('note_a', 'Alpha v2', 'decision', 'new alpha text'));
-    const third = ingestNoteDirectory({ dir });
+    const third = ingestNoteDirectory({ trusted: false, dir });
     expect(third.replaced).toEqual(['note_a']);
     expect(third.unchanged).toBe(1);
 
@@ -180,19 +180,19 @@ describe('ingestNoteDirectory', () => {
 
   it('a deleted file tags its memory missing and never deletes it; it clears when the file returns', () => {
     const dir = makeDir({ 'a.md': note('note_a', 'Alpha', 'decision', 'alpha') });
-    ingestNoteDirectory({ dir });
+    ingestNoteDirectory({ trusted: false, dir });
     fs.renameSync(path.join(dir, 'a.md'), path.join(fixture.tmpDir, 'a.md.away'));
 
-    const r = ingestNoteDirectory({ dir });
+    const r = ingestNoteDirectory({ trusted: false, dir });
     expect(r.markedMissing).toEqual(['note_a']);
     const a = kg().getEntity('note_a')!;
     expect(a.archived).toBeUndefined();
     expect(a.tags).toContain(NOTE_FILE_MISSING_TAG);
     // Idempotent: a second run does not report it again.
-    expect(ingestNoteDirectory({ dir }).markedMissing).toEqual([]);
+    expect(ingestNoteDirectory({ trusted: false, dir }).markedMissing).toEqual([]);
 
     fs.renameSync(path.join(fixture.tmpDir, 'a.md.away'), path.join(dir, 'a.md'));
-    ingestNoteDirectory({ dir });
+    ingestNoteDirectory({ trusted: false, dir });
     expect(kg().getEntity('note_a')!.tags).not.toContain(NOTE_FILE_MISSING_TAG);
   });
 
@@ -201,7 +201,7 @@ describe('ingestNoteDirectory', () => {
     fs.writeFileSync(outside, note('evil', 'Outside', 'fact', 'outside text'));
     const dir = makeDir({ 'a.md': note('note_a', 'Alpha', 'decision', 'alpha') });
     fs.symlinkSync(outside, path.join(dir, 'link.md'));
-    const r = ingestNoteDirectory({ dir });
+    const r = ingestNoteDirectory({ trusted: false, dir });
     expect(r.created).toEqual(['note_a']);
     expect(r.skipped).toContainEqual({ path: 'link.md', reason: 'symlink refused' });
     expect(kg().getEntity('evil')).toBeNull();
@@ -214,7 +214,7 @@ describe('ingestNoteDirectory', () => {
       'node_modules/y.md': note('nm_note', 'NM', 'fact', 'nm'),
       'big.md': note('big', 'Big', 'fact', 'x'.repeat(2000)),
     });
-    const r = ingestNoteDirectory({ dir, maxBytes: 1024 });
+    const r = ingestNoteDirectory({ trusted: false, dir, maxBytes: 1024 });
     expect(r.created).toEqual(['n1']);
     expect(r.skipped).toContainEqual({ path: 'big.md', reason: 'larger than 1 KB' });
     expect(kg().getEntity('git_note')).toBeNull();
@@ -228,13 +228,13 @@ describe('ingestNoteDirectory', () => {
       '2.md': note('n2', 'Two', 'fact', 'two'),
       '3.md': note('n3', 'Three', 'fact', 'three'),
     });
-    const first = ingestNoteDirectory({ dir, maxFiles: 1 });
+    const first = ingestNoteDirectory({ trusted: false, dir, maxFiles: 1 });
     expect(first).toMatchObject({ created: ['n1'], more: 2 });
     // Unchanged files are recognised by their stat fingerprint and do not use
     // up the cap, so the next run reaches the next file.
-    const second = ingestNoteDirectory({ dir, maxFiles: 1 });
+    const second = ingestNoteDirectory({ trusted: false, dir, maxFiles: 1 });
     expect(second).toMatchObject({ created: ['n2'], unchanged: 1, more: 1 });
-    expect(ingestNoteDirectory({ dir, maxFiles: 1 })).toMatchObject({ created: ['n3'], unchanged: 2, more: 0 });
+    expect(ingestNoteDirectory({ trusted: false, dir, maxFiles: 1 })).toMatchObject({ created: ['n3'], unchanged: 2, more: 0 });
   });
 
   it('a file past the cap is still on disk: its memory is not tagged missing', () => {
@@ -242,10 +242,10 @@ describe('ingestNoteDirectory', () => {
       '1.md': note('n1', 'One', 'fact', 'one'),
       '2.md': note('n2', 'Two', 'fact', 'two'),
     });
-    ingestNoteDirectory({ dir });
+    ingestNoteDirectory({ trusted: false, dir });
     fs.writeFileSync(path.join(dir, '1.md'), note('n1', 'One v2', 'fact', 'one changed'));
     fs.writeFileSync(path.join(dir, '2.md'), note('n2', 'Two v2', 'fact', 'two changed'));
-    const capped = ingestNoteDirectory({ dir, maxFiles: 1 });
+    const capped = ingestNoteDirectory({ trusted: false, dir, maxFiles: 1 });
     expect(capped).toMatchObject({ replaced: ['n1'], more: 1, markedMissing: [] });
     expect(kg().getEntity('n2')!.tags).not.toContain(NOTE_FILE_MISSING_TAG);
   });
@@ -253,7 +253,7 @@ describe('ingestNoteDirectory', () => {
   it('never overwrites a memory that did not come from a note file', () => {
     remember({ name: 'shared_name', type: 'decision', why: 'written by hand, not from a file; revisit if it moves into notes', observations: ['hand-written'] });
     const dir = makeDir({ 'a.md': note('shared_name', 'From file', 'decision', 'file text') });
-    const r = ingestNoteDirectory({ dir });
+    const r = ingestNoteDirectory({ trusted: false, dir });
     expect(r.created).toEqual([]);
     expect(r.skipped[0].reason).toMatch(/did not come from a note file/);
     expect(kg().getEntity('shared_name')!.observations).toEqual(['hand-written', 'Why: written by hand, not from a file; revisit if it moves into notes']);
@@ -261,10 +261,10 @@ describe('ingestNoteDirectory', () => {
 
   it('does not undo a forget', () => {
     const dir = makeDir({ 'a.md': note('note_a', 'Alpha', 'decision', 'alpha') });
-    ingestNoteDirectory({ dir });
+    ingestNoteDirectory({ trusted: false, dir });
     forget({ name: 'note_a' });
     fs.writeFileSync(path.join(dir, 'a.md'), note('note_a', 'Alpha v2', 'decision', 'alpha two'));
-    const r = ingestNoteDirectory({ dir });
+    const r = ingestNoteDirectory({ trusted: false, dir });
     expect(r.skipped[0].reason).toMatch(/archived with forget/);
     expect(kg().getEntity('note_a')!.archived).toBe(true);
   });
@@ -272,12 +272,12 @@ describe('ingestNoteDirectory', () => {
   it('redacts credential-shaped text from the file body', () => {
     const secret = ['Bearer', 'placeholderplaceholder1234'].join(' ');
     const dir = makeDir({ 'a.md': note('note_a', 'Alpha', 'decision', `curl -H "${secret}"`) });
-    ingestNoteDirectory({ dir });
+    ingestNoteDirectory({ trusted: false, dir });
     expect(kg().getEntity('note_a')!.observations.join(' ')).not.toContain('placeholderplaceholder');
   });
 
   it('throws on a directory that does not exist', () => {
-    expect(() => ingestNoteDirectory({ dir: path.join(fixture.tmpDir, 'nope') })).toThrow();
+    expect(() => ingestNoteDirectory({ trusted: false, dir: path.join(fixture.tmpDir, 'nope') })).toThrow();
   });
 
   it('F1: an unusable file is remembered by fingerprint, so it neither eats the cap nor starves real notes', () => {
@@ -285,12 +285,12 @@ describe('ingestNoteDirectory', () => {
       '0-bad.md': '# no frontmatter here\n',
       '1-good.md': note('good_note', 'Good', 'fact', 'good body'),
     });
-    const first = ingestNoteDirectory({ dir, maxFiles: 1 });
+    const first = ingestNoteDirectory({ trusted: false, dir, maxFiles: 1 });
     expect(first.created).toHaveLength(0);
     expect(first.more).toBe(1);
     expect(first.skipped[0].path).toBe('0-bad.md');
 
-    const second = ingestNoteDirectory({ dir, maxFiles: 1 });
+    const second = ingestNoteDirectory({ trusted: false, dir, maxFiles: 1 });
     expect(second.created).toEqual(['good_note']);
     // Still reported — but from the fingerprint, without using the cap.
     expect(second.skipped.map((x) => x.path)).toContain('0-bad.md');
@@ -298,7 +298,7 @@ describe('ingestNoteDirectory', () => {
 
     // Editing the bad file makes it eligible for a real read again.
     fs.writeFileSync(path.join(dir, '0-bad.md'), note('fixed_note', 'Fixed', 'fact', 'now valid'));
-    expect(ingestNoteDirectory({ dir, maxFiles: 1 }).created).toEqual(['fixed_note']);
+    expect(ingestNoteDirectory({ trusted: false, dir, maxFiles: 1 }).created).toEqual(['fixed_note']);
   });
 
   it('F3: two files with the same frontmatter name do not take turns replacing one memory', () => {
@@ -306,10 +306,10 @@ describe('ingestNoteDirectory', () => {
       'a.md': note('dup_name', 'From A', 'fact', 'text a'),
       'b.md': note('dup_name', 'From B', 'fact', 'text b'),
     });
-    const r = ingestNoteDirectory({ dir });
+    const r = ingestNoteDirectory({ trusted: false, dir });
     expect(r.created).toEqual(['dup_name']);
     expect(r.skipped).toContainEqual({ path: 'b.md', reason: 'name "dup_name" already used by a.md in this directory' });
-    const again = ingestNoteDirectory({ dir });
+    const again = ingestNoteDirectory({ trusted: false, dir });
     expect(again.replaced).toHaveLength(0);
     expect(kg().getEntity('dup_name')!.observations).toEqual(['text a']);
     expect(kg().getEntity('dup_name')!.metadata?.replaced_history).toBeUndefined();
@@ -317,9 +317,9 @@ describe('ingestNoteDirectory', () => {
 
   it('F3: the owner of a name keeps it even when a later-added duplicate sorts first', () => {
     const dir = makeDir({ 'b.md': note('dup2', 'Owner', 'fact', 'owner text') });
-    ingestNoteDirectory({ dir });
+    ingestNoteDirectory({ trusted: false, dir });
     fs.writeFileSync(path.join(dir, 'a.md'), note('dup2', 'Intruder', 'fact', 'intruder text'));
-    const r = ingestNoteDirectory({ dir });
+    const r = ingestNoteDirectory({ trusted: false, dir });
     expect(r.replaced).toHaveLength(0);
     expect(r.skipped).toContainEqual({ path: 'a.md', reason: 'name "dup2" already used by b.md in this directory' });
     expect(kg().getEntity('dup2')!.observations).toEqual(['owner text']);
@@ -328,7 +328,7 @@ describe('ingestNoteDirectory', () => {
   it('F4: the frontmatter name gets the same hygiene as the body', () => {
     const secret = ['Bearer', 'placeholderplaceholder1234'].join(' ');
     const dir = makeDir({ 'a.md': note(`leak ${secret}`, 'Alpha', 'fact', 'alpha') });
-    const r = ingestNoteDirectory({ dir });
+    const r = ingestNoteDirectory({ trusted: false, dir });
     expect(r.created).toHaveLength(1);
     expect(r.created[0]).not.toContain('placeholderplaceholder');
     expect(r.created[0]).toContain('***REDACTED***');
@@ -336,19 +336,19 @@ describe('ingestNoteDirectory', () => {
 
   it('F5: a file change keeps tags a person added and the first project tag', () => {
     const dir = makeDir({ 'a.md': note('tagged', 'Alpha', 'fact', 'alpha') });
-    ingestNoteDirectory({ dir, project: 'first' });
+    ingestNoteDirectory({ trusted: false, dir, project: 'first' });
     remember({ name: 'tagged', type: 'fact', tags: ['topic:auth'] });
     fs.writeFileSync(path.join(dir, 'a.md'), note('tagged', 'Alpha v2', 'fact', 'alpha two'));
-    ingestNoteDirectory({ dir, project: 'second' });
+    ingestNoteDirectory({ trusted: false, dir, project: 'second' });
     expect(kg().getEntity('tagged')!.tags.sort()).toEqual([NOTE_FILE_TAG, 'project:first', 'topic:auth'].sort());
   });
 
   it('a note-file memory that a manual remember appended to: the next file change replaces the appended line (kept in history)', () => {
     const dir = makeDir({ 'a.md': note('mixed', 'Alpha', 'fact', 'from the file') });
-    ingestNoteDirectory({ dir });
+    ingestNoteDirectory({ trusted: false, dir });
     remember({ name: 'mixed', type: 'fact', observations: ['added by hand'] });
     fs.writeFileSync(path.join(dir, 'a.md'), note('mixed', 'Alpha v2', 'fact', 'file edited'));
-    ingestNoteDirectory({ dir });
+    ingestNoteDirectory({ trusted: false, dir });
     const e = kg().getEntity('mixed')!;
     expect(e.observations).toEqual(['file edited']);
     const history = e.metadata?.replaced_history as Array<{ observations: string[] }>;
@@ -357,13 +357,13 @@ describe('ingestNoteDirectory', () => {
 
   it('P1: a renamed file is one replace, not a replace plus a false "missing"', () => {
     const dir = makeDir({ 'A.md': note('x1', 'X', 'fact', 'x body') });
-    ingestNoteDirectory({ dir });
+    ingestNoteDirectory({ trusted: false, dir });
     fs.renameSync(path.join(dir, 'A.md'), path.join(dir, 'B.md'));
-    const moved = ingestNoteDirectory({ dir });
+    const moved = ingestNoteDirectory({ trusted: false, dir });
     // A move with the bytes intact updates the path only: no new version.
     expect(moved).toMatchObject({ replaced: [], repathed: ['x1'], markedMissing: [] });
     expect(kg().getEntity('x1')!.tags).not.toContain(NOTE_FILE_MISSING_TAG);
-    const settled = ingestNoteDirectory({ dir });
+    const settled = ingestNoteDirectory({ trusted: false, dir });
     expect(settled).toMatchObject({ replaced: [], unchanged: 1 });
     expect(kg().getEntity('x1')!.metadata?.replaced_history).toBeUndefined();
     expect((kg().getEntity('x1')!.metadata?.provenance as Record<string, unknown>).note_path).toBe('B.md');
@@ -375,8 +375,8 @@ describe('ingestNoteDirectory', () => {
       'b.md': note('same', 'B', 'fact', 'b'),
       'c.md': note('good_c', 'C', 'fact', 'c'),
     });
-    for (let i = 0; i < 4; i++) ingestNoteDirectory({ dir, maxFiles: 1 });
-    const last = ingestNoteDirectory({ dir, maxFiles: 1 });
+    for (let i = 0; i < 4; i++) ingestNoteDirectory({ trusted: false, dir, maxFiles: 1 });
+    const last = ingestNoteDirectory({ trusted: false, dir, maxFiles: 1 });
     expect(kg().getEntity('good_c')).not.toBeNull();
     expect(last.more).toBe(0);
     expect(last.skipped.map((x) => x.path)).toContain('b.md');
@@ -387,10 +387,10 @@ describe('ingestNoteDirectory', () => {
       'a.md': note('same2', 'A', 'fact', 'from a'),
       'b.md': note('same2', 'B', 'fact', 'from b'),
     });
-    ingestNoteDirectory({ dir });
-    ingestNoteDirectory({ dir });
+    ingestNoteDirectory({ trusted: false, dir });
+    ingestNoteDirectory({ trusted: false, dir });
     fs.rmSync(path.join(dir, 'a.md'));
-    const r = ingestNoteDirectory({ dir });
+    const r = ingestNoteDirectory({ trusted: false, dir });
     expect(r.replaced).toEqual(['same2']);
     expect(kg().getEntity('same2')!.observations).toEqual(['from b']);
     expect(kg().getEntity('same2')!.tags).not.toContain(NOTE_FILE_MISSING_TAG);
@@ -401,10 +401,10 @@ describe('ingestNoteDirectory', () => {
       'a.md': note('same3', 'A', 'fact', 'from a'),
       'b.md': note('same3', 'B', 'fact', 'from b'),
     });
-    ingestNoteDirectory({ dir });
-    ingestNoteDirectory({ dir });
+    ingestNoteDirectory({ trusted: false, dir });
+    ingestNoteDirectory({ trusted: false, dir });
     fs.writeFileSync(path.join(dir, 'a.md'), note('renamed_a', 'A2', 'fact', 'from a, renamed'));
-    const r = ingestNoteDirectory({ dir });
+    const r = ingestNoteDirectory({ trusted: false, dir });
     expect(r.created).toEqual(['renamed_a']);
     expect(r.replaced).toEqual(['same3']);
     expect(kg().getEntity('same3')!.observations).toEqual(['from b']);
@@ -412,13 +412,13 @@ describe('ingestNoteDirectory', () => {
 
   it('P3-a: no skip-cache row is left behind when nothing is skipped', () => {
     const dir = makeDir({ 'bad.md': 'no frontmatter\n' });
-    const r = ingestNoteDirectory({ dir });
+    const r = ingestNoteDirectory({ trusted: false, dir });
     expect(r.skipped).toHaveLength(1);
     const key = `note_ingest_skips:${r.dirId}`;
     const count = () => (getDatabase().prepare('SELECT COUNT(*) AS c FROM memesh_metadata WHERE key = ?').get(key) as { c: number }).c;
     expect(count()).toBe(1);
     fs.rmSync(path.join(dir, 'bad.md'));
-    ingestNoteDirectory({ dir });
+    ingestNoteDirectory({ trusted: false, dir });
     expect(count()).toBe(0);
   });
 
@@ -447,7 +447,7 @@ describe('ingestNoteDirectory', () => {
       };
     };
     const quiet = (dir: string) => {
-      const r = ingestNoteDirectory({ dir });
+      const r = ingestNoteDirectory({ trusted: false, dir });
       expect(r.created).toHaveLength(0);
       expect(r.replaced).toHaveLength(0);
       expect(r.repathed).toHaveLength(0);
@@ -457,9 +457,9 @@ describe('ingestNoteDirectory', () => {
 
     it('S1: an owner that renames its name hands the old name to the duplicate, then settles', () => {
       const dir = mk('s1', { 'a.md': note('same', 'A', 'fact', 'from a'), 'b.md': note('same', 'B', 'fact', 'from b') });
-      ingestNoteDirectory({ dir });
+      ingestNoteDirectory({ trusted: false, dir });
       put(dir, 'a.md', note('other', 'A2', 'fact', 'from a2'));
-      ingestNoteDirectory({ dir });
+      ingestNoteDirectory({ trusted: false, dir });
       quiet(dir);
       quiet(dir);
       expect(state('same')).toEqual({ obs: ['from b'], path: 'b.md', missing: false });
@@ -468,11 +468,11 @@ describe('ingestNoteDirectory', () => {
 
     it('S2: an owner that sorts LAST keeps its name when edited; its new content lands', () => {
       const dir = mk('s2', { 'z.md': note('same2', 'Z', 'fact', 'from z') });
-      ingestNoteDirectory({ dir });
+      ingestNoteDirectory({ trusted: false, dir });
       put(dir, 'b.md', note('same2', 'B', 'fact', 'from b'));
-      ingestNoteDirectory({ dir });
+      ingestNoteDirectory({ trusted: false, dir });
       put(dir, 'z.md', note('same2', 'Z', 'fact', 'from z EDITED'));
-      const r = ingestNoteDirectory({ dir });
+      const r = ingestNoteDirectory({ trusted: false, dir });
       expect(r.replaced).toEqual(['same2']);
       expect(r.skipped).toContainEqual({ path: 'b.md', reason: 'name "same2" already used by z.md in this directory' });
       quiet(dir);
@@ -481,10 +481,10 @@ describe('ingestNoteDirectory', () => {
 
     it('S3: an owner renamed on disk while a duplicate exists keeps the name (content hash)', () => {
       const dir = mk('s3', { 'a.md': note('same3', 'A', 'fact', 'from a'), 'b.md': note('same3', 'B', 'fact', 'from b') });
-      ingestNoteDirectory({ dir });
-      ingestNoteDirectory({ dir });
+      ingestNoteDirectory({ trusted: false, dir });
+      ingestNoteDirectory({ trusted: false, dir });
       fs.renameSync(path.join(dir, 'a.md'), path.join(dir, 'c.md'));
-      const r = ingestNoteDirectory({ dir });
+      const r = ingestNoteDirectory({ trusted: false, dir });
       expect(r).toMatchObject({ replaced: [], repathed: ['same3'], markedMissing: [] });
       quiet(dir);
       expect(state('same3')).toEqual({ obs: ['from a'], path: 'c.md', missing: false });
@@ -492,20 +492,20 @@ describe('ingestNoteDirectory', () => {
 
     it('S3b: the same with the renamed owner sorting last', () => {
       const dir = mk('s3b', { 'a.md': note('same3b', 'A', 'fact', 'from a'), 'm.md': note('same3b', 'M', 'fact', 'from m') });
-      ingestNoteDirectory({ dir });
+      ingestNoteDirectory({ trusted: false, dir });
       fs.renameSync(path.join(dir, 'a.md'), path.join(dir, 'z.md'));
-      ingestNoteDirectory({ dir });
+      ingestNoteDirectory({ trusted: false, dir });
       quiet(dir);
       expect(state('same3b')).toEqual({ obs: ['from a'], path: 'z.md', missing: false });
     });
 
     it('S4: a file that renames its name away and back does not ping-pong; the name stays with its new owner', () => {
       const dir = mk('s4', { 'a.md': note('same4', 'A', 'fact', 'from a'), 'b.md': note('same4', 'B', 'fact', 'from b') });
-      ingestNoteDirectory({ dir });
+      ingestNoteDirectory({ trusted: false, dir });
       put(dir, 'a.md', note('other4', 'A2', 'fact', 'a2'));
-      ingestNoteDirectory({ dir });
+      ingestNoteDirectory({ trusted: false, dir });
       put(dir, 'a.md', note('same4', 'A3', 'fact', 'a3'));
-      const r = ingestNoteDirectory({ dir });
+      const r = ingestNoteDirectory({ trusted: false, dir });
       expect(r.skipped).toContainEqual({ path: 'a.md', reason: 'name "same4" already used by b.md in this directory' });
       expect(r.markedMissing).toEqual(['other4']);
       quiet(dir);
@@ -516,9 +516,9 @@ describe('ingestNoteDirectory', () => {
 
     it('S5: a file that changes its own name leaves the old memory tagged missing', () => {
       const dir = mk('s5', { 'a.md': note('old5', 'Old', 'fact', 'v1') });
-      ingestNoteDirectory({ dir });
+      ingestNoteDirectory({ trusted: false, dir });
       put(dir, 'a.md', note('new5', 'New', 'fact', 'v2'));
-      const r = ingestNoteDirectory({ dir });
+      const r = ingestNoteDirectory({ trusted: false, dir });
       expect(r.created).toEqual(['new5']);
       expect(r.markedMissing).toEqual(['old5']);
       quiet(dir);
@@ -528,26 +528,26 @@ describe('ingestNoteDirectory', () => {
 
     it('an edited owner past the per-run cap is not displaced by a duplicate read first', () => {
       const dir = mk('cap', { 'z.md': note('capname', 'Z', 'fact', 'from z') });
-      ingestNoteDirectory({ dir });
+      ingestNoteDirectory({ trusted: false, dir });
       put(dir, 'a.md', note('capname', 'A', 'fact', 'from a'));
       put(dir, 'z.md', note('capname', 'Z', 'fact', 'from z edited'));
-      const r = ingestNoteDirectory({ dir, maxFiles: 1 });
+      const r = ingestNoteDirectory({ trusted: false, dir, maxFiles: 1 });
       expect(r.more).toBe(1);
       expect(r.replaced).toHaveLength(0);
       expect(r.skipped).toContainEqual({ path: 'a.md', reason: 'name "capname" belongs to z.md, which was not read this run' });
-      ingestNoteDirectory({ dir, maxFiles: 1 });
+      ingestNoteDirectory({ trusted: false, dir, maxFiles: 1 });
       expect(state('capname')).toEqual({ obs: ['from z edited'], path: 'z.md', missing: false });
     });
 
     it('N7: a duplicate that arrives a run AFTER the rename still takes the name over', () => {
       const dir = mk('n7', { 'a.md': note('S7', 'A', 'fact', 'a') });
-      ingestNoteDirectory({ dir });
+      ingestNoteDirectory({ trusted: false, dir });
       put(dir, 'a.md', note('T7', 'A2', 'fact', 'a renamed'));
-      expect(ingestNoteDirectory({ dir }).markedMissing).toEqual(['S7']);
+      expect(ingestNoteDirectory({ trusted: false, dir }).markedMissing).toEqual(['S7']);
       // The newcomer appears only now, so the file that used to own S7 is not
       // read this run — but this run knows it declares T7.
       put(dir, 'b.md', note('S7', 'B', 'fact', 'from b'));
-      const r = ingestNoteDirectory({ dir });
+      const r = ingestNoteDirectory({ trusted: false, dir });
       expect(r.replaced).toEqual(['S7']);
       expect(state('S7')).toEqual({ obs: ['from b'], path: 'b.md', missing: false });
       quiet(dir);
@@ -556,12 +556,12 @@ describe('ingestNoteDirectory', () => {
 
     it('N8: the same when the file that let the name go is an unread, fingerprinted loser', () => {
       const dir = mk('n8', { 'q.md': note('S8', 'Q', 'fact', 'from q') });
-      ingestNoteDirectory({ dir });
+      ingestNoteDirectory({ trusted: false, dir });
       // q.md moves to another name, which p.md owns — so q.md loses, is
       // fingerprinted, and S8 is left missing.
       put(dir, 'p.md', note('L8', 'P', 'fact', 'from p'));
       put(dir, 'q.md', note('L8', 'Q2', 'fact', 'from q now L8'));
-      const moved = ingestNoteDirectory({ dir });
+      const moved = ingestNoteDirectory({ trusted: false, dir });
       expect(moved.created).toEqual(['L8']);
       expect(moved.markedMissing).toEqual(['S8']);
       expect(moved.skipped).toContainEqual({ path: 'q.md', reason: 'name "L8" already used by p.md in this directory' });
@@ -569,7 +569,7 @@ describe('ingestNoteDirectory', () => {
       // A newcomer claims S8 while q.md — still the recorded file — is not
       // read at all this run: its name is known from the skip fingerprint.
       put(dir, 'b.md', note('S8', 'B', 'fact', 'from b'));
-      const r = ingestNoteDirectory({ dir });
+      const r = ingestNoteDirectory({ trusted: false, dir });
       expect(r.skipped).toContainEqual({ path: 'q.md', reason: 'name "L8" already used by p.md in this directory' });
       expect(r.replaced).toEqual(['S8']);
       expect(state('S8')).toEqual({ obs: ['from b'], path: 'b.md', missing: false });
@@ -583,7 +583,7 @@ describe('ingestNoteDirectory', () => {
       fs.utimesSync(path.join(dir, 'a.md'), same, same);
       fs.utimesSync(path.join(dir, 'b.md'), same, same);
       expect(fs.statSync(path.join(dir, 'a.md')).size).toBe(fs.statSync(path.join(dir, 'b.md')).size);
-      ingestNoteDirectory({ dir });
+      ingestNoteDirectory({ trusted: false, dir });
       expect(state('SWAPA')!.path).toBe('a.md');
 
       // Swap the two files, keeping both mtimes.
@@ -593,7 +593,7 @@ describe('ingestNoteDirectory', () => {
       fs.utimesSync(path.join(dir, 'a.md'), same, same);
       fs.utimesSync(path.join(dir, 'b.md'), same, same);
 
-      const r = ingestNoteDirectory({ dir });
+      const r = ingestNoteDirectory({ trusted: false, dir });
       expect(r.repathed.sort()).toEqual(['SWAPA', 'SWAPB']);
       expect(state('SWAPA')).toEqual({ obs: ['aaa'], path: 'b.md', missing: false });
       expect(state('SWAPB')).toEqual({ obs: ['bbb'], path: 'a.md', missing: false });
@@ -602,12 +602,12 @@ describe('ingestNoteDirectory', () => {
 
     it('N1d: a rename of the file only — repeated — does not evict the real history', () => {
       const dir = mk('mv', { 'v0.md': note('MV', 'V', 'fact', 'the one real body') });
-      ingestNoteDirectory({ dir });
+      ingestNoteDirectory({ trusted: false, dir });
       put(dir, 'v0.md', note('MV', 'V2', 'fact', 'the second real body'));
-      ingestNoteDirectory({ dir });
+      ingestNoteDirectory({ trusted: false, dir });
       for (let i = 0; i < 25; i++) {
         fs.renameSync(path.join(dir, i === 0 ? 'v0.md' : `mv${i - 1}.md`), path.join(dir, `mv${i}.md`));
-        ingestNoteDirectory({ dir });
+        ingestNoteDirectory({ trusted: false, dir });
       }
       const history = kg().getEntity('MV')!.metadata?.replaced_history as Array<{ observations: string[] }>;
       expect(history).toHaveLength(1);
@@ -617,16 +617,16 @@ describe('ingestNoteDirectory', () => {
 
     it('N10b: an unparseable recorded file frees its name a run later, exactly as it does in the same run', () => {
       const dir = mk('n10b', { 'a.md': note('U10b', 'A', 'fact', 'from a') });
-      ingestNoteDirectory({ dir });
+      ingestNoteDirectory({ trusted: false, dir });
       // The recorded file stops being a note at all.
       put(dir, 'a.md', 'no frontmatter any more\n');
-      const broke = ingestNoteDirectory({ dir });
+      const broke = ingestNoteDirectory({ trusted: false, dir });
       expect(broke.skipped).toContainEqual({ path: 'a.md', reason: 'no frontmatter — a note file needs a `---` block with a name' });
       expect(broke.markedMissing).toEqual(['U10b']);
 
       // The newcomer arrives a run later, with a.md skipped by fingerprint.
       put(dir, 'b.md', note('U10b', 'B', 'fact', 'from b'));
-      const r = ingestNoteDirectory({ dir });
+      const r = ingestNoteDirectory({ trusted: false, dir });
       expect(r.replaced).toEqual(['U10b']);
       expect(state('U10b')).toEqual({ obs: ['from b'], path: 'b.md', missing: false });
       quiet(dir);
@@ -634,34 +634,34 @@ describe('ingestNoteDirectory', () => {
 
     it('N11: a newcomer refused by the per-run cap still gets the name once it is freed', () => {
       const dir = mk('n11', { 'm.md': note('X11', 'M', 'fact', 'm v1') });
-      ingestNoteDirectory({ dir, maxFiles: 1 });
+      ingestNoteDirectory({ trusted: false, dir, maxFiles: 1 });
       put(dir, 'a.md', note('X11', 'A', 'fact', 'from a'));
       put(dir, 'm.md', note('Y11', 'M2', 'fact', 'm renamed'));
       // a.md sorts first and uses the one read; m.md is left for later.
-      const capped = ingestNoteDirectory({ dir, maxFiles: 1 });
+      const capped = ingestNoteDirectory({ trusted: false, dir, maxFiles: 1 });
       expect(capped.more).toBe(1);
       // Next run reads m.md: it declares Y11, so X11 loses its file.
-      const renamed = ingestNoteDirectory({ dir, maxFiles: 1 });
+      const renamed = ingestNoteDirectory({ trusted: false, dir, maxFiles: 1 });
       expect(renamed.created).toEqual(['Y11']);
       expect(renamed.markedMissing).toEqual(['X11']);
       // And now the newcomer must be able to claim the freed name.
-      ingestNoteDirectory({ dir, maxFiles: 1 });
-      ingestNoteDirectory({ dir, maxFiles: 1 });
+      ingestNoteDirectory({ trusted: false, dir, maxFiles: 1 });
+      ingestNoteDirectory({ trusted: false, dir, maxFiles: 1 });
       expect(state('X11')).toEqual({ obs: ['from a'], path: 'a.md', missing: false });
       expect(state('Y11')).toEqual({ obs: ['m renamed'], path: 'm.md', missing: false });
     });
 
     it('N11b: a freed name is given away even while the file that freed it is past the cap', () => {
       const dir = mk('n11b', { 'm.md': note('X11b', 'M', 'fact', 'm v1') });
-      ingestNoteDirectory({ dir });
+      ingestNoteDirectory({ trusted: false, dir });
       put(dir, 'm.md', note('Y11b', 'M2', 'fact', 'm renamed'));
-      expect(ingestNoteDirectory({ dir }).markedMissing).toEqual(['X11b']);
+      expect(ingestNoteDirectory({ trusted: false, dir }).markedMissing).toEqual(['X11b']);
       // m.md changes again, so it is no longer "unchanged", and the newcomer
       // sorts first and takes the single read: this run cannot see what m.md
       // declares — but X11b is already nobody's, so the newcomer gets it.
       put(dir, 'm.md', note('Y11b', 'M3', 'fact', 'm edited again'));
       put(dir, 'a.md', note('X11b', 'A', 'fact', 'from a'));
-      const r = ingestNoteDirectory({ dir, maxFiles: 1 });
+      const r = ingestNoteDirectory({ trusted: false, dir, maxFiles: 1 });
       expect(r.more).toBe(1);
       expect(r.replaced).toEqual(['X11b']);
       expect(state('X11b')).toEqual({ obs: ['from a'], path: 'a.md', missing: false });
@@ -669,17 +669,17 @@ describe('ingestNoteDirectory', () => {
 
     it('S6: the skip row follows the losers — gone when the dup takes over, back and gone again with the returning file', () => {
       const dir = mk('s6', { 'a.md': note('same6', 'A', 'fact', 'a'), 'b.md': note('same6', 'B', 'fact', 'b') });
-      const key = `note_ingest_skips:${ingestNoteDirectory({ dir }).dirId}`;
+      const key = `note_ingest_skips:${ingestNoteDirectory({ trusted: false, dir }).dirId}`;
       const row = () => getDatabase().prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(key) as { value: string } | undefined;
       expect(Object.keys(JSON.parse(row()!.value))).toEqual(['b.md']);
       fs.rmSync(path.join(dir, 'a.md'));
-      expect(ingestNoteDirectory({ dir }).replaced).toEqual(['same6']);
+      expect(ingestNoteDirectory({ trusted: false, dir }).replaced).toEqual(['same6']);
       expect(row()).toBeUndefined();
       put(dir, 'a.md', note('same6', 'A', 'fact', 'a back'));
-      ingestNoteDirectory({ dir });
+      ingestNoteDirectory({ trusted: false, dir });
       expect(Object.keys(JSON.parse(row()!.value))).toEqual(['a.md']);
       fs.rmSync(path.join(dir, 'a.md'));
-      ingestNoteDirectory({ dir });
+      ingestNoteDirectory({ trusted: false, dir });
       expect(row()).toBeUndefined();
       expect(state('same6')).toEqual({ obs: ['b'], path: 'b.md', missing: false });
     });
@@ -689,11 +689,11 @@ describe('ingestNoteDirectory', () => {
 describe('note-ingest: the entity type follows the file — #324 C5', () => {
   it('a changed metadata.type updates the stored type, not only the title', () => {
     const dir = makeDir({ 'a.md': note('note_a', 'Alpha', 'feedback', 'Alpha body.') });
-    ingestNoteDirectory({ dir });
+    ingestNoteDirectory({ trusted: false, dir });
     expect(kg().getEntity('note_a')!.type).toBe('feedback');
 
     fs.writeFileSync(path.join(dir, 'a.md'), note('note_a', 'Alpha revised', 'decision', 'Alpha body revised.'));
-    const r = ingestNoteDirectory({ dir });
+    const r = ingestNoteDirectory({ trusted: false, dir });
     expect(r.replaced).toEqual(['note_a']);
     const e = kg().getEntity('note_a')!;
     // The receipt already said `replaced`, and the title already followed the
@@ -711,9 +711,9 @@ describe('note-ingest: the entity type follows the file — #324 C5', () => {
     // change between ingests" indistinguishable from that unrelated
     // canonicalization. Any non-lesson type proves the same point.
     const dir = makeDir({ 'b.md': note('note_b', 'Beta', 'pattern', 'Beta body.') });
-    ingestNoteDirectory({ dir });
+    ingestNoteDirectory({ trusted: false, dir });
     fs.writeFileSync(path.join(dir, 'b.md'), note('note_b', 'Beta', 'pattern', 'Beta body changed.'));
-    ingestNoteDirectory({ dir });
+    ingestNoteDirectory({ trusted: false, dir });
     expect(kg().getEntity('note_b')!.type).toBe('pattern');
   });
 });
@@ -725,7 +725,7 @@ describe('note-ingest: a refusal leaves a durable trace — #324 C3', () => {
       'nofm.md': '# no frontmatter here',
       'noname.md': '---\ndescription: "nameless"\n---\n\nbody\n',
     });
-    const first = ingestNoteDirectory({ dir });
+    const first = ingestNoteDirectory({ trusted: false, dir });
     expect(first.created).toEqual(['note_good']);
     expect(first.skipped).toHaveLength(2);
     // `skipped.length` sticks forever once a file is bad, so the hook cannot
@@ -735,13 +735,13 @@ describe('note-ingest: a refusal leaves a durable trace — #324 C3', () => {
     expect(first.refusedNow, 'two files were refused and nothing counted them').toBe(2);
     expect(summarizeNoteIngest(first)).toContain('2 newly refused');
 
-    const second = ingestNoteDirectory({ dir });
+    const second = ingestNoteDirectory({ trusted: false, dir });
     expect(second.skipped).toHaveLength(2);
     expect(second.refusedNow, 'the same two bad files are not news a second time').toBe(0);
     expect(summarizeNoteIngest(second)).not.toContain('newly refused');
 
     fs.writeFileSync(path.join(dir, 'third.md'), '# also no frontmatter');
-    const third = ingestNoteDirectory({ dir });
+    const third = ingestNoteDirectory({ trusted: false, dir });
     expect(third.skipped).toHaveLength(3);
     expect(third.refusedNow).toBe(1);
   });
@@ -749,21 +749,21 @@ describe('note-ingest: a refusal leaves a durable trace — #324 C3', () => {
   it('a refused symlink is news once, not on every run', () => {
     const dir = makeDir({ 'good.md': note('note_g', 'G', 'decision', 'G body.') });
     fs.symlinkSync(path.join(dir, 'good.md'), path.join(dir, 'link.md'));
-    const first = ingestNoteDirectory({ dir });
+    const first = ingestNoteDirectory({ trusted: false, dir });
     expect(first.skipped.map((s) => s.reason)).toEqual(['symlink refused']);
     expect(first.refusedNow).toBe(1);
     // Symlinks are collected before the read loop and were never
     // fingerprinted, so counting them naively says "1 newly refused" on
     // every Stop forever — the same stickiness, relocated.
-    const second = ingestNoteDirectory({ dir });
+    const second = ingestNoteDirectory({ trusted: false, dir });
     expect(second.skipped).toHaveLength(1);
     expect(second.refusedNow, 'the symlink was re-reported as new').toBe(0);
   });
 
   it('a run that stored nothing and refused nothing reports zero of both', () => {
     const dir = makeDir({ 'good.md': note('note_q', 'Q', 'decision', 'Q body.') });
-    ingestNoteDirectory({ dir });
-    const again = ingestNoteDirectory({ dir });
+    ingestNoteDirectory({ trusted: false, dir });
+    const again = ingestNoteDirectory({ trusted: false, dir });
     expect(again.refusedNow).toBe(0);
     expect(again.created).toEqual([]);
     expect(again.replaced).toEqual([]);
@@ -774,7 +774,7 @@ describe('note-ingest: a file over the observation cap is refused, not silently 
   it('names the count instead of storing the first 100 and dropping the rest', () => {
     const body = Array.from({ length: 130 }, (_, i) => `Paragraph ${i + 1}.`).join('\n\n');
     const dir = makeDir({ 'big.md': note('note_big', 'Big', 'decision', body) });
-    const r = ingestNoteDirectory({ dir });
+    const r = ingestNoteDirectory({ trusted: false, dir });
     // This is a Stop-hook path: a silent drop is indistinguishable from
     // nothing happening. The transport rejects the same shape and names the
     // count; storing 100 with {"skipped":[],"more":0} told nobody that 30
@@ -791,7 +791,7 @@ describe('note-ingest: a file over the observation cap is refused, not silently 
   it('exactly at the cap is still stored', () => {
     const body = Array.from({ length: 100 }, (_, i) => `Paragraph ${i + 1}.`).join('\n\n');
     const dir = makeDir({ 'edge.md': note('note_edge', 'Edge', 'decision', body) });
-    const r = ingestNoteDirectory({ dir });
+    const r = ingestNoteDirectory({ trusted: false, dir });
     expect(r.created).toEqual(['note_edge']);
     expect(kg().getEntity('note_edge')!.observations).toHaveLength(100);
   });
@@ -799,8 +799,8 @@ describe('note-ingest: a file over the observation cap is refused, not silently 
   it('the refusal is fingerprinted, so the file is not re-read on every run', () => {
     const body = Array.from({ length: 130 }, (_, i) => `Paragraph ${i + 1}.`).join('\n\n');
     const dir = makeDir({ 'big.md': note('note_big2', 'Big', 'decision', body) });
-    ingestNoteDirectory({ dir });
-    const second = ingestNoteDirectory({ dir });
+    ingestNoteDirectory({ trusted: false, dir });
+    const second = ingestNoteDirectory({ trusted: false, dir });
     expect(second.skipped).toHaveLength(1);
     expect(second.refusedNow).toBe(0);
   });
@@ -819,14 +819,14 @@ const canDenyReads = process.platform !== 'win32' && (process.getuid?.() ?? 0) !
 describe.skipIf(!canDenyReads)('note-ingest: an unreadable file marks its memory missing — #324 C9', () => {
   it('tags source:note-file:missing instead of leaving a memory pointed at a file it cannot read', () => {
     const dir = makeDir({ 'a.md': note('note_a', 'Alpha', 'decision', 'Alpha body.') });
-    expect(ingestNoteDirectory({ dir }).created).toEqual(['note_a']);
+    expect(ingestNoteDirectory({ trusted: false, dir }).created).toEqual(['note_a']);
 
     // The bytes change so the stat fingerprint does not fast-path it, then
     // the file becomes unreadable.
     fs.writeFileSync(path.join(dir, 'a.md'), note('note_a', 'Alpha', 'decision', 'Alpha body two.'));
     fs.chmodSync(path.join(dir, 'a.md'), 0o000);
     try {
-      const r = ingestNoteDirectory({ dir });
+      const r = ingestNoteDirectory({ trusted: false, dir });
       expect(r.skipped.map((x) => x.reason).join(' ')).toContain('unreadable');
       // The skip recorded no declared name, so the missing sweep saw the path
       // in presentRels and moved on: the one user-visible signal this module
@@ -841,12 +841,12 @@ describe.skipIf(!canDenyReads)('note-ingest: an unreadable file marks its memory
 
   it('the file coming back clears the missing tag', () => {
     const dir = makeDir({ 'b.md': note('note_b', 'Beta', 'decision', 'Beta body.') });
-    ingestNoteDirectory({ dir });
+    ingestNoteDirectory({ trusted: false, dir });
     fs.writeFileSync(path.join(dir, 'b.md'), note('note_b', 'Beta', 'decision', 'Beta body two.'));
     fs.chmodSync(path.join(dir, 'b.md'), 0o000);
-    ingestNoteDirectory({ dir });
+    ingestNoteDirectory({ trusted: false, dir });
     fs.chmodSync(path.join(dir, 'b.md'), 0o644);
-    const back = ingestNoteDirectory({ dir });
+    const back = ingestNoteDirectory({ trusted: false, dir });
     expect(back.replaced).toEqual(['note_b']);
     expect(kg().getEntity('note_b')!.tags ?? []).not.toContain(NOTE_FILE_MISSING_TAG);
   });
@@ -861,7 +861,7 @@ describe.skipIf(!canDenyReads)('note-ingest: an unreadable file marks its memory
       // One slot, and `bad.md` sorts first. It sits after `read++`, so it
       // consumed the whole run's budget and `good.md` was never reached —
       // every run, forever, because the skip left no fingerprint either.
-      const r = ingestNoteDirectory({ dir, maxFiles: 1 });
+      const r = ingestNoteDirectory({ trusted: false, dir, maxFiles: 1 });
       expect(r.created, 'the unreadable file ate the only cap slot').toEqual(['note_good']);
       expect(r.more).toBe(0);
     } finally {
@@ -873,35 +873,35 @@ describe.skipIf(!canDenyReads)('note-ingest: an unreadable file marks its memory
 describe('note-ingest: a name-level refusal is news once too — #324 C3', () => {
   it('a file whose memory was forgotten is not reported as newly refused every run', () => {
     const dir = makeDir({ 'a.md': note('note_arch', 'Alpha', 'decision', 'Alpha body.') });
-    expect(ingestNoteDirectory({ dir }).created).toEqual(['note_arch']);
+    expect(ingestNoteDirectory({ trusted: false, dir }).created).toEqual(['note_arch']);
     forget({ name: 'note_arch' });
 
-    const first = ingestNoteDirectory({ dir });
+    const first = ingestNoteDirectory({ trusted: false, dir });
     expect(first.skipped.map((x) => x.reason).join(' ')).toContain('archived with forget');
     expect(first.refusedNow).toBe(1);
 
     // The three name-level refusals go through skipAll, which reports but
     // records no fingerprint — so without one they are new on every single
     // Stop, which is the stickiness refusedNow exists to remove.
-    const second = ingestNoteDirectory({ dir });
+    const second = ingestNoteDirectory({ trusted: false, dir });
     expect(second.skipped).toHaveLength(1);
     expect(second.refusedNow, 'the same refusal was announced again').toBe(0);
-    const third = ingestNoteDirectory({ dir });
+    const third = ingestNoteDirectory({ trusted: false, dir });
     expect(third.refusedNow).toBe(0);
   });
 
   it('the file is still re-read each run, so the refusal lifts when its cause does', () => {
     const dir = makeDir({ 'b.md': note('note_rev', 'Beta', 'decision', 'Beta body.') });
-    ingestNoteDirectory({ dir });
+    ingestNoteDirectory({ trusted: false, dir });
     forget({ name: 'note_rev' });
-    ingestNoteDirectory({ dir });
-    ingestNoteDirectory({ dir });
+    ingestNoteDirectory({ trusted: false, dir });
+    ingestNoteDirectory({ trusted: false, dir });
 
     // Un-archived without the file changing. A fingerprint that drove the
     // phase-1 early skip would leave this file refused forever, which is the
     // trap the unreadable path (C9) documents.
     remember({ name: 'note_rev', type: 'decision', observations: ['Beta body.'] });
-    const back = ingestNoteDirectory({ dir });
+    const back = ingestNoteDirectory({ trusted: false, dir });
     expect(back.skipped, 'the file was never re-read after its memory came back').toHaveLength(0);
   });
 });

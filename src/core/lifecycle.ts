@@ -1,6 +1,7 @@
 import type { MemeshDatabase } from '../storage/sqlite.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { dropEntityFromIndexes } from '../storage/entity-index.js';
+import { AUTO_CAPTURE_TAG } from './types.js';
 
 const DECAY_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const STALE_THRESHOLD_DAYS = 30;
@@ -246,6 +247,134 @@ export function compressWeeklyNoise(db: MemeshDatabase): { compressed: number; w
   ).run(new Date().toISOString());
 
   return { compressed: totalCompressed, weeksProcessed };
+}
+
+// ---------------------------------------------------------------------------
+// Unused auto-captured memories
+// ---------------------------------------------------------------------------
+
+/** The mechanical records the hooks write on their own. Everything else was written by an agent or a person. */
+export const AUTO_ARCHIVE_TYPES = ['commit', 'session-insight', 'session-summary'] as const;
+/** Days without a citation, a recall or a new observation after which one of them is archived. */
+export const AUTO_ARCHIVE_UNUSED_DAYS = 14;
+const AUTO_ARCHIVE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+/** Ids kept in the run record; the count is always exact. */
+const AUTO_ARCHIVE_RECORDED_IDS = 100;
+export const AUTO_ARCHIVE_AT_KEY = 'last_auto_archive_at';
+export const AUTO_ARCHIVE_RUN_KEY = 'last_auto_archive_run';
+
+/** What one run of the archiver did; `memesh doctor` shows the last one. */
+export interface AutoArchiveRun {
+  at: string;
+  unusedDays: number;
+  archived: number;
+  byType: Record<string, number>;
+  /** Old enough, but kept because a session cited or fetched them. */
+  keptCited: number;
+  /** The first ids archived, for recovery. */
+  ids: number[];
+}
+
+/**
+ * Archive auto-captured commits and session rollups that nobody has used for
+ * AUTO_ARCHIVE_UNUSED_DAYS.
+ *
+ * "Auto-captured" is the `source:auto-capture` tag the capture hooks stamp,
+ * not the type: a commit an agent wrote with `remember` carries no such tag and
+ * is never touched, and neither is any decision, lesson or other type. "Used"
+ * is any of: ever cited or fetched (`recall_hits`), recalled in the window
+ * (`last_accessed_at`), or added to in the window. A cited memory is kept
+ * however old it is.
+ *
+ * Archiving is the same state change `forget` makes: the row, its text and its
+ * tags stay, only the keyword index forgets it. It is recoverable — read it
+ * with `recall --include-archived`, bring it back by `remember`ing the same
+ * name — and the row carries `metadata.auto_archive` so these can be told from
+ * ones a person archived.
+ *
+ * Throttled to once a day; returns null when it did not run. Every run that
+ * did is recorded in `memesh_metadata` (AUTO_ARCHIVE_RUN_KEY), including one
+ * that archived nothing.
+ */
+export function archiveUnusedAutoCaptured(db: MemeshDatabase, now: Date = new Date()): AutoArchiveRun | null {
+  const last = db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(AUTO_ARCHIVE_AT_KEY) as { value: string } | undefined;
+  if (last && now.getTime() - new Date(last.value).getTime() < AUTO_ARCHIVE_INTERVAL_MS) return null;
+
+  const cols = new Set((db.prepare('PRAGMA table_info(entities)').all() as Array<{ name: string }>).map((c) => c.name));
+  // A database from before these columns has nothing the rule can judge. That
+  // is still a run, and it is recorded as one that archived nothing.
+  const judgeable = cols.has('status') && cols.has('recall_hits') && cols.has('last_accessed_at');
+  const cutoff = new Date(now.getTime() - AUTO_ARCHIVE_UNUSED_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const types = [...AUTO_ARCHIVE_TYPES];
+  const typeList = types.map(() => '?').join(',');
+  const old = `e.status = 'active' AND e.type IN (${typeList})
+    AND EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?)
+    AND julianday(e.created_at) < julianday(?)
+    AND (e.last_accessed_at IS NULL OR julianday(e.last_accessed_at) < julianday(?))
+    AND COALESCE((SELECT MAX(julianday(o.created_at)) FROM observations o WHERE o.entity_id = e.id), 0) < julianday(?)`;
+  const params = [...types, AUTO_CAPTURE_TAG, cutoff, cutoff, cutoff];
+
+  const run = db.transaction((): AutoArchiveRun => {
+    const result: AutoArchiveRun = {
+      at: now.toISOString(), unusedDays: AUTO_ARCHIVE_UNUSED_DAYS, archived: 0, byType: {}, keptCited: 0, ids: [],
+    };
+    if (judgeable) {
+      result.keptCited = (db.prepare(`SELECT COUNT(*) AS c FROM entities e WHERE ${old} AND COALESCE(e.recall_hits, 0) > 0`).get(...params) as { c: number }).c;
+      const rows = db.prepare(
+        `SELECT e.id, e.name, e.type FROM entities e WHERE ${old} AND COALESCE(e.recall_hits, 0) = 0 ORDER BY e.id`,
+      ).all(...params) as Array<{ id: number; name: string; type: string }>;
+      const mark = JSON.stringify({ at: result.at, rule: 'unused', days: AUTO_ARCHIVE_UNUSED_DAYS });
+      const archiveOne = db.prepare(
+        `UPDATE entities SET status = 'archived',
+           metadata = CASE WHEN metadata IS NULL THEN json_object('auto_archive', json(?))
+                           WHEN json_valid(metadata) THEN json_set(metadata, '$.auto_archive', json(?))
+                           ELSE metadata END
+         WHERE id = ?`,
+      );
+      for (const row of rows) {
+        // Out of the keyword index first (a contentless delete repeats the
+        // indexed text), then out of circulation.
+        dropEntityFromIndexes(db, row.id, row.name);
+        archiveOne.run(mark, mark, row.id);
+        result.archived++;
+        result.byType[row.type] = (result.byType[row.type] ?? 0) + 1;
+        if (result.ids.length < AUTO_ARCHIVE_RECORDED_IDS) result.ids.push(row.id);
+      }
+    }
+    const put = db.prepare('INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)');
+    put.run(AUTO_ARCHIVE_RUN_KEY, JSON.stringify(result));
+    put.run(AUTO_ARCHIVE_AT_KEY, result.at);
+    return result;
+  });
+  return run.immediate();
+}
+
+/** The archiver's run record exists but cannot be read (truncated or not the shape it writes). */
+export class AutoArchiveRecordUnreadable extends Error {
+  constructor(detail: string) {
+    super(`the automatic archive's run record is unreadable: ${detail}`);
+    this.name = 'AutoArchiveRecordUnreadable';
+  }
+}
+
+/**
+ * The last run of the archiver, or null when it has never run. A record that
+ * is there but cannot be read throws `AutoArchiveRecordUnreadable`: "never
+ * ran" and "ran, and the record is damaged" are different answers.
+ */
+export function readLastAutoArchiveRun(db: { prepare(sql: string): { get(): unknown } }): AutoArchiveRun | null {
+  const row = db.prepare(`SELECT value FROM memesh_metadata WHERE key = '${AUTO_ARCHIVE_RUN_KEY}'`).get() as { value: string } | undefined;
+  if (!row) return null;
+  let parsed: AutoArchiveRun;
+  try {
+    parsed = JSON.parse(row.value) as AutoArchiveRun;
+  } catch (err) {
+    throw new AutoArchiveRecordUnreadable(err instanceof Error ? err.message : String(err));
+  }
+  if (typeof parsed?.at !== 'string' || !Number.isInteger(parsed.archived)) {
+    throw new AutoArchiveRecordUnreadable('missing "at" or "archived"');
+  }
+  return parsed;
 }
 
 // Export preserved/noise type sets for testing

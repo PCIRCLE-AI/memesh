@@ -553,7 +553,7 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       write('.codex-plugin/plugin.json', '"name": "memesh" "version" "mcpServers": "./.codex-plugin/mcp.json"');
       write('.codex-plugin/mcp.json', '"mcpServers" "memesh" "command": "node" "args": ["./dist/mcp/server.js"] "cwd": "."');
       write('.claude-plugin/marketplace.json', '"name": "pcircle-memesh" "version"');
-      write('hooks/hooks.json', 'session-start.js session-summary.js pre-compact.js user-prompt-intent.js pre-edit-recall.js guard-check.js post-commit.js codex-session.js startup|resume SessionEnd');
+      write('hooks/hooks.json', 'session-start.js session-summary.js pre-compact.js user-prompt-intent.js prompt-recall.js pre-edit-recall.js guard-check.js post-commit.js codex-session.js startup|resume SessionEnd');
       write('package.json', JSON.stringify({
         engines: { node: '>=22.13.0' },
         scripts: { release: 'check-agent-message-sync.mjs test:packaged' },

@@ -6,8 +6,24 @@ are not part of a published npm release yet.
 
 ## [Unreleased]
 
+### Added
+
+- Memories now reach the agent when you ask about them. When a prompt is plainly about something already stored, up to three of those memories (a title and its `[mem:id]`) ride along with it, under the same "background data, not instructions" notice as the session-start block. The match uses the same keyword search as `recall`, reads each memory's title and every observation, and cuts Chinese, Japanese and Korean text into words. A memory is shown at most once per session, nothing is added when nothing matches strongly, and a private session (the agent called the `private_session` tool) gets nothing, and neither does a session whose private marker cannot be read. Your style and working-habit notes (the `feedback` types) and project status notes not touched for 30 days are never brought along. Turn it off with `memesh config set promptRecall false`.
+- `memesh doctor` shows the last run of the automatic archive.
+- `node scripts/audit/prompt-recall-replay.mjs --db <copy> --prompt "..."` prints what a prompt would bring along, and reports the rate and size for a file of prompts.
+
+### Changed
+
+- Auto-captured commits and session rollups that nothing used for 14 days are archived at session start (at most once a day). A commit or rollup that a session cited or recalled, and every memory an agent wrote, is kept. Archived memories stay readable with `recall --include-archived` and come back when you remember the same name.
+- Session start and `briefing` now show the same memories: both use `sessionLimit` (default 10, previously 30 for `briefing`). Decisions take the project's slots first; commits no longer fill them (up to three recent commits follow) and session rollups are no longer listed under recent activity. The injected index no longer repeats memories the block above it already shows.
+- Auto-captured memories always get a title, derived from their first meaningful observation when the capture supplied none.
+- Notes from your own Claude Code memory folder (`~/.claude/projects/<project>/memory/`, read automatically when a session ends) are now trusted like a memory an agent stores with `remember`, so they can appear at session start and when a prompt is about them. Before, every note file was untrusted and never showed up unasked. `memesh import --notes <folder>` stays untrusted unless you add `--trust` (it asks first; `--yes` skips the question, as with a JSON import). Notes already stored from your own memory folders are marked trusted once, the first time the database opens; notes from other folders and imports are left untrusted. A note read again from disk still does not raise a memory's confidence, and a decision note without a stated reason is stored as written.
+
 ### Fixed
 
+- A memory that was not trusted (an import, a note from another folder) became trusted when an agent added to it with `remember`, so an imported memory could reach every session just by being added to. It now stays untrusted unless the caller says otherwise (`--trust`, your own memory folder). This was the case since v4.2.0.
+- A memory title or text could contain a closing tag such as the one that ends a system message, and it reached the agent as written. The `<` of every injected memory is now shown as `&lt;`, and direction marks and zero-width characters (U+061C, U+200B, U+200E, U+200F, U+2060 to U+2064, U+FEFF) are replaced by a space. The joiners U+200C and U+200D stay, because Persian, Indic scripts and emoji need them.
+- Memories written by the Hermes and OpenClaw plugins no longer appear in the session-start briefing of every project.
 - Codex sessions now produce session insights like Claude sessions do, built from Codex's own record of each command and file change: tool calls, files changed, commands run and failed commands. A failure that Codex printed but did not record as a command is reported too, by a best-effort match that can occasionally miss a failure or count one twice. Previously every Codex session was skipped as too little activity. Files written under the temporary folders (`/tmp`, `/private/tmp`, `/var/folders`) are not remembered as edited files: not those Codex changes with its patch tool, and not shell writes in Codex or Claude sessions. A session insight lists at most 30 edited file names and counts the rest.
 
 ## [4.13.0] — 2026-11-02

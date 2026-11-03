@@ -96,8 +96,10 @@ Unreleased source builds add `/memesh-memories` in Claude Code to view and edit 
 
 ---
 
-Plugins ship **10 hooks**. The intent reminder recognizes "remember this"
-(5 languages). Memory editing lives in Claude Code/Claude Desktop Code
+Plugins ship **11 hooks**. The intent reminder recognizes "remember this"
+(5 languages). When a prompt is plainly about something already stored, up to three
+of those memories (title and `[mem:id]`) ride along with it; turn that off with
+`memesh config set promptRecall false`. Memory editing lives in Claude Code/Claude Desktop Code
 through the MeMesh Mod, and in Codex through MCP/native forms. There is no
 standalone Web Dashboard.
 

@@ -88,6 +88,9 @@ function indexHeading(projectName) {
 function indexEmptyLine(projectName) {
     return `- No durable memories (decisions, lessons, patterns, references) for ${jsonStringLiteral(projectLabel(projectName))} yet.`;
 }
+function indexAllShownLine(projectName) {
+    return `- Every durable memory for ${jsonStringLiteral(projectLabel(projectName))} is already listed above.`;
+}
 function moreLine(n, truncated) {
     return `- ${n}${truncated ? '+' : ''} more — memesh recall --tag "project:…"`;
 }
@@ -114,9 +117,9 @@ export function buildBriefingIndex(candidates, projectName, now, options = {}) {
     const truncated = options.truncated === true;
     const charAllowance = typeof options.maxChars === 'number' ? options.maxChars : Infinity;
     const cutoff = now - INDEX_STALE_DAYS * DAY_MS;
-    const eligible = candidates
-        .filter((c) => isIndexableType(c.type) && candidateIsAutoInjectable(c.metadata))
-        .slice()
+    const listable = candidates.filter((c) => isIndexableType(c.type) && candidateIsAutoInjectable(c.metadata));
+    const eligible = listable
+        .filter((c) => !options.exclude?.has(c.id))
         .sort(compareIndexCandidates);
     const current = [];
     let older = 0;
@@ -129,7 +132,7 @@ export function buildBriefingIndex(candidates, projectName, now, options = {}) {
     }
     const heading = indexHeading(projectName);
     if (current.length === 0 && older === 0) {
-        const closed = closeWithFooter([heading, indexEmptyLine(projectName)], 0);
+        const closed = closeWithFooter([heading, listable.length > 0 ? indexAllShownLine(projectName) : indexEmptyLine(projectName)], 0);
         return { ...closed, shown: 0, more: 0, older: 0, truncated, ids: [] };
     }
     const reserve = sectionBytes([

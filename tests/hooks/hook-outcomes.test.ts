@@ -221,7 +221,7 @@ describe('hook outcome records', () => {
 
   it.each([
     'post-commit', 'pre-compact', 'guard-check', 'pre-edit-recall',
-    'decision-nudge', 'session-summary', 'user-prompt-intent',
+    'decision-nudge', 'session-summary', 'user-prompt-intent', 'prompt-recall',
   ])('%s persists an error LABEL, never the exception message (#327 S2)', (hook) => {
     // V8's JSON errors quote the text they choked on, so a message-as-reason
     // copies the payload — here a planted marker — into a permanent,

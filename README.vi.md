@@ -96,7 +96,7 @@ Các bản dựng từ mã nguồn chưa phát hành bổ sung `/memesh-memories
 
 ---
 
-Các plugin có **10 hook**. Tính năng nhắc khi người dùng muốn ghi nhớ điều gì đó hỗ trợ 5 ngôn ngữ. Bạn có thể sửa bộ nhớ qua MeMesh Mod trên Claude Code/Claude Desktop Code và trong MCP/biểu mẫu tích hợp sẵn trên Codex. Không có Web Dashboard độc lập.
+Các plugin có **11 hook**. Tính năng nhắc khi người dùng muốn ghi nhớ điều gì đó hỗ trợ 5 ngôn ngữ. Bạn có thể sửa bộ nhớ qua MeMesh Mod trên Claude Code/Claude Desktop Code và trong MCP/biểu mẫu tích hợp sẵn trên Codex. Không có Web Dashboard độc lập.
 
 **Xếp hạng theo điểm** — mức liên quan (30%) + độ mới (25%) + tần suất (18%) + độ tin cậy (17%) + tác động của việc truy xuất (10%). Xem [kiến trúc](docs/ARCHITECTURE.md).
 

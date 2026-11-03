@@ -186,7 +186,7 @@ export async function runNoteIngestion({ memoryDir, project, metaUrl }) {
   openDatabase(undefined, { busyTimeoutMs: HOOK_BUSY_TIMEOUT_MS });
   let result;
   try {
-    result = ingestNoteDirectory({ dir: memoryDir, project, maxFiles: INGEST_MAX_FILES });
+    result = ingestNoteDirectory({ dir: memoryDir, project, maxFiles: INGEST_MAX_FILES, trusted: true });
   } finally {
     closeDatabase();
   }

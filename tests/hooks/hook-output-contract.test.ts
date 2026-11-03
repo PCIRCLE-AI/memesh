@@ -198,6 +198,16 @@ const HOOK_CASES: HookCase[] = [
     },
   },
   {
+    file: 'prompt-recall.js',
+    boundEvent: 'UserPromptSubmit',
+    input: {
+      session_id: 'contract-7b',
+      cwd: '/tmp/contract-project',
+      hook_event_name: 'UserPromptSubmit',
+      prompt: 'remember that we use PKCE for OAuth',
+    },
+  },
+  {
     file: 'decision-nudge.js',
     boundEvent: 'PostToolUse',
     input: {

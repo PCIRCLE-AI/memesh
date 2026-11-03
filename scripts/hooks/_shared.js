@@ -1784,6 +1784,22 @@ function pathMentionMatches(text, matchStart, matchEnd, editedPath) {
 // generated copy — the same code core's remember validation and the db
 // backfill run, so the three writers cannot drift on the contract.
 export { truncateTitle } from './_generated/title.js';
+import { truncateTitle as truncateTitleLocal, isBoilerplateObservation } from './_generated/title.js';
+
+/**
+ * A title for a capture that supplied none: the first line of the first
+ * observation that says something (mechanical capture metadata is skipped),
+ * else the entity's name. Every auto-captured memory has one, so no line of an
+ * injected block or an index ever falls back to a machine key.
+ */
+export function deriveCaptureTitle(name, observations) {
+  for (const obs of observations) {
+    if (typeof obs !== 'string') continue;
+    const line = obs.split('\n').map((l) => l.trim()).find((l) => l !== '');
+    if (line && !isBoilerplateObservation(line)) return truncateTitleLocal(line);
+  }
+  return truncateTitleLocal(String(name));
+}
 
 /**
  * `localHandoff` (the Stop hook's session handoff only): the replacement just
@@ -1894,8 +1910,15 @@ function captureEntityInner(db, { name, type, observations: rawObservations, tag
   // Title and observations are one set: a key split between them is masked as a whole.
   const head = typeof rawTitle === 'string' ? [rawTitle] : [];
   const texts = redactSecretList([...head, ...rawObservations.filter((o) => typeof o === 'string')]);
-  const title = head.length > 0 ? texts.shift() : rawTitle;
+  const requestedTitle = head.length > 0 ? texts.shift() : rawTitle;
   const observations = rawObservations.map((o) => (typeof o === 'string' ? texts.shift() : o));
+  // Auto-capture always supplies a title. A caller that passed none (or a
+  // blank one) gets one derived from the already-redacted text, so a new
+  // memory is born with it and an existing one that has none is given it. A
+  // title the caller did pass is never replaced by a derived one.
+  const noTitle = typeof requestedTitle !== 'string' || requestedTitle.trim() === '';
+  const derivedTitle = noTitle ? deriveCaptureTitle(name, observations) : null;
+  const title = noTitle ? undefined : requestedTitle;
   // source_host provenance: the host this hook run is under, as the caller
   // detected it. Claude Code and Codex both run these hooks, so it cannot be
   // assumed. Stamped only on the INSERT — an OR IGNORE re-capture of an
@@ -1915,9 +1938,9 @@ function captureEntityInner(db, { name, type, observations: rawObservations, tag
     ...redactTextValues(metadata),
     provenance: sourceHost ? { source_host: sourceHost } : {},
   };
-  if (title != null) insertMetadata.title_source = 'heuristic';
+  insertMetadata.title_source = 'heuristic';
   // No namespace: a hook-written entity takes the column default.
-  const row = insertOrGetEntity(db, { name, type, metadataJson: JSON.stringify(insertMetadata), title: title ?? null });
+  const row = insertOrGetEntity(db, { name, type, metadataJson: JSON.stringify(insertMetadata), title: title ?? derivedTitle });
   if (!row) return null;
   const isNew = row.isNew;
   const id = row.id;
@@ -1946,8 +1969,12 @@ function captureEntityInner(db, { name, type, observations: rawObservations, tag
   // anything. Captured BEFORE the write so the FTS delete below matches
   // what was indexed.
   const previousTitle = row.title;
-  if (!isNew && title !== undefined && title !== previousTitle) {
-    db.prepare('UPDATE entities SET title = ? WHERE id = ?').run(title, id);
+  // An existing memory that has no title yet is given the derived one; one that
+  // has a title keeps it when the caller passed none.
+  // A restated entity (`replace`) gets a title that matches its new text, not the old derived one.
+  const titleToWrite = title !== undefined ? title : (replace || previousTitle == null || previousTitle === '' ? derivedTitle ?? undefined : undefined);
+  if (!isNew && titleToWrite !== undefined && titleToWrite !== previousTitle) {
+    db.prepare('UPDATE entities SET title = ? WHERE id = ?').run(titleToWrite, id);
     // Keep the heuristic mark in step with the write. Heal corrupted metadata
     // (replace with {}) instead of leaving it — a corrupted metadata row would
     // otherwise never get title_source stamped and remain permanently broken.
@@ -1971,7 +1998,7 @@ function captureEntityInner(db, { name, type, observations: rawObservations, tag
     }
     // Stamp title_source on every title write (not just initial). This keeps
     // the source field synchronized with the current title, per Fix C3.
-    if (title != null) {
+    if (titleToWrite != null) {
       const updatedMeta = { ...(meta ?? {}), title_source: 'heuristic' };
       db.prepare('UPDATE entities SET metadata = ? WHERE id = ?')
         .run(JSON.stringify(updatedMeta), id);
@@ -2073,8 +2100,8 @@ function captureEntityInner(db, { name, type, observations: rawObservations, tag
   const allObsText = joinIndexedObservations(obsParts);
   // Current title is fully determined by the branches above — no re-read.
   const currentTitle = isNew
-    ? (title ?? null)
-    : ((title !== undefined && title !== previousTitle) ? title : previousTitle);
+    ? (title ?? derivedTitle)
+    : ((titleToWrite !== undefined && titleToWrite !== previousTitle) ? titleToWrite : previousTitle);
   reindexEntityFts(
     db,
     id,

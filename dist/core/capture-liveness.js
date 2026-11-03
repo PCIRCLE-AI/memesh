@@ -89,6 +89,7 @@ export const CAPTURE_HOOKS = [
     'remember-nudge',
     'handoff-capture',
     'stop-message-gate',
+    'prompt-recall',
 ];
 export const FAIL_ELIGIBLE_HOOKS = ['session-summary'];
 export const SILENT_ELIGIBLE_HOOKS = ['post-commit', 'session-summary', 'pre-compact', 'handoff-capture'];
@@ -131,6 +132,13 @@ export const SKIP_REASONS = {
     recallThrottled: 'no guard matched and recall for this file is throttled: this session already looked at it',
     candidateWindowTruncated: 'more candidates may exist than the search window examined',
     noPromptIntent: 'the prompt carried no remember intent and no update decision',
+    promptEmpty: 'the prompt held no text',
+    promptRecallOff: 'prompt recall is turned off (promptRecall is false)',
+    promptPrivateSession: 'private_session: the agent marked this session private, so no memory was searched or shown',
+    promptPrivacyUnreadable: 'private_session_unreadable: whether this session is private could not be read, so no memory was shown',
+    promptNoTerms: 'the prompt held no word distinctive enough to search for',
+    promptNoMatch: 'no stored memory matched the prompt strongly enough',
+    promptAlreadyShown: 'the memories that matched were already shown in this session',
     noMemoryDir: 'no Claude Code memory directory for this project',
     noNoteChanged: 'no note file changed since the last ingestion',
     noteIngesterNotBuilt: 'the note ingester is not built (dist/core/note-ingest.js is missing)',
@@ -237,6 +245,7 @@ export const UNCLASSIFIED_SKIP_HOOKS = [
     'decision-nudge',
     'guard-check',
     'stop-message-gate',
+    'prompt-recall',
 ];
 export const NEVER_RAN_GRACE_HOURS = 72;
 export function parseHookOutcomes(raw, limit = HOOK_OUTCOMES_PER_HOOK) {

@@ -119,9 +119,6 @@ function seedUnredactedRows(): void {
 function rankedPart(text: string): string {
   return text.split('Index of durable memories for')[0];
 }
-function indexPart(text: string): string {
-  return text.split('Index of durable memories for')[1] ?? '';
-}
 
 function expectRedactedEverywhere(text: string): void {
   expect(text).not.toContain(DB_PASSWORD);
@@ -139,19 +136,17 @@ function expectRedactedEverywhere(text: string): void {
   // the ranked sections NOR the index, and the memory is still listed.
   expect(text).not.toContain('postgres://reviewer:');
   expect(text).not.toContain('ppppp');
-  expect(rankedPart(text)).toContain('is the old primary');
-  expect(indexPart(text)).toContain('is the old primary');
+  // Listed once: the index leaves out what the ranked block above it prints.
+  expect(text).toContain('is the old primary');
   expect(text).not.toContain(homeDir());
   expect(text).toContain('***REDACTED***');
   expect(text).toContain(path.join('~', 'runbook.md')); // `~\runbook.md` on Windows
 
-  // The decision is in both places, redacted in both — never one of each.
+  // The decision is listed, and every line it appears on is redacted.
   const ranked = rankedPart(text);
-  const index = indexPart(text);
   expect(ranked).toContain('for staging');
-  expect(index).toContain('for staging');
   const stagingLines = text.split('\n').filter((l) => l.includes('for staging'));
-  expect(stagingLines.length).toBeGreaterThanOrEqual(2);
+  expect(stagingLines.length).toBeGreaterThanOrEqual(1);
   for (const line of stagingLines) expect(line).toContain('***REDACTED***');
 }
 
@@ -200,6 +195,14 @@ describe('briefing redaction (#464)', () => {
       const result = assembleBriefing(project);
       expect(result.text).toContain('Decisions and direction');
       expectRedactedEverywhere(result.text);
+      // The standalone index is the full catalog and is redacted line by line too.
+      const catalog = result.index.lines.join('\n');
+      expect(catalog).toContain('for staging');
+      expect(catalog).toContain('is the old primary');
+      expect(catalog).not.toContain(DB_PASSWORD);
+      expect(catalog).not.toContain(TOKEN_VALUE);
+      expect(catalog).not.toContain('ppppp');
+      expect(catalog).toContain('***REDACTED***');
     } finally {
       if (previous === undefined) delete process.env.MEMESH_BRIEFING;
       else process.env.MEMESH_BRIEFING = previous;

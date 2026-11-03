@@ -31,5 +31,6 @@ export declare function injectedIndexReserve(projectName: string): number;
 export declare function buildBriefingIndex(candidates: readonly IndexCandidate[], projectName: string, now: number, options?: {
     truncated?: boolean;
     maxChars?: number;
+    exclude?: ReadonlySet<number>;
 }): BriefingIndex;
 //# sourceMappingURL=briefing-index.d.ts.map

@@ -274,7 +274,7 @@ describe('memesh config get', () => {
     const set = runCli(home, ['config', 'set', 'nonsense', 'x'], {});
     expect(got.status).toBe(1);
     expect(got.stdout).toBe('');
-    expect(got.stderr).toBe('Unknown key: nonsense\nAllowed keys: autoCapture, autoUpdate, briefing, sessionLimit, updateCheck\n');
+    expect(got.stderr).toBe('Unknown key: nonsense\nAllowed keys: autoCapture, autoUpdate, briefing, promptRecall, sessionLimit, updateCheck\n');
     expect(got.stderr, 'get and set must not word the refusal differently').toBe(set.stderr);
     expect(runCli(home, ['config', 'unset', 'nonsense'], {}).stderr, 'nor unset').toBe(set.stderr);
   });

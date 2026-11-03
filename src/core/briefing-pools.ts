@@ -23,6 +23,7 @@ import { INDEX_CANDIDATE_CAP, INDEX_EXCLUDED_TYPES, INDEX_SNIPPET_FETCH_CHARS, t
 import {
   DECISION_LAYER_TYPES,
   DECISION_TYPES,
+  EVIDENCE_LAYER_TYPES,
   GLOBAL_TOPOLOGY_LIMIT,
   LESSON_TYPE_LIST,
   SNIPPET_FETCH_CHARS,
@@ -40,6 +41,10 @@ const LESSON_LIMIT = 5;
 const RECENT_LIMIT = 5;
 /** Memories that belong to no project shown to every project's session. */
 const NO_PROJECT_LIMIT = 5;
+/** Recent commits shown after the project's own memories. They take none of its slots. */
+const ACTIVITY_LIMIT = 3;
+/** Mechanical capture: it never competes with decisions, lessons and knowledge for the project's slots. */
+const EVIDENCE_TYPE_LIST: readonly string[] = [...EVIDENCE_LAYER_TYPES];
 
 const SCORING_COLUMNS = ['access_count', 'last_accessed_at', 'confidence', 'recall_hits', 'recall_misses'] as const;
 
@@ -83,6 +88,8 @@ const active = (cols: EntityColumns) => (cols.status ? " AND e.status = 'active'
 const nonGlobal = (cols: EntityColumns) => (cols.namespace ? " AND (e.namespace IS NULL OR e.namespace <> 'global')" : '');
 /** A row carrying no `project:` tag at all — a memory that belongs to no project. */
 const NO_PROJECT_TAG = "NOT EXISTS (SELECT 1 FROM tags pt WHERE pt.entity_id = e.id AND pt.tag LIKE 'project:%')";
+/** A row scoped to one host or agent (`platform:hermes`, `agent:<id>`): its owner's work elsewhere, not a memory of the person. */
+const HOST_SCOPED_TAG = "EXISTS (SELECT 1 FROM tags ht WHERE ht.entity_id = e.id AND (ht.tag LIKE 'platform:%' OR ht.tag LIKE 'agent:%'))";
 const titleCol = (cols: EntityColumns) => (cols.title ? 'e.title' : 'NULL AS title');
 const candidateColumns = (cols: EntityColumns) => [
   'e.id', 'e.name', 'e.type', titleCol(cols), 'e.metadata', 'e.created_at',
@@ -175,6 +182,7 @@ export interface BriefingPools {
   /** Every trusted lesson in the window (≤ LESSON_POOL_LIMIT), for a count. */
   lessonCount: number;
   lessons: PoolRow[];
+  /** The project's own memories, decisions first, then up to ACTIVITY_LIMIT recent commits after them (outside the limit). */
   project: PoolRow[];
   /** Memories with no project (preferences, general lessons), every level. */
   noProject: PoolRow[];
@@ -215,10 +223,10 @@ export function selectBriefingPools(db: MemeshDatabase, projectName: string, opt
   const projectRows = db.prepare(
     `SELECT DISTINCT ${columns}
      FROM entities e JOIN tags t ON t.entity_id = e.id
-     WHERE t.tag = ?${active(cols)} AND e.type <> ?${nonGlobal(cols)}
+     WHERE t.tag = ?${active(cols)} AND e.type <> ? AND e.type NOT IN (${EVIDENCE_TYPE_LIST.map(() => '?').join(',')})${nonGlobal(cols)}
      ORDER BY e.id DESC
      LIMIT ?`,
-  ).all(projectTag, SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[];
+  ).all(projectTag, SESSION_HANDOFF_TYPE, ...EVIDENCE_TYPE_LIST, TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[];
   // Decisions first (#434 step 3): the project's newest trusted decision-layer
   // rows take slots before the score-ordered candidates fill the rest.
   const decisions = guarded('decisions', [] as PoolRow[], () => (db.prepare(
@@ -230,7 +238,22 @@ export function selectBriefingPools(db: MemeshDatabase, projectName: string, opt
      LIMIT ?`,
   ).all(projectTag, ...DECISION_LAYER_TYPES, TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[])
     .map(toPoolRow).filter((row) => trustedForAutoContext(row.metadata)), options.onError);
-  const project = prioritizeDecisions(decisions, selectPool(projectRows, TOPOLOGY_CANDIDATE_CAP), options.projectLimit);
+  // The project's slots go to its decisions, then its other work and knowledge,
+  // by score. A flood of commits (or session rollups) used to fill the slots
+  // that a decision was waiting for; they now follow the project's memories
+  // and take none of the limit. Session rollups are bookkeeping and are not
+  // shown at all.
+  const activity = selectPool(db.prepare(
+    `SELECT DISTINCT ${columns}
+     FROM entities e JOIN tags t ON t.entity_id = e.id
+     WHERE t.tag = ?${active(cols)} AND e.type = 'commit'${nonGlobal(cols)}
+     ORDER BY e.id DESC
+     LIMIT ?`,
+  ).all(projectTag, TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[], ACTIVITY_LIMIT);
+  const project = [
+    ...prioritizeDecisions(decisions, selectPool(projectRows, TOPOLOGY_CANDIDATE_CAP), options.projectLimit),
+    ...activity,
+  ];
 
   const lessonRows = guarded('lessons', [] as PoolRow[], () => (db.prepare(
     `SELECT DISTINCT ${columns}
@@ -244,10 +267,12 @@ export function selectBriefingPools(db: MemeshDatabase, projectName: string, opt
   // Memories that belong to no project (stored with project: false, or legacy
   // rows that never had a tag): not this project's, not global, but meant for
   // whoever works next — the same active/trust/ranking rules, a small window,
-  // at every level. Global rows keep their own pool below.
+  // at every level. Global rows keep their own pool below. A row scoped to one
+  // host or agent (Hermes, OpenClaw) is that host's, not the person's, and
+  // does not ride into every project's session.
   const noProject = selectPool(db.prepare(
     `SELECT ${columns} FROM entities e
-     WHERE ${NO_PROJECT_TAG} AND e.type <> ?${active(cols)}${nonGlobal(cols)}
+     WHERE ${NO_PROJECT_TAG} AND NOT ${HOST_SCOPED_TAG} AND e.type <> ?${active(cols)}${nonGlobal(cols)}
      ORDER BY e.id DESC
      LIMIT ?`,
   ).all(SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[], NO_PROJECT_LIMIT);
@@ -268,10 +293,10 @@ export function selectBriefingPools(db: MemeshDatabase, projectName: string, opt
   const recent = options.foreign
     ? selectPool(db.prepare(
       `SELECT ${columns} FROM entities e
-       WHERE NOT ${NO_PROJECT_TAG} AND e.type <> ?${active(cols)}${nonGlobal(cols)}
+       WHERE NOT ${NO_PROJECT_TAG} AND e.type <> ? AND e.type NOT IN (${EVIDENCE_TYPE_LIST.map(() => '?').join(',')})${active(cols)}${nonGlobal(cols)}
        ORDER BY e.id DESC
        LIMIT ?`,
-    ).all(SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[], RECENT_LIMIT)
+    ).all(SESSION_HANDOFF_TYPE, ...EVIDENCE_TYPE_LIST, TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[], RECENT_LIMIT)
     : [];
 
   return {

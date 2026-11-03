@@ -165,6 +165,12 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     db.close();
     expect(row?.title).toBe('Hook alpha');
 
+    // The person's own memory folder is trusted: sessions may be shown it.
+    const trustDb = new MemeshDatabase(path.join(home, '.memesh', 'knowledge-graph.db'));
+    const meta = trustDb.prepare("SELECT metadata FROM entities WHERE name = 'hook_note_a'").get() as { metadata: string };
+    trustDb.close();
+    expect(JSON.parse(meta.metadata)).toMatchObject({ trust: 'trusted', provenance: { source: 'note-file' } });
+
     append(reads(1));
     expect(run().status).toBe(0);
     expect(outcomes('note-ingest').at(-1)).toMatchObject({ outcome: 'skipped', reason: 'no note file changed since the last ingestion' });

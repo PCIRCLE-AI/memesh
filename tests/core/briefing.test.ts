@@ -843,7 +843,9 @@ describe('assembleBriefing', () => {
       if (previousBriefingEnv === undefined) delete process.env.MEMESH_BRIEFING;
       else process.env.MEMESH_BRIEFING = previousBriefingEnv;
     }
-    const section = result.text.split('Index of durable memories for')[1] ?? '';
+    // The standalone index is the full catalog; the injected one leaves out what
+    // the ranked block already prints (pinned in the next test).
+    const section = result.index.lines.join('\n');
     expect(section).toContain('Use PKCE for the CLI');
     expect(section).toContain('Raising the timeout hid a deadlock');
     expect(section).toContain('Deploy notes');
@@ -1062,7 +1064,9 @@ describe('assembleBriefing', () => {
     expect(indexSection(briefing)).not.toBeNull();
     expect(indexSection(briefing)).toEqual(indexSection(injected));
     expect(indexSection(briefing)!.join('\n')).not.toContain('Global rule 3');
-    expect(indexSection(briefing)!.join('\n')).toContain('Project decision 6');
+    // Printed by the ranked block (the same limit on both sides), so the index does not list it again.
+    expect(briefing).toContain('Project decision 6');
+    expect(indexSection(briefing)!.join('\n')).not.toContain('Project decision 6');
     expect(briefing).toContain('Prove the parity');
     expect(briefing).toContain('Global memory — applies across projects:');
     expect(briefing).toContain('Global rule 2');
@@ -1916,7 +1920,8 @@ describe('decisions first, one budget — both readers (#434 step 3)', () => {
   it('D1: both readers rank with recall impact, the same way', () => {
     const db = getDatabase();
     db.exec('BEGIN');
-    for (let i = 1; i <= 40; i++) add(`d1-${i}`, 'commit', `D1 commit ${i}`, { obs: [ts(1)] });
+    // Notes, not commits: commits are mechanical capture and take none of the project's slots.
+    for (let i = 1; i <= 40; i++) add(`d1-${i}`, 'note', `D1 commit ${i}`, { obs: [ts(1)] });
     db.exec('COMMIT');
     db.prepare("UPDATE entities SET recall_hits = 20, recall_misses = 0 WHERE name IN ('d1-1','d1-2','d1-3','d1-4','d1-5')").run();
     db.prepare("UPDATE entities SET recall_hits = 0, recall_misses = 20 WHERE name IN ('d1-36','d1-37','d1-38','d1-39','d1-40')").run();
@@ -2111,9 +2116,80 @@ describe('decisions first, one budget — both readers (#434 step 3)', () => {
         expect(block, blocked).not.toContain(`${blocked}-DECISION`);
       }
     }
-    // Decisions consume slots; the commits fill what is left (limit 3).
-    expect((hook.match(/- \[commit\]/g) ?? [])).toHaveLength(2);
+    // Commits take none of the project's slots (limit 3): they follow the
+    // decision, at most three of them, whatever the limit is.
+    expect((hook.match(/- \[commit\]/g) ?? [])).toHaveLength(3);
+    expect(hook.indexOf('ELIGIBLE-DECISION')).toBeLessThan(hook.indexOf('- [commit]'));
   });
+
+  it('#411: a decision followed by a flood of newer commits keeps its slot at the smallest limit, on both readers', () => {
+    add('lone', 'decision', 'LONE-DECISION-FIRST', { obs: [ts(30)] });
+    add('lesson', 'lesson_learned', 'LESSON-FIRST', { obs: [ts(30)] });
+    add('note', 'note', 'NOTE-KNOWLEDGE', { obs: [ts(30)] });
+    for (let i = 0; i < 40; i++) add(`flood-${i}`, 'commit', `fix: flood ${i}`, { obs: [ts(0.1)] });
+    for (let i = 0; i < 10; i++) add(`rollup-${i}`, 'session-insight', `significant session ${i}`, { obs: [ts(0.1)] });
+    vi.stubEnv('MEMESH_SESSION_LIMIT', '3');
+    const hook = ranked(runHook('standard', 3).context);
+    const text = ranked(core('standard'));
+    expect(hook).toBe(text);
+    for (const block of [hook, text]) {
+      expect(block).toContain('LONE-DECISION-FIRST');
+      expect(block).toContain('LESSON-FIRST');
+      expect(block).toContain('NOTE-KNOWLEDGE');
+      expect(block.match(/- \[commit\]/g) ?? []).toHaveLength(3);
+      expect(block, 'session rollups are bookkeeping and are not shown').not.toContain('significant session');
+      expect(block.indexOf('LONE-DECISION-FIRST')).toBeLessThan(block.indexOf('- [commit]'));
+    }
+  });
+
+  it('#595: a memory scoped to a host or an agent does not ride into every project, on both readers; a plain no-project memory still does', () => {
+    add('plain', 'preference', 'PLAIN-NO-PROJECT-PREFERENCE', { obs: [ts(1)], tag: null });
+    add('hermes', 'note', 'HERMES-HOST-MEMORY', { obs: [ts(1)], tag: 'platform:hermes' });
+    add('agent', 'note', 'OPENCLAW-AGENT-MEMORY', { obs: [ts(1)], tag: 'agent:claw-1' });
+    add('own', 'decision', 'OWN-PROJECT-DECISION', { obs: [ts(1)] });
+    // A host tag on a memory that ALSO carries this project keeps it in the project.
+    const both = add('hosted-in-project', 'note', 'HOSTED-IN-PROJECT-NOTE', { obs: [ts(1)] });
+    getDatabase().prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(both, 'platform:hermes');
+    for (const block of [ranked(runHook('minimal', 10).context), ranked(core('minimal'))]) {
+      expect(block).toContain('PLAIN-NO-PROJECT-PREFERENCE');
+      expect(block).toContain('OWN-PROJECT-DECISION');
+      expect(block).toContain('HOSTED-IN-PROJECT-NOTE');
+      expect(block).not.toContain('HERMES-HOST-MEMORY');
+      expect(block).not.toContain('OPENCLAW-AGENT-MEMORY');
+    }
+  });
+
+  it('the hook and the briefing show the same memories at the default limit and at a configured one', () => {
+    for (let i = 0; i < 14; i++) add(`dec-${i}`, 'decision', `PARITY-DECISION-${i}`, { obs: [ts(i + 1)] });
+    for (let i = 0; i < 6; i++) add(`note-${i}`, 'note', `PARITY-NOTE-${i}`, { obs: [ts(i + 1)] });
+    for (let i = 0; i < 6; i++) add(`c-${i}`, 'commit', `fix: parity ${i}`, { obs: [ts(0.1)] });
+    // No MEMESH_SESSION_LIMIT anywhere: both resolve the one default.
+    const fromHook = (limit: string) => {
+      const out = execFileSync('node', [path.resolve('scripts/hooks/session-start.js')], {
+        input: JSON.stringify({ cwd, session_id: `parity-${limit || 'default'}` }),
+        env: (() => { const e: NodeJS.ProcessEnv = { ...process.env, MEMESH_DB_PATH: dbPath, MEMESH_BRIEFING: 'standard' }; delete e.MEMESH_SESSION_LIMIT; if (limit) e.MEMESH_SESSION_LIMIT = limit; return e; })(),
+        encoding: 'utf8', timeout: 30_000,
+      });
+      return hookMemoryContext(out, cwd)!;
+    };
+    closeDatabase();
+    const defaultHook = ranked(fromHook(''));
+    const configuredHook = ranked(fromHook('4'));
+    openDatabase(dbPath);
+    delete process.env.MEMESH_SESSION_LIMIT;
+    vi.unstubAllEnvs();
+    const defaultCore = ranked(core('standard'));
+    vi.stubEnv('MEMESH_SESSION_LIMIT', '4');
+    const configuredCore = ranked(core('standard'));
+    expect(defaultCore).toBe(defaultHook);
+    expect(configuredCore).toBe(configuredHook);
+    // The default window is 10; a section prints at most 8 lines of it.
+    expect(defaultHook.match(/PARITY-DECISION-/g)).toHaveLength(8);
+    expect(configuredHook.match(/PARITY-DECISION-/g)).toHaveLength(4);
+    // Commits are outside the limit in both.
+    expect(defaultHook.match(/- \[commit\]/g)).toHaveLength(3);
+    expect(configuredHook.match(/- \[commit\]/g)).toHaveLength(3);
+  }, 60_000);
 
   it('F4: renders by latest valid activity — a newer lower-score decision before an older higher-score one', () => {
     add('touched', 'decision', 'OLD-BUT-TOUCHED', { created: ts(1500), obs: [ts(1500), ts(0.01)] });
@@ -2162,7 +2238,9 @@ describe('decisions first, one budget — both readers (#434 step 3)', () => {
     // Offsets 0..3 put the cut on each position of the surrogate pairs, so at
     // least one line per surface is clipped exactly between the two halves.
     for (let k = 0; k < 4; k++) add(`astral-${k}`, 'decision', `${'a'.repeat(k)}${'😀'.repeat(120)}`, { obs: [ts(k + 1)] });
-    for (const [label, text] of [['core', core('standard')], ['hook', runHook('standard', 30).context]] as const) {
+    // A window of one leaves three of the four to the index, which lists what the ranked block does not.
+    vi.stubEnv('MEMESH_SESSION_LIMIT', '1');
+    for (const [label, text] of [['core', core('standard')], ['hook', runHook('standard', 1).context]] as const) {
       expect(ranked(text), `${label} ranked`).toContain('😀');
       expect(text.split('Index of durable memories for')[1] ?? '', `${label} index`).toContain('😀');
       expect(text, label).not.toMatch(LONE_SURROGATE);

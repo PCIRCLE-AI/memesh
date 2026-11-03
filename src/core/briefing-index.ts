@@ -233,6 +233,10 @@ function indexEmptyLine(projectName: string): string {
   return `- No durable memories (decisions, lessons, patterns, references) for ${jsonStringLiteral(projectLabel(projectName))} yet.`;
 }
 
+function indexAllShownLine(projectName: string): string {
+  return `- Every durable memory for ${jsonStringLiteral(projectLabel(projectName))} is already listed above.`;
+}
+
 /** The project name is NOT interpolated into this command. It comes from a
  *  directory name or a git remote's basename and is restricted to nothing, so
  *  pasting it back into a shell is the caller quoting whatever the filesystem
@@ -303,7 +307,7 @@ export function buildBriefingIndex(
   candidates: readonly IndexCandidate[],
   projectName: string,
   now: number,
-  options: { truncated?: boolean; maxChars?: number } = {},
+  options: { truncated?: boolean; maxChars?: number; exclude?: ReadonlySet<number> } = {},
 ): BriefingIndex {
   const truncated = options.truncated === true;
   // `maxChars` is the room an injected block has left for the index, in
@@ -311,9 +315,11 @@ export function buildBriefingIndex(
   // none and keeps exactly its line/byte caps.
   const charAllowance = typeof options.maxChars === 'number' ? options.maxChars : Infinity;
   const cutoff = now - INDEX_STALE_DAYS * DAY_MS;
-  const eligible = candidates
-    .filter((c) => isIndexableType(c.type) && candidateIsAutoInjectable(c.metadata))
-    .slice()
+  const listable = candidates.filter((c) => isIndexableType(c.type) && candidateIsAutoInjectable(c.metadata));
+  // `exclude` holds the ids the block above the index already printed: the
+  // index lists what is NOT there, so a memory is never shown twice.
+  const eligible = listable
+    .filter((c) => !options.exclude?.has(c.id))
     .sort(compareIndexCandidates);
   const current: IndexCandidate[] = [];
   let older = 0;
@@ -326,7 +332,9 @@ export function buildBriefingIndex(
 
   const heading = indexHeading(projectName);
   if (current.length === 0 && older === 0) {
-    const closed = closeWithFooter([heading, indexEmptyLine(projectName)], 0);
+    // Nothing left to list: either the project has no durable memory, or every
+    // one of them is already printed above — and the two must not read alike.
+    const closed = closeWithFooter([heading, listable.length > 0 ? indexAllShownLine(projectName) : indexEmptyLine(projectName)], 0);
     return { ...closed, shown: 0, more: 0, older: 0, truncated, ids: [] };
   }
 

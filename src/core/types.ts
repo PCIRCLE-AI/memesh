@@ -166,6 +166,11 @@ export interface SearchOptions {
 // --- Operation Input Types (what transports pass to core) ---
 
 export interface RememberInput {
+  /**
+   * Internal. A decision may be stored without a `why` (note files keep the text
+   * as written). Not part of the tool schemas, so no transport can set it.
+   */
+  reasonOptional?: boolean;
   /** Required unless `note` is given, in which case it is derived. */
   name?: string;
   /** Required unless `note` is given, in which case it defaults to `note`. */

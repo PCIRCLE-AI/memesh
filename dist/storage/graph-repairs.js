@@ -378,4 +378,46 @@ export function removeJunkFileTags(db) {
     });
     return removed;
 }
+const OWN_NOTE_TRUST_KEY = 'own_note_folder_trust_v1';
+export function trustOwnNoteFolderMemories(conn, ownDirIds) {
+    if (ownDirIds.size === 0)
+        return 0;
+    const rows = conn
+        .prepare(`SELECT e.id, e.metadata FROM entities e
+      WHERE json_valid(e.metadata)
+        AND json_extract(e.metadata, '$.trust') = 'untrusted'
+        AND json_extract(e.metadata, '$.provenance.source') = 'note-file'
+        AND EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = 'source:note-file')`)
+        .all();
+    const set = conn.prepare("UPDATE entities SET metadata = json_set(metadata, '$.trust', 'trusted') WHERE id = ?");
+    let changed = 0;
+    for (const row of rows) {
+        let dirId;
+        try {
+            dirId = JSON.parse(row.metadata).provenance?.note_dir_id;
+        }
+        catch {
+            continue;
+        }
+        if (typeof dirId !== 'string' || !ownDirIds.has(dirId))
+            continue;
+        set.run(row.id);
+        changed += 1;
+    }
+    return changed;
+}
+export function repairOwnNoteFolderTrust(db, ownDirIds) {
+    let changed = -1;
+    runOnceMigration(db, {
+        key: OWN_NOTE_TRUST_KEY,
+        version: 1,
+        describe: 'own note folder trust',
+        migrate: (conn) => {
+            changed = trustOwnNoteFolderMemories(conn, ownDirIds);
+            if (changed > 0)
+                note(`${changed} note memor${changed === 1 ? 'y' : 'ies'} from your own memory folders are now trusted, so sessions can be shown them.`);
+        },
+    });
+    return changed;
+}
 //# sourceMappingURL=graph-repairs.js.map

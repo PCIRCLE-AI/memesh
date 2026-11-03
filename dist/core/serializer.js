@@ -8,6 +8,7 @@ import { boundReplacedHistory } from './replaced-history.js';
 import { NAMESPACES } from './types.js';
 export const IMPORTABLE_METADATA_KEYS = new Set([
     'title_source',
+    'auto_archive',
     'source_kind',
     'source',
     'cluster_key',
