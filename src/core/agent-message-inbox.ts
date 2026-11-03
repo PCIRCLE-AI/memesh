@@ -33,6 +33,7 @@
 // scripts/generate-hook-core.mjs, exactly like task-state.ts, so SessionStart
 // and the MCP/CLI briefing surface cannot disagree on this trust boundary.
 
+import { agentMessageExpiryCutoff } from './agent-message-ttl.js';
 import { jsonStringLiteral } from './work-topology.js';
 
 /** Minimal database shape shared by node:sqlite and the hook's wrapper. */
@@ -182,6 +183,7 @@ export function unreadDeliveryCount(db: InboxDb, project: string, recipient?: st
        WHERE d.project = ?
          AND d.recipient = ?
          ${intended.sql}
+         AND d.created_at >= ?
          AND NOT EXISTS (
            SELECT 1 FROM agent_message_receipts r
            WHERE r.project = d.project
@@ -189,7 +191,7 @@ export function unreadDeliveryCount(db: InboxDb, project: string, recipient?: st
              AND r.message_id = d.message_id
              AND r.receipt_kind = 'intake'
          )`,
-    ).get(project, recipient, ...intended.params) as { n?: number } | undefined;
+    ).get(project, recipient, ...intended.params, agentMessageExpiryCutoff()) as { n?: number } | undefined;
     const n = row?.n;
     return typeof n === 'number' && n > 0 ? n : 0;
   } catch {
@@ -405,6 +407,7 @@ export function unreadMessageRefsFor(
        WHERE ${match.sql}
          ${intended.sql}
          ${accepted.sql}
+         AND d.created_at >= ?
          AND NOT EXISTS (SELECT 1 FROM json_each(?) excluded WHERE excluded.value = d.message_id)
          AND NOT EXISTS (
            SELECT 1 FROM agent_message_receipts r
@@ -415,7 +418,7 @@ export function unreadMessageRefsFor(
          )
        ORDER BY d.project, d.message_id
        LIMIT ?`,
-    ).all(...match.params, ...intended.params, ...accepted.params, JSON.stringify(excludeMessageIds), limit) as Array<{ project?: string; message_id?: string }>;
+    ).all(...match.params, ...intended.params, ...accepted.params, agentMessageExpiryCutoff(), JSON.stringify(excludeMessageIds), limit) as Array<{ project?: string; message_id?: string }>;
     return rows.filter(
       (row): row is UnreadMessageRef => typeof row.project === 'string' && typeof row.message_id === 'string',
     );
@@ -498,6 +501,7 @@ export function unreadInboxLinesFor(
        WHERE ${match.sql}
          ${intended.sql}
          ${accepted.sql}
+         AND d.created_at >= ?
          AND NOT EXISTS (
            SELECT 1 FROM agent_message_receipts r
            WHERE r.project = d.project
@@ -508,7 +512,7 @@ export function unreadInboxLinesFor(
        GROUP BY d.project, d.recipient, d.target_kind
        ORDER BY n DESC, d.project, d.recipient
        LIMIT 5`,
-    ).all(...match.params, ...intended.params, ...accepted.params) as Array<{ project?: string; recipient?: string; target_kind?: string; n?: number }>;
+    ).all(...match.params, ...intended.params, ...accepted.params, agentMessageExpiryCutoff()) as Array<{ project?: string; recipient?: string; target_kind?: string; n?: number }>;
     return rows.flatMap((row) =>
       typeof row.project === 'string' && typeof row.recipient === 'string' && typeof row.n === 'number' && row.n > 0
         ? unreadInboxLines(row.n, row.project, row.recipient, undefined, row.target_kind === 'session' ? 'session' : 'principal')

@@ -12,7 +12,7 @@
 import { describe, it, expect } from 'vitest';
 import { getDatabase } from '../../src/db.js';
 import { sendAgentMessage, recordAgentReceipt } from '../../src/core/agent-messaging.js';
-import { unreadMessageRefsFor, unreadInboxLines, unreadInboxLinesFor } from '../../src/core/agent-message-inbox.js';
+import { unreadDeliveryCount, unreadMessageRefsFor, unreadInboxLines, unreadInboxLinesFor } from '../../src/core/agent-message-inbox.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
 import { registerAgentSession, sendSessionTargetedMessage } from '../helpers/agent-session-fixture.js';
 
@@ -307,5 +307,41 @@ describe('Feature: #566 an exact-session message reminds only the session it is 
     const a = registerAgentSession('proj-a', 'claude-principal');
     const sent = sendSessionTargetedMessage('proj-a', a, 'k566-3');
     expect(unreadMessageRefsFor(getDatabase(), 'claude-principal')).toEqual([{ project: 'proj-a', message_id: sent.message_id }]);
+  });
+});
+
+describe('a delivery past its one-day lifetime is not waiting for anyone', () => {
+  useTestDatabase('memesh-inbox-expired-');
+
+  function sendAged(modifier: string) {
+    const sent = sendAgentMessage(getDatabase(), {
+      project: 'proj-expiry', sender: 'sender', recipient: 'claude-principal',
+      idempotency_key: `k-${modifier}`, payload: 'x', content_type: 'text/plain',
+    });
+    for (const table of ['agent_messages', 'agent_message_deliveries', 'agent_message_events']) {
+      getDatabase().prepare(`UPDATE ${table} SET created_at = datetime('now', ${modifier.split(' | ').map((m) => `'${m}'`).join(', ')}) WHERE message_id = ?`).run(sent.message_id);
+    }
+    return sent;
+  }
+
+  it('is not counted by unreadDeliveryCount', () => {
+    sendAged('-25 hours');
+    const alive = sendAged('-23 hours | -30 minutes');
+    expect(unreadDeliveryCount(getDatabase(), 'proj-expiry', 'claude-principal')).toBe(1);
+    expect(alive.message_id).toBeTruthy();
+  });
+
+  it('is not listed by unreadMessageRefsFor', () => {
+    sendAged('-25 hours');
+    const alive = sendAged('-23 hours | -30 minutes');
+    expect(unreadMessageRefsFor(getDatabase(), 'claude-principal'))
+      .toEqual([{ project: 'proj-expiry', message_id: alive.message_id }]);
+  });
+
+  it('is not reminded about by unreadInboxLinesFor', () => {
+    sendAged('-25 hours');
+    expect(unreadInboxLinesFor(getDatabase(), 'claude-principal')).toEqual([]);
+    sendAged('-23 hours | -30 minutes');
+    expect(unreadInboxLinesFor(getDatabase(), 'claude-principal').join('\n')).toContain('1 message');
   });
 });

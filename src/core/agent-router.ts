@@ -13,6 +13,7 @@ import {
   type AgentMessagePostCommitNotifier,
   type AgentTargetKind,
 } from './agent-messaging.js';
+import { agentMessageExpiryCutoff } from './agent-message-ttl.js';
 import { compareSemVerPrecedence, parseSemVer } from './semver.js';
 
 export const AGENT_ROUTER_PROTOCOL_VERSION = 2;
@@ -505,7 +506,7 @@ export class AgentRouter {
       model: null,
       work_summary: registration.work_summary ?? null,
     });
-    setImmediate(() => { void this.drainConnection(connection, request.hops + 1).catch(() => undefined); });
+    setImmediate(() => { void this.drainConnection(connection, request.hops + 1).catch((error) => reportDrainFailure(connection, error)); });
     return {
       connection_id: connection.connection_id,
       generation: connection.generation,
@@ -868,6 +869,7 @@ export class AgentRouter {
       WHERE d.project = ? AND h.delivery_id IS NULL AND e.event_sequence <= ?
         AND (e.event_sequence > ? OR (e.event_sequence = ? AND d.delivery_id > ?))
         AND d.target_kind = 'principal' AND d.recipient = ? AND e.event_sequence > ?
+        AND d.created_at >= ?
       ORDER BY e.event_sequence ASC, d.delivery_id ASC
       LIMIT ?
     `);
@@ -884,11 +886,19 @@ export class AgentRouter {
         cursorDeliveryId,
         connection.principal_id,
         checkpoint.activation_event_sequence,
+        agentMessageExpiryCutoff(),
         this.limits.drain_limit,
       ) as Array<{ delivery_id: string; event_sequence: number }>;
       if (rows.length === 0) break;
       for (const row of rows) {
-        if (await this.dispatchDelivery(row.delivery_id, connection.project, hops, connection)) drained += 1;
+        try {
+          if (await this.dispatchDelivery(row.delivery_id, connection.project, hops, connection)) drained += 1;
+        } catch (error) {
+          // This one message ran out its day after the batch was chosen (the
+          // pushes before it took that long). Skip it, not the newer ones after it.
+          if (error instanceof AgentRouterError && error.code === 'delivery_not_found') continue;
+          throw error;
+        }
       }
       const last = rows.at(-1)!;
       cursorSequence = last.event_sequence;
@@ -1037,11 +1047,11 @@ export class AgentRouter {
       SELECT d.delivery_id, d.message_id, d.project, d.recipient, d.target_kind, d.intended_session, e.event_sequence
       FROM agent_message_deliveries d
       JOIN agent_message_events e ON e.delivery_id = d.delivery_id
-      WHERE d.delivery_id = ? AND d.project = ?
-    `).get(validateField('delivery_id', deliveryId), validateField('project', project)) as
+      WHERE d.delivery_id = ? AND d.project = ? AND d.created_at >= ?
+    `).get(validateField('delivery_id', deliveryId), validateField('project', project), agentMessageExpiryCutoff()) as
       | DeliveryRow
       | undefined;
-    if (!row) throw new AgentRouterError('delivery_not_found', 'The delivery does not exist in this project.');
+    if (!row) throw new AgentRouterError('delivery_not_found', 'The delivery does not exist in this project, or its message is past its one-day lifetime.');
     parseTargetKind(row.target_kind);
     return row;
   }
@@ -1714,4 +1724,15 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 function toRouterError(error: unknown): AgentRouterError {
   if (error instanceof AgentRouterError) return error;
   return new AgentRouterError('internal_error', 'The router could not process the request.');
+}
+
+/**
+ * Pushing a connection's pending messages failed. The connection stays up and
+ * the messages stay in the inbox, so nothing else is done, but the failure is
+ * not dropped: a stuck push has to leave a trace.
+ */
+function reportDrainFailure(connection: ConnectionRow, error: unknown): void {
+  try {
+    process.stderr.write(`MeMesh router: could not push pending messages to session ${connection.session_instance_id} (${error instanceof Error ? error.message : String(error)})\n`);
+  } catch { /* stderr gone */ }
 }

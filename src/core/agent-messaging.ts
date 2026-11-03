@@ -5,6 +5,7 @@ import {
   enforceAgentMessageStorageQuota,
 } from './agent-message-storage.js';
 import { sessionAliasChain } from './agent-message-inbox.js';
+import { AGENT_MESSAGE_TTL_MS, agentMessageExpiryCutoff } from './agent-message-ttl.js';
 import { sqliteUtcToIso } from './time-utils.js';
 import {
   AGENT_SCOPE_ID_MAX_LENGTH,
@@ -83,6 +84,12 @@ export interface SendAgentMessageOptions {
   storage_quota_bytes?: number;
   /** Internal principal fallback of an already counted send; never a public input. */
   fallback_of_message_id?: string;
+  /**
+   * Internal: the expiry pass's notice to a sender. It is one message per
+   * sender per pass, written by MeMesh itself, so the conversation-loop limit
+   * (two agents answering each other) has nothing to say about it.
+   */
+  skip_conversation_loop_limit?: boolean;
 }
 
 export interface PollAgentEventsInput {
@@ -251,6 +258,25 @@ const MIN_WAIT_INTERVAL_MS = 10;
 export class AgentMessagingError extends Error {}
 export class AgentIdempotencyConflictError extends AgentMessagingError {}
 export class AgentMessageAccessError extends AgentMessagingError {}
+/**
+ * The message existed and is gone: messages are kept one day from creation and
+ * then deleted. A distinct error so a caller can tell "too late" from "never
+ * yours" or "never existed".
+ */
+export class AgentMessageExpiredError extends AgentMessageAccessError {
+  readonly code = 'message_expired';
+
+  constructor(messageId: string, createdAtIso: string, use: 'read' | 'reply') {
+    const expiredAt = new Date(Date.parse(createdAtIso) + AGENT_MESSAGE_TTL_MS).toISOString();
+    super(
+      use === 'reply'
+        ? `message_expired: message ${messageId} (sent ${createdAtIso}) expired at ${expiredAt}; MeMesh keeps a message for one day and then deletes it, `
+          + 'so it cannot be replied to. Send the reply without reply_to and say what it answers.'
+        : `message_expired: message ${messageId} (sent ${createdAtIso}) expired at ${expiredAt}; MeMesh keeps a message for one day and then deletes it. `
+          + 'Ask the sender to send it again.',
+    );
+  }
+}
 export class AgentConversationLoopError extends AgentMessagingError {
   readonly code = 'conversation_loop_suspected';
 
@@ -544,7 +570,26 @@ export function sendAgentMessage(
       reused = true;
       return existing;
     }
-    if (options.fallback_of_message_id === undefined) enforceConversationLoopLimit(db, normalized);
+    // The same key can still point at a message that is past its day but not
+    // deleted yet. That message is gone to everyone, so the key is free again:
+    // this send is a new message, not a retry of one nobody can read.
+    db.prepare(`
+      DELETE FROM agent_message_idempotency
+      WHERE project = ? AND sender = ? AND idempotency_key = ?
+        AND message_id IN (SELECT message_id FROM agent_messages WHERE created_at < ?)
+    `).run(normalized.project, normalized.sender, normalized.idempotency_key, agentMessageExpiryCutoff());
+    // A reply to a message that has run out its day: say so, rather than
+    // storing a pointer to nothing. Checked after the retry lookup above, so
+    // retrying a reply that was stored while its parent was alive still returns
+    // that reply. An id MeMesh never knew, or one the sender had no part in, is
+    // not checked.
+    if (normalized.reply_to !== null) {
+      const expired = expiredMessageErrorFor(db, normalized.project, normalized.sender, normalized.reply_to, 'reply');
+      if (expired) throw expired;
+    }
+    if (options.fallback_of_message_id === undefined && options.skip_conversation_loop_limit !== true) {
+      enforceConversationLoopLimit(db, normalized);
+    }
     if (options.storage_quota_bytes !== undefined) {
       enforceAgentMessageStorageQuota(db, {
         quotaBytes: options.storage_quota_bytes,
@@ -638,9 +683,10 @@ export function pollAgentEvents(db: MemeshDatabase, input: PollAgentEventsInput)
     JOIN agent_messages m ON m.message_id = e.message_id
     JOIN agent_message_deliveries d ON d.delivery_id = e.delivery_id
     WHERE e.project = ? AND e.recipient = ? AND e.event_sequence > ?
+      AND m.created_at >= ?
     ORDER BY e.event_sequence ASC
     LIMIT ?
-  `).all(project, recipient, cursor.event_sequence, limit) as EventRow[];
+  `).all(project, recipient, cursor.event_sequence, agentMessageExpiryCutoff(), limit) as EventRow[];
 
   if (rows.length === 0) {
     if (cursor.cursor_token) return { events: [], next_cursor: cursor.cursor_token };
@@ -704,9 +750,12 @@ export function fetchAgentMessage(db: MemeshDatabase, input: FetchAgentMessageIn
     FROM agent_messages m
     JOIN agent_message_deliveries d ON d.message_id = m.message_id
     WHERE m.project = ? AND d.project = ? AND d.recipient = ? AND d.target_kind = ? AND m.message_id = ?
-  `).get(project, project, recipient, targetKind, messageId) as FetchRow | undefined;
+      AND m.created_at >= ?
+  `).get(project, project, recipient, targetKind, messageId, agentMessageExpiryCutoff()) as FetchRow | undefined;
 
   if (!row) {
+    const expired = expiredMessageErrorFor(db, project, recipient, messageId, 'read');
+    if (expired) throw expired;
     throw new AgentMessageAccessError(
       `Agent message ${messageId} is not available to recipient ${recipient} in project ${project}.`,
     );
@@ -1171,9 +1220,10 @@ function lookupExistingMessage(
     JOIN agent_message_deliveries d ON d.message_id = m.message_id
     JOIN agent_message_events e ON e.message_id = m.message_id
     WHERE i.project = ? AND i.sender = ? AND i.idempotency_key = ?
+      AND m.created_at >= ?
     ORDER BY e.event_sequence ASC
     LIMIT 1
-  `).get(project, sender, idempotencyKey) as ExistingIdempotencyRow | undefined;
+  `).get(project, sender, idempotencyKey, agentMessageExpiryCutoff()) as ExistingIdempotencyRow | undefined;
 }
 
 function loadSentMessage(
@@ -1208,6 +1258,35 @@ function loadSentMessage(
   `).get(project, project, recipient, messageId) as MessageJoinRow | undefined;
 }
 
+/**
+ * Did this message exist and run out its day, and was `caller` a party to it?
+ * Yes for a row the expiry pass has already deleted (its id is kept for a while
+ * in `agent_message_expiries`) and for a row past its day but not yet reached
+ * by the pass. Only its sender and its recipient are told: anyone else gets the
+ * ordinary "not available", exactly as for an id that never existed. Returns
+ * null for them, and for an id that is simply unknown.
+ */
+export function expiredMessageErrorFor(
+  db: MemeshDatabase,
+  project: string,
+  caller: string,
+  messageId: string,
+  use: 'read' | 'reply',
+): AgentMessageExpiredError | null {
+  const gone = (db.prepare(
+    'SELECT created_at, sender, recipient FROM agent_message_expiries WHERE project = ? AND message_id = ?',
+  ).get(project, messageId) ?? db.prepare(
+    'SELECT created_at, sender, recipient FROM agent_messages WHERE project = ? AND message_id = ? AND created_at < ?',
+  ).get(project, messageId, agentMessageExpiryCutoff())) as
+    | { created_at: string; sender: string | null; recipient: string | null }
+    | undefined;
+  if (!gone) return null;
+  // A row remembered before the sender and recipient were kept has neither: it fails closed.
+  const who = canonicalAgentScopeId(caller);
+  const isParty = [gone.sender, gone.recipient].some((party) => party !== null && canonicalAgentScopeId(party) === who);
+  return isParty ? new AgentMessageExpiredError(messageId, sqliteUtcToIso(gone.created_at), use) : null;
+}
+
 /** Throws unless the delivery exists; returns who it is for (#497). */
 function assertMessageAccess(
   db: MemeshDatabase,
@@ -1218,10 +1297,12 @@ function assertMessageAccess(
   const row = db.prepare(`
     SELECT intended_session, target_kind
     FROM agent_message_deliveries
-    WHERE project = ? AND recipient = ? AND message_id = ?
-  `).get(project, recipient, messageId) as { intended_session: string | null; target_kind: string } | undefined;
+    WHERE project = ? AND recipient = ? AND message_id = ? AND created_at >= ?
+  `).get(project, recipient, messageId, agentMessageExpiryCutoff()) as { intended_session: string | null; target_kind: string } | undefined;
 
   if (!row) {
+    const expired = expiredMessageErrorFor(db, project, recipient, messageId, 'read');
+    if (expired) throw expired;
     throw new AgentMessageAccessError(
       `Agent message ${messageId} is not available to recipient ${recipient} in project ${project}.`,
     );

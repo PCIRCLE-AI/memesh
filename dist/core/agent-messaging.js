@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { agentMessagePayloadStorageBytes, enforceAgentMessageStorageQuota, } from './agent-message-storage.js';
 import { sessionAliasChain } from './agent-message-inbox.js';
+import { AGENT_MESSAGE_TTL_MS, agentMessageExpiryCutoff } from './agent-message-ttl.js';
 import { sqliteUtcToIso } from './time-utils.js';
 import { AGENT_SCOPE_ID_MAX_LENGTH, agentScopeIdRejection, canonicalAgentScopeId, } from './agent-scope-id.js';
 const MAX_SCOPE_FIELD = AGENT_SCOPE_ID_MAX_LENGTH;
@@ -18,6 +19,17 @@ export class AgentMessagingError extends Error {
 export class AgentIdempotencyConflictError extends AgentMessagingError {
 }
 export class AgentMessageAccessError extends AgentMessagingError {
+}
+export class AgentMessageExpiredError extends AgentMessageAccessError {
+    code = 'message_expired';
+    constructor(messageId, createdAtIso, use) {
+        const expiredAt = new Date(Date.parse(createdAtIso) + AGENT_MESSAGE_TTL_MS).toISOString();
+        super(use === 'reply'
+            ? `message_expired: message ${messageId} (sent ${createdAtIso}) expired at ${expiredAt}; MeMesh keeps a message for one day and then deletes it, `
+                + 'so it cannot be replied to. Send the reply without reply_to and say what it answers.'
+            : `message_expired: message ${messageId} (sent ${createdAtIso}) expired at ${expiredAt}; MeMesh keeps a message for one day and then deletes it. `
+                + 'Ask the sender to send it again.');
+    }
 }
 export class AgentConversationLoopError extends AgentMessagingError {
     code = 'conversation_loop_suspected';
@@ -188,8 +200,19 @@ export function sendAgentMessage(db, input, options = {}) {
             reused = true;
             return existing;
         }
-        if (options.fallback_of_message_id === undefined)
+        db.prepare(`
+      DELETE FROM agent_message_idempotency
+      WHERE project = ? AND sender = ? AND idempotency_key = ?
+        AND message_id IN (SELECT message_id FROM agent_messages WHERE created_at < ?)
+    `).run(normalized.project, normalized.sender, normalized.idempotency_key, agentMessageExpiryCutoff());
+        if (normalized.reply_to !== null) {
+            const expired = expiredMessageErrorFor(db, normalized.project, normalized.sender, normalized.reply_to, 'reply');
+            if (expired)
+                throw expired;
+        }
+        if (options.fallback_of_message_id === undefined && options.skip_conversation_loop_limit !== true) {
             enforceConversationLoopLimit(db, normalized);
+        }
         if (options.storage_quota_bytes !== undefined) {
             enforceAgentMessageStorageQuota(db, {
                 quotaBytes: options.storage_quota_bytes,
@@ -258,9 +281,10 @@ export function pollAgentEvents(db, input) {
     JOIN agent_messages m ON m.message_id = e.message_id
     JOIN agent_message_deliveries d ON d.delivery_id = e.delivery_id
     WHERE e.project = ? AND e.recipient = ? AND e.event_sequence > ?
+      AND m.created_at >= ?
     ORDER BY e.event_sequence ASC
     LIMIT ?
-  `).all(project, recipient, cursor.event_sequence, limit);
+  `).all(project, recipient, cursor.event_sequence, agentMessageExpiryCutoff(), limit);
     if (rows.length === 0) {
         if (cursor.cursor_token)
             return { events: [], next_cursor: cursor.cursor_token };
@@ -317,8 +341,12 @@ export function fetchAgentMessage(db, input) {
     FROM agent_messages m
     JOIN agent_message_deliveries d ON d.message_id = m.message_id
     WHERE m.project = ? AND d.project = ? AND d.recipient = ? AND d.target_kind = ? AND m.message_id = ?
-  `).get(project, project, recipient, targetKind, messageId);
+      AND m.created_at >= ?
+  `).get(project, project, recipient, targetKind, messageId, agentMessageExpiryCutoff());
     if (!row) {
+        const expired = expiredMessageErrorFor(db, project, recipient, messageId, 'read');
+        if (expired)
+            throw expired;
         throw new AgentMessageAccessError(`Agent message ${messageId} is not available to recipient ${recipient} in project ${project}.`);
     }
     return {
@@ -703,9 +731,10 @@ function lookupExistingMessage(db, project, sender, idempotencyKey) {
     JOIN agent_message_deliveries d ON d.message_id = m.message_id
     JOIN agent_message_events e ON e.message_id = m.message_id
     WHERE i.project = ? AND i.sender = ? AND i.idempotency_key = ?
+      AND m.created_at >= ?
     ORDER BY e.event_sequence ASC
     LIMIT 1
-  `).get(project, sender, idempotencyKey);
+  `).get(project, sender, idempotencyKey, agentMessageExpiryCutoff());
 }
 function loadSentMessage(db, project, recipient, messageId) {
     return db.prepare(`
@@ -733,13 +762,24 @@ function loadSentMessage(db, project, recipient, messageId) {
     LIMIT 1
   `).get(project, project, recipient, messageId);
 }
+export function expiredMessageErrorFor(db, project, caller, messageId, use) {
+    const gone = (db.prepare('SELECT created_at, sender, recipient FROM agent_message_expiries WHERE project = ? AND message_id = ?').get(project, messageId) ?? db.prepare('SELECT created_at, sender, recipient FROM agent_messages WHERE project = ? AND message_id = ? AND created_at < ?').get(project, messageId, agentMessageExpiryCutoff()));
+    if (!gone)
+        return null;
+    const who = canonicalAgentScopeId(caller);
+    const isParty = [gone.sender, gone.recipient].some((party) => party !== null && canonicalAgentScopeId(party) === who);
+    return isParty ? new AgentMessageExpiredError(messageId, sqliteUtcToIso(gone.created_at), use) : null;
+}
 function assertMessageAccess(db, project, recipient, messageId) {
     const row = db.prepare(`
     SELECT intended_session, target_kind
     FROM agent_message_deliveries
-    WHERE project = ? AND recipient = ? AND message_id = ?
-  `).get(project, recipient, messageId);
+    WHERE project = ? AND recipient = ? AND message_id = ? AND created_at >= ?
+  `).get(project, recipient, messageId, agentMessageExpiryCutoff());
     if (!row) {
+        const expired = expiredMessageErrorFor(db, project, recipient, messageId, 'read');
+        if (expired)
+            throw expired;
         throw new AgentMessageAccessError(`Agent message ${messageId} is not available to recipient ${recipient} in project ${project}.`);
     }
     return row;

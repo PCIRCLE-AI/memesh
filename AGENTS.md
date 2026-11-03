@@ -101,7 +101,13 @@ hosts should share memories. Not installed yet? Follow
    because a legitimately new id looks the same, and an id that was once seen
    but has gone quiet gets no hint either — that would reveal someone else's
    mail. A length-limited briefing can omit some project notices; those
-   messages remain pending.
+   messages remain pending. A message is kept for one day from creation, read or
+   not, then deleted (its content stays in a local archive for one more day). If
+   its recipient recorded no intake, acknowledgement or disposition and sent no
+   reply, its sender receives one message from `memesh` per cleanup listing what
+   expired (poll your own recipient, then fetch); fetching, acknowledging or
+   replying to an expired id returns `message_expired`, so handle a message
+   within the day or ask for it again.
    Check a known inbox with the exact `project` and `recipient`; poll first,
    then fetch each returned `message_id`, then record `intake` for it: fetching alone does not
    acknowledge and does not end the reminder. Under Claude Code, a separate
@@ -129,7 +135,7 @@ hosts should share memories. Not installed yet? Follow
 | `briefing` | The assembled work topology — an eligible exact-project handoff precedes ranked memories at every level, after optional repository facts; `minimal` then shows this project's decisions, lessons, knowledge and recent activity plus memories with no project, `standard` adds fresh task state and a capped durable-memory index, and `full` adds other projects and global memory; exact `project` + `recipient` can surface only that recipient's unfetched deliveries |
 | `user_patterns` | Analyze work schedule, tool preferences, and focus areas from memory |
 | `improvement` | Propose an evidence-linked product improvement or read its status; only a human may accept/reject it |
-| `message` | Discover live agents, then exchange exact-recipient untrusted messages: durable JSON payload max 64 KiB; complete native envelope max 16 KiB with distinct `native_message_too_large` and `recipient_unavailable` errors; delivery reads/acceptance never imply ACK or disposition |
+| `message` | Discover live agents, then exchange exact-recipient untrusted messages: durable JSON payload max 64 KiB; complete native envelope max 16 KiB with distinct `native_message_too_large` and `recipient_unavailable` errors; delivery reads/acceptance never imply ACK or disposition; a message is kept one day, then deleted |
 
 ## Memory hygiene
 

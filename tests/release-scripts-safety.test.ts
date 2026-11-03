@@ -465,10 +465,10 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
         ['send', 'send'], ['watch', 'poll'], ['discover', 'discover'], ['fetch', 'fetch'], ['intake', 'intake'],
         ['ack', 'ack'], ['disposition', 'disposition'], ['activation', 'activation'], ['receipts', 'receipts'],
       ].map(([command, action]) => `.command('${command}')\n.action(() => ({ action: '${action}' }))`).join('\n');
-      const cliRequired = "\n--payload-stdin\nnever argv\nreadCliMessagePayloadFromStdin\nmessageStorageCmd storage report prune automatic_pruning\n'codex-session'\nmode: host === 'codex-session'\n'ordinary-session-native-queue'";
+      const cliRequired = "\n--payload-stdin\nnever argv\nreadCliMessagePayloadFromStdin\nmessageStorageCmd storage report one day from creation, then deleted\n'codex-session'\nmode: host === 'codex-session'\n'ordinary-session-native-queue'";
       write('src/transports/cli/cli.ts', cliMappings + cliRequired);
       write('src/transports/agent-messaging.ts', 'target_kind: input.target_kind recipient_unavailable native_accepted');
-      write('src/core/agent-message-storage.ts', 'protected_unresolved_message_count terminal_prunable_message_count storage_quota_exceeded');
+      write('src/core/agent-message-storage.ts', 'protected_unresolved_message_count expired_pending_message_count storage_quota_exceeded');
       write('src/core/agent-router.ts', 'principal session generation host_kind work_summary lease_expires_at_ms');
       for (const adapter of ['codex-app-server.ts', 'acp-client.ts']) write(`src/host-adapters/${adapter}`, 'adapter');
       const claudeChannelServer = "'claude/channel' notifications/claude/channel createClaudeChannelServer";
@@ -484,7 +484,7 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       write('dist/transports/agent-messaging.js', 'executeAgentMessageAction target_kind: input.target_kind recipient_unavailable native_accepted');
       write('dist/transports/schemas.js', "target_kind z.enum(['principal', 'session'])");
       write('dist/transports/cli/cli.js', cliMappings + cliRequired);
-      write('dist/core/agent-message-storage.js', 'protected_unresolved_message_count terminal_prunable_message_count storage_quota_exceeded');
+      write('dist/core/agent-message-storage.js', 'protected_unresolved_message_count expired_pending_message_count storage_quota_exceeded');
       for (const artifact of ['dist/host-adapters/codex-app-server.js', 'dist/host-adapters/acp-client.js']) write(artifact);
       write('dist/host-adapters/claude-channel.js', claudeChannelServer);
       write('dist/host-adapters/codex-app-server.js', 'experimentalApi: true thread/queue/add ws://localhost/rpc perMessageDeflate: false');

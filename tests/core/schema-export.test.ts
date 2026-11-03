@@ -317,3 +317,20 @@ describe('#534 the export matches the live MCP tools', () => {
     expect(Object.keys(out).sort()).toEqual(expected);
   });
 });
+
+describe('what the message tool tells an agent about how long a message lives', () => {
+  const keepsOneDay = /kept (for )?one day/;
+
+  it('says so in the MCP description and in the exported OpenAI one', () => {
+    const mcp = (TOOL_DEFINITIONS.find((tool) => tool.name === 'message') as { description: string }).description;
+    const openai = (exportOpenAITools().find((tool: any) => tool.function.name === 'memesh_message') as any).function.description as string;
+    for (const [where, text] of [['MCP', mcp], ['OpenAI', openai]] as const) {
+      expect(text, where).toMatch(keepsOneDay);
+      expect(text, where).toContain('local archive for one more day');
+      expect(text, where).not.toMatch(/kept forever|never deleted/);
+    }
+    expect(mcp).toContain('recorded no intake, ack or disposition and sent no reply');
+    expect(openai).toContain('recorded nothing and did not reply');
+    expect(mcp).toContain('message_expired');
+  });
+});

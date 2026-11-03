@@ -291,6 +291,47 @@ CREATE TABLE IF NOT EXISTS agent_retention_facts (
   FOREIGN KEY (message_id) REFERENCES agent_messages(message_id) ON DELETE CASCADE
 );
 
+-- One-day message expiry (src/core/agent-message-expiry.ts). Neither table is
+-- tied to agent_messages by a foreign key: they must outlive the rows they
+-- describe. agent_message_expiry_runs is the record of every pass, including
+-- the ones that did nothing; agent_message_expiries keeps only the id of a
+-- deleted message (no content) for a bounded time, so a
+-- later read of, or reply to, that id gets a specific answer: its sender and
+-- recipient are kept only to decide who may be told that.
+CREATE TABLE IF NOT EXISTS agent_message_expiry_runs (
+  run_id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  started_at_ms           INTEGER NOT NULL,
+  finished_at_ms          INTEGER NOT NULL,
+  trigger_source          TEXT NOT NULL,
+  outcome                 TEXT NOT NULL,
+  expired_message_count   INTEGER NOT NULL DEFAULT 0,
+  unread_message_count    INTEGER NOT NULL DEFAULT 0,
+  notice_count            INTEGER NOT NULL DEFAULT 0,
+  presence_fact_count     INTEGER NOT NULL DEFAULT 0,
+  connection_count        INTEGER NOT NULL DEFAULT 0,
+  backup_path             TEXT,
+  detail                  TEXT
+);
+
+-- One row, held by the process that is running a pass; it runs out so a
+-- process that was killed does not block the next one.
+CREATE TABLE IF NOT EXISTS agent_message_expiry_lease (
+  lease_id                INTEGER PRIMARY KEY CHECK (lease_id = 1),
+  holder                  TEXT NOT NULL,
+  expires_at_ms           INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS agent_message_expiries (
+  message_id              TEXT PRIMARY KEY,
+  project                 TEXT NOT NULL,
+  created_at              TIMESTAMP NOT NULL,
+  expired_at_ms           INTEGER NOT NULL,
+  was_read                INTEGER NOT NULL,
+  notice_message_id       TEXT,
+  sender                  TEXT,
+  recipient               TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_agent_message_events_recipient_sequence
   ON agent_message_events(project, recipient, event_sequence);
 CREATE INDEX IF NOT EXISTS idx_agent_message_deliveries_scope
@@ -304,6 +345,23 @@ CREATE INDEX IF NOT EXISTS idx_agent_principals_activation
 CREATE INDEX IF NOT EXISTS idx_agent_session_connections_active
   ON agent_session_connections(project, principal_id, session_instance_id, lease_expires_at_ms)
   WHERE disconnected_at IS NULL;
+-- A message delete cascades through these three tables. Each is searched by a
+-- column no existing index leads with, so without them every deleted message
+-- scans the whole table (20000 expired messages took minutes).
+CREATE INDEX IF NOT EXISTS idx_agent_message_receipts_message
+  ON agent_message_receipts(message_id);
+CREATE INDEX IF NOT EXISTS idx_agent_message_events_message
+  ON agent_message_events(message_id);
+CREATE INDEX IF NOT EXISTS idx_agent_message_events_delivery
+  ON agent_message_events(delivery_id);
+-- The expiry pass asks, for every message it is about to delete, whether a reply
+-- points at it.
+CREATE INDEX IF NOT EXISTS idx_agent_messages_reply_to
+  ON agent_messages(reply_to_message_id) WHERE reply_to_message_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_agent_messages_created
+  ON agent_messages(created_at);
+CREATE INDEX IF NOT EXISTS idx_agent_message_expiry_runs_started
+  ON agent_message_expiry_runs(started_at_ms);
 CREATE INDEX IF NOT EXISTS idx_agent_dispatch_attempts_delivery
   ON agent_dispatch_attempts(delivery_id, attempt_number);
 CREATE INDEX IF NOT EXISTS idx_agent_workflow_facts_delivery_created
@@ -518,6 +576,18 @@ export function migrateEntitiesSchema(db: MemeshDatabase): void {
     safeAlter(db, sql);
     messageColumns.add(column);
   };
+  // The expiry table shipped (unreleased) without these two; a database that
+  // already created it gets them here.
+  const expiryColumns = new Set(
+    (db.prepare("PRAGMA table_info(agent_message_expiries)").all() as Array<{ name: string }>).map(
+      (column) => column.name,
+    ),
+  );
+  for (const column of ['sender', 'recipient']) {
+    if (expiryColumns.size > 0 && !expiryColumns.has(column)) {
+      safeAlter(db, `ALTER TABLE agent_message_expiries ADD COLUMN ${column} TEXT`);
+    }
+  }
   addMessageColumn('payload_sha256', 'ALTER TABLE agent_messages ADD COLUMN payload_sha256 TEXT');
   addMessageColumn('payload_original_bytes', 'ALTER TABLE agent_messages ADD COLUMN payload_original_bytes INTEGER');
   addMessageColumn('payload_tombstoned_at', 'ALTER TABLE agent_messages ADD COLUMN payload_tombstoned_at TIMESTAMP');

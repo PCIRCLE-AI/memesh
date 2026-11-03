@@ -6,6 +6,7 @@ import {
   AgentMessageAccessError,
   AgentMessagingError,
   AgentNativeMessageTooLargeError,
+  expiredMessageErrorFor,
   fetchAgentMessage,
   pollAgentEvents,
   readAgentMessageReceipts,
@@ -274,6 +275,8 @@ function resolveCanonicalDelivery(
     WHERE project = ? AND recipient = ? AND message_id = ?
   `).get(project, recipient, messageId) as CanonicalDeliveryScope | undefined;
   if (!delivery) {
+    const expired = expiredMessageErrorFor(db, project, recipient, messageId, 'read');
+    if (expired) throw expired;
     throw new AgentMessageAccessError(
       `Agent message ${messageId} is not available to recipient ${recipient} in project ${project}.`,
     );

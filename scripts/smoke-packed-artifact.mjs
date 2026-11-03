@@ -1039,7 +1039,7 @@ fs.writeFileSync(process.env.MEMESH_CODEX_QUEUE_CAPTURE, JSON.stringify({ thread
     assert.equal(fs.readFileSync(queueCapture, 'utf8'), JSON.stringify(queued), 'the active host received a wakeup for another principal');
 
     const storageReport = JSON.parse(execFileSync(installedBin('memesh'), [
-      'message', 'storage', 'report', '--cutoff', '2026-01-01T00:00:00.000Z',
+      'message', 'storage', 'report',
     ], {
       cwd: consumerDir,
       env: nativeEnv,
@@ -1047,17 +1047,8 @@ fs.writeFileSync(process.env.MEMESH_CODEX_QUEUE_CAPTURE, JSON.stringify({ thread
     }));
     assert.equal(storageReport.message_count, 2, 'installed storage report did not see both durable messages');
     assert.equal(storageReport.protected_unresolved_message_count, 2, 'installed storage report did not protect unresolved messages');
-    assert.equal(storageReport.policy.automatic_pruning, false, 'installed storage report claimed automatic pruning');
-
-    const storageDryRun = JSON.parse(execFileSync(installedBin('memesh'), [
-      'message', 'storage', 'prune', '--cutoff', '2026-01-01T00:00:00.000Z', '--batch-size', '1',
-    ], {
-      cwd: consumerDir,
-      env: nativeEnv,
-      encoding: 'utf8',
-    }));
-    assert.equal(storageDryRun.dry_run, true, 'installed storage prune was not dry-run by default');
-    assert.equal(storageDryRun.tombstoned_count, 0, 'installed dry-run changed message payloads');
+    assert.equal(storageReport.policy.retention, 'one day from creation, then deleted', 'installed storage report did not state the one-day rule');
+    assert.equal(storageReport.expired_pending_message_count, 0, 'installed storage report found messages past their day in a fresh smoke database');
 
     let quotaFailure;
     try {
@@ -1080,7 +1071,7 @@ fs.writeFileSync(process.env.MEMESH_CODEX_QUEUE_CAPTURE, JSON.stringify({ thread
     assert.ok(quotaFailure, 'installed over-quota send unexpectedly succeeded');
     assert.match(String(quotaFailure.stderr), /Agent message storage quota exceeded/);
     const afterQuota = JSON.parse(execFileSync(installedBin('memesh'), [
-      'message', 'storage', 'report', '--cutoff', '2026-01-01T00:00:00.000Z',
+      'message', 'storage', 'report',
     ], { cwd: consumerDir, env: nativeEnv, encoding: 'utf8' }));
     assert.equal(afterQuota.message_count, 2, 'installed quota rejection left a partial message');
 

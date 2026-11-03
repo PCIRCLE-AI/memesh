@@ -3,7 +3,8 @@
 import { timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { closeDatabase, openDatabase } from '../db.js';
+import { closeDatabase, getDatabase, isDatabaseOpen, openDatabase } from '../db.js';
+import { startAgentMessageExpiryScheduler } from '../core/agent-message-expiry.js';
 import { AgentRouter, AgentRouterError, AGENT_ROUTER_SOCKET_PATH_MAX_BYTES, type AgentHostRegistration } from '../core/agent-router.js';
 import { createCodexCliQueueAdapter } from '../host-adapters/codex-cli-queue.js';
 import { getAgentRouterSocketPath, getMemeshDirFromDbPath } from '../core/paths.js';
@@ -69,7 +70,13 @@ try {
   reportFailure(error);
 }
 
+// Messages are kept one day (agent-message-expiry.ts). The router is the
+// long-lived process that has the database open, so it runs the pass: shortly
+// after start (the socket is already listening by then) and every few minutes.
+let stopExpiry: () => void = () => undefined;
+
 async function shutdown(): Promise<void> {
+  stopExpiry();
   await router.stop();
   closeDatabase();
 }
@@ -77,4 +84,6 @@ async function shutdown(): Promise<void> {
 process.once('SIGINT', () => { void shutdown().finally(() => process.exit(0)); });
 process.once('SIGTERM', () => { void shutdown().finally(() => process.exit(0)); });
 
-router.start().catch(reportFailure);
+router.start().then(() => {
+  stopExpiry = startAgentMessageExpiryScheduler(() => (isDatabaseOpen() ? getDatabase() : null), { trigger: 'router' });
+}).catch(reportFailure);

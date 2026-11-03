@@ -102,9 +102,9 @@ requireText('src/transports/schemas.ts', ['target_kind', "z.enum(['principal', '
 requireText('dist/transports/schemas.js', ['target_kind', "z.enum(['principal', 'session'])"]);
 requireText('src/transports/agent-messaging.ts', ['target_kind: input.target_kind', 'recipient_unavailable', 'native_accepted']);
 requireText('dist/transports/agent-messaging.js', ['target_kind: input.target_kind', 'recipient_unavailable', 'native_accepted']);
-requireText('src/transports/cli/cli.ts', ['messageStorageCmd', 'storage', 'report', 'prune', 'automatic_pruning']);
-requireText('src/core/agent-message-storage.ts', ['protected_unresolved_message_count', 'terminal_prunable_message_count', 'storage_quota_exceeded']);
-requireText('dist/core/agent-message-storage.js', ['protected_unresolved_message_count', 'terminal_prunable_message_count', 'storage_quota_exceeded']);
+requireText('src/transports/cli/cli.ts', ['messageStorageCmd', 'storage', 'report', 'one day from creation, then deleted']);
+requireText('src/core/agent-message-storage.ts', ['protected_unresolved_message_count', 'expired_pending_message_count', 'storage_quota_exceeded']);
+requireText('dist/core/agent-message-storage.js', ['protected_unresolved_message_count', 'expired_pending_message_count', 'storage_quota_exceeded']);
 
 // Router/session semantics are a separate lifecycle from durable receipts.
 requireText('src/core/agent-router.ts', [

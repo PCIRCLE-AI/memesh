@@ -37,6 +37,7 @@ import {
 } from './capture-liveness.js';
 import { guardFromMetadata } from './guards.js';
 import { getAgentMessageStorageReport } from './agent-message-storage.js';
+import { AGENT_MESSAGE_EXPIRY_INTERVAL_MS, databaseFile, lastAgentMessageExpiryRun, latestAgentMessageExpiryArchive } from './agent-message-expiry.js';
 import { readHostConfigFile } from '../host-runtime/config.js';
 
 export type DoctorCheckStatus = 'pass' | 'warn' | 'fail';
@@ -162,12 +163,12 @@ interface DoctorOptions {
   envImpl?: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
   /**
-   * Optional owner-supplied message-storage policy. Doctor reports it but
-   * never enables it, schedules retention, or changes the database.
+   * Optional owner-supplied message-storage quota. Doctor reports it but
+   * never enables it or changes the database. (Retention is not a policy: a
+   * message is always kept one day.)
    */
   agentMessageStoragePolicy?: {
     storage_quota_bytes?: number;
-    retention_cutoff?: Date | string;
   };
   /**
    * Test seam: probe that the built-in SQLite runtime can open a database.
@@ -406,11 +407,7 @@ function inspectAgentMessageStorage(
     ).get() as { present?: number } | undefined;
     if (!present?.present) return undefined;
 
-    // A cutoff is policy, not a diagnostic default. Epoch is only an inert
-    // placeholder needed by the report's classifier; without an owner cutoff
-    // doctor deliberately does not present an age-prunable count.
-    const cutoff = policy?.retention_cutoff ?? new Date(0);
-    const report = getAgentMessageStorageReport(db, { cutoff, databasePath });
+    const report = getAgentMessageStorageReport(db, { databasePath });
     const quota = policy?.storage_quota_bytes;
     const invalidQuota = quota !== undefined && (!Number.isSafeInteger(quota) || quota < 0);
     const quotaText = quota === undefined
@@ -418,10 +415,9 @@ function inspectAgentMessageStorage(
       : !invalidQuota
         ? `quota ${formatStorageBytes(quota)} (${formatStorageBytes(report.payload_bytes)} logical payload used)`
         : 'configured quota is invalid';
-    const retentionText = policy?.retention_cutoff === undefined
-      ? 'retention policy not configured; terminal-prunable payload was not evaluated'
-      : `retention cutoff ${String(policy.retention_cutoff)}; ${report.terminal_prunable_message_count} terminal message(s) `
-        + `(${formatStorageBytes(report.terminal_prunable_payload_bytes)}) are prunable by that owner policy`;
+    const retentionText = report.expired_pending_message_count === 0
+      ? 'messages are kept one day, then deleted'
+      : `messages are kept one day, then deleted; ${report.expired_pending_message_count} past that are waiting for the next expiry pass`;
     const walText = report.wal_file_bytes === null
       ? 'WAL size unavailable'
       : `WAL ${formatStorageBytes(report.wal_file_bytes)}`;
@@ -433,7 +429,7 @@ function inspectAgentMessageStorage(
       `${report.message_count} message(s), ${formatStorageBytes(report.payload_bytes)} logical payload `
       + `(${report.protected_unresolved_message_count} unresolved/protected); ${formatStorageBytes(report.reusable_freelist_bytes)} `
       + `SQLite freelist reusable; ${databaseText}; ${walText}; ${quotaText}; ${retentionText}. `
-      + 'Doctor only read this state: it did not prune payloads, checkpoint WAL, or run VACUUM.';
+      + 'Doctor only read this state: it did not delete messages, checkpoint WAL, or run VACUUM.';
 
     if (invalidQuota) {
       return createCheck(
@@ -453,6 +449,96 @@ function inspectAgentMessageStorage(
   } catch {
     // This diagnostic must not turn a healthy database row into a duplicate
     // database failure merely because a pre-message schema cannot report it.
+    return undefined;
+  }
+}
+
+/**
+ * The one-day message expiry (core/agent-message-expiry.ts): when the last pass
+ * ran, what it did, and whether it is keeping up. Read-only. A pass records
+ * itself even when it deletes nothing, so "no row" means none has run on this
+ * database, not that one ran and said nothing.
+ */
+function inspectAgentMessageExpiry(db: MemeshDatabase, nowMs: number = Date.now()): DoctorCheck | undefined {
+  try {
+    const present = db.prepare(
+      "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name IN ('agent_messages', 'agent_message_expiry_runs')",
+    ).get() as { n?: number } | undefined;
+    if (present?.n !== 2) return undefined;
+
+    const waiting = getAgentMessageStorageReport(db, {}).expired_pending_message_count;
+    const how = 'It runs by itself while the MeMesh router, MCP server or memesh serve is running; start a MeMesh session and re-run memesh doctor.';
+    // The pass records itself, and a database file this user cannot write cannot even record that:
+    // so doctor looks at the file itself rather than wait for a row that can never be written.
+    const file = databaseFile(db);
+    if (file !== '') {
+      try {
+        fs.accessSync(file, fs.constants.W_OK);
+      } catch {
+        return createCheck('agent_message_expiry', 'Agent message expiry', 'warn',
+          `The database file ${file} cannot be written by this user, so the one-day expiry cannot delete anything (messages past their day are hidden but stay on disk).`,
+          `Make the database writable (for example chmod u+w ${file}), then re-run memesh doctor.`);
+      }
+    }
+    // A pass that wrote its row ("started") and has not finished: still working, or stopped.
+    const stuck = db.prepare(
+      "SELECT started_at_ms, expired_message_count, backup_path FROM agent_message_expiry_runs WHERE outcome = 'started' ORDER BY run_id DESC LIMIT 1",
+    ).get() as { started_at_ms: number; expired_message_count: number; backup_path: string | null } | undefined;
+    const finishedCheck = (): DoctorCheck => {
+      const last = lastAgentMessageExpiryRun(db);
+      if (!last) {
+        return waiting > 0
+          ? createCheck('agent_message_expiry', 'Agent message expiry', 'warn',
+            `No expiry pass has run on this database, and ${waiting} message(s) are past their one day. ${how}`, how)
+          : createInfo('agent_message_expiry', 'Agent message expiry', `No expiry pass has run yet. Messages are kept one day, then deleted. ${how}`);
+      }
+      const ageMs = nowMs - last.finished_at_ms;
+      const ago = ageMs < 90_000 ? 'under a minute ago'
+        : ageMs < 90 * 60_000 ? `${Math.round(ageMs / 60_000)} minute(s) ago`
+          : `${Math.round(ageMs / 3_600_000)} hour(s) ago`;
+      const did = `${last.expired_message_count} message(s) deleted (${last.unread_message_count} with no intake, acknowledgement, disposition or reply; ${last.notice_count} sender notice(s)), `
+        + `${last.presence_fact_count} presence fact(s) and ${last.connection_count} connection(s) cleared`;
+      const latestArchive = latestAgentMessageExpiryArchive(db);
+      const backup = latestArchive
+        ? (fs.existsSync(latestArchive)
+          ? ` Deleted messages are kept one more day in ${latestArchive}.`
+          : ` The archive of deleted messages, ${latestArchive}, is not there any more.`)
+        : '';
+      const summary = `Last pass ${ago} (${last.outcome}, started by ${last.trigger_source}): ${did}.${backup}${last.detail ? ` ${last.detail}.` : ''}`;
+      const failed = last.outcome === 'failed' || last.outcome === 'archive_failed' || last.outcome === 'archive_unavailable'
+        || last.outcome === 'no_message_tables' || last.outcome === 'read_only';
+      if (failed) {
+        return createCheck('agent_message_expiry', 'Agent message expiry', 'warn', summary,
+          'Nothing is deleted while this fails. Read the detail above, fix it (for the archive: free disk space or permissions on the backups folder next to the database; for a read-only database: make it writable), then re-run memesh doctor.');
+      }
+      if (waiting > 0 && ageMs > 2 * AGENT_MESSAGE_EXPIRY_INTERVAL_MS) {
+        return createCheck('agent_message_expiry', 'Agent message expiry', 'warn',
+          `${summary} ${waiting} message(s) are past their one day and the last pass is old. ${how}`, how);
+      }
+      return createInfo('agent_message_expiry', 'Agent message expiry', summary);
+    };
+    if (!stuck) return finishedCheck();
+    const sinceMs = nowMs - stuck.started_at_ms;
+    const since = sinceMs < 90_000 ? 'under a minute ago'
+      : sinceMs < 90 * 60_000 ? `${Math.round(sinceMs / 60_000)} minute(s) ago`
+        : `${Math.round(sinceMs / 3_600_000 * 10) / 10} hour(s) ago`;
+    const old = sinceMs > 10 * 60_000;
+    const unfinished = `A pass started ${since} and has not finished`
+      + (old ? ' (the process running it was probably stopped)' : ' (it is still working, or it was stopped a moment ago)')
+      + `; it had deleted ${stuck.expired_message_count} message(s) when it last saved its count`
+      + (stuck.backup_path && fs.existsSync(stuck.backup_path) ? `, and those are in ${stuck.backup_path}` : '')
+      + '. If it was stopped, the next pass takes over once its lease runs out (at most three minutes after its last batch), closes it as interrupted and carries on.';
+    // Whatever the last finished pass said still counts: a stopped pass must not hide a failure behind it.
+    if (!lastAgentMessageExpiryRun(db)) {
+      return old
+        ? createCheck('agent_message_expiry', 'Agent message expiry', 'warn', unfinished, how)
+        : createInfo('agent_message_expiry', 'Agent message expiry', unfinished);
+    }
+    const before = finishedCheck();
+    return old || before.status !== 'pass'
+      ? createCheck('agent_message_expiry', 'Agent message expiry', 'warn', `${unfinished} ${before.summary}`, before.fix ?? how)
+      : createInfo('agent_message_expiry', 'Agent message expiry', `${unfinished} ${before.summary}`);
+  } catch {
     return undefined;
   }
 }
@@ -3236,6 +3322,9 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
       configuredAgentMessageStoragePolicy(agentMessageStoragePolicy),
     );
     if (messageStorage) dbChecks.push(messageStorage);
+
+    const messageExpiry = inspectAgentMessageExpiry(db as unknown as MemeshDatabase);
+    if (messageExpiry) dbChecks.push(messageExpiry);
 
     const codexQueueDaemon = inspectCodexQueueDaemon(db as unknown as MemeshDatabase);
     if (codexQueueDaemon) dbChecks.push(codexQueueDaemon);

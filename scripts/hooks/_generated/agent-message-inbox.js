@@ -6,6 +6,7 @@
 // always-on capture path survives a missing or stale dist/ while staying
 // byte-locked to core — eliminating the hand-mirror drift behind the P0 FTS bug.
 // ============================================================================
+import { agentMessageExpiryCutoff } from './agent-message-ttl.js';
 import { jsonStringLiteral } from './work-topology.js';
 function hostAcceptedFilter(db, excludeHostAccepted, session) {
     if (!excludeHostAccepted)
@@ -82,13 +83,14 @@ export function unreadDeliveryCount(db, project, recipient, session) {
        WHERE d.project = ?
          AND d.recipient = ?
          ${intended.sql}
+         AND d.created_at >= ?
          AND NOT EXISTS (
            SELECT 1 FROM agent_message_receipts r
            WHERE r.project = d.project
              AND r.recipient = d.recipient
              AND r.message_id = d.message_id
              AND r.receipt_kind = 'intake'
-         )`).get(project, recipient, ...intended.params);
+         )`).get(project, recipient, ...intended.params, agentMessageExpiryCutoff());
         const n = row?.n;
         return typeof n === 'number' && n > 0 ? n : 0;
     }
@@ -170,6 +172,7 @@ export function unreadMessageRefsFor(db, recipient, session, limit = UNREAD_MESS
        WHERE ${match.sql}
          ${intended.sql}
          ${accepted.sql}
+         AND d.created_at >= ?
          AND NOT EXISTS (SELECT 1 FROM json_each(?) excluded WHERE excluded.value = d.message_id)
          AND NOT EXISTS (
            SELECT 1 FROM agent_message_receipts r
@@ -179,7 +182,7 @@ export function unreadMessageRefsFor(db, recipient, session, limit = UNREAD_MESS
              AND r.receipt_kind = 'intake'
          )
        ORDER BY d.project, d.message_id
-       LIMIT ?`).all(...match.params, ...intended.params, ...accepted.params, JSON.stringify(excludeMessageIds), limit);
+       LIMIT ?`).all(...match.params, ...intended.params, ...accepted.params, agentMessageExpiryCutoff(), JSON.stringify(excludeMessageIds), limit);
         return rows.filter((row) => typeof row.project === 'string' && typeof row.message_id === 'string');
     }
     catch (err) {
@@ -217,6 +220,7 @@ export function unreadInboxLinesFor(db, recipient, session, excludeHostAccepted 
        WHERE ${match.sql}
          ${intended.sql}
          ${accepted.sql}
+         AND d.created_at >= ?
          AND NOT EXISTS (
            SELECT 1 FROM agent_message_receipts r
            WHERE r.project = d.project
@@ -226,7 +230,7 @@ export function unreadInboxLinesFor(db, recipient, session, excludeHostAccepted 
          )
        GROUP BY d.project, d.recipient, d.target_kind
        ORDER BY n DESC, d.project, d.recipient
-       LIMIT 5`).all(...match.params, ...intended.params, ...accepted.params);
+       LIMIT 5`).all(...match.params, ...intended.params, ...accepted.params, agentMessageExpiryCutoff());
         return rows.flatMap((row) => typeof row.project === 'string' && typeof row.recipient === 'string' && typeof row.n === 'number' && row.n > 0
             ? unreadInboxLines(row.n, row.project, row.recipient, undefined, row.target_kind === 'session' ? 'session' : 'principal')
             : []);

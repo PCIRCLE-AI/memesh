@@ -3,13 +3,14 @@ import express from 'express';
 import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
 import { randomBytes, timingSafeEqual } from 'crypto';
-import { openDatabase, closeDatabase, getDatabase, } from '../../db.js';
+import { openDatabase, closeDatabase, getDatabase, isDatabaseOpen, } from '../../db.js';
 import { remember, recallWithConflicts, forget, exportMemories, importMemories, learn, shownEntity, } from '../../core/operations.js';
 import { KnowledgeGraph } from '../../knowledge-graph.js';
 import { MEMORY_DATA_NOTICE } from '../../core/work-topology.js';
 import { readConfig, updateConfig, } from '../../core/config.js';
 import { SESSION_LIMIT_MIN, SESSION_LIMIT_MAX } from '../../core/session-limit.js';
 import { AGENT_SCOPE_ID_MAX_LENGTH } from '../../core/agent-scope-id.js';
+import { startAgentMessageExpiryScheduler } from '../../core/agent-message-expiry.js';
 import { BRIEFING_LEVELS } from '../../core/briefing-level.js';
 import { isDoctorFixPermissionError, PluginRefreshBudgetError, removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
 import { computePatterns } from '../../core/patterns.js';
@@ -750,6 +751,10 @@ export function startServer(host = HOST, port = PORT, opts) {
         process.exit(1);
     });
     serverAuthRequired.set(server, isRemote);
+    if (opts?.agentMessageExpiry === true) {
+        const stopExpiry = startAgentMessageExpiryScheduler(() => (isDatabaseOpen() ? getDatabase() : null), { trigger: 'http-serve' });
+        server.on('close', stopExpiry);
+    }
     return server;
 }
 export function __setRemoteTokenForTest(value) {
@@ -761,7 +766,7 @@ const isMain = process.env.MEMESH_CLI_SERVE !== '1'
 if (isMain || process.argv[1]?.endsWith('memesh-http')) {
     let server;
     try {
-        server = startServer();
+        server = startServer(undefined, undefined, { agentMessageExpiry: true });
     }
     catch (err) {
         console.error(`MeMesh: ${err instanceof Error ? err.message : String(err)}`);

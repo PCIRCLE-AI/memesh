@@ -48,6 +48,9 @@ const SOURCES = [
   { from: 'dist/core/title.js', to: 'title.js', src: 'src/core/title.ts' },
   { from: 'dist/core/work-topology.js', to: 'work-topology.js', src: 'src/core/work-topology.ts' },
   { from: 'dist/core/task-state.js', to: 'task-state.js', src: 'src/core/task-state.ts' },
+  // The one-day message lifetime: the unread count the hooks print must not
+  // count a message the expiry pass has not deleted yet.
+  { from: 'dist/core/agent-message-ttl.js', to: 'agent-message-ttl.js', src: 'src/core/agent-message-ttl.ts' },
   { from: 'dist/core/agent-message-inbox.js', to: 'agent-message-inbox.js', src: 'src/core/agent-message-inbox.ts' },
   { from: 'dist/core/repo-state.js', to: 'repo-state.js', src: 'src/core/repo-state.ts' },
   { from: 'dist/core/guards.js', to: 'guards.js', src: 'src/core/guards.ts' },

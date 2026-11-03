@@ -68,9 +68,6 @@ describe('CLI error envelopes: caller mistakes are one line, not a crash', () =>
     ['message', 'discover', '--project', 'owned-errors', '--limit', '101'],
     ['message', 'watch', '--project', 'owned-errors', '--recipient', 'owned-reader', '--wait-ms', '99999'],
     ['message', 'watch', '--project', 'owned-errors', '--recipient', 'owned-reader', '--limit', '101'],
-    ['message', 'storage', 'report', '--cutoff', 'notadate'],
-    ['message', 'storage', 'prune', '--cutoff', 'notadate'],
-    ['message', 'storage', 'prune', '--cutoff', '2100-01-01T00:00:00Z', '--batch-size', '1001'],
     ['agent', 'setup', 'codex-session', '--principal', 'owned-reader', '--workspace', '/no/such/owned-workspace'],
   ])('reports the caller error without a crash or schema dump: %j', (...args) => {
     const r = runCli(args);

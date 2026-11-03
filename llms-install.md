@@ -78,19 +78,19 @@ session. The ordinary Codex path below is the documented bounded native queue
 path; `poll`/`watch` and cursor recovery remain available for compatibility and
 diagnosis.
 
-Message storage remains owner-controlled. There is no default quota or
-automatic pruning. To inspect it after installation:
+A message is kept for one day, read or not, and MeMesh deletes it by itself
+(its sender is told when the recipient recorded nothing and did not reply); what
+it deletes is kept in a local archive for one more day. Nothing is configured. To inspect
+storage and the last cleanup after installation:
 
 ```bash
-memesh message storage report --cutoff 2026-08-01T00:00:00Z
-memesh message storage prune --cutoff 2026-08-01T00:00:00Z --batch-size 100
+memesh message storage report
+memesh doctor
 ```
 
-The prune command is a dry-run unless `--apply` is supplied. Only old terminal
-payload content is tombstoned; unresolved/offline-pending messages and all
-lifecycle audit facts are preserved. Set an explicit hard quota for all send
-transports with `MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES=<bytes>`; an
-over-quota send is rejected atomically.
+Set an explicit hard quota for all send transports with
+`MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES=<bytes>`; an over-quota send is
+rejected atomically.
 
 ### Optional: one-time local host setup
 
@@ -184,7 +184,7 @@ work. The notice's routing identifiers, not the body, appear in the `codex queue
 process arguments; still do not send secrets through the native path. If the session is stopped, missing,
 or disconnected, MeMesh neither starts nor replaces it; the durable inbox remains
 available to scoped fetch, cursor recovery, `poll`, and `memesh message watch`
-for audit and diagnosis. Failed exact-session native delivery is not replayed
+for audit and diagnosis, for the one day a message is kept. Failed exact-session native delivery is not replayed
 automatically after a later registration; the sender must retry deliberately.
 
 The following are separate managed-host paths:

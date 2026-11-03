@@ -7,6 +7,7 @@ export declare function isLoopbackRequest(req: {
 export declare function startServer(host?: string, port?: number, opts?: {
     allowRemote?: boolean;
     autoUpdateCheck?: boolean;
+    agentMessageExpiry?: boolean;
     updateCheckImpl?: typeof checkForUpdate;
     lastUpdateCheckImpl?: typeof getLastUpdateCheck;
 }): ReturnType<typeof app.listen>;
