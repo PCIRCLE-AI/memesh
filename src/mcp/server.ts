@@ -15,6 +15,9 @@ import { configureVersionSource, normalizeClientHost } from '../transports/mcp/h
 import { resolveMcpProject } from '../transports/mcp/project-context.js';
 import { startClaudeInboxPresence } from '../host-runtime/claude-inbox.js';
 import type { RouterHostConnection } from '../host-runtime/router-client.js';
+import { accountMemeshDir, dispatchAutoUpdate, logAutoUpdateLine, registerLiveHost } from '../core/auto-update.js';
+import { findPackageRoot } from '../core/package-root.js';
+import { getMemeshDirFromDbPath } from '../core/paths.js';
 
 // This file sits at the same depth (2 levels below the package root) both as
 // TS source (src/mcp/server.ts) and inside the bundled dist/mcp/server.js
@@ -125,9 +128,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
 
 // Start
 async function main() {
+  // The agent that started this server is a running host: the updater waits
+  // for it to exit before it replaces any file (this covers hosts with no hooks).
+  try {
+    // Registered where every data directory looks (the account's own ~/.memesh): the program an update replaces is shared by all of them.
+    registerLiveHost(accountMemeshDir() ?? getMemeshDirFromDbPath(), undefined, getMemeshDirFromDbPath());
+  } catch (err) {
+    // Not fatal for the server, but the updater cannot see this host and may replace files under it: say so.
+    logAutoUpdateLine(getMemeshDirFromDbPath(), `auto-update: could not register this MCP host (${err instanceof Error ? err.message : String(err)}); the updater may not wait for it`);
+  }
   openDatabase();
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  // A host that wires only this server runs no SessionStart hook, so nothing else would start the updater there. It is the same
+  // single entry the hooks and `memesh serve` use: its own throttle, lock and policy decide whether anything happens.
+  try {
+    void dispatchAutoUpdate(findPackageRoot(import.meta.url)).catch((err) => {
+      logAutoUpdateLine(getMemeshDirFromDbPath(), `auto-update: the MCP server could not start the updater (${err instanceof Error ? err.message : String(err)})`);
+    });
+  } catch (err) {
+    logAutoUpdateLine(getMemeshDirFromDbPath(), `auto-update: the MCP server could not start the updater (${err instanceof Error ? err.message : String(err)})`);
+  }
 }
 
 async function shutdown() {

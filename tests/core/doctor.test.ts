@@ -3329,17 +3329,39 @@ describe('shell CLI on PATH check (plugin-without-global gotcha)', () => {
       }
     }
 
-    it('WARNs when the cache was staged from an older commit than the marketplace has, same version', async () => {
+    it('PASSes (nothing to do) when the cache is on the verified release and the marketplace branch has moved ahead, same version', async () => {
       const packageRoot = createPackageRoot();
       tempRoots.push(packageRoot);
       const registry = registryWith(packageRoot, { installPath: packageRoot, version: '4.8.2', gitCommitSha: 'a'.repeat(40) });
       const result = await run(packageRoot, registry, 'b'.repeat(40));
       const check = result.checks.find((c) => c.id === 'plugin-cache');
-      expect(check?.status).toBe('warn');
-      expect(check?.code).toBe('plugin-cache.stale');
+      expect(check?.status).toBe('pass');
+      expect(check?.code).toBe('plugin-cache.behind-marketplace');
       expect(check?.summary).toContain('aaaaaaaa');
       expect(check?.summary).toContain('bbbbbbbb');
-      expect(check?.fix).toContain('memesh upgrade-plugin');
+      expect(check?.summary).toContain('Nothing to do');
+      // Not damage, and not something to "refresh": the cache stays on the release that was verified. The old advice ran the
+      // unpinned upgrade script, which installed the marketplace's current (unreleased, unchecked) branch.
+      expect(check?.fix).toBeUndefined();
+      expect(check?.summary).not.toContain('upgrade-plugin');
+      expect(check?.summary).not.toContain('marketplace upgrade');
+      expect(check?.fixId, 'a marketplace that moved ahead must not offer an automatic repair that installs unchecked code').toBeUndefined();
+    });
+
+    it('WARNs, and names the reinstall, when Claude Code\'s record says another version than the plugin that is running (cache and record disagree)', async () => {
+      const packageRoot = createPackageRoot(); // runs as 4.8.2
+      writeJson(path.join(packageRoot, 'package.json'), { name: '@pcircle/memesh', version: '4.8.2' });
+      tempRoots.push(packageRoot);
+      const registry = registryWith(packageRoot, { installPath: packageRoot, version: '4.8.1', gitCommitSha: 'a'.repeat(40) });
+      const result = await run(packageRoot, registry, 'b'.repeat(40));
+      const check = result.checks.find((c) => c.id === 'plugin-cache');
+      expect(check?.status).toBe('warn');
+      expect(check?.code).toBe('plugin-cache.stale');
+      expect(check?.summary).toContain('4.8.1');
+      expect(check?.summary).toContain('4.8.2');
+      expect(check?.fix).toContain('memesh update --reinstall');
+      expect(check?.fix).not.toContain('upgrade-plugin');
+      expect(check?.fix).not.toContain('marketplace upgrade');
     });
 
     it('PASSes when the registry commit is the marketplace HEAD', async () => {
@@ -3560,14 +3582,13 @@ describe('shell CLI on PATH check (plugin-without-global gotcha)', () => {
       });
       const check = result.checks.find((c) => c.id === 'plugin-cache');
       expect(seenHosts).toEqual(['codex']);
-      expect(check?.status).toBe('warn');
-      expect(check?.code).toBe('plugin-cache.stale');
+      expect(check?.status).toBe('pass');
+      expect(check?.code).toBe('plugin-cache.behind-marketplace');
       expect(check?.summary).toContain('Codex');
-      expect(check?.fix).toMatch(/codex plugin marketplace upgrade pcircle-memesh && codex plugin add memesh@pcircle-memesh/);
-      // `add` replaces a same-version cache atomically (verified on codex-cli
-      // 0.150.1); a `remove` first would leave nothing installed if `add` failed.
-      expect(check?.fix).not.toContain('remove');
-      expect(check?.fix).not.toContain('upgrade-plugin');
+      expect(check?.summary).toContain('memesh update');
+      // Neither host command that installs the marketplace's current branch.
+      expect(check?.summary).not.toContain('marketplace upgrade');
+      expect(check?.summary).not.toContain('upgrade-plugin');
       expect(check?.params).toMatchObject({ host: 'Codex', installed: 'aaaaaaaa', marketplace: 'bbbbbbbb' });
     });
 
@@ -3585,11 +3606,12 @@ describe('shell CLI on PATH check (plugin-without-global gotcha)', () => {
         const result = await runWithDefaultDiscovery(packageRoot);
         const check = result.checks.find(c => c.id === 'plugin-cache-codex');
         expect(check, JSON.stringify(result.checks.map(c => c.id))).toBeDefined();
-        expect(check?.status).toBe('warn');
-        expect(check?.code).toBe('plugin-cache.stale');
+        expect(check?.status).toBe('pass');
+        expect(check?.code).toBe('plugin-cache.behind-marketplace');
         expect(check?.summary).toContain('aaaaaaaa');
         expect(check?.summary).toContain('bbbbbbbb');
-        expect(check?.fix).toContain('codex plugin marketplace upgrade pcircle-memesh');
+        expect(check?.summary).toContain('memesh update');
+        expect(check?.summary).not.toContain('marketplace upgrade');
       });
     });
 
@@ -3656,9 +3678,10 @@ describe('shell CLI on PATH check (plugin-without-global gotcha)', () => {
         { host: 'codex', packageRoot: codexRoot },
       ], 'b'.repeat(40));
       expect(result.checks.find((c) => c.id === 'plugin-cache-claude-code')?.status).toBe('pass');
-      expect(result.checks.find((c) => c.id === 'plugin-cache-codex')?.status).toBe('warn');
-      expect(result.checks.find((c) => c.id === 'plugin-cache-codex')?.code).toBe('plugin-cache.stale');
-      expect(result.checks.find((c) => c.id === 'plugin-cache-codex')?.fix).toContain('codex plugin marketplace upgrade pcircle-memesh');
+      expect(result.checks.find((c) => c.id === 'plugin-cache-codex')?.status).toBe('pass');
+      expect(result.checks.find((c) => c.id === 'plugin-cache-codex')?.code).toBe('plugin-cache.behind-marketplace');
+      expect(result.checks.find((c) => c.id === 'plugin-cache-codex')?.summary).toContain('memesh update');
+      expect(result.checks.find((c) => c.id === 'plugin-cache-codex')?.summary).not.toContain('marketplace upgrade');
     });
 
     it('WARNs an installed host when either revision is unverifiable', async () => {
@@ -3853,7 +3876,10 @@ describe('shell CLI on PATH check (plugin-without-global gotcha)', () => {
         { host: 'claude-code', packageRoot: second, installedPluginsPath: registry },
       ]);
       expect(result.checks.find(c => c.id === 'plugin-cache-claude-code')?.status).toBe('pass');
-      expect(result.checks.find(c => c.id === 'plugin-cache-claude-code-2')?.status).toBe('warn');
+      // The second scope's cache is on an older commit than the marketplace's: not damage, so it passes, with its own row and its own code.
+      expect(result.checks.find(c => c.id === 'plugin-cache-claude-code-2')?.status).toBe('pass');
+      expect(result.checks.find(c => c.id === 'plugin-cache-claude-code-2')?.code).toBe('plugin-cache.behind-marketplace');
+      expect(result.checks.find(c => c.id === 'plugin-cache-claude-code')?.code).toBeUndefined();
     });
 
     it('default discovery warns for a missing cache and mixed invalid scope', async () => {
@@ -3874,7 +3900,10 @@ describe('shell CLI on PATH check (plugin-without-global gotcha)', () => {
         expect(result.checks.find(c => c.id === 'plugin-cache-claude-code')?.status).toBe('pass');
         expect(result.checks.find(c => c.id === 'plugin-cache-claude-code-2')?.code).toBe('plugin-cache.unverifiable');
         expect(result.checks.find(c => c.id === 'plugin-cache-claude-code-3')?.code).toBe('plugin-cache.unverifiable');
-        expect(result.checks.find(c => c.id === 'plugin-cache-claude-code-2')?.fix).toContain('memesh upgrade-plugin');
+        // The repair is the verified reinstall: the old one re-staged the marketplace's current, unchecked branch.
+        expect(result.checks.find(c => c.id === 'plugin-cache-claude-code-2')?.fix).toContain('memesh update --reinstall');
+        expect(result.checks.find(c => c.id === 'plugin-cache-claude-code-2')?.fix).not.toContain('upgrade-plugin');
+        expect(result.checks.find(c => c.id === 'plugin-cache-claude-code-2')?.fixId).toBe('plugin-cache-refresh');
       });
     });
   });
@@ -4001,8 +4030,9 @@ describe('npm-global vs. discovered plugin-cache version skew (F3/F5)', () => {
     ], stale ? 'd'.repeat(40) : sha);
 
     const check = result.checks.find((c) => c.id === 'plugin-cache-claude-code');
-    expect(check?.status).toBe(stale ? 'warn' : 'pass');
-    if (stale) expect(check?.code).toBe('plugin-cache.stale');
+    expect(check?.status).toBe('pass');
+    if (stale) expect(check?.code).toBe('plugin-cache.behind-marketplace');
+    // Version skew is no reason to tell anybody to update: a marketplace that moved ahead says nothing is needed.
     expect(check?.fix ?? '').not.toContain('memesh update');
   });
 
@@ -4774,5 +4804,246 @@ describe('doctor rows that had no assertion', () => {
       expect(check.summary, 'the privacy sentence is the reason this row exists')
         .toContain('Never transmitted automatically');
     });
+  });
+});
+
+describe('doctor: automatic updates', () => {
+  async function auto(state: Record<string, unknown> | null, support: Record<string, unknown> = { label: 'npm global', canSelfUpdate: false }, extra: { setup?: (dataDir: string) => void; policy?: string } = {}) {
+    const root = createPackageRoot();
+    tempRoots.push(root);
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-doctor-au-'));
+    tempRoots.push(dataDir);
+    if (state) fs.writeFileSync(path.join(dataDir, 'auto-update-state.json'), JSON.stringify(state));
+    extra.setup?.(dataDir);
+    const saved = process.env.MEMESH_DB_PATH;
+    const savedPolicy = process.env.MEMESH_AUTO_UPDATE;
+    process.env.MEMESH_DB_PATH = path.join(dataDir, 'knowledge-graph.db');
+    process.env.MEMESH_AUTO_UPDATE = extra.policy ?? 'off';
+    try {
+      const result = await runDoctor({
+        packageRoot: root, packageVersion: '4.0.3',
+        openDatabaseImpl: () => makeDatabase(0) as never,
+        closeDatabaseImpl: () => undefined,
+        getConfigPathImpl: () => path.join(root, 'config.json'),
+        getUpdateCheckImpl: async () => makeUpdateCheck(),
+        getCurrentInstallChannelImpl: () => 'npm-global',
+        getInstallChannelSupportImpl: () => support as never,
+        nativeBindingProbeImpl: () => ({ ok: true }),
+        resolveShellMemeshImpl: () => null,
+      });
+      return result.checks.find((check) => check.id === 'auto-update');
+    } finally {
+      if (saved === undefined) delete process.env.MEMESH_DB_PATH; else process.env.MEMESH_DB_PATH = saved;
+      if (savedPolicy === undefined) delete process.env.MEMESH_AUTO_UPDATE; else process.env.MEMESH_AUTO_UPDATE = savedPolicy;
+    }
+  }
+
+  it('reports the setting and that nothing has run yet', async () => {
+    expect(await auto(null)).toMatchObject({ status: 'pass', summary: expect.stringContaining('off') });
+  });
+
+  it('shows the last attempt, and warns only when it failed', async () => {
+    const base = { at: '2026-11-03T00:00:00.000Z', from: '4.12.0', to: '4.13.0', channel: 'npm-global', backup: null };
+    const skipped = await auto({ ...base, outcome: 'skipped', reason: 'policy is off' });
+    expect(skipped).toMatchObject({ status: 'pass', summary: expect.stringContaining('skipped — policy is off') });
+    const failed = await auto({ ...base, outcome: 'failed', reason: 'not installed: the package source could not be verified', backup: '/x/pre-update.db' });
+    expect(failed).toMatchObject({ status: 'warn', code: 'auto-update.failed', summary: expect.stringContaining('could not be verified') });
+    expect(failed?.fix).toContain('auto-update.log');
+    // The backup made before the failed install is named, so it is not lost to a reader who only sees the warning.
+    expect(failed?.fix).toContain('/x/pre-update.db');
+  });
+
+  describe('an update that died, a lock left behind, a wait that ran over', () => {
+    const base = { at: '2026-11-03T00:00:00.000Z', from: '4.12.0', to: '4.13.0', channel: 'npm-global', backup: null, outcome: 'skipped', reason: 'policy is off' };
+    const lockFile = (dir: string, pid: number, label: string) => fs.writeFileSync(path.join(dir, 'auto-update.lock'), `token\n${pid}\n${Date.now() - 60_000}\n${label}\n`);
+    const marker = (dir: string, pid: number) => fs.writeFileSync(path.join(dir, 'auto-update-installing.json'), JSON.stringify({ at: '2026-11-03T00:00:00.000Z', from: '4.12.0', to: '4.13.0', pid, started: null }));
+    const GONE = 2_147_483_000;
+
+    it('an install that started and whose process is gone without a result is a warning that names the way back', async () => {
+      const check = await auto(null, undefined, { setup: (d) => marker(d, GONE) });
+      expect(check).toMatchObject({ status: 'warn', code: 'auto-update.interrupted' });
+      expect(check?.summary).toContain('may be half done');
+      expect(check?.summary).toContain('4.12.0 to 4.13.0');
+      expect(check?.fix).toContain('memesh update --reinstall');
+      expect(check?.fix).toContain('backups');
+    });
+
+    it('the same marker with its process still running is an install in progress, not a warning', async () => {
+      const check = await auto({ ...base }, undefined, { setup: (d) => marker(d, process.pid) });
+      expect(check?.status).toBe('pass');
+      expect(check?.summary).toContain('An install to 4.13.0 is running now');
+    });
+
+    it('a lock whose owner is gone is said so, with who started it; one whose owner runs is just reported', async () => {
+      const orphan = await auto(null, undefined, { setup: (d) => lockFile(d, GONE, 'manual') });
+      expect(orphan).toMatchObject({ status: 'warn', code: 'auto-update.lock-orphan' });
+      expect(orphan?.summary).toContain('manual update');
+      expect(orphan?.fix).toContain('takes the lock over');
+      const live = await auto({ ...base }, undefined, { setup: (d) => lockFile(d, process.pid, 'auto') });
+      expect(live?.status).toBe('pass');
+      expect(live?.summary).toContain('An update is running now');
+    });
+
+    it('a wait of 3 days or more is a warning (the limit is 3: the runner should have installed), 2 days is not', async () => {
+      const waiting = (days: number) => ({ ...base, outcome: 'waiting', reason: 'waiting: a session is still running; the update is applied after it ends', waitingSince: new Date(Date.now() - days * 86_400_000 - 60_000).toISOString() });
+      const over = await auto(waiting(15));
+      expect(over).toMatchObject({ status: 'warn', code: 'auto-update.wait-overdue' });
+      expect(over?.fix).toContain('does not wait for sessions');
+      expect((await auto(waiting(3)))?.code).toBe('auto-update.wait-overdue');
+      expect(await auto(waiting(2))).toMatchObject({ status: 'pass', summary: expect.stringContaining('waiting for 2 day(s) of the 3 allowed') });
+    });
+
+    it('an install that cannot update itself is not described as one that will', async () => {
+      const check = await auto(null, { channel: 'source-checkout', label: 'source checkout', canSelfUpdate: false, recommendedCommand: null, guidance: 'Update this source checkout from its repository and rebuild it.' }, { policy: 'major' });
+      expect(check?.summary).toContain('cannot update itself, so nothing is installed');
+      expect(check?.summary).toContain('rebuild it');
+      expect(check?.summary).not.toContain('it installs after running sessions end');
+    });
+
+    it('a Hermes copy that failed is still advised on when the update installed after the 3-day wait', async () => {
+      const check = await auto({ ...base, outcome: 'installed', reason: 'installed after waiting 3 days: sessions were still running, so they may use the new files before they restart', hermes: [{ path: '/h/plugins/memesh', outcome: 'failed', reason: 'refused', backup: null }] });
+      expect(check?.code).toBe('auto-update.mixed-versions');
+      expect(check?.fix).toContain('Restart the sessions');
+      expect(check?.fix).toContain('memesh hermes install');
+      expect(check?.fix).toContain('auto-update.log');
+    });
+  });
+
+  it('warns that open sessions may be mixing old and new files after an update that did not wait for them', async () => {
+    const mixed = await auto({ at: '2026-11-03T00:00:00.000Z', from: '4.12.0', to: '4.13.0', channel: 'npm-global', backup: null, outcome: 'installed', reason: 'installed after waiting 3 days: sessions were still running, so they may use the new files before they restart' });
+    expect(mixed).toMatchObject({ status: 'warn', code: 'auto-update.mixed-versions' });
+  });
+  it('says how many of the 3 days a waiting update has used', async () => {
+    const since = new Date(Date.now() - 2 * 86_400_000 - 3_600_000).toISOString();
+    const waiting = await auto({ at: since, from: '4.12.0', to: '4.13.0', channel: 'npm-global', backup: null, outcome: 'waiting', reason: 'waiting: a session is still running; the update is applied after it ends', waitingSince: since });
+    expect(waiting).toMatchObject({ status: 'pass', summary: expect.stringContaining('waiting for 2 day(s) of the 3 allowed') });
+  });
+  it('lists what happened to each Hermes provider copy, and warns only when a refresh failed', async () => {
+    const base = { at: '2026-11-07T00:00:00.000Z', from: '4.12.0', to: '4.13.0', channel: 'npm-global', backup: null, outcome: 'installed', reason: 'installed' };
+    const edited = await auto({ ...base, hermes: [{ path: '/h/plugins/memesh', outcome: 'skipped', reason: 'left alone: files in this copy were changed after MeMesh installed it', backup: null }] });
+    expect(edited).toMatchObject({ status: 'pass', summary: expect.stringContaining('Hermes provider at /h/plugins/memesh: skipped') });
+    const failed = await auto({ ...base, hermes: [{ path: '/h/plugins/memesh', outcome: 'failed', reason: 'the verified package holds no Hermes provider', backup: null }] });
+    expect(failed).toMatchObject({ status: 'warn', code: 'auto-update.hermes-failed' });
+    expect(failed?.fix).toContain('memesh hermes install');
+  });
+  it('tells a rejected package apart (a bare npm install skips the check; memesh update refuses too), and names the install channel\'s command otherwise', async () => {
+    const base = { at: '2026-11-08T00:00:00.000Z', from: '4.12.0', to: '4.13.0', channel: 'npm-global', backup: null, outcome: 'failed' };
+    const rejected = await auto({ ...base, reason: 'not installed: the package source could not be verified' }, { channel: 'npm-global', label: 'npm global', canSelfUpdate: true, recommendedCommand: 'memesh update', guidance: '' });
+    expect(rejected?.fix).toContain('Do not install this version by other means (a bare npm install)');
+    expect(rejected?.fix).toContain('memesh update` runs the same check and will refuse too');
+    const mismatch = await auto({ ...base, reason: 'not installed: the downloaded package does not match the verified one' }, { channel: 'npm-global', label: 'npm global', canSelfUpdate: true, recommendedCommand: 'memesh update', guidance: '' });
+    expect(mismatch?.fix).toContain('Do not install this version by other means (a bare npm install)');
+    // A plugin install is not told about npm: the way that is being refused for it is installing from the marketplace by hand.
+    const plugin = await auto({ ...base, channel: 'plugin-marketplace', reason: 'not installed: the package source could not be verified' }, { channel: 'plugin-marketplace', label: 'Claude Code plugin', canSelfUpdate: true, recommendedCommand: 'memesh update', guidance: '' });
+    expect(plugin?.fix).toContain('installing it from the marketplace yourself');
+    expect(plugin?.fix).not.toContain('npm install');
+    const other = await auto({ ...base, reason: 'install failed' }, { channel: 'plugin-marketplace', label: 'Codex plugin', canSelfUpdate: false, recommendedCommand: 'codex plugin add memesh@pcircle-memesh', guidance: 'Update it from Codex.' });
+    expect(other?.fix).toContain('codex plugin add memesh@pcircle-memesh');
+    expect(other?.fix).not.toContain('memesh update');
+    const none = await auto({ ...base, reason: 'install failed' }, { channel: 'unknown', label: 'unknown', canSelfUpdate: false, recommendedCommand: null, guidance: 'Update the way you installed it.' });
+    expect(none?.fix).toContain('the way you installed MeMesh');
+  });
+
+  it('tells a damaged state file apart from "no attempt yet"', async () => {
+    const none = await auto(null);
+    expect(none).toMatchObject({ status: 'pass', summary: expect.stringContaining('No attempt has run yet') });
+    const root = createPackageRoot();
+    tempRoots.push(root);
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-doctor-au-bad-'));
+    tempRoots.push(dataDir);
+    fs.writeFileSync(path.join(dataDir, 'auto-update-state.json'), '{ not json');
+    const saved = { db: process.env.MEMESH_DB_PATH, policy: process.env.MEMESH_AUTO_UPDATE };
+    process.env.MEMESH_DB_PATH = path.join(dataDir, 'knowledge-graph.db');
+    process.env.MEMESH_AUTO_UPDATE = 'off';
+    try {
+      const result = await runDoctor({
+        packageRoot: root, packageVersion: '4.0.3',
+        openDatabaseImpl: () => makeDatabase(0) as never,
+        closeDatabaseImpl: () => undefined,
+        getConfigPathImpl: () => path.join(root, 'config.json'),
+        getUpdateCheckImpl: async () => makeUpdateCheck(),
+        getCurrentInstallChannelImpl: () => 'npm-global',
+        getInstallChannelSupportImpl: () => ({ label: 'npm global', canSelfUpdate: false }) as never,
+        nativeBindingProbeImpl: () => ({ ok: true }),
+        resolveShellMemeshImpl: () => null,
+      });
+      const check = result.checks.find((c) => c.id === 'auto-update');
+      expect(check).toMatchObject({ status: 'warn', code: 'auto-update.state-unreadable' });
+      expect(check?.summary).not.toContain('No attempt has run yet');
+    } finally {
+      if (saved.db === undefined) delete process.env.MEMESH_DB_PATH; else process.env.MEMESH_DB_PATH = saved.db;
+      if (saved.policy === undefined) delete process.env.MEMESH_AUTO_UPDATE; else process.env.MEMESH_AUTO_UPDATE = saved.policy;
+    }
+  });
+
+  it('warns, with the command to add it back, when the Codex marketplace was removed (it is not added back automatically)', async () => {
+    const row = await auto({ at: '2026-11-08T00:00:00.000Z', from: '4.12.0', to: '4.13.0', channel: 'plugin-marketplace', backup: null, outcome: 'skipped', reason: 'not installed: the Codex marketplace pcircle-memesh is not in config.toml and MeMesh did not remove it, so it was taken as removed on purpose and not added back; `memesh update --reinstall` adds it back (pinned to this release) and installs the plugin' });
+    expect(row).toMatchObject({ status: 'warn', code: 'auto-update.codex-marketplace-missing' });
+    // The pinned way back, never the unpinned add that would install the marketplace's unchecked branch.
+    expect(row?.fix).toContain('memesh update --reinstall');
+    expect(row?.fix).not.toContain('codex plugin add');
+    expect(row?.fix).toContain('If that was on purpose');
+  });
+
+  it('F4: a pin that failed and was undone says the old version still runs and the next run tries again, not "update the way you installed it"', async () => {
+    const row = await auto({ at: '2026-11-08T00:00:00.000Z', from: '4.12.0', to: '4.13.0', channel: 'npm-global', backup: null, outcome: 'failed', reason: 'install ran but its dependencies could not be set to the versions the release pins; the previous version was put back' }, { label: 'npm global', canSelfUpdate: true });
+    expect(row).toMatchObject({ status: 'warn', code: 'auto-update.pin-undone' });
+    expect(row?.fix).toContain('4.12.0 is still what runs');
+    expect(row?.fix).toContain('tries again');
+    expect(row?.fix).not.toContain('update the way you installed');
+  });
+
+  it('F7: an install that cannot update itself is not described as one that "installs after sessions end", even with the setting on', async () => {
+    const row = await auto(null, { label: 'unknown install', canSelfUpdate: false, guidance: 'Update it the way you installed it.' }, { policy: 'major' });
+    expect(row?.summary).toContain('cannot update itself');
+    expect(row?.summary).not.toContain('it installs after running sessions end');
+  });
+
+  it('a Codex marketplace that a failed update removed says so: it is not described as removed on purpose', async () => {
+    const row = await auto({ at: '2026-11-08T00:00:00.000Z', from: '4.12.0', to: '4.13.0', channel: 'plugin-marketplace', backup: null, outcome: 'failed', reason: 'Codex plugin install failed AND MeMesh could not put the marketplace it had removed back (the pcircle-memesh marketplace is now missing because of this update, not because you removed it): the next run puts it back if config.toml is still as this run left it, or run `codex plugin marketplace add PCIRCLE-AI/memesh` yourself' });
+    expect(row).toMatchObject({ status: 'warn', code: 'auto-update.codex-restore-failed' });
+    expect(row?.fix).toContain('not because you removed it');
+    expect(row?.fix).not.toContain('If you removed it on purpose');
+  });
+
+  it('shows the note an attempt carried (a recovered update lock), so it is not only in the state file', async () => {
+    const withNote = await auto({ at: '2026-11-08T00:00:00.000Z', from: '4.12.0', to: null, channel: 'npm-global', backup: null, outcome: 'skipped', reason: 'policy is off', notice: 'the update lock was damaged and untouched for over 15 minutes' });
+    expect(withNote?.summary).toContain('Note: the update lock was damaged');
+    const without = await auto({ at: '2026-11-08T00:00:00.000Z', from: '4.12.0', to: null, channel: 'npm-global', backup: null, outcome: 'skipped', reason: 'policy is off', notice: null });
+    expect(without?.summary).not.toContain('Note:');
+  });
+
+  it('does not crash where the system has no passwd entry for this user, and says why nothing is applied by default', async () => {
+    const savedPolicy = process.env.MEMESH_AUTO_UPDATE;
+    const spy = vi.spyOn(os, 'userInfo').mockImplementation(() => { throw new Error('ENOENT: no passwd entry for this uid'); });
+    try {
+      const root = createPackageRoot();
+      tempRoots.push(root);
+      const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-doctor-nopw-'));
+      tempRoots.push(dataDir);
+      const savedDb = process.env.MEMESH_DB_PATH;
+      process.env.MEMESH_DB_PATH = path.join(dataDir, 'knowledge-graph.db');
+      delete process.env.MEMESH_AUTO_UPDATE;
+      try {
+        const result = await runDoctor({
+          packageRoot: root, packageVersion: '4.0.3',
+          openDatabaseImpl: () => makeDatabase(0) as never,
+          closeDatabaseImpl: () => undefined,
+          getConfigPathImpl: () => path.join(root, 'config.json'),
+          getUpdateCheckImpl: async () => makeUpdateCheck(),
+          getCurrentInstallChannelImpl: () => 'npm-global',
+          getInstallChannelSupportImpl: () => ({ label: 'npm global', canSelfUpdate: false }) as never,
+          nativeBindingProbeImpl: () => ({ ok: true }),
+          resolveShellMemeshImpl: () => null,
+        });
+        const row = result.checks.find((check) => check.id === 'auto-update');
+        expect(row?.summary).toContain('no passwd entry');
+      } finally {
+        if (savedDb === undefined) delete process.env.MEMESH_DB_PATH; else process.env.MEMESH_DB_PATH = savedDb;
+      }
+    } finally {
+      spy.mockRestore();
+      if (savedPolicy === undefined) delete process.env.MEMESH_AUTO_UPDATE; else process.env.MEMESH_AUTO_UPDATE = savedPolicy;
+    }
   });
 });

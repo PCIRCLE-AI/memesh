@@ -66,7 +66,7 @@ const SOURCES = [
   { from: 'dist/core/capture-liveness.js', to: 'capture-liveness.js', src: 'src/core/capture-liveness.ts' },
   // The one update-status resolver (issue #308): SessionStart, UserPromptSubmit,
   // the Stop-hook updater and `memesh status` must agree on what "an update
-  // is available", "snoozed", "just upgraded" and "check failed" mean.
+  // is available", "just upgraded" and "check failed" mean.
   { from: 'dist/core/update-notice.js', to: 'update-notice.js', src: 'src/core/update-notice.ts' },
   { from: 'dist/core/semver.js', to: 'semver.js', src: 'src/core/semver.ts' },
   // The citation contract. Mirrored because a PLUGIN install never runs
@@ -95,6 +95,9 @@ const SOURCES = [
   // keeps it out of its pools) and pre-edit recall must agree on its type, its
   // entity name and its cleaning rules, so they are one mirrored leaf.
   { from: 'dist/core/session-handoff.js', to: 'session-handoff.js', src: 'src/core/session-handoff.ts' },
+  // When a process started, as `ps` prints it with the locale and time zone pinned: the one implementation the update lock, the
+  // registry of running hosts and the Claude launcher check all use (a second copy would drift, and one of them did).
+  { from: 'dist/core/process-identity.js', to: 'process-identity.js', src: 'src/core/process-identity.ts' },
   // The Codex session principal decision (#474 follow-up, cross-host
   // discovery): SessionStart needs the SAME identity `codex-session.ts`
   // registers with the router under, or the hook's address line and the

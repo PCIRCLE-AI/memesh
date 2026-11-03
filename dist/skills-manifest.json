@@ -33,8 +33,8 @@
     },
     {
       "path": "scripts/hooks/_claude-channel.js",
-      "sha256": "a3597f9e4f3a347117a555e2acf94129f97617de4587a61b737011be685a162d",
-      "bytes": 7939
+      "sha256": "1981e419131ab28229ee9663a3344bfb6271be21621b72d03a19af2f04cf50a4",
+      "bytes": 7522
     },
     {
       "path": "scripts/hooks/_clear-alias.js",
@@ -122,6 +122,11 @@
       "bytes": 4047
     },
     {
+      "path": "scripts/hooks/_generated/process-identity.js",
+      "sha256": "d4101f310a3c3259cdd84aab5e5dd02c9d08765e2c5090274d2692c891956f1f",
+      "bytes": 1910
+    },
+    {
       "path": "scripts/hooks/_generated/repo-state.js",
       "sha256": "754d782760c8c12679579a1e7be18c8196cfe31b1b23712215016ec390654c1b",
       "bytes": 3452
@@ -173,8 +178,8 @@
     },
     {
       "path": "scripts/hooks/_generated/update-notice.js",
-      "sha256": "d5230bdbc6b2930993912596a7bc6beb502a4c9c7a4136579284cbe6a3f31f6e",
-      "bytes": 8838
+      "sha256": "83faafeacb9eeb031920a1f290756f6e7c9208a7b6a7e6cf1bea98b4a2289952",
+      "bytes": 7246
     },
     {
       "path": "scripts/hooks/_generated/work-topology.js",
@@ -183,8 +188,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "a9efd05e201f6224a2496d8e2cd582a11186cca0250c4564ba1290385d28efcc",
-      "bytes": 127314
+      "sha256": "513543800b53cd5eaafdcb1f8bfc171c3fb62c134a677b90df3da8d049ef4d5e",
+      "bytes": 116476
     },
     {
       "path": "scripts/hooks/_stop-handoff.js",
@@ -198,8 +203,8 @@
     },
     {
       "path": "scripts/hooks/auto-update-runner.mjs",
-      "sha256": "4be306189df3748f61d46ab32889e61f2ec3545c371165c76fc2abf67e017ada",
-      "bytes": 9267
+      "sha256": "cf627caf6338f8829436656a68b82b22ec5678dec80bae74702f000a559523af",
+      "bytes": 15428
     },
     {
       "path": "scripts/hooks/codex-busy-message-notice.js",
@@ -238,13 +243,13 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "d39c7a9f82d54b0f22bc0c9997fc04e945ef073d7a165f5d5b6ee80198b8676b",
-      "bytes": 98712
+      "sha256": "1c29b35622edc39ae3c3769798d391dda275f172c9ebf20be9948fc98746484a",
+      "bytes": 99474
     },
     {
       "path": "scripts/hooks/session-summary.js",
-      "sha256": "5d3abbaad3a5947c983f38e3686654a3024e1d068a9a7d8b8515a58a7b4b4bcf",
-      "bytes": 39063
+      "sha256": "bc9b2c8c965225a6644064b141edb470a0a955e4f9205edb51df47c798792802",
+      "bytes": 36987
     },
     {
       "path": "scripts/hooks/stop-message-gate.js",
@@ -253,8 +258,8 @@
     },
     {
       "path": "scripts/hooks/user-prompt-intent.js",
-      "sha256": "fa48c5661a9ad1986954d41655291e377a9f368d65d5d7acecdd9e6c10b66385",
-      "bytes": 16039
+      "sha256": "a314ff13fbbb41e9e17d83d12724fe2653ea17a60e995ff4504d45e4c2b600e9",
+      "bytes": 11138
     },
     {
       "path": "skills/memesh-review/SKILL.md",

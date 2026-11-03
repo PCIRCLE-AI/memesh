@@ -5,8 +5,8 @@
  * Issue #308 asks that "first use" mean the first time MeMesh is used in a
  * session, whatever the door. The hooks already had the notice; a host that
  * only wires the MCP server, or a human at the terminal, never saw it. Both
- * now read the same resolver (update-notice.ts) and the same snooze, receipt
- * and "never ask again" state as the hooks, so the four doors agree.
+ * now read the same resolver (update-notice.ts) and the same receipt
+ * and "updates off" state as the hooks, so the four doors agree.
  *
  * Coordination with the hooks: a SessionStart hook that just emitted a
  * notice leaves an `update-prompt-claims/*.json` file; an MCP process that
@@ -22,6 +22,9 @@ import path from 'path';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { memeshDir } from './paths.js';
+import { bumpKind, currentPolicy, policyPermits } from './auto-update.js';
+import { findPackageRoot } from './package-root.js';
+import { getCurrentInstallChannel, getInstallChannelSupport } from './install-channel.js';
 import { getLastUpdateCheck } from './version-check.js';
 import { claimJustUpgradedMarker, resolveUpdateNotice, shouldRefreshUpdateCache, type UpdateNotice } from './update-notice.js';
 
@@ -32,10 +35,44 @@ export const FRESH_CHECK_THROTTLE_MS = 5 * 60 * 1000;
 
 export type EntryPoint = 'mcp' | 'cli';
 
-export function formatUpdateNoticeLine(notice: UpdateNotice): string | null {
+/**
+ * What the notice may say about an available upgrade depends on three things, and a line that ignores them says
+ * something false: whether automatic updates are on, whether this install can update itself at all, and who reads
+ * the line. A person at a terminal may be told the command; a model reading a tool result must not be told to run
+ * it (it would, and update when the owner said off, and without waiting for sessions to end). When automatic updates
+ * are on, the line says the update installs by itself once the running sessions end.
+ */
+export type UpgradeNoticeMode =
+  | { updates: 'on'; door: 'cli' | 'mcp' }
+  /** The owner said off; `unsupported` is set too when this install could not update itself anyway. */
+  | { updates: 'off'; door: 'cli' | 'mcp'; unsupported?: string }
+  /** Automatic updates are on, but the setting (`patch`, `minor`) does not take this release by itself. */
+  | { updates: 'held'; door: 'cli' | 'mcp'; setting: string }
+  | { updates: 'unsupported'; guidance: string; door?: 'cli' | 'mcp' };
+
+export function formatUpdateNoticeLine(notice: UpdateNotice, mode: UpgradeNoticeMode = { updates: 'on', door: 'cli' }): string | null {
   switch (notice.kind) {
-    case 'UPGRADE_AVAILABLE':
-      return `[memesh update] ${notice.latestVersion} is available (you are on ${notice.currentVersion}). Run \`memesh update\`, or reply “Not now” / “Never ask again” in a hooked session.`;
+    case 'UPGRADE_AVAILABLE': {
+      const head = `[memesh update] ${notice.latestVersion} is available (you are on ${notice.currentVersion}).`;
+      if (mode.updates === 'off') {
+        // The model door never gets the command: a model told how to install it may, and the owner said off.
+        if (mode.door === 'mcp') return `${head} Automatic updates are off, so it is not being installed. Do not update on your own.`;
+        // `memesh update` cannot do it on an install that cannot update itself: say that, not a command that would refuse.
+        if (mode.unsupported) return `${head} Automatic updates are off, and MeMesh cannot install it for this install method: ${mode.unsupported}`;
+        return `${head} Automatic updates are off, so it is not being installed; \`memesh update\` installs it when you choose to.`;
+      }
+      if (mode.updates === 'held') {
+        if (mode.door === 'mcp') return `${head} The setting autoUpdate: ${mode.setting} does not install this release by itself, so it is not being installed. Do not update on your own.`;
+        return `${head} The setting autoUpdate: ${mode.setting} does not install this release by itself; \`memesh update\` installs it when you choose to.`;
+      }
+      if (mode.updates === 'unsupported') {
+        // The model door gets no command either: the install method has no safe one, and it must not improvise.
+        if (mode.door === 'mcp') return `${head} MeMesh cannot install it for this install method. Do not update on your own; tell the person.`;
+        return `${head} MeMesh cannot install it for this install method: ${mode.guidance}`;
+      }
+      if (mode.door === 'mcp') return `${head} Automatic updates are on: it is installed by itself after the running sessions end. No action is needed.`;
+      return `${head} Run \`memesh update\` to install it now.`;
+    }
     case 'JUST_UPGRADED':
       return `[memesh update] Upgraded ${notice.from} → ${notice.to}. Processes started before the upgrade keep running ${notice.from} until they restart.`;
     case 'CHECK_FAILED':
@@ -198,6 +235,8 @@ export interface EntryPointNoticeInput {
   updateCheckEnabled?: boolean;
   /** Tests: observe the detached refresh instead of spawning `memesh status`. */
   refresh?: (dir: string, currentVersion: string, now: Date) => boolean;
+  /** Tests: what the install method can do (default: looked up from where this package is installed). null = unknown. */
+  installSupport?: { canSelfUpdate: boolean; guidance: string } | null;
 }
 
 /** How long the MCP door waits before re-reading a cache that had no answer. */
@@ -228,6 +267,27 @@ class ProcessMemo {
     if (!this.set) return;
     for (const entry of [...this.set]) if (entry.startsWith(this.retryPrefix)) this.set.delete(entry);
   }
+}
+
+/** Which kind of upgrade line this process may print: see UpgradeNoticeMode. */
+function upgradeNoticeMode(input: EntryPointNoticeInput, latestVersion: string | null): UpgradeNoticeMode {
+  // An unreadable setting is off here too (resolveUpdatePolicy says so).
+  let policy: ReturnType<typeof currentPolicy>['policy'];
+  try { policy = currentPolicy().policy; } catch { policy = 'off'; }
+  let support = input.installSupport;
+  if (support === undefined) {
+    try {
+      const packageRoot = findPackageRoot(import.meta.url);
+      support = getInstallChannelSupport(getCurrentInstallChannel({ packageRoot }), packageRoot);
+    } catch { support = null; } // unknown is not "cannot": the notice goes on without that claim
+  }
+  const cannot = support && !support.canSelfUpdate ? support.guidance : undefined;
+  if (policy === 'off') return { updates: 'off', door: input.entryPoint, ...(cannot ? { unsupported: cannot } : {}) };
+  // Unknown is not "cannot": only an install that is known to be unable to update itself gets that sentence.
+  if (cannot) return { updates: 'unsupported', guidance: cannot, door: input.entryPoint };
+  // The setting decides which releases install by themselves: say so when this one is not among them.
+  if (latestVersion && !policyPermits(policy, bumpKind(input.currentVersion, latestVersion))) return { updates: 'held', door: input.entryPoint, setting: policy };
+  return { updates: 'on', door: input.entryPoint };
 }
 
 /**
@@ -266,7 +326,7 @@ export function updateNoticeForEntryPoint(input: EntryPointNoticeInput): string 
       return null;
     }
     memo?.decide();
-    if (notice.kind === 'DISABLED' || notice.kind === 'SNOOZED' || notice.kind === 'UP_TO_DATE') return null;
+    if (notice.kind === 'DISABLED' || notice.kind === 'UP_TO_DATE') return null;
 
     // A SessionStart hook said this a moment ago, whatever it said.
     if (input.entryPoint === 'mcp'
@@ -281,7 +341,7 @@ export function updateNoticeForEntryPoint(input: EntryPointNoticeInput): string 
       if (!claimed) return null;
       return formatUpdateNoticeLine({ ...notice, from: claimed.from, to: claimed.to });
     }
-    return formatUpdateNoticeLine(notice);
+    return formatUpdateNoticeLine(notice, upgradeNoticeMode(input, notice.kind === 'UPGRADE_AVAILABLE' ? notice.latestVersion : null));
   } catch {
     return null;
   }

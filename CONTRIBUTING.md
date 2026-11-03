@@ -143,14 +143,17 @@ npm run release:finish -- --accept-moved-after-bump
 
 The alternative is leaving those files for the next version. A machine that
 already holds an earlier commit under the same version gets a plugin-cache
-warning from `memesh doctor`, with the refresh command (`memesh upgrade-plugin`
-for Claude Code, `codex plugin marketplace upgrade pcircle-memesh && codex plugin
-add memesh@pcircle-memesh` for Codex). If the list cannot be computed (for
+warning from `memesh doctor` that says no action is needed: the install stays on the
+release that was verified, `memesh update` moves to a newer one, and
+`memesh update --reinstall` puts the installed one back through the same checks. If the list cannot be computed (for
 example a shallow clone), the release is refused and the flag does not override
 that.
 
 If a prerelease exists but npm publication failed, retry its unchanged tag with
-`gh workflow run publish-npm.yml -f release_tag=vX.Y.Z`. This accepts only an
+`gh workflow run publish-npm.yml --ref vX.Y.Z -f release_tag=vX.Y.Z` (the `--ref` is
+required: the run must start ON the tag, because the signing certificate names the
+ref it ran at and the automatic updater only installs a release signed at
+`refs/tags/v<version>`; the workflow refuses to run anywhere else). This accepts only an
 existing non-draft prerelease and publishes to `next`; it does not move tags or
 promote `latest`. `prepublishOnly` still runs the full artifact gates once.
 
@@ -166,8 +169,9 @@ The tag it creates is lightweight rather than annotated. Nothing in this
 repository reads the difference — there is no `git describe` anywhere, and
 `git tag --list`, `git ls-remote --tags` and CI's `fetch-tags: true` treat both
 alike. No ruleset needs pausing either: `Protect release and benchmark tags`
-covers `refs/tags/v*` with `deletion` and `non_fast_forward` rules only, so tag
-*creation* is not what it blocks.
+covers `refs/tags/v*` with `deletion` and `non_fast_forward` rules, and
+`Only admins create release tags` (ruleset 26770214) restricts who can create a
+`v*` tag at all, which is what the release is: an admin creating the tag.
 
 Why it is one call rather than `git tag` + `git push` + `gh release create`: the
 middle of that sequence leaves a pushed tag with no release. Nothing publishes,

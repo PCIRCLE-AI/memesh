@@ -1211,8 +1211,8 @@ var require_command = __commonJS({
   "node_modules/commander/lib/command.js"(exports) {
     var EventEmitter = __require("node:events").EventEmitter;
     var childProcess = __require("node:child_process");
-    var path22 = __require("node:path");
-    var fs25 = __require("node:fs");
+    var path25 = __require("node:path");
+    var fs28 = __require("node:fs");
     var process2 = __require("node:process");
     var { Argument: Argument2, humanReadableArgName } = require_argument();
     var { CommanderError: CommanderError2 } = require_error();
@@ -2206,7 +2206,7 @@ Expecting one of '${allowedValues.join("', '")}'`);
        * @param {string} subcommandName
        */
       _checkForMissingExecutable(executableFile, executableDir, subcommandName) {
-        if (fs25.existsSync(executableFile)) return;
+        if (fs28.existsSync(executableFile)) return;
         const executableDirMessage = executableDir ? `searched for local subcommand relative to directory '${executableDir}'` : "no directory for search for local subcommand, use .executableDir() to supply a custom directory";
         const executableMissing = `'${executableFile}' does not exist
  - if '${subcommandName}' is not meant to be an executable command, remove description parameter from '.command()' and use '.description()' instead
@@ -2224,11 +2224,11 @@ Expecting one of '${allowedValues.join("', '")}'`);
         let launchWithNode = false;
         const sourceExt = [".js", ".ts", ".tsx", ".mjs", ".cjs"];
         function findFile(baseDir, baseName) {
-          const localBin = path22.resolve(baseDir, baseName);
-          if (fs25.existsSync(localBin)) return localBin;
-          if (sourceExt.includes(path22.extname(baseName))) return void 0;
+          const localBin = path25.resolve(baseDir, baseName);
+          if (fs28.existsSync(localBin)) return localBin;
+          if (sourceExt.includes(path25.extname(baseName))) return void 0;
           const foundExt = sourceExt.find(
-            (ext) => fs25.existsSync(`${localBin}${ext}`)
+            (ext) => fs28.existsSync(`${localBin}${ext}`)
           );
           if (foundExt) return `${localBin}${foundExt}`;
           return void 0;
@@ -2240,21 +2240,21 @@ Expecting one of '${allowedValues.join("', '")}'`);
         if (this._scriptPath) {
           let resolvedScriptPath;
           try {
-            resolvedScriptPath = fs25.realpathSync(this._scriptPath);
+            resolvedScriptPath = fs28.realpathSync(this._scriptPath);
           } catch {
             resolvedScriptPath = this._scriptPath;
           }
-          executableDir = path22.resolve(
-            path22.dirname(resolvedScriptPath),
+          executableDir = path25.resolve(
+            path25.dirname(resolvedScriptPath),
             executableDir
           );
         }
         if (executableDir) {
           let localFile = findFile(executableDir, executableFile);
           if (!localFile && !subcommand._executableFile && this._scriptPath) {
-            const legacyName = path22.basename(
+            const legacyName = path25.basename(
               this._scriptPath,
-              path22.extname(this._scriptPath)
+              path25.extname(this._scriptPath)
             );
             if (legacyName !== this._name) {
               localFile = findFile(
@@ -2265,7 +2265,7 @@ Expecting one of '${allowedValues.join("', '")}'`);
           }
           executableFile = localFile || executableFile;
         }
-        launchWithNode = sourceExt.includes(path22.extname(executableFile));
+        launchWithNode = sourceExt.includes(path25.extname(executableFile));
         let proc;
         if (process2.platform !== "win32") {
           if (launchWithNode) {
@@ -3180,7 +3180,7 @@ Expecting one of '${allowedValues.join("', '")}'`);
        * @return {Command}
        */
       nameFromFilename(filename) {
-        this._name = path22.basename(filename, path22.extname(filename));
+        this._name = path25.basename(filename, path25.extname(filename));
         return this;
       }
       /**
@@ -3194,9 +3194,9 @@ Expecting one of '${allowedValues.join("', '")}'`);
        * @param {string} [path]
        * @return {(string|null|Command)}
        */
-      executableDir(path23) {
-        if (path23 === void 0) return this._executableDir;
-        this._executableDir = path23;
+      executableDir(path26) {
+        if (path26 === void 0) return this._executableDir;
+        this._executableDir = path26;
         return this;
       }
       /**
@@ -3502,8 +3502,8 @@ var init_sqlite = __esm({
     BUSY_TIMEOUT_MS = 3e4;
     MemeshDatabase = class extends DatabaseSync {
       #depth = 0;
-      constructor(path22, options = {}) {
-        super(path22, options);
+      constructor(path25, options = {}) {
+        super(path25, options);
         this.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
       }
       pragma(statement) {
@@ -4382,10 +4382,10 @@ var init_entity_write = __esm({
 function canonicalEntityType(type) {
   return LESSON_TYPES.has(type) ? "lesson_learned" : type;
 }
-function utcEpoch(at) {
-  if (!at)
+function utcEpoch(at2) {
+  if (!at2)
     return NaN;
-  return Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(at) ? at : `${at.replace(" ", "T")}Z`);
+  return Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(at2) ? at2 : `${at2.replace(" ", "T")}Z`);
 }
 function unconfirmedDaysSince(seenAt, now) {
   const seen = Math.max(...seenAt.map(utcEpoch).filter((t) => !Number.isNaN(t) && t <= now + 5 * 6e4));
@@ -4970,12 +4970,12 @@ function maskMatches(input2) {
   if (spans.length === 0)
     return input2;
   let out = "";
-  let at = 0;
+  let at2 = 0;
   for (const [start, end] of gluedAfter(input2, merge(spans))) {
-    out += `${input2.slice(at, start)}${REDACTED}`;
-    at = end;
+    out += `${input2.slice(at2, start)}${REDACTED}`;
+    at2 = end;
   }
-  return out + input2.slice(at);
+  return out + input2.slice(at2);
 }
 function merge(spans) {
   spans.sort((a, b) => a[0] - b[0] || b[1] - a[1]);
@@ -4997,15 +4997,15 @@ function gluedAfter(input2, spans) {
     let end = spans[next][1];
     next++;
     const skipTo = GLUED.map(() => start);
-    for (let at = start; at <= end && end < input2.length; at++) {
+    for (let at2 = start; at2 <= end && end < input2.length; at2++) {
       GLUED.forEach((pattern, i) => {
-        if (at < skipTo[i])
+        if (at2 < skipTo[i])
           return;
-        pattern.lastIndex = at;
+        pattern.lastIndex = at2;
         const m = pattern.exec(input2);
         if (m === null)
           return;
-        skipTo[i] = at + m[0].length;
+        skipTo[i] = at2 + m[0].length;
         end = Math.max(end, skipTo[i]);
       });
       while (next < spans.length && spans[next][0] <= end)
@@ -6391,8 +6391,8 @@ function basename(p) {
   const parts = p.split(/[\\/]/);
   return parts[parts.length - 1] ?? "";
 }
-function isScratchPath(path22) {
-  return SCRATCH_PREFIXES.some((prefix) => path22.startsWith(prefix));
+function isScratchPath(path25) {
+  return SCRATCH_PREFIXES.some((prefix) => path25.startsWith(prefix));
 }
 function bashEditedPaths(cmd) {
   if (typeof cmd !== "string")
@@ -7869,9 +7869,9 @@ function importMemories(args, options) {
             const replaced = replacedVersion;
             const history = Array.isArray(merged.replaced_history) ? merged.replaced_history : [];
             const now = storedContent(entity.name);
-            const unchanged = now.title === replaced.title && JSON.stringify(now.observations) === JSON.stringify(replaced.observations) && JSON.stringify(now.tags) === JSON.stringify(replaced.tags);
+            const unchanged2 = now.title === replaced.title && JSON.stringify(now.observations) === JSON.stringify(replaced.observations) && JSON.stringify(now.tags) === JSON.stringify(replaced.tags);
             const version2 = redactVersionText(replaced);
-            return unchanged ? merged : { ...merged, replaced_history: boundReplacedHistory([...history, version2]) };
+            return unchanged2 ? merged : { ...merged, replaced_history: boundReplacedHistory([...history, version2]) };
           });
         }
         if (!existing) {
@@ -8322,8 +8322,8 @@ function forget(args) {
 function setPinned(name, pinned) {
   const db2 = getDatabase();
   const kg = new KnowledgeGraph(db2);
-  const exists = db2.prepare("SELECT 1 FROM entities WHERE name = ?").get(name);
-  if (!exists)
+  const exists2 = db2.prepare("SELECT 1 FROM entities WHERE name = ?").get(name);
+  if (!exists2)
     return { name, pinned: null, found: false };
   kg.updateEntityMetadata(name, (current) => {
     const next = { ...current };
@@ -8538,6 +8538,21 @@ function updateConfig(partial2) {
   writeRawConfig(raw);
   return selectConfig(raw);
 }
+function updateConfigInDir(dir, partial2) {
+  const saved = process.env.MEMESH_DIR;
+  process.env.MEMESH_DIR = dir;
+  try {
+    return updateConfig(partial2);
+  } finally {
+    if (saved === void 0)
+      delete process.env.MEMESH_DIR;
+    else
+      process.env.MEMESH_DIR = saved;
+  }
+}
+function getConfigDir() {
+  return configDir();
+}
 function getConfigPath() {
   return configFilePath();
 }
@@ -8636,6 +8651,2495 @@ var init_semver = __esm({
   }
 });
 
+// dist/core/install-channel.js
+var install_channel_exports = {};
+__export(install_channel_exports, {
+  PLUGIN_REFRESH_COMMANDS: () => PLUGIN_REFRESH_COMMANDS,
+  detectInstallChannel: () => detectInstallChannel,
+  detectPluginHost: () => detectPluginHost,
+  getCurrentInstallChannel: () => getCurrentInstallChannel,
+  getGlobalNpmRoot: () => getGlobalNpmRoot,
+  getInstallChannelSupport: () => getInstallChannelSupport,
+  pluginHostConfigRoot: () => pluginHostConfigRoot,
+  versionedPluginCacheRoots: () => versionedPluginCacheRoots
+});
+import fs5 from "fs";
+import path4 from "path";
+import { execFileSync as execFileSync2 } from "child_process";
+function isSubpath(parent, child) {
+  const relative = path4.relative(parent, child);
+  return relative === "" || !relative.startsWith("..") && !path4.isAbsolute(relative);
+}
+function getRootBeforeNodeModules(packageRoot3) {
+  const marker = `${path4.sep}node_modules${path4.sep}`;
+  const index = packageRoot3.indexOf(marker);
+  if (index === -1)
+    return null;
+  return packageRoot3.slice(0, index);
+}
+function pluginHostConfigRoot(host) {
+  const descriptor = PLUGIN_HOST_DIRS.find(([candidate]) => candidate === host);
+  if (!descriptor)
+    throw new Error(`Unsupported plugin host: ${host}`);
+  const [, defaultDir, envVar] = descriptor;
+  const relocated = process.env[envVar];
+  return relocated ? path4.resolve(relocated) : path4.join(homeDir(), defaultDir);
+}
+function parseVersionDirectory(raw) {
+  const version2 = parseSemVer(raw);
+  return version2 ? { version: version2, raw } : null;
+}
+function compareVersions(a, b) {
+  return compareSemVerPrecedence(a.version, b.version) || (a.raw < b.raw ? -1 : a.raw > b.raw ? 1 : 0);
+}
+function versionedPluginCacheRoots(root) {
+  try {
+    return fs5.readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => parseVersionDirectory(entry.name)).filter((version2) => version2 !== null).sort(compareVersions).map((version2) => path4.join(root, version2.raw));
+  } catch {
+    return [];
+  }
+}
+function detectPluginHost(packageRoot3, options = {}) {
+  const { env = process.env } = options;
+  const normalized = path4.resolve(packageRoot3);
+  for (const [host, dir, envVar] of PLUGIN_HOST_DIRS) {
+    const segment = `${path4.sep}${dir}${path4.sep}plugins${path4.sep}cache${path4.sep}`;
+    if (normalized.includes(segment))
+      return host;
+    const relocated = env[envVar];
+    if (relocated) {
+      const cacheRoot = path4.join(path4.resolve(relocated), "plugins", "cache");
+      if (isSubpath(cacheRoot, normalized))
+        return host;
+    }
+  }
+  return null;
+}
+function isPluginMarketplacePath(packageRoot3) {
+  return detectPluginHost(packageRoot3) !== null;
+}
+function derivedGlobalNpmRoot(execPath) {
+  const prefix = path4.dirname(path4.dirname(execPath));
+  return process.platform === "win32" ? path4.join(prefix, "node_modules") : path4.join(prefix, "lib", "node_modules");
+}
+function getGlobalNpmRoot(options = {}) {
+  const { execFileSyncImpl = execFileSync2, execPathImpl = process.execPath } = options;
+  try {
+    const spawned = execFileSyncImpl("npm", ["root", "-g"], { encoding: "utf8" }).trim();
+    if (spawned)
+      return spawned;
+  } catch {
+  }
+  return derivedGlobalNpmRoot(execPathImpl);
+}
+function detectInstallChannel(options) {
+  const { packageRoot: packageRoot3, globalNpmRoot, existsSyncImpl = fs5.existsSync } = options;
+  const normalizedPackageRoot = path4.resolve(packageRoot3);
+  if (isPluginMarketplacePath(normalizedPackageRoot)) {
+    return "plugin-marketplace";
+  }
+  if (existsSyncImpl(path4.join(normalizedPackageRoot, ".git"))) {
+    return "source-checkout";
+  }
+  const resolvedGlobalNpmRoot = typeof globalNpmRoot === "function" ? globalNpmRoot() : globalNpmRoot;
+  if (resolvedGlobalNpmRoot && isSubpath(path4.resolve(resolvedGlobalNpmRoot), normalizedPackageRoot)) {
+    return "npm-global";
+  }
+  const rootBeforeNodeModules = getRootBeforeNodeModules(normalizedPackageRoot);
+  if (rootBeforeNodeModules && existsSyncImpl(path4.join(rootBeforeNodeModules, "package.json"))) {
+    return "npm-local";
+  }
+  return "unknown";
+}
+function getCurrentInstallChannel(options) {
+  const { packageRoot: packageRoot3, existsSyncImpl, execFileSyncImpl } = options;
+  const canCache = !existsSyncImpl && !execFileSyncImpl;
+  if (canCache) {
+    const cached2 = channelCache.get(packageRoot3);
+    if (cached2 !== void 0)
+      return cached2;
+  }
+  const channel = detectInstallChannel({
+    packageRoot: packageRoot3,
+    globalNpmRoot: () => getGlobalNpmRoot({ execFileSyncImpl }),
+    existsSyncImpl
+  });
+  if (canCache)
+    channelCache.set(packageRoot3, channel);
+  return channel;
+}
+function getInstallChannelSupport(channel, packageRoot3) {
+  switch (channel) {
+    case "npm-global":
+      return {
+        channel,
+        label: "npm global",
+        canSelfUpdate: true,
+        recommendedCommand: "memesh update",
+        guidance: "This installation can be updated directly from MeMesh."
+      };
+    case "npm-local":
+      return {
+        channel,
+        label: "project-local package install",
+        canSelfUpdate: false,
+        recommendedCommand: null,
+        guidance: "Update this installation from the project package manager that installed MeMesh."
+      };
+    case "source-checkout":
+      return {
+        channel,
+        label: "source checkout",
+        canSelfUpdate: false,
+        recommendedCommand: null,
+        guidance: "Update this source checkout from its repository and rebuild it."
+      };
+    case "plugin-marketplace": {
+      if (detectPluginHost(packageRoot3) === "codex") {
+        return {
+          channel,
+          label: "Codex CLI plugin marketplace",
+          canSelfUpdate: true,
+          recommendedCommand: "memesh update",
+          guidance: `Run \`memesh update\`: it checks the release's source, backs up the database and updates the Codex plugin to that release (automatic updates do the same by default; \`memesh doctor\` shows what they did). To repair damaged plugin files without a new release: \`${PLUGIN_REFRESH_COMMANDS.codex}\` (the same checks, for this version).`
+        };
+      }
+      return {
+        channel,
+        label: "Claude Code plugin marketplace",
+        canSelfUpdate: true,
+        recommendedCommand: "memesh update",
+        guidance: `Run \`memesh update\` (no \`memesh\` command on your PATH? run \`node "${path4.join(packageRoot3, "dist", "transports", "cli", "cli.js")}" update\`; \`npx @pcircle/memesh update\` cannot work, because npx runs a throwaway copy that is not this install): it checks the release's source, backs up the database and updates the plugin to that release; automatic updates do the same by default and \`memesh doctor\` shows what they did. To repair damaged plugin files without a new release: \`${PLUGIN_REFRESH_COMMANDS["claude-code"]}\`.`
+      };
+    }
+    default:
+      return {
+        channel: "unknown",
+        label: "unknown",
+        canSelfUpdate: false,
+        recommendedCommand: null,
+        guidance: "Update this installation from the tool or workflow that installed MeMesh."
+      };
+  }
+}
+var PLUGIN_REFRESH_COMMANDS, PLUGIN_HOST_DIRS, channelCache;
+var init_install_channel = __esm({
+  "dist/core/install-channel.js"() {
+    "use strict";
+    init_paths();
+    init_semver();
+    PLUGIN_REFRESH_COMMANDS = {
+      "claude-code": "memesh update --reinstall",
+      codex: "memesh update --reinstall"
+    };
+    PLUGIN_HOST_DIRS = [
+      ["claude-code", ".claude", "CLAUDE_CONFIG_DIR"],
+      ["codex", ".codex", "CODEX_HOME"]
+    ];
+    channelCache = /* @__PURE__ */ new Map();
+  }
+});
+
+// dist/core/process-identity.js
+import { execFileSync as execFileSync3 } from "child_process";
+function runRealPsStart(pid, exec = execFileSync3) {
+  return exec("/bin/ps", ["-o", "lstart=", "-p", String(pid)], {
+    encoding: "utf8",
+    timeout: 3e3,
+    stdio: ["ignore", "pipe", "ignore"],
+    env: { ...process.env, TZ: "UTC", LC_ALL: "C" }
+  });
+}
+function processStartTag(pid, read = runRealPsStart, now = Date.now) {
+  if (process.platform === "win32" || !Number.isSafeInteger(pid) || pid <= 0)
+    return null;
+  const hit = cache.get(pid);
+  if (hit && now() - hit.at < CACHE_TTL_MS)
+    return hit.tag;
+  let tag = null;
+  try {
+    const out = read(pid).trim();
+    tag = out === "" ? null : `${START_TAG_PREFIX}${out}`;
+  } catch {
+  }
+  cache.set(pid, { tag, at: now() });
+  return tag;
+}
+function startTagComparable(started) {
+  return typeof started === "string" && started.startsWith(START_TAG_PREFIX);
+}
+function sameProcessAlive(pid, started, pidAlive2, read = processStartTag) {
+  if (!pidAlive2(pid))
+    return false;
+  if (!startTagComparable(started))
+    return true;
+  const now = read(pid);
+  return now === null ? true : now === started;
+}
+var CACHE_TTL_MS, cache, START_TAG_PREFIX;
+var init_process_identity = __esm({
+  "dist/core/process-identity.js"() {
+    "use strict";
+    CACHE_TTL_MS = 3e4;
+    cache = /* @__PURE__ */ new Map();
+    START_TAG_PREFIX = "v2:";
+  }
+});
+
+// dist/core/hermes-provider.js
+var hermes_provider_exports = {};
+__export(hermes_provider_exports, {
+  HERMES_REASONS: () => HERMES_REASONS,
+  MARKER_FILE: () => MARKER_FILE,
+  REGISTRY_FILE: () => REGISTRY_FILE,
+  candidateInstalls: () => candidateInstalls,
+  defaultInstallTarget: () => defaultInstallTarget,
+  defaultInstallTargetOrNull: () => defaultInstallTargetOrNull,
+  hermesHome: () => hermesHome,
+  inspectInstall: () => inspectInstall,
+  installProvider: () => installProvider,
+  refreshInstalls: () => refreshInstalls,
+  refreshTargets: () => refreshTargets,
+  registerInstall: () => registerInstall,
+  registryProblem: () => registryProblem,
+  registryProblemResult: () => registryProblemResult,
+  staleInstalls: () => staleInstalls
+});
+import fs6 from "fs";
+import path5 from "path";
+import { createHash as createHash5 } from "crypto";
+function hermesHome(env, accountHome) {
+  if (env.HERMES_HOME)
+    return path5.resolve(env.HERMES_HOME);
+  const home = accountHome ?? env.HOME;
+  if (!home)
+    throw new Error("the Hermes home cannot be worked out: HERMES_HOME is not set and neither is a home directory (pass --path)");
+  return path5.join(home, ".hermes");
+}
+function defaultInstallTargetOrNull(env, accountHome) {
+  try {
+    return defaultInstallTarget(env, accountHome);
+  } catch {
+    return null;
+  }
+}
+function defaultInstallTarget(env, accountHome) {
+  return path5.join(hermesHome(env, accountHome), "plugins", "memesh");
+}
+function listFiles(root, dir = root, out = []) {
+  for (const entry of fs6.readdirSync(dir, { withFileTypes: true })) {
+    if (SKIPPED.has(entry.name) || entry.name.endsWith(".pyc"))
+      continue;
+    const full = path5.join(dir, entry.name);
+    const rel = path5.relative(root, full).split(path5.sep).join("/");
+    if (rel === MARKER_FILE)
+      continue;
+    if (entry.isDirectory())
+      listFiles(root, full, out);
+    else if (entry.isFile())
+      out.push(rel);
+    else
+      throw new Error(`not a plain file: ${rel}`);
+  }
+  return out.sort();
+}
+function hashFiles(root) {
+  const hashes = {};
+  for (const rel of listFiles(root))
+    hashes[rel] = createHash5("sha256").update(fs6.readFileSync(path5.join(root, rel))).digest("hex");
+  return hashes;
+}
+function sameHashes(a, b) {
+  const ak = Object.keys(a);
+  return ak.length === Object.keys(b).length && ak.every((k) => a[k] === b[k]);
+}
+function inspectInstall(target) {
+  let stat;
+  try {
+    stat = fs6.lstatSync(target);
+  } catch (err) {
+    return err.code === "ENOENT" ? { state: "absent" } : { state: "unreadable", why: errorText(err) };
+  }
+  if (stat.isSymbolicLink()) {
+    let to = "?";
+    try {
+      to = fs6.readlinkSync(target);
+    } catch {
+    }
+    return { state: "linked", to };
+  }
+  if (!stat.isDirectory())
+    return { state: "foreign" };
+  const markerPath = path5.join(target, MARKER_FILE);
+  let markerText;
+  try {
+    markerText = fs6.readFileSync(markerPath, "utf8");
+  } catch (err) {
+    return err.code === "ENOENT" ? { state: "foreign" } : { state: "unreadable", why: errorText(err) };
+  }
+  let marker;
+  try {
+    const parsed = JSON.parse(markerText);
+    if (parsed.source !== "memesh" || typeof parsed.version !== "string" || !parsed.files || typeof parsed.files !== "object") {
+      return { state: "marker-unreadable" };
+    }
+    marker = parsed;
+  } catch {
+    return { state: "marker-unreadable" };
+  }
+  let modified;
+  try {
+    modified = !sameHashes(marker.files, hashFiles(target));
+  } catch (err) {
+    return { state: "unreadable", why: errorText(err) };
+  }
+  return { state: "managed", marker, modified };
+}
+function errorText(err) {
+  const e = err;
+  return `${e?.code ?? "error"}${e?.message ? `: ${e.message.replace(/\s+/g, " ").slice(0, 140)}` : ""}`;
+}
+function exists(p) {
+  try {
+    fs6.lstatSync(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function copyDir(from, to) {
+  fs6.cpSync(from, to, { recursive: true, filter: (src) => !SKIPPED.has(path5.basename(src)) && !src.endsWith(".pyc") });
+}
+function backUp(target, backupRoot, now) {
+  fs6.mkdirSync(backupRoot, { recursive: true, mode: 448 });
+  const id = createHash5("sha256").update(path5.resolve(target)).digest("hex").slice(0, 8);
+  const stem = path5.join(backupRoot, `hermes-provider-${now.toISOString().replace(/[:.]/g, "-")}-${id}`);
+  try {
+    for (const name of fs6.readdirSync(backupRoot)) {
+      const m = /^hermes-provider-.*\.partial-(\d+)$/.exec(name);
+      if (m && !ownerAlive(Number(m[1]), "x"))
+        fs6.rmSync(path5.join(backupRoot, name), { recursive: true, force: true });
+    }
+  } catch {
+  }
+  let dest = stem;
+  for (let n = 2; exists(dest); n += 1)
+    dest = `${stem}-${n}`;
+  const partial2 = `${dest}.partial-${process.pid}`;
+  try {
+    fs6.cpSync(target, partial2, { recursive: true });
+    fs6.renameSync(partial2, dest);
+  } catch (err) {
+    try {
+      fs6.rmSync(partial2, { recursive: true, force: true });
+    } catch {
+    }
+    throw err;
+  }
+  return dest;
+}
+function ownerTag(pid) {
+  const start = processStartTag(pid);
+  return start === null ? "x" : hashTag(start);
+}
+function ownerAlive(pid, tag) {
+  try {
+    process.kill(pid, 0);
+  } catch (err) {
+    if (err.code === "ESRCH")
+      return false;
+  }
+  if (tag === "x")
+    return true;
+  const now = processStartTag(pid);
+  return now === null ? true : hashTag(now) === tag;
+}
+function stagingPaths(target, owner) {
+  const dir = path5.dirname(target);
+  const base = path5.basename(target);
+  const newRoot = path5.join(dir, `${NEW_PREFIX}${base}-${owner}`);
+  const oldRoot = path5.join(dir, `${OLD_PREFIX}${base}-${owner}`);
+  return { newRoot, fresh: path5.join(newRoot, COPY), oldRoot, old: path5.join(oldRoot, COPY) };
+}
+function leftovers(target, log) {
+  const dir = path5.dirname(target);
+  const base = path5.basename(target);
+  let names;
+  try {
+    names = fs6.readdirSync(dir);
+  } catch (err) {
+    if (err.code !== "ENOENT")
+      log?.(`hermes: could not list ${dir} for the leftovers of an interrupted refresh (${errorText(err)})`);
+    return [];
+  }
+  const found = [];
+  for (const name of names) {
+    for (const [prefix, kind] of [[NEW_PREFIX, "new"], [OLD_PREFIX, "old"]]) {
+      if (!name.startsWith(prefix))
+        continue;
+      const m = new RegExp(`^${escapeRegExp(prefix)}${escapeRegExp(base)}-(\\d+)-([0-9a-f]{10}|x)$`).exec(name);
+      if (m)
+        found.push({ root: path5.join(dir, name), kind, pid: Number(m[1]), tag: m[2] });
+    }
+  }
+  return found;
+}
+function recoverInterrupted(target, log) {
+  const left = leftovers(target, log).filter((l) => !ownerAlive(l.pid, l.tag));
+  let restored = false;
+  if (!exists(target)) {
+    const olds = left.filter((l) => l.kind === "old" && exists(path5.join(l.root, COPY))).sort((a, b) => {
+      try {
+        return fs6.statSync(b.root).mtimeMs - fs6.statSync(a.root).mtimeMs;
+      } catch {
+        return 0;
+      }
+    });
+    if (olds.length > 0) {
+      fs6.renameSync(path5.join(olds[0].root, COPY), target);
+      restored = true;
+    }
+  }
+  for (const l of left) {
+    if (exists(l.root))
+      fs6.rmSync(l.root, { recursive: true, force: true });
+  }
+  return restored;
+}
+function hasRestorableLeftover(target) {
+  if (exists(target))
+    return false;
+  return leftovers(target).some((l) => l.kind === "old" && !ownerAlive(l.pid, l.tag) && exists(path5.join(l.root, COPY)));
+}
+function withCopyLock(target, busy, fn) {
+  const lockDir = path5.join(path5.dirname(target), `.memesh-lock-${path5.basename(target)}`);
+  fs6.mkdirSync(path5.dirname(target), { recursive: true });
+  const take = () => {
+    try {
+      fs6.mkdirSync(lockDir);
+    } catch (err) {
+      if (err.code === "EEXIST")
+        return false;
+      throw err;
+    }
+    fs6.writeFileSync(path5.join(lockDir, "owner.json"), JSON.stringify({ pid: process.pid, tag: ownerTag(process.pid) }));
+    return true;
+  };
+  let held = take();
+  if (!held) {
+    let owner = null;
+    try {
+      owner = JSON.parse(fs6.readFileSync(path5.join(lockDir, "owner.json"), "utf8"));
+    } catch {
+    }
+    const running = owner !== null && typeof owner.pid === "number" && ownerAlive(owner.pid, typeof owner.tag === "string" ? owner.tag : "x");
+    let youngNoOwner = false;
+    if (owner === null) {
+      try {
+        youngNoOwner = Date.now() - fs6.statSync(lockDir).mtimeMs < 6e4;
+      } catch {
+      }
+    }
+    if (running || youngNoOwner)
+      return busy();
+    fs6.rmSync(lockDir, { recursive: true, force: true });
+    held = take();
+    if (!held)
+      return busy();
+  }
+  try {
+    return fn();
+  } finally {
+    try {
+      fs6.rmSync(lockDir, { recursive: true, force: true });
+    } catch {
+    }
+  }
+}
+function writeCopy(input2, replacing, keep) {
+  const { sourceDir, target, version: version2, backupRoot, now } = input2;
+  const files = hashFiles(sourceDir);
+  const owner = `${process.pid}-${ownerTag(process.pid)}`;
+  const { newRoot, fresh, oldRoot, old } = stagingPaths(target, owner);
+  fs6.rmSync(newRoot, { recursive: true, force: true });
+  fs6.mkdirSync(path5.dirname(target), { recursive: true });
+  fs6.mkdirSync(newRoot, { recursive: true });
+  let backup = null;
+  let residue = null;
+  try {
+    copyDir(sourceDir, fresh);
+    const marker = { source: "memesh", version: version2, installedAt: now.toISOString(), files };
+    fs6.writeFileSync(path5.join(fresh, MARKER_FILE), JSON.stringify(marker, null, 2) + "\n");
+    if (replacing) {
+      if (keep)
+        backup = backUp(target, backupRoot, now);
+      fs6.rmSync(oldRoot, { recursive: true, force: true });
+      fs6.mkdirSync(oldRoot, { recursive: true });
+      fs6.renameSync(target, old);
+      try {
+        fs6.renameSync(fresh, target);
+      } catch (err) {
+        fs6.renameSync(old, target);
+        fs6.rmSync(oldRoot, { recursive: true, force: true });
+        throw err;
+      }
+      try {
+        fs6.rmSync(oldRoot, { recursive: true, force: true });
+      } catch {
+        residue = oldRoot;
+      }
+    } else {
+      fs6.renameSync(fresh, target);
+    }
+  } finally {
+    try {
+      fs6.rmSync(newRoot, { recursive: true, force: true });
+    } catch {
+    }
+  }
+  return { backup, residue };
+}
+function installProvider(input2) {
+  const { target } = input2;
+  return withCopyLock(target, () => ({ path: target, outcome: "skipped", reason: HERMES_REASONS.busy, backup: null }), () => installLocked(input2));
+}
+function installLocked(input2) {
+  const { target, sourceDir, version: version2 } = input2;
+  let restored;
+  try {
+    restored = recoverInterrupted(target, input2.log);
+  } catch (err) {
+    return { path: target, outcome: "failed", reason: `${HERMES_REASONS.failed}: could not clean up after an interrupted update: ${errorText(err)}`, backup: null };
+  }
+  const state = inspectInstall(target);
+  if (state.state === "linked")
+    return { path: target, outcome: "skipped", reason: `${HERMES_REASONS.linked} (it points to ${state.to})`, backup: null };
+  if (state.state === "unreadable")
+    return { path: target, outcome: "failed", reason: `${HERMES_REASONS.unreadable} (${state.why})`, backup: null };
+  try {
+    if (state.state === "absent") {
+      writeCopy(input2, false, false);
+      return { path: target, outcome: "installed", reason: HERMES_REASONS.installed, backup: null };
+    }
+    if (state.state === "managed" && !state.modified && state.marker.version === version2 && sameHashes(state.marker.files, hashFiles(sourceDir))) {
+      return { path: target, outcome: "unchanged", reason: HERMES_REASONS.unchanged, backup: null };
+    }
+    if (!input2.force) {
+      if (state.state === "foreign")
+        return { path: target, outcome: "skipped", reason: HERMES_REASONS.notOurs, backup: null };
+      if (state.state === "marker-unreadable")
+        return { path: target, outcome: "skipped", reason: HERMES_REASONS.markerUnreadable, backup: null };
+      if (state.state === "managed" && state.modified)
+        return { path: target, outcome: "skipped", reason: HERMES_REASONS.modified, backup: null };
+    }
+    const keep = !(state.state === "managed" && !state.modified);
+    const { backup, residue } = writeCopy(input2, true, keep);
+    const notes = [HERMES_REASONS.refreshed];
+    if (restored)
+      notes.push(HERMES_REASONS.restored);
+    if (residue)
+      notes.push(`the old copy could not be removed and is still at ${residue}; delete it by hand`);
+    return { path: target, outcome: "refreshed", reason: notes.join("; "), backup };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.startsWith("not a plain file"))
+      return { path: target, outcome: "failed", reason: `${HERMES_REASONS.unsafeSource} (${message})`, backup: null };
+    return { path: target, outcome: "failed", reason: `${HERMES_REASONS.failed}: ${message.slice(0, 160)}`, backup: null };
+  }
+}
+function readRegistryState(memeshDir3) {
+  let text;
+  try {
+    text = fs6.readFileSync(path5.join(memeshDir3, REGISTRY_FILE), "utf8");
+  } catch (err) {
+    return err.code === "ENOENT" ? { ok: true, installs: [] } : { ok: false, why: errorText(err) };
+  }
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.installs))
+      return { ok: false, why: 'it has no "installs" list' };
+    return { ok: true, installs: parsed.installs.filter((p) => typeof p === "string" && path5.isAbsolute(p)) };
+  } catch (err) {
+    return { ok: false, why: `it is not valid JSON (${errorText(err)})` };
+  }
+}
+function readRegistry(memeshDir3) {
+  const state = readRegistryState(memeshDir3);
+  return state.ok ? state.installs : [];
+}
+function registryProblem(memeshDir3) {
+  const state = readRegistryState(memeshDir3);
+  return state.ok ? null : state.why;
+}
+function registryProblemResult(memeshDir3) {
+  const why = registryProblem(memeshDir3);
+  if (why === null)
+    return null;
+  return { path: path5.join(memeshDir3, REGISTRY_FILE), outcome: "failed", reason: `the list of installed copies cannot be read (${why}): the copies it names are not being updated until it is fixed or removed`, backup: null };
+}
+function registerInstall(memeshDir3, target) {
+  const state = readRegistryState(memeshDir3);
+  if (!state.ok) {
+    throw new Error(`${path5.join(memeshDir3, REGISTRY_FILE)} cannot be read (${state.why}), so it was not changed: fix or remove it, then run the command again`);
+  }
+  const installs = new Set(state.installs);
+  installs.add(path5.resolve(target));
+  fs6.mkdirSync(memeshDir3, { recursive: true, mode: 448 });
+  const file2 = path5.join(memeshDir3, REGISTRY_FILE);
+  const temp = `${file2}.tmp-${process.pid}`;
+  fs6.writeFileSync(temp, JSON.stringify({ installs: [...installs].sort() }, null, 2) + "\n", { mode: 384 });
+  fs6.renameSync(temp, file2);
+}
+function candidateInstalls(memeshDir3, env, accountHome) {
+  const fallback = defaultInstallTargetOrNull(env, accountHome);
+  return [.../* @__PURE__ */ new Set([...fallback === null ? [] : [fallback], ...readRegistry(memeshDir3)])];
+}
+function refreshTargets(memeshDir3, env, accountHome) {
+  const registered = readRegistry(memeshDir3);
+  return candidateInstalls(memeshDir3, env, accountHome).filter((t) => inspectInstall(t).state !== "absent" || registered.includes(t) || hasRestorableLeftover(t));
+}
+function refreshInstalls(input2) {
+  const results = [];
+  const registry2 = readRegistryState(input2.memeshDir);
+  const problem = registryProblemResult(input2.memeshDir);
+  if (problem)
+    results.push(problem);
+  if (defaultInstallTargetOrNull(input2.env, input2.accountHome) === null)
+    input2.log?.("hermes: there is no home directory and HERMES_HOME is not set, so there is no default place for the provider; only the registered copies are looked at");
+  const registered = registry2.ok ? registry2.installs : [];
+  for (const target of refreshTargets(input2.memeshDir, input2.env, input2.accountHome)) {
+    const backupRoot = path5.join(input2.memeshDir, "backups");
+    let restored;
+    try {
+      restored = recoverInterrupted(target, input2.log);
+    } catch (err) {
+      results.push({ path: target, outcome: "failed", reason: `${HERMES_REASONS.failed}: could not clean up after an interrupted update: ${errorText(err)}`, backup: null });
+      continue;
+    }
+    const state = inspectInstall(target);
+    if (state.state === "absent") {
+      if (registered.includes(target))
+        results.push({ path: target, outcome: "failed", reason: HERMES_REASONS.gone, backup: null });
+      continue;
+    }
+    if (state.state === "foreign") {
+      if (registered.includes(target) || restored)
+        results.push({ path: target, outcome: "skipped", reason: restored ? `${HERMES_REASONS.restored}; ${HERMES_REASONS.notOurs}` : HERMES_REASONS.notOurs, backup: null });
+      continue;
+    }
+    const result = installProvider({ sourceDir: input2.sourceDir, target, version: input2.version, force: false, backupRoot, now: input2.now, ...input2.log ? { log: input2.log } : {} });
+    if (restored) {
+      results.push({ ...result, reason: result.outcome === "unchanged" ? HERMES_REASONS.restored : `${HERMES_REASONS.restored}; ${result.reason}` });
+    } else {
+      results.push(result);
+    }
+  }
+  return results;
+}
+function staleInstalls(memeshDir3, env, version2, accountHome) {
+  return candidateInstalls(memeshDir3, env, accountHome).filter((target) => {
+    if (hasRestorableLeftover(target))
+      return true;
+    const state = inspectInstall(target);
+    return state.state === "managed" && !state.modified && state.marker.version !== version2;
+  });
+}
+var MARKER_FILE, REGISTRY_FILE, HERMES_REASONS, SKIPPED, NEW_PREFIX, OLD_PREFIX, COPY, hashTag, escapeRegExp;
+var init_hermes_provider = __esm({
+  "dist/core/hermes-provider.js"() {
+    "use strict";
+    init_process_identity();
+    MARKER_FILE = ".memesh-install.json";
+    REGISTRY_FILE = "hermes-installs.json";
+    HERMES_REASONS = {
+      installed: "installed",
+      refreshed: "refreshed to the verified version",
+      unchanged: "already the verified version",
+      notOurs: "left alone: this directory was not installed by MeMesh (it has no install marker)",
+      modified: "left alone: files in this copy were changed after MeMesh installed it",
+      markerUnreadable: "left alone: the install marker could not be read",
+      unsafeSource: "not installed: the provider source holds something other than plain files",
+      failed: "failed",
+      linked: "left alone: it is a symbolic link, somebody pointed it somewhere on purpose, and MeMesh writes neither through it nor over it",
+      unreadable: "left alone: something in this directory cannot be read, so it cannot be told whether it is MeMesh's copy or whether it was edited",
+      gone: "a copy MeMesh installed here is no longer there; run `memesh hermes install` (add --path for a copy outside the default place) to put it back",
+      restored: "the copy had been lost to an update that was interrupted; it was put back first",
+      busy: "left alone: another refresh of this copy is running (the next run tries again)",
+      linkedHint: "MeMesh never changes a symbolic link, with or without --force: point --path at a real directory, or remove the link yourself"
+    };
+    SKIPPED = /* @__PURE__ */ new Set(["__pycache__", ".DS_Store"]);
+    NEW_PREFIX = ".memesh-new-";
+    OLD_PREFIX = ".memesh-old-";
+    COPY = "copy";
+    hashTag = (start) => createHash5("sha256").update(start).digest("hex").slice(0, 10);
+    escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+});
+
+// dist/core/update-notice.js
+import fs7 from "fs";
+import path6 from "path";
+function isStrictlyOlder(a, b) {
+  const parse3 = (v) => {
+    const [main, ...rest] = String(v).split(/[-+]/);
+    const nums = main.split(".").map((s) => Number.parseInt(s, 10));
+    return { nums, tail: rest.join("-") };
+  };
+  const pa = parse3(a);
+  const pb = parse3(b);
+  const len = Math.max(pa.nums.length, pb.nums.length);
+  for (let i = 0; i < len; i++) {
+    const ai = Number.isFinite(pa.nums[i]) ? pa.nums[i] : 0;
+    const bi = Number.isFinite(pb.nums[i]) ? pb.nums[i] : 0;
+    if (ai !== bi)
+      return ai < bi;
+  }
+  if (pa.tail && !pb.tail)
+    return true;
+  if (!pa.tail && pb.tail)
+    return false;
+  return pa.tail < pb.tail;
+}
+function parseIso(value) {
+  if (typeof value !== "string")
+    return null;
+  const t = Date.parse(value);
+  return Number.isNaN(t) ? null : t;
+}
+function readJson(file2) {
+  try {
+    if (!fs7.existsSync(file2))
+      return null;
+    const parsed = JSON.parse(fs7.readFileSync(file2, "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+function writePrivateJson(file2, value) {
+  fs7.mkdirSync(path6.dirname(file2), { recursive: true, mode: 448 });
+  fs7.writeFileSync(file2, JSON.stringify(value, null, 2), { mode: 384 });
+  try {
+    fs7.chmodSync(file2, 384);
+  } catch {
+  }
+}
+function readJustUpgradedMarker(dir) {
+  const raw = readJson(path6.join(dir, JUST_UPGRADED_FILE));
+  if (!raw)
+    return null;
+  const { from, to, at: at2 } = raw;
+  if (typeof from !== "string" || !from || typeof to !== "string" || !to)
+    return null;
+  return { from, to, at: typeof at2 === "string" ? at2 : "" };
+}
+function writeJustUpgradedMarker(dir, from, to, now = /* @__PURE__ */ new Date()) {
+  writePrivateJson(path6.join(dir, JUST_UPGRADED_FILE), { from, to, at: now.toISOString() });
+}
+function clearJustUpgradedMarker(dir) {
+  try {
+    fs7.unlinkSync(path6.join(dir, JUST_UPGRADED_FILE));
+  } catch {
+  }
+}
+function claimJustUpgradedMarker(dir) {
+  const file2 = path6.join(dir, JUST_UPGRADED_FILE);
+  const taken = `${file2}.claimed-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    fs7.renameSync(file2, taken);
+  } catch {
+    return null;
+  }
+  const raw = readJson(taken);
+  try {
+    fs7.unlinkSync(taken);
+  } catch {
+  }
+  if (!raw)
+    return null;
+  const { from, to, at: at2 } = raw;
+  if (typeof from !== "string" || !from || typeof to !== "string" || !to)
+    return null;
+  return { from, to, at: typeof at2 === "string" ? at2 : "" };
+}
+function boundedReason(raw) {
+  const oneLine2 = redactUserPaths(raw).replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
+  return oneLine2.length > 160 ? `${oneLine2.slice(0, 157)}...` : oneLine2;
+}
+function answerIsCurrent(currentVersion, cache2, now) {
+  if (!cache2 || cache2.currentVersion !== currentVersion)
+    return false;
+  if (typeof cache2.latestVersion !== "string")
+    return false;
+  const latest = normalizeRegistryVersion(cache2.latestVersion);
+  if (latest === null)
+    return false;
+  if (cache2.checkSucceeded === false && !isStrictlyOlder(currentVersion, latest))
+    return false;
+  const successAt = parseIso(cache2.lastSuccessfulCheckAt);
+  if (successAt === null)
+    return false;
+  return now.getTime() - successAt <= ANSWER_VALID_MS;
+}
+function shouldRefreshUpdateCache(currentVersion, cache2, now = /* @__PURE__ */ new Date()) {
+  if (!answerIsCurrent(currentVersion, cache2, now))
+    return true;
+  const successAt = parseIso(cache2.lastSuccessfulCheckAt);
+  const age = now.getTime() - successAt;
+  const upgrade = isStrictlyOlder(currentVersion, normalizeRegistryVersion(cache2.latestVersion));
+  return age > (upgrade ? UPGRADE_AVAILABLE_REFRESH_MS : UP_TO_DATE_REFRESH_MS);
+}
+function resolveUpdateNotice(input2) {
+  const { dir, currentVersion, cache: cache2 } = input2;
+  const now = input2.now ?? /* @__PURE__ */ new Date();
+  if (input2.updateCheckEnabled === false)
+    return { kind: "DISABLED", currentVersion };
+  const marker = readJustUpgradedMarker(dir);
+  if (marker) {
+    if (marker.to === currentVersion) {
+      return { kind: "JUST_UPGRADED", currentVersion, from: marker.from, to: marker.to };
+    }
+    clearJustUpgradedMarker(dir);
+  }
+  if (!answerIsCurrent(currentVersion, cache2, now)) {
+    let reason = "no update check has completed yet";
+    let attempted = false;
+    if (cache2 && cache2.currentVersion === currentVersion) {
+      attempted = parseIso(cache2.lastSuccessfulCheckAt) !== null || typeof cache2.lastError === "string" && cache2.lastError.length > 0;
+      if (typeof cache2.lastError === "string" && cache2.lastError)
+        reason = boundedReason(cache2.lastError);
+      else if (typeof cache2.latestVersion === "string" && normalizeRegistryVersion(cache2.latestVersion) === null)
+        reason = "registry returned an invalid version";
+      else if (attempted && cache2.checkSucceeded === false)
+        reason = "the last update check failed";
+      else if (parseIso(cache2.lastSuccessfulCheckAt) !== null)
+        reason = "the last successful check is more than a day old";
+    }
+    return { kind: "CHECK_FAILED", currentVersion, reason, attempted };
+  }
+  const latestVersion = normalizeRegistryVersion(cache2.latestVersion);
+  if (!isStrictlyOlder(currentVersion, latestVersion)) {
+    return { kind: "UP_TO_DATE", currentVersion, latestVersion };
+  }
+  return { kind: "UPGRADE_AVAILABLE", currentVersion, latestVersion };
+}
+var UP_TO_DATE_REFRESH_MS, UPGRADE_AVAILABLE_REFRESH_MS, ANSWER_VALID_MS, JUST_UPGRADED_FILE;
+var init_update_notice = __esm({
+  "dist/core/update-notice.js"() {
+    "use strict";
+    init_paths();
+    init_semver();
+    UP_TO_DATE_REFRESH_MS = 60 * 60 * 1e3;
+    UPGRADE_AVAILABLE_REFRESH_MS = 12 * 60 * 60 * 1e3;
+    ANSWER_VALID_MS = 24 * 60 * 60 * 1e3;
+    JUST_UPGRADED_FILE = "just-upgraded.json";
+  }
+});
+
+// dist/core/updater.js
+import { execFileSync as execFileSync4 } from "child_process";
+function parseSemver(version2) {
+  const m = /^(\d+)\.(\d+)\.(\d+)(?:[-+].+)?$/.exec(version2.trim());
+  if (!m)
+    return null;
+  return {
+    major: Number(m[1]),
+    minor: Number(m[2]),
+    patch: Number(m[3])
+  };
+}
+function classifyBump(from, to) {
+  const a = parseSemver(from);
+  const b = parseSemver(to);
+  if (!a || !b)
+    return null;
+  if (b.major > a.major)
+    return "major";
+  if (b.major < a.major)
+    return null;
+  if (b.minor > a.minor)
+    return "minor";
+  if (b.minor < a.minor)
+    return null;
+  if (b.patch > a.patch)
+    return "patch";
+  return null;
+}
+function parseInstalledGlobalVersion(raw) {
+  const parsed = JSON.parse(raw);
+  return parsed.dependencies?.["@pcircle/memesh"]?.version ?? null;
+}
+function getInstalledGlobalVersion(options = {}) {
+  const { execFileSyncImpl = execFileSync4, readbackTimeoutMs = DEFAULT_READBACK_TIMEOUT_MS } = options;
+  try {
+    const raw = execFileSyncImpl("npm", ["ls", "-g", "@pcircle/memesh", "--json", "--depth=0"], { encoding: "utf8", timeout: readbackTimeoutMs });
+    return parseInstalledGlobalVersion(raw);
+  } catch {
+    return null;
+  }
+}
+var DEFAULT_READBACK_TIMEOUT_MS;
+var init_updater = __esm({
+  "dist/core/updater.js"() {
+    "use strict";
+    DEFAULT_READBACK_TIMEOUT_MS = 30 * 1e3;
+  }
+});
+
+// dist/core/auto-update.js
+var auto_update_exports = {};
+__export(auto_update_exports, {
+  ATTEMPT_FILE: () => ATTEMPT_FILE,
+  ATTEMPT_INTERVAL_MS: () => ATTEMPT_INTERVAL_MS,
+  AUTO_UPDATE_REASONS: () => AUTO_UPDATE_REASONS,
+  BACKUPS_KEPT: () => BACKUPS_KEPT,
+  CODEX_MARKETPLACE: () => CODEX_MARKETPLACE,
+  CODEX_MARKETPLACE_SOURCE: () => CODEX_MARKETPLACE_SOURCE,
+  CODEX_PLUGIN: () => CODEX_PLUGIN,
+  CODEX_RESTORE_FILE: () => CODEX_RESTORE_FILE,
+  COMPARE_SCRIPT: () => COMPARE_SCRIPT,
+  DEFAULT_AUTO_UPDATE_POLICY: () => DEFAULT_AUTO_UPDATE_POLICY,
+  DISPATCH_CLAIM: () => DISPATCH_CLAIM,
+  EXPECTED_SOURCE: () => EXPECTED_SOURCE,
+  INSTALLING_FILE: () => INSTALLING_FILE,
+  LIVE_HOSTS_DIR: () => LIVE_HOSTS_DIR,
+  LIVE_WAIT_MAX_MS: () => LIVE_WAIT_MAX_MS,
+  LIVE_WAIT_POLL_MS: () => LIVE_WAIT_POLL_MS,
+  LOG_FILE: () => LOG_FILE,
+  PACKAGE_NAME: () => PACKAGE_NAME,
+  STATE_FILE: () => STATE_FILE,
+  WAIT_FILE: () => WAIT_FILE,
+  accountConfigHolding: () => accountConfigHolding,
+  accountMemeshDir: () => accountMemeshDir,
+  backupDatabase: () => backupDatabase,
+  bumpKind: () => bumpKind,
+  chooseTarget: () => chooseTarget,
+  codexHomeFor: () => codexHomeFor,
+  codexMarketplaceState: () => codexMarketplaceState,
+  compareEnv: () => compareEnv,
+  compareUrl: () => compareUrl,
+  currentPolicy: () => currentPolicy,
+  describeLockHolder: () => describeLockHolder,
+  dispatchAutoUpdate: () => dispatchAutoUpdate,
+  ensureOwnerDir: () => ensureOwnerDir,
+  inspectAutoUpdateState: () => inspectAutoUpdateState,
+  isCi: () => isCi,
+  judgeAuditSignatures: () => judgeAuditSignatures,
+  judgeCommitOnMain: () => judgeCommitOnMain,
+  judgeShrinkwrap: () => judgeShrinkwrap,
+  liveHostPids: () => liveHostPids,
+  logAutoUpdateLine: () => logAutoUpdateLine,
+  nodeUsesEnvProxy: () => nodeUsesEnvProxy,
+  ownerOnly: () => ownerOnly,
+  policyPermits: () => policyPermits,
+  productionDeps: () => productionDeps,
+  propagateOff: () => propagateOff,
+  proxyConfigured: () => proxyConfigured,
+  readAutoUpdateState: () => readAutoUpdateState,
+  readInstalling: () => readInstalling,
+  readRegistryTags: () => readRegistryTags,
+  refreshHermes: () => refreshHermes,
+  registerLiveHost: () => registerLiveHost,
+  resolveUpdatePolicy: () => resolveUpdatePolicy,
+  runAutoUpdate: () => runAutoUpdate,
+  runManualUpdate: () => runManualUpdate,
+  safeAccountHome: () => safeAccountHome,
+  sha512Integrity: () => sha512Integrity,
+  signerIdentity: () => signerIdentity,
+  startReinstall: () => startReinstall,
+  stripMultilineStrings: () => stripMultilineStrings,
+  sweepWorkDirs: () => sweepWorkDirs,
+  unsafeTarEntries: () => unsafeTarEntries
+});
+import { spawn, spawnSync } from "child_process";
+import { createHash as createHash6, X509Certificate } from "crypto";
+import fs8 from "fs";
+import os2 from "os";
+import path7 from "path";
+import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
+function ownerOnly(target) {
+  removeGroupAndOtherAccess(target);
+}
+function ensureOwnerDir(dir) {
+  fs8.mkdirSync(dir, { recursive: true, mode: 448 });
+  ownerOnly(dir);
+}
+function readConfigFile(file2) {
+  let text;
+  try {
+    text = fs8.readFileSync(file2, "utf8");
+  } catch (err) {
+    const code = err.code ?? "UNKNOWN";
+    if (code !== "ENOENT")
+      return { state: "unreadable", why: code };
+    try {
+      fs8.lstatSync(file2);
+      return { state: "unreadable", why: "dangling symlink" };
+    } catch (lerr) {
+      const lcode = lerr.code ?? "UNKNOWN";
+      return lcode === "ENOENT" ? { state: "absent" } : { state: "unreadable", why: lcode };
+    }
+  }
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return { state: "unreadable", why: "not a JSON object" };
+    return { state: "ok", raw: parsed };
+  } catch {
+    return { state: "unreadable", why: "not valid JSON" };
+  }
+}
+function isCi(env) {
+  const truthy = (v) => v !== void 0 && v !== "" && v !== "0" && v.toLowerCase() !== "false";
+  return truthy(env.CI) || ["GITHUB_ACTIONS", "GITLAB_CI", "BUILDKITE", "CIRCLECI", "JENKINS_URL", "TF_BUILD", "TRAVIS", "APPVEYOR", "CODEBUILD_BUILD_ID", "TEAMCITY_VERSION", "DRONE", "BITBUCKET_BUILD_NUMBER", "CIRRUS_CI", "SEMAPHORE", "container"].some((k) => truthy(env[k]));
+}
+function safeAccountHome() {
+  try {
+    const home = os2.userInfo().homedir;
+    return home ? home : null;
+  } catch {
+    return null;
+  }
+}
+function parsePolicy(value) {
+  if (typeof value !== "string")
+    return null;
+  const lowered = value.toLowerCase();
+  return lowered === "off" || lowered === "patch" || lowered === "minor" || lowered === "major" ? lowered : null;
+}
+function samePath(a, b) {
+  const real = (p) => {
+    try {
+      return fs8.realpathSync(p);
+    } catch {
+      return path7.resolve(p);
+    }
+  };
+  return real(a) === real(b);
+}
+function resolveUpdatePolicy(input2) {
+  const off = (reason, source, detail) => ({ policy: "off", source, reason, ...detail ? { detail } : {} });
+  const accountDir = input2.accountHome === null ? null : path7.join(input2.accountHome, ".memesh");
+  const configs = [];
+  const seen = [];
+  const addConfigDir = (dir, source) => {
+    if (seen.some((d) => samePath(d, dir)))
+      return;
+    seen.push(dir);
+    configs.push({ file: path7.join(dir, "config.json"), source });
+  };
+  addConfigDir(input2.activeDir, "config");
+  const extraDirs = Array.isArray(input2.extraConfigDirs) ? input2.extraConfigDirs : [];
+  for (const dir of extraDirs)
+    addConfigDir(dir, "config");
+  if (accountDir !== null)
+    addConfigDir(accountDir, "account-config");
+  const explicit = [];
+  const envValue = input2.env.MEMESH_AUTO_UPDATE;
+  if (envValue !== void 0) {
+    const parsed = parsePolicy(envValue);
+    if (parsed === null)
+      return off(AUTO_UPDATE_REASONS.policyOffInvalidValue, "env");
+    if (parsed === "off")
+      return off(AUTO_UPDATE_REASONS.policyOff, "env");
+    explicit.push({ policy: parsed, source: "env" });
+  }
+  for (const { file: file2, source } of configs) {
+    const read = readConfigFile(file2);
+    if (read.state === "unreadable")
+      return off(AUTO_UPDATE_REASONS.policyOffUnreadableConfig, source, `${file2}: ${read.why}`);
+    if (read.state === "absent")
+      continue;
+    if (read.raw.updateCheck === false)
+      return off(AUTO_UPDATE_REASONS.policyOffUpdateCheck, source);
+    if (read.raw.autoUpdate === void 0)
+      continue;
+    const parsed = parsePolicy(read.raw.autoUpdate);
+    if (parsed === null)
+      return off(AUTO_UPDATE_REASONS.policyOffInvalidValue, source);
+    explicit.push({ policy: parsed, source });
+  }
+  const refused = explicit.find((e) => e.policy === "off");
+  if (refused)
+    return off(AUTO_UPDATE_REASONS.policyOff, refused.source);
+  if (explicit.length > 0)
+    return { policy: explicit[0].policy, source: explicit[0].source, reason: null };
+  if (accountDir === null)
+    return off(AUTO_UPDATE_REASONS.policyOffNoAccountHome, "none");
+  if (isCi(input2.env))
+    return off(AUTO_UPDATE_REASONS.policyOffCi, "none");
+  const ownData = samePath(input2.activeDir, accountDir) && !input2.env.MEMESH_DB_PATH && !input2.env.MEMESH_DIR;
+  if (!ownData)
+    return off(AUTO_UPDATE_REASONS.policyOffForeignHome, "none");
+  return { policy: DEFAULT_AUTO_UPDATE_POLICY, source: "default", reason: null };
+}
+function accountMemeshDir() {
+  const home = safeAccountHome();
+  return home === null ? null : path7.join(home, ".memesh");
+}
+function propagateOff(activeConfigDir, accountDir) {
+  if (accountDir === null || samePath(accountDir, activeConfigDir))
+    return { path: null, error: null };
+  const file2 = path7.join(accountDir, "config.json");
+  try {
+    updateConfigInDir(accountDir, { autoUpdate: "off" });
+    return { path: file2, error: null };
+  } catch (err) {
+    return { path: file2, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+function accountConfigHolding(activeConfigDir, accountDir) {
+  if (accountDir === null || samePath(accountDir, activeConfigDir))
+    return null;
+  const file2 = path7.join(accountDir, "config.json");
+  const read = readConfigFile(file2);
+  if (read.state === "unreadable")
+    return { path: file2, kind: "unreadable", why: read.why };
+  return read.state === "ok" && read.raw.autoUpdate === "off" ? { path: file2, kind: "off", why: null } : null;
+}
+function currentPolicy(env = process.env) {
+  return resolveUpdatePolicy({ env, activeDir: getMemeshDirFromDbPath(), extraConfigDirs: [memeshDir()], accountHome: safeAccountHome() });
+}
+function chooseTarget(current, tags) {
+  const cur = parseSemVer(current);
+  const latest = tags.latest ? parseSemVer(tags.latest) : null;
+  const onNext = Boolean(cur && (cur.prerelease !== null || current === tags.next || latest && compareSemVerPrecedence(cur, latest) > 0));
+  let stream = onNext ? "next" : "latest";
+  let target = tags[stream] ?? null;
+  if (stream === "next" && cur && latest && compareSemVerPrecedence(latest, cur) > 0) {
+    const nextVersion = tags.next ? parseSemVer(tags.next) : null;
+    if (!nextVersion || compareSemVerPrecedence(nextVersion, cur) <= 0) {
+      stream = "latest";
+      target = tags.latest ?? null;
+    }
+  }
+  const parsedTarget = target ? parseSemVer(target) : null;
+  if (!cur || !parsedTarget || compareSemVerPrecedence(cur, parsedTarget) >= 0)
+    return { stream, target: null };
+  return { stream, target };
+}
+function bumpKind(from, to) {
+  return classifyBump(from, to) ?? "patch";
+}
+function policyPermits(policy, bump) {
+  return POLICY_RANK[policy] >= BUMP_RANK[bump];
+}
+function at(value, ...keys) {
+  let cur = value;
+  for (const key of keys) {
+    if (cur === null || typeof cur !== "object")
+      return void 0;
+    cur = cur[key];
+  }
+  return cur;
+}
+function statementOf(element) {
+  const payload = at(element, "bundle", "dsseEnvelope", "payload");
+  if (typeof payload !== "string")
+    return null;
+  try {
+    return JSON.parse(Buffer.from(payload, "base64").toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+function signerIdentity(element) {
+  const root = at(element, "bundle");
+  const raw = at(root, "verificationMaterial", "x509CertificateChain", "certificates", 0, "rawBytes") ?? at(root, "verificationMaterial", "certificate", "rawBytes");
+  if (typeof raw !== "string")
+    return null;
+  try {
+    const san = new X509Certificate(Buffer.from(raw, "base64")).subjectAltName;
+    const uri = san === void 0 ? void 0 : /URI:([^,\s]+)/.exec(san)?.[1];
+    return uri ?? null;
+  } catch {
+    return null;
+  }
+}
+function judgeAuditSignatures(json2, name, version2, options) {
+  let parsed;
+  try {
+    parsed = JSON.parse(json2);
+  } catch {
+    return { ok: false, reason: "npm audit signatures printed no JSON" };
+  }
+  if (!Array.isArray(parsed.invalid) || !Array.isArray(parsed.verified))
+    return { ok: false, reason: "npm audit signatures output has no verified/invalid lists" };
+  if (parsed.invalid.length > 0)
+    return { ok: false, reason: "a package in the install has an invalid signature" };
+  const entry = parsed.verified.find((e) => e.name === name && e.version === version2);
+  if (!entry)
+    return { ok: false, reason: `${name}@${version2} has no verified signature and provenance` };
+  if (!Array.isArray(entry.attestationBundles))
+    return { ok: false, reason: "no attestation was included for this version" };
+  for (const bundle of entry.attestationBundles) {
+    const statement = statementOf(bundle);
+    if (at(statement, "predicateType") !== "https://slsa.dev/provenance/v1")
+      continue;
+    const subjectList = at(statement, "subject");
+    const subjects = Array.isArray(subjectList) ? subjectList : [];
+    const subjectNames = subjects.map((s) => String(at(s, "name")));
+    if (!subjectNames.includes(`pkg:npm/${name.replace("@", "%40")}@${version2}`))
+      continue;
+    const workflow = at(statement, "predicate", "buildDefinition", "externalParameters", "workflow");
+    const digest = subjects.find((subject) => at(subject, "name") === `pkg:npm/${name.replace("@", "%40")}@${version2}`);
+    if (at(digest, "digest", "sha512") !== options.tarballSha512Hex)
+      return { ok: false, reason: "the attested package digest is not the digest of the downloaded tarball" };
+    const expectedSigner = `${EXPECTED_SOURCE.repository}/${EXPECTED_SOURCE.workflowPath}@refs/tags/v${version2}`;
+    if ((options.signerOf ?? signerIdentity)(bundle) !== expectedSigner)
+      return { ok: false, reason: "the signing certificate does not name this repository's release workflow at this version's tag" };
+    if (at(workflow, "repository") !== EXPECTED_SOURCE.repository)
+      return { ok: false, reason: "provenance names a different repository" };
+    if (at(workflow, "path") !== EXPECTED_SOURCE.workflowPath)
+      return { ok: false, reason: "provenance names a different workflow" };
+    if (at(workflow, "ref") !== `refs/tags/v${version2}`)
+      return { ok: false, reason: "provenance names a different tag" };
+    const commit = at(statement, "predicate", "buildDefinition", "resolvedDependencies", 0, "digest", "gitCommit");
+    if (typeof commit !== "string" || !/^[0-9a-f]{40}$/.test(commit))
+      return { ok: false, reason: "provenance carries no commit" };
+    return { ok: true, gitCommit: commit };
+  }
+  return { ok: false, reason: "no provenance statement for this version" };
+}
+function compareUrl(commit) {
+  const slug = EXPECTED_SOURCE.repository.replace("https://github.com/", "");
+  return `https://api.github.com/repos/${slug}/compare/${commit}...refs/heads/main?per_page=1`;
+}
+function proxyConfigured(env) {
+  return ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"].some((k) => typeof env[k] === "string" && env[k] !== "");
+}
+function nodeUsesEnvProxy(version2 = process.versions.node) {
+  const [major, minor] = version2.split(".").map(Number);
+  return major > 24 || major === 24 || major === 22 && minor >= 21;
+}
+function compareEnv(env, version2 = process.versions.node) {
+  return proxyConfigured(env) && nodeUsesEnvProxy(version2) ? { ...env, NODE_USE_ENV_PROXY: "1" } : env;
+}
+function judgeCommitOnMain(result, commit, proxyIgnored = false) {
+  if (result.status !== 0) {
+    const note2 = proxyIgnored ? `; a proxy is configured but this Node (${process.versions.node}) does not use it for fetch (it needs Node 22.21 or 24 and newer), so the request went out directly` : "";
+    return { ok: false, code: "unconfirmed", detail: `the lookup did not complete (${result.stderr.trim().slice(0, 120) || `exit ${result.status ?? "none"}`})${note2}` };
+  }
+  const newline = result.stdout.indexOf("\n");
+  const http = newline < 0 ? result.stdout : result.stdout.slice(0, newline);
+  const body = newline < 0 ? "" : result.stdout.slice(newline + 1);
+  if (http === "404")
+    return { ok: false, code: "notOnMain", detail: "the repository has no such commit" };
+  if (http !== "200")
+    return { ok: false, code: "unconfirmed", detail: `GitHub answered ${http || "nothing"}` };
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return { ok: false, code: "unconfirmed", detail: "GitHub's answer was not JSON" };
+  }
+  const status = at(parsed, "status");
+  const mergeBase = at(parsed, "merge_base_commit", "sha");
+  if (typeof status !== "string" || typeof mergeBase !== "string")
+    return { ok: false, code: "unconfirmed", detail: "GitHub's answer had no status and merge base" };
+  if ((status === "ahead" || status === "identical") && mergeBase === commit)
+    return { ok: true };
+  return { ok: false, code: "notOnMain", detail: `the commit is ${status} of main, not part of it` };
+}
+function shrinkwrapEntryProblem(key, entry) {
+  const where = key.replace(/^node_modules\//, "");
+  const version2 = at(entry, "version");
+  if (typeof version2 !== "string")
+    return `${where} has no pinned version`;
+  const resolved = at(entry, "resolved");
+  if (typeof resolved !== "string")
+    return `${where} is not pinned to the npm registry`;
+  const alias = at(entry, "name");
+  const name = typeof alias === "string" ? alias : key.slice(key.lastIndexOf("node_modules/") + "node_modules/".length);
+  const last = name.startsWith("@") ? name.split("/")[1] : name;
+  if (resolved !== `https://registry.npmjs.org/${name}/-/${last}-${version2}.tgz`)
+    return `${where} is not pinned to its own address on the npm registry (${resolved})`;
+  const integrity = at(entry, "integrity");
+  if (typeof integrity !== "string" || !SHA512_INTEGRITY.test(integrity))
+    return `${where} has no full sha512 integrity hash`;
+  return null;
+}
+function judgeShrinkwrap(text, version2) {
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return { ok: false, detail: "npm-shrinkwrap.json is not JSON" };
+  }
+  const packages = at(parsed, "packages");
+  if (packages === null || typeof packages !== "object" || Array.isArray(packages))
+    return { ok: false, detail: "npm-shrinkwrap.json has no package list" };
+  const entries = Object.entries(packages);
+  if (at(packages, "", "version") !== version2)
+    return { ok: false, detail: "npm-shrinkwrap.json is not for this version" };
+  const dependencies = at(packages, "", "dependencies");
+  for (const name of dependencies !== null && typeof dependencies === "object" ? Object.keys(dependencies) : []) {
+    if (typeof at(packages, `node_modules/${name}`, "version") !== "string")
+      return { ok: false, detail: `npm-shrinkwrap.json does not pin ${name}` };
+  }
+  for (const [key, entry] of entries) {
+    if (key === "")
+      continue;
+    const problem = shrinkwrapEntryProblem(key, entry);
+    if (problem)
+      return { ok: false, detail: problem };
+  }
+  return { ok: true };
+}
+function sha512Integrity(file2) {
+  return `sha512-${createHash6("sha512").update(fs8.readFileSync(file2)).digest("base64")}`;
+}
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    const code = err.code;
+    return code !== "ESRCH" && code !== "EPERM";
+  }
+}
+function registerLiveHost(dir, pid = process.ppid, logDir = dir) {
+  if (!Number.isSafeInteger(pid) || pid <= 1) {
+    appendLog(logDir, `auto-update: this host's process id (${pid}) cannot be registered as a running host, so the updater will not wait for it`);
+    return;
+  }
+  const root = path7.join(dir, LIVE_HOSTS_DIR);
+  ensureOwnerDir(root);
+  const hostFile = path7.join(root, `${pid}.json`);
+  fs8.writeFileSync(hostFile, JSON.stringify({ pid, at: (/* @__PURE__ */ new Date()).toISOString(), started: processStartTag(pid) }), { mode: 384 });
+  ownerOnly(hostFile);
+}
+function liveHostPids(dir) {
+  const root = path7.join(dir, LIVE_HOSTS_DIR);
+  let names;
+  try {
+    names = fs8.readdirSync(root);
+  } catch (err) {
+    if (err.code !== "ENOENT")
+      return null;
+    try {
+      fs8.accessSync(dir, fs8.constants.W_OK | fs8.constants.X_OK);
+      return [];
+    } catch (e) {
+      return e.code === "ENOENT" ? [] : null;
+    }
+  }
+  try {
+    fs8.accessSync(root, fs8.constants.W_OK | fs8.constants.X_OK);
+  } catch {
+    return null;
+  }
+  const alive = [];
+  for (const name of names) {
+    const pid = Number(name.replace(/\.json$/, ""));
+    if (!Number.isSafeInteger(pid) || pid <= 1)
+      continue;
+    let started = null;
+    try {
+      started = JSON.parse(fs8.readFileSync(path7.join(root, name), "utf8")).started ?? null;
+    } catch {
+    }
+    if (sameProcessAlive(pid, started, pidAlive))
+      alive.push(pid);
+    else {
+      const reused = pidAlive(pid);
+      appendLog(dir, `auto-update: host pid ${pid} ${reused ? `is now another program${started ? ` (registered as started ${started})` : ""}` : "is no longer running"}; its registration was removed`);
+      try {
+        fs8.unlinkSync(path7.join(root, name));
+      } catch (err) {
+        if (err.code !== "ENOENT")
+          appendLog(dir, `auto-update: could not remove the registration of host pid ${pid} (${err.message}); it is checked again next time`);
+      }
+    }
+  }
+  return alive;
+}
+function backupDatabase(dbPath, backupDir, tag, now = /* @__PURE__ */ new Date()) {
+  if (!fs8.existsSync(dbPath))
+    return null;
+  ensureOwnerDir(backupDir);
+  const target = path7.join(backupDir, `pre-update-${tag}-${now.toISOString().replace(/[:.]/g, "-")}.db`);
+  const db2 = new DatabaseSync2(dbPath, { readOnly: true });
+  try {
+    db2.exec(`VACUUM INTO '${target.replace(/'/g, "''")}'`);
+  } finally {
+    db2.close();
+  }
+  fs8.chmodSync(target, 384);
+  const stamped = fs8.readdirSync(backupDir).filter((f) => f.startsWith("pre-update-") && f.endsWith(".db")).map((f) => {
+    try {
+      return { f, at: fs8.statSync(path7.join(backupDir, f)).mtimeMs };
+    } catch {
+      return { f, at: 0 };
+    }
+  }).sort((x, y) => x.at - y.at || x.f.localeCompare(y.f));
+  for (const { f } of stamped.slice(0, Math.max(0, stamped.length - BACKUPS_KEPT))) {
+    if (path7.join(backupDir, f) === target)
+      continue;
+    try {
+      fs8.unlinkSync(path7.join(backupDir, f));
+    } catch {
+    }
+  }
+  return target;
+}
+function readWaitStart(dir, target) {
+  try {
+    const value = JSON.parse(fs8.readFileSync(path7.join(dir, WAIT_FILE), "utf8"));
+    const since = typeof value.since === "string" ? Date.parse(value.since) : NaN;
+    return value.target === target && Number.isFinite(since) ? since : null;
+  } catch {
+    return null;
+  }
+}
+function writeWaitStart(dir, target, since) {
+  try {
+    ensureOwnerDir(dir);
+    const waitFile = path7.join(dir, WAIT_FILE);
+    fs8.writeFileSync(waitFile, JSON.stringify({ target, since: new Date(since).toISOString() }), { mode: 384 });
+    ownerOnly(waitFile);
+  } catch (err) {
+    appendLog(dir, `auto-update: could not record when the wait began (${err instanceof Error ? err.message : String(err)}); a restarted runner would count the 3 days again`);
+  }
+}
+function clearWaitStart(dir) {
+  try {
+    fs8.unlinkSync(path7.join(dir, WAIT_FILE));
+  } catch {
+  }
+}
+function writeState(dir, state) {
+  try {
+    ensureOwnerDir(dir);
+    const file2 = path7.join(dir, STATE_FILE);
+    const tmp = `${file2}.tmp-${process.pid}`;
+    fs8.writeFileSync(tmp, JSON.stringify(state, null, 2), { mode: 384 });
+    ownerOnly(tmp);
+    fs8.renameSync(tmp, file2);
+  } catch {
+  }
+}
+function inspectAutoUpdateState(dir) {
+  const file2 = path7.join(dir, STATE_FILE);
+  let raw;
+  try {
+    raw = fs8.readFileSync(file2, "utf8");
+  } catch (err) {
+    const code = err?.code;
+    if (code === "ENOENT") {
+      try {
+        fs8.lstatSync(file2);
+      } catch (e2) {
+        if (e2?.code === "ENOENT")
+          return { kind: "absent" };
+      }
+    }
+    return { kind: "unreadable", detail: err instanceof Error ? err.message : String(err) };
+  }
+  try {
+    const value = JSON.parse(raw);
+    if (!value || typeof value !== "object" || typeof value.outcome !== "string")
+      return { kind: "unreadable", detail: "the file is JSON but not an update record" };
+    const hermes = value.hermes;
+    if (hermes !== void 0 && hermes !== null) {
+      const element = (h) => h !== null && typeof h === "object" && typeof h.path === "string" && typeof h.outcome === "string" && typeof h.reason === "string";
+      if (!Array.isArray(hermes) || !hermes.every(element))
+        return { kind: "unreadable", detail: 'the "hermes" list holds an entry that is not a result (path, outcome, reason)' };
+    }
+    return { kind: "ok", state: value };
+  } catch (err) {
+    return { kind: "unreadable", detail: err instanceof Error ? err.message : String(err) };
+  }
+}
+function readAutoUpdateState(dir) {
+  const read = inspectAutoUpdateState(dir);
+  return read.kind === "ok" ? read.state : null;
+}
+function writeInstalling(dir, marker) {
+  try {
+    ensureOwnerDir(dir);
+    const file2 = path7.join(dir, INSTALLING_FILE);
+    fs8.writeFileSync(file2, JSON.stringify(marker), { mode: 384 });
+    ownerOnly(file2);
+  } catch (err) {
+    appendLog(dir, `auto-update: could not write the record that an install started (${err instanceof Error ? err.message : String(err)})`);
+  }
+}
+function clearInstalling(dir) {
+  try {
+    fs8.unlinkSync(path7.join(dir, INSTALLING_FILE));
+  } catch {
+  }
+}
+function readInstalling(dir) {
+  try {
+    const value = JSON.parse(fs8.readFileSync(path7.join(dir, INSTALLING_FILE), "utf8"));
+    if (typeof value.at !== "string" || typeof value.to !== "string" || typeof value.pid !== "number")
+      return null;
+    const marker = { at: value.at, from: String(value.from ?? "?"), to: value.to, pid: value.pid, started: typeof value.started === "string" ? value.started : null };
+    return { marker, running: sameProcessAlive(marker.pid, marker.started, pidAlive) };
+  } catch {
+    return null;
+  }
+}
+function logAutoUpdateLine(dir, line) {
+  appendLog(dir, line);
+}
+function oneLine(text) {
+  return text.replace(/[\r\n\u2028\u2029]+/g, " ");
+}
+function appendLog(dir, line) {
+  try {
+    ensureOwnerDir(dir);
+    fs8.appendFileSync(path7.join(dir, LOG_FILE), `[${(/* @__PURE__ */ new Date()).toISOString()}] ${oneLine(line)}
+`, { mode: 384 });
+    ownerOnly(path7.join(dir, LOG_FILE));
+  } catch {
+  }
+}
+function readRegistryTags(exec = defaultExec) {
+  const r = exec("npm", ["view", PACKAGE_NAME, "dist-tags", "--json"], { timeoutMs: 15e3 });
+  if (r.status !== 0)
+    return null;
+  try {
+    const parsed = JSON.parse(r.stdout);
+    const tags = {};
+    for (const key of ["latest", "next"]) {
+      const raw = parsed[key];
+      const v = typeof raw === "string" ? normalizeRegistryVersion(raw) : null;
+      if (v)
+        tags[key] = v;
+    }
+    return tags;
+  } catch {
+    return null;
+  }
+}
+function unchanged(staged) {
+  try {
+    return sha512Integrity(staged.tarball) === staged.integrity;
+  } catch {
+    return false;
+  }
+}
+function makeWorkDir(root, prefix) {
+  const dir = fs8.mkdtempSync(path7.join(root, prefix));
+  try {
+    fs8.writeFileSync(path7.join(dir, WORK_OWNER), JSON.stringify({ pid: process.pid, started: processStartTag(process.pid) }));
+  } catch {
+  }
+  return dir;
+}
+function sweepWorkDirs(root, nowMs = Date.now()) {
+  const removed = [];
+  let names;
+  try {
+    names = fs8.readdirSync(root);
+  } catch {
+    return removed;
+  }
+  for (const name of names) {
+    if (!WORK_PREFIXES.some((prefix) => name.startsWith(prefix)))
+      continue;
+    const dir = path7.join(root, name);
+    try {
+      const stat = fs8.lstatSync(dir);
+      if (!stat.isDirectory() || typeof process.getuid === "function" && stat.uid !== process.getuid())
+        continue;
+      let owner = null;
+      try {
+        owner = JSON.parse(fs8.readFileSync(path7.join(dir, WORK_OWNER), "utf8"));
+      } catch {
+      }
+      if (owner && typeof owner.pid === "number") {
+        if (sameProcessAlive(owner.pid, typeof owner.started === "string" ? owner.started : null, pidAlive))
+          continue;
+      } else if (nowMs - stat.mtimeMs < 36e5)
+        continue;
+      fs8.rmSync(dir, { recursive: true, force: true });
+      removed.push(dir);
+    } catch {
+    }
+  }
+  return removed;
+}
+function stageAndVerify(deps, target) {
+  const swept = sweepWorkDirs(deps.tmpRoot);
+  if (swept.length > 0)
+    appendLog(deps.dir, `auto-update: removed ${swept.length} working director${swept.length === 1 ? "y" : "ies"} left by an update that was killed`);
+  const stage = makeWorkDir(deps.tmpRoot, "memesh-update-");
+  const cleanup = () => {
+    try {
+      fs8.rmSync(stage, { recursive: true, force: true });
+    } catch {
+    }
+  };
+  const fail = (code, detail) => {
+    cleanup();
+    return { ok: false, code, detail };
+  };
+  fs8.writeFileSync(path7.join(stage, "package.json"), JSON.stringify({ name: "memesh-update-probe", version: "1.0.0", private: true }));
+  const install = deps.exec("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", `${PACKAGE_NAME}@${target}`], { cwd: stage });
+  if (install.status !== 0)
+    return fail(AUTO_UPDATE_REASONS.sourceNotVerified, "staging install failed");
+  const pack = deps.exec("npm", ["pack", `${PACKAGE_NAME}@${target}`, "--pack-destination", stage, "--silent"], { cwd: stage });
+  const tarball = path7.join(stage, pack.stdout.trim().split("\n").pop() ?? "");
+  if (pack.status !== 0 || !fs8.existsSync(tarball) || !fs8.statSync(tarball).isFile())
+    return fail(AUTO_UPDATE_REASONS.tarballMismatch, "npm pack produced no tarball");
+  const audit = deps.exec("npm", ["audit", "signatures", "--json", "--include-attestations"], { cwd: stage });
+  const bytes = fs8.readFileSync(tarball);
+  const verdict = judgeAuditSignatures(audit.stdout, PACKAGE_NAME, target, {
+    tarballSha512Hex: createHash6("sha512").update(bytes).digest("hex"),
+    ...deps.signerOf ? { signerOf: deps.signerOf } : {}
+  });
+  if (!verdict.ok)
+    return fail(AUTO_UPDATE_REASONS.sourceNotVerified, verdict.reason);
+  const onMain = judgeCommitOnMain(deps.exec(process.execPath, ["-e", COMPARE_SCRIPT, compareUrl(verdict.gitCommit)], { cwd: stage, env: compareEnv(deps.env), timeoutMs: 4e4 }), verdict.gitCommit, proxyConfigured(deps.env) && !nodeUsesEnvProxy());
+  if (!onMain.ok)
+    return fail(onMain.code === "notOnMain" ? AUTO_UPDATE_REASONS.commitNotOnMain : AUTO_UPDATE_REASONS.commitUnconfirmed, onMain.detail);
+  const shrinkwrap = deps.exec("tar", ["-xzOf", tarball, "package/npm-shrinkwrap.json"]);
+  const pinned = shrinkwrap.status === 0 ? judgeShrinkwrap(shrinkwrap.stdout, target) : { ok: false, detail: "the package has no npm-shrinkwrap.json" };
+  if (!pinned.ok)
+    return fail(AUTO_UPDATE_REASONS.dependenciesNotPinned, pinned.detail);
+  const unpackDir = path7.join(stage, "pinned");
+  fs8.mkdirSync(unpackDir);
+  const unpack = deps.exec("tar", ["-xzf", tarball, "-C", unpackDir, "--no-same-owner"]);
+  const unpacked = path7.join(unpackDir, "package");
+  if (unpack.status !== 0 || !fs8.existsSync(unpacked))
+    return fail(AUTO_UPDATE_REASONS.dependenciesNotFetched, "the verified package could not be unpacked");
+  const rehearsal = deps.exec("npm", ["ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"], { cwd: unpacked, timeoutMs: PIN_TIMEOUT_MS });
+  if (rehearsal.status !== 0)
+    return fail(AUTO_UPDATE_REASONS.dependenciesNotFetched, rehearsal.stderr.trim() || `npm ci ${rehearsal.status === null ? "did not finish in time" : `exited ${rehearsal.status}`}`);
+  let lockIntegrity;
+  try {
+    lockIntegrity = JSON.parse(fs8.readFileSync(path7.join(stage, "package-lock.json"), "utf8")).packages?.[`node_modules/${PACKAGE_NAME}`]?.integrity;
+  } catch {
+  }
+  if (typeof lockIntegrity !== "string" || lockIntegrity !== `sha512-${createHash6("sha512").update(bytes).digest("base64")}`)
+    return fail(AUTO_UPDATE_REASONS.tarballMismatch, "integrity differs from the verified install");
+  return { ok: true, tarball, integrity: lockIntegrity, gitCommit: verdict.gitCommit, cleanup };
+}
+function stripMultilineStrings(toml) {
+  return toml.replace(/"""[\s\S]*?"""|'''[\s\S]*?'''/g, '""');
+}
+function codexMarketplaceState(codexHome) {
+  let text;
+  try {
+    text = stripMultilineStrings(fs8.readFileSync(path7.join(codexHome, "config.toml"), "utf8"));
+  } catch (err) {
+    return err.code === "ENOENT" ? "missing" : "unreadable";
+  }
+  const table = new RegExp(`^\\[marketplaces\\.${CODEX_MARKETPLACE}\\]\\s*$([\\s\\S]*?)(?=^\\[|(?![\\s\\S]))`, "m").exec(text);
+  if (!table) {
+    const mentioned = text.split("\n").some((line) => {
+      const code = line.replace(/#.*$/, "");
+      return /marketplaces/.test(code) && code.includes(CODEX_MARKETPLACE) || new RegExp(`^\\s*["']?${CODEX_MARKETPLACE}["']?\\s*[=.]`).test(code);
+    });
+    return mentioned ? "foreign" : "missing";
+  }
+  const source = /^source\s*=\s*"([^"]*)"/m.exec(table[1])?.[1];
+  const type = /^source_type\s*=\s*"([^"]*)"/m.exec(table[1])?.[1];
+  return type === "git" && (source === `https://github.com/${CODEX_MARKETPLACE_SOURCE}.git` || source === `https://github.com/${CODEX_MARKETPLACE_SOURCE}` || source === CODEX_MARKETPLACE_SOURCE) ? "official" : "foreign";
+}
+function codexDecision(deps) {
+  if (deps.codexHome === null)
+    return { state: "missing", skip: AUTO_UPDATE_REASONS.codexHomeUnknown };
+  const state = codexMarketplaceState(deps.codexHome);
+  if (state === "foreign")
+    return { state, skip: AUTO_UPDATE_REASONS.codexMarketplaceForeign };
+  if (state === "unreadable")
+    return { state, skip: AUTO_UPDATE_REASONS.codexMarketplaceUnreadable };
+  if (state === "missing" && !deps.reinstall)
+    return { state, skip: AUTO_UPDATE_REASONS.codexMarketplaceMissing };
+  return { state, skip: null };
+}
+function codexHomeFor(packageRoot3) {
+  const parts = path7.resolve(packageRoot3).split(path7.sep);
+  for (let i = parts.length - 4; i >= 1; i -= 1) {
+    if (parts[i] === "plugins" && parts[i + 1] === "cache" && parts[i + 2] === CODEX_MARKETPLACE)
+      return parts.slice(0, i).join(path7.sep) || path7.sep;
+  }
+  return null;
+}
+function codexConfigFingerprint(codexHome) {
+  try {
+    return createHash6("sha256").update(fs8.readFileSync(path7.join(codexHome, "config.toml"))).digest("hex");
+  } catch (err) {
+    return err.code === "ENOENT" ? "absent" : "unreadable";
+  }
+}
+function codexMarketplaceSource(codexHome) {
+  try {
+    const text = stripMultilineStrings(fs8.readFileSync(path7.join(codexHome, "config.toml"), "utf8"));
+    const table = new RegExp(`^\\[marketplaces\\.${CODEX_MARKETPLACE}\\]\\s*$([\\s\\S]*?)(?=^\\[|(?![\\s\\S]))`, "m").exec(text);
+    return table ? /^source\s*=\s*"([^"]*)"/m.exec(table[1])?.[1] ?? null : null;
+  } catch {
+    return null;
+  }
+}
+function readCodexRestoreRecord(dir) {
+  let text;
+  try {
+    text = fs8.readFileSync(path7.join(dir, CODEX_RESTORE_FILE), "utf8");
+  } catch (err) {
+    return err.code === "ENOENT" ? null : "damaged";
+  }
+  try {
+    const v = JSON.parse(text);
+    return typeof v.marketplace === "string" && typeof v.source === "string" && typeof v.configAfter === "string" && typeof v.at === "string" ? { marketplace: v.marketplace, original: typeof v.original === "string" ? v.original : null, source: v.source, configAfter: v.configAfter, at: v.at } : "damaged";
+  } catch {
+    return "damaged";
+  }
+}
+function repairCodexMarketplace(deps) {
+  if (deps.codexHome === null)
+    return;
+  const file2 = path7.join(deps.dir, CODEX_RESTORE_FILE);
+  const record2 = readCodexRestoreRecord(deps.dir);
+  if (record2 === null)
+    return;
+  const drop = (why) => {
+    appendLog(deps.dir, `auto-update: codex marketplace record dropped: ${why}`);
+    try {
+      fs8.rmSync(file2, { force: true });
+    } catch (err) {
+      appendLog(deps.dir, `auto-update: could not delete ${file2} (${err instanceof Error ? err.message : String(err)})`);
+    }
+  };
+  if (record2 === "damaged")
+    return drop("the record could not be read, so nothing is restored from it");
+  const state = codexMarketplaceState(deps.codexHome);
+  if (state !== "missing")
+    return drop(`the marketplace is ${state} now, so there is nothing to put back`);
+  if (codexConfigFingerprint(deps.codexHome) !== record2.configAfter)
+    return drop("config.toml changed after the failed restore, so the missing marketplace is not ours to put back");
+  const added = deps.exec("codex", ["plugin", "marketplace", "add", record2.source], { env: { ...deps.env, CODEX_HOME: deps.codexHome } });
+  if (added.status === 0 && codexMarketplaceState(deps.codexHome) === "official") {
+    appendLog(deps.dir, `auto-update: the Codex marketplace ${record2.marketplace} that a failed update had removed was put back (${record2.source})`);
+    try {
+      fs8.rmSync(file2, { force: true });
+    } catch (err) {
+      appendLog(deps.dir, `auto-update: could not delete ${file2} (${err instanceof Error ? err.message : String(err)})`);
+    }
+    return;
+  }
+  appendLog(deps.dir, `auto-update: the Codex marketplace ${record2.marketplace} could not be put back yet (${oneLine(added.stderr).slice(0, 160)}); the next run tries again`);
+}
+function updateCodexPlugin(deps, codexHome, commit, target, wasMissing = false) {
+  const env = { ...deps.env, CODEX_HOME: codexHome };
+  const codex = (...args) => deps.exec("codex", ["plugin", ...args], { env });
+  const restore = () => {
+    codex("marketplace", "remove", CODEX_MARKETPLACE);
+    if (wasMissing)
+      return codexMarketplaceState(codexHome) === "missing";
+    return codex("marketplace", "add", CODEX_MARKETPLACE_SOURCE).status === 0;
+  };
+  if (!wasMissing) {
+    const removed = codex("marketplace", "remove", CODEX_MARKETPLACE);
+    if (removed.status !== 0)
+      return { kind: "step", detail: `marketplace remove: ${removed.stderr}`, restored: true, untouched: true };
+  }
+  const added = codex("marketplace", "add", CODEX_MARKETPLACE_SOURCE, "--ref", commit);
+  if (added.status !== 0)
+    return { kind: "step", detail: `marketplace add: ${added.stderr}`, restored: restore() };
+  const installed = codex("add", CODEX_PLUGIN);
+  if (installed.status !== 0)
+    return { kind: "step", detail: `plugin add: ${installed.stderr}`, restored: restore() };
+  const root = /Installed plugin root:\s*(.+)$/m.exec(installed.stdout)?.[1]?.trim();
+  if (root === void 0 || path7.basename(root) !== target)
+    return { kind: "readback" };
+  try {
+    if (!fs8.statSync(root).isDirectory())
+      return { kind: "readback" };
+  } catch {
+    return { kind: "readback" };
+  }
+  try {
+    const version2 = JSON.parse(fs8.readFileSync(path7.join(root, "package.json"), "utf8")).version;
+    if (typeof version2 === "string" && version2 !== target)
+      return { kind: "readback" };
+  } catch {
+  }
+  return null;
+}
+function claudeConfigRoot(env) {
+  if (env.CLAUDE_CONFIG_DIR)
+    return env.CLAUDE_CONFIG_DIR;
+  return env.HOME ? path7.join(env.HOME, ".claude") : null;
+}
+function claudeRegistryRecords(deps, commit, version2) {
+  const root = claudeConfigRoot(deps.env);
+  const file2 = deps.claudeRegistryPath ?? (root === null ? null : path7.join(root, "plugins", "installed_plugins.json"));
+  if (file2 === null)
+    return false;
+  try {
+    const entries = at(JSON.parse(fs8.readFileSync(file2, "utf8")), "plugins", "memesh@pcircle-memesh");
+    return Array.isArray(entries) && entries.some((e) => at(e, "gitCommitSha") === commit && (typeof at(e, "version") !== "string" || at(e, "version") === version2));
+  } catch {
+    return false;
+  }
+}
+function installGlobal(deps, tarball) {
+  const root = deps.exec("npm", ["root", "-g"]);
+  const rootDir = root.status === 0 ? root.stdout.trim() : "";
+  if (rootDir === "")
+    return { ok: false, reason: AUTO_UPDATE_REASONS.globalDirUnknown, detail: root.stderr };
+  const installedDir = path7.join(rootDir, ...PACKAGE_NAME.split("/"));
+  try {
+    for (const name of fs8.readdirSync(path7.dirname(installedDir))) {
+      const m = /^memesh\.rollback-(\d+)$/.exec(name);
+      if (m && !pidAlive(Number(m[1])))
+        fs8.rmSync(path7.join(path7.dirname(installedDir), name), { recursive: true, force: true });
+    }
+  } catch {
+  }
+  const had = fs8.existsSync(installedDir);
+  const rollbackDir = path7.join(path7.dirname(installedDir), `memesh.rollback-${process.pid}`);
+  if (had) {
+    try {
+      fs8.rmSync(rollbackDir, { recursive: true, force: true });
+      fs8.cpSync(installedDir, rollbackDir, { recursive: true, verbatimSymlinks: true });
+    } catch (err) {
+      try {
+        fs8.rmSync(rollbackDir, { recursive: true, force: true });
+      } catch {
+      }
+      return { ok: false, reason: AUTO_UPDATE_REASONS.rollbackUnavailable, detail: err instanceof Error ? err.message : String(err) };
+    }
+  }
+  const putBack = () => {
+    if (!had)
+      return true;
+    try {
+      fs8.rmSync(installedDir, { recursive: true, force: true });
+      fs8.renameSync(rollbackDir, installedDir);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const failed = (reason, detail) => {
+    if (putBack())
+      return { ok: false, reason, detail: `the previous version was put back; npm said: ${detail.trim()}` };
+    return { ok: false, reason: AUTO_UPDATE_REASONS.installNotUndone, detail: `a copy of the previous version is at ${rollbackDir}; npm said: ${detail.trim()}` };
+  };
+  const install = deps.exec("npm", ["install", "-g", "--ignore-scripts", tarball]);
+  if (install.status !== 0)
+    return failed(AUTO_UPDATE_REASONS.installFailed, install.stderr);
+  if (!fs8.existsSync(path7.join(installedDir, "npm-shrinkwrap.json")))
+    return failed(AUTO_UPDATE_REASONS.dependencyPinFailed, "the installed package has no npm-shrinkwrap.json");
+  const pin = deps.exec("npm", ["ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"], { cwd: installedDir, timeoutMs: PIN_TIMEOUT_MS });
+  if (pin.status !== 0)
+    return failed(AUTO_UPDATE_REASONS.dependencyPinFailed, pin.stderr.trim() || `npm ci ${pin.status === null ? "did not finish in time" : `exited ${pin.status}`}`);
+  if (had) {
+    try {
+      fs8.rmSync(rollbackDir, { recursive: true, force: true });
+    } catch {
+    }
+  }
+  return { ok: true };
+}
+function unsafeTarEntries(verbose, names) {
+  const lines = verbose.split("\n").filter((line) => line.trim() !== "");
+  if (lines.length !== names.length)
+    return [`the two listings of the package do not line up (${lines.length} entries with a type, ${names.length} names)`];
+  const bad = [];
+  names.forEach((name, i) => {
+    const type = lines[i][0];
+    const segments = name.split("/");
+    const outside = !(name === "package/extensions/hermes-memesh" || name === PROVIDER_PREFIX || name.startsWith(PROVIDER_PREFIX));
+    if (type !== "-" && type !== "d")
+      bad.push(`${name} (type ${type})`);
+    else if (name.startsWith("/") || segments.includes(".."))
+      bad.push(`${name} (path escapes)`);
+    else if (outside)
+      bad.push(`${name} (outside the provider directory)`);
+  });
+  return bad;
+}
+function refreshHermes(deps, tarball, version2, expectedIntegrity) {
+  const targets = refreshTargets(deps.dir, deps.env, deps.accountHome);
+  const problem = registryProblemResult(deps.dir);
+  if (targets.length === 0)
+    return problem ? [problem] : null;
+  const ours = targets.filter((p) => {
+    const state = inspectInstall(p).state;
+    return state === "managed" || state === "absent";
+  });
+  const failAll = (reason) => [...problem ? [problem] : [], ...ours.map((p) => ({ path: p, outcome: "failed", reason, backup: null }))];
+  const work = makeWorkDir(deps.tmpRoot, "memesh-hermes-");
+  try {
+    const mine = path7.join(work, "package.tgz");
+    try {
+      fs8.copyFileSync(tarball, mine);
+    } catch {
+      return failAll(AUTO_UPDATE_REASONS.tarballChanged);
+    }
+    if (sha512Integrity(mine) !== expectedIntegrity)
+      return failAll(AUTO_UPDATE_REASONS.tarballChanged);
+    const why = (r) => `tar exit ${r.status ?? "none"}${r.stderr.trim() ? `: ${r.stderr.trim().replace(/\s+/g, " ").slice(0, 120)}` : ""}`;
+    const names = deps.exec("tar", ["-tzf", mine, "package/extensions/hermes-memesh"]);
+    if (names.status !== 0)
+      return failAll(`the verified package could not be listed (${why(names)})`);
+    if (names.stdout.trim() === "")
+      return failAll("the verified package holds no Hermes provider");
+    const listing = deps.exec("tar", ["-tvzf", mine, "package/extensions/hermes-memesh"]);
+    if (listing.status !== 0)
+      return failAll(`the verified package could not be listed (${why(listing)})`);
+    const hostile = unsafeTarEntries(listing.stdout, names.stdout.split("\n").filter((line) => line !== ""));
+    if (hostile.length > 0)
+      return failAll(`refused: the package holds entries that are not plain files under the provider directory (${hostile.slice(0, 3).join("; ")})`);
+    const extracted = deps.exec("tar", ["-xzf", mine, "-C", work, "--no-same-owner", "package/extensions/hermes-memesh"]);
+    if (extracted.status !== 0)
+      return failAll(`the provider could not be extracted (${why(extracted)})`);
+    const sourceDir = path7.join(work, "package", "extensions", "hermes-memesh");
+    if (!fs8.existsSync(sourceDir))
+      return failAll("the verified package holds no Hermes provider");
+    const realWork = fs8.realpathSync(work);
+    const realSource = fs8.realpathSync(sourceDir);
+    if (realSource !== path7.join(realWork, "package", "extensions", "hermes-memesh"))
+      return failAll("refused: the extracted provider is not where it was expected");
+    return refreshInstalls({ sourceDir, version: version2, memeshDir: deps.dir, env: deps.env, accountHome: deps.accountHome, now: deps.now(), log: (line) => appendLog(deps.dir, `auto-update: ${line}`) });
+  } catch (err) {
+    return failAll(`failed: ${(err instanceof Error ? err.message : String(err)).slice(0, 160)}`);
+  } finally {
+    try {
+      fs8.rmSync(work, { recursive: true, force: true });
+    } catch (err) {
+      appendLog(deps.dir, `auto-update: could not remove the working directory ${work} (${err instanceof Error ? err.message : String(err)})`);
+    }
+  }
+}
+async function runAutoUpdate(deps) {
+  const base = { from: deps.currentVersion, channel: deps.channel };
+  let to = null;
+  let backup = null;
+  let waitingSince = null;
+  let hermes = null;
+  const finish = (outcome, reason, detail) => {
+    const state = { at: deps.now().toISOString(), outcome, reason, from: base.from, to, channel: base.channel, backup, waitingSince: outcome === "waiting" ? waitingSince : null, hermes, notice: deps.notice ?? null, detail: detail ? oneLine(detail).trim().slice(0, 300) : null };
+    writeState(deps.dir, state);
+    if (outcome !== "waiting")
+      clearInstalling(deps.dir);
+    if (hermes !== null)
+      for (const h of hermes)
+        appendLog(deps.dir, `auto-update hermes-provider ${h.outcome.toUpperCase()}: ${h.reason} path=${h.path}${h.backup ? ` backup=${h.backup}` : ""}`);
+    appendLog(deps.dir, `auto-update ${outcome.toUpperCase()}: ${reason}${detail ? ` (${detail.replace(/[\r\n]+/g, " ").slice(0, 200)})` : ""} from=${base.from} to=${to ?? "-"} channel=${base.channel}`);
+    return { outcome, reason };
+  };
+  try {
+    const policyNow = () => deps.manual ? { policy: "major", source: "default", reason: null } : resolveUpdatePolicy({ env: deps.env, activeDir: deps.dir, extraConfigDirs: [deps.configDir], accountHome: deps.accountHome });
+    const decision = policyNow();
+    if (decision.policy === "off")
+      return finish("skipped", decision.reason ?? AUTO_UPDATE_REASONS.policyOff, decision.detail);
+    const supported = deps.channel === "npm-global" || deps.channel === "plugin-marketplace" && deps.pluginHost !== null;
+    if (!supported)
+      return finish("skipped", AUTO_UPDATE_REASONS.channelUnsupported);
+    if (deps.pluginHost === "codex")
+      repairCodexMarketplace(deps);
+    let target;
+    if (deps.reinstall) {
+      target = deps.currentVersion;
+    } else {
+      const tags = deps.readTags();
+      if (!tags)
+        return finish("failed", AUTO_UPDATE_REASONS.registryUnreachable);
+      target = chooseTarget(deps.currentVersion, tags).target;
+    }
+    if (!target) {
+      if (readAutoUpdateState(deps.dir)?.reason === AUTO_UPDATE_REASONS.installNotUndone)
+        return finish("failed", AUTO_UPDATE_REASONS.installNotUndone, "still unfinished from the earlier attempt");
+      const stale = staleInstalls(deps.dir, deps.env, deps.currentVersion, deps.accountHome);
+      const unreadableList = registryProblemResult(deps.dir);
+      if (stale.length > 0) {
+        const current = stageAndVerify(deps, deps.currentVersion);
+        if (current.ok) {
+          try {
+            hermes = refreshHermes(deps, current.tarball, deps.currentVersion, current.integrity);
+          } finally {
+            current.cleanup();
+          }
+        } else {
+          hermes = [...unreadableList ? [unreadableList] : [], ...stale.map((p) => ({ path: p, outcome: "failed", reason: current.code, backup: null }))];
+        }
+      } else if (unreadableList) {
+        hermes = [unreadableList];
+      }
+      return finish("skipped", AUTO_UPDATE_REASONS.upToDate);
+    }
+    to = target;
+    if (!policyPermits(decision.policy, bumpKind(deps.currentVersion, target)))
+      return finish("skipped", AUTO_UPDATE_REASONS.bumpNotPermitted);
+    if (deps.pluginHost === "codex") {
+      const decided = codexDecision(deps);
+      if (decided.skip)
+        return finish("skipped", decided.skip);
+    }
+    const first = stageAndVerify(deps, target);
+    if (!first.ok)
+      return finish("failed", first.code, first.detail);
+    let staged = first;
+    try {
+      try {
+        backup = backupDatabase(deps.dbPath, path7.join(deps.dir, "backups"), deps.currentVersion, deps.now());
+      } catch (err) {
+        return finish("failed", AUTO_UPDATE_REASONS.backupFailed, err instanceof Error ? err.message : String(err));
+      }
+      const startNow = deps.now().getTime();
+      const stored = readWaitStart(deps.dir, target);
+      const waitedFrom = stored !== null && stored <= startNow ? stored : startNow;
+      if (stored !== null && stored > startNow)
+        appendLog(deps.dir, "auto-update: the recorded start of the wait is in the future (the clock moved back); counting from now");
+      let announced = false;
+      let waitedOut = false;
+      let slept = 0;
+      let unknownLogged = false;
+      for (; ; ) {
+        if (deps.manual)
+          break;
+        const live = liveHostPids(deps.liveHostsDir ?? deps.dir);
+        if (live !== null && live.length === 0)
+          break;
+        if (live === null && !unknownLogged) {
+          unknownLogged = true;
+          appendLog(deps.dir, `auto-update: ${AUTO_UPDATE_REASONS.hostsUnreadable}`);
+        }
+        if (!announced) {
+          announced = true;
+          waitingSince = new Date(waitedFrom).toISOString();
+          writeWaitStart(deps.dir, target, waitedFrom);
+          finish("waiting", live === null ? AUTO_UPDATE_REASONS.hostsUnreadable : AUTO_UPDATE_REASONS.waitingForHosts);
+        }
+        if (deps.now().getTime() - waitedFrom >= LIVE_WAIT_MAX_MS || slept >= LIVE_WAIT_MAX_MS) {
+          waitedOut = true;
+          break;
+        }
+        if (deps.heartbeat?.() === false)
+          return finish("failed", AUTO_UPDATE_REASONS.lockLost);
+        await deps.sleep(LIVE_WAIT_POLL_MS);
+        slept += LIVE_WAIT_POLL_MS;
+      }
+      clearWaitStart(deps.dir);
+      const after = policyNow();
+      if (after.policy === "off")
+        return finish("skipped", after.reason ?? AUTO_UPDATE_REASONS.policyOff, after.detail);
+      if (!policyPermits(after.policy, bumpKind(deps.currentVersion, target)))
+        return finish("skipped", AUTO_UPDATE_REASONS.bumpNotPermitted);
+      if (announced) {
+        staged.cleanup();
+        const again = stageAndVerify(deps, target);
+        if (!again.ok)
+          return finish("failed", again.code, again.detail);
+        staged = again;
+      }
+      const last = policyNow();
+      if (last.policy === "off")
+        return finish("skipped", last.reason ?? AUTO_UPDATE_REASONS.policyOff, last.detail);
+      if (!policyPermits(last.policy, bumpKind(deps.currentVersion, target)))
+        return finish("skipped", AUTO_UPDATE_REASONS.bumpNotPermitted);
+      if (deps.heartbeat?.() === false)
+        return finish("failed", AUTO_UPDATE_REASONS.lockLost);
+      writeInstalling(deps.dir, { at: deps.now().toISOString(), from: deps.currentVersion, to: target, pid: process.pid, started: processStartTag(process.pid) });
+      deps.beforeInstall?.(staged.tarball);
+      if (!unchanged(staged))
+        return finish("failed", AUTO_UPDATE_REASONS.tarballChanged);
+      if (deps.channel === "npm-global") {
+        const done = installGlobal(deps, staged.tarball);
+        if (!done.ok)
+          return finish("failed", done.reason, done.detail);
+        if (deps.readInstalledVersion() !== target)
+          return finish("failed", AUTO_UPDATE_REASONS.readbackFailed);
+      } else if (deps.pluginHost === "codex") {
+        const { skip, state: codexState } = codexDecision(deps);
+        if (skip || deps.codexHome === null)
+          return finish("skipped", skip ?? AUTO_UPDATE_REASONS.codexHomeUnknown);
+        const originalSource = codexMarketplaceSource(deps.codexHome);
+        const failure2 = updateCodexPlugin(deps, deps.codexHome, staged.gitCommit, target, codexState === "missing");
+        if (failure2?.kind === "step" && !failure2.restored && !failure2.untouched) {
+          try {
+            const record2 = { marketplace: CODEX_MARKETPLACE, original: originalSource, source: CODEX_MARKETPLACE_SOURCE, configAfter: codexConfigFingerprint(deps.codexHome), at: deps.now().toISOString() };
+            fs8.writeFileSync(path7.join(deps.dir, CODEX_RESTORE_FILE), JSON.stringify(record2, null, 2) + "\n", { mode: 384 });
+            ownerOnly(path7.join(deps.dir, CODEX_RESTORE_FILE));
+          } catch (err) {
+            appendLog(deps.dir, `auto-update: could not write ${CODEX_RESTORE_FILE} (${err instanceof Error ? err.message : String(err)}); the marketplace will not be put back by itself`);
+          }
+        }
+        if (failure2?.kind === "readback")
+          return finish("failed", AUTO_UPDATE_REASONS.codexReadbackFailed);
+        if (failure2?.kind === "step" && failure2.untouched)
+          return finish("failed", AUTO_UPDATE_REASONS.codexRemoveFailed, failure2.detail);
+        if (failure2)
+          return finish("failed", failure2.restored ? AUTO_UPDATE_REASONS.codexInstallFailed : AUTO_UPDATE_REASONS.codexRestoreFailed, failure2.detail);
+      } else {
+        const script = path7.join(deps.packageRoot, "scripts", "upgrade-plugin.sh");
+        const run = deps.exec("bash", [script], {
+          env: { ...deps.env, MEMESH_UPGRADE_PIN_COMMIT: staged.gitCommit, MEMESH_UPGRADE_EXPECT_VERSION: target }
+        });
+        if (run.status !== 0)
+          return finish("failed", AUTO_UPDATE_REASONS.installFailed, run.stderr);
+        if (!claudeRegistryRecords(deps, staged.gitCommit, target))
+          return finish("failed", AUTO_UPDATE_REASONS.claudeReadbackFailed);
+      }
+      hermes = refreshHermes(deps, staged.tarball, target, staged.integrity);
+      try {
+        writeJustUpgradedMarker(deps.dir, deps.currentVersion, target, deps.now());
+      } catch {
+      }
+      return finish("installed", waitedOut ? AUTO_UPDATE_REASONS.installedAfterWait : AUTO_UPDATE_REASONS.installed);
+    } finally {
+      staged.cleanup();
+    }
+  } catch (err) {
+    return finish("failed", AUTO_UPDATE_REASONS.installFailed, err instanceof Error ? err.message : String(err));
+  }
+}
+function removeRetiredFiles(dir) {
+  for (const name of ["update-snooze.json", "update-consent"]) {
+    try {
+      fs8.rmSync(path7.join(dir, name), { recursive: true, force: true });
+    } catch {
+    }
+  }
+}
+function defaultCanSelfUpdate(root) {
+  const support = getInstallChannelSupport(getCurrentInstallChannel({ packageRoot: root }), root);
+  return { ok: support.canSelfUpdate, label: support.label };
+}
+async function dispatchAutoUpdate(pluginRoot, nowMs = Date.now(), options = {}) {
+  const dir = getMemeshDirFromDbPath();
+  let fd = -1;
+  let claim2 = null;
+  const say = (line) => {
+    try {
+      ensureOwnerDir(dir);
+      fs8.appendFileSync(path7.join(dir, LOG_FILE), `[${(/* @__PURE__ */ new Date()).toISOString()}] ${oneLine(line)}
+`, { mode: 384 });
+      ownerOnly(path7.join(dir, LOG_FILE));
+    } catch {
+      try {
+        process.stderr.write(`[memesh] ${oneLine(line)}
+`);
+      } catch {
+      }
+    }
+  };
+  try {
+    ensureOwnerDir(dir);
+    removeRetiredFiles(dir);
+    const support = (options.canSelfUpdate ?? defaultCanSelfUpdate)(pluginRoot);
+    if (!support.ok) {
+      say(`auto-update: no runner started: ${support.label} cannot update itself`);
+      return { state: "unsupported" };
+    }
+    const claimPath = path7.join(dir, DISPATCH_CLAIM);
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        fs8.mkdirSync(claimPath);
+        claim2 = claimPath;
+        break;
+      } catch (err) {
+        if (err.code !== "EEXIST")
+          throw err;
+        let age = 0;
+        let vanished = false;
+        try {
+          age = Date.now() - fs8.statSync(claimPath).mtimeMs;
+        } catch {
+          vanished = true;
+        }
+        if (attempt === 0 && vanished)
+          continue;
+        if (attempt === 0 && age > DISPATCH_CLAIM_STALE_MS) {
+          say(`auto-update: a dispatch claim ${Math.round(age / 1e3)} seconds old was left behind; taking it over`);
+          fs8.rmSync(claimPath, { recursive: true, force: true });
+          continue;
+        }
+        say("auto-update THROTTLED: another session is deciding whether to start the updater right now");
+        return { state: "throttled" };
+      }
+    }
+    const attemptPath = path7.join(dir, ATTEMPT_FILE);
+    try {
+      const last = Number(fs8.readFileSync(attemptPath, "utf8"));
+      if (Number.isFinite(last) && last > nowMs) {
+        say(`auto-update: the last attempt time is in the future (${new Date(last).toISOString()}); ignoring it`);
+      } else if (Number.isFinite(last) && nowMs - last < ATTEMPT_INTERVAL_MS) {
+        say(`auto-update THROTTLED: the last attempt was ${Math.round((nowMs - last) / 6e4)} minute(s) ago, under the ${ATTEMPT_INTERVAL_MS / 36e5}-hour interval`);
+        return { state: "throttled" };
+      }
+    } catch {
+    }
+    const runnerPath = path7.join(pluginRoot, "scripts", "hooks", "auto-update-runner.mjs");
+    if (!fs8.existsSync(runnerPath)) {
+      say(`auto-update FAILED: runner missing at ${runnerPath}`);
+      return { state: "failed" };
+    }
+    const logPath = path7.join(dir, LOG_FILE);
+    try {
+      fd = fs8.openSync(logPath, "a", 384);
+    } catch (err) {
+      try {
+        process.stderr.write(`[memesh] auto-update FAILED: durable log unavailable at ${logPath} (${err instanceof Error ? err.message : String(err)})
+`);
+      } catch {
+      }
+      return { state: "failed" };
+    }
+    const lockPath = path7.join(dir, "auto-update.lock");
+    const child = (options.spawnImpl ?? spawn)(process.execPath, [runnerPath, lockPath], { detached: true, stdio: ["ignore", fd, fd], env: process.env, windowsHide: true });
+    return await new Promise((resolve2) => {
+      let settled = false;
+      const finishWith = (state, line) => {
+        if (settled)
+          return;
+        settled = true;
+        if (fd >= 0) {
+          try {
+            fs8.closeSync(fd);
+          } catch {
+          }
+          fd = -1;
+        }
+        say(line);
+        resolve2({ state });
+      };
+      child.once("spawn", () => {
+        child.unref();
+        try {
+          fs8.writeFileSync(attemptPath, String(nowMs), { mode: 384 });
+          ownerOnly(attemptPath);
+        } catch (err) {
+          say(`auto-update: could not record the attempt time (${err instanceof Error ? err.message : String(err)})`);
+        }
+        finishWith("dispatched", `auto-update DISPATCHED: worker_pid=${child.pid ?? "unknown"} lock=${lockPath}`);
+      });
+      child.once("error", (err) => finishWith("failed", `auto-update FAILED: stage=dispatch error=${err.message}`));
+    });
+  } catch (err) {
+    if (fd >= 0) {
+      try {
+        fs8.closeSync(fd);
+      } catch {
+      }
+    }
+    say(`auto-update FAILED: stage=dispatch error=${err instanceof Error ? err.message : String(err)}`);
+    return { state: "failed" };
+  } finally {
+    if (claim2 !== null) {
+      try {
+        fs8.rmSync(claim2, { recursive: true, force: true });
+      } catch (err) {
+        say(`auto-update: could not remove the dispatch claim (${err instanceof Error ? err.message : String(err)}); it is taken over after a minute`);
+      }
+    }
+  }
+}
+function describeLockHolder(dir) {
+  try {
+    const [, pid, startedAt, label, startTag] = fs8.readFileSync(path7.join(dir, "auto-update.lock"), "utf8").split("\n");
+    const started = Number(startedAt);
+    if (!Number.isSafeInteger(Number(pid)) || !Number.isFinite(started))
+      return null;
+    return { label: label === "manual" ? "manual" : "auto", pid: Number(pid), startedAt: new Date(started).toISOString(), running: sameProcessAlive(Number(pid), startTag || null, pidAlive) };
+  } catch {
+    return null;
+  }
+}
+function runManualUpdate(pluginRoot, dir = getMemeshDirFromDbPath(), options = {}) {
+  const runnerPath = path7.join(pluginRoot, "scripts", "hooks", "auto-update-runner.mjs");
+  const logPath = path7.join(dir, LOG_FILE);
+  if (!fs8.existsSync(runnerPath)) {
+    return { code: 1, lines: [`\u274C The update runner is missing (${runnerPath}); reinstall MeMesh.`] };
+  }
+  ensureOwnerDir(dir);
+  const before = readAutoUpdateState(dir)?.at ?? null;
+  const offBeforeRun = currentPolicy().policy === "off";
+  const ran = spawnSync(process.execPath, [runnerPath, path7.join(dir, "auto-update.lock"), options.reinstall ? "--reinstall" : "--manual"], { stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", env: process.env });
+  const read = inspectAutoUpdateState(dir);
+  const state = read.kind === "ok" ? read.state : null;
+  const fresh = state !== null && state.at !== before;
+  const offNote = offBeforeRun ? ["\u2139\uFE0F  Automatic updates are still off; this was an update you asked for by hand."] : [];
+  if (!fresh) {
+    const tail = `${ran.stderr ?? ""}${ran.stdout ?? ""}`.trim().split("\n").slice(-3).join(" | ");
+    if (ran.error)
+      return { code: 1, lines: [`\u274C No update was made: the runner could not start (${ran.error.message}).`, `   Log: ${logPath}`] };
+    const interrupted = readInstalling(dir);
+    if (ran.signal !== null || interrupted && !interrupted.running) {
+      return { code: 1, lines: [
+        `\u274C The update was interrupted${ran.signal ? ` (${ran.signal})` : ""} before it recorded a result.`,
+        interrupted ? `   An install to ${interrupted.marker.to} had started at ${interrupted.marker.at}, so some files may already be new: run \`memesh update --reinstall\` to put this version back through the same checks.` : "   Nothing had been installed yet.",
+        `   Log: ${logPath}`
+      ] };
+    }
+    const holder = describeLockHolder(dir);
+    const waiting = readAutoUpdateState(dir);
+    if (holder !== null && holder.running && ran.status !== 0) {
+      const what = holder.label === "manual" ? "an update you started by hand" : "an automatic update";
+      const wait = waiting?.outcome === "waiting" && waiting.waitingSince ? ` It is waiting for running sessions to end (since ${waiting.waitingSince}, at most 3 days); closing them lets it finish.` : "";
+      return { code: 1, lines: [`\u274C No update was made: ${what} is already running (started ${holder.startedAt}, pid ${holder.pid}).${wait}`, "   Try again when it has finished; `memesh doctor` shows its state."] };
+    }
+    if (read.kind === "unreadable")
+      return { code: 1, lines: [`\u274C The update ran, but its record cannot be read (${read.detail}); \`memesh doctor\` shows what is on the machine.`, `   Log: ${logPath}`] };
+    return { code: 1, lines: [`\u274C No update was made: the runner ended (exit ${ran.status ?? "none"}) without recording a result${tail ? `: ${tail}` : ""}.`, `   Log: ${logPath}`] };
+  }
+  const fresh_ = state;
+  const hermesFailed = (Array.isArray(fresh_.hermes) ? fresh_.hermes : []).filter((h) => h.outcome === "failed");
+  const hermesLines = hermesFailed.map((h) => `\u26A0\uFE0F  Hermes provider at ${h.path} was not updated: ${h.reason}`);
+  if (fresh_.outcome === "installed") {
+    const verb = options.reinstall ? `Reinstalled ${fresh_.to ?? "?"}` : `Updated ${fresh_.from ?? "?"} \u2192 ${fresh_.to ?? "?"}`;
+    const lines = [`\u2705 ${verb} (source verified; database backup: ${fresh_.backup ?? "none"}).`, "   It takes effect in the next session you start; sessions already running keep the old version until they restart.", ...hermesLines, ...offNote];
+    return { code: hermesFailed.length > 0 ? 1 : 0, lines };
+  }
+  if (fresh_.reason === AUTO_UPDATE_REASONS.upToDate) {
+    if (hermesFailed.length > 0)
+      return { code: 1, lines: [`\u26A0\uFE0F  MeMesh itself is on the newest version (${fresh_.from ?? "?"}), but the Hermes provider could not be brought to it.`, ...hermesLines, ...offNote] };
+    return { code: 0, lines: [`\u2705 Already on the newest version for this install (${fresh_.from ?? "?"}).`, ...offNote] };
+  }
+  const backupLine = fresh_.backup ? ` Your database backup: ${fresh_.backup}.` : "";
+  const installRan = INSTALL_ALREADY_RAN.has(fresh_.reason);
+  const effect = installRan ? `   An install step had already run, so some files may be new. \`memesh doctor\` shows what is on the machine; \`memesh update --reinstall\` puts this version back through the same checks.${backupLine}` : fresh_.reason === AUTO_UPDATE_REASONS.dependencyPinFailed ? `   Nothing was changed: the install was undone and ${fresh_.from ?? "the version that was running"} is still what runs. The next \`memesh update\` tries again.${backupLine}` : `   Nothing was installed.${backupLine}`;
+  const still = !installRan && fresh_.from ? ` (still on ${fresh_.from})` : "";
+  return { code: 1, lines: [`\u274C Not updated${still}: ${fresh_.reason}`, ...fresh_.detail ? [`   ${fresh_.detail}`] : [], effect, `   Log: ${logPath}`, ...offNote] };
+}
+function startReinstall(pluginRoot, dir = getMemeshDirFromDbPath()) {
+  const runnerPath = path7.join(pluginRoot, "scripts", "hooks", "auto-update-runner.mjs");
+  if (!fs8.existsSync(runnerPath))
+    throw new Error(`The update runner is missing at ${runnerPath}; reinstall MeMesh.`);
+  ensureOwnerDir(dir);
+  const logPath = path7.join(dir, LOG_FILE);
+  const fd = fs8.openSync(logPath, "a", 384);
+  try {
+    const child = spawn(process.execPath, [runnerPath, path7.join(dir, "auto-update.lock"), "--reinstall"], { detached: true, stdio: ["ignore", fd, fd], env: process.env, windowsHide: true });
+    child.unref();
+  } finally {
+    fs8.closeSync(fd);
+  }
+  return { started: true, message: `A verified reinstall of this version was started in the background (source check, database backup, install). It takes a few minutes; \`memesh doctor\` shows the result, and the log is ${logPath}.` };
+}
+function productionDeps(packageRoot3, currentVersion) {
+  const channel = getCurrentInstallChannel({ packageRoot: packageRoot3 });
+  const host = channel === "plugin-marketplace" ? detectPluginHost(packageRoot3) : null;
+  const codexHome = codexHomeFor(packageRoot3);
+  return {
+    env: process.env,
+    accountHome: safeAccountHome(),
+    dir: getMemeshDirFromDbPath(),
+    liveHostsDir: accountMemeshDir() ?? getMemeshDirFromDbPath(),
+    configDir: memeshDir(),
+    dbPath: process.env.MEMESH_DB_PATH ?? path7.join(memeshDir(), "knowledge-graph.db"),
+    packageRoot: packageRoot3,
+    currentVersion,
+    channel,
+    pluginHost: host === "codex" && codexHome === null ? null : host,
+    codexHome,
+    exec: defaultExec,
+    readTags: () => readRegistryTags(defaultExec),
+    tmpRoot: os2.tmpdir(),
+    sleep: (ms) => new Promise((resolve2) => setTimeout(resolve2, ms)),
+    now: () => /* @__PURE__ */ new Date(),
+    readInstalledVersion: () => getInstalledGlobalVersion()
+  };
+}
+var DEFAULT_AUTO_UPDATE_POLICY, PACKAGE_NAME, EXPECTED_SOURCE, STATE_FILE, LOG_FILE, LIVE_HOSTS_DIR, WAIT_FILE, ATTEMPT_FILE, DISPATCH_CLAIM, DISPATCH_CLAIM_STALE_MS, INSTALLING_FILE, CODEX_RESTORE_FILE, BACKUPS_KEPT, ATTEMPT_INTERVAL_MS, LIVE_WAIT_POLL_MS, LIVE_WAIT_MAX_MS, CODEX_MARKETPLACE, CODEX_PLUGIN, CODEX_MARKETPLACE_SOURCE, AUTO_UPDATE_REASONS, POLICY_RANK, BUMP_RANK, COMPARE_SCRIPT, SHA512_INTEGRITY, defaultExec, PIN_TIMEOUT_MS, WORK_PREFIXES, WORK_OWNER, PROVIDER_PREFIX, INSTALL_ALREADY_RAN;
+var init_auto_update = __esm({
+  "dist/core/auto-update.js"() {
+    "use strict";
+    init_install_channel();
+    init_paths();
+    init_config();
+    init_hermes_provider();
+    init_semver();
+    init_update_notice();
+    init_process_identity();
+    init_file_mode();
+    init_updater();
+    DEFAULT_AUTO_UPDATE_POLICY = "major";
+    PACKAGE_NAME = "@pcircle/memesh";
+    EXPECTED_SOURCE = {
+      repository: "https://github.com/PCIRCLE-AI/memesh",
+      workflowPath: ".github/workflows/publish-npm.yml"
+    };
+    STATE_FILE = "auto-update-state.json";
+    LOG_FILE = "auto-update.log";
+    LIVE_HOSTS_DIR = "live-hosts";
+    WAIT_FILE = "auto-update-wait.json";
+    ATTEMPT_FILE = "auto-update-attempt";
+    DISPATCH_CLAIM = "auto-update-dispatch.claim";
+    DISPATCH_CLAIM_STALE_MS = 6e4;
+    INSTALLING_FILE = "auto-update-installing.json";
+    CODEX_RESTORE_FILE = "auto-update-codex-restore.json";
+    BACKUPS_KEPT = 3;
+    ATTEMPT_INTERVAL_MS = 6 * 60 * 60 * 1e3;
+    LIVE_WAIT_POLL_MS = 15 * 1e3;
+    LIVE_WAIT_MAX_MS = 3 * 24 * 60 * 60 * 1e3;
+    CODEX_MARKETPLACE = "pcircle-memesh";
+    CODEX_PLUGIN = "memesh@pcircle-memesh";
+    CODEX_MARKETPLACE_SOURCE = "PCIRCLE-AI/memesh";
+    AUTO_UPDATE_REASONS = {
+      policyOff: "policy is off",
+      policyOffUnreadableConfig: "policy is off: a config file could not be read, so an explicit off cannot be ruled out",
+      policyOffInvalidValue: "policy is off: a setting held a value that is not off, patch, minor or major",
+      policyOffUpdateCheck: "policy is off: update checks were turned off (updateCheck=false)",
+      policyOffCi: "no update: this run is inside CI or a container and the setting was not given explicitly",
+      policyOffNoAccountHome: "no update: the account's home directory cannot be determined (no passwd entry) and the setting was not given explicitly",
+      policyOffForeignHome: "no update: this run uses a data directory that is not the account's own ~/.memesh and the setting was not given explicitly",
+      channelUnsupported: "no update: this install channel cannot update itself (source checkout, project-local or unknown)",
+      registryUnreachable: "no update: the npm registry did not answer",
+      upToDate: "already on the newest version for this channel",
+      bumpNotPermitted: "no update: the policy does not permit this kind of version bump",
+      sourceNotVerified: "not installed: the package source could not be verified",
+      tarballMismatch: "not installed: the downloaded package does not match the verified one",
+      dependencyPinFailed: "install ran but its dependencies could not be set to the versions the release pins; the previous version was put back",
+      installNotUndone: "an install ran, its dependencies could not be set to the versions the release pins, AND the previous version could not be put back: run `memesh update --reinstall` to finish it (until then MeMesh may not start)",
+      dependenciesNotFetched: "not installed: the release's pinned dependencies could not be fetched and checked (network, registry or a hash that did not match), so the installed version was not touched",
+      globalDirUnknown: "not installed: the directory npm keeps global packages in could not be found, so a failed install could not be undone",
+      rollbackUnavailable: "not installed: a copy of the installed version could not be made, so a failed install could not be undone",
+      commitNotOnMain: "not installed: the release was not built from a commit on the main branch of the official repository",
+      commitUnconfirmed: "not installed: it could not be confirmed that the release commit is on the main branch of the official repository (GitHub did not answer); a later run tries again",
+      dependenciesNotPinned: "not installed: the package does not pin its dependencies (no complete npm-shrinkwrap.json), so what would be installed could not be checked",
+      codexMarketplaceUnreadable: "not installed: the Codex config.toml could not be read, so it is not known whether the pcircle-memesh marketplace is the official one",
+      codexHomeUnknown: "not installed: the Codex directory this plugin lives in could not be worked out from where it is installed, so the Codex plugin was left alone",
+      codexMarketplaceMissing: "not installed: the Codex marketplace pcircle-memesh is not in config.toml and MeMesh did not remove it, so it was taken as removed on purpose and not added back; `memesh update --reinstall` adds it back (pinned to this release) and installs the plugin",
+      codexMarketplaceForeign: "not installed: the Codex marketplace named pcircle-memesh does not come from the official repository, so it was left alone",
+      codexInstallFailed: "Codex plugin install failed; the marketplace was put back to its unpinned state",
+      codexRestoreFailed: "Codex plugin install failed AND MeMesh could not put the marketplace it had removed back (the pcircle-memesh marketplace is now missing because of this update, not because you removed it): the next run puts it back if config.toml is still as this run left it, or run `codex plugin marketplace add PCIRCLE-AI/memesh` yourself",
+      codexRemoveFailed: "Codex plugin not updated: the marketplace could not be removed, so nothing was changed",
+      codexReadbackFailed: "Codex plugin install ran but did not install the target version",
+      claudeReadbackFailed: "Claude Code plugin install ran but the plugin registry does not record the target commit",
+      backupFailed: "not installed: the database backup failed",
+      waitingForHosts: "waiting: a session is still running; the update is applied after it ends",
+      installedAfterWait: "installed after waiting 3 days: sessions were still running, so they may use the new files before they restart",
+      hostsUnreadable: "running sessions cannot be listed (the live-hosts directory is unreadable or cannot be written to, so sessions could not register), so they are assumed to be running",
+      installFailed: "install failed",
+      tarballChanged: "not installed: the verified tarball changed on disk between the check and the install",
+      readbackFailed: "install ran but the installed version is not the target",
+      lockLost: "not installed: this runner no longer holds the update lock (another update took it over), so it stopped",
+      installed: "installed"
+    };
+    POLICY_RANK = { off: 0, patch: 1, minor: 2, major: 3 };
+    BUMP_RANK = { patch: 1, minor: 2, major: 3 };
+    COMPARE_SCRIPT = "fetch(process.argv[1],{headers:{accept:'application/vnd.github+json','user-agent':'memesh-auto-update'},signal:AbortSignal.timeout(20000)}).then(async(r)=>{process.stdout.write(r.status+'\\n'+await r.text())}).catch((e)=>{process.stderr.write(String(e));process.exit(1)})";
+    SHA512_INTEGRITY = /^sha512-[A-Za-z0-9+/]{86}==$/;
+    defaultExec = (cmd, args, opts = {}) => {
+      const r = spawnSync(cmd, args, { cwd: opts.cwd, env: opts.env ?? process.env, encoding: "utf8", timeout: opts.timeoutMs ?? 8 * 60 * 1e3, maxBuffer: 64 * 1024 * 1024 });
+      return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+    };
+    PIN_TIMEOUT_MS = 10 * 60 * 1e3;
+    WORK_PREFIXES = ["memesh-update-", "memesh-hermes-"];
+    WORK_OWNER = "owner.json";
+    PROVIDER_PREFIX = "package/extensions/hermes-memesh/";
+    INSTALL_ALREADY_RAN = /* @__PURE__ */ new Set([
+      AUTO_UPDATE_REASONS.installFailed,
+      AUTO_UPDATE_REASONS.readbackFailed,
+      AUTO_UPDATE_REASONS.codexReadbackFailed,
+      AUTO_UPDATE_REASONS.claudeReadbackFailed,
+      AUTO_UPDATE_REASONS.installNotUndone,
+      AUTO_UPDATE_REASONS.codexInstallFailed,
+      AUTO_UPDATE_REASONS.codexRestoreFailed
+    ]);
+  }
+});
+
 // dist/core/version-check.js
 var version_check_exports = {};
 __export(version_check_exports, {
@@ -8647,8 +11151,8 @@ __export(version_check_exports, {
   isAheadOfLatest: () => isAheadOfLatest,
   showsPreReleaseNotice: () => showsPreReleaseNotice
 });
-import fs5 from "fs";
-import path4 from "path";
+import fs10 from "fs";
+import path9 from "path";
 import { execFile } from "child_process";
 function isUpdateAvailable(currentVersion, latestVersion) {
   if (latestVersion === null)
@@ -8677,7 +11181,7 @@ function getUpdateCheckPath(updateCheckPath, currentVersion) {
   if (process.env.MEMESH_UPDATE_CHECK_PATH)
     return process.env.MEMESH_UPDATE_CHECK_PATH;
   const versionTag = currentVersion && /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : "unknown";
-  return path4.join(memeshDir(), `update-check.${versionTag}.json`);
+  return path9.join(memeshDir(), `update-check.${versionTag}.json`);
 }
 function parseIsoDate(value) {
   if (!value)
@@ -8757,36 +11261,36 @@ function parseStoredUpdateCheck(raw) {
 function readStoredUpdateCheck(updateCheckPath, currentVersion) {
   try {
     const targetPath = getUpdateCheckPath(updateCheckPath, currentVersion);
-    if (!fs5.existsSync(targetPath))
+    if (!fs10.existsSync(targetPath))
       return null;
-    return parseStoredUpdateCheck(JSON.parse(fs5.readFileSync(targetPath, "utf8")));
+    return parseStoredUpdateCheck(JSON.parse(fs10.readFileSync(targetPath, "utf8")));
   } catch {
     return null;
   }
 }
 function pruneOldUpdateCheckFiles(targetPath) {
-  const dir = path4.dirname(targetPath);
+  const dir = path9.dirname(targetPath);
   const versionedFile = /^update-check\..+\.json$/;
-  if (!versionedFile.test(path4.basename(targetPath)))
+  if (!versionedFile.test(path9.basename(targetPath)))
     return;
   let entries;
   try {
-    entries = fs5.readdirSync(dir);
+    entries = fs10.readdirSync(dir);
   } catch {
     return;
   }
   const files = entries.filter((name) => versionedFile.test(name)).map((name) => {
-    const full = path4.join(dir, name);
+    const full = path9.join(dir, name);
     let mtimeMs = 0;
     try {
-      mtimeMs = fs5.statSync(full).mtimeMs;
+      mtimeMs = fs10.statSync(full).mtimeMs;
     } catch {
     }
     return { full, mtimeMs };
   }).sort((a, b) => b.mtimeMs - a.mtimeMs);
   for (const stale of files.slice(MAX_UPDATE_CHECK_FILES)) {
     try {
-      fs5.unlinkSync(stale.full);
+      fs10.unlinkSync(stale.full);
     } catch {
     }
   }
@@ -8794,37 +11298,37 @@ function pruneOldUpdateCheckFiles(targetPath) {
 function writeStoredUpdateCheck(stored, updateCheckPath, currentVersion) {
   try {
     const targetPath = getUpdateCheckPath(updateCheckPath, currentVersion);
-    fs5.mkdirSync(path4.dirname(targetPath), { recursive: true });
+    fs10.mkdirSync(path9.dirname(targetPath), { recursive: true });
     const tempPath = `${targetPath}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
-    fs5.writeFileSync(tempPath, JSON.stringify(stored, null, 2));
+    fs10.writeFileSync(tempPath, JSON.stringify(stored, null, 2));
     try {
-      fs5.renameSync(tempPath, targetPath);
+      fs10.renameSync(tempPath, targetPath);
     } catch (renameErr) {
       const REPLACEABLE_ERRS = /* @__PURE__ */ new Set(["EEXIST", "EACCES", "EPERM", "EBUSY", "ENOTEMPTY"]);
       const renameCode = renameErr?.code;
       if (!renameCode || !REPLACEABLE_ERRS.has(renameCode)) {
         try {
-          fs5.unlinkSync(tempPath);
+          fs10.unlinkSync(tempPath);
         } catch {
         }
         throw renameErr;
       }
       try {
-        fs5.unlinkSync(targetPath);
+        fs10.unlinkSync(targetPath);
       } catch (err) {
         if (err?.code !== "ENOENT") {
           try {
-            fs5.unlinkSync(tempPath);
+            fs10.unlinkSync(tempPath);
           } catch {
           }
           throw renameErr;
         }
       }
       try {
-        fs5.renameSync(tempPath, targetPath);
+        fs10.renameSync(tempPath, targetPath);
       } catch (secondErr) {
         try {
-          fs5.unlinkSync(tempPath);
+          fs10.unlinkSync(tempPath);
         } catch {
         }
         throw secondErr;
@@ -8994,206 +11498,16 @@ var init_version_check = __esm({
   }
 });
 
-// dist/core/install-channel.js
-var install_channel_exports = {};
-__export(install_channel_exports, {
-  PLUGIN_REFRESH_COMMANDS: () => PLUGIN_REFRESH_COMMANDS,
-  detectInstallChannel: () => detectInstallChannel,
-  detectPluginHost: () => detectPluginHost,
-  getCurrentInstallChannel: () => getCurrentInstallChannel,
-  getGlobalNpmRoot: () => getGlobalNpmRoot,
-  getInstallChannelSupport: () => getInstallChannelSupport,
-  pluginHostConfigRoot: () => pluginHostConfigRoot,
-  versionedPluginCacheRoots: () => versionedPluginCacheRoots
-});
-import fs8 from "fs";
-import path7 from "path";
-import { execFileSync as execFileSync2 } from "child_process";
-function isSubpath(parent, child) {
-  const relative = path7.relative(parent, child);
-  return relative === "" || !relative.startsWith("..") && !path7.isAbsolute(relative);
-}
-function getRootBeforeNodeModules(packageRoot3) {
-  const marker = `${path7.sep}node_modules${path7.sep}`;
-  const index = packageRoot3.indexOf(marker);
-  if (index === -1)
-    return null;
-  return packageRoot3.slice(0, index);
-}
-function pluginHostConfigRoot(host) {
-  const descriptor = PLUGIN_HOST_DIRS.find(([candidate]) => candidate === host);
-  if (!descriptor)
-    throw new Error(`Unsupported plugin host: ${host}`);
-  const [, defaultDir, envVar] = descriptor;
-  const relocated = process.env[envVar];
-  return relocated ? path7.resolve(relocated) : path7.join(homeDir(), defaultDir);
-}
-function parseVersionDirectory(raw) {
-  const version2 = parseSemVer(raw);
-  return version2 ? { version: version2, raw } : null;
-}
-function compareVersions(a, b) {
-  return compareSemVerPrecedence(a.version, b.version) || (a.raw < b.raw ? -1 : a.raw > b.raw ? 1 : 0);
-}
-function versionedPluginCacheRoots(root) {
-  try {
-    return fs8.readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => parseVersionDirectory(entry.name)).filter((version2) => version2 !== null).sort(compareVersions).map((version2) => path7.join(root, version2.raw));
-  } catch {
-    return [];
-  }
-}
-function detectPluginHost(packageRoot3, options = {}) {
-  const { env = process.env } = options;
-  const normalized = path7.resolve(packageRoot3);
-  for (const [host, dir, envVar] of PLUGIN_HOST_DIRS) {
-    const segment = `${path7.sep}${dir}${path7.sep}plugins${path7.sep}cache${path7.sep}`;
-    if (normalized.includes(segment))
-      return host;
-    const relocated = env[envVar];
-    if (relocated) {
-      const cacheRoot = path7.join(path7.resolve(relocated), "plugins", "cache");
-      if (isSubpath(cacheRoot, normalized))
-        return host;
-    }
-  }
-  return null;
-}
-function isPluginMarketplacePath(packageRoot3) {
-  return detectPluginHost(packageRoot3) !== null;
-}
-function derivedGlobalNpmRoot(execPath) {
-  const prefix = path7.dirname(path7.dirname(execPath));
-  return process.platform === "win32" ? path7.join(prefix, "node_modules") : path7.join(prefix, "lib", "node_modules");
-}
-function getGlobalNpmRoot(options = {}) {
-  const { execFileSyncImpl = execFileSync2, execPathImpl = process.execPath } = options;
-  try {
-    const spawned = execFileSyncImpl("npm", ["root", "-g"], { encoding: "utf8" }).trim();
-    if (spawned)
-      return spawned;
-  } catch {
-  }
-  return derivedGlobalNpmRoot(execPathImpl);
-}
-function detectInstallChannel(options) {
-  const { packageRoot: packageRoot3, globalNpmRoot, existsSyncImpl = fs8.existsSync } = options;
-  const normalizedPackageRoot = path7.resolve(packageRoot3);
-  if (isPluginMarketplacePath(normalizedPackageRoot)) {
-    return "plugin-marketplace";
-  }
-  if (existsSyncImpl(path7.join(normalizedPackageRoot, ".git"))) {
-    return "source-checkout";
-  }
-  const resolvedGlobalNpmRoot = typeof globalNpmRoot === "function" ? globalNpmRoot() : globalNpmRoot;
-  if (resolvedGlobalNpmRoot && isSubpath(path7.resolve(resolvedGlobalNpmRoot), normalizedPackageRoot)) {
-    return "npm-global";
-  }
-  const rootBeforeNodeModules = getRootBeforeNodeModules(normalizedPackageRoot);
-  if (rootBeforeNodeModules && existsSyncImpl(path7.join(rootBeforeNodeModules, "package.json"))) {
-    return "npm-local";
-  }
-  return "unknown";
-}
-function getCurrentInstallChannel(options) {
-  const { packageRoot: packageRoot3, existsSyncImpl, execFileSyncImpl } = options;
-  const canCache = !existsSyncImpl && !execFileSyncImpl;
-  if (canCache) {
-    const cached2 = channelCache.get(packageRoot3);
-    if (cached2 !== void 0)
-      return cached2;
-  }
-  const channel = detectInstallChannel({
-    packageRoot: packageRoot3,
-    globalNpmRoot: () => getGlobalNpmRoot({ execFileSyncImpl }),
-    existsSyncImpl
-  });
-  if (canCache)
-    channelCache.set(packageRoot3, channel);
-  return channel;
-}
-function getInstallChannelSupport(channel, packageRoot3) {
-  switch (channel) {
-    case "npm-global":
-      return {
-        channel,
-        label: "npm global",
-        canSelfUpdate: true,
-        recommendedCommand: "memesh update",
-        guidance: "This installation can be updated directly from MeMesh."
-      };
-    case "npm-local":
-      return {
-        channel,
-        label: "project-local package install",
-        canSelfUpdate: false,
-        recommendedCommand: null,
-        guidance: "Update this installation from the project package manager that installed MeMesh."
-      };
-    case "source-checkout":
-      return {
-        channel,
-        label: "source checkout",
-        canSelfUpdate: false,
-        recommendedCommand: null,
-        guidance: "Update this source checkout from its repository and rebuild it."
-      };
-    case "plugin-marketplace": {
-      if (detectPluginHost(packageRoot3) === "codex") {
-        return {
-          channel,
-          label: "Codex CLI plugin marketplace",
-          canSelfUpdate: false,
-          recommendedCommand: PLUGIN_REFRESH_COMMANDS.codex,
-          guidance: `Run \`${PLUGIN_REFRESH_COMMANDS.codex}\` to refresh the snapshot and re-stage the plugin from it (\`add\` replaces an existing same-version cache). The plugin marketplace pins versions, so a new release does not auto-update.`
-        };
-      }
-      return {
-        channel,
-        label: "Claude Code plugin marketplace",
-        canSelfUpdate: false,
-        recommendedCommand: "memesh upgrade-plugin",
-        guidance: "Run `memesh upgrade-plugin` (no npm CLI? `npx @pcircle/memesh upgrade-plugin`), or reinstall the plugin from the Claude Code /plugin UI. The plugin marketplace pins versions, so a new release does not auto-update."
-      };
-    }
-    default:
-      return {
-        channel: "unknown",
-        label: "unknown",
-        canSelfUpdate: false,
-        recommendedCommand: null,
-        guidance: "Update this installation from the tool or workflow that installed MeMesh."
-      };
-  }
-}
-var PLUGIN_REFRESH_COMMANDS, PLUGIN_HOST_DIRS, channelCache;
-var init_install_channel = __esm({
-  "dist/core/install-channel.js"() {
-    "use strict";
-    init_paths();
-    init_semver();
-    PLUGIN_REFRESH_COMMANDS = {
-      "claude-code": "memesh upgrade-plugin",
-      codex: "codex plugin marketplace upgrade pcircle-memesh && codex plugin add memesh@pcircle-memesh"
-    };
-    PLUGIN_HOST_DIRS = [
-      ["claude-code", ".claude", "CLAUDE_CONFIG_DIR"],
-      ["codex", ".codex", "CODEX_HOME"]
-    ];
-    channelCache = /* @__PURE__ */ new Map();
-  }
-});
-
 // dist/core/doctor-fixes.js
-import fs9 from "node:fs";
-import path8 from "node:path";
-import { execFileSync as execFileSync3 } from "node:child_process";
+import fs12 from "node:fs";
+import path11 from "node:path";
 import { randomBytes as randomBytes2 } from "node:crypto";
 function removeRetiredConfigKeys() {
   const configPath = getConfigPath();
-  if (!fs9.existsSync(configPath)) {
+  if (!fs12.existsSync(configPath)) {
     return { changed: false, removed: [], backupPath: null, configPath };
   }
-  const original = fs9.readFileSync(configPath, "utf8");
+  const original = fs12.readFileSync(configPath, "utf8");
   let parsed;
   try {
     const value = JSON.parse(original);
@@ -9208,31 +11522,31 @@ function removeRetiredConfigKeys() {
   if (removed.length === 0) {
     return { changed: false, removed: [], backupPath: null, configPath };
   }
-  const dir = path8.dirname(configPath);
+  const dir = path11.dirname(configPath);
   const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-  const backupPath = path8.join(dir, `config.json.bak-${stamp}-${process.pid}-${randomBytes2(3).toString("hex")}`);
-  fs9.writeFileSync(backupPath, original, { flag: "wx", mode: 384 });
+  const backupPath = path11.join(dir, `config.json.bak-${stamp}-${process.pid}-${randomBytes2(3).toString("hex")}`);
+  fs12.writeFileSync(backupPath, original, { flag: "wx", mode: 384 });
   try {
-    fs9.chmodSync(backupPath, 384);
+    fs12.chmodSync(backupPath, 384);
   } catch {
   }
-  if (fs9.readFileSync(configPath, "utf8") !== original) {
+  if (fs12.readFileSync(configPath, "utf8") !== original) {
     throw new Error(`Refusing to modify ${configPath}: it changed while the backup was being created.`);
   }
   for (const key of removed)
     delete parsed[key];
   const tempPath = `${configPath}.tmp-${process.pid}-${randomBytes2(3).toString("hex")}`;
   try {
-    fs9.writeFileSync(tempPath, `${JSON.stringify(parsed, null, 2)}
+    fs12.writeFileSync(tempPath, `${JSON.stringify(parsed, null, 2)}
 `, { flag: "wx", mode: 384 });
     try {
-      fs9.chmodSync(tempPath, 384);
+      fs12.chmodSync(tempPath, 384);
     } catch {
     }
-    fs9.renameSync(tempPath, configPath);
+    fs12.renameSync(tempPath, configPath);
   } catch (error62) {
     try {
-      fs9.unlinkSync(tempPath);
+      fs12.unlinkSync(tempPath);
     } catch {
     }
     throw error62;
@@ -9255,9 +11569,6 @@ function isDoctorFixPermissionError(error62) {
     return true;
   return record2?.cause !== void 0 && record2.cause !== error62 ? isDoctorFixPermissionError(record2.cause) : false;
 }
-function safeOutput(value) {
-  return value.replace(/(?:\/Users\/[^\s'"`]+|\/home\/[^\s'"`]+|[A-Za-z]:\\[^\s'"`]+)/g, "<local-path>").replace(/(Bearer\s+|sk-|ghp_)[A-Za-z0-9._-]+/gi, "$1<redacted>").slice(-4e3);
-}
 function pluginHostFromDoctorCheck(check2) {
   if (check2.params?.host === "Codex")
     return "codex";
@@ -9266,64 +11577,15 @@ function pluginHostFromDoctorCheck(check2) {
   throw new Error("The plugin host for this repair is unknown; re-run memesh doctor first.");
 }
 function refreshPluginCache(packageRoot3, host) {
-  if (host === "claude-code") {
-    const script = path8.join(packageRoot3, "scripts", "upgrade-plugin.sh");
-    if (!fs9.existsSync(script))
-      throw new Error(`Plugin refresh script is missing at ${script}.`);
-    const run = execFileSync3("bash", [script], {
-      encoding: "utf8",
-      timeout: PLUGIN_REFRESH_BUDGET_MS,
-      stdio: ["ignore", "pipe", "pipe"],
-      env: process.env
-    });
-    return {
-      host,
-      command: PLUGIN_REFRESH_COMMANDS[host],
-      exitCode: 0,
-      output: safeOutput(String(run)),
-      restartRequired: true
-    };
-  }
-  const deadline = Date.now() + PLUGIN_REFRESH_BUDGET_MS;
-  const upgrade = execFileSync3("codex", ["plugin", "marketplace", "upgrade", "pcircle-memesh"], {
-    encoding: "utf8",
-    timeout: PLUGIN_REFRESH_BUDGET_MS,
-    stdio: ["ignore", "pipe", "pipe"],
-    env: process.env
-  });
-  const remaining = deadline - Date.now();
-  if (remaining < MIN_SECOND_COMMAND_MS)
-    throw new PluginRefreshBudgetError();
-  const add = execFileSync3("codex", CODEX_ADD_ARGS, {
-    encoding: "utf8",
-    timeout: remaining,
-    stdio: ["ignore", "pipe", "pipe"],
-    env: process.env
-  });
-  return {
-    host,
-    command: PLUGIN_REFRESH_COMMANDS[host],
-    exitCode: 0,
-    output: safeOutput(`${String(upgrade)}
-${String(add)}`),
-    restartRequired: true
-  };
+  const started = startReinstall(packageRoot3);
+  return { host, command: PLUGIN_REFRESH_COMMANDS[host], exitCode: 0, output: started.message, restartRequired: true };
 }
-var PLUGIN_REFRESH_BUDGET_MS, MIN_SECOND_COMMAND_MS, CODEX_ADD_ARGS, PluginRefreshBudgetError;
 var init_doctor_fixes = __esm({
   "dist/core/doctor-fixes.js"() {
     "use strict";
     init_config();
     init_install_channel();
-    PLUGIN_REFRESH_BUDGET_MS = 12e4;
-    MIN_SECOND_COMMAND_MS = 5e3;
-    CODEX_ADD_ARGS = ["plugin", "add", "memesh@pcircle-memesh"];
-    PluginRefreshBudgetError = class extends Error {
-      constructor() {
-        super(`The Codex marketplace upgrade ran, but the ${PLUGIN_REFRESH_BUDGET_MS / 1e3} s repair budget was nearly used up before the plugin could be added. Finish by hand: codex ${CODEX_ADD_ARGS.join(" ")}`);
-        this.name = "PluginRefreshBudgetError";
-      }
-    };
+    init_auto_update();
   }
 });
 
@@ -9609,10 +11871,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path22) {
-  if (!path22)
+function getElementAtPath(obj, path25) {
+  if (!path25)
     return obj;
-  return path22.reduce((acc, key) => acc?.[key], obj);
+  return path25.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -9871,11 +12133,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path22, issues) {
+function prefixIssues(path25, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path22);
+    iss.path.unshift(path25);
     return iss;
   });
 }
@@ -10408,16 +12670,16 @@ function flattenError(error62, mapper = (issue2) => issue2.message) {
 }
 function formatError(error62, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error63, path22 = []) => {
+  const processError = (error63, path25 = []) => {
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path22, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path25, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path22, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path25, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path22, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path25, ...issue2.path]);
       } else {
-        const fullpath = [...path22, ...issue2.path];
+        const fullpath = [...path25, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -10456,17 +12718,17 @@ function formatError(error62, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error62, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error63, path22 = []) => {
+  const processError = (error63, path25 = []) => {
     var _a3;
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path22, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path25, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path22, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path25, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path22, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path25, ...issue2.path]);
       } else {
-        const fullpath = [...path22, ...issue2.path];
+        const fullpath = [...path25, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -10505,8 +12767,8 @@ function treeifyError(error62, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path22 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path22) {
+  const path25 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path25) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -28538,13 +30800,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path22 = ref.slice(1).split("/").filter(Boolean);
-  if (path22.length === 0) {
+  const path25 = ref.slice(1).split("/").filter(Boolean);
+  if (path25.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path22[0] === defsKey) {
-    const key = path22[1] === void 0 ? void 0 : decodeJSONPointerSegment(path22[1]);
+  if (path25[0] === defsKey) {
+    const key = path25[1] === void 0 ? void 0 : decodeJSONPointerSegment(path25[1]);
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -29263,21 +31525,21 @@ function visit(schema, fnOrHandlers) {
     const h = fnOrHandlers[node2._zod.def.type];
     return h ? h(node2, rewritten) : node2;
   };
-  const cache = /* @__PURE__ */ new Map();
+  const cache2 = /* @__PURE__ */ new Map();
   function run(s) {
-    const cached2 = cache.get(s);
+    const cached2 = cache2.get(s);
     if (cached2 === RESOLVING) {
       return new $ZodLazy({
         type: "lazy",
-        getter: () => cache.get(s)
+        getter: () => cache2.get(s)
       });
     }
     if (cached2 !== void 0)
       return cached2;
-    cache.set(s, RESOLVING);
+    cache2.set(s, RESOLVING);
     const inner = mapInner(s);
     const mapped = fn(inner, inner !== s);
-    cache.set(s, mapped);
+    cache2.set(s, mapped);
     return mapped;
   }
   function mapInner(s) {
@@ -29796,8 +32058,8 @@ var init_zod = __esm({
 });
 
 // dist/core/agent-message-storage.js
-import { createHash as createHash5, randomUUID } from "node:crypto";
-import fs10 from "node:fs";
+import { createHash as createHash7, randomUUID } from "node:crypto";
+import fs13 from "node:fs";
 function getAgentMessageStorageReport(db2, options) {
   const cutoff = normalizeAgentMessageCutoff(options.cutoff);
   const states = readMessageStates(db2, cutoff);
@@ -30040,7 +32302,7 @@ function toCandidate(row) {
   return {
     message_id: row.message_id,
     payload_bytes: row.payload_bytes,
-    payload_sha256: createHash5("sha256").update(row.payload_json, "utf8").digest("hex")
+    payload_sha256: createHash7("sha256").update(row.payload_json, "utf8").digest("hex")
   };
 }
 function resultForCandidates(dryRun, candidates) {
@@ -30067,7 +32329,7 @@ function insertRetentionFact(db2, candidate, actor, tombstone) {
     payload_sha256: candidate.payload_sha256,
     tombstone_payload_bytes: Buffer.byteLength(tombstone, "utf8")
   });
-  const requestHash = createHash5("sha256").update(detailJson, "utf8").digest("hex");
+  const requestHash = createHash7("sha256").update(detailJson, "utf8").digest("hex");
   db2.prepare(`
     INSERT INTO agent_retention_facts (
       retention_fact_id, message_id, actor, retention_state, idempotency_key, request_hash, detail_json
@@ -30124,7 +32386,7 @@ function safeFileSize(filePath) {
   if (!filePath)
     return null;
   try {
-    const stat = fs10.statSync(filePath);
+    const stat = fs13.statSync(filePath);
     return stat.isFile() ? stat.size : null;
   } catch {
     return null;
@@ -30270,7 +32532,7 @@ var init_agent_message_inbox = __esm({
 });
 
 // dist/core/agent-messaging.js
-import { createHash as createHash6, randomBytes as randomBytes3, randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash8, randomBytes as randomBytes3, randomUUID as randomUUID2 } from "node:crypto";
 function agentHostKind(adapter) {
   if (adapter === "codex-cli-queue" || adapter === "codex-app-server")
     return "codex";
@@ -30947,7 +33209,7 @@ function parseJsonObjectOrValue(json2) {
   return parsed;
 }
 function hashCanonical(value) {
-  return createHash6("sha256").update(stableStringify(value)).digest("hex");
+  return createHash8("sha256").update(stableStringify(value)).digest("hex");
 }
 function stableStringify(value) {
   if (value === null)
@@ -31444,12 +33706,12 @@ var init_schemas3 = __esm({
 });
 
 // dist/core/repo-state.js
-import { execFileSync as execFileSync4 } from "child_process";
-import fs12 from "fs";
-import path10 from "path";
+import { execFileSync as execFileSync5 } from "child_process";
+import fs15 from "fs";
+import path13 from "path";
 function tryGit2(cwd, args) {
   try {
-    return execFileSync4("git", ["-C", cwd, ...args], {
+    return execFileSync5("git", ["-C", cwd, ...args], {
       encoding: "utf8",
       timeout: GIT_TIMEOUT_MS,
       stdio: ["ignore", "pipe", "pipe"]
@@ -31460,7 +33722,7 @@ function tryGit2(cwd, args) {
 }
 function declaredVersionOf(repoRoot) {
   try {
-    const raw = fs12.readFileSync(path10.join(repoRoot, "package.json"), "utf8");
+    const raw = fs15.readFileSync(path13.join(repoRoot, "package.json"), "utf8");
     const version2 = JSON.parse(raw).version;
     return typeof version2 === "string" && version2.length > 0 ? version2 : null;
   } catch {
@@ -31892,9 +34154,9 @@ function sectionBytes(lines) {
   return lines.reduce((sum, line) => sum + byteLength2(line) + 1, 0);
 }
 function compareIndexCandidates(a, b) {
-  const at = utcEpoch(a.lastActivity);
+  const at2 = utcEpoch(a.lastActivity);
   const bt = utcEpoch(b.lastActivity);
-  const av = Number.isNaN(at) ? -Infinity : at;
+  const av = Number.isNaN(at2) ? -Infinity : at2;
   const bv = Number.isNaN(bt) ? -Infinity : bt;
   if (av !== bv)
     return bv - av;
@@ -31981,8 +34243,8 @@ function buildBriefingIndex(candidates, projectName2, now, options = {}) {
   const current = [];
   let older = 0;
   for (const c of eligible) {
-    const at = utcEpoch(c.lastActivity);
-    if (!Number.isNaN(at) && at < cutoff)
+    const at2 = utcEpoch(c.lastActivity);
+    if (!Number.isNaN(at2) && at2 < cutoff)
       older++;
     else
       current.push(c);
@@ -32448,17 +34710,17 @@ var init_briefing = __esm({
 });
 
 // dist/core/citation-rule.js
-import fs13 from "fs";
-import path11 from "path";
+import fs16 from "fs";
+import path14 from "path";
 function citationRuleDir(scope, home, cwd) {
   if (scope === "project")
-    return path11.join(cwd, ".claude", "rules");
+    return path14.join(cwd, ".claude", "rules");
   const relocated = process.env.CLAUDE_CONFIG_DIR;
-  const configRoot = relocated ? path11.resolve(relocated) : path11.join(home, ".claude");
-  return path11.join(configRoot, "rules");
+  const configRoot = relocated ? path14.resolve(relocated) : path14.join(home, ".claude");
+  return path14.join(configRoot, "rules");
 }
 function citationRulePath(scope, home, cwd) {
-  return path11.join(citationRuleDir(scope, home, cwd), CITATION_RULE_FILENAME);
+  return path14.join(citationRuleDir(scope, home, cwd), CITATION_RULE_FILENAME);
 }
 function readRule(filePath, fsImpl) {
   try {
@@ -32469,7 +34731,7 @@ function readRule(filePath, fsImpl) {
     throw err;
   }
 }
-function writeCitationRule(scope, home, cwd, fsImpl = fs13) {
+function writeCitationRule(scope, home, cwd, fsImpl = fs16) {
   const filePath = citationRulePath(scope, home, cwd);
   const existing = readRule(filePath, fsImpl);
   if (existing.kind === "read") {
@@ -32481,11 +34743,11 @@ function writeCitationRule(scope, home, cwd, fsImpl = fs13) {
     fsImpl.writeFileSync(filePath, CITATION_RULE_BODY);
     return { path: filePath, action: "updated" };
   }
-  fsImpl.mkdirSync(path11.dirname(filePath), { recursive: true });
+  fsImpl.mkdirSync(path14.dirname(filePath), { recursive: true });
   fsImpl.writeFileSync(filePath, CITATION_RULE_BODY);
   return { path: filePath, action: "created" };
 }
-function removeCitationRule(scope, home, cwd, fsImpl = fs13) {
+function removeCitationRule(scope, home, cwd, fsImpl = fs16) {
   const filePath = citationRulePath(scope, home, cwd);
   const existing = readRule(filePath, fsImpl);
   if (existing.kind === "absent")
@@ -32495,7 +34757,7 @@ function removeCitationRule(scope, home, cwd, fsImpl = fs13) {
   fsImpl.rmSync(filePath);
   return { path: filePath, action: "removed" };
 }
-function citationRuleState(scope, home, cwd, fsImpl = fs13) {
+function citationRuleState(scope, home, cwd, fsImpl = fs16) {
   const filePath = citationRulePath(scope, home, cwd);
   const existing = readRule(filePath, fsImpl);
   if (existing.kind === "absent")
@@ -32536,11 +34798,11 @@ __export(install_hooks_exports, {
   settingsHaveMemeshHooks: () => settingsHaveMemeshHooks,
   uninstallHooks: () => uninstallHooks
 });
-import fs14 from "fs";
-import path12 from "path";
+import fs17 from "fs";
+import path15 from "path";
 function settingsHaveMemeshHooks(settingsPath) {
   try {
-    const parsed = JSON.parse(fs14.readFileSync(settingsPath, "utf8"));
+    const parsed = JSON.parse(fs17.readFileSync(settingsPath, "utf8"));
     for (const entries of Object.values(parsed.hooks ?? {})) {
       if (!Array.isArray(entries))
         continue;
@@ -32556,12 +34818,12 @@ function settingsHaveMemeshHooks(settingsPath) {
   return false;
 }
 function detectPluginRuntime(installedPluginsPathImpl) {
-  const defaultPath = path12.join(pluginHostConfigRoot("claude-code"), "plugins", "installed_plugins.json");
+  const defaultPath = path15.join(pluginHostConfigRoot("claude-code"), "plugins", "installed_plugins.json");
   const targetPath = installedPluginsPathImpl ?? defaultPath;
-  if (!fs14.existsSync(targetPath))
+  if (!fs17.existsSync(targetPath))
     return null;
   try {
-    const raw = fs14.readFileSync(targetPath, "utf8");
+    const raw = fs17.readFileSync(targetPath, "utf8");
     const j = JSON.parse(raw);
     const entries = j?.plugins?.["memesh@pcircle-memesh"];
     if (!Array.isArray(entries) || entries.length === 0)
@@ -32579,37 +34841,37 @@ function detectPluginRuntime(installedPluginsPathImpl) {
 }
 function settingsPathFor(scope, cwd) {
   if (scope === "project") {
-    return path12.join(cwd, ".claude", "settings.json");
+    return path15.join(cwd, ".claude", "settings.json");
   }
-  return path12.join(pluginHostConfigRoot("claude-code"), "settings.json");
+  return path15.join(pluginHostConfigRoot("claude-code"), "settings.json");
 }
 function writeSettingsSync(targetPath, data) {
-  fs14.writeFileSync(targetPath, data, "utf8");
+  fs17.writeFileSync(targetPath, data, "utf8");
 }
 function readSettings(p) {
-  if (!fs14.existsSync(p))
+  if (!fs17.existsSync(p))
     return {};
   try {
-    const raw = fs14.readFileSync(p, "utf8");
+    const raw = fs17.readFileSync(p, "utf8");
     return JSON.parse(raw);
   } catch {
     throw new Error(`settings file at ${p} is not valid JSON; refusing to modify`);
   }
 }
 function backupSettings(settingsPath) {
-  if (!fs14.existsSync(settingsPath))
+  if (!fs17.existsSync(settingsPath))
     return null;
   const ts = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
   const backup = `${settingsPath}.bak-pre-memesh-${ts}`;
-  fs14.copyFileSync(settingsPath, backup);
+  fs17.copyFileSync(settingsPath, backup);
   return backup;
 }
 function loadPluginHooks(pluginRoot) {
-  const manifestPath = path12.join(pluginRoot, "hooks", "hooks.json");
-  if (!fs14.existsSync(manifestPath)) {
+  const manifestPath = path15.join(pluginRoot, "hooks", "hooks.json");
+  if (!fs17.existsSync(manifestPath)) {
     throw new Error(`plugin hooks manifest not found at ${manifestPath}`);
   }
-  const manifest = JSON.parse(fs14.readFileSync(manifestPath, "utf8"));
+  const manifest = JSON.parse(fs17.readFileSync(manifestPath, "utf8"));
   const out = {};
   for (const [event, entries] of Object.entries(manifest.hooks)) {
     out[event] = entries.map((entry) => ({
@@ -32653,7 +34915,7 @@ function installHooks(opts) {
       skipped: 0,
       pruned: 0,
       conflicts: [],
-      markerPath: path12.join(memeshDir(), MARKER_FILE),
+      markerPath: path15.join(memeshDir(), MARKER_FILE2),
       pluginRuntimeDetected: pluginRuntime,
       citationRule
     };
@@ -32700,15 +34962,15 @@ function installHooks(opts) {
       added++;
     }
   }
-  const markerPath = path12.join(memeshDir(), MARKER_FILE);
+  const markerPath = path15.join(memeshDir(), MARKER_FILE2);
   let backupPath = null;
   if (!opts.dryRun && (added > 0 || skipped > 0)) {
     backupPath = backupSettings(settingsPath);
     settings.hooks = existing;
-    fs14.mkdirSync(path12.dirname(settingsPath), { recursive: true });
+    fs17.mkdirSync(path15.dirname(settingsPath), { recursive: true });
     writeSettingsSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
-    fs14.mkdirSync(path12.dirname(markerPath), { recursive: true });
-    fs14.writeFileSync(markerPath, JSON.stringify({
+    fs17.mkdirSync(path15.dirname(markerPath), { recursive: true });
+    fs17.writeFileSync(markerPath, JSON.stringify({
       installed_at: (/* @__PURE__ */ new Date()).toISOString(),
       version: opts.pluginVersion,
       plugin_root: opts.pluginRoot,
@@ -32731,7 +34993,7 @@ function installHooks(opts) {
 function uninstallHooks(opts) {
   const cwd = opts.cwd ?? process.cwd();
   const settingsPath = settingsPathFor(opts.scope, cwd);
-  const settings = fs14.existsSync(settingsPath) ? readSettings(settingsPath) : null;
+  const settings = fs17.existsSync(settingsPath) ? readSettings(settingsPath) : null;
   const citationRule = opts.dryRun ? { path: citationRulePath(opts.scope, homeDir(), cwd), action: "absent" } : removeCitationRule(opts.scope, homeDir(), cwd);
   if (!settings) {
     return { settingsPath, backupPath: null, removed: 0, citationRule };
@@ -32755,10 +35017,10 @@ function uninstallHooks(opts) {
   if (!opts.dryRun && removed > 0) {
     backupPath = backupSettings(settingsPath);
     writeSettingsSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
-    const markerPath = path12.join(memeshDir(), MARKER_FILE);
-    if (fs14.existsSync(markerPath)) {
+    const markerPath = path15.join(memeshDir(), MARKER_FILE2);
+    if (fs17.existsSync(markerPath)) {
       try {
-        fs14.unlinkSync(markerPath);
+        fs17.unlinkSync(markerPath);
       } catch {
       }
     }
@@ -32766,31 +35028,31 @@ function uninstallHooks(opts) {
   return { settingsPath, backupPath, removed, citationRule };
 }
 function readInstallMarker() {
-  const markerPath = path12.join(memeshDir(), MARKER_FILE);
-  if (!fs14.existsSync(markerPath))
+  const markerPath = path15.join(memeshDir(), MARKER_FILE2);
+  if (!fs17.existsSync(markerPath))
     return null;
   try {
-    return JSON.parse(fs14.readFileSync(markerPath, "utf8"));
+    return JSON.parse(fs17.readFileSync(markerPath, "utf8"));
   } catch {
     return null;
   }
 }
-var MARKER_FILE;
+var MARKER_FILE2;
 var init_install_hooks = __esm({
   "dist/core/install-hooks.js"() {
     "use strict";
     init_paths();
     init_citation_rule();
     init_install_channel();
-    MARKER_FILE = "install-hooks.json";
+    MARKER_FILE2 = "install-hooks.json";
   }
 });
 
 // dist/core/agent-router.js
 import { randomUUID as randomUUID3 } from "node:crypto";
-import fs16 from "node:fs";
+import fs19 from "node:fs";
 import net from "node:net";
-import path14 from "node:path";
+import path17 from "node:path";
 function isLegacyAgentRouterVersionMismatchResponse(value) {
   if (!isPlainObject4(value) || value.version !== 1 || value.request_id !== "" || value.ok !== false)
     return false;
@@ -32937,7 +35199,7 @@ function isSelectionCard(value, project) {
   return typeof value.session_id === "string" && (value.handle === void 0 || typeof value.handle === "string") && typeof value.principal_id === "string" && ["codex", "claude", "gemini", "other"].includes(String(value.host_kind)) && value.project === project && (value.model === null || typeof value.model === "string") && (value.work_summary === null || typeof value.work_summary === "string") && value.active === true && Number.isSafeInteger(value.generation) && value.generation >= 1 && Number.isSafeInteger(value.lease_expires_at_ms) && value.lease_expires_at_ms >= 0;
 }
 function validateSocketPath(socketPath) {
-  if (typeof socketPath !== "string" || !path14.isAbsolute(socketPath) || Buffer.byteLength(socketPath) > AGENT_ROUTER_SOCKET_PATH_MAX_BYTES) {
+  if (typeof socketPath !== "string" || !path17.isAbsolute(socketPath) || Buffer.byteLength(socketPath) > AGENT_ROUTER_SOCKET_PATH_MAX_BYTES) {
     throw new AgentRouterProtocolError("invalid_socket_path", `Router socket path must be absolute and at most ${AGENT_ROUTER_SOCKET_PATH_MAX_BYTES} bytes.`);
   }
   return socketPath;
@@ -32972,7 +35234,7 @@ var init_agent_router = __esm({
 });
 
 // dist/transports/agent-messaging.js
-import { createHash as createHash10, randomUUID as randomUUID4 } from "node:crypto";
+import { createHash as createHash12, randomUUID as randomUUID4 } from "node:crypto";
 function configuredAgentMessageStorageQuotaBytes() {
   const raw = process.env[AGENT_MESSAGE_STORAGE_QUOTA_ENV];
   if (raw === void 0 || raw === "")
@@ -33270,7 +35532,7 @@ function parseStoredObject(raw, label) {
   throw new AgentMessagingError(`Invalid stored JSON object in ${label}.`);
 }
 function principalFallbackKey(idempotencyKey) {
-  return `principal-fallback:${createHash10("sha256").update(idempotencyKey).digest("hex")}`;
+  return `principal-fallback:${createHash12("sha256").update(idempotencyKey).digest("hex")}`;
 }
 function hasPrincipalFallback(db2, sent, idempotencyKey) {
   return db2.prepare(`
@@ -33481,7 +35743,7 @@ var init_agent_messaging2 = __esm({
 
 // dist/host-runtime/config.js
 import { randomBytes as randomBytes4 } from "node:crypto";
-import fs17 from "node:fs";
+import fs20 from "node:fs";
 function assertSecureLocalHostRuntimeSupported() {
   if (process.platform === "win32") {
     throw new Error(SECURE_LOCAL_HOST_RUNTIME_UNSUPPORTED);
@@ -33500,7 +35762,7 @@ function readTokenFile(tokenFile) {
 function ensureRouterTokenFile(tokenFile) {
   assertSecureLocalHostRuntimeSupported();
   try {
-    fs17.writeFileSync(tokenFile, `${randomBytes4(32).toString("hex")}
+    fs20.writeFileSync(tokenFile, `${randomBytes4(32).toString("hex")}
 `, { mode: 384, flag: "wx" });
   } catch (error62) {
     if (error62.code !== "EEXIST")
@@ -33516,12 +35778,12 @@ function requiredString(value, field) {
 }
 function readOwnerPrivateFile(file2, label, maxBytes) {
   assertSecureLocalHostRuntimeSupported();
-  if (typeof fs17.constants.O_NOFOLLOW !== "number") {
+  if (typeof fs20.constants.O_NOFOLLOW !== "number") {
     throw new Error(`This platform cannot safely reject a symlink ${label}.`);
   }
-  const descriptor = fs17.openSync(file2, fs17.constants.O_RDONLY | fs17.constants.O_NOFOLLOW | fs17.constants.O_NONBLOCK);
+  const descriptor = fs20.openSync(file2, fs20.constants.O_RDONLY | fs20.constants.O_NOFOLLOW | fs20.constants.O_NONBLOCK);
   try {
-    const stat = fs17.fstatSync(descriptor);
+    const stat = fs20.fstatSync(descriptor);
     if (!stat.isFile())
       throw new Error(`The ${label} must be an owner-private regular file.`);
     assertOwnerPrivate(stat, label);
@@ -33530,7 +35792,7 @@ function readOwnerPrivateFile(file2, label, maxBytes) {
     const content = Buffer.allocUnsafe(maxBytes + 1);
     let bytesRead = 0;
     while (bytesRead < content.length) {
-      const chunkBytes = fs17.readSync(descriptor, content, bytesRead, content.length - bytesRead, null);
+      const chunkBytes = fs20.readSync(descriptor, content, bytesRead, content.length - bytesRead, null);
       if (chunkBytes === 0)
         break;
       bytesRead += chunkBytes;
@@ -33539,7 +35801,7 @@ function readOwnerPrivateFile(file2, label, maxBytes) {
       throw new Error(`The ${label} exceeds its ${maxBytes}-byte limit.`);
     return content.subarray(0, bytesRead).toString("utf8");
   } finally {
-    fs17.closeSync(descriptor);
+    fs20.closeSync(descriptor);
   }
 }
 function assertOwnerPrivate(stat, label) {
@@ -33570,11 +35832,11 @@ __export(why_exports, {
   explainCommits: () => explainCommits,
   resolveFileCommits: () => resolveFileCommits
 });
-import { execFileSync as execFileSync5 } from "child_process";
+import { execFileSync as execFileSync6 } from "child_process";
 import { existsSync } from "fs";
 import { resolve } from "path";
 function runGit(cwd, args) {
-  return execFileSync5("git", ["-C", cwd, ...args], {
+  return execFileSync6("git", ["-C", cwd, ...args], {
     encoding: "utf8",
     timeout: GIT_TIMEOUT_MS2,
     stdio: ["ignore", "pipe", "pipe"]
@@ -34644,7 +36906,7 @@ var require_has_flag = __commonJS({
 var require_supports_color = __commonJS({
   "node_modules/supports-color/index.js"(exports, module) {
     "use strict";
-    var os4 = __require("os");
+    var os5 = __require("os");
     var tty = __require("tty");
     var hasFlag = require_has_flag();
     var { env } = process;
@@ -34692,7 +36954,7 @@ var require_supports_color = __commonJS({
         return min;
       }
       if (process.platform === "win32") {
-        const osRelease = os4.release().split(".");
+        const osRelease = os5.release().split(".");
         if (Number(osRelease[0]) >= 10 && Number(osRelease[2]) >= 10586) {
           return Number(osRelease[2]) >= 14931 ? 3 : 2;
         }
@@ -49463,11 +51725,11 @@ var require_mime_types = __commonJS({
       }
       return exts[0];
     }
-    function lookup(path22) {
-      if (!path22 || typeof path22 !== "string") {
+    function lookup(path25) {
+      if (!path25 || typeof path25 !== "string") {
         return false;
       }
-      var extension2 = extname("x." + path22).toLowerCase().slice(1);
+      var extension2 = extname("x." + path25).toLowerCase().slice(1);
       if (!extension2) {
         return false;
       }
@@ -53140,13 +55402,13 @@ var require_view = __commonJS({
   "node_modules/express/lib/view.js"(exports, module) {
     "use strict";
     var debug = require_src()("express:view");
-    var path22 = __require("node:path");
-    var fs25 = __require("node:fs");
-    var dirname = path22.dirname;
-    var basename2 = path22.basename;
-    var extname = path22.extname;
-    var join = path22.join;
-    var resolve2 = path22.resolve;
+    var path25 = __require("node:path");
+    var fs28 = __require("node:fs");
+    var dirname = path25.dirname;
+    var basename2 = path25.basename;
+    var extname = path25.extname;
+    var join = path25.join;
+    var resolve2 = path25.resolve;
     module.exports = View;
     function View(name, options) {
       var opts = options || {};
@@ -53175,17 +55437,17 @@ var require_view = __commonJS({
       this.path = this.lookup(fileName);
     }
     View.prototype.lookup = function lookup(name) {
-      var path23;
+      var path26;
       var roots = [].concat(this.root);
       debug('lookup "%s"', name);
-      for (var i = 0; i < roots.length && !path23; i++) {
+      for (var i = 0; i < roots.length && !path26; i++) {
         var root = roots[i];
         var loc = resolve2(root, name);
         var dir = dirname(loc);
         var file2 = basename2(loc);
-        path23 = this.resolve(dir, file2);
+        path26 = this.resolve(dir, file2);
       }
-      return path23;
+      return path26;
     };
     View.prototype.render = function render(options, callback) {
       var sync = true;
@@ -53207,21 +55469,21 @@ var require_view = __commonJS({
     };
     View.prototype.resolve = function resolve3(dir, file2) {
       var ext = this.ext;
-      var path23 = join(dir, file2);
-      var stat = tryStat(path23);
+      var path26 = join(dir, file2);
+      var stat = tryStat(path26);
       if (stat && stat.isFile()) {
-        return path23;
+        return path26;
       }
-      path23 = join(dir, basename2(file2, ext), "index" + ext);
-      stat = tryStat(path23);
+      path26 = join(dir, basename2(file2, ext), "index" + ext);
+      stat = tryStat(path26);
       if (stat && stat.isFile()) {
-        return path23;
+        return path26;
       }
     };
-    function tryStat(path23) {
-      debug('stat "%s"', path23);
+    function tryStat(path26) {
+      debug('stat "%s"', path26);
       try {
-        return fs25.statSync(path23);
+        return fs28.statSync(path26);
       } catch (e) {
         return void 0;
       }
@@ -54461,15 +56723,15 @@ var require_dist3 = __commonJS({
       let index = 0;
       function consumeUntil(end) {
         const output2 = [];
-        let path22 = "";
+        let path25 = "";
         function writePath() {
-          if (!path22)
+          if (!path25)
             return;
           output2.push({
             type: "text",
-            value: encodePath(path22)
+            value: encodePath(path25)
           });
-          path22 = "";
+          path25 = "";
         }
         while (index < chars.length) {
           const value = chars[index++];
@@ -54481,7 +56743,7 @@ var require_dist3 = __commonJS({
             if (index === chars.length) {
               throw new PathError(`Unexpected end after \\ at index ${index}`, str);
             }
-            path22 += chars[index++];
+            path25 += chars[index++];
             continue;
           }
           if (value === ":" || value === "*") {
@@ -54525,7 +56787,7 @@ var require_dist3 = __commonJS({
           if (value === "}" || value === "(" || value === ")" || value === "[" || value === "]" || value === "+" || value === "?" || value === "!") {
             throw new PathError(`Unexpected ${value} at index ${index - 1}`, str);
           }
-          path22 += value;
+          path25 += value;
         }
         if (end) {
           throw new PathError(`Unexpected end at index ${index}, expected ${end}`, str);
@@ -54535,17 +56797,17 @@ var require_dist3 = __commonJS({
       }
       return new TokenData(consumeUntil(""), str);
     }
-    function compile2(path22, options = {}) {
+    function compile2(path25, options = {}) {
       const { encode: encode3 = encodeURIComponent, delimiter = DEFAULT_DELIMITER } = options;
-      const data = typeof path22 === "object" ? path22 : parse3(path22, options);
+      const data = typeof path25 === "object" ? path25 : parse3(path25, options);
       const fn = tokensToFunction(data.tokens, delimiter, encode3);
-      return function path23(params = {}) {
+      return function path26(params = {}) {
         const missing = [];
-        const path24 = fn(params, missing);
+        const path27 = fn(params, missing);
         if (missing.length) {
           throw new TypeError(`Missing parameters: ${missing.join(", ")}`);
         }
-        return path24;
+        return path27;
       };
     }
     function tokensToFunction(tokens, delimiter, encode3) {
@@ -54607,9 +56869,9 @@ var require_dist3 = __commonJS({
         return encodeValue(value);
       };
     }
-    function match(path22, options = {}) {
+    function match(path25, options = {}) {
       const { decode: decode3 = decodeURIComponent, delimiter = DEFAULT_DELIMITER } = options;
-      const { regexp, keys } = pathToRegexp(path22, options);
+      const { regexp, keys } = pathToRegexp(path25, options);
       const decoders = keys.map((key) => {
         if (decode3 === false)
           return NOOP_VALUE;
@@ -54621,7 +56883,7 @@ var require_dist3 = __commonJS({
         const m = regexp.exec(input2);
         if (!m)
           return false;
-        const path23 = m[0];
+        const path26 = m[0];
         const params = /* @__PURE__ */ Object.create(null);
         for (let i = 1; i < m.length; i++) {
           if (m[i] === void 0)
@@ -54630,21 +56892,21 @@ var require_dist3 = __commonJS({
           const decoder = decoders[i - 1];
           params[key.name] = decoder(m[i]);
         }
-        return { path: path23, params };
+        return { path: path26, params };
       };
     }
-    function pathToRegexp(path22, options = {}) {
+    function pathToRegexp(path25, options = {}) {
       const { delimiter = DEFAULT_DELIMITER, end = true, sensitive = false, trailing = true } = options;
       const keys = [];
       let source = "";
       let combinations = 0;
-      function process2(path23) {
-        if (Array.isArray(path23)) {
-          for (const p of path23)
+      function process2(path26) {
+        if (Array.isArray(path26)) {
+          for (const p of path26)
             process2(p);
           return;
         }
-        const data = typeof path23 === "object" ? path23 : parse3(path23, options);
+        const data = typeof path26 === "object" ? path26 : parse3(path26, options);
         flatten(data.tokens, 0, [], (tokens) => {
           if (combinations >= 256) {
             throw new PathError("Too many path combinations", data.originalPath);
@@ -54655,7 +56917,7 @@ var require_dist3 = __commonJS({
           combinations++;
         });
       }
-      process2(path22);
+      process2(path25);
       let pattern = `^(?:${source})`;
       if (trailing)
         pattern += "(?:" + escape2(delimiter) + "$)?";
@@ -54795,18 +57057,18 @@ var require_layer = __commonJS({
     var TRAILING_SLASH_REGEXP = /\/+$/;
     var MATCHING_GROUP_REGEXP = /\((?:\?<(.*?)>)?(?!\?)/g;
     module.exports = Layer;
-    function Layer(path22, options, fn) {
+    function Layer(path25, options, fn) {
       if (!(this instanceof Layer)) {
-        return new Layer(path22, options, fn);
+        return new Layer(path25, options, fn);
       }
-      debug("new %o", path22);
+      debug("new %o", path25);
       const opts = options || {};
       this.handle = fn;
       this.keys = [];
       this.name = fn.name || "<anonymous>";
       this.params = void 0;
       this.path = void 0;
-      this.slash = path22 === "/" && opts.end === false;
+      this.slash = path25 === "/" && opts.end === false;
       function matcher(_path) {
         if (_path instanceof RegExp) {
           const keys = [];
@@ -54845,7 +57107,7 @@ var require_layer = __commonJS({
           decode: decodeParam
         });
       }
-      this.matchers = Array.isArray(path22) ? path22.map(matcher) : [matcher(path22)];
+      this.matchers = Array.isArray(path25) ? path25.map(matcher) : [matcher(path25)];
     }
     Layer.prototype.handleError = function handleError(error62, req, res, next) {
       const fn = this.handle;
@@ -54885,9 +57147,9 @@ var require_layer = __commonJS({
         next(err);
       }
     };
-    Layer.prototype.match = function match(path22) {
+    Layer.prototype.match = function match(path25) {
       let match2;
-      if (path22 != null) {
+      if (path25 != null) {
         if (this.slash) {
           this.params = {};
           this.path = "";
@@ -54895,7 +57157,7 @@ var require_layer = __commonJS({
         }
         let i = 0;
         while (!match2 && i < this.matchers.length) {
-          match2 = this.matchers[i](path22);
+          match2 = this.matchers[i](path25);
           i++;
         }
       }
@@ -54923,13 +57185,13 @@ var require_layer = __commonJS({
         throw err;
       }
     }
-    function loosen(path22) {
-      if (path22 instanceof RegExp || path22 === "/") {
-        return path22;
+    function loosen(path25) {
+      if (path25 instanceof RegExp || path25 === "/") {
+        return path25;
       }
-      return Array.isArray(path22) ? path22.map(function(p) {
+      return Array.isArray(path25) ? path25.map(function(p) {
         return loosen(p);
-      }) : String(path22).replace(TRAILING_SLASH_REGEXP, "");
+      }) : String(path25).replace(TRAILING_SLASH_REGEXP, "");
     }
   }
 });
@@ -54945,9 +57207,9 @@ var require_route = __commonJS({
     var flatten = Array.prototype.flat;
     var methods = METHODS.map((method) => method.toLowerCase());
     module.exports = Route;
-    function Route(path22) {
-      debug("new %o", path22);
-      this.path = path22;
+    function Route(path25) {
+      debug("new %o", path25);
+      this.path = path25;
       this.stack = [];
       this.methods = /* @__PURE__ */ Object.create(null);
     }
@@ -55155,8 +57417,8 @@ var require_router = __commonJS({
         if (++sync > 100) {
           return setImmediate(next, err);
         }
-        const path22 = getPathname(req);
-        if (path22 == null) {
+        const path25 = getPathname(req);
+        if (path25 == null) {
           return done(layerError);
         }
         let layer;
@@ -55164,7 +57426,7 @@ var require_router = __commonJS({
         let route;
         while (match !== true && idx < stack.length) {
           layer = stack[idx++];
-          match = matchLayer(layer, path22);
+          match = matchLayer(layer, path25);
           route = layer.route;
           if (typeof match !== "boolean") {
             layerError = layerError || match;
@@ -55202,18 +57464,18 @@ var require_router = __commonJS({
           } else if (route) {
             layer.handleRequest(req, res, next);
           } else {
-            trimPrefix(layer, layerError, layerPath, path22);
+            trimPrefix(layer, layerError, layerPath, path25);
           }
           sync = 0;
         });
       }
-      function trimPrefix(layer, layerError, layerPath, path22) {
+      function trimPrefix(layer, layerError, layerPath, path25) {
         if (layerPath.length !== 0) {
-          if (layerPath !== path22.substring(0, layerPath.length)) {
+          if (layerPath !== path25.substring(0, layerPath.length)) {
             next(layerError);
             return;
           }
-          const c = path22[layerPath.length];
+          const c = path25[layerPath.length];
           if (c && c !== "/") {
             next(layerError);
             return;
@@ -55237,7 +57499,7 @@ var require_router = __commonJS({
     };
     Router.prototype.use = function use(handler) {
       let offset = 0;
-      let path22 = "/";
+      let path25 = "/";
       if (typeof handler !== "function") {
         let arg = handler;
         while (Array.isArray(arg) && arg.length !== 0) {
@@ -55245,7 +57507,7 @@ var require_router = __commonJS({
         }
         if (typeof arg !== "function") {
           offset = 1;
-          path22 = handler;
+          path25 = handler;
         }
       }
       const callbacks = flatten.call(slice.call(arguments, offset), Infinity);
@@ -55257,8 +57519,8 @@ var require_router = __commonJS({
         if (typeof fn !== "function") {
           throw new TypeError("argument handler must be a function");
         }
-        debug("use %o %s", path22, fn.name || "<anonymous>");
-        const layer = new Layer(path22, {
+        debug("use %o %s", path25, fn.name || "<anonymous>");
+        const layer = new Layer(path25, {
           sensitive: this.caseSensitive,
           strict: false,
           end: false
@@ -55268,9 +57530,9 @@ var require_router = __commonJS({
       }
       return this;
     };
-    Router.prototype.route = function route(path22) {
-      const route2 = new Route(path22);
-      const layer = new Layer(path22, {
+    Router.prototype.route = function route(path25) {
+      const route2 = new Route(path25);
+      const layer = new Layer(path25, {
         sensitive: this.caseSensitive,
         strict: this.strict,
         end: true
@@ -55283,8 +57545,8 @@ var require_router = __commonJS({
       return route2;
     };
     methods.concat("all").forEach(function(method) {
-      Router.prototype[method] = function(path22) {
-        const route = this.route(path22);
+      Router.prototype[method] = function(path25) {
+        const route = this.route(path25);
         route[method].apply(route, slice.call(arguments, 1));
         return this;
       };
@@ -55313,9 +57575,9 @@ var require_router = __commonJS({
       const fqdnIndex = url2.substring(0, pathLength).indexOf("://");
       return fqdnIndex !== -1 ? url2.substring(0, url2.indexOf("/", 3 + fqdnIndex)) : void 0;
     }
-    function matchLayer(layer, path22) {
+    function matchLayer(layer, path25) {
       try {
-        return layer.match(path22);
+        return layer.match(path25);
       } catch (err) {
         return err;
       }
@@ -55543,7 +57805,7 @@ var require_application = __commonJS({
     };
     app2.use = function use(fn) {
       var offset = 0;
-      var path22 = "/";
+      var path25 = "/";
       if (typeof fn !== "function") {
         var arg = fn;
         while (Array.isArray(arg) && arg.length !== 0) {
@@ -55551,7 +57813,7 @@ var require_application = __commonJS({
         }
         if (typeof arg !== "function") {
           offset = 1;
-          path22 = fn;
+          path25 = fn;
         }
       }
       var fns = flatten.call(slice.call(arguments, offset), Infinity);
@@ -55561,12 +57823,12 @@ var require_application = __commonJS({
       var router = this.router;
       fns.forEach(function(fn2) {
         if (!fn2 || !fn2.handle || !fn2.set) {
-          return router.use(path22, fn2);
+          return router.use(path25, fn2);
         }
-        debug(".use app under %s", path22);
-        fn2.mountpath = path22;
+        debug(".use app under %s", path25);
+        fn2.mountpath = path25;
         fn2.parent = this;
-        router.use(path22, function mounted_app(req, res, next) {
+        router.use(path25, function mounted_app(req, res, next) {
           var orig = req.app;
           fn2.handle(req, res, function(err) {
             Object.setPrototypeOf(req, orig.request);
@@ -55578,8 +57840,8 @@ var require_application = __commonJS({
       }, this);
       return this;
     };
-    app2.route = function route(path22) {
-      return this.router.route(path22);
+    app2.route = function route(path25) {
+      return this.router.route(path25);
     };
     app2.engine = function engine(ext, fn) {
       if (typeof fn !== "function") {
@@ -55622,7 +57884,7 @@ var require_application = __commonJS({
       }
       return this;
     };
-    app2.path = function path22() {
+    app2.path = function path25() {
       return this.parent ? this.parent.path() + this.mountpath : "";
     };
     app2.enabled = function enabled(setting) {
@@ -55638,17 +57900,17 @@ var require_application = __commonJS({
       return this.set(setting, false);
     };
     methods.forEach(function(method) {
-      app2[method] = function(path22) {
+      app2[method] = function(path25) {
         if (method === "get" && arguments.length === 1) {
-          return this.set(path22);
+          return this.set(path25);
         }
-        var route = this.route(path22);
+        var route = this.route(path25);
         route[method].apply(route, slice.call(arguments, 1));
         return this;
       };
     });
-    app2.all = function all(path22) {
-      var route = this.route(path22);
+    app2.all = function all(path25) {
+      var route = this.route(path25);
       var args = slice.call(arguments, 1);
       for (var i = 0; i < methods.length; i++) {
         route[methods[i]].apply(route, args);
@@ -55656,7 +57918,7 @@ var require_application = __commonJS({
       return this;
     };
     app2.render = function render(name, options, callback) {
-      var cache = this.cache;
+      var cache2 = this.cache;
       var done = callback;
       var engines = this.engines;
       var opts = options;
@@ -55670,7 +57932,7 @@ var require_application = __commonJS({
         renderOptions.cache = this.enabled("view cache");
       }
       if (renderOptions.cache) {
-        view = cache[name];
+        view = cache2[name];
       }
       if (!view) {
         var View2 = this.get("view");
@@ -55686,7 +57948,7 @@ var require_application = __commonJS({
           return done(err);
         }
         if (renderOptions.cache) {
-          cache[name] = view;
+          cache2[name] = view;
         }
       }
       tryRender(view, renderOptions, done);
@@ -56558,7 +58820,7 @@ var require_request = __commonJS({
       var subdomains2 = !isIP2(hostname3) ? hostname3.split(".").reverse() : [hostname3];
       return subdomains2.slice(offset);
     });
-    defineGetter(req, "path", function path22() {
+    defineGetter(req, "path", function path25() {
       return parse3(this).pathname;
     });
     defineGetter(req, "host", function host() {
@@ -56965,32 +59227,32 @@ var require_send = __commonJS({
     var escapeHtml = require_escape_html();
     var etag = require_etag();
     var fresh = require_fresh();
-    var fs25 = __require("fs");
+    var fs28 = __require("fs");
     var mime = require_mime_types();
     var ms = require_ms();
     var onFinished = require_on_finished();
     var parseRange = require_range_parser();
-    var path22 = __require("path");
+    var path25 = __require("path");
     var statuses = require_statuses();
     var Stream = __require("stream");
     var util = __require("util");
-    var extname = path22.extname;
-    var join = path22.join;
-    var normalize = path22.normalize;
-    var resolve2 = path22.resolve;
-    var sep = path22.sep;
+    var extname = path25.extname;
+    var join = path25.join;
+    var normalize = path25.normalize;
+    var resolve2 = path25.resolve;
+    var sep = path25.sep;
     var BYTES_RANGE_REGEXP = /^ *bytes=/;
     var MAX_MAXAGE = 60 * 60 * 24 * 365 * 1e3;
     var UP_PATH_REGEXP = /(?:^|[\\/])\.\.(?:[\\/]|$)/;
     module.exports = send;
-    function send(req, path23, options) {
-      return new SendStream(req, path23, options);
+    function send(req, path26, options) {
+      return new SendStream(req, path26, options);
     }
-    function SendStream(req, path23, options) {
+    function SendStream(req, path26, options) {
       Stream.call(this);
       var opts = options || {};
       this.options = opts;
-      this.path = path23;
+      this.path = path26;
       this.req = req;
       this._acceptRanges = opts.acceptRanges !== void 0 ? Boolean(opts.acceptRanges) : true;
       this._cacheControl = opts.cacheControl !== void 0 ? Boolean(opts.cacheControl) : true;
@@ -57104,10 +59366,10 @@ var require_send = __commonJS({
       var lastModified = this.res.getHeader("Last-Modified");
       return parseHttpDate(lastModified) <= parseHttpDate(ifRange);
     };
-    SendStream.prototype.redirect = function redirect(path23) {
+    SendStream.prototype.redirect = function redirect(path26) {
       var res = this.res;
       if (hasListeners(this, "directory")) {
-        this.emit("directory", res, path23);
+        this.emit("directory", res, path26);
         return;
       }
       if (this.hasTrailingSlash()) {
@@ -57127,38 +59389,38 @@ var require_send = __commonJS({
     SendStream.prototype.pipe = function pipe2(res) {
       var root = this._root;
       this.res = res;
-      var path23 = decode3(this.path);
-      if (path23 === -1) {
+      var path26 = decode3(this.path);
+      if (path26 === -1) {
         this.error(400);
         return res;
       }
-      if (~path23.indexOf("\0")) {
+      if (~path26.indexOf("\0")) {
         this.error(400);
         return res;
       }
       var parts;
       if (root !== null) {
-        if (path23) {
-          path23 = normalize("." + sep + path23);
+        if (path26) {
+          path26 = normalize("." + sep + path26);
         }
-        if (UP_PATH_REGEXP.test(path23)) {
-          debug('malicious path "%s"', path23);
+        if (UP_PATH_REGEXP.test(path26)) {
+          debug('malicious path "%s"', path26);
           this.error(403);
           return res;
         }
-        parts = path23.split(sep);
-        path23 = normalize(join(root, path23));
+        parts = path26.split(sep);
+        path26 = normalize(join(root, path26));
       } else {
-        if (UP_PATH_REGEXP.test(path23)) {
-          debug('malicious path "%s"', path23);
+        if (UP_PATH_REGEXP.test(path26)) {
+          debug('malicious path "%s"', path26);
           this.error(403);
           return res;
         }
-        parts = normalize(path23).split(sep);
-        path23 = resolve2(path23);
+        parts = normalize(path26).split(sep);
+        path26 = resolve2(path26);
       }
       if (containsDotFile(parts)) {
-        debug('%s dotfile "%s"', this._dotfiles, path23);
+        debug('%s dotfile "%s"', this._dotfiles, path26);
         switch (this._dotfiles) {
           case "allow":
             break;
@@ -57172,13 +59434,13 @@ var require_send = __commonJS({
         }
       }
       if (this._index.length && this.hasTrailingSlash()) {
-        this.sendIndex(path23);
+        this.sendIndex(path26);
         return res;
       }
-      this.sendFile(path23);
+      this.sendFile(path26);
       return res;
     };
-    SendStream.prototype.send = function send2(path23, stat) {
+    SendStream.prototype.send = function send2(path26, stat) {
       var len = stat.size;
       var options = this.options;
       var opts = {};
@@ -57190,9 +59452,9 @@ var require_send = __commonJS({
         this.headersAlreadySent();
         return;
       }
-      debug('pipe "%s"', path23);
-      this.setHeader(path23, stat);
-      this.type(path23);
+      debug('pipe "%s"', path26);
+      this.setHeader(path26, stat);
+      this.type(path26);
       if (this.isConditionalGET()) {
         if (this.isPreconditionFailure()) {
           this.error(412);
@@ -57241,30 +59503,30 @@ var require_send = __commonJS({
         res.end();
         return;
       }
-      this.stream(path23, opts);
+      this.stream(path26, opts);
     };
-    SendStream.prototype.sendFile = function sendFile(path23) {
+    SendStream.prototype.sendFile = function sendFile(path26) {
       var i = 0;
       var self = this;
-      debug('stat "%s"', path23);
-      fs25.stat(path23, function onstat(err, stat) {
-        var pathEndsWithSep = path23[path23.length - 1] === sep;
-        if (err && err.code === "ENOENT" && !extname(path23) && !pathEndsWithSep) {
+      debug('stat "%s"', path26);
+      fs28.stat(path26, function onstat(err, stat) {
+        var pathEndsWithSep = path26[path26.length - 1] === sep;
+        if (err && err.code === "ENOENT" && !extname(path26) && !pathEndsWithSep) {
           return next(err);
         }
         if (err) return self.onStatError(err);
-        if (stat.isDirectory()) return self.redirect(path23);
+        if (stat.isDirectory()) return self.redirect(path26);
         if (pathEndsWithSep) return self.error(404);
-        self.emit("file", path23, stat);
-        self.send(path23, stat);
+        self.emit("file", path26, stat);
+        self.send(path26, stat);
       });
       function next(err) {
         if (self._extensions.length <= i) {
           return err ? self.onStatError(err) : self.error(404);
         }
-        var p = path23 + "." + self._extensions[i++];
+        var p = path26 + "." + self._extensions[i++];
         debug('stat "%s"', p);
-        fs25.stat(p, function(err2, stat) {
+        fs28.stat(p, function(err2, stat) {
           if (err2) return next(err2);
           if (stat.isDirectory()) return next();
           self.emit("file", p, stat);
@@ -57272,7 +59534,7 @@ var require_send = __commonJS({
         });
       }
     };
-    SendStream.prototype.sendIndex = function sendIndex(path23) {
+    SendStream.prototype.sendIndex = function sendIndex(path26) {
       var i = -1;
       var self = this;
       function next(err) {
@@ -57280,9 +59542,9 @@ var require_send = __commonJS({
           if (err) return self.onStatError(err);
           return self.error(404);
         }
-        var p = join(path23, self._index[i]);
+        var p = join(path26, self._index[i]);
         debug('stat "%s"', p);
-        fs25.stat(p, function(err2, stat) {
+        fs28.stat(p, function(err2, stat) {
           if (err2) return next(err2);
           if (stat.isDirectory()) return next();
           self.emit("file", p, stat);
@@ -57291,10 +59553,10 @@ var require_send = __commonJS({
       }
       next();
     };
-    SendStream.prototype.stream = function stream(path23, options) {
+    SendStream.prototype.stream = function stream(path26, options) {
       var self = this;
       var res = this.res;
-      var stream2 = fs25.createReadStream(path23, options);
+      var stream2 = fs28.createReadStream(path26, options);
       this.emit("stream", stream2);
       stream2.pipe(res);
       function cleanup() {
@@ -57309,17 +59571,17 @@ var require_send = __commonJS({
         self.emit("end");
       });
     };
-    SendStream.prototype.type = function type(path23) {
+    SendStream.prototype.type = function type(path26) {
       var res = this.res;
       if (res.getHeader("Content-Type")) return;
-      var ext = extname(path23);
+      var ext = extname(path26);
       var type2 = mime.contentType(ext) || "application/octet-stream";
       debug("content-type %s", type2);
       res.setHeader("Content-Type", type2);
     };
-    SendStream.prototype.setHeader = function setHeader(path23, stat) {
+    SendStream.prototype.setHeader = function setHeader(path26, stat) {
       var res = this.res;
-      this.emit("headers", res, path23, stat);
+      this.emit("headers", res, path26, stat);
       if (this._acceptRanges && !res.getHeader("Accept-Ranges")) {
         debug("accept ranges");
         res.setHeader("Accept-Ranges", "bytes");
@@ -57377,9 +59639,9 @@ var require_send = __commonJS({
       }
       return err instanceof Error ? createError(status, err, { expose: false }) : createError(status, err);
     }
-    function decode3(path23) {
+    function decode3(path26) {
       try {
-        return decodeURIComponent(path23);
+        return decodeURIComponent(path26);
       } catch (err) {
         return -1;
       }
@@ -57523,7 +59785,7 @@ var require_response = __commonJS({
     var http = __require("node:http");
     var onFinished = require_on_finished();
     var mime = require_mime_types();
-    var path22 = __require("node:path");
+    var path25 = __require("node:path");
     var pathIsAbsolute = __require("node:path").isAbsolute;
     var statuses = require_statuses();
     var sign = require_cookie_signature().sign;
@@ -57532,8 +59794,8 @@ var require_response = __commonJS({
     var setCharset = require_utils3().setCharset;
     var cookie = require_cookie();
     var send = require_send();
-    var extname = path22.extname;
-    var resolve2 = path22.resolve;
+    var extname = path25.extname;
+    var resolve2 = path25.resolve;
     var vary = require_vary();
     var { Buffer: Buffer3 } = __require("node:buffer");
     var res = Object.create(http.ServerResponse.prototype);
@@ -57679,26 +59941,26 @@ var require_response = __commonJS({
       this.type("txt");
       return this.send(body);
     };
-    res.sendFile = function sendFile(path23, options, callback) {
+    res.sendFile = function sendFile(path26, options, callback) {
       var done = callback;
       var req = this.req;
       var res2 = this;
       var next = req.next;
       var opts = options || {};
-      if (!path23) {
+      if (!path26) {
         throw new TypeError("path argument is required to res.sendFile");
       }
-      if (typeof path23 !== "string") {
+      if (typeof path26 !== "string") {
         throw new TypeError("path must be a string to res.sendFile");
       }
       if (typeof options === "function") {
         done = options;
         opts = {};
       }
-      if (!opts.root && !pathIsAbsolute(path23)) {
+      if (!opts.root && !pathIsAbsolute(path26)) {
         throw new TypeError("path must be absolute or specify root to res.sendFile");
       }
-      var pathname = encodeURI(path23);
+      var pathname = encodeURI(path26);
       opts.etag = this.app.enabled("etag");
       var file2 = send(req, pathname, opts);
       sendfile(res2, file2, opts, function(err) {
@@ -57709,7 +59971,7 @@ var require_response = __commonJS({
         }
       });
     };
-    res.download = function download(path23, filename, options, callback) {
+    res.download = function download(path26, filename, options, callback) {
       var done = callback;
       var name = filename;
       var opts = options || null;
@@ -57726,7 +59988,7 @@ var require_response = __commonJS({
         opts = filename;
       }
       var headers = {
-        "Content-Disposition": contentDisposition(name || path23)
+        "Content-Disposition": contentDisposition(name || path26)
       };
       if (opts && opts.headers) {
         var keys = Object.keys(opts.headers);
@@ -57739,7 +60001,7 @@ var require_response = __commonJS({
       }
       opts = Object.create(opts);
       opts.headers = headers;
-      var fullPath = !opts.root ? resolve2(path23) : path23;
+      var fullPath = !opts.root ? resolve2(path26) : path26;
       return this.sendFile(fullPath, opts, done);
     };
     res.contentType = res.type = function contentType(type) {
@@ -58022,11 +60284,11 @@ var require_serve_static = __commonJS({
         }
         var forwardError = !fallthrough;
         var originalUrl = parseUrl.original(req);
-        var path22 = parseUrl(req).pathname;
-        if (path22 === "/" && originalUrl.pathname.substr(-1) !== "/") {
-          path22 = "";
+        var path25 = parseUrl(req).pathname;
+        if (path25 === "/" && originalUrl.pathname.substr(-1) !== "/") {
+          path25 = "";
         }
-        var stream = send(req, path22, opts);
+        var stream = send(req, path25, opts);
         stream.on("directory", onDirectory);
         if (setHeaders) {
           stream.on("headers", setHeaders);
@@ -60183,7 +62445,7 @@ var require_ip_address = __commonJS({
 import { isIPv6 } from "node:net";
 import { isIPv6 as isIPv62 } from "node:net";
 import { Buffer as Buffer2 } from "node:buffer";
-import { createHash as createHash11 } from "node:crypto";
+import { createHash as createHash13 } from "node:crypto";
 import { isIP } from "node:net";
 function ipKeyGenerator(ip, ipv6Subnet = 56) {
   if (isIPv6(ip)) {
@@ -60371,7 +62633,7 @@ var init_dist = __esm({
       return resetSeconds;
     };
     getPartitionKey = (key) => {
-      const hash2 = createHash11("sha256");
+      const hash2 = createHash13("sha256");
       hash2.update(key);
       const partitionKey = hash2.digest("hex").slice(0, 12);
       return Buffer2.from(partitionKey).toString("base64");
@@ -61462,9 +63724,9 @@ var init_stats = __esm({
 });
 
 // dist/core/database-diagnosis.js
-import fs18 from "fs";
-import path15 from "path";
-function diagnoseDatabaseFailure(err, databasePath, existsSyncImpl = fs18.existsSync, statSyncImpl = fs18.statSync) {
+import fs21 from "fs";
+import path18 from "path";
+function diagnoseDatabaseFailure(err, databasePath, existsSyncImpl = fs21.existsSync, statSyncImpl = fs21.statSync) {
   const message = err instanceof Error ? err.message : "unknown database error";
   let diagnosis;
   let fix;
@@ -61496,7 +63758,7 @@ function diagnoseDatabaseFailure(err, databasePath, existsSyncImpl = fs18.exists
       fix = `Check file system integrity and permissions`;
     }
   } else {
-    const dir = path15.dirname(databasePath);
+    const dir = path18.dirname(databasePath);
     if (!existsSyncImpl(dir)) {
       diagnosis = `Database directory does not exist: ${dir}`;
       fix = `Create the folder; the next memesh command creates a fresh database: mkdir -p ${shellQuote(dir)} && memesh recall`;
@@ -61504,7 +63766,7 @@ function diagnoseDatabaseFailure(err, databasePath, existsSyncImpl = fs18.exists
       try {
         const dirStat = statSyncImpl(dir);
         const canWrite = !!(dirStat.mode & 128);
-        if ((dirStat.mode & fs18.constants.S_IFMT) === fs18.constants.S_IFREG) {
+        if ((dirStat.mode & fs21.constants.S_IFMT) === fs21.constants.S_IFREG) {
           diagnosis = `${dir} is a file, not a folder, so no database can be created inside it`;
           fix = "Point MEMESH_DB_PATH at a path inside a folder";
         } else if (!(dirStat.mode & 64)) {
@@ -61544,154 +63806,23 @@ var init_retired_routes = __esm({
   }
 });
 
-// dist/core/updater.js
-var updater_exports = {};
-__export(updater_exports, {
-  classifyBump: () => classifyBump,
-  decideAutoUpdate: () => decideAutoUpdate,
-  getInstalledGlobalVersion: () => getInstalledGlobalVersion,
-  parseAutoUpdatePolicy: () => parseAutoUpdatePolicy,
-  runGlobalUpdate: () => runGlobalUpdate
-});
-import { execFileSync as execFileSync6 } from "child_process";
-function parseAutoUpdatePolicy(value) {
-  if (typeof value !== "string")
-    return null;
-  const lowered = value.toLowerCase();
-  return VALID_AUTO_UPDATE_POLICIES.has(lowered) ? lowered : null;
-}
-function parseSemver(version2) {
-  const m = /^(\d+)\.(\d+)\.(\d+)(?:[-+].+)?$/.exec(version2.trim());
-  if (!m)
-    return null;
-  return {
-    major: Number(m[1]),
-    minor: Number(m[2]),
-    patch: Number(m[3])
-  };
-}
-function classifyBump(from, to) {
-  const a = parseSemver(from);
-  const b = parseSemver(to);
-  if (!a || !b)
-    return null;
-  if (b.major > a.major)
-    return "major";
-  if (b.major < a.major)
-    return null;
-  if (b.minor > a.minor)
-    return "minor";
-  if (b.minor < a.minor)
-    return null;
-  if (b.patch > a.patch)
-    return "patch";
-  return null;
-}
-function decideAutoUpdate(input2) {
-  const { currentVersion, latestVersion, policy, currentVersionDeprecated } = input2;
-  if (!latestVersion) {
-    return { shouldUpdate: false, bump: null, reason: "no latest version available", deprecationOverride: false };
-  }
-  const bump = classifyBump(currentVersion, latestVersion);
-  if (!bump) {
-    return { shouldUpdate: false, bump: null, reason: "already at or above latest", deprecationOverride: false };
-  }
-  const policyAllows = POLICY_RANK[policy] >= BUMP_RANK[bump];
-  if (policyAllows) {
-    return {
-      shouldUpdate: true,
-      bump,
-      reason: `policy '${policy}' permits ${bump} bump`,
-      deprecationOverride: false
-    };
-  }
-  if (currentVersionDeprecated && bump === "patch" && policy !== "off") {
-    return {
-      shouldUpdate: true,
-      bump,
-      reason: `installed ${currentVersion} is deprecated; security override forces patch upgrade despite policy '${policy}'`,
-      deprecationOverride: true
-    };
-  }
-  return {
-    shouldUpdate: false,
-    bump,
-    reason: `policy '${policy}' does not permit ${bump} bump`,
-    deprecationOverride: false
-  };
-}
-function parseInstalledGlobalVersion(raw) {
-  const parsed = JSON.parse(raw);
-  return parsed.dependencies?.["@pcircle/memesh"]?.version ?? null;
-}
-function getInstalledGlobalVersion(options = {}) {
-  const { execFileSyncImpl = execFileSync6, readbackTimeoutMs = DEFAULT_READBACK_TIMEOUT_MS } = options;
-  try {
-    const raw = execFileSyncImpl("npm", ["ls", "-g", "@pcircle/memesh", "--json", "--depth=0"], { encoding: "utf8", timeout: readbackTimeoutMs });
-    return parseInstalledGlobalVersion(raw);
-  } catch {
-    return null;
-  }
-}
-function runGlobalUpdate(latestVersion, options = {}) {
-  const { execFileSyncImpl = execFileSync6, installTimeoutMs = DEFAULT_INSTALL_TIMEOUT_MS, readbackTimeoutMs = DEFAULT_READBACK_TIMEOUT_MS } = options;
-  if (!EXACT_VERSION_RE.test(latestVersion)) {
-    throw new Error(`refusing non-exact npm version target: ${latestVersion}`);
-  }
-  execFileSyncImpl("npm", ["install", "-g", `@pcircle/memesh@${latestVersion}`], { stdio: "inherit", timeout: installTimeoutMs });
-  const installedVersion = getInstalledGlobalVersion({ execFileSyncImpl, readbackTimeoutMs });
-  if (installedVersion !== latestVersion) {
-    if (installedVersion) {
-      throw new Error(`expected ${latestVersion}, but npm reports ${installedVersion} is installed`);
-    }
-    throw new Error("npm did not report a global @pcircle/memesh installation after update");
-  }
-  return { installedVersion };
-}
-var DEFAULT_INSTALL_TIMEOUT_MS, DEFAULT_READBACK_TIMEOUT_MS, EXACT_VERSION_RE, VALID_AUTO_UPDATE_POLICIES, POLICY_RANK, BUMP_RANK;
-var init_updater = __esm({
-  "dist/core/updater.js"() {
-    "use strict";
-    DEFAULT_INSTALL_TIMEOUT_MS = 8 * 60 * 1e3;
-    DEFAULT_READBACK_TIMEOUT_MS = 30 * 1e3;
-    EXACT_VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
-    VALID_AUTO_UPDATE_POLICIES = /* @__PURE__ */ new Set([
-      "off",
-      "patch",
-      "minor",
-      "major"
-    ]);
-    POLICY_RANK = {
-      off: 0,
-      patch: 1,
-      minor: 2,
-      major: 3
-    };
-    BUMP_RANK = {
-      patch: 1,
-      minor: 2,
-      major: 3
-    };
-  }
-});
-
 // dist/core/install-id.js
 var install_id_exports = {};
 __export(install_id_exports, {
   getInstallId: () => getInstallId,
   getInstallRecord: () => getInstallRecord
 });
-import fs19 from "fs";
-import path16 from "path";
+import fs22 from "fs";
+import path19 from "path";
 import { randomUUID as randomUUID5 } from "crypto";
 function installFilePath() {
-  return path16.join(memeshDir(), "install.json");
+  return path19.join(memeshDir(), "install.json");
 }
 function getInstallRecord() {
   const filePath = installFilePath();
   try {
-    if (fs19.existsSync(filePath)) {
-      const raw = fs19.readFileSync(filePath, "utf8");
+    if (fs22.existsSync(filePath)) {
+      const raw = fs22.readFileSync(filePath, "utf8");
       const parsed = JSON.parse(raw);
       if (typeof parsed.install_id === "string" && parsed.install_id.length > 0) {
         return {
@@ -61709,9 +63840,9 @@ function getInstallRecord() {
     schema_version: SCHEMA_VERSION
   };
   try {
-    fs19.mkdirSync(path16.dirname(filePath), { recursive: true });
-    removeGroupAndOtherAccess(path16.dirname(filePath));
-    fs19.writeFileSync(filePath, JSON.stringify(record2, null, 2), { encoding: "utf8", mode: 384 });
+    fs22.mkdirSync(path19.dirname(filePath), { recursive: true });
+    removeGroupAndOtherAccess(path19.dirname(filePath));
+    fs22.writeFileSync(filePath, JSON.stringify(record2, null, 2), { encoding: "utf8", mode: 384 });
     removeGroupAndOtherAccess(filePath);
   } catch {
   }
@@ -62218,11 +64349,11 @@ __export(doctor_exports, {
   runDoctor: () => runDoctor,
   satisfiesMinimumNodeRange: () => satisfiesMinimumNodeRange
 });
-import fs20 from "fs";
-import os2 from "os";
-import path17 from "path";
+import fs23 from "fs";
+import os3 from "os";
+import path20 from "path";
 import net2 from "node:net";
-import { createHash as createHash12 } from "crypto";
+import { createHash as createHash14 } from "crypto";
 import { createRequire as createRequire2 } from "module";
 import { execFileSync as execFileSync7 } from "child_process";
 function countH2Headings(content) {
@@ -62242,7 +64373,7 @@ function countH2Headings(content) {
   return n;
 }
 function inspectLocaleReadmeParity(packageRoot3, existsSyncImpl, readFileSyncImpl) {
-  const englishPath = path17.join(packageRoot3, "README.md");
+  const englishPath = path20.join(packageRoot3, "README.md");
   if (!existsSyncImpl(englishPath)) {
     return createCheck("readme_locale_parity", "README locale parity", "pass", "README.md not present in this install; locale-parity check skipped.");
   }
@@ -62252,14 +64383,14 @@ function inspectLocaleReadmeParity(packageRoot3, existsSyncImpl, readFileSyncImp
   } catch (err) {
     return createCheck("readme_locale_parity", "README locale parity", "warn", `Could not read README.md: ${err instanceof Error ? err.message : String(err)}`, void 0, { code: "readme-parity.unreadable", params: { detail: err instanceof Error ? err.message : String(err) } });
   }
-  const present = LOCALE_README_FILES.filter((filename) => existsSyncImpl(path17.join(packageRoot3, filename)));
+  const present = LOCALE_README_FILES.filter((filename) => existsSyncImpl(path20.join(packageRoot3, filename)));
   if (present.length === 0) {
     return createCheck("readme_locale_parity", "README locale parity", "pass", "No locale README in this install; locale-parity check skipped.");
   }
   const drift = [];
   for (const filename of present) {
     try {
-      const count = countH2Headings(readFileSyncImpl(path17.join(packageRoot3, filename), "utf8"));
+      const count = countH2Headings(readFileSyncImpl(path20.join(packageRoot3, filename), "utf8"));
       if (Math.abs(count - englishCount) > LOCALE_H2_TOLERANCE) {
         drift.push({ name: filename, count });
       }
@@ -62373,7 +64504,7 @@ function inspectProjectIdentitySplit(db2) {
 function inspectCodexSessionSetup(codexPluginCacheDetected, existsSyncImpl) {
   if (!codexPluginCacheDetected)
     return null;
-  const configPath = path17.join(getMemeshDirFromDbPath(), "hosts", "codex-session.json");
+  const configPath = path20.join(getMemeshDirFromDbPath(), "hosts", "codex-session.json");
   if (existsSyncImpl(configPath)) {
     return createInfo("codex-session-setup", "Codex ordinary-session notifications", "A Codex identity override file is present and will be validated at SessionStart. A valid override applies only in its configured workspace; other Codex plugin sessions use automatic thread-scoped identities. A cached plugin copy does not prove a live registration; use `memesh message discover --project <project>` to read current presence.");
   }
@@ -62441,7 +64572,7 @@ function inspectConfigFile(existsSyncImpl, readFileSyncImpl, getConfigPathImpl) 
   }
 }
 function declaredMcpManifest(packageRoot3, readFileSyncImpl) {
-  const parsed = parseJsonFile(path17.join(packageRoot3, ".claude-plugin", "plugin.json"), readFileSyncImpl);
+  const parsed = parseJsonFile(path20.join(packageRoot3, ".claude-plugin", "plugin.json"), readFileSyncImpl);
   if (!parsed.ok)
     return null;
   const declared = parsed.value.mcpServers;
@@ -62455,7 +64586,7 @@ function inspectMcpConfig(packageRoot3, installChannel, existsSyncImpl, readFile
     return createCheck("mcp-config", "MCP config", "fail", ".claude-plugin/plugin.json declares no `mcpServers` path, so Claude Code has no MeMesh MCP server to start.", "Reinstall MeMesh so the plugin manifest and the MCP manifest it names are both restored.", { code: "mcp-config.missing" });
   }
   const label = relativeManifest;
-  const mcpPath = path17.join(packageRoot3, relativeManifest);
+  const mcpPath = path20.join(packageRoot3, relativeManifest);
   if (!existsSyncImpl(mcpPath)) {
     return createCheck("mcp-config", "MCP config", "fail", `${label} is missing.`, "Reinstall MeMesh so the plugin manifest and the MCP manifest it names are both restored.", { code: "mcp-config.missing" });
   }
@@ -62474,7 +64605,7 @@ function inspectMcpConfig(packageRoot3, installChannel, existsSyncImpl, readFile
     if (entry.includes(MCP_PLACEHOLDER) && pluginRoot === null) {
       return createCheck("mcp-config", "MCP config", "warn", `${label} starts \`${entry}\`. NOT VERIFIED: \`${MCP_PLACEHOLDER}\` is substituted by the Claude Code plugin runtime, and this is a ${installChannel} install with CLAUDE_PLUGIN_ROOT unset \u2014 so the file it names was not checked.`, `Verify it the way the plugin runtime would: CLAUDE_PLUGIN_ROOT=${shellQuote(packageRoot3)} memesh doctor`, { code: "mcp-config.placeholder-unresolved", params: { entry, channel: installChannel } });
     }
-    const resolved = pluginRoot === null ? path17.resolve(packageRoot3, entry) : path17.resolve(entry.replaceAll(MCP_PLACEHOLDER, pluginRoot));
+    const resolved = pluginRoot === null ? path20.resolve(packageRoot3, entry) : path20.resolve(entry.replaceAll(MCP_PLACEHOLDER, pluginRoot));
     if (!existsSyncImpl(resolved)) {
       return createCheck("mcp-config", "MCP config", "fail", `${label} starts \`${entry}\`, and that file is not in this install \u2014 so every memesh MCP tool fails to start.`, `Reinstall MeMesh; if you edited \`${label}\` by hand, point it back at \`${MCP_PLACEHOLDER}/dist/mcp/server.js\`.`, { code: "mcp-config.entry-missing", params: { entry, resolved } });
     }
@@ -62496,14 +64627,14 @@ function extractHookScriptPaths(hooksConfig, packageRoot3) {
         if (typeof hook.command !== "string")
           continue;
         const command = hook.command.replace("${CLAUDE_PLUGIN_ROOT}/", "");
-        scripts.add(path17.join(packageRoot3, command));
+        scripts.add(path20.join(packageRoot3, command));
       }
     }
   }
   return Array.from(scripts).sort();
 }
 function inspectHooksConfig(packageRoot3, platform, existsSyncImpl, readFileSyncImpl, statSyncImpl) {
-  const hooksPath = path17.join(packageRoot3, "hooks", "hooks.json");
+  const hooksPath = path20.join(packageRoot3, "hooks", "hooks.json");
   if (!existsSyncImpl(hooksPath)) {
     return [
       createCheck("hooks-config", "Hooks config", "fail", "hooks/hooks.json is missing.", "Restore `hooks/hooks.json` from the package or reinstall MeMesh.", { code: "hooks-config.missing" })
@@ -62530,7 +64661,7 @@ function inspectHooksConfig(packageRoot3, platform, existsSyncImpl, readFileSync
   if (missingScripts.length > 0) {
     return [
       configCheck,
-      createCheck("hook-scripts", "Hook scripts", "fail", `Missing hook scripts: ${missingScripts.map((entry) => path17.relative(packageRoot3, entry)).join(", ")}.`, "Restore the missing files from the package or reinstall MeMesh.", { code: "hook-scripts.missing", params: { files: missingScripts.map((entry) => path17.relative(packageRoot3, entry)).join(", ") } })
+      createCheck("hook-scripts", "Hook scripts", "fail", `Missing hook scripts: ${missingScripts.map((entry) => path20.relative(packageRoot3, entry)).join(", ")}.`, "Restore the missing files from the package or reinstall MeMesh.", { code: "hook-scripts.missing", params: { files: missingScripts.map((entry) => path20.relative(packageRoot3, entry)).join(", ") } })
     ];
   }
   if (platform !== "win32") {
@@ -62541,7 +64672,7 @@ function inspectHooksConfig(packageRoot3, platform, existsSyncImpl, readFileSync
     if (nonExecutable.length > 0) {
       return [
         configCheck,
-        createCheck("hook-scripts", "Hook scripts", "fail", `Hook scripts are not executable: ${nonExecutable.map((entry) => path17.relative(packageRoot3, entry)).join(", ")}.`, "Run `npm run build` from the repo checkout or `chmod +x scripts/hooks/*.js` for a local repair.", { code: "hook-scripts.not-executable", params: { files: nonExecutable.map((entry) => path17.relative(packageRoot3, entry)).join(", ") } })
+        createCheck("hook-scripts", "Hook scripts", "fail", `Hook scripts are not executable: ${nonExecutable.map((entry) => path20.relative(packageRoot3, entry)).join(", ")}.`, "Run `npm run build` from the repo checkout or `chmod +x scripts/hooks/*.js` for a local repair.", { code: "hook-scripts.not-executable", params: { files: nonExecutable.map((entry) => path20.relative(packageRoot3, entry)).join(", ") } })
       ];
     }
   }
@@ -62551,7 +64682,7 @@ function inspectHooksConfig(packageRoot3, platform, existsSyncImpl, readFileSync
   ];
 }
 function inspectHookWiring(existsSyncImpl, readFileSyncImpl, memeshDir3, installChannel, installedPluginsPath, pluginHost) {
-  const markerPath = path17.join(memeshDir3, "install-hooks.json");
+  const markerPath = path20.join(memeshDir3, "install-hooks.json");
   if (!existsSyncImpl(markerPath)) {
     if (installChannel === "plugin-marketplace") {
       const runtime = pluginHost === "codex" ? "Codex CLI" : "Claude Code";
@@ -62597,7 +64728,7 @@ function inspectHookWiring(existsSyncImpl, readFileSyncImpl, memeshDir3, install
           hasMemeshHook = true;
           if (CAPTURE_EVENTS.has(event))
             hasCaptureHook = true;
-          if (missingScript === null && typeof cmd.command === "string" && path17.isAbsolute(cmd.command) && !existsSyncImpl(cmd.command)) {
+          if (missingScript === null && typeof cmd.command === "string" && path20.isAbsolute(cmd.command) && !existsSyncImpl(cmd.command)) {
             missingScript = cmd.command;
           }
         }
@@ -62615,7 +64746,7 @@ function inspectHookWiring(existsSyncImpl, readFileSyncImpl, memeshDir3, install
   }
   return createCheck("hook-wiring", "Hooks wired into Claude Code", "pass", `Wired in ${marker.settings_path} (scope: ${marker.scope ?? "user"}, version: ${marker.version ?? "unknown"}).`, void 0, { params: { captureWired: hasCaptureHook ? 1 : 0 } });
 }
-function inspectHookActivity(openDatabaseImpl, closeDatabaseImpl, existsSyncImpl = fs20.existsSync, statSyncImpl = fs20.statSync, wiringPresent = true) {
+function inspectHookActivity(openDatabaseImpl, closeDatabaseImpl, existsSyncImpl = fs23.existsSync, statSyncImpl = fs23.statSync, wiringPresent = true) {
   const TITLE = "Hook activity";
   const captureOff = autoCaptureOffSource();
   if (captureOff === "config") {
@@ -62685,7 +64816,7 @@ function inspectHookActivity(openDatabaseImpl, closeDatabaseImpl, existsSyncImpl
     if (measuringHours === null || measuringHours < 24) {
       return createCheck("hook-activity", TITLE, "pass", "Hook-run tracking has only just started on this database \u2014 the first work session will fill it in.");
     }
-    const markerPath = path17.join(memeshDir(), "install-hooks.json");
+    const markerPath = path20.join(memeshDir(), "install-hooks.json");
     if (existsSyncImpl(markerPath)) {
       try {
         if (Date.now() - statSyncImpl(markerPath).mtimeMs < 24 * 60 * 60 * 1e3) {
@@ -62744,7 +64875,7 @@ function withRecordedHosts(result) {
     return result;
   return { ...result, check: { ...result.check, summary: `${result.check.summary} Hosts recorded: ${hostsSeen.join(", ")}.` } };
 }
-function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyncImpl = fs20.readFileSync, memeshDirImpl = getMemeshDirFromDbPath, captureWired = true) {
+function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyncImpl = fs23.readFileSync, memeshDirImpl = getMemeshDirFromDbPath, captureWired = true) {
   const TITLE = "Capture liveness";
   if (autoCaptureOffSource() !== null) {
     return {
@@ -62753,7 +64884,7 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
   }
   let raw;
   try {
-    raw = readFileSyncImpl(path17.join(memeshDirImpl(), HOOK_OUTCOMES_FILENAME), "utf8");
+    raw = readFileSyncImpl(path20.join(memeshDirImpl(), HOOK_OUTCOMES_FILENAME), "utf8");
   } catch {
     raw = null;
   }
@@ -62960,7 +65091,7 @@ function inspectNodeRuntime(packageRoot3, existsSyncImpl, readFileSyncImpl, node
   const facts = `Node ${nodeVersion} (ABI ${moduleAbi}, ${process.platform}/${process.arch}). Built-in node:sqlite: ${hasNodeSqliteImpl() ? "available" : "not available"}.`;
   let declared;
   try {
-    const pkgPath = path17.join(packageRoot3, "package.json");
+    const pkgPath = path20.join(packageRoot3, "package.json");
     if (existsSyncImpl(pkgPath)) {
       const parsed = JSON.parse(String(readFileSyncImpl(pkgPath, "utf8")));
       if (typeof parsed.engines?.node === "string")
@@ -62992,16 +65123,16 @@ function inspectNativeBinding(packageRoot3, _existsSyncImpl, probeImpl = default
   const result = probeImpl(packageRoot3);
   return result.ok ? createCheck("native-binding", "SQLite", "pass", "node:sqlite opened a database (probe succeeded).") : createCheck("native-binding", "SQLite", "fail", `SQLite could not open a database: ${result.message}`, "Check the Node runtime and reinstall if necessary.", { code: "native-binding.load-failed", params: { detail: result.message, root: packageRoot3 } });
 }
-function readVersionFromInstalledBinary(binaryPath, existsSyncImpl, readFileSyncImpl, realpathSyncImpl = fs20.realpathSync) {
+function readVersionFromInstalledBinary(binaryPath, existsSyncImpl, readFileSyncImpl, realpathSyncImpl = fs23.realpathSync) {
   let resolved;
   try {
     resolved = realpathSyncImpl(binaryPath);
   } catch {
     resolved = binaryPath;
   }
-  let dir = path17.dirname(resolved);
+  let dir = path20.dirname(resolved);
   for (let depth = 0; depth < 8; depth += 1) {
-    const pkgPath = path17.join(dir, "package.json");
+    const pkgPath = path20.join(dir, "package.json");
     if (existsSyncImpl(pkgPath)) {
       const parsed = parseJsonFile(pkgPath, readFileSyncImpl);
       if (!parsed.ok)
@@ -63009,7 +65140,7 @@ function readVersionFromInstalledBinary(binaryPath, existsSyncImpl, readFileSync
       const { name, version: version2 } = parsed.value;
       return name === "@pcircle/memesh" && typeof version2 === "string" ? version2 : null;
     }
-    const parent = path17.dirname(dir);
+    const parent = path20.dirname(dir);
     if (parent === dir)
       return null;
     dir = parent;
@@ -63018,7 +65149,7 @@ function readVersionFromInstalledBinary(binaryPath, existsSyncImpl, readFileSync
 }
 function inspectShellCli(installChannel, packageRoot3, packageVersion2, resolveShellMemeshImpl, existsSyncImpl, readFileSyncImpl) {
   const shellPath = resolveShellMemeshImpl();
-  const isSameAsCurrent = shellPath ? path17.resolve(shellPath).startsWith(path17.resolve(packageRoot3)) : false;
+  const isSameAsCurrent = shellPath ? path20.resolve(shellPath).startsWith(path20.resolve(packageRoot3)) : false;
   const hasDistinctShellCli = !!shellPath && !isSameAsCurrent;
   if (installChannel === "npm-global") {
     return createCheck("shell-cli", "Shell CLI on PATH", "pass", shellPath ? `\`memesh\` resolves to ${shellPath} (npm-global install \u2014 terminals across the machine pick it up).` : "Running from npm-global install \u2014 shell access available in this terminal.");
@@ -63043,9 +65174,9 @@ function inspectShellCli(installChannel, packageRoot3, packageVersion2, resolveS
 function defaultMarketplaceHeadSha(host) {
   if (host === "codex") {
     const codexHome = pluginHostConfigRoot("codex");
-    return readCodexInstallRevision(path17.join(codexHome, ".tmp", "marketplaces", "pcircle-memesh"), fs20.readFileSync);
+    return readCodexInstallRevision(path20.join(codexHome, ".tmp", "marketplaces", "pcircle-memesh"), fs23.readFileSync);
   }
-  const dir = path17.join(pluginHostConfigRoot("claude-code"), "plugins", "marketplaces", "pcircle-memesh");
+  const dir = path20.join(pluginHostConfigRoot("claude-code"), "plugins", "marketplaces", "pcircle-memesh");
   try {
     const out = execFileSync7("git", ["-C", dir, "rev-parse", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
     return /^[0-9a-f]{40}$/.test(out) ? out : null;
@@ -63054,7 +65185,7 @@ function defaultMarketplaceHeadSha(host) {
   }
 }
 function readCodexInstallRevision(root, readFileSyncImpl) {
-  const parsed = parseJsonFile(path17.join(root, ".codex-marketplace-install.json"), readFileSyncImpl);
+  const parsed = parseJsonFile(path20.join(root, ".codex-marketplace-install.json"), readFileSyncImpl);
   if (!parsed.ok)
     return null;
   const rev = parsed.value.revision;
@@ -63063,7 +65194,7 @@ function readCodexInstallRevision(root, readFileSyncImpl) {
 function pluginCacheUnverifiable(host, missing) {
   const hostLabel = host === "codex" ? "Codex" : "Claude Code";
   const command = PLUGIN_REFRESH_COMMANDS[host];
-  return createCheck("plugin-cache", `Plugin cache source record is current (${hostLabel})`, "warn", `Could not tell whether the plugin cache matches the marketplace: ${missing}. The version alone cannot answer this \u2014 two builds can carry the same version.`, `Run \`${command}\` \u2014 it re-stages the cache from the marketplace and records the commit, after which this check can answer.`, { code: "plugin-cache.unverifiable", params: { host: hostLabel, command } }, "plugin-cache-refresh");
+  return createCheck("plugin-cache", `Plugin cache source record is current (${hostLabel})`, "warn", `Could not tell whether the plugin cache matches the marketplace: ${missing}. The version alone cannot answer this \u2014 two builds can carry the same version.`, `Run \`${command}\` \u2014 it puts this version back through the same checks an update takes (source check, database backup) and records the commit, after which this check can answer.`, { code: "plugin-cache.unverifiable", params: { host: hostLabel, command } }, "plugin-cache-refresh");
 }
 function readClaudePluginEntries(registryPath, readFileSyncImpl, existsSyncImpl) {
   if (!existsSyncImpl(registryPath)) {
@@ -63084,9 +65215,9 @@ function readClaudePluginEntries(registryPath, readFileSyncImpl, existsSyncImpl)
 }
 function defaultPluginCacheDiscovery(readFileSyncImpl, existsSyncImpl) {
   const discovered = [];
-  const claudeConfigRoot = pluginHostConfigRoot("claude-code");
-  const claudeRegistry = path17.join(claudeConfigRoot, "plugins", "installed_plugins.json");
-  const claudeCacheRoot = path17.join(claudeConfigRoot, "plugins", "cache", "pcircle-memesh", "memesh");
+  const claudeConfigRoot2 = pluginHostConfigRoot("claude-code");
+  const claudeRegistry = path20.join(claudeConfigRoot2, "plugins", "installed_plugins.json");
+  const claudeCacheRoot = path20.join(claudeConfigRoot2, "plugins", "cache", "pcircle-memesh", "memesh");
   const registry2 = readClaudePluginEntries(claudeRegistry, readFileSyncImpl, existsSyncImpl);
   const entries = registry2.entries;
   if (registry2.malformed) {
@@ -63101,18 +65232,18 @@ function defaultPluginCacheDiscovery(readFileSyncImpl, existsSyncImpl) {
     for (const entry of entries) {
       const recordedInstallPath = typeof entry.installPath === "string" && entry.installPath.length > 0 ? entry.installPath : null;
       const installPath = recordedInstallPath ?? claudeCacheRoot;
-      const cache = {
+      const cache2 = {
         host: "claude-code",
         packageRoot: installPath,
         installedPluginsPath: claudeRegistry,
         ...!recordedInstallPath ? { unverifiableReason: "an installed_plugins.json entry has no usable installPath" } : !existsSyncImpl(installPath) ? { unverifiableReason: `the recorded plugin cache does not exist at ${installPath}` } : {}
       };
-      const rootKey = path17.resolve(installPath);
+      const rootKey = path20.resolve(installPath);
       const existing = cachesByRoot.get(rootKey);
       if (!existing)
-        cachesByRoot.set(rootKey, cache);
-      else if (!existing.unverifiableReason && cache.unverifiableReason) {
-        existing.unverifiableReason = cache.unverifiableReason;
+        cachesByRoot.set(rootKey, cache2);
+      else if (!existing.unverifiableReason && cache2.unverifiableReason) {
+        existing.unverifiableReason = cache2.unverifiableReason;
       }
     }
     discovered.push(...cachesByRoot.values());
@@ -63139,7 +65270,7 @@ function defaultPluginCacheDiscovery(readFileSyncImpl, existsSyncImpl) {
     }
   }
   const codexHome = pluginHostConfigRoot("codex");
-  const codexCacheRoot = path17.join(codexHome, "plugins", "cache", "pcircle-memesh", "memesh");
+  const codexCacheRoot = path20.join(codexHome, "plugins", "cache", "pcircle-memesh", "memesh");
   const codexRoots = versionedPluginCacheRoots(codexCacheRoot);
   if (codexRoots.length === 1) {
     discovered.push({ host: "codex", packageRoot: codexRoots[0] });
@@ -63160,18 +65291,20 @@ function inspectPluginCacheCurrency(installChannel, pluginHost, packageRoot3, in
   const command = PLUGIN_REFRESH_COMMANDS[host];
   let installedSha;
   let installedMissing;
+  let recordedVersion = null;
   if (host === "codex") {
     installedSha = readCodexInstallRevision(packageRoot3, readFileSyncImpl);
     installedMissing = "the plugin cache carries no readable .codex-marketplace-install.json revision";
   } else {
-    const registryPath = installedPluginsPath ?? path17.join(pluginHostConfigRoot("claude-code"), "plugins", "installed_plugins.json");
+    const registryPath = installedPluginsPath ?? path20.join(pluginHostConfigRoot("claude-code"), "plugins", "installed_plugins.json");
     const registry2 = readClaudePluginEntries(registryPath, readFileSyncImpl, existsSyncImpl);
     const entries = registry2.entries;
-    const here = path17.resolve(packageRoot3);
-    const matching = entries.filter((e) => typeof e?.installPath === "string" && path17.resolve(e.installPath) === here);
+    const here = path20.resolve(packageRoot3);
+    const matching = entries.filter((e) => typeof e?.installPath === "string" && path20.resolve(e.installPath) === here);
     const soleEntry = entries.length === 1 ? entries[0] : void 0;
     const soleEntryHasPath = typeof soleEntry?.installPath === "string" && soleEntry.installPath.length > 0;
     const entry = matching.length === 1 ? matching[0] : void 0;
+    recordedVersion = typeof entry?.version === "string" ? entry.version : null;
     installedSha = !registry2.malformed && typeof entry?.gitCommitSha === "string" && /^[0-9a-f]{40}$/.test(entry.gitCommitSha) ? entry.gitCommitSha : null;
     if (!registry2.exists) {
       installedMissing = `installed_plugins.json does not exist at ${registryPath}`;
@@ -63203,27 +65336,36 @@ function inspectPluginCacheCurrency(installChannel, pluginHost, packageRoot3, in
   if (installedSha === marketplaceSha) {
     return createCheck("plugin-cache", `Plugin cache source record is current (${hostLabel})`, "pass", `The plugin cache records marketplace commit ${marketplaceSha.slice(0, 8)}, which matches the current marketplace snapshot.`);
   }
-  return createCheck("plugin-cache", `Plugin cache source record is current (${hostLabel})`, "warn", `The plugin cache records commit ${installedSha.slice(0, 8)}, but the marketplace has moved to ${marketplaceSha.slice(0, 8)} under the same version \u2014 ${hostLabel} does not normally refresh a cache whose version did not change, so refresh the cache before relying on the newer marketplace code.`, `Run \`${command}\` to refresh the cache in place, then restart ${hostLabel}.`, { code: "plugin-cache.stale", params: { installed: installedSha.slice(0, 8), marketplace: marketplaceSha.slice(0, 8), host: hostLabel, command } }, "plugin-cache-refresh");
+  const params = { installed: installedSha.slice(0, 8), marketplace: marketplaceSha.slice(0, 8), host: hostLabel, command };
+  let runningVersion = null;
+  try {
+    runningVersion = JSON.parse(readFileSyncImpl(path20.join(packageRoot3, "package.json"), "utf8")).version ?? null;
+  } catch {
+  }
+  if (recordedVersion !== null && typeof runningVersion === "string" && recordedVersion !== runningVersion) {
+    return createCheck("plugin-cache", `Plugin cache source record is current (${hostLabel})`, "warn", `${hostLabel}'s record says version ${recordedVersion} is installed from commit ${installedSha.slice(0, 8)}, but the plugin running here is ${runningVersion}: the cache and the record disagree.`, "Run `memesh update --reinstall`: it puts the verified release back (source check, commit on main, pinned dependencies, read-back) and rewrites the record.", { code: "plugin-cache.stale", params });
+  }
+  return createCheck("plugin-cache", `Plugin cache source record is current (${hostLabel})`, "pass", `The plugin cache records commit ${installedSha.slice(0, 8)}; the ${hostLabel} marketplace has since moved to ${marketplaceSha.slice(0, 8)}. The installed plugin stays on the release MeMesh verified: the marketplace branch is ahead of the last release, and its newer code has not been checked. Nothing to do; \`memesh update\` moves to the next release when one is published.`, void 0, { code: "plugin-cache.behind-marketplace", params });
 }
 function isClaudeChannelCommand(command) {
   if (command === "memesh-host-claude")
     return true;
-  if (typeof command !== "string" || !path17.isAbsolute(command) || path17.basename(command) !== "memesh-host-claude") {
+  if (typeof command !== "string" || !path20.isAbsolute(command) || path20.basename(command) !== "memesh-host-claude") {
     return false;
   }
   try {
-    const target = fs20.realpathSync(command);
-    const stat = fs20.statSync(target);
+    const target = fs23.realpathSync(command);
+    const stat = fs23.statSync(target);
     if (!stat.isFile())
       return false;
-    fs20.accessSync(target, fs20.constants.X_OK);
+    fs23.accessSync(target, fs23.constants.X_OK);
     return true;
   } catch {
     return false;
   }
 }
 function inspectClaudeChannelRegistration(existsSyncImpl, readFileSyncImpl) {
-  const configPath = path17.join(homeDir(), ".claude.json");
+  const configPath = path20.join(homeDir(), ".claude.json");
   let parsed = null;
   if (existsSyncImpl(configPath)) {
     try {
@@ -63276,6 +65418,61 @@ function isFreshInstall() {
   } catch {
     return false;
   }
+}
+function inspectAutoUpdate(installSupport) {
+  const policy = currentPolicy();
+  const cannotSelfUpdate = installSupport !== void 0 && !installSupport.canSelfUpdate;
+  const setting = policy.policy === "off" ? `off (${policy.reason ?? "policy is off"})` : cannotSelfUpdate ? `on in the settings, but this install (${installSupport.label}) cannot update itself, so nothing is installed. ${installSupport.guidance}` : `on for ${policy.policy === "major" ? "every version" : `${policy.policy} versions and below`}; it installs after running sessions end (waiting at most 3 days, after which sessions still open may use the new files before they restart)`;
+  const dataDir = getMemeshDirFromDbPath();
+  const read = inspectAutoUpdateState(dataDir);
+  const installing2 = readInstalling(dataDir);
+  if (installing2 && !installing2.running) {
+    return createCheck("auto-update", "Automatic updates", "warn", `Automatic updates are ${setting}. An update from ${installing2.marker.from} to ${installing2.marker.to} began its install at ${installing2.marker.at}, and the process that ran it is gone without recording a result, so the install may be half done.`, `Put this version back through the same checks with \`memesh update --reinstall\` (a database backup was made before the install began: see ${path20.join(dataDir, "backups")}). Details: ${path20.join(dataDir, "auto-update.log")}.`, { code: "auto-update.interrupted" });
+  }
+  const holder = describeLockHolder(dataDir);
+  if (holder && !holder.running) {
+    return createCheck("auto-update", "Automatic updates", "warn", `Automatic updates are ${setting}. The update lock was left behind by a ${holder.label === "manual" ? "manual" : "automatic"} update (pid ${holder.pid}, started ${holder.startedAt}) that is no longer running.`, `Nothing to do: the next update attempt takes the lock over about 2 minutes after its owner is found gone. Details: ${path20.join(dataDir, "auto-update.log")}.`, { code: "auto-update.lock-orphan" });
+  }
+  const running = installing2?.running ? ` An install to ${installing2.marker.to} is running now (since ${installing2.marker.at}).` : holder?.running ? ` An update is running now (started ${holder.startedAt}, ${holder.label === "manual" ? "by hand" : "automatic"}).` : "";
+  if (read.kind === "unreadable") {
+    return createCheck("auto-update", "Automatic updates", "warn", `Automatic updates are ${setting}. The record of the last attempt cannot be read (${read.detail}), so it is not known whether one ran or failed.`, `Look at ${path20.join(dataDir, "auto-update-state.json")} and ${path20.join(dataDir, "auto-update.log")}; removing the damaged record (a file, or a directory that is in its place) is safe: the next attempt writes a new one.`, { code: "auto-update.state-unreadable" });
+  }
+  if (read.kind === "absent") {
+    return createCheck("auto-update", "Automatic updates", "pass", `Automatic updates are ${setting}. No attempt has run yet.${running}`);
+  }
+  const state = read.state;
+  const waitedDays = state.outcome === "waiting" && state.waitingSince ? Math.floor((Date.now() - Date.parse(state.waitingSince)) / 864e5) : null;
+  const hermesResults = Array.isArray(state.hermes) ? state.hermes : [];
+  const hermesNotes = hermesResults.map((h) => ` Hermes provider at ${h.path}: ${h.outcome} \u2014 ${h.reason}.`).join("");
+  const what = `Last attempt ${state.at}: ${state.outcome} \u2014 ${state.reason}${state.to ? ` (${state.from ?? "?"} \u2192 ${state.to})` : ""}${waitedDays !== null && waitedDays >= 0 ? `; waiting for ${waitedDays} day(s) of the 3 allowed` : ""}.${hermesNotes}${state.notice ? ` Note: ${state.notice}.` : ""}${running}`;
+  const logPath = path20.join(dataDir, "auto-update.log");
+  const hermesAdvice = `To put the Hermes provider in place by hand: \`memesh hermes install\` (add \`--path <dir>\` for a copy outside the default place; a directory MeMesh did not install is only replaced with \`--force\`, and is saved first). Read ${logPath} for the reason.`;
+  if (waitedDays !== null && waitedDays >= 3) {
+    return createCheck("auto-update", "Automatic updates", "warn", `Automatic updates are ${setting}. ${what}`, `The wait for running sessions is limited to 3 days, so the update should have installed by now: its runner is probably not running. Update now with \`${installSupport?.recommendedCommand ?? "memesh update"}\` (it does not wait for sessions); read ${logPath} for what the runner said.`, { code: "auto-update.wait-overdue" });
+  }
+  if (state.reason === AUTO_UPDATE_REASONS.installedAfterWait) {
+    return createCheck("auto-update", "Automatic updates", "warn", `Automatic updates are ${setting}. ${what}`, `Restart the sessions that were open during the update so they run the new version together with their hooks.${hermesResults.some((h) => h.outcome === "failed") ? ` ${hermesAdvice}` : ""}`, { code: "auto-update.mixed-versions" });
+  }
+  if (hermesResults.some((h) => h.outcome === "failed")) {
+    return createCheck("auto-update", "Automatic updates", "warn", `Automatic updates are ${setting}. ${what}`, hermesAdvice, { code: "auto-update.hermes-failed" });
+  }
+  if (state.reason === AUTO_UPDATE_REASONS.codexMarketplaceMissing) {
+    return createCheck("auto-update", "Automatic updates", "warn", `Automatic updates are ${setting}. ${what}`, "The Codex marketplace pcircle-memesh is not in config.toml, and MeMesh did not remove it, so it is taken as removed on purpose and the Codex plugin is not being updated. If that was on purpose, nothing to do. To get it back, pinned to the verified release: `memesh update --reinstall`.", { code: "auto-update.codex-marketplace-missing" });
+  }
+  if (state.reason === AUTO_UPDATE_REASONS.codexRestoreFailed) {
+    return createCheck("auto-update", "Automatic updates", "warn", `Automatic updates are ${setting}. ${what}`, "An update removed the Codex marketplace pcircle-memesh and then failed before it could put it back: it is missing because of that update, not because you removed it. The next automatic run puts it back while config.toml is unchanged; to do it now: `codex plugin marketplace add PCIRCLE-AI/memesh`, then `memesh update --reinstall`.", { code: "auto-update.codex-restore-failed" });
+  }
+  if (state.reason === AUTO_UPDATE_REASONS.dependencyPinFailed) {
+    return createCheck("auto-update", "Automatic updates", "warn", `Automatic updates are ${setting}. ${what}`, `The update was undone and ${state.from ?? "the previous version"} is still what runs: nothing is broken. The next automatic run, or \`memesh update\`, tries again. If it keeps failing, read ${path20.join(getMemeshDirFromDbPath(), "auto-update.log")} for the step that failed (usually the network or the registry).`, { code: "auto-update.pin-undone" });
+  }
+  if (state.outcome === "failed") {
+    const log = path20.join(getMemeshDirFromDbPath(), "auto-update.log");
+    const backup = state.backup ? ` A database backup was made first: ${state.backup}` : "";
+    const sourceRejected = state.reason === AUTO_UPDATE_REASONS.sourceNotVerified || state.reason === AUTO_UPDATE_REASONS.tarballMismatch || state.reason === AUTO_UPDATE_REASONS.commitNotOnMain || state.reason === AUTO_UPDATE_REASONS.dependenciesNotPinned;
+    const fix = state.reason === AUTO_UPDATE_REASONS.installNotUndone ? `Run \`memesh update --reinstall\`: it puts this version back through the same checks and finishes the install. Until then MeMesh may not start (its dependencies are missing). Read ${log} for what happened.${backup}` : sourceRejected ? `Do not install this version by other means (${installSupport?.channel === "npm-global" || installSupport === void 0 ? "a bare npm install" : "installing it from the marketplace yourself"}): that skips the check of where the package came from. \`memesh update\` runs the same check and will refuse too. Read ${log} for the check that failed; if it keeps failing, report it.${backup}` : installSupport?.recommendedCommand ? `Read ${log} for the step that failed, then update by hand with \`${installSupport.recommendedCommand}\`.${backup}` : `Read ${log} for the step that failed, then update the way you installed MeMesh.${backup}`;
+    return createCheck("auto-update", "Automatic updates", "warn", `Automatic updates are ${setting}. ${what}`, fix, { code: "auto-update.failed" });
+  }
+  return createCheck("auto-update", "Automatic updates", "pass", `Automatic updates are ${setting}. ${what}`);
 }
 async function inspectUpdateStatus(packageVersion2, getUpdateCheckImpl, installSupport) {
   const update = await getUpdateCheckImpl(packageVersion2, { preferFresh: false });
@@ -63349,7 +65546,7 @@ async function inspectHttpProbe(httpBaseUrl, fetchImpl) {
 }
 function verifySkillsManifest(packageRoot3, existsSyncImpl, readFileSyncImpl, installSupport) {
   const reinstall = installSupport.guidance;
-  const manifestPath = path17.join(packageRoot3, "dist", "skills-manifest.json");
+  const manifestPath = path20.join(packageRoot3, "dist", "skills-manifest.json");
   if (!existsSyncImpl(manifestPath)) {
     return createCheck("skills-manifest", "Skills + hooks integrity", "warn", "No skills-manifest.json found. This is normal for source checkouts \u2014 packaged installs ship the manifest.", `Run \`npm run build\` to regenerate, or reinstall: ${reinstall}`, { code: "skills-manifest.missing-dev" });
   }
@@ -63366,7 +65563,7 @@ function verifySkillsManifest(packageRoot3, existsSyncImpl, readFileSyncImpl, in
   const mismatches = [];
   const missing = [];
   for (const entry of entries) {
-    const full = path17.join(packageRoot3, entry.path);
+    const full = path20.join(packageRoot3, entry.path);
     if (!existsSyncImpl(full)) {
       missing.push(entry.path);
       continue;
@@ -63374,7 +65571,7 @@ function verifySkillsManifest(packageRoot3, existsSyncImpl, readFileSyncImpl, in
     let actualHash;
     try {
       const buf = readFileSyncImpl(full);
-      actualHash = createHash12("sha256").update(buf).digest("hex");
+      actualHash = createHash14("sha256").update(buf).digest("hex");
     } catch (err) {
       mismatches.push(`${entry.path} (read error: ${err instanceof Error ? err.message : "unknown"})`);
       continue;
@@ -63400,12 +65597,12 @@ function probeInstalledMessageCapability(packageRoot3) {
     "dist/host-adapters/claude-channel.js",
     "dist/host-adapters/acp-client.js"
   ];
-  const absent = required2.filter((relative) => !fs20.existsSync(path17.join(packageRoot3, relative)));
+  const absent = required2.filter((relative) => !fs23.existsSync(path20.join(packageRoot3, relative)));
   if (absent.length > 0)
     return { ok: false, message: `installed runtime is missing ${absent.join(", ")}` };
-  const probeHome = fs20.mkdtempSync(path17.join(os2.tmpdir(), "memesh-doctor-message-"));
+  const probeHome = fs23.mkdtempSync(path20.join(os3.tmpdir(), "memesh-doctor-message-"));
   try {
-    execFileSync7(process.execPath, [path17.join(packageRoot3, "dist/transports/cli/doctor-message-probe.js"), packageRoot3], {
+    execFileSync7(process.execPath, [path20.join(packageRoot3, "dist/transports/cli/doctor-message-probe.js"), packageRoot3], {
       cwd: packageRoot3,
       stdio: "pipe",
       timeout: 15e3,
@@ -63415,7 +65612,7 @@ function probeInstalledMessageCapability(packageRoot3) {
   } catch {
     return { ok: false, message: "installed MCP or bundled host adapters did not complete the message capability probe" };
   } finally {
-    fs20.rmSync(probeHome, { recursive: true, force: true });
+    fs23.rmSync(probeHome, { recursive: true, force: true });
   }
 }
 function inspectMessageCapability(packageRoot3, enabled, probe) {
@@ -63435,7 +65632,7 @@ async function defaultMessageRouterStatusProbe() {
   }
   let stat;
   try {
-    stat = fs20.lstatSync(socketPath);
+    stat = fs23.lstatSync(socketPath);
   } catch (error62) {
     const detail = error62 instanceof Error ? error62.message : String(error62);
     return { socket_path: socketPath, socket: "missing", detail };
@@ -63489,7 +65686,7 @@ function summarizeOverallStatus(checks) {
   return "PASS";
 }
 async function runDoctor(options) {
-  const { packageRoot: packageRoot3, packageVersion: packageVersion2, probeHttp = false, httpBaseUrl = "http://127.0.0.1:3737", platform = process.platform, envImpl = process.env, openDatabaseImpl = openDatabase, closeDatabaseImpl = closeDatabase, isDatabaseOpenImpl = isDatabaseOpen, getConfigPathImpl = getConfigPath, getUpdateCheckImpl = getUpdateCheck, getCurrentInstallChannelImpl = getCurrentInstallChannel, installedPluginsPathImpl, marketplaceHeadShaImpl = defaultMarketplaceHeadSha, pluginCacheDiscoveryImpl, getInstallChannelSupportImpl = getInstallChannelSupport, existsSyncImpl = fs20.existsSync, readFileSyncImpl = fs20.readFileSync, statSyncImpl = fs20.statSync, fetchImpl = fetch, agentMessageStoragePolicy, nativeBindingProbeImpl, resolveShellMemeshImpl = defaultResolveShellMemesh, probeMessageCapability = process.env.MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY === "1", messageCapabilityProbeImpl = probeInstalledMessageCapability, probeMessageRouterStatus = process.env.MEMESH_DOCTOR_PROBE_MESSAGE_ROUTER === "1", messageRouterStatusProbeImpl = defaultMessageRouterStatusProbe } = options;
+  const { packageRoot: packageRoot3, packageVersion: packageVersion2, probeHttp = false, httpBaseUrl = "http://127.0.0.1:3737", platform = process.platform, envImpl = process.env, openDatabaseImpl = openDatabase, closeDatabaseImpl = closeDatabase, isDatabaseOpenImpl = isDatabaseOpen, getConfigPathImpl = getConfigPath, getUpdateCheckImpl = getUpdateCheck, getCurrentInstallChannelImpl = getCurrentInstallChannel, installedPluginsPathImpl, marketplaceHeadShaImpl = defaultMarketplaceHeadSha, pluginCacheDiscoveryImpl, getInstallChannelSupportImpl = getInstallChannelSupport, existsSyncImpl = fs23.existsSync, readFileSyncImpl = fs23.readFileSync, statSyncImpl = fs23.statSync, fetchImpl = fetch, agentMessageStoragePolicy, nativeBindingProbeImpl, resolveShellMemeshImpl = defaultResolveShellMemesh, probeMessageCapability = process.env.MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY === "1", messageCapabilityProbeImpl = probeInstalledMessageCapability, probeMessageRouterStatus = process.env.MEMESH_DOCTOR_PROBE_MESSAGE_ROUTER === "1", messageRouterStatusProbeImpl = defaultMessageRouterStatusProbe } = options;
   const wasDbOpenBeforeUs = isDatabaseOpenImpl();
   const safeCloseDatabaseImpl = wasDbOpenBeforeUs ? () => void 0 : closeDatabaseImpl;
   const checks = [];
@@ -63624,9 +65821,10 @@ async function runDoctor(options) {
   checks.push(inspectMessageCapability(packageRoot3, probeMessageCapability, messageCapabilityProbeImpl));
   checks.push(await inspectMessageRouterStatus(probeMessageRouterStatus, messageRouterStatusProbeImpl));
   checks.push(await inspectUpdateStatus(packageVersion2, getUpdateCheckImpl, installSupport));
+  checks.push(inspectAutoUpdate(installSupport));
   try {
     const record2 = getInstallRecord();
-    checks.push(createInfo("install_id", "Install ID", `Anonymous install ID: ${record2.install_id} (created ${record2.created_at}). Stored locally at ${path17.join(memeshDir(), "install.json")}. Never transmitted automatically; included only in feedback issues you submit with the "Include system info" checkbox on.`));
+    checks.push(createInfo("install_id", "Install ID", `Anonymous install ID: ${record2.install_id} (created ${record2.created_at}). Stored locally at ${path20.join(memeshDir(), "install.json")}. Never transmitted automatically; included only in feedback issues you submit with the "Include system info" checkbox on.`));
   } catch {
   }
   checks.push(inspectLocaleReadmeParity(packageRoot3, existsSyncImpl, readFileSyncImpl));
@@ -63669,6 +65867,7 @@ var init_doctor = __esm({
     init_db();
     init_version_check();
     init_updater();
+    init_auto_update();
     init_install_channel();
     init_install_id();
     init_file_mode();
@@ -63700,19 +65899,19 @@ var init_doctor = __esm({
 });
 
 // dist/core/transcript-source.js
-import fs21 from "fs";
-import { createHash as createHash13 } from "node:crypto";
-import path18 from "path";
+import fs24 from "fs";
+import { createHash as createHash15 } from "node:crypto";
+import path21 from "path";
 function readTranscriptSnapshot(transcriptPath, expected) {
   return readTranscriptSnapshotWithin(transcriptPath, expected, MAX_TRANSCRIPT_SOURCE_BYTES).snapshot;
 }
 function readTranscriptSnapshotWithin(transcriptPath, expected, aggregateBytesRemaining) {
   let fd;
   try {
-    fd = fs21.openSync(transcriptPath, fs21.constants.O_RDONLY | fs21.constants.O_NOFOLLOW);
-    if (fs21.lstatSync(transcriptPath).isSymbolicLink())
+    fd = fs24.openSync(transcriptPath, fs24.constants.O_RDONLY | fs24.constants.O_NOFOLLOW);
+    if (fs24.lstatSync(transcriptPath).isSymbolicLink())
       return { snapshot: null, aggregateLimitExceeded: false };
-    const before = fs21.fstatSync(fd, { bigint: true });
+    const before = fs24.fstatSync(fd, { bigint: true });
     const sizeBytes = Number(before.size);
     if (!before.isFile() || sizeBytes < 0 || sizeBytes > MAX_TRANSCRIPT_SOURCE_BYTES) {
       return { snapshot: null, aggregateLimitExceeded: false };
@@ -63732,16 +65931,16 @@ function readTranscriptSnapshotWithin(transcriptPath, expected, aggregateBytesRe
     const bytes = Buffer.allocUnsafe(sizeBytes);
     let offset = 0;
     while (offset < bytes.length) {
-      const count = fs21.readSync(fd, bytes, offset, bytes.length - offset, offset);
+      const count = fs24.readSync(fd, bytes, offset, bytes.length - offset, offset);
       if (count === 0)
         return { snapshot: null, aggregateLimitExceeded: false };
       offset += count;
     }
-    const after = fs21.fstatSync(fd, { bigint: true });
+    const after = fs24.fstatSync(fd, { bigint: true });
     if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) {
       return { snapshot: null, aggregateLimitExceeded: false };
     }
-    const contentHash = createHash13("sha256").update(bytes).digest("hex");
+    const contentHash = createHash15("sha256").update(bytes).digest("hex");
     if (expected && contentHash !== expected.contentHash)
       return { snapshot: null, aggregateLimitExceeded: false };
     return { snapshot: { bytes, contentHash, ...identity }, aggregateLimitExceeded: false };
@@ -63750,7 +65949,7 @@ function readTranscriptSnapshotWithin(transcriptPath, expected, aggregateBytesRe
   } finally {
     if (fd !== void 0) {
       try {
-        fs21.closeSync(fd);
+        fs24.closeSync(fd);
       } catch {
       }
     }
@@ -63760,7 +65959,7 @@ function claudeProjectsDir() {
   const override = process.env.CLAUDE_PROJECTS_DIR;
   if (override && override.trim() !== "")
     return override;
-  return path18.join(homeDir(), ".claude", "projects");
+  return path21.join(homeDir(), ".claude", "projects");
 }
 function projectTranscriptSlug(cwd) {
   return cwd.replace(/[^a-zA-Z0-9]/g, "-");
@@ -63776,11 +65975,11 @@ function lineCwd(line) {
 function recordedCwd(text) {
   let from = 0;
   for (; ; ) {
-    const at = text.indexOf('"cwd"', from);
-    if (at < 0)
+    const at2 = text.indexOf('"cwd"', from);
+    if (at2 < 0)
       return null;
-    const start = text.lastIndexOf("\n", at) + 1;
-    const newline = text.indexOf("\n", at);
+    const start = text.lastIndexOf("\n", at2) + 1;
+    const newline = text.indexOf("\n", at2);
     const end = newline < 0 ? text.length : newline;
     const cwd = lineCwd(text.slice(start, end));
     if (cwd !== null)
@@ -63789,10 +65988,10 @@ function recordedCwd(text) {
   }
 }
 function sameProjectPath(a, b) {
-  if (path18.normalize(a) === path18.normalize(b))
+  if (path21.normalize(a) === path21.normalize(b))
     return true;
   try {
-    if (fs21.realpathSync(a) === fs21.realpathSync(b))
+    if (fs24.realpathSync(a) === fs24.realpathSync(b))
       return true;
   } catch {
   }
@@ -63807,13 +66006,13 @@ function scanTranscripts(opts) {
   const windowDays = opts.windowDays ?? 3;
   const now = opts.now ?? /* @__PURE__ */ new Date();
   const cutoffMs = now.getTime() - windowDays * 864e5;
-  const dir = path18.join(claudeProjectsDir(), projectTranscriptSlug(cwd));
+  const dir = path21.join(claudeProjectsDir(), projectTranscriptSlug(cwd));
   let names;
   try {
-    const dirStat = fs21.lstatSync(dir);
+    const dirStat = fs24.lstatSync(dir);
     if (dirStat.isSymbolicLink() || !dirStat.isDirectory())
       return [];
-    names = fs21.readdirSync(dir).filter((name) => name.endsWith(".jsonl")).sort();
+    names = fs24.readdirSync(dir).filter((name) => name.endsWith(".jsonl")).sort();
   } catch {
     return [];
   }
@@ -63826,7 +66025,7 @@ function scanTranscripts(opts) {
   for (const name of names) {
     let stat;
     try {
-      stat = fs21.lstatSync(path18.join(dir, name));
+      stat = fs24.lstatSync(path21.join(dir, name));
     } catch {
       opts.onSkip?.("unreadable", 1);
       continue;
@@ -63847,7 +66046,7 @@ function scanTranscripts(opts) {
   const sessions = [];
   let bytesRead = 0;
   for (const name of eligibleNames) {
-    const full = path18.join(dir, name);
+    const full = path21.join(dir, name);
     const read = readTranscriptSnapshotWithin(full, void 0, MAX_TRANSCRIPT_SCAN_BYTES - bytesRead);
     if (read.aggregateLimitExceeded) {
       opts.onSkip?.("scan_too_large", eligibleNames.length);
@@ -63972,7 +66171,7 @@ var init_transcript_extractor = __esm({
 });
 
 // dist/core/product-improvements.js
-import { createHash as createHash14 } from "node:crypto";
+import { createHash as createHash16 } from "node:crypto";
 function clean2(label, value, max) {
   const normalized = value.replace(/\s+/g, " ").trim();
   if (!normalized)
@@ -64043,7 +66242,7 @@ __export(dreamer_exports, {
   listProposals: () => listProposals,
   rejectProposal: () => rejectProposal
 });
-import { createHash as createHash15 } from "node:crypto";
+import { createHash as createHash17 } from "node:crypto";
 function collisionSafeName(db2, proposed, kind, proposalId2) {
   const taken = db2.prepare("SELECT 1 FROM entities WHERE name = ?").get(proposed) !== void 0;
   return taken ? `${proposed} (${kind} #${proposalId2})` : proposed;
@@ -64161,7 +66360,7 @@ function executeWorkPackage(db2, input2, context = {}) {
   const execute = () => {
     const project = input2.action === "prepare" ? input2.project : input2.ref.project;
     const kind = input2.action === "prepare" ? input2.kind : input2.ref.kind;
-    const hash2 = (value) => createHash15("sha256").update(JSON.stringify(value)).digest("hex");
+    const hash2 = (value) => createHash17("sha256").update(JSON.stringify(value)).digest("hex");
     if (input2.action !== "prepare") {
       const submitted = input2.action === "submit" ? input2.result : void 0;
       if (submitted && holdsSecret([submitted.name, ...submitted.observations, ...submitted.tags])) {
@@ -64857,9 +67056,9 @@ __export(server_exports, {
   startServer: () => startServer
 });
 import { randomBytes as randomBytes5, timingSafeEqual } from "crypto";
-import fs22 from "fs";
-import path19 from "path";
-import { fileURLToPath as fileURLToPath2 } from "url";
+import fs25 from "fs";
+import path22 from "path";
+import { fileURLToPath as fileURLToPath3 } from "url";
 function isLoopbackRequest(req) {
   const ip = req.ip ?? "";
   return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
@@ -64873,19 +67072,19 @@ function loadOrCreateRemoteToken() {
     return { token: Buffer.from(fromEnv, "utf8"), freshlyCreated: false };
   }
   const dir = memeshDir2();
-  const tokenPath = path19.join(dir, "remote-token");
-  fs22.mkdirSync(dir, { recursive: true });
+  const tokenPath = path22.join(dir, "remote-token");
+  fs25.mkdirSync(dir, { recursive: true });
   removeGroupAndOtherAccess(dir);
   const generated = randomBytes5(32).toString("hex");
   try {
-    const fd = fs22.openSync(tokenPath, fs22.constants.O_WRONLY | fs22.constants.O_CREAT | fs22.constants.O_EXCL, 384);
+    const fd = fs25.openSync(tokenPath, fs25.constants.O_WRONLY | fs25.constants.O_CREAT | fs25.constants.O_EXCL, 384);
     try {
-      fs22.writeFileSync(fd, generated + "\n");
+      fs25.writeFileSync(fd, generated + "\n");
     } finally {
-      fs22.closeSync(fd);
+      fs25.closeSync(fd);
     }
     try {
-      fs22.chmodSync(tokenPath, 384);
+      fs25.chmodSync(tokenPath, 384);
     } catch {
     }
     return { token: Buffer.from(generated, "utf8"), freshlyCreated: true };
@@ -64893,7 +67092,7 @@ function loadOrCreateRemoteToken() {
     if (err?.code !== "EEXIST")
       throw err;
   }
-  const value = fs22.readFileSync(tokenPath, "utf8").trim();
+  const value = fs25.readFileSync(tokenPath, "utf8").trim();
   if (value.length < 16) {
     throw new Error(`Existing ${tokenPath} is too short (<16 chars). Delete it and restart memesh-http to regenerate.`);
   }
@@ -65095,7 +67294,7 @@ function startServer(host = HOST, port = PORT, opts) {
     remoteToken = token;
     if (freshlyCreated) {
       const dir = memeshDir2();
-      const tokenPath = path19.join(dir, "remote-token");
+      const tokenPath = path22.join(dir, "remote-token");
       process.stderr.write(`
 MeMesh HTTP: bearer token generated for remote access.
   Token file: ${tokenPath} (mode 600)
@@ -65105,7 +67304,7 @@ MeMesh HTTP: bearer token generated for remote access.
 
 `);
     } else {
-      process.stderr.write(`MeMesh HTTP: remote bind requires Authorization: Bearer <token>. Token loaded from ${process.env.MEMESH_REMOTE_TOKEN ? "MEMESH_REMOTE_TOKEN" : path19.join(memeshDir2(), "remote-token")}.
+      process.stderr.write(`MeMesh HTTP: remote bind requires Authorization: Bearer <token>. Token loaded from ${process.env.MEMESH_REMOTE_TOKEN ? "MEMESH_REMOTE_TOKEN" : path22.join(memeshDir2(), "remote-token")}.
 `);
     }
   }
@@ -65196,9 +67395,9 @@ var init_server = __esm({
     init_file_mode();
     init_database_diagnosis();
     init_retired_routes();
-    packageJsonPath = path19.resolve(path19.dirname(fileURLToPath2(import.meta.url)), "../../../package.json");
-    packageRoot = path19.dirname(packageJsonPath);
-    packageVersion = JSON.parse(fs22.readFileSync(packageJsonPath, "utf8")).version ?? "0.0.0";
+    packageJsonPath = path22.resolve(path22.dirname(fileURLToPath3(import.meta.url)), "../../../package.json");
+    packageRoot = path22.dirname(packageJsonPath);
+    packageVersion = JSON.parse(fs25.readFileSync(packageJsonPath, "utf8")).version ?? "0.0.0";
     app = (0, import_express.default)();
     apiLimiter = rate_limit_default({
       windowMs: 15 * 60 * 1e3,
@@ -65297,9 +67496,6 @@ var init_server = __esm({
       } catch (error62) {
         if (error62 instanceof HttpError)
           throw error62;
-        if (error62 instanceof PluginRefreshBudgetError) {
-          throw new HttpError(500, "doctor.repair-incomplete", error62.message);
-        }
         if (isDoctorFixPermissionError(error62)) {
           throw new HttpError(500, "operation.permission-denied", "MeMesh cannot modify the local files required for this repair. Start `memesh serve` from your own Terminal, and retry. If it still fails, run `memesh doctor`.");
         }
@@ -66269,9 +68465,9 @@ __export(project_tags_exports, {
   renameProjectTag: () => renameProjectTag,
   sameProjectRefusal: () => sameProjectRefusal
 });
-import fs23 from "node:fs";
-import os3 from "node:os";
-import path20 from "node:path";
+import fs26 from "node:fs";
+import os4 from "node:os";
+import path23 from "node:path";
 import { pathToFileURL } from "node:url";
 function listProjectTags(db2) {
   const conn = db2 ?? getDatabase();
@@ -66412,9 +68608,9 @@ function destinationHolds(conn, table, rid, to) {
   return false;
 }
 function previewOnCopy(source, from, to) {
-  const dir = fs23.mkdtempSync(path20.join(os3.tmpdir(), "memesh-rename-preview-"));
+  const dir = fs26.mkdtempSync(path23.join(os4.tmpdir(), "memesh-rename-preview-"));
   try {
-    const file2 = path20.join(dir, "copy.db");
+    const file2 = path23.join(dir, "copy.db");
     try {
       source.prepare("VACUUM INTO ?").run(file2);
     } catch (err) {
@@ -66427,7 +68623,7 @@ function previewOnCopy(source, from, to) {
       copy.close();
     }
   } finally {
-    fs23.rmSync(dir, { recursive: true, force: true });
+    fs26.rmSync(dir, { recursive: true, force: true });
   }
 }
 function openReadOnlyForPreview(dbPath, openHandle = (target) => new MemeshDatabase(target, { readOnly: true })) {
@@ -66451,11 +68647,11 @@ function openReadOnlyForPreview(dbPath, openHandle = (target) => new MemeshDatab
   } catch (err) {
     let realPath = dbPath;
     try {
-      realPath = fs23.realpathSync(dbPath);
+      realPath = fs26.realpathSync(dbPath);
     } catch {
     }
     const wal = `${realPath}-wal`;
-    const hasWal = fs23.existsSync(wal) && fs23.statSync(wal).size > 0;
+    const hasWal = fs26.existsSync(wal) && fs26.statSync(wal).size > 0;
     if (hasWal || !/readonly|unable to open/i.test(err instanceof Error ? err.message : String(err)))
       throw err;
     return open2(`${pathToFileURL(dbPath).href}?immutable=1`);
@@ -66494,197 +68690,67 @@ init_operations();
 init_recall_agent_view();
 init_config();
 init_session_limit();
-import { createHash as createHash16 } from "crypto";
-import fs24 from "fs";
-import path21 from "path";
-import { fileURLToPath as fileURLToPath3 } from "url";
+import { createHash as createHash18 } from "crypto";
+import fs27 from "fs";
+import path24 from "path";
+import { fileURLToPath as fileURLToPath4 } from "url";
 
 // dist/core/update-entrypoint.js
 init_paths();
-init_version_check();
-import fs7 from "fs";
-import path6 from "path";
-import { spawn } from "child_process";
+init_auto_update();
+import fs11 from "fs";
+import path10 from "path";
+import { spawn as spawn2 } from "child_process";
+import { fileURLToPath as fileURLToPath2 } from "url";
+
+// dist/core/package-root.js
+import fs9 from "fs";
+import path8 from "path";
 import { fileURLToPath } from "url";
-
-// dist/core/update-notice.js
-init_paths();
-init_semver();
-import fs6 from "fs";
-import path5 from "path";
-var UP_TO_DATE_REFRESH_MS = 60 * 60 * 1e3;
-var UPGRADE_AVAILABLE_REFRESH_MS = 12 * 60 * 60 * 1e3;
-var ANSWER_VALID_MS = 24 * 60 * 60 * 1e3;
-var SNOOZE_LEVEL_MS = [24 * 60 * 60 * 1e3, 48 * 60 * 60 * 1e3, 7 * 24 * 60 * 60 * 1e3];
-var SNOOZE_FILE = "update-snooze.json";
-var JUST_UPGRADED_FILE = "just-upgraded.json";
-function isStrictlyOlder(a, b) {
-  const parse3 = (v) => {
-    const [main, ...rest] = String(v).split(/[-+]/);
-    const nums = main.split(".").map((s) => Number.parseInt(s, 10));
-    return { nums, tail: rest.join("-") };
-  };
-  const pa = parse3(a);
-  const pb = parse3(b);
-  const len = Math.max(pa.nums.length, pb.nums.length);
-  for (let i = 0; i < len; i++) {
-    const ai = Number.isFinite(pa.nums[i]) ? pa.nums[i] : 0;
-    const bi = Number.isFinite(pb.nums[i]) ? pb.nums[i] : 0;
-    if (ai !== bi)
-      return ai < bi;
+function findPackageRoot(moduleUrl) {
+  let dir = path8.dirname(fileURLToPath(moduleUrl));
+  for (; ; ) {
+    if (fs9.existsSync(path8.join(dir, "package.json")))
+      return dir;
+    const up = path8.dirname(dir);
+    if (up === dir)
+      throw new Error(`no package.json above ${fileURLToPath(moduleUrl)}`);
+    dir = up;
   }
-  if (pa.tail && !pb.tail)
-    return true;
-  if (!pa.tail && pb.tail)
-    return false;
-  return pa.tail < pb.tail;
-}
-function parseIso(value) {
-  if (typeof value !== "string")
-    return null;
-  const t = Date.parse(value);
-  return Number.isNaN(t) ? null : t;
-}
-function readJson(file2) {
-  try {
-    if (!fs6.existsSync(file2))
-      return null;
-    const parsed = JSON.parse(fs6.readFileSync(file2, "utf8"));
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-function readSnooze(dir) {
-  const raw = readJson(path5.join(dir, SNOOZE_FILE));
-  if (!raw)
-    return null;
-  const { target, level, since } = raw;
-  if (typeof target !== "string" || !target)
-    return null;
-  if (typeof level !== "number" || !Number.isInteger(level) || level < 1)
-    return null;
-  if (parseIso(since) === null)
-    return null;
-  return { target, level, since };
-}
-function snoozeExpiresAt(state) {
-  const since = parseIso(state.since) ?? 0;
-  const duration3 = SNOOZE_LEVEL_MS[Math.min(state.level, SNOOZE_LEVEL_MS.length) - 1];
-  return since + duration3;
-}
-function readJustUpgradedMarker(dir) {
-  const raw = readJson(path5.join(dir, JUST_UPGRADED_FILE));
-  if (!raw)
-    return null;
-  const { from, to, at } = raw;
-  if (typeof from !== "string" || !from || typeof to !== "string" || !to)
-    return null;
-  return { from, to, at: typeof at === "string" ? at : "" };
-}
-function clearJustUpgradedMarker(dir) {
-  try {
-    fs6.unlinkSync(path5.join(dir, JUST_UPGRADED_FILE));
-  } catch {
-  }
-}
-function claimJustUpgradedMarker(dir) {
-  const file2 = path5.join(dir, JUST_UPGRADED_FILE);
-  const taken = `${file2}.claimed-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
-  try {
-    fs6.renameSync(file2, taken);
-  } catch {
-    return null;
-  }
-  const raw = readJson(taken);
-  try {
-    fs6.unlinkSync(taken);
-  } catch {
-  }
-  if (!raw)
-    return null;
-  const { from, to, at } = raw;
-  if (typeof from !== "string" || !from || typeof to !== "string" || !to)
-    return null;
-  return { from, to, at: typeof at === "string" ? at : "" };
-}
-function boundedReason(raw) {
-  const oneLine = redactUserPaths(raw).replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
-  return oneLine.length > 160 ? `${oneLine.slice(0, 157)}...` : oneLine;
-}
-function answerIsCurrent(currentVersion, cache, now) {
-  if (!cache || cache.currentVersion !== currentVersion)
-    return false;
-  if (typeof cache.latestVersion !== "string")
-    return false;
-  const latest = normalizeRegistryVersion(cache.latestVersion);
-  if (latest === null)
-    return false;
-  if (cache.checkSucceeded === false && !isStrictlyOlder(currentVersion, latest))
-    return false;
-  const successAt = parseIso(cache.lastSuccessfulCheckAt);
-  if (successAt === null)
-    return false;
-  return now.getTime() - successAt <= ANSWER_VALID_MS;
-}
-function shouldRefreshUpdateCache(currentVersion, cache, now = /* @__PURE__ */ new Date()) {
-  if (!answerIsCurrent(currentVersion, cache, now))
-    return true;
-  const successAt = parseIso(cache.lastSuccessfulCheckAt);
-  const age = now.getTime() - successAt;
-  const upgrade = isStrictlyOlder(currentVersion, normalizeRegistryVersion(cache.latestVersion));
-  return age > (upgrade ? UPGRADE_AVAILABLE_REFRESH_MS : UP_TO_DATE_REFRESH_MS);
-}
-function resolveUpdateNotice(input2) {
-  const { dir, currentVersion, cache } = input2;
-  const now = input2.now ?? /* @__PURE__ */ new Date();
-  if (input2.updateCheckEnabled === false)
-    return { kind: "DISABLED", currentVersion };
-  const marker = readJustUpgradedMarker(dir);
-  if (marker) {
-    if (marker.to === currentVersion) {
-      return { kind: "JUST_UPGRADED", currentVersion, from: marker.from, to: marker.to };
-    }
-    clearJustUpgradedMarker(dir);
-  }
-  if (!answerIsCurrent(currentVersion, cache, now)) {
-    let reason = "no update check has completed yet";
-    let attempted = false;
-    if (cache && cache.currentVersion === currentVersion) {
-      attempted = parseIso(cache.lastSuccessfulCheckAt) !== null || typeof cache.lastError === "string" && cache.lastError.length > 0;
-      if (typeof cache.lastError === "string" && cache.lastError)
-        reason = boundedReason(cache.lastError);
-      else if (typeof cache.latestVersion === "string" && normalizeRegistryVersion(cache.latestVersion) === null)
-        reason = "registry returned an invalid version";
-      else if (attempted && cache.checkSucceeded === false)
-        reason = "the last update check failed";
-      else if (parseIso(cache.lastSuccessfulCheckAt) !== null)
-        reason = "the last successful check is more than a day old";
-    }
-    return { kind: "CHECK_FAILED", currentVersion, reason, attempted };
-  }
-  const latestVersion = normalizeRegistryVersion(cache.latestVersion);
-  if (!isStrictlyOlder(currentVersion, latestVersion)) {
-    return { kind: "UP_TO_DATE", currentVersion, latestVersion };
-  }
-  const snooze = readSnooze(dir);
-  if (snooze && snooze.target === latestVersion) {
-    const until = snoozeExpiresAt(snooze);
-    if (now.getTime() < until) {
-      return { kind: "SNOOZED", currentVersion, latestVersion, until: new Date(until).toISOString(), level: snooze.level };
-    }
-  }
-  return { kind: "UPGRADE_AVAILABLE", currentVersion, latestVersion };
 }
 
 // dist/core/update-entrypoint.js
+init_install_channel();
+init_version_check();
+init_update_notice();
 var RECENT_HOOK_NOTICE_MS = 10 * 60 * 1e3;
 var CLI_NOTICE_THROTTLE_MS = 24 * 60 * 60 * 1e3;
 var FRESH_CHECK_THROTTLE_MS = 5 * 60 * 1e3;
-function formatUpdateNoticeLine(notice) {
+function formatUpdateNoticeLine(notice, mode = { updates: "on", door: "cli" }) {
   switch (notice.kind) {
-    case "UPGRADE_AVAILABLE":
-      return `[memesh update] ${notice.latestVersion} is available (you are on ${notice.currentVersion}). Run \`memesh update\`, or reply \u201CNot now\u201D / \u201CNever ask again\u201D in a hooked session.`;
+    case "UPGRADE_AVAILABLE": {
+      const head = `[memesh update] ${notice.latestVersion} is available (you are on ${notice.currentVersion}).`;
+      if (mode.updates === "off") {
+        if (mode.door === "mcp")
+          return `${head} Automatic updates are off, so it is not being installed. Do not update on your own.`;
+        if (mode.unsupported)
+          return `${head} Automatic updates are off, and MeMesh cannot install it for this install method: ${mode.unsupported}`;
+        return `${head} Automatic updates are off, so it is not being installed; \`memesh update\` installs it when you choose to.`;
+      }
+      if (mode.updates === "held") {
+        if (mode.door === "mcp")
+          return `${head} The setting autoUpdate: ${mode.setting} does not install this release by itself, so it is not being installed. Do not update on your own.`;
+        return `${head} The setting autoUpdate: ${mode.setting} does not install this release by itself; \`memesh update\` installs it when you choose to.`;
+      }
+      if (mode.updates === "unsupported") {
+        if (mode.door === "mcp")
+          return `${head} MeMesh cannot install it for this install method. Do not update on your own; tell the person.`;
+        return `${head} MeMesh cannot install it for this install method: ${mode.guidance}`;
+      }
+      if (mode.door === "mcp")
+        return `${head} Automatic updates are on: it is installed by itself after the running sessions end. No action is needed.`;
+      return `${head} Run \`memesh update\` to install it now.`;
+    }
     case "JUST_UPGRADED":
       return `[memesh update] Upgraded ${notice.from} \u2192 ${notice.to}. Processes started before the upgrade keep running ${notice.from} until they restart.`;
     case "CHECK_FAILED":
@@ -66694,31 +68760,31 @@ function formatUpdateNoticeLine(notice) {
   }
 }
 function recentHookNoticeExists(dir, currentVersion, latestVersion, now = /* @__PURE__ */ new Date()) {
-  const claims = path6.join(dir, "update-prompt-claims");
+  const claims = path10.join(dir, "update-prompt-claims");
   let names;
   try {
-    names = fs7.readdirSync(claims);
+    names = fs11.readdirSync(claims);
   } catch {
     return false;
   }
   for (const name of names) {
     if (!name.endsWith(".json"))
       continue;
-    const file2 = path6.join(claims, name);
+    const file2 = path10.join(claims, name);
     let fd = null;
     try {
-      fd = fs7.openSync(file2, "r");
-      const stat = fs7.fstatSync(fd);
+      fd = fs11.openSync(file2, "r");
+      const stat = fs11.fstatSync(fd);
       if (now.getTime() - stat.mtimeMs > RECENT_HOOK_NOTICE_MS)
         continue;
-      const value = JSON.parse(fs7.readFileSync(fd, "utf8"));
+      const value = JSON.parse(fs11.readFileSync(fd, "utf8"));
       if (value.decision === "emitted" && value.currentVersion === currentVersion && (latestVersion === null || value.latestVersion === latestVersion))
         return true;
     } catch {
     } finally {
       if (fd !== null)
         try {
-          fs7.closeSync(fd);
+          fs11.closeSync(fd);
         } catch {
         }
     }
@@ -66727,7 +68793,7 @@ function recentHookNoticeExists(dir, currentVersion, latestVersion, now = /* @__
 }
 function updateCheckEnabledIn(dir) {
   try {
-    const raw = JSON.parse(fs7.readFileSync(path6.join(dir, "config.json"), "utf8"));
+    const raw = JSON.parse(fs11.readFileSync(path10.join(dir, "config.json"), "utf8"));
     return raw.updateCheck !== false;
   } catch {
     return true;
@@ -66735,34 +68801,34 @@ function updateCheckEnabledIn(dir) {
 }
 function cliThrottled(dir, currentVersion, now) {
   const tag = /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : "unknown";
-  const marker = path6.join(dir, `last-cli-update-notice.${tag}.lock`);
+  const marker = path10.join(dir, `last-cli-update-notice.${tag}.lock`);
   let fd = null;
   try {
     try {
-      fd = fs7.openSync(marker, "r+");
+      fd = fs11.openSync(marker, "r+");
     } catch (err) {
       const code = err.code;
       if (code !== "ENOENT") {
         return true;
       }
-      fs7.mkdirSync(dir, { recursive: true, mode: 448 });
+      fs11.mkdirSync(dir, { recursive: true, mode: 448 });
       try {
-        fd = fs7.openSync(marker, "wx", 384);
+        fd = fs11.openSync(marker, "wx", 384);
       } catch (raceErr) {
         if (raceErr.code === "EEXIST")
           return true;
         throw raceErr;
       }
-      fs7.writeSync(fd, String(now.getTime()));
+      fs11.writeSync(fd, String(now.getTime()));
       return false;
     }
-    const stat = fs7.fstatSync(fd);
+    const stat = fs11.fstatSync(fd);
     if (now.getTime() - stat.mtimeMs < CLI_NOTICE_THROTTLE_MS)
       return true;
-    fs7.ftruncateSync(fd, 0);
-    fs7.writeSync(fd, String(now.getTime()), 0);
+    fs11.ftruncateSync(fd, 0);
+    fs11.writeSync(fd, String(now.getTime()), 0);
     try {
-      fs7.fchmodSync(fd, 384);
+      fs11.fchmodSync(fd, 384);
     } catch {
     }
     return false;
@@ -66771,7 +68837,7 @@ function cliThrottled(dir, currentVersion, now) {
   } finally {
     if (fd !== null)
       try {
-        fs7.closeSync(fd);
+        fs11.closeSync(fd);
       } catch {
       }
   }
@@ -66781,8 +68847,8 @@ function spawnCacheRefresh(dir, currentVersion, now) {
   const claim2 = `${process.pid}-${now.getTime()}`;
   const failed = (error62) => {
     try {
-      if (marker && fs7.readFileSync(marker, "utf8") === claim2)
-        fs7.unlinkSync(marker);
+      if (marker && fs11.readFileSync(marker, "utf8") === claim2)
+        fs11.unlinkSync(marker);
     } catch {
     }
     const code = error62?.code;
@@ -66790,32 +68856,32 @@ function spawnCacheRefresh(dir, currentVersion, now) {
     console.error(`[memesh update] Could not start update cache refresh (${reason}). Status remains unknown; a later call can retry.`);
   };
   try {
-    const modulePath = fileURLToPath(import.meta.url);
-    const bundledCli = path6.basename(modulePath) === "cli.js" && path6.basename(path6.dirname(modulePath)) === "cli" && path6.basename(path6.dirname(path6.dirname(modulePath))) === "transports";
+    const modulePath = fileURLToPath2(import.meta.url);
+    const bundledCli = path10.basename(modulePath) === "cli.js" && path10.basename(path10.dirname(modulePath)) === "cli" && path10.basename(path10.dirname(path10.dirname(modulePath))) === "transports";
     const helperUrl = new URL(bundledCli ? "../../core/version-check.js" : "../core/version-check.js", import.meta.url);
-    if (!fs7.existsSync(fileURLToPath(helperUrl)))
+    if (!fs11.existsSync(fileURLToPath2(helperUrl)))
       return false;
     const tag = /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : "unknown";
-    marker = path6.join(dir, `last-fresh-refresh.${tag}.lock`);
+    marker = path10.join(dir, `last-fresh-refresh.${tag}.lock`);
     try {
-      if (now.getTime() - fs7.statSync(marker).mtimeMs < FRESH_CHECK_THROTTLE_MS)
+      if (now.getTime() - fs11.statSync(marker).mtimeMs < FRESH_CHECK_THROTTLE_MS)
         return false;
-      fs7.unlinkSync(marker);
+      fs11.unlinkSync(marker);
     } catch {
     }
-    fs7.mkdirSync(dir, { recursive: true, mode: 448 });
+    fs11.mkdirSync(dir, { recursive: true, mode: 448 });
     try {
-      const fd = fs7.openSync(marker, "wx", 384);
+      const fd = fs11.openSync(marker, "wx", 384);
       try {
-        fs7.writeSync(fd, claim2);
+        fs11.writeSync(fd, claim2);
       } finally {
-        fs7.closeSync(fd);
+        fs11.closeSync(fd);
       }
     } catch {
       return false;
     }
     const refresh = "const { getUpdateCheck } = await import(process.argv[1]); await getUpdateCheck(process.argv[2], { preferFresh: true });";
-    const child = spawn(process.execPath, ["--input-type=module", "--eval", refresh, helperUrl.href, currentVersion], {
+    const child = spawn2(process.execPath, ["--input-type=module", "--eval", refresh, helperUrl.href, currentVersion], {
       detached: true,
       stdio: "ignore",
       env: { ...process.env },
@@ -66868,6 +68934,31 @@ var ProcessMemo = class {
         this.set.delete(entry);
   }
 };
+function upgradeNoticeMode(input2, latestVersion) {
+  let policy;
+  try {
+    policy = currentPolicy().policy;
+  } catch {
+    policy = "off";
+  }
+  let support = input2.installSupport;
+  if (support === void 0) {
+    try {
+      const packageRoot3 = findPackageRoot(import.meta.url);
+      support = getInstallChannelSupport(getCurrentInstallChannel({ packageRoot: packageRoot3 }), packageRoot3);
+    } catch {
+      support = null;
+    }
+  }
+  const cannot = support && !support.canSelfUpdate ? support.guidance : void 0;
+  if (policy === "off")
+    return { updates: "off", door: input2.entryPoint, ...cannot ? { unsupported: cannot } : {} };
+  if (cannot)
+    return { updates: "unsupported", guidance: cannot, door: input2.entryPoint };
+  if (latestVersion && !policyPermits(policy, bumpKind(input2.currentVersion, latestVersion)))
+    return { updates: "held", door: input2.entryPoint, setting: policy };
+  return { updates: "on", door: input2.entryPoint };
+}
 function updateNoticeForEntryPoint(input2) {
   try {
     const now = input2.now ?? /* @__PURE__ */ new Date();
@@ -66877,17 +68968,17 @@ function updateNoticeForEntryPoint(input2) {
     const dir = input2.dir ?? memeshDir();
     const updateCheckEnabled = input2.updateCheckEnabled ?? updateCheckEnabledIn(dir);
     const tag = /^[0-9A-Za-z.+-]+$/.test(input2.currentVersion) ? input2.currentVersion : "unknown";
-    const cache = getLastUpdateCheck(input2.currentVersion, { now, updateCheckPath: path6.join(dir, `update-check.${tag}.json`) });
-    if (updateCheckEnabled && shouldRefreshUpdateCache(input2.currentVersion, cache, now)) {
+    const cache2 = getLastUpdateCheck(input2.currentVersion, { now, updateCheckPath: path10.join(dir, `update-check.${tag}.json`) });
+    if (updateCheckEnabled && shouldRefreshUpdateCache(input2.currentVersion, cache2, now)) {
       (input2.refresh ?? spawnCacheRefresh)(dir, input2.currentVersion, now);
     }
-    const notice = resolveUpdateNotice({ dir, currentVersion: input2.currentVersion, cache, now, updateCheckEnabled });
+    const notice = resolveUpdateNotice({ dir, currentVersion: input2.currentVersion, cache: cache2, now, updateCheckEnabled });
     if (notice.kind === "CHECK_FAILED" && !notice.attempted) {
       memo2?.retryLater();
       return null;
     }
     memo2?.decide();
-    if (notice.kind === "DISABLED" || notice.kind === "SNOOZED" || notice.kind === "UP_TO_DATE")
+    if (notice.kind === "DISABLED" || notice.kind === "UP_TO_DATE")
       return null;
     if (input2.entryPoint === "mcp" && recentHookNoticeExists(dir, notice.currentVersion, notice.kind === "UPGRADE_AVAILABLE" ? notice.latestVersion : null, now)) {
       return null;
@@ -66900,7 +68991,7 @@ function updateNoticeForEntryPoint(input2) {
         return null;
       return formatUpdateNoticeLine({ ...notice, from: claimed.from, to: claimed.to });
     }
-    return formatUpdateNoticeLine(notice);
+    return formatUpdateNoticeLine(notice, upgradeNoticeMode(input2, notice.kind === "UPGRADE_AVAILABLE" ? notice.latestVersion : null));
   } catch {
     return null;
   }
@@ -66919,9 +69010,9 @@ init_db();
 init_operations();
 init_note_derive();
 init_title();
-import fs11 from "fs";
-import path9 from "path";
-import { createHash as createHash7 } from "crypto";
+import fs14 from "fs";
+import path12 from "path";
+import { createHash as createHash9 } from "crypto";
 var NOTE_FILE_TAG = "source:note-file";
 var NOTE_FILE_MISSING_TAG = "source:note-file:missing";
 var NOTE_FILE_MAX_BYTES = 256 * 1024;
@@ -66980,8 +69071,8 @@ function discover(realDir) {
   const files = [];
   const symlinks = [];
   const walk = (abs) => {
-    for (const entry of fs11.readdirSync(abs, { withFileTypes: true })) {
-      const child = path9.join(abs, entry.name);
+    for (const entry of fs14.readdirSync(abs, { withFileTypes: true })) {
+      const child = path12.join(abs, entry.name);
       if (entry.isSymbolicLink()) {
         if (entry.name.toLowerCase().endsWith(".md"))
           symlinks.push(child);
@@ -67001,7 +69092,7 @@ function discover(realDir) {
   symlinks.sort();
   return { files, symlinks };
 }
-var relPath = (realDir, abs) => path9.relative(realDir, abs).split(path9.sep).join("/");
+var relPath = (realDir, abs) => path12.relative(realDir, abs).split(path12.sep).join("/");
 function parseProvenance(raw) {
   if (!raw)
     return {};
@@ -67015,10 +69106,10 @@ function parseProvenance(raw) {
 function ingestNoteDirectory(opts) {
   const maxFiles = opts.maxFiles ?? NOTE_DIR_MAX_FILES;
   const maxBytes = opts.maxBytes ?? NOTE_FILE_MAX_BYTES;
-  const realDir = fs11.realpathSync(opts.dir);
-  if (!fs11.statSync(realDir).isDirectory())
+  const realDir = fs14.realpathSync(opts.dir);
+  if (!fs14.statSync(realDir).isDirectory())
     throw new Error(`not a directory: ${opts.dir}`);
-  const dirId = createHash7("sha256").update(realDir).digest("hex").slice(0, 16);
+  const dirId = createHash9("sha256").update(realDir).digest("hex").slice(0, 16);
   const { files, symlinks } = discover(realDir);
   const presentRels = new Set(files.map((abs) => relPath(realDir, abs)));
   const result = {
@@ -67075,7 +69166,7 @@ function ingestNoteDirectory(opts) {
     report(rel, reason);
     let st;
     try {
-      st = fs11.lstatSync(abs);
+      st = fs14.lstatSync(abs);
     } catch {
       st = null;
     }
@@ -67085,7 +69176,7 @@ function ingestNoteDirectory(opts) {
   const declaredNameAt = /* @__PURE__ */ new Map();
   const statOf = (rel) => {
     try {
-      return fs11.lstatSync(path9.join(realDir, rel));
+      return fs14.lstatSync(path12.join(realDir, rel));
     } catch {
       return null;
     }
@@ -67121,7 +69212,7 @@ function ingestNoteDirectory(opts) {
       }
     };
     try {
-      stat = fs11.lstatSync(abs);
+      stat = fs14.lstatSync(abs);
     } catch (err) {
       skip(`unreadable: ${err.code ?? "error"}`);
       declaredNameAt.set(rel, "");
@@ -67154,12 +69245,12 @@ function ingestNoteDirectory(opts) {
         contentSkip(`larger than ${Math.round(maxBytes / 1024)} KB`);
         continue;
       }
-      const real = fs11.realpathSync(abs);
-      if (!real.startsWith(realDir + path9.sep)) {
+      const real = fs14.realpathSync(abs);
+      if (!real.startsWith(realDir + path12.sep)) {
         unreachableSkip("resolves outside the directory");
         continue;
       }
-      raw = fs11.readFileSync(real);
+      raw = fs14.readFileSync(real);
     } catch (err) {
       unreachableSkip(`unreadable: ${err.code ?? "error"}`);
       continue;
@@ -67196,7 +69287,7 @@ function ingestNoteDirectory(opts) {
       name,
       stat,
       unchanged: false,
-      contentHash: createHash7("sha256").update(raw).digest("hex"),
+      contentHash: createHash9("sha256").update(raw).digest("hex"),
       type,
       title: truncateTitle(cleanDescription || observations[0]),
       observations
@@ -67572,7 +69663,7 @@ function captureChatSession(input2) {
 // dist/core/turn-signal.js
 init_paths();
 init_operations();
-import { createHash as createHash8 } from "crypto";
+import { createHash as createHash10 } from "crypto";
 var DECISION_CUES = [
   /\b(?:we|i)(?:'ve| have|'ll| will)?\s+(?:decided|settled on|opted)\b/gi,
   /\bdecision\s*:/gi,
@@ -67639,7 +69730,7 @@ function captureChatTurn(input2) {
   const signal = classifyTurn(input2.userText, input2.assistantText);
   if (!signal)
     return { outcome: "skipped", reason: "no decision- or lesson-shaped move in this turn" };
-  const digest = createHash8("sha256").update(input2.userText).update("\0").update(input2.assistantText).digest("hex").slice(0, 12);
+  const digest = createHash10("sha256").update(input2.userText).update("\0").update(input2.assistantText).digest("hex").slice(0, 12);
   const name = `${input2.namePrefix}-${input2.sessionId}-${digest}`;
   remember({
     name,
@@ -67658,7 +69749,7 @@ function captureChatTurn(input2) {
 init_db();
 init_operations();
 init_paths();
-import { createHash as createHash9 } from "crypto";
+import { createHash as createHash11 } from "crypto";
 var DELEGATION_TYPE = "delegation";
 var DELEGATION_VERDICTS = ["unreviewed", "accepted", "rejected"];
 var ENVELOPE_MAX_BYTES = 4 * 1024 * 1024;
@@ -67719,8 +69810,8 @@ function trustFor(verdict) {
       return "untrusted-until-verified";
   }
 }
-function verdictLine(verdict, at, note2) {
-  const base = verdict === "unreviewed" ? "Verdict: unreviewed \u2014 the worker output is untrusted until the orchestrator verifies it" : `Verdict: ${verdict} by the orchestrator at ${at}`;
+function verdictLine(verdict, at2, note2) {
+  const base = verdict === "unreviewed" ? "Verdict: unreviewed \u2014 the worker output is untrusted until the orchestrator verifies it" : `Verdict: ${verdict} by the orchestrator at ${at2}`;
   return note2 ? `${base}. Note: ${clean(note2, 500)}` : base;
 }
 function recordDelegation(input2) {
@@ -67743,8 +69834,8 @@ function recordDelegation(input2) {
   const summary = summarizeEnvelope(parsed);
   const verdict = input2.verdict ?? "unreviewed";
   const trust = trustFor(verdict);
-  const envelopeSha256 = createHash9("sha256").update(input2.envelopeText).digest("hex");
-  const identityHash = createHash9("sha256").update(source).update("\0").update(envelopeSha256).digest("hex");
+  const envelopeSha256 = createHash11("sha256").update(input2.envelopeText).digest("hex");
+  const identityHash = createHash11("sha256").update(source).update("\0").update(envelopeSha256).digest("hex");
   const name = `delegation-${input2.promptSha256.slice(0, 12)}-${identityHash.slice(0, 8)}`;
   const existing = getDatabase().prepare("SELECT metadata FROM entities WHERE name = ?").get(name);
   if (existing) {
@@ -67761,19 +69852,19 @@ function recordDelegation(input2) {
     allowedSource = "envelope";
   const toolsLine = allowedTools === null ? "Allowed tools: not reported in the envelope" : `Allowed tools: ${allowedTools.length ? allowedTools.join(", ") : "none"}${granted ? " (granted by the orchestrator)" : ""}`;
   const envelopeDisagrees = granted && summary.allowedTools && [...granted].sort().join("\0") !== [...summary.allowedTools].sort().join("\0");
-  const at = (/* @__PURE__ */ new Date()).toISOString();
+  const at2 = (/* @__PURE__ */ new Date()).toISOString();
   const usageText = USAGE_KEYS.filter((k) => summary.usage[k] !== void 0).map((k) => `${k}=${summary.usage[k]}`).join(", ");
   remember({
     name,
     type: DELEGATION_TYPE,
-    title: `${at.slice(0, 10)} delegation to ${summary.model ?? "worker"} (${summary.mode})`,
+    title: `${at2.slice(0, 10)} delegation to ${summary.model ?? "worker"} (${summary.mode})`,
     observations: [
       `Delegated to ${summary.model ?? "an unnamed model"} (${summary.mode} mode); prompt sha256 ${input2.promptSha256}`,
       toolsLine,
       ...envelopeDisagrees ? [`Allowed tools mismatch: the envelope reports ${summary.allowedTools.join(", ") || "none"}`] : [],
       `Result: ok=${summary.ok}, finish_reason=${summary.finishReason ?? "none"}`,
       usageText ? `Usage: ${usageText}` : "Usage: not reported in the envelope",
-      verdictLine(verdict, at),
+      verdictLine(verdict, at2),
       ...input2.followUp ? [`Follow-up: ${clean(input2.followUp, 500)}`] : []
     ],
     tags: [`source:${source}`, `project:${input2.project}`],
@@ -67782,7 +69873,7 @@ function recordDelegation(input2) {
       source,
       trust,
       verdict,
-      ...verdict !== "unreviewed" ? { verified_at: at } : {},
+      ...verdict !== "unreviewed" ? { verified_at: at2 } : {},
       prompt_sha256: input2.promptSha256,
       envelope_sha256: envelopeSha256,
       model: summary.model,
@@ -67806,14 +69897,14 @@ function setDelegationVerdict(input2) {
   if (row.type !== DELEGATION_TYPE || !SHA256_RE.test(String(provenance.prompt_sha256))) {
     throw new DelegationInputError(`"${input2.name}" is not a delegation record`);
   }
-  const at = (/* @__PURE__ */ new Date()).toISOString();
+  const at2 = (/* @__PURE__ */ new Date()).toISOString();
   const trust = trustFor(input2.verdict);
   remember({
     name: input2.name,
     type: DELEGATION_TYPE,
-    observations: [verdictLine(input2.verdict, at, input2.note)],
+    observations: [verdictLine(input2.verdict, at2, input2.note)],
     trustOverride: input2.verdict === "accepted" ? "trusted" : "untrusted",
-    provenanceOverride: { ...provenance, trust, verdict: input2.verdict, verified_at: at },
+    provenanceOverride: { ...provenance, trust, verdict: input2.verdict, verified_at: at2 },
     sourceHost: "cli"
   });
   return {
@@ -67826,11 +69917,11 @@ function setDelegationVerdict(input2) {
 
 // dist/core/setup.js
 init_install_hooks();
-import fs15 from "fs";
-import path13 from "path";
+import fs18 from "fs";
+import path16 from "path";
 function inspectClaudeCode(seams) {
-  const claudeDir = path13.join(seams.home(), ".claude");
-  const present = fs15.existsSync(claudeDir);
+  const claudeDir = path16.join(seams.home(), ".claude");
+  const present = fs18.existsSync(claudeDir);
   const status = {
     host: "claude-code",
     title: "Claude Code",
@@ -67844,13 +69935,13 @@ function inspectClaudeCode(seams) {
     status.wiredDetail = "not on this machine \u2014 nothing to wire";
     return status;
   }
-  const plugin = detectPluginRuntime(seams.installedPluginsPath ?? path13.join(claudeDir, "plugins", "installed_plugins.json"));
+  const plugin = detectPluginRuntime(seams.installedPluginsPath ?? path16.join(claudeDir, "plugins", "installed_plugins.json"));
   if (plugin) {
     status.wired = true;
     status.wiredDetail = `plugin v${plugin.version} manages hooks, MCP and skills (installed_plugins.json)`;
     return status;
   }
-  const settingsPath = path13.join(claudeDir, "settings.json");
+  const settingsPath = path16.join(claudeDir, "settings.json");
   const hooksWired = settingsHaveMemeshHooks(settingsPath);
   let mcpWired = null;
   let mcpDetail;
@@ -67922,10 +70013,10 @@ function inspectGemini(seams) {
   };
   if (!present)
     return status;
-  const settingsPath = path13.join(seams.home(), ".gemini", "settings.json");
+  const settingsPath = path16.join(seams.home(), ".gemini", "settings.json");
   let wired = false;
   try {
-    const parsed = JSON.parse(fs15.readFileSync(settingsPath, "utf8"));
+    const parsed = JSON.parse(fs18.readFileSync(settingsPath, "utf8"));
     wired = Boolean(parsed.mcpServers && Object.prototype.hasOwnProperty.call(parsed.mcpServers, "memesh"));
   } catch {
   }
@@ -68047,12 +70138,12 @@ function isPromptAbort(err) {
 }
 function isOnPath(tool) {
   const exts = process.platform === "win32" ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean) : [""];
-  for (const dir of (process.env.PATH ?? "").split(path21.delimiter)) {
+  for (const dir of (process.env.PATH ?? "").split(path24.delimiter)) {
     if (!dir)
       continue;
     for (const ext of exts) {
       try {
-        fs24.accessSync(path21.join(dir, tool + ext), fs24.constants.X_OK);
+        fs27.accessSync(path24.join(dir, tool + ext), fs27.constants.X_OK);
         return true;
       } catch {
       }
@@ -68062,7 +70153,7 @@ function isOnPath(tool) {
 }
 function createHostConfigAtomically(host, configPath, config2) {
   try {
-    fs24.writeFileSync(configPath, `${JSON.stringify(config2, null, 2)}
+    fs27.writeFileSync(configPath, `${JSON.stringify(config2, null, 2)}
 `, { flag: "wx", mode: 384 });
   } catch (error62) {
     if (error62.code === "EEXIST") {
@@ -68079,9 +70170,9 @@ function wireUserHooks() {
   const r = installHooks({ pluginRoot: packageRoot2, pluginVersion: pkg.version, scope: "user" });
   return `hooks: added ${r.added}, skipped ${r.skipped} already-installed${r.backupPath ? ` (backup: ${r.backupPath})` : ""}`;
 }
-var packageJsonPath2 = path21.resolve(path21.dirname(fileURLToPath3(import.meta.url)), "../../../package.json");
-var packageRoot2 = path21.dirname(packageJsonPath2);
-var pkg = JSON.parse(fs24.readFileSync(packageJsonPath2, "utf8"));
+var packageRoot2 = findPackageRoot(import.meta.url);
+var packageJsonPath2 = path24.join(packageRoot2, "package.json");
+var pkg = JSON.parse(fs27.readFileSync(packageJsonPath2, "utf8"));
 var RECALL_OMITTED_HINT = "omitted to keep the response under size \u2014 narrow the query, or use memesh export for the full text";
 var RECALL_SCAN_NOTE = "The search index is out of date; these results come from a scan of the stored text.";
 var program2 = new Command();
@@ -68377,13 +70468,13 @@ program2.command("export").description("Export memories as JSON. Defaults to std
     });
     const json2 = JSON.stringify(result, null, 2);
     if (opts.out) {
-      const outDir = path21.dirname(path21.resolve(opts.out));
-      if (!fs24.existsSync(outDir)) {
+      const outDir = path24.dirname(path24.resolve(opts.out));
+      if (!fs27.existsSync(outDir)) {
         console.error(`Error: cannot write ${opts.out} \u2014 the directory ${outDir} does not exist.`);
         console.error(`       Create it first (mkdir -p ${shellQuote(outDir)}), or drop -o to write to stdout.`);
         process.exit(1);
       }
-      fs24.writeFileSync(opts.out, json2 + "\n");
+      fs27.writeFileSync(opts.out, json2 + "\n");
       process.stderr.write(`\u2705 Exported ${result.entity_count} entities to ${opts.out}
 `);
     } else {
@@ -68455,7 +70546,7 @@ program2.command("import").description("Import memories from a JSON export file,
   await withDatabase(async () => {
     let raw;
     try {
-      raw = fs24.readFileSync(file2, "utf8");
+      raw = fs27.readFileSync(file2, "utf8");
     } catch (err) {
       if (err?.code === "ENOENT") {
         console.error(`Error: file not found: ${file2}`);
@@ -68812,16 +70903,16 @@ agentCmd.command("setup").description("Write this host's local config (a stable 
   if (opts.model !== void 0) {
     process.stderr.write("--model is ignored: no host tells MeMesh which model a session runs, so discovery shows none.\n");
   }
-  const messageDir = path21.dirname(getDbPath());
-  const hostsDir = path21.join(messageDir, "hosts");
-  fs24.mkdirSync(hostsDir, { recursive: true, mode: 448 });
-  const hostsStat = fs24.lstatSync(hostsDir);
+  const messageDir = path24.dirname(getDbPath());
+  const hostsDir = path24.join(messageDir, "hosts");
+  fs27.mkdirSync(hostsDir, { recursive: true, mode: 448 });
+  const hostsStat = fs27.lstatSync(hostsDir);
   if (!hostsStat.isDirectory() || hostsStat.isSymbolicLink() || (hostsStat.mode & 63) !== 0) {
     throw new Error("The managed host config directory must be a real owner-private directory.");
   }
   const filename = host === "gemini" ? "gemini-acp.json" : `${host}.json`;
-  const configPath = path21.join(hostsDir, filename);
-  const routerTokenFile = path21.join(messageDir, "agent-router.token");
+  const configPath = path24.join(hostsDir, filename);
+  const routerTokenFile = path24.join(messageDir, "agent-router.token");
   ensureRouterTokenFile(routerTokenFile);
   const common = {
     router_socket: getAgentRouterSocketPath(),
@@ -68833,14 +70924,14 @@ agentCmd.command("setup").description("Write this host's local config (a stable 
   let sessionWorkspace;
   if (host === "codex-session") {
     try {
-      sessionWorkspace = fs24.realpathSync(path21.resolve(opts.workspace));
+      sessionWorkspace = fs27.realpathSync(path24.resolve(opts.workspace));
     } catch (error62) {
       if (error62 instanceof Error)
         error62.message = `--workspace: ${error62.message}`;
       throw error62;
     }
   }
-  const config2 = host === "codex-session" ? { ...common, workspace: sessionWorkspace } : host === "codex" ? { ...common, control_socket: path21.join(hostsDir, "codex-app-server.sock"), workspace: path21.resolve(opts.workspace) } : host === "claude" ? { ...common, server_name: "memesh-channel" } : { ...common, workspace: path21.resolve(opts.workspace), command: "gemini", args: [] };
+  const config2 = host === "codex-session" ? { ...common, workspace: sessionWorkspace } : host === "codex" ? { ...common, control_socket: path24.join(hostsDir, "codex-app-server.sock"), workspace: path24.resolve(opts.workspace) } : host === "claude" ? { ...common, server_name: "memesh-channel" } : { ...common, workspace: path24.resolve(opts.workspace), command: "gemini", args: [] };
   createHostConfigAtomically(host, configPath, config2);
   const launchCommand = host === "codex-session" ? null : host === "codex" ? `memesh-host-codex --config ${shellQuote(configPath)}` : host === "claude" ? "claude --dangerously-load-development-channels server:memesh-channel" : `memesh-host-acp --config ${shellQuote(configPath)}`;
   const registrationCommand = host === "claude" ? `claude mcp add --transport stdio --scope user memesh-channel -- memesh-host-claude --config ${shellQuote(configPath)}` : null;
@@ -68963,7 +71054,7 @@ program2.command("why").description("Explain a file: commits memesh remembers to
   });
 });
 program2.command("setup").description("Detect Claude Code / Codex / Gemini on this machine, wire memesh into each, and verify").option("--check", "Only report wiring status per host; change nothing (exit 1 if a present host is unwired)").option("--yes", "Apply every wiring action without asking").action(async (opts) => {
-  const { spawnSync, execFileSync: execFileSync8 } = await import("child_process");
+  const { spawnSync: spawnSync2, execFileSync: execFileSync8 } = await import("child_process");
   const runSeam = (cmd, args) => {
     try {
       let target = cmd;
@@ -68975,7 +71066,7 @@ program2.command("setup").description("Detect Claude Code / Codex / Gemini on th
           useShell = /\.(cmd|bat)$/i.test(resolved);
         }
       }
-      const r = spawnSync(target, args, { encoding: "utf8", shell: useShell });
+      const r = spawnSync2(target, args, { encoding: "utf8", shell: useShell });
       return { status: r.status, stderr: r.stderr ?? "" };
     } catch (err) {
       return { status: null, stderr: err instanceof Error ? err.message : String(err) };
@@ -69183,7 +71274,7 @@ configCmd.command("get").description("Show one stored config value (for `briefin
   const row = buildConfigListing(readConfig()).find((r) => r.key === key);
   console.log(row ? row.value : `${key} is not set in config.json`);
 });
-configCmd.command("set").description(`Set an ordinary config value: autoCapture (true|false), sessionLimit (a whole number, ${SESSION_LIMIT_MIN}-${SESSION_LIMIT_MAX}), autoUpdate (off|patch|minor|major), updateCheck (true|false), briefing (minimal|standard|full \u2014 controls what a session start gets; MEMESH_BRIEFING env var overrides this)`).argument("<key>", "Config key \u2014 see `memesh config list` for valid keys").argument("<value>", "Config value \u2014 see this command's description for each key's valid values").action((key, value) => {
+configCmd.command("set").description(`Set an ordinary config value: autoCapture (true|false), sessionLimit (a whole number, ${SESSION_LIMIT_MIN}-${SESSION_LIMIT_MAX}), autoUpdate (off|patch|minor|major \u2014 the largest version bump MeMesh may install by itself; major when unset in the default ~/.memesh outside CI and containers, where it is off unless set; off stops all automatic updates, wherever it is set: config set autoUpdate off also writes the account config), updateCheck (true|false), briefing (minimal|standard|full \u2014 controls what a session start gets; MEMESH_BRIEFING env var overrides this)`).argument("<key>", "Config key \u2014 see `memesh config list` for valid keys").argument("<value>", "Config value \u2014 see this command's description for each key's valid values").action((key, value) => {
   requireAllowedKey(key);
   const validate2 = KEY_VALIDATORS[key];
   if (validate2) {
@@ -69203,6 +71294,27 @@ configCmd.command("set").description(`Set an ordinary config value: autoCapture 
   updateConfig({ [key]: coerced });
   const displayValue = String(value);
   console.log(`\u2705 Set ${key} = ${displayValue}`);
+  if (key === "autoUpdate" && value !== "off") {
+    void Promise.resolve().then(() => (init_auto_update(), auto_update_exports)).then(({ accountMemeshDir: accountMemeshDir2, accountConfigHolding: accountConfigHolding2 }) => {
+      const held = accountConfigHolding2(getConfigDir(), accountMemeshDir2());
+      if (held === null)
+        return;
+      console.log(held.kind === "off" ? `   Automatic updates are still off: ${held.path} says off, and that one wins. Set it there too: MEMESH_DIR=${path24.dirname(held.path)} memesh config set autoUpdate ${value}` : `   Automatic updates are still off: ${held.path} cannot be read (${held.why}), and an unreadable config counts as off. Repair or delete that file, then set it there too: MEMESH_DIR=${path24.dirname(held.path)} memesh config set autoUpdate ${value}`);
+    });
+  }
+  if (key === "autoUpdate" && value === "off") {
+    void Promise.resolve().then(() => (init_auto_update(), auto_update_exports)).then(({ accountMemeshDir: accountMemeshDir2, propagateOff: propagateOff2 }) => {
+      const out = propagateOff2(getConfigDir(), accountMemeshDir2());
+      if (out.path === null)
+        return;
+      if (out.error === null) {
+        console.log(`   Also written to ${out.path}, so a MeMesh started without MEMESH_DIR sees it too.`);
+      } else {
+        console.error(`\u26A0\uFE0F  Could not write it to ${out.path} (${out.error}): a MeMesh started without MEMESH_DIR may still update. Set MEMESH_AUTO_UPDATE=off there.`);
+        process.exitCode = 1;
+      }
+    });
+  }
 });
 configCmd.command("unset").description("Remove a config value (ordinary settings only)").argument("<key>", "Config key \u2014 see `memesh config list` for valid keys").action((key) => {
   requireAllowedKey(key);
@@ -69213,6 +71325,14 @@ configCmd.command("unset").description("Remove a config value (ordinary settings
     return;
   }
   console.log(`\u2705 Removed ${key}`);
+  if (key === "autoUpdate") {
+    void Promise.resolve().then(() => (init_auto_update(), auto_update_exports)).then(({ accountMemeshDir: accountMemeshDir2, accountConfigHolding: accountConfigHolding2 }) => {
+      const held = accountConfigHolding2(getConfigDir(), accountMemeshDir2());
+      if (held === null)
+        return;
+      console.log(held.kind === "off" ? `   Automatic updates are still off: ${held.path} says off. Remove it there too: MEMESH_DIR=${path24.dirname(held.path)} memesh config unset autoUpdate` : `   Automatic updates are still off: ${held.path} cannot be read (${held.why}), and an unreadable config counts as off. Repair or delete that file.`);
+    });
+  }
 });
 program2.command("export-schema").description("Export MeMesh tools in OpenAI function calling format").option("--format <format>", "Output format (openai)", "openai").action(async (opts) => {
   const { exportOpenAITools: exportOpenAITools2 } = await Promise.resolve().then(() => (init_schema_export(), schema_export_exports));
@@ -69251,12 +71371,19 @@ program2.command("serve").description("Start the HTTP API server").option("--por
   const { startServer: startServer2 } = await Promise.resolve().then(() => (init_server(), server_exports));
   try {
     startServer2(opts.host, opts.port, { allowRemote: opts.allowRemote, autoUpdateCheck: true });
+    void Promise.resolve().then(() => (init_auto_update(), auto_update_exports)).then(({ ATTEMPT_INTERVAL_MS: ATTEMPT_INTERVAL_MS2, dispatchAutoUpdate: dispatchAutoUpdate2 }) => {
+      const dispatch = () => {
+        void dispatchAutoUpdate2(packageRoot2);
+      };
+      dispatch();
+      setInterval(dispatch, ATTEMPT_INTERVAL_MS2).unref();
+    });
   } catch (err) {
     console.error(`MeMesh: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
   }
 });
-program2.command("update").description("Update MeMesh to latest version (npm global installs)").action(async () => {
+program2.command("update").description("Update MeMesh now, the same verified way the automatic update does (npm global and plugin installs)").option("--reinstall", "Put this version back through the same checks instead of moving to a newer one (repairs a damaged or unverifiable install)").action(async (opts) => {
   const { getCurrentInstallChannel: getCurrentInstallChannel2, getInstallChannelSupport: getInstallChannelSupport2 } = await Promise.resolve().then(() => (init_install_channel(), install_channel_exports));
   const install = getCurrentInstallChannel2({ packageRoot: packageRoot2 });
   const installSupport = getInstallChannelSupport2(install, packageRoot2);
@@ -69265,49 +71392,32 @@ program2.command("update").description("Update MeMesh to latest version (npm glo
     console.error(`   ${installSupport.guidance}`);
     process.exit(1);
   }
-  const { checkForUpdate: checkForUpdate2 } = await Promise.resolve().then(() => (init_version_check(), version_check_exports));
-  const check2 = await checkForUpdate2(pkg.version);
-  if (!check2.checkSucceeded || !check2.latestVersion) {
-    console.error("\u274C Unable to check npm for the latest MeMesh version right now.");
-    console.error("   Try again later, or update manually: npm install -g @pcircle/memesh@latest");
-    process.exit(1);
-  }
-  if (!check2.updateAvailable) {
-    console.log(`\u2705 Already on latest version (${pkg.version})`);
-    return;
-  }
-  console.log(`\u{1F504} Updating ${pkg.version} \u2192 ${check2.latestVersion}...`);
-  try {
-    const { runGlobalUpdate: runGlobalUpdate2 } = await Promise.resolve().then(() => (init_updater(), updater_exports));
-    const result = runGlobalUpdate2(check2.latestVersion);
-    console.log(`\u2705 Updated to ${result.installedVersion}`);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "unknown error";
-    console.error(`\u274C Update failed: ${message}`);
-    console.error("   This command supports npm global installs.");
-    console.error("   Try manually: npm install -g @pcircle/memesh@latest");
-    process.exit(1);
-  }
+  const { runManualUpdate: runManualUpdate2 } = await Promise.resolve().then(() => (init_auto_update(), auto_update_exports));
+  console.log(opts.reinstall ? `\u{1F504} Reinstalling MeMesh ${pkg.version}: its source is verified before anything is installed...` : `\u{1F504} Checking for a newer MeMesh than ${pkg.version} and verifying it before anything is installed...`);
+  const result = runManualUpdate2(packageRoot2, void 0, { reinstall: opts.reinstall === true });
+  for (const line of result.lines)
+    (result.code === 0 ? console.log : console.error)(line);
+  process.exit(result.code);
 });
 function resolveUpgradePluginScript(packageRootPath, pluginCacheRoot, pluginRegistryPath) {
   const roots = versionedPluginCacheRoots(pluginCacheRoot);
   const newestRoot = roots[roots.length - 1];
-  const bundled = path21.join(packageRootPath, "scripts", "upgrade-plugin.sh");
-  const hasRepairTarget = Boolean(newestRoot || pluginRegistryPath && fs24.existsSync(pluginRegistryPath));
-  if (fs24.existsSync(bundled) && hasRepairTarget) {
-    return { script: bundled, newest: newestRoot ? path21.basename(newestRoot) : null };
+  const bundled = path24.join(packageRootPath, "scripts", "upgrade-plugin.sh");
+  const hasRepairTarget = Boolean(newestRoot || pluginRegistryPath && fs27.existsSync(pluginRegistryPath));
+  if (fs27.existsSync(bundled) && hasRepairTarget) {
+    return { script: bundled, newest: newestRoot ? path24.basename(newestRoot) : null };
   }
   if (!newestRoot)
     return null;
-  const newest = path21.basename(newestRoot);
-  const script = path21.join(newestRoot, "scripts", "upgrade-plugin.sh");
+  const newest = path24.basename(newestRoot);
+  const script = path24.join(newestRoot, "scripts", "upgrade-plugin.sh");
   return { script, newest };
 }
-program2.command("upgrade-plugin").description("Upgrade the Claude Code plugin install (finds and runs its bundled upgrade script)").action(async () => {
-  const { spawnSync } = await import("child_process");
+program2.command("upgrade-plugin").description("Repair the Claude Code plugin install: puts back the commit it recorded (use `memesh update` to move to a newer release)").action(async () => {
+  const { spawnSync: spawnSync2 } = await import("child_process");
   const configRoot = pluginHostConfigRoot("claude-code");
-  const cacheRoot = path21.join(configRoot, "plugins", "cache", "pcircle-memesh", "memesh");
-  const registryPath = path21.join(configRoot, "plugins", "installed_plugins.json");
+  const cacheRoot = path24.join(configRoot, "plugins", "cache", "pcircle-memesh", "memesh");
+  const registryPath = path24.join(configRoot, "plugins", "installed_plugins.json");
   const resolved = resolveUpgradePluginScript(packageRoot2, cacheRoot, registryPath);
   if (!resolved) {
     console.error(`No Claude Code plugin install found (looked in ${cacheRoot}).`);
@@ -69316,7 +71426,7 @@ program2.command("upgrade-plugin").description("Upgrade the Claude Code plugin i
     process.exit(1);
   }
   const { script, newest } = resolved;
-  if (!fs24.existsSync(script)) {
+  if (!fs27.existsSync(script)) {
     console.error(`Plugin install found${newest ? ` (v${newest})` : ""}, but it has no scripts/upgrade-plugin.sh \u2014 plugin versions before 4.2.5 shipped without it.`);
     console.error("Reinstall once from the Claude Code /plugin UI, or run the npm-global copy directly:");
     console.error('  bash "$(npm prefix -g)/lib/node_modules/@pcircle/memesh/scripts/upgrade-plugin.sh"');
@@ -69334,7 +71444,7 @@ program2.command("upgrade-plugin").description("Upgrade the Claude Code plugin i
       console.error(installHints[tool]);
     process.exit(1);
   }
-  const run = spawnSync("bash", [script], {
+  const run = spawnSync2("bash", [script], {
     stdio: "inherit",
     env: { ...process.env, CLAUDE_CONFIG_DIR: configRoot }
   });
@@ -69349,10 +71459,10 @@ program2.command("upgrade-plugin").description("Upgrade the Claude Code plugin i
 var kgCmd = program2.command("kg").description("Knowledge graph maintenance");
 function backUpDatabase(label) {
   const dbPath = getDbPath();
-  const backupDir = path21.join(path21.dirname(dbPath), "backups");
+  const backupDir = path24.join(path24.dirname(dbPath), "backups");
   const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-  const backupPath = path21.join(backupDir, `kg-before-${label}-${stamp}.db`);
-  fs24.mkdirSync(backupDir, { recursive: true, mode: 448 });
+  const backupPath = path24.join(backupDir, `kg-before-${label}-${stamp}.db`);
+  fs27.mkdirSync(backupDir, { recursive: true, mode: 448 });
   getDatabase().prepare("VACUUM INTO ?").run(backupPath);
   return { dbPath, backupPath };
 }
@@ -69379,7 +71489,7 @@ kgCmd.command("backfill-relations").description("Propose relations that connect 
     minNameJaccard: opts.minJaccard
   };
   if (!opts.apply) {
-    if (!fs24.existsSync(getDbPath())) {
+    if (!fs27.existsSync(getDbPath())) {
       if (opts.json)
         console.log(JSON.stringify({ candidates: [], skippedOrphanIds: [] }, null, 2));
       else
@@ -69587,7 +71697,7 @@ Nothing written. Re-run with --apply to commit (the DB is backed up first).`);
     await withDatabase(() => run(to));
     return;
   }
-  if (!fs24.existsSync(getDbPath())) {
+  if (!fs27.existsSync(getDbPath())) {
     if (opts.from) {
       console.error(`Error: No MeMesh database at ${getDbPath()}, so nothing carries project ${opts.from}. Check HOME and MEMESH_DB_PATH.`);
       process.exitCode = 1;
@@ -69963,10 +72073,10 @@ _Diagnostics unavailable: doctor probe failed._`;
   if (opts.diagnostics !== false) {
     console.log("Re-run with --no-diagnostics to leave out the install ID and the doctor report.");
   }
-  const { spawn: spawn2 } = await import("child_process");
+  const { spawn: spawn3 } = await import("child_process");
   const { command, args } = feedbackBrowserOpenCommand(process.platform, url2);
   try {
-    const child = spawn2(command, args, { stdio: "ignore", detached: true });
+    const child = spawn3(command, args, { stdio: "ignore", detached: true });
     const opened = await new Promise((resolve2) => {
       child.once("spawn", () => resolve2(true));
       child.once("error", () => resolve2(false));
@@ -70030,7 +72140,54 @@ async function hermesInput(session) {
   }
 }
 var HERMES_BASE_TAGS = ["platform:hermes"];
-var hermesCmd = program2.command("hermes").description("Capture paths used by the Hermes Agent memory plugin (reads JSON on stdin, prints a JSON result)");
+var hermesCmd = program2.command("hermes").description("The Hermes Agent memory plugin: install it, and the capture paths it calls (those read JSON on stdin and print a JSON result)");
+hermesCmd.command("install").description("Install the Hermes memory provider from this MeMesh package, or refresh a copy MeMesh installed earlier. Automatic updates keep copies installed this way current.").option("--path <dir>", "Where to install it (default: $HERMES_HOME/plugins/memesh, HERMES_HOME defaulting to ~/.hermes). Inside a Hermes checkout use <checkout>/plugins/memory/memesh.").option("--force", "Replace a directory MeMesh did not install, or a copy you edited. The old directory is saved under the MeMesh data directory first.").action(async (opts) => {
+  const { HERMES_REASONS: HERMES_REASONS2, defaultInstallTarget: defaultInstallTarget2, installProvider: installProvider2, registerInstall: registerInstall2 } = await Promise.resolve().then(() => (init_hermes_provider(), hermes_provider_exports));
+  const sourceDir = path24.join(packageRoot2, "extensions", "hermes-memesh");
+  if (!fs27.existsSync(path24.join(sourceDir, "__init__.py"))) {
+    console.error(`Error: this MeMesh package does not contain the Hermes provider (looked in ${sourceDir}).`);
+    console.error("  Update MeMesh (memesh update), or copy extensions/hermes-memesh/ from the repository by hand.");
+    process.exit(1);
+  }
+  let target;
+  try {
+    target = typeof opts.path === "string" && opts.path !== "" ? path24.resolve(opts.path) : defaultInstallTarget2(process.env, null);
+  } catch (err) {
+    console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+  const memeshDataDir = getMemeshDirFromDbPath();
+  const result = installProvider2({
+    sourceDir,
+    target,
+    version: pkg.version,
+    force: Boolean(opts.force),
+    backupRoot: path24.join(memeshDataDir, "backups"),
+    now: /* @__PURE__ */ new Date()
+  });
+  if (result.outcome === "skipped" || result.outcome === "failed") {
+    console.error(`Hermes provider not installed at ${target}: ${result.reason}`);
+    if (result.outcome === "skipped" && result.reason.includes("symbolic link"))
+      console.error(`  ${HERMES_REASONS2.linkedHint}.`);
+    else if (result.outcome === "skipped" && result.reason === HERMES_REASONS2.busy)
+      console.error("  Run this command again in a minute.");
+    else if (result.outcome === "skipped")
+      console.error("  Re-run with --force to replace it; the old directory is saved first.");
+    process.exit(1);
+  }
+  console.log(`Hermes provider ${result.outcome} at ${target} (MeMesh ${pkg.version}).`);
+  if (result.backup)
+    console.log(`Previous copy saved at ${result.backup}`);
+  try {
+    registerInstall2(memeshDataDir, target);
+  } catch (err) {
+    console.error(`The copy is in place, but MeMesh could not record it for automatic updates (${err instanceof Error ? err.message : String(err)}): it will not be refreshed with MeMesh until that is fixed and this command is run again.`);
+    process.exit(1);
+  }
+  const { currentPolicy: currentPolicy2 } = await Promise.resolve().then(() => (init_auto_update(), auto_update_exports));
+  const refreshing = currentPolicy2().policy === "off" ? "Automatic updates are off, so this copy stays at this version until you run this command again." : "Automatic MeMesh updates keep this copy current.";
+  console.log(`Activate it with memory.provider: memesh in $HERMES_HOME/config.yaml, then restart Hermes. ${refreshing}`);
+});
 hermesCmd.command("capture-session").description(`Turn a Hermes message list ({"messages": [...]}) into the Stop hook's session-insight entities`).option("--session <id>", "Hermes session id (required)", hermesSessionId).action(async (opts) => {
   const body = await hermesInput(opts.session);
   if (!Array.isArray(body.messages)) {
@@ -70069,7 +72226,7 @@ hermesCmd.command("capture-turn").description('Store one Hermes turn ({"user": "
 function readLocalFile(flag, file2, maxBytes) {
   let stat;
   try {
-    stat = fs24.statSync(file2);
+    stat = fs27.statSync(file2);
   } catch (err) {
     console.error(`Error: ${flag} ${file2}: ${err.code ?? String(err)}`);
     process.exit(1);
@@ -70082,7 +72239,7 @@ function readLocalFile(flag, file2, maxBytes) {
     console.error(`Error: ${flag} ${file2} is larger than ${maxBytes} bytes.`);
     process.exit(1);
   }
-  return fs24.readFileSync(file2);
+  return fs27.readFileSync(file2);
 }
 function reportDelegationError(err) {
   if (err instanceof DelegationInputError) {
@@ -70099,7 +72256,7 @@ delegationCmd.command("record").description("Turn a worker JSON envelope into on
   }
   requireOneOf(opts.verdict, DELEGATION_VERDICTS, "--verdict");
   const envelopeText = readLocalFile("--envelope", opts.envelope, ENVELOPE_MAX_BYTES).toString("utf8");
-  const promptSha256 = createHash16("sha256").update(readLocalFile("--prompt-file", opts.promptFile, 64 * 1024 * 1024)).digest("hex");
+  const promptSha256 = createHash18("sha256").update(readLocalFile("--prompt-file", opts.promptFile, 64 * 1024 * 1024)).digest("hex");
   await withDatabase(() => {
     let result;
     try {
@@ -70193,7 +72350,7 @@ if (cliEntryPath && isExecutedModule(cliEntryPath, import.meta.url)) {
 }
 function isExecutedModule(entryPath, moduleUrl) {
   try {
-    return fs24.realpathSync(entryPath) === fs24.realpathSync(fileURLToPath3(moduleUrl));
+    return fs27.realpathSync(entryPath) === fs27.realpathSync(fileURLToPath4(moduleUrl));
   } catch {
     return false;
   }

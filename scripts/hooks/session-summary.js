@@ -6,30 +6,23 @@
 //
 import { join } from 'path';
 import { existsSync, readFileSync, writeSync } from 'fs';
-import { pathToFileURL } from 'url';
-import { setImmediate } from 'node:timers';
 import {
   AUTO_CAPTURE_TAG,
   captureEntity,
-  decideAutoUpdateHook,
   extractCitedMemoryIds,
   recallSessionPath,
   writePrivateJsonAtomic,
   getMemeshDirFromDbPath,
   getProjectName,
-  findAutoUpdateConsent,
   isAutoCaptureEnabled,
   openHookDb,
-  readUpdateCheckCache,
   redactSecrets,
   hookErrorReason,
   hookSourceHost,
   recordHookOutcome,
   recordHookRun,
   stampHookRunOnly,
-  resolvePluginRoot,
   SKIP_REASONS,
-  spawnAutoUpdate,
   truncateTitle,
 } from './_shared.js';
 import { createCodexState, finishCodex, readCodexRow } from './_codex-rollout.js';
@@ -38,42 +31,6 @@ import { runStopNotes } from './_stop-notes.js';
 // Edited file names from Bash and Edit/Write, under one path-shape rule
 // (#495). Generated from src/core/bash-edited-paths.ts — do not hand-edit.
 import { bashEditedFileNames, editedFileName, isPathShapedFileName, listEditedFiles } from './_generated/bash-edited-paths.js';
-
-let installChannel = null;
-try {
-  const pluginRoot = resolvePluginRoot(import.meta.url);
-  const modulePath = join(pluginRoot, 'dist/core/install-channel.js');
-  if (existsSync(modulePath)) {
-    installChannel = await import(pathToFileURL(modulePath).href);
-  }
-} catch {
-  // Best-effort: source checkouts may not have built dist output yet.
-}
-
-async function runAutoUpdateAtStop(sessionId) {
-  try {
-    const pluginRoot = resolvePluginRoot(import.meta.url);
-    const pkg = JSON.parse(readFileSync(join(pluginRoot, 'package.json'), 'utf8'));
-    const installedVersion = typeof pkg.version === 'string' ? pkg.version : null;
-    if (!installedVersion) return;
-
-    const cache = readUpdateCheckCache(installedVersion);
-    // Validate the target and cache freshness independently of the unattended
-    // policy. Only exact session/version/channel approval below permits action;
-    // this does not opt the owner into future automatic updates.
-    const decision = decideAutoUpdateHook(installedVersion, cache, 'major');
-    let channel = 'unknown';
-    try { channel = installChannel?.getCurrentInstallChannel({ packageRoot: pluginRoot }) ?? 'unknown'; } catch { /* best-effort */ }
-    const consent = decision.run
-      ? findAutoUpdateConsent(sessionId, installedVersion, decision.latest, channel)
-      : null;
-    if (decision.run && consent?.decision === 'approved') {
-      await spawnAutoUpdate(decision.latest, installChannel);
-    }
-  } catch {
-    // Best-effort: update failures must never break session capture.
-  }
-}
 
 // Parse a JSONL transcript file.
 // Handles the current Claude Code transcript format where tool_use/tool_result
@@ -743,11 +700,6 @@ process.stdin.on('end', async () => {
 });
 
 async function exit0() {
-  // All valid Stop paths, including short turns and capture opt-out, settle
-  // explicit update consent. Yield so enclosing capture finally blocks close
-  // their resources before installed files could change.
-  await new Promise(resolve => setImmediate(resolve));
-  if (payload) await runAutoUpdateAtStop(payload.session_id || 'unknown');
   // The one thing this hook may print (#324): the nudge. `systemMessage` is
   // the only Stop output Claude Code shows the user (Stop has no
   // hookSpecificOutput variant — tests/helpers/hook-output-contract.ts).

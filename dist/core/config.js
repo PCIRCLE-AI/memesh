@@ -137,6 +137,19 @@ export function updateConfig(partial) {
     writeRawConfig(raw);
     return selectConfig(raw);
 }
+export function updateConfigInDir(dir, partial) {
+    const saved = process.env.MEMESH_DIR;
+    process.env.MEMESH_DIR = dir;
+    try {
+        return updateConfig(partial);
+    }
+    finally {
+        if (saved === undefined)
+            delete process.env.MEMESH_DIR;
+        else
+            process.env.MEMESH_DIR = saved;
+    }
+}
 export function getConfigDir() {
     return configDir();
 }

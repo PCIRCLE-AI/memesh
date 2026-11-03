@@ -21,6 +21,9 @@
     "scripts/hooks/",
     "scripts/upgrade-plugin.sh",
     "skills/",
+    "extensions/hermes-memesh/",
+    "!extensions/hermes-memesh/**/__pycache__",
+  "!extensions/hermes-memesh/**/*.pyc",
     "docs/platforms/agent-messaging.md",
     ".claude-plugin/",
     ".codex-plugin/",
@@ -29,7 +32,8 @@
     "llms-install.md",
     "scripts/check-plugin-hook-artifact.mjs",
     "scripts/lib/npm-bin.mjs",
-    "AGENTS.md"
+    "AGENTS.md",
+    "npm-shrinkwrap.json"
   ],
   "scripts": {
     "build": "node scripts/check-schema-drift.mjs && tsc && node scripts/build-mcp-bundle.mjs && node scripts/build-cli-bundle.mjs && node scripts/generate-hook-core.mjs && node scripts/set-executable-bits.mjs && node scripts/generate-skills-manifest.mjs && node scripts/smoke-test.mjs",
@@ -50,6 +54,8 @@
     "release:finish": "node scripts/finish-release.mjs",
     "verify:artifact": "npm run verify:release && npm run test:isolated && npm run test:packaged && npm run test:packaged:upgrade",
     "prepublishOnly": "npm run build && npm run verify:artifact",
+    "prepack": "node scripts/shrinkwrap.mjs write",
+    "postpack": "node scripts/shrinkwrap.mjs remove",
     "typecheck": "tsc -p tsconfig.check.json",
     "lint": "node scripts/lint-tracked.mjs --max-warnings 0",
     "lint:fix": "node scripts/lint-tracked.mjs --fix",

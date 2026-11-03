@@ -87,8 +87,10 @@ describe('session-start banners cover every install channel', () => {
     expect(start, 'pluginUpgradeLine not found').toBeGreaterThan(-1);
     const body = src.slice(start, src.indexOf('\nfunction ', start + 1));
     expect(body, 'the helper does not consult the plugin host').toMatch(/pluginHostOf\(/);
-    expect(body, 'no Codex-specific command').toMatch(/codex plugin marketplace upgrade/);
-    expect(body, 'no Claude Code command').toMatch(/memesh upgrade-plugin/);
+    // Both hosts are sent to the one verified path. The old lines handed Codex `marketplace upgrade` and Claude `upgrade-plugin`,
+    // each of which installs the marketplace's current branch without the source check, the backup or the autoUpdate setting.
+    expect(body, 'no update command').toMatch(/memesh update/);
+    expect(body, 'still offers a host command that bypasses the verified update').not.toMatch(/codex plugin marketplace upgrade|memesh upgrade-plugin|npx @pcircle\/memesh/);
     // The three assertions above are satisfied by the strings merely being
     // PRESENT, and the defect here is a wrong mapping, not a missing string.
     // Measured: changing the predicate to `=== 'codex-disabled'` — so every
@@ -100,7 +102,7 @@ describe('session-start banners cover every install channel', () => {
     expect(
       body,
       "the codex branch no longer returns the codex command — the strings are all still there, the mapping is not",
-    ).toMatch(/if \(host === 'codex'\) \{[\s\S]{0,200}?codex plugin marketplace upgrade/);
+    ).toMatch(/if \(host === 'codex'\) \{[\s\S]{0,200}?memesh update/);
   });
 
   it("says so when it could not ask which host this is, rather than assuming Claude Code", () => {

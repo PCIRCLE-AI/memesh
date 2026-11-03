@@ -1,7 +1,6 @@
 export declare const UP_TO_DATE_REFRESH_MS: number;
 export declare const UPGRADE_AVAILABLE_REFRESH_MS: number;
 export declare const ANSWER_VALID_MS: number;
-export declare const SNOOZE_LEVEL_MS: readonly [number, number, number];
 export interface UpdateCheckCacheLike {
     currentVersion?: string | null;
     latestVersion?: string | null;
@@ -24,12 +23,6 @@ export type UpdateNotice = {
     reason: string;
     attempted: boolean;
 } | {
-    kind: 'SNOOZED';
-    currentVersion: string;
-    latestVersion: string;
-    until: string;
-    level: number;
-} | {
     kind: 'UPGRADE_AVAILABLE';
     currentVersion: string;
     latestVersion: string;
@@ -38,11 +31,6 @@ export type UpdateNotice = {
     currentVersion: string;
     latestVersion: string;
 };
-export interface SnoozeState {
-    target: string;
-    level: number;
-    since: string;
-}
 export interface JustUpgradedMarker {
     from: string;
     to: string;
@@ -50,10 +38,6 @@ export interface JustUpgradedMarker {
 }
 export declare function staleRunningProcessNotice(runningVersion: string, packageJsonPath: string | URL): string | null;
 export declare function isStrictlyOlder(a: string, b: string): boolean;
-export declare function readSnooze(dir: string): SnoozeState | null;
-export declare function writeSnooze(dir: string, target: string, now?: Date): SnoozeState;
-export declare function clearSnooze(dir: string): void;
-export declare function snoozeExpiresAt(state: SnoozeState): number;
 export declare function readJustUpgradedMarker(dir: string): JustUpgradedMarker | null;
 export declare function writeJustUpgradedMarker(dir: string, from: string, to: string, now?: Date): void;
 export declare function clearJustUpgradedMarker(dir: string): void;

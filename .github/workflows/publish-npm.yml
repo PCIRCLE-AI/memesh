@@ -3,6 +3,10 @@ name: Publish to npm
 on:
   release:
     types: [published, released]
+  # A retry must be started ON the release tag (`gh workflow run publish-npm.yml --ref vX.Y.Z -f release_tag=vX.Y.Z`): the signing
+  # certificate names the ref the workflow ran at, and the automatic updater only installs a release whose certificate says
+  # refs/tags/v<version>. Run from a branch, the release would be published and then refused by every machine; the first step below
+  # stops that before anything is published.
   workflow_dispatch:
     inputs:
       release_tag:
@@ -28,6 +32,18 @@ jobs:
       id-token: write
 
     steps:
+      - name: Run on a release tag
+        # GITHUB_REF is the ref this run was started at (a release event: its tag; a dispatch: the --ref given). Not an expression, so it
+        # is read from the environment, never put into the script text.
+        run: |
+          case "$GITHUB_REF" in
+            refs/tags/v*) ;;
+            *)
+              echo "::error::this workflow ran at $GITHUB_REF, not at a release tag (refs/tags/v*). A release published from here would be refused by the automatic updater of every install, because its signing certificate would not name a tag. Start it on the tag: gh workflow run publish-npm.yml --ref vX.Y.Z -f release_tag=vX.Y.Z"
+              exit 1
+              ;;
+          esac
+
       - name: Validate prerelease retry
         if: github.event_name == 'workflow_dispatch'
         env:
@@ -36,6 +52,8 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          # the run is on the tag it was asked to publish, not on another one
+          test "$GITHUB_REF" = "refs/tags/$RELEASE_TAG"
           test "$(gh release view "$RELEASE_TAG" --json isDraft,isPrerelease --jq '(.isDraft == false) and (.isPrerelease == true)')" = true
 
       - name: Checkout code
@@ -43,6 +61,28 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ inputs.release_tag || github.ref }}
+
+      - name: Release commit is on main
+        # The provenance this job produces names this commit, and the automatic
+        # updater installs what that provenance names. So the commit must be one
+        # that landed on main: a tag pushed on a side branch must not be able to
+        # produce an attested release. (The tag name is never put into this
+        # script; it checks the commit that was checked out.)
+        # This step catches mistakes. It is not what stops a hostile release:
+        # anybody who can push a branch can edit this file in that branch. Who
+        # can create a release tag at all is governed by the tag ruleset (26770214,
+        # "Only admins create release tags"), and the updater checks for itself
+        # that the attested commit is on main before it installs anything.
+        run: |
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+            git fetch --no-tags --unshallow origin main
+          else
+            git fetch --no-tags origin main
+          fi
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::$(git rev-parse HEAD) is not an ancestor of origin/main; refusing to publish a release that did not come from main."
+            exit 1
+          fi
 
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4

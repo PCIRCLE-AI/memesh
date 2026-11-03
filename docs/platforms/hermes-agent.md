@@ -37,8 +37,12 @@ plugins/memory/memesh/
 ```
 
 **Reference implementation**: source previously live-tested with MeMesh 4.5.1
-lives in this repo at [`extensions/hermes-memesh/`](../../extensions/hermes-memesh/) — copy
-it into a Hermes checkout as `plugins/memory/memesh/`. It includes the
+lives in this repo at [`extensions/hermes-memesh/`](../../extensions/hermes-memesh/) and
+ships inside the `@pcircle/memesh` package. Install it with `memesh hermes install`
+(into `$HERMES_HOME/plugins/memesh`, where Hermes finds user plugins), or with
+`memesh hermes install --path <checkout>/plugins/memory/memesh` for a Hermes checkout.
+A copy installed this way is kept current by MeMesh's automatic updates; a copy you
+edited, or one made by hand, is never overwritten without `--force`. It includes the
 session-boundary hooks (`on_pre_compress`/`on_session_end`/`on_session_switch`)
 whose synchronous-write requirement is explained under Troubleshooting and safety below.
 

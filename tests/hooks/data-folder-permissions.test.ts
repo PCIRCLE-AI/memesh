@@ -55,6 +55,44 @@ describe.skipIf(!posixUser)('#520: hooks and the data folder', () => {
     expect(r.stderr).toMatch(/could not record the session-start hook outcome/);
   });
 
+  const names = (dir: string) => fs.readdirSync(dir).sort();
+
+  it('path A (no database yet, updates on): a read-only data folder stays dr-x------ and gets no new file', () => {
+    fs.chmodSync(dataDir, 0o500);
+    const before = names(dataDir);
+    const r = spawnSync(process.execPath, [path.resolve('scripts/hooks/session-start.js')], {
+      input: JSON.stringify({ cwd: home }),
+      env: { ...process.env, HOME: home, USERPROFILE: home, MEMESH_DIR: dataDir, MEMESH_DB_PATH: path.join(dataDir, 'knowledge-graph.db'), MEMESH_AUTO_UPDATE: 'major' },
+      encoding: 'utf8', timeout: 15000,
+    });
+    expect(r.status).toBe(0);
+    expect(mode(dataDir)).toBe(0o500);
+    expect(names(dataDir)).toEqual(before);
+  });
+
+  it('path B (a database exists, updates on, the folder is read-only): the hook answers, the folder stays dr-x------, no file is added or changed', () => {
+    openDatabase(path.join(dataDir, 'knowledge-graph.db'));
+    closeDatabase();
+    for (const f of fs.readdirSync(dataDir)) fs.chmodSync(path.join(dataDir, f), 0o400);
+    fs.chmodSync(dataDir, 0o500);
+    const before = names(dataDir);
+    const sizes = Object.fromEntries(before.map((f) => [f, fs.statSync(path.join(dataDir, f)).size]));
+    const r = spawnSync(process.execPath, [path.resolve('scripts/hooks/session-start.js')], {
+      input: JSON.stringify({ cwd: home }),
+      env: { ...process.env, HOME: home, USERPROFILE: home, MEMESH_DIR: dataDir, MEMESH_DB_PATH: path.join(dataDir, 'knowledge-graph.db'), MEMESH_AUTO_UPDATE: 'major' },
+      encoding: 'utf8', timeout: 15000,
+    });
+    try {
+      expect(r.status).toBe(0);
+      expect(r.stdout.length).toBeGreaterThan(0);
+      expect(mode(dataDir)).toBe(0o500);
+      expect(names(dataDir)).toEqual(before);
+      for (const f of before) expect(fs.statSync(path.join(dataDir, f)).size).toBe(sizes[f]);
+    } finally {
+      for (const f of fs.readdirSync(dataDir)) { try { fs.chmodSync(path.join(dataDir, f), 0o600); } catch { /* gone */ } }
+    }
+  });
+
   it('a hook run makes a world-readable data folder owner-only', () => {
     fs.chmodSync(dataDir, 0o755);
     const r = runSessionStart();

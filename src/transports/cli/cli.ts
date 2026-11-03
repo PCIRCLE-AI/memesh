@@ -11,11 +11,12 @@ import {
 import type { MemeshDatabase } from '../../storage/sqlite.js';
 import { remember, recallForAgent, forget, exportMemories, importMemories, learn, setPinned } from '../../core/operations.js';
 import { agentRecallEnvelope } from '../../core/recall-agent-view.js';
-import { readConfig, updateConfig } from '../../core/config.js';
+import { getConfigDir, readConfig, updateConfig } from '../../core/config.js';
 import { SESSION_LIMIT_MIN, SESSION_LIMIT_MAX, resolveSessionLimit } from '../../core/session-limit.js';
 import { updateNoticeForEntryPoint } from '../../core/update-entrypoint.js';
 import { removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
-import { getAgentRouterSocketPath, getDbPath, getProjectName, homeDir, redactSecrets, redactUserPaths } from '../../core/paths.js';
+import { findPackageRoot } from '../../core/package-root.js';
+import { getAgentRouterSocketPath, getDbPath, getMemeshDirFromDbPath, getProjectName, homeDir, redactSecrets, redactUserPaths } from '../../core/paths.js';
 import { agentScopeIdRejection, canonicalAgentScopeId, projectScopeRejection } from '../../core/agent-scope-id.js';
 import { NAMESPACES } from '../../core/types.js';
 import { deriveNote, splitObservations, NOTE_DEFAULT_TYPE, NOTE_MAX_OBSERVATIONS } from '../../core/note-derive.js';
@@ -310,11 +311,8 @@ function wireUserHooks(): string {
 
 // One list, in core. The CLI's private copy was the fourth.
 
-const packageJsonPath = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  '../../../package.json'
-);
-const packageRoot = path.dirname(packageJsonPath);
+const packageRoot = findPackageRoot(import.meta.url);
+const packageJsonPath = path.join(packageRoot, 'package.json');
 const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
 
 /** How human-readable `recall` says the size cap (#494) left results out. */
@@ -331,7 +329,7 @@ program
 
 // First-use update notice at the terminal (#308: any door). One stderr line,
 // once a day per installed version, from the same resolver the hooks use —
-// so a snooze or "never ask again" given in a session also silences the CLI.
+// so turning updates off (`updateCheck` false) also silences the CLI.
 // stderr, never stdout: commands that print JSON stay parseable. Commands
 // that ARE about updates or setup speak for themselves and are skipped.
 const UPDATE_NOTICE_SILENT_COMMANDS = new Set([
@@ -1910,7 +1908,7 @@ function requireAllowedKey(key: string): void {
 const KEY_VALIDATORS: Record<string, (value: string) => string | null> = {
   autoUpdate: (v) => ['off', 'patch', 'minor', 'major'].includes(v) ? null : 'must be one of: off, patch, minor, major',
   autoCapture: (v) => ['true', 'false', '1', '0'].includes(v) ? null : 'must be one of: true, false, 1, 0',
-  // "Never ask again" sets this to false from a hook; this is the way back.
+  // Turns the background version check off (false) or back on (true).
   updateCheck: (v) => ['true', 'false', '1', '0'].includes(v) ? null : 'must be one of: true, false, 1, 0',
   // #360 — reject here so a typo'd level is a loud CLI error, not a value
   // that only surfaces later as a traced-and-defaulted "invalid" reason.
@@ -2017,7 +2015,7 @@ configCmd
 configCmd
   .command('set')
   .description(`Set an ordinary config value: autoCapture (true|false), sessionLimit (a whole number, ${SESSION_LIMIT_MIN}-${SESSION_LIMIT_MAX}), `
-    + 'autoUpdate (off|patch|minor|major), updateCheck (true|false), '
+    + 'autoUpdate (off|patch|minor|major — the largest version bump MeMesh may install by itself; major when unset in the default ~/.memesh outside CI and containers, where it is off unless set; off stops all automatic updates, wherever it is set: config set autoUpdate off also writes the account config), updateCheck (true|false), '
     + 'briefing (minimal|standard|full — controls what a session start gets; MEMESH_BRIEFING env var overrides this)')
   .argument('<key>', 'Config key — see `memesh config list` for valid keys')
   .argument('<value>', 'Config value — see this command\'s description for each key\'s valid values')
@@ -2048,6 +2046,31 @@ configCmd
     updateConfig({ [key]: coerced } as never);
     const displayValue = String(value);
     console.log(`✅ Set ${key} = ${displayValue}`);
+    if (key === 'autoUpdate' && value !== 'off') {
+      // A different config (the account's own) may still say off, or be unreadable, which counts as off: this set does not reach it.
+      void import('../../core/auto-update.js').then(({ accountMemeshDir, accountConfigHolding }) => {
+        const held = accountConfigHolding(getConfigDir(), accountMemeshDir());
+        if (held === null) return;
+        console.log(held.kind === 'off'
+          ? `   Automatic updates are still off: ${held.path} says off, and that one wins. Set it there too: MEMESH_DIR=${path.dirname(held.path)} memesh config set autoUpdate ${value}`
+          : `   Automatic updates are still off: ${held.path} cannot be read (${held.why}), and an unreadable config counts as off. Repair or delete that file, then set it there too: MEMESH_DIR=${path.dirname(held.path)} memesh config set autoUpdate ${value}`);
+      });
+    }
+    if (key === 'autoUpdate' && value === 'off') {
+      // This process reads and writes the config of ITS data directory (MEMESH_DIR). A MeMesh started without that
+      // variable looks in the account's own ~/.memesh and would never see this off, and would update. An explicit
+      // off is written where every MeMesh looks.
+      void import('../../core/auto-update.js').then(({ accountMemeshDir, propagateOff }) => {
+        const out = propagateOff(getConfigDir(), accountMemeshDir());
+        if (out.path === null) return;
+        if (out.error === null) {
+          console.log(`   Also written to ${out.path}, so a MeMesh started without MEMESH_DIR sees it too.`);
+        } else {
+          console.error(`⚠️  Could not write it to ${out.path} (${out.error}): a MeMesh started without MEMESH_DIR may still update. Set MEMESH_AUTO_UPDATE=off there.`);
+          process.exitCode = 1;
+        }
+      });
+    }
 
   });
 
@@ -2064,6 +2087,16 @@ configCmd
       return;
     }
     console.log(`✅ Removed ${key}`);
+    if (key === 'autoUpdate') {
+      // An off set with `config set` was also written to the account's own config (see above); removing it here does not remove that.
+      void import('../../core/auto-update.js').then(({ accountMemeshDir, accountConfigHolding }) => {
+        const held = accountConfigHolding(getConfigDir(), accountMemeshDir());
+        if (held === null) return;
+        console.log(held.kind === 'off'
+          ? `   Automatic updates are still off: ${held.path} says off. Remove it there too: MEMESH_DIR=${path.dirname(held.path)} memesh config unset autoUpdate`
+          : `   Automatic updates are still off: ${held.path} cannot be read (${held.why}), and an unreadable config counts as off. Repair or delete that file.`);
+      });
+    }
   });
 
 // --- export-schema ---
@@ -2139,6 +2172,15 @@ program
       // autoUpdateCheck: a user-launched serve is online by definition, so it
       // fills the npm update cache itself instead of nagging the user to.
       startServer(opts.host, opts.port, { allowRemote: opts.allowRemote, autoUpdateCheck: true });
+      // A machine whose only MeMesh client is a long-running server (a Hermes host, say) runs no
+      // Claude or Codex hook, so nothing else would ever start the updater there. The server is
+      // not registered as a running host: replacing files under it is safe (it keeps running the
+      // old version until it restarts), and waiting for it would mean waiting for ever.
+      void import('../../core/auto-update.js').then(({ ATTEMPT_INTERVAL_MS, dispatchAutoUpdate }) => {
+        const dispatch = () => { void dispatchAutoUpdate(packageRoot); };
+        dispatch();
+        setInterval(dispatch, ATTEMPT_INTERVAL_MS).unref();
+      });
     } catch (err) {
       // startServer refuses a non-loopback bind without an opt-in, and the
       // refusal is a good actionable sentence. Thrown out of an async action
@@ -2152,8 +2194,9 @@ program
 // --- update ---
 program
   .command('update')
-  .description('Update MeMesh to latest version (npm global installs)')
-  .action(async () => {
+  .description('Update MeMesh now, the same verified way the automatic update does (npm global and plugin installs)')
+  .option('--reinstall', 'Put this version back through the same checks instead of moving to a newer one (repairs a damaged or unverifiable install)')
+  .action(async (opts: { reinstall?: boolean }) => {
     const { getCurrentInstallChannel, getInstallChannelSupport } = await import('../../core/install-channel.js');
     const install = getCurrentInstallChannel({ packageRoot });
     const installSupport = getInstallChannelSupport(install, packageRoot);
@@ -2164,40 +2207,22 @@ program
       process.exit(1);
     }
 
-    const { checkForUpdate } = await import('../../core/version-check.js');
-    const check = await checkForUpdate(pkg.version);
-
-    if (!check.checkSucceeded || !check.latestVersion) {
-      console.error('❌ Unable to check npm for the latest MeMesh version right now.');
-      console.error('   Try again later, or update manually: npm install -g @pcircle/memesh@latest');
-      process.exit(1);
-    }
-
-    if (!check.updateAvailable) {
-      console.log(`✅ Already on latest version (${pkg.version})`);
-      return;
-    }
-
-    console.log(`🔄 Updating ${pkg.version} → ${check.latestVersion}...`);
-
-    try {
-      const { runGlobalUpdate } = await import('../../core/updater.js');
-      const result = runGlobalUpdate(check.latestVersion);
-      console.log(`✅ Updated to ${result.installedVersion}`);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'unknown error';
-      console.error(`❌ Update failed: ${message}`);
-      console.error('   This command supports npm global installs.');
-      console.error('   Try manually: npm install -g @pcircle/memesh@latest');
-      process.exit(1);
-    }
+    // One path: the verified, reversible update the automatic updater takes (source check,
+    // database backup, pinned install, read-back). Not a bare `npm install -g`.
+    const { runManualUpdate } = await import('../../core/auto-update.js');
+    console.log(opts.reinstall
+      ? `🔄 Reinstalling MeMesh ${pkg.version}: its source is verified before anything is installed...`
+      : `🔄 Checking for a newer MeMesh than ${pkg.version} and verifying it before anything is installed...`);
+    const result = runManualUpdate(packageRoot, undefined, { reinstall: opts.reinstall === true });
+    for (const line of result.lines) (result.code === 0 ? console.log : console.error)(line);
+    process.exit(result.code);
   });
 
 // --- upgrade-plugin ---
 //
-// Claude Code's plugin marketplace pins versions at install time and never
-// auto-updates. The bundled scripts/upgrade-plugin.sh closes that gap, but
-// reaching it meant hand-substituting the installed version into
+// Claude Code's plugin marketplace pins versions at install time. This command only REPAIRS: the bundled
+// scripts/upgrade-plugin.sh puts back the commit the plugin registry recorded (it does not move to a newer one:
+// `memesh update` verifies a release first). Reaching the script meant hand-substituting the installed version into
 // ~/.claude/plugins/cache/pcircle-memesh/memesh/<version>/scripts/... — a
 // path shape most users get wrong on the first try. This command finds the
 // running MeMesh installation first, then the newest installed plugin version,
@@ -2224,7 +2249,7 @@ export function resolveUpgradePluginScript(
 
 program
   .command('upgrade-plugin')
-  .description('Upgrade the Claude Code plugin install (finds and runs its bundled upgrade script)')
+  .description('Repair the Claude Code plugin install: puts back the commit it recorded (use `memesh update` to move to a newer release)')
   .action(async () => {
     const { spawnSync } = await import('child_process');
     const configRoot = pluginHostConfigRoot('claude-code');
@@ -3195,7 +3220,56 @@ const HERMES_BASE_TAGS = ['platform:hermes'];
 
 const hermesCmd = program
   .command('hermes')
-  .description('Capture paths used by the Hermes Agent memory plugin (reads JSON on stdin, prints a JSON result)');
+  .description('The Hermes Agent memory plugin: install it, and the capture paths it calls (those read JSON on stdin and print a JSON result)');
+
+hermesCmd
+  .command('install')
+  .description('Install the Hermes memory provider from this MeMesh package, or refresh a copy MeMesh installed earlier. Automatic updates keep copies installed this way current.')
+  .option('--path <dir>', 'Where to install it (default: $HERMES_HOME/plugins/memesh, HERMES_HOME defaulting to ~/.hermes). Inside a Hermes checkout use <checkout>/plugins/memory/memesh.')
+  .option('--force', 'Replace a directory MeMesh did not install, or a copy you edited. The old directory is saved under the MeMesh data directory first.')
+  .action(async (opts) => {
+    const { HERMES_REASONS, defaultInstallTarget, installProvider, registerInstall } = await import('../../core/hermes-provider.js');
+    const sourceDir = path.join(packageRoot, 'extensions', 'hermes-memesh');
+    if (!fs.existsSync(path.join(sourceDir, '__init__.py'))) {
+      console.error(`Error: this MeMesh package does not contain the Hermes provider (looked in ${sourceDir}).`);
+      console.error('  Update MeMesh (memesh update), or copy extensions/hermes-memesh/ from the repository by hand.');
+      process.exit(1);
+    }
+    let target: string;
+    try {
+      target = typeof opts.path === 'string' && opts.path !== '' ? path.resolve(opts.path) : defaultInstallTarget(process.env, null);
+    } catch (err) {
+      // No HERMES_HOME and no home directory: say what to pass instead of crashing with a stack trace.
+      console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+    const memeshDataDir = getMemeshDirFromDbPath();
+    const result = installProvider({
+      sourceDir, target, version: pkg.version, force: Boolean(opts.force),
+      backupRoot: path.join(memeshDataDir, 'backups'), now: new Date(),
+    });
+    if (result.outcome === 'skipped' || result.outcome === 'failed') {
+      console.error(`Hermes provider not installed at ${target}: ${result.reason}`);
+      if (result.outcome === 'skipped' && result.reason.includes('symbolic link')) console.error(`  ${HERMES_REASONS.linkedHint}.`);
+      else if (result.outcome === 'skipped' && result.reason === HERMES_REASONS.busy) console.error('  Run this command again in a minute.');
+      else if (result.outcome === 'skipped') console.error('  Re-run with --force to replace it; the old directory is saved first.');
+      process.exit(1);
+    }
+    console.log(`Hermes provider ${result.outcome} at ${target} (MeMesh ${pkg.version}).`);
+    if (result.backup) console.log(`Previous copy saved at ${result.backup}`);
+    // The copy is in place either way; what registering decides is whether automatic updates will find it later.
+    try {
+      registerInstall(memeshDataDir, target);
+    } catch (err) {
+      console.error(`The copy is in place, but MeMesh could not record it for automatic updates (${err instanceof Error ? err.message : String(err)}): it will not be refreshed with MeMesh until that is fixed and this command is run again.`);
+      process.exit(1);
+    }
+    const { currentPolicy } = await import('../../core/auto-update.js');
+    const refreshing = currentPolicy().policy === 'off'
+      ? 'Automatic updates are off, so this copy stays at this version until you run this command again.'
+      : 'Automatic MeMesh updates keep this copy current.';
+    console.log(`Activate it with memory.provider: memesh in $HERMES_HOME/config.yaml, then restart Hermes. ${refreshing}`);
+  });
 
 hermesCmd
   .command('capture-session')

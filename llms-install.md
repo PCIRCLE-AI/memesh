@@ -273,23 +273,59 @@ codex mcp add memesh -- memesh-mcp
 
 This writes `[mcp_servers.memesh]` into `~/.codex/config.toml`.
 
-### Refresh a stale plugin cache
+### Refresh a damaged plugin cache
 
-If the configured marketplace snapshot is stale, refresh it and re-stage the
-plugin. `codex plugin add` replaces the installed cache atomically, so do not
-remove the working plugin first:
+To move to a newer release, do nothing (MeMesh updates itself, see "Updates"
+below) or run `memesh update`. To **repair** a damaged or unverifiable plugin
+cache, run:
 
 ```
-codex plugin marketplace upgrade pcircle-memesh
-codex plugin add memesh@pcircle-memesh
+memesh update --reinstall
 ```
+
+It puts this very version back through the same checks an update takes (the
+release's source is verified, your database is backed up, the commit is pinned and
+read back), for Claude Code and Codex alike. Do not use `codex plugin marketplace
+upgrade` or `memesh upgrade-plugin` for this: they install the marketplace's
+current branch, which is ahead of the last release and has not been checked.
+`memesh doctor --fix` starts the same reinstall in the background. No `memesh`
+command on your PATH (a plugin-only install)? Run the CLI the plugin ships:
+`node <plugin directory>/dist/transports/cli/cli.js update --reinstall`; `npx`
+cannot do it, because it runs a throwaway copy that is not your install.
 
 | Failure | Remedy |
 |---|---|
 | `command not found: codex` | Codex CLI itself is not installed — out of scope here; install it first, then re-run the add. |
-| Plugin-installed `memesh` is absent | Refresh and reinstall the plugin using the commands above, then restart Codex. |
+| Plugin-installed `memesh` is absent | Run `memesh update --reinstall` (above), then restart Codex. |
 | Manually registered `memesh` is absent | Re-run `codex mcp add memesh -- memesh-mcp` and re-check. |
 | Manual registration is listed, but tool calls fail | Run `command -v memesh-mcp`. Empty output means section 2 is incomplete or PATH is wrong — fix per section 2's table. |
+
+## Updates
+
+MeMesh updates itself by default, to every new version (patch, minor and major).
+It installs only a release whose npm provenance it has checked, backs up your
+database first, waits until your running sessions have ended (at most 3 days),
+and then replaces the files; the new version starts with your next session.
+npm-global installs, the Claude Code plugin and the Codex plugin are all covered.
+
+- **What it checks**: the release's npm provenance (built by this project's
+  release workflow at that version's tag), that its commit is part of `main` in
+  the official repository (asked of the host's compare service; no answer means no
+  install), and that it pins every dependency with a hash. It then installs
+  without running any install script, and applies the pinned dependency versions,
+  in the way each install method allows: an npm-global install rehearses the
+  pinned install first, then installs the verified package and runs `npm ci` from
+  its `npm-shrinkwrap.json`, and puts the previous version back if that fails; the
+  Claude Code plugin installs the dependencies with `npm ci` from the lockfile of
+  the release commit; the Codex plugin is installed from a self-contained bundle.
+- **See what it did**: `memesh doctor` (row "Automatic updates").
+- **Update right now**: `memesh update` (same checks, no waiting).
+- **Turn it off**: `memesh config set autoUpdate off`, or set the environment
+  variable `MEMESH_AUTO_UPDATE=off`. An explicit `off` is never overridden by an
+  automatic update. It does not stop you from running `memesh update` yourself:
+  that is an update you asked for, and it says the setting is still off.
+- **Limit it**: `memesh config set autoUpdate patch` (or `minor`) installs only
+  that size of change.
 
 ## 4. Cursor
 

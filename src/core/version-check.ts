@@ -497,7 +497,7 @@ export async function checkForUpdate(
     if (latestOutcome.outcome === 'ok') {
       // Version lookup succeeded. The deprecation sub-call's outcome
       // is surfaced via lastError (and via the version-aware
-      // staleness gate in decideAutoUpdateHook), so partial failure
+      // staleness gate), so partial failure
       // doesn't have to suppress the version-fresh signal. Hiding
       // latestVersion just because deprecation timed out would tell
       // the user "update unavailable" while in fact `memesh update`

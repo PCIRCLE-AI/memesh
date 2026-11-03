@@ -40,6 +40,8 @@ memesh doctor
 
 [Installation and update guide](llms-install.md) · [Other integrations](docs/platforms/README.md)
 
+**Updates are automatic.** MeMesh installs new releases by itself (every version) after checking the release's provenance and backing up your database, and waits until your running sessions have ended. It is on by default in your own `~/.memesh`, not in CI, in a container or in a data directory you pointed somewhere else (set `autoUpdate` there to turn it on). Turn it off with `memesh config set autoUpdate off`; update right now with `memesh update`; repair a damaged plugin with `memesh update --reinstall`; `memesh doctor` shows what it did.
+
 `PCIRCLE-AI/memesh` is the GitHub repository that supplies the marketplace. `memesh@pcircle-memesh` selects the `memesh` plugin from the `pcircle-memesh` marketplace.
 
 ## Let Codex and Claude Code collaborate

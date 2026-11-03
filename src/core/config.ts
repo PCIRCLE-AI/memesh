@@ -216,6 +216,20 @@ export function updateConfig(partial: Partial<MeMeshConfig>): MeMeshConfig {
   return selectConfig(raw);
 }
 
+/**
+ * `updateConfig` for another data directory than this process's own. The config writer takes its directory from
+ * MEMESH_DIR; this points it elsewhere for the duration of one synchronous write and puts it back.
+ */
+export function updateConfigInDir(dir: string, partial: Partial<MeMeshConfig>): MeMeshConfig {
+  const saved = process.env.MEMESH_DIR;
+  process.env.MEMESH_DIR = dir;
+  try {
+    return updateConfig(partial);
+  } finally {
+    if (saved === undefined) delete process.env.MEMESH_DIR; else process.env.MEMESH_DIR = saved;
+  }
+}
+
 export function getConfigDir(): string {
   return configDir();
 }

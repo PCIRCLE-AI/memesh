@@ -20,111 +20,14 @@
 
 import { pathToFileURL } from 'url';
 import {
-  findAutoUpdateConsent,
-  importFromPluginRoot,
   isAutoCaptureEnabled,
   hookErrorReason,
   SKIP_REASONS,
   recordHookOutcome,
-  markUpdatePromptAnswered,
-  memeshDir,
-  parseAutoUpdateConsent,
-  readUpdateCheckCache,
-  readUpdatePromptClaim,
-  resolvePluginRoot,
   unreadMessageLines,
   SESSION_ID_MISMATCH_REASON,
-  writeAutoUpdateConsent,
-  writeSnooze,
 } from './_shared.js';
-import { join } from 'path';
-import { existsSync, readFileSync, realpathSync } from 'fs';
-
-let installChannelMod = null;
-try {
-  const pluginRoot = resolvePluginRoot(import.meta.url);
-  const modulePath = join(pluginRoot, 'dist/core/install-channel.js');
-  if (existsSync(modulePath)) installChannelMod = await import(pathToFileURL(modulePath).href);
-} catch {
-  // Source checkouts without a build remain non-blocking and cannot self-update.
-}
-
-function currentInstallChannel() {
-  try {
-    return installChannelMod?.getCurrentInstallChannel({
-      packageRoot: resolvePluginRoot(import.meta.url),
-    }) ?? 'unknown';
-  } catch {
-    return 'unknown';
-  }
-}
-
-function currentInstalledVersion() {
-  try {
-    const pkg = JSON.parse(readFileSync(join(resolvePluginRoot(import.meta.url), 'package.json'), 'utf8'));
-    return typeof pkg.version === 'string' ? pkg.version : null;
-  } catch { return null; }
-}
-
-/**
- * Record the owner's answer to this session's first-use update notice.
- *
- * Returns 'approved' | 'declined' | 'never' | null. The answer counts only
- * when THIS session was actually shown the notice (a prompt claim exists for
- * session/current/latest), so a stray "no" in unrelated conversation is not
- * a decision about updates.
- *
- *   approved — npm-global only (the one channel with a hook-owned installer);
- *              other channels were told their manual action and cannot be
- *              approved into an install.
- *   declined — "Not now": escalating snooze for this target version, on
- *              every channel. A distinct newer target is offered again.
- *   never    — "Never ask again": config.updateCheck = false; also snoozed so
- *              a host that already read the old config stays quiet.
- */
-async function recordUpdateConsent(sessionId, prompt) {
-  const current = currentInstalledVersion();
-  if (!current || !sessionId) return null;
-  const cache = readUpdateCheckCache(current);
-  const latest = cache?.latestVersion;
-  if (typeof latest !== 'string' || !latest) return null;
-  const decision = parseAutoUpdateConsent(prompt);
-  if (!decision) return null;
-  const channel = currentInstallChannel();
-  const pending = channel === 'npm-global'
-    ? findAutoUpdateConsent(sessionId, current, latest, channel)
-    : null;
-  const claim = readUpdatePromptClaim(sessionId, current, latest);
-  // The notice must have been shown to THIS session and not answered yet.
-  // Once answered, later "no"/"later" in ordinary conversation is not a
-  // decision about updates (it used to escalate the snooze every time).
-  const open = (claim && claim.decision !== 'answered') || pending?.decision === 'pending';
-  if (!open) return null;
-
-  if (decision === 'approved') {
-    if (!pending || pending.decision !== 'pending') return null;
-    if (!writeAutoUpdateConsent(sessionId, current, latest, pending.channel ?? channel, 'approved')) return null;
-    markUpdatePromptAnswered(sessionId, current, latest, 'approved');
-    return 'approved';
-  }
-  // declined | never
-  try { writeSnooze(memeshDir(), latest); } catch { /* best-effort */ }
-  if (pending?.decision === 'pending') {
-    writeAutoUpdateConsent(sessionId, current, latest, pending.channel ?? channel, 'declined');
-  }
-  let recorded = decision;
-  if (decision === 'never') {
-    try {
-      const configMod = await importFromPluginRoot(resolvePluginRoot(import.meta.url), 'dist/core/config.js');
-      configMod.updateConfig({ updateCheck: false });
-    } catch (err) {
-      logError('user-prompt-intent', `could not persist updateCheck=false: ${err?.message || err}`);
-      recorded = 'declined';
-    }
-  }
-  markUpdatePromptAnswered(sessionId, current, latest, recorded);
-  return recorded;
-}
+import { realpathSync } from 'fs';
 
 // Patterns compiled at module load — invalid regex MUST fail loudly. Do
 // NOT move into a try block "for safety": a regex compile error is a
@@ -240,7 +143,7 @@ if (isMainModule) {
   // hook's only effect is the additionalContext it injects, so its outcome is
   // `notified`, not `wrote`: doctor's `writes` answers "is memory capture
   // still alive", and an injected hint is not a memory. Both branches that
-  // reach it — a remember intent and an update-consent decision — inject and
+  // reach it — a remember intent and a waiting message — inject and
   // store nothing, so there is no writing branch here to keep.
   let payload = null;
   const record = (outcome, reason, entity) =>
@@ -272,7 +175,6 @@ if (isMainModule) {
       // or non-string, detectRememberIntent's type guard returns false safely.
       payload = data;
       const prompt = data.prompt ?? data.user_prompt ?? '';
-      const updateDecision = await recordUpdateConsent(data.session_id, prompt);
       const rememberIntent = detectRememberIntent(prompt);
       // Messages waiting for the recipient this session declared in
       // MEMESH_RECIPIENT, or — under Claude Code with the channel configured,
@@ -291,31 +193,22 @@ if (isMainModule) {
         { sessionId: data.session_id, cwd: data.cwd },
         () => record('notified', SESSION_ID_MISMATCH_REASON),
       );
-      if (!rememberIntent && !updateDecision && inboxLines.length === 0) {
+      if (!rememberIntent && inboxLines.length === 0) {
         record('skipped', SKIP_REASONS.noPromptIntent);
         return process.exit(0);
       }
-      // Update consent is a user-authorized control decision, not memory
-      // capture; it must still be recorded when auto-capture is disabled.
-      if (!isAutoCaptureEnabled(process.env) && !updateDecision && inboxLines.length === 0) {
+      if (!isAutoCaptureEnabled(process.env) && inboxLines.length === 0) {
         record('skipped', SKIP_REASONS.autoCaptureOff);
         return process.exit(0);
       }
 
       const contexts = [];
-      if (updateDecision === 'approved') {
-        contexts.push('The user explicitly approved the MeMesh upgrade. The Stop hook may now update the consented installation.');
-      } else if (updateDecision === 'declined') {
-        contexts.push('The user declined the MeMesh upgrade. It is snoozed for this target version (24h, then 48h, then 7 days on repeated declines); do not install it or mention it again unless a newer version appears.');
-      } else if (updateDecision === 'never') {
-        contexts.push('The user asked never to be asked about MeMesh updates again. updateCheck is now off; do not mention updates. `memesh config set updateCheck true` turns checks back on.');
-      }
       const hint = rememberIntent && isAutoCaptureEnabled(process.env);
       if (hint) contexts.push(buildHint());
       if (inboxLines.length > 0) contexts.push(inboxLines.join('\n'));
       const out = { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: contexts.join('\n\n') } };
       process.stdout.write(JSON.stringify(out));
-      record('notified', undefined, `hint:${updateDecision ?? (hint ? 'remember-intent' : 'inbox')}`);
+      record('notified', undefined, `hint:${hint ? 'remember-intent' : 'inbox'}`);
       process.exit(0);
     } catch (err) {
       logError('user-prompt-intent', err?.message || err);

@@ -1,9 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { findRetiredConfigKeys, getConfigPath, ConfigUnreadableError } from './config.js';
 import { PLUGIN_REFRESH_COMMANDS } from './install-channel.js';
+import { startReinstall } from './auto-update.js';
 
 export interface RetiredConfigCleanupResult {
   changed: boolean;
@@ -107,83 +107,20 @@ export function isDoctorFixPermissionError(error: unknown): boolean {
     : false;
 }
 
-function safeOutput(value: string): string {
-  return value.replace(/(?:\/Users\/[^\s'"`]+|\/home\/[^\s'"`]+|[A-Za-z]:\\[^\s'"`]+)/g, '<local-path>')
-    .replace(/(Bearer\s+|sk-|ghp_)[A-Za-z0-9._-]+/gi, '$1<redacted>')
-    .slice(-4000);
-}
-
-/** Run the existing host-owned cache refresh command without shell parsing. */
+/** The plugin host a doctor row names (the label it carries in its params). */
 export function pluginHostFromDoctorCheck(check: { params?: Record<string, string | number> }): 'claude-code' | 'codex' {
   if (check.params?.host === 'Codex') return 'codex';
   if (check.params?.host === 'Claude Code') return 'claude-code';
   throw new Error('The plugin host for this repair is unknown; re-run memesh doctor first.');
 }
 
-/** The whole refresh gets this long, however many commands it runs. The dashboard's repair button waits for it (DoctorBanner.tsx). */
-const PLUGIN_REFRESH_BUDGET_MS = 120_000;
-
 /**
- * The least time worth handing the second Codex command. A floor, not a
- * measurement: with less left than this the command would only be killed by its
- * own timeout, and the user would read a bare `spawnSync codex ETIMEDOUT` where
- * they need to be told what is left to do. `memesh doctor --fix` prints that
- * message; the dashboard gets it through `doctor.repair-incomplete` (server.ts).
+ * `doctor --fix` and the dashboard's repair button for a plugin cache: start the verified reinstall (the same checks an update
+ * takes: source, backup, pinned install, read-back) in the background and say so. It takes minutes, more than either can
+ * wait for; the result lands in the record `memesh doctor` reads. The old repair ran the marketplace's current branch,
+ * unchecked, whatever the `autoUpdate` setting said.
  */
-const MIN_SECOND_COMMAND_MS = 5_000;
-
-const CODEX_ADD_ARGS = ['plugin', 'add', 'memesh@pcircle-memesh'];
-
-/** The Codex marketplace upgrade ran, but too little of the shared budget was left to run `plugin add`. */
-export class PluginRefreshBudgetError extends Error {
-  constructor() {
-    super(
-      `The Codex marketplace upgrade ran, but the ${PLUGIN_REFRESH_BUDGET_MS / 1000} s repair budget was nearly used up before the plugin could be added. `
-      + `Finish by hand: codex ${CODEX_ADD_ARGS.join(' ')}`,
-    );
-    this.name = 'PluginRefreshBudgetError';
-  }
-}
-
 export function refreshPluginCache(packageRoot: string, host: 'claude-code' | 'codex'): PluginRefreshResult {
-  // The doctor row is authoritative. Never infer a host from the running
-  // package path: npm-global installs can report a stale Claude or Codex
-  // cache discovered elsewhere on the same machine.
-  if (host === 'claude-code') {
-    const script = path.join(packageRoot, 'scripts', 'upgrade-plugin.sh');
-    if (!fs.existsSync(script)) throw new Error(`Plugin refresh script is missing at ${script}.`);
-    const run = execFileSync('bash', [script], {
-      encoding: 'utf8',
-      timeout: PLUGIN_REFRESH_BUDGET_MS,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: process.env,
-    });
-    return {
-      host,
-      command: PLUGIN_REFRESH_COMMANDS[host],
-      exitCode: 0,
-      output: safeOutput(String(run)),
-      restartRequired: true,
-    };
-  }
-
-  // Two commands, one deadline: the second gets what the first left over, so
-  // the pair can never run past the budget the repair button waits for. With
-  // too little left it is not started at all (see PluginRefreshBudgetError).
-  const deadline = Date.now() + PLUGIN_REFRESH_BUDGET_MS;
-  const upgrade = execFileSync('codex', ['plugin', 'marketplace', 'upgrade', 'pcircle-memesh'], {
-    encoding: 'utf8', timeout: PLUGIN_REFRESH_BUDGET_MS, stdio: ['ignore', 'pipe', 'pipe'], env: process.env,
-  });
-  const remaining = deadline - Date.now();
-  if (remaining < MIN_SECOND_COMMAND_MS) throw new PluginRefreshBudgetError();
-  const add = execFileSync('codex', CODEX_ADD_ARGS, {
-    encoding: 'utf8', timeout: remaining, stdio: ['ignore', 'pipe', 'pipe'], env: process.env,
-  });
-  return {
-    host,
-    command: PLUGIN_REFRESH_COMMANDS[host],
-    exitCode: 0,
-    output: safeOutput(`${String(upgrade)}\n${String(add)}`),
-    restartRequired: true,
-  };
+  const started = startReinstall(packageRoot);
+  return { host, command: PLUGIN_REFRESH_COMMANDS[host], exitCode: 0, output: started.message, restartRequired: true };
 }
