@@ -1,1 +1,1 @@
-{"version":3,"file":"native-loader.d.ts","sourceRoot":"","sources":["../../src/network/native-loader.ts"],"names":[],"mappings":"AAQA,OAAO,KAAK,EAAE,UAAU,EAAE,MAAM,iBAAiB,CAAC;AAWlD,wBAAgB,UAAU,CAAC,gBAAgB,EAAE,MAAM,GAAG,UAAU,CAQ/D;AAQD,wBAAgB,kBAAkB,CAAC,GAAG,EAAE,OAAO,GAAG,MAAM,CAoBvD"}
+{"version":3,"file":"native-loader.d.ts","sourceRoot":"","sources":["../../src/network/native-loader.ts"],"names":[],"mappings":"AAQA,OAAO,KAAK,EAAE,UAAU,EAAE,MAAM,iBAAiB,CAAC;AAYlD,wBAAgB,UAAU,CAAC,gBAAgB,EAAE,MAAM,GAAG,UAAU,CAW/D;AAGD,wBAAgB,kBAAkB,CAAC,GAAG,EAAE,OAAO,GAAG,MAAM,CAKvD"}

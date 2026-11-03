@@ -1,5 +1,7 @@
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { build } from 'esbuild';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { closeDatabase, openDatabase } from '../../src/db.js';
 import { ensureIdentity } from '../../src/network/identity.js';
@@ -41,7 +43,7 @@ describe('invites', () => {
     }
   });
 
-  it('reusing an invite from a second connection is refused (in order; the race is in integration)', () => {
+  it('reusing an invite from a second connection is refused', () => {
     const { token } = createInvite(db, HOUR, NOW);
     const other = openNetworkStore(dbPath);
     try {
@@ -58,6 +60,33 @@ describe('invites', () => {
       other.close();
     }
   });
+
+  it('a real race: several processes against one database never both win an invite', async () => {
+    const invites = 300;
+    const slotMs = 6;
+    const racers = 4;
+    const hashes: string[] = [];
+    db.exec('BEGIN');
+    for (let i = 0; i < invites; i++) hashes.push(hashToken(createInvite(db, HOUR * 1000, Date.now()).token));
+    db.exec('COMMIT');
+    const hashesFile = path.join(home, 'hashes.json');
+    fs.writeFileSync(hashesFile, JSON.stringify(hashes));
+    const bundle = path.join(home, 'racer.mjs');
+    await build({
+      entryPoints: [path.resolve(import.meta.dirname, 'fixtures/consume-race.ts')],
+      outfile: bundle, bundle: true, platform: 'node', format: 'esm', logLevel: 'silent',
+    });
+    const startAt = Date.now() + 1500;
+    const wins = await Promise.all(Array.from({ length: racers }, () => new Promise<number>((resolve, reject) => {
+      const child = spawn(process.execPath, [bundle, dbPath, hashesFile, String(startAt), String(slotMs)], { stdio: ['ignore', 'pipe', 'inherit'] });
+      let output = '';
+      child.stdout.setEncoding('utf8').on('data', (chunk: string) => { output += chunk; });
+      child.on('close', (code) => (code === 0 ? resolve(Number(output.trim())) : reject(new Error(`racer exited ${code}`))));
+    })));
+    expect(wins.reduce((sum, won) => sum + won, 0)).toBe(invites);
+    // It was a race: the wins are spread, not one process running ahead of the rest.
+    expect(wins.filter((won) => won > 0).length).toBeGreaterThan(1);
+  }, 60_000);
 
   it('names why an invite cannot be used', () => {
     const { token } = createInvite(db, HOUR, NOW);
@@ -151,13 +180,19 @@ describe('invite links', () => {
   });
 
   it('refuses malformed links with a specific error and never echoes them', () => {
-    const good = decode(encodeLink(identity, fields));
+    const real = encodeLink(identity, fields);
+    const good = decode(real);
     const cases: Array<[string, string]> = [
       ['https://example.com/', 'link_malformed'],
       ['memesh://join/', 'link_malformed'],
       ['memesh://join/!!!', 'link_malformed'],
       [encode('text'), 'link_malformed'],
       [encode(null), 'link_malformed'],
+      // A real link gone wrong: the token is alive in every one of these.
+      [` ${real}`, 'link_malformed'],
+      [`${real.slice(0, 80)}!${real.slice(80)}`, 'link_malformed'],
+      [real.slice(0, real.length - 40), 'link_malformed'],
+      [encode({ ...good, token: Buffer.alloc(32, 8).toString('base64url') }), 'link_tampered'],
       [encode({ ...good, pad: 'x'.repeat(8000) }), 'link_malformed'],
       [encode({ ...good, v: 2 }), 'link_version'],
       [encode({ ...good, owner_id: 'nope' }), 'link_malformed'],
@@ -174,12 +209,12 @@ describe('invite links', () => {
       expect(err.code).toBe(code);
       expect(err.message).not.toContain(fields.token);
       // Several pieces of the encoded link, the tail included: any one could be echoed.
-      const encoded = link.slice('memesh://join/'.length);
-      for (const at of [0, Math.floor(encoded.length / 2), Math.max(0, encoded.length - 24)]) {
-        const piece = encoded.slice(at, at + 24);
-        if (piece.length === 24) expect(err.message).not.toContain(piece);
+      const encoded = link.replace(/^.*memesh:\/\/join\//, '');
+      for (const at of [0, Math.floor(encoded.length / 2), Math.max(0, encoded.length - 12)]) {
+        const piece = encoded.slice(at, at + 12);
+        if (piece.length === 12) expect(err.message).not.toContain(piece);
       }
-      for (const fieldValue of ['short', 'ftp://x/', 'not an address', 'hunter2', 'PWNED']) {
+      for (const fieldValue of ['short', 'ftp://x/', 'not an address', 'hunter2', 'PWNED', Buffer.alloc(32, 8).toString('base64url')]) {
         expect(err.message).not.toContain(fieldValue);
       }
     }
@@ -267,8 +302,6 @@ describe('join decision', () => {
 });
 
 describe('a join reply', () => {
-  const home = makeHome();
-  afterAll(() => removeTree(home));
   const parsed = (raw: unknown): JoinReply => parseJoinReply(Buffer.from(JSON.stringify(raw)));
 
   it('passes only codes it knows, and turns anything else into a fixed string', () => {
@@ -298,7 +331,7 @@ describe('the store', () => {
   afterEach(() => removeTree(home));
   const posixIt = it.skipIf(process.platform === 'win32');
 
-  posixIt('tightens a loose database and folder, and creates new ones private', () => {
+  posixIt('tightens a loose database and folder', () => {
     const folder = path.join(home, 'data');
     fs.mkdirSync(folder, { mode: 0o755 });
     fs.chmodSync(folder, 0o755);

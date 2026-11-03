@@ -57,7 +57,7 @@ export interface JoinedStatus {
     members: RosterMember[];
     bridge: {
         running: boolean;
-        cannot_tell: boolean;
+        unresponsive: boolean;
         pid: number | null;
         started_at: string | null;
         relay_state: BridgeStatus['relay_state'] | null;
@@ -68,5 +68,5 @@ export interface JoinedStatus {
         non_member_refused: number;
     };
 }
-export declare function getNetworkStatus(ctx: NetworkContext): NetworkStatus;
+export declare function getNetworkStatus(ctx: NetworkContext): Promise<NetworkStatus>;
 //# sourceMappingURL=operations.d.ts.map

@@ -85,8 +85,8 @@ function printStatus(status) {
         console.log(`  ${member.person}@${member.name}  ${member.machine_id.slice(0, 12)}...  joined ${member.joined_at}`);
     }
     const bridge = status.bridge;
-    if (bridge.cannot_tell) {
-        console.log(`Bridge:       cannot tell. Process ${bridge.pid} holds the lock and could not be confirmed as this bridge.`);
+    if (bridge.unresponsive) {
+        console.log(`Bridge:       not answering. ${bridge.pid === null ? 'Its process id is not known.' : `Its last recorded process id is ${bridge.pid}.`} End it with your system's tools if it stays this way.`);
     }
     else {
         console.log(bridge.running
@@ -154,8 +154,8 @@ export function registerNetworkCommand(program, networkDistDir) {
         .command('status')
         .description('Show this machine, the member list and the bridge')
         .option('--json', 'Print JSON')
-        .action(action((opts) => {
-        const status = getNetworkStatus(context());
+        .action(action(async (opts) => {
+        const status = await getNetworkStatus(context());
         if (opts.json)
             console.log(JSON.stringify(status, null, 2));
         else
@@ -173,11 +173,8 @@ export function registerNetworkCommand(program, networkDistDir) {
         .command('down')
         .description('Stop the bridge process')
         .action(action(async () => {
-        const { stopped, pid, forced } = await stopBridge(context());
-        if (!stopped)
-            console.log('The network bridge is not running.');
-        else
-            console.log(forced ? `The network bridge (pid ${pid}) did not stop when asked and was killed.` : `Stopped the network bridge (pid ${pid}).`);
+        const { stopped, pid } = await stopBridge(context());
+        console.log(stopped ? `Stopped the network bridge (pid ${pid}).` : 'The network bridge is not running.');
     }));
 }
 //# sourceMappingURL=command.js.map

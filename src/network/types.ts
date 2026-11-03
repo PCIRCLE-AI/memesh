@@ -10,8 +10,8 @@ export const RELAY_OFF = 'off';
 
 /** The bridge's exit status when another bridge already holds the data dir. */
 export const EXIT_ALREADY_RUNNING = 3;
-/** The bridge's exit status when a live process holds the lock and it cannot tell whose. */
-export const EXIT_LOCK_UNCONFIRMED = 4;
+/** The bridge's exit status when something holds its control socket and does not answer. */
+export const EXIT_HOLDER_UNRESPONSIVE = 4;
 
 export const SINGLE_MACHINE_NOTE = 'Single-machine MeMesh keeps working.';
 
@@ -45,7 +45,8 @@ export type NetworkErrorCode =
   | 'runtime_install_failed'
   | 'runtime_load_failed'
   | 'bridge_failed'
-  | 'bridge_unconfirmed';
+  | 'bridge_unresponsive'
+  | 'runtime_check_timeout';
 
 /** An expected failure with a sentence for a person. Messages never carry a token. */
 export class NetworkError extends Error {
@@ -99,14 +100,11 @@ export function runtimeDir(dataDir: string): string {
 
 /**
  * A child resolves the same data dir and database as the parent, whatever the
- * parent inherited. NODE_PATH and NAPI_RS_* are dropped: either one can point the
- * loader at a native file the pinned checksums never covered.
+ * parent inherited. NODE_PATH is dropped: nothing in the bridge should resolve a
+ * module by name from anywhere else.
  */
 export function childEnv(ctx: NetworkContext): NodeJS.ProcessEnv {
-  const inherited = Object.entries(ctx.env ?? process.env).filter(([key]) => {
-    const name = key.toUpperCase();
-    return name !== 'NODE_PATH' && !name.startsWith('NAPI_RS_');
-  });
+  const inherited = Object.entries(ctx.env ?? process.env).filter(([key]) => key.toUpperCase() !== 'NODE_PATH');
   return { ...Object.fromEntries(inherited), MEMESH_DIR: ctx.dataDir, MEMESH_DB_PATH: ctx.dbPath };
 }
 

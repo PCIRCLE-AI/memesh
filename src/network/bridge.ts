@@ -1,15 +1,13 @@
 // dist/network/bridge.js: the only process that loads the native transport.
 //
-//   bridge.js check               load the native file once and report (used after install)
-//   bridge.js join                one join as a client; input on stdin, a JSON result on stdout
-//   bridge.js serve <data dir>    the long-running bridge; the data dir on its command line
-//                                 is how `down` knows this process belongs to that folder
+//   bridge.js check   load the native file once and report (used after install)
+//   bridge.js join    one join as a client; input on stdin, a JSON result on stdout
+//   bridge.js serve   the long-running bridge
 
 import path from 'node:path';
 import { getDbPath, getMemeshDirFromDbPath } from '../core/paths.js';
 import { JOIN_CHILD_INPUT_MAX_BYTES, runJoinClient, type JoinChildInput } from './bridge-join.js';
 import { serve } from './bridge-serve.js';
-import { recordStartupFailure } from './bridge-startup-failure.js';
 import { explainLoadFailure, loadNative } from './native-loader.js';
 import { errorMessage, runtimeDir } from './types.js';
 
@@ -56,14 +54,15 @@ if (mode === 'check') {
     await reply({ ok: false, code: 'internal', detail: errorMessage(err), relay_reached: null });
     process.exit(1);
   }
-} else if (mode === 'serve' && process.argv[3] === dataDir) {
+} else if (mode === 'serve') {
   try {
     process.exit(await serve(dataDir, getDbPath()));
   } catch (err) {
-    recordStartupFailure(dataDir, errorMessage(err));
+    // It never held the control socket, so the status file is not its to write. Stderr is bridge.log.
+    process.stderr.write(`The network bridge failed before it could start: ${errorMessage(err)}\n`);
     process.exit(1);
   }
 } else {
-  process.stderr.write('Usage: bridge.js check | join | serve <data dir>\n');
+  process.stderr.write('Usage: bridge.js check | join | serve\n');
   process.exit(2);
 }

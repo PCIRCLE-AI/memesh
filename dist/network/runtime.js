@@ -58,17 +58,15 @@ export function checkRuntime(ctx, timeoutMs = CHECK_TIMEOUT_MS) {
     });
     if (result.status === 0)
         return;
-    let reason;
     if (result.error?.code === 'ETIMEDOUT') {
-        reason = `the check did not finish within ${timeoutMs / 1000} s, so nothing is known about the files; try again when this computer is less busy`;
+        throw new NetworkError('runtime_check_timeout', `The check of the networking component did not finish within ${timeoutMs / 1000} s, so nothing is known about its files and they were left alone. Try again when this computer is less busy. ${SINGLE_MACHINE_NOTE}`);
     }
-    else {
-        try {
-            reason = JSON.parse(result.stdout).reason;
-        }
-        catch {
-            reason = `the networking component could not start: ${describeChildDeath(result.status, result.signal)}`;
-        }
+    let reason;
+    try {
+        reason = JSON.parse(result.stdout).reason;
+    }
+    catch {
+        reason = `the networking component could not start: ${describeChildDeath(result.status, result.signal)}`;
     }
     throw new NetworkError('runtime_load_failed', `The networking component did not load: ${reason}. ${SINGLE_MACHINE_NOTE}`);
 }
@@ -89,16 +87,15 @@ function assertPlatformPackageInstalled(lockText, directory) {
     throw new NetworkError('runtime_install_failed', `Could not install the networking component: the native file for this computer failed to download or did not match its pinned checksum, so it was refused. Try again; if it repeats, your network or npm registry is changing the files. ${SINGLE_MACHINE_NOTE}`);
 }
 function removeFailedInstall(dataDir, directory, created) {
-    fs.rmSync(directory, { recursive: true, force: true });
     try {
+        fs.rmSync(directory, { recursive: true, force: true });
         if (created.network)
             fs.rmdirSync(path.dirname(directory));
         if (created.data)
             fs.rmdirSync(dataDir);
     }
     catch (err) {
-        if (err.code !== 'ENOTEMPTY')
-            throw err;
+        process.stderr.write(`MeMesh could not clean up after the failed install: ${err.message}\n`);
     }
 }
 export function ensureRuntime(ctx, options = {}) {
@@ -114,10 +111,12 @@ export function ensureRuntime(ctx, options = {}) {
     const marker = path.join(directory, MARKER);
     if (!options.force && fs.existsSync(marker) && fs.readFileSync(marker, 'utf8').trim() === wanted) {
         try {
-            checkRuntime(ctx);
+            checkRuntime(ctx, options.checkTimeoutMs);
             return;
         }
         catch (err) {
+            if (err.code === 'runtime_check_timeout')
+                throw err;
             options.onProgress?.(`The installed networking component is not usable (${err.message}) Reinstalling.`);
         }
     }
@@ -129,10 +128,11 @@ export function ensureRuntime(ctx, options = {}) {
     try {
         runNpmCi(ctx, directory);
         assertPlatformPackageInstalled(lockText, directory);
-        checkRuntime(ctx);
+        checkRuntime(ctx, options.checkTimeoutMs);
     }
     catch (err) {
-        removeFailedInstall(ctx.dataDir, directory, created);
+        if (err.code !== 'runtime_check_timeout')
+            removeFailedInstall(ctx.dataDir, directory, created);
         throw err;
     }
     fs.writeFileSync(marker, `${wanted}\n`);

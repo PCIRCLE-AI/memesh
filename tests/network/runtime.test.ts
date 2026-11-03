@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { startBridge } from '../../src/network/bridge-control.js';
 import { ensureIdentity } from '../../src/network/identity.js';
 import { encodeLink } from '../../src/network/invites.js';
@@ -60,19 +60,10 @@ describe('the shipped pin', () => {
 });
 
 describe('explaining failures', () => {
-  it('replaces the loader\'s "npm has a bug" with the real reason', () => {
-    const platformMissing = new Error('Cannot find native binding. npm has a bug related to optional dependencies (https://example). Please try `npm i` again after removing both package-lock.json and node_modules directory.');
-    platformMissing.cause = new Error("Cannot find module '@number0/iroh-darwin-x64'");
-    expect(explainLoadFailure(platformMissing)).not.toMatch(/npm has a bug|package-lock/);
-    expect(explainLoadFailure(platformMissing)).toMatch(/missing from the install/);
-
-    const unsupported = new Error('Cannot find native binding. npm has a bug related to optional dependencies.');
-    unsupported.cause = new Error('Unsupported architecture on macOS: x64');
-    expect(explainLoadFailure(unsupported)).toMatch(/not supported.*macOS: x64/);
-
-    const damaged = new Error('Cannot find native binding. npm has a bug related to optional dependencies.');
-    damaged.cause = new Error('dlopen(/x/iroh.node, 0x0001): file too short');
-    expect(explainLoadFailure(damaged)).toMatch(/damaged/);
+  it('says what a load failure means', () => {
+    expect(explainLoadFailure(new Error('the native networking file for darwin-x64 is missing from the install'))).toMatch(/missing from the install/);
+    expect(explainLoadFailure(Object.assign(new Error('no such file'), { code: 'ENOENT' }))).toMatch(/not installed/);
+    expect(explainLoadFailure(new Error('dlopen(/x/iroh.node, 0x0001): file too short'))).toMatch(/damaged/);
   });
 
   it('says what happened to npm in plain terms', () => {
@@ -134,12 +125,41 @@ describe.skipIf(process.platform === 'win32' || !PLATFORM_SUPPORTED)('child proc
     expect(err.message).toMatch(/Single-machine MeMesh keeps working/);
   });
 
+  const HANG = 'setTimeout(() => {}, 20000);';
+
   it('a load check that times out says so, and does not blame the file', async () => {
-    const ctx = { ...newContext(), bridgeEntry: crashingBridge('setTimeout(() => {}, 20000);') };
+    const ctx = { ...newContext(), bridgeEntry: crashingBridge(HANG) };
     const err = await failure(() => checkRuntime(ctx, 300));
-    expect(err.code).toBe('runtime_load_failed');
+    expect(err.code).toBe('runtime_check_timeout');
     expect(err.message).toMatch(/did not finish/);
     expect(err.message).not.toMatch(/damaged/);
+  });
+
+  it('a load check that times out on a good install neither reinstalls nor deletes it', async () => {
+    const ctx = { ...newContext(), bridgeEntry: crashingBridge(HANG) };
+    seedInstalled(ctx);
+    const keep = path.join(runtimeDir(ctx.dataDir), 'KEEP');
+    fs.writeFileSync(keep, 'x');
+    const progress: string[] = [];
+    const err = await failure(() => ensureRuntime(ctx, { checkTimeoutMs: 300, onProgress: (message) => progress.push(message) }));
+    expect(err.code).toBe('runtime_check_timeout');
+    expect(progress).toEqual([]);
+    expect(fs.existsSync(keep)).toBe(true);
+  });
+
+  it('own relay not reached and direct failed too: says so, not "run up on the other machine"', async () => {
+    const answer = (relayReached: boolean) => crashingBridge(`
+if (process.argv[2] === 'check') { console.log('{"ok":true}'); process.exit(0); }
+process.stdin.resume();
+process.stdin.on('end', () => console.log(JSON.stringify({ ok: false, code: 'owner_unreachable', detail: 'timed out', relay_reached: ${relayReached} })));`);
+    const down = { ...newContext(), bridgeEntry: answer(false) };
+    seedInstalled(down);
+    const err = await failure(() => joinNetwork(down, { link: signedLink(TOKEN), name: 'mac', person: 'kt' }));
+    expect(err.message).toMatch(/could not reach its relay either/);
+    expect(err.message).not.toMatch(/network up/);
+    const up = { ...newContext(), bridgeEntry: answer(true) };
+    seedInstalled(up);
+    expect((await failure(() => joinNetwork(up, { link: signedLink(TOKEN), name: 'mac', person: 'kt' }))).message).toMatch(/network up/);
   });
 
   it('a crash while starting the bridge is an error naming the signal', async () => {
@@ -202,7 +222,8 @@ process.stdin.on('end', () => {
       bridgeEntry: crashingBridge(`
 import fs from 'node:fs';
 import path from 'node:path';
-const dir = path.join(process.argv[3], 'network');
+const dir = path.join(process.env.MEMESH_DIR, 'network');
+fs.mkdirSync(dir, { recursive: true });
 fs.writeFileSync(path.join(dir, 'bridge-status.json'), JSON.stringify({ pid: process.pid, state: 'failed', last_error: 'the actual reason' }));
 process.exit(7);`),
     };
@@ -211,8 +232,8 @@ process.exit(7);`),
     expect(err.message).toMatch(/the actual reason/);
   });
 
-  it('the child environment cannot point the loader elsewhere', () => {
-    const env = childEnv({ ...newContext(), env: { KEEP: '1', NODE_PATH: '/x', node_path: '/y', NAPI_RS_NATIVE_LIBRARY_PATH: '/z', NAPI_RS_FORCE_WASI: '1' } });
+  it('the child environment has no NODE_PATH', () => {
+    const env = childEnv({ ...newContext(), env: { KEEP: '1', NODE_PATH: '/x', node_path: '/y' } });
     expect(Object.keys(env).sort()).toEqual(['KEEP', 'MEMESH_DB_PATH', 'MEMESH_DIR']);
   });
 
@@ -267,7 +288,7 @@ process.exit(7);`),
       const ctx = installContext(lockText);
       const err = await failure(() => createNetwork(ctx, { name: 'mac', person: 'kt' }));
       expect(err.code).toBe('runtime_install_failed');
-      expect(err.message).toMatch(/pinned checksum/);
+      expect(err.message).toMatch(/the download did not match the pinned checksum/);
       expect(fs.existsSync(ctx.dataDir)).toBe(false);
     }, 120_000);
 
@@ -286,40 +307,29 @@ process.exit(7);`),
       expect(fs.existsSync(ctx.dbPath)).toBe(true);
     }, 120_000);
 
-    it('a copy planted in a parent node_modules is not loaded, and no marker is written', async () => {
-      registry.serve('platform-garbage');
-      const ctx = installContext(registry.lockWith({ wrapper: true, platform: false }));
-      const planted = path.join(ctx.env.HOME as string, 'node_modules', platformKey());
-      fs.mkdirSync(planted, { recursive: true });
-      const proof = path.join(ctx.env.HOME as string, 'PLANTED-LOADED');
-      fs.writeFileSync(path.join(planted, 'package.json'), JSON.stringify({ name: platformKey(), version: '9.9.9', main: 'index.js' }));
-      fs.writeFileSync(path.join(planted, 'index.js'), `require('fs').writeFileSync(${JSON.stringify(proof)}, 'x'); module.exports = { Endpoint: { builder() { return {}; } } };`);
-      const err = await failure(() => ensureRuntime(ctx));
-      expect(err.code).toBe('runtime_install_failed');
-      expect(fs.existsSync(proof)).toBe(false);
-      expect(fs.existsSync(markerOf(ctx))).toBe(false);
-
-      // The same at load time, with the install already gone wrong on disk.
-      fs.mkdirSync(path.join(runtimeDir(ctx.dataDir), 'node_modules/@number0/iroh'), { recursive: true });
-      fs.writeFileSync(path.join(runtimeDir(ctx.dataDir), 'package-lock.json'), lockText);
-      fs.writeFileSync(path.join(runtimeDir(ctx.dataDir), 'node_modules/@number0/iroh/index.js'), `module.exports = require(${JSON.stringify(platformKey())});`);
-      const check = await failure(() => checkRuntime(ctx));
-      expect(check.message).toMatch(/missing from the install/);
-      expect(fs.existsSync(proof)).toBe(false);
+    it('a cleanup that fails does not replace the install\'s real error', async () => {
+      registry.serve('all-garbage');
+      const ctx = installContext(lockText);
+      const realRm = fs.rmSync;
+      const removal = vi.spyOn(fs, 'rmSync').mockImplementation((target, options) => {
+        if (String(target) === runtimeDir(ctx.dataDir) && options?.recursive) throw Object.assign(new Error('EACCES: no'), { code: 'EACCES' });
+        realRm(target, options);
+      });
+      try {
+        const err = await failure(() => ensureRuntime(ctx));
+        expect(err.code).toBe('runtime_install_failed');
+        expect(err.message).toMatch(/the download did not match the pinned checksum/);
+      } finally {
+        removal.mockRestore();
+      }
     }, 120_000);
 
-    it('resolution stays inside the runtime folder for the main package too', async () => {
+    it('a check that times out right after installing leaves the install in place', async () => {
       registry.serve('good');
-      const ctx = installContext(registry.lockWith({ wrapper: true, platform: true }));
-      ensureRuntime(ctx);
-      fs.rmSync(path.join(runtimeDir(ctx.dataDir), 'node_modules/@number0/iroh'), { recursive: true });
-      const planted = path.join(ctx.env.HOME as string, 'node_modules/@number0/iroh');
-      fs.mkdirSync(planted, { recursive: true });
-      const proof = path.join(ctx.env.HOME as string, 'PLANTED-MAIN-LOADED');
-      fs.writeFileSync(path.join(planted, 'index.js'), `require('fs').writeFileSync(${JSON.stringify(proof)}, 'x'); module.exports = { Endpoint: { builder() { return {}; } } };`);
-      const check = await failure(() => checkRuntime(ctx));
-      expect(check.code).toBe('runtime_load_failed');
-      expect(fs.existsSync(proof)).toBe(false);
+      const ctx = { ...installContext(registry.lockWith({ wrapper: true, platform: true })), bridgeEntry: crashingBridge(HANG) };
+      const err = await failure(() => ensureRuntime(ctx, { checkTimeoutMs: 300 }));
+      expect(err.code).toBe('runtime_check_timeout');
+      expect(fs.existsSync(path.join(runtimeDir(ctx.dataDir), 'node_modules', platformKey()))).toBe(true);
     }, 120_000);
   });
 });

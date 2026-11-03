@@ -40,7 +40,8 @@ export async function buildTree(options: { cli?: boolean } = {}): Promise<Tree> 
   return { root, bridgeEntry, assetsDir, cli };
 }
 
-export function makeHome(prefix = 'memesh-network-home-'): string {
+// Short: a socket path has a byte limit, and macOS's temp folder is already long.
+export function makeHome(prefix = 'mn-'): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
 
@@ -57,7 +58,7 @@ export function contextFor(tree: Tree, home: string): NetworkContext {
 
 /** The real install path, once per test file: `npm ci` from the shipped lock. Needs the npm registry. */
 export function installRuntimeOnce(tree: Tree): string {
-  const seed = contextFor(tree, makeHome('memesh-network-seed-'));
+  const seed = contextFor(tree, makeHome('mn-seed-'));
   ensureRuntime(seed);
   return runtimeDir(seed.dataDir);
 }

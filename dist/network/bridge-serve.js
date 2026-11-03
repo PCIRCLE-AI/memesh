@@ -1,5 +1,6 @@
 import fs from 'node:fs';
-import { acquireLock, logPath, readLockPid, releaseLock, writeStatus, } from './bridge-state.js';
+import { logPath, writeStatus } from './bridge-state.js';
+import { holdControlSocket } from './control-socket.js';
 import { bindEndpoint, deadline, toBytes } from './endpoint.js';
 import { ensureNetworkDir, loadIdentity } from './identity.js';
 import { JOIN_REQUEST_MAX_BYTES, handleJoinRequest } from './join-protocol.js';
@@ -7,7 +8,7 @@ import { explainLoadFailure, loadNative } from './native-loader.js';
 import { RELAY_PING_INTERVAL_MS, applyRelayState, pingRelay, relayComplaint } from './relay-monitor.js';
 import { findMember, verifyRoster } from './roster.js';
 import { openNetworkStore, readConfig, signedRosterOf } from './store.js';
-import { EXIT_ALREADY_RUNNING, EXIT_LOCK_UNCONFIRMED, JOIN_ALPN, NET_ALPN, RELAY_OFF, errorMessage, runtimeDir, } from './types.js';
+import { EXIT_ALREADY_RUNNING, EXIT_HOLDER_UNRESPONSIVE, JOIN_ALPN, NET_ALPN, RELAY_OFF, errorMessage, runtimeDir, } from './types.js';
 const RELAY_ONLINE_DEADLINE_MS = 20_000;
 const HANDSHAKE_DEADLINE_MS = 20_000;
 const STREAM_DEADLINE_MS = 15_000;
@@ -34,10 +35,23 @@ export async function serve(dataDir, dbPath) {
     }
     catch { }
     ensureNetworkDir(dataDir);
-    const lock = await acquireLock(dataDir);
-    if (lock !== 'acquired') {
-        appendLog(dataDir, lock === 'held' ? 'exit_already_running' : 'exit_lock_unconfirmed');
-        return lock === 'held' ? EXIT_ALREADY_RUNNING : EXIT_LOCK_UNCONFIRMED;
+    let requestStop = () => {
+        appendLog(dataDir, 'stopped', { reason: 'asked during startup' });
+        process.exit(0);
+    };
+    let ready = false;
+    const control = await holdControlSocket(dataDir, {
+        isReady: () => ready,
+        stop: () => requestStop(),
+        onProblem: (message) => appendLog(dataDir, 'control_problem', { error: message }),
+    });
+    if (control.kind === 'already-running') {
+        appendLog(dataDir, 'exit_already_running');
+        return EXIT_ALREADY_RUNNING;
+    }
+    if (control.kind === 'holder-unresponsive') {
+        appendLog(dataDir, 'exit_holder_unresponsive');
+        return EXIT_HOLDER_UNRESPONSIVE;
     }
     const startedAt = new Date().toISOString();
     const status = {
@@ -72,7 +86,7 @@ export async function serve(dataDir, dbPath) {
     const fail = (event, message) => {
         status.state = 'failed';
         recordError(event, message);
-        releaseLock(dataDir);
+        control.close();
         return 1;
     };
     publish();
@@ -120,6 +134,7 @@ export async function serve(dataDir, dbPath) {
         return fail('exit_bind', `Cannot open a network connection: ${errorMessage(err)}`);
     }
     status.state = 'running';
+    ready = true;
     status.relay_state = relayUrl === RELAY_OFF ? 'off' : 'connecting';
     publish();
     appendLog(dataDir, 'running', { relay_state: status.relay_state, owner: isOwner });
@@ -146,7 +161,7 @@ export async function serve(dataDir, dbPath) {
             refreshRelayState();
         }, RELAY_ONLINE_DEADLINE_MS));
         let pingInFlight = false;
-        relayTimers.push(setInterval(() => {
+        const ping = () => {
             if (pingInFlight)
                 return;
             pingInFlight = true;
@@ -155,15 +170,12 @@ export async function serve(dataDir, dbPath) {
                 relaySignals.reachable = reachable;
                 refreshRelayState();
             });
-        }, RELAY_PING_INTERVAL_MS));
+        };
+        ping();
+        relayTimers.push(setInterval(ping, RELAY_PING_INTERVAL_MS));
     }
     let lastPublished = Date.now();
     const heartbeat = setInterval(() => {
-        if (readLockPid(dataDir) !== process.pid) {
-            recordError('lock_lost', 'Another process took the network bridge lock, so this bridge stopped.');
-            void stop('lock_lost', 1);
-            return;
-        }
         let addresses = null;
         try {
             addresses = endpoint.addr().directAddresses();
@@ -199,9 +211,10 @@ export async function serve(dataDir, dbPath) {
             db.close();
         }
         catch { }
-        releaseLock(dataDir);
+        control.close();
         process.exit(exitCode);
     };
+    requestStop = () => { void stop('asked over the control socket', 0); };
     for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
         process.on(signal, () => { void stop(signal, 0); });
     }

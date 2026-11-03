@@ -2,13 +2,14 @@
 // transport, relay off, direct addresses. Needs the npm registry once per run to
 // install the runtime. Skipped on a computer the pin does not cover (Intel Mac),
 // and on Windows, where this path has never been measured.
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startBridge, stopBridge } from '../../src/network/bridge-control.js';
-import { lockPath, logPath, readStatus, statusPath, type BridgeStatus } from '../../src/network/bridge-state.js';
+import { logPath, readStatus, statusPath, type BridgeStatus } from '../../src/network/bridge-state.js';
+import { controlPath } from '../../src/network/control-socket.js';
 import { ensureIdentity, identityPath, loadIdentity } from '../../src/network/identity.js';
 import type { Connection, Endpoint, IrohModule } from '../../src/network/iroh-types.js';
 import { encodeLink, hashToken, parseLink } from '../../src/network/invites.js';
@@ -31,8 +32,8 @@ const supported = isPlatformSupported(lockText, process.platform, process.arch, 
 const NET_OTHER = 'fedcba9876543210fedcba9876543210';
 const bytes = (value: string | Buffer): number[] => Array.from(Buffer.from(value));
 
-const getNetworkStatus = (ctx: NetworkContext): JoinedStatus => {
-  const status = readNetworkStatus(ctx);
+const getNetworkStatus = async (ctx: NetworkContext): Promise<JoinedStatus> => {
+  const status = await readNetworkStatus(ctx);
   if (!status.joined) throw new Error('expected a joined machine');
   return status;
 };
@@ -133,8 +134,8 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
     expect(joined.member.name).toBe('second');
     expect(joined.member.machine_id).toBe(loadIdentity(member.dataDir).machineId);
 
-    const ownerView = getNetworkStatus(owner);
-    const memberView = getNetworkStatus(member);
+    const ownerView = await getNetworkStatus(owner);
+    const memberView = await getNetworkStatus(member);
     expect(ownerView.role).toBe('owner');
     expect(memberView.role).toBe('member');
     expect(memberView.roster_version).toBe(2);
@@ -268,7 +269,7 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
       new Promise((resolve) => setTimeout(() => resolve('still open'), 20_000)),
     ]);
     expect(String(reason)).not.toBe('still open');
-    expect(getNetworkStatus(owner).bridge.running).toBe(true);
+    expect((await getNetworkStatus(owner)).bridge.running).toBe(true);
     await expect.poll(() => ownerStatus().last_error_at).not.toBe(earlierErrorAt);
     expect(ownerStatus().last_error).toMatch(/TooLong/);
     const { link } = await inviteFrom(owner);
@@ -276,10 +277,12 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
   });
 
   it('one bridge per data dir: a second exits and the first keeps running', async () => {
-    const first = getNetworkStatus(owner).bridge.pid;
-    const second = spawnSync(process.execPath, [owner.bridgeEntry, 'serve', owner.dataDir], { env: childEnv(owner), encoding: 'utf8', timeout: 30_000 });
+    const first = (await getNetworkStatus(owner)).bridge.pid;
+    const statusBefore = readStatus(owner.dataDir)?.updated_at;
+    const second = spawnSync(process.execPath, [owner.bridgeEntry, 'serve'], { env: childEnv(owner), encoding: 'utf8', timeout: 30_000 });
     expect(second.status).toBe(EXIT_ALREADY_RUNNING);
-    expect(getNetworkStatus(owner).bridge.pid).toBe(first);
+    expect((await getNetworkStatus(owner)).bridge.pid).toBe(first);
+    expect(readStatus(owner.dataDir)).toMatchObject({ pid: first, updated_at: statusBefore });
     expect((await startBridge(owner)).started).toBe(false);
     expect((await bridgeUp(owner)).pid).toBe(first);
   });
@@ -291,32 +294,29 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
     expect(await refusal(inviteFrom(member))).toBe('not_owner');
   });
 
-  it('down stops the bridge and leaves a record; up starts again; a stale lock is cleared', async () => {
+  it('down stops the bridge and leaves a record; a killed bridge\'s stale socket is replaced', async () => {
     const stopped = await stopBridge(owner);
     expect(stopped.stopped).toBe(true);
-    expect(getNetworkStatus(owner).bridge.running).toBe(false);
+    expect((await getNetworkStatus(owner)).bridge.running).toBe(false);
     expect(readStatus(owner.dataDir)?.state).toBe('stopped');
+    expect(fs.existsSync(controlPath(owner.dataDir))).toBe(false);
     expect((await stopBridge(owner)).stopped).toBe(false);
 
-    // A pid that is alive but is not a bridge: this test process. It must not be
-    // mistaken for one, and `down` must never signal it.
-    fs.writeFileSync(lockPath(owner.dataDir), `${process.pid}\n`);
-    expect((await stopBridge(owner)).stopped).toBe(false);
     const again = await startBridge(owner);
     expect(again.started).toBe(true);
-    expect(getNetworkStatus(owner).bridge.pid).toBe(again.pid);
-
-    // A bridge that died without cleaning up leaves a lock the next start clears.
+    expect((await getNetworkStatus(owner)).bridge.pid).toBe(again.pid);
     process.kill(again.pid, 'SIGKILL');
-    await expect.poll(() => getNetworkStatus(owner).bridge.running, { timeout: 10_000 }).toBe(false);
-    expect((await startBridge(owner)).started).toBe(true);
+    await expect.poll(async () => (await getNetworkStatus(owner)).bridge.running, { timeout: 10_000 }).toBe(false);
+    expect(fs.lstatSync(controlPath(owner.dataDir)).isSocket()).toBe(true);
+    const after = await startBridge(owner);
+    expect(after.started).toBe(true);
+    expect(readStatus(owner.dataDir)).toMatchObject({ pid: after.pid, state: 'running' });
   }, 120_000);
 
   it('a relay that does not answer is recorded, the bridge keeps serving, and a join reports it', async () => {
     const ctx = machine();
     createNetwork(ctx, { name: 'no-relay', person: 'kt', relay: 'http://127.0.0.1:9/' });
     await startBridge(ctx);
-    expect(readStatus(ctx.dataDir)?.relay_state).toBe('connecting');
 
     // A link made without the flag has no addresses in it.
     const relayOnly = await createLink(ctx, { ttlHours: 1 });
@@ -325,7 +325,7 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
 
     await expect.poll(() => readStatus(ctx.dataDir)?.relay_state, { timeout: 40_000, interval: 500 }).toBe('unreachable');
     expect(readStatus(ctx.dataDir)?.last_error).toMatch(/not answering/);
-    expect(getNetworkStatus(ctx).bridge.running).toBe(true);
+    expect((await getNetworkStatus(ctx)).bridge.running).toBe(true);
 
     // This machine's relay is the link's relay, it is down, and there is no other
     // way: said about this machine, before the invite is touched.
@@ -333,7 +333,7 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
     await expect(joinNetwork(stranded, { link: relayOnly.link, name: 'stranded', person: 'kt' })).rejects.toMatchObject({
       code: 'relay_unreachable', message: expect.stringMatching(/This machine could not reach its relay.*not used/),
     });
-    expect(getNetworkStatus(ctx).roster_version).toBe(1);
+    expect((await getNetworkStatus(ctx)).roster_version).toBe(1);
 
     // Still serving: a direct connection gets through with the relay down, and the
     // joiner is told its relay was not reached.
@@ -347,7 +347,7 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
     const { link } = await inviteFrom(owner);
     const ctx = machine();
     await expect(joinNetwork(ctx, { link, name: 'typo', person: 'kt', relay: 'http://127.0.0.1:9/' })).rejects.toMatchObject({ code: 'relay_unreachable' });
-    expect(readNetworkStatus(ctx).joined).toBe(false);
+    expect((await readNetworkStatus(ctx)).joined).toBe(false);
     const db = openNetworkStore(owner.dbPath);
     try {
       expect(db.prepare('SELECT used_at FROM agent_network_invites WHERE hash = ?').get(hashToken(parseLink(link).token))).toEqual({ used_at: null });
@@ -442,29 +442,77 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
     await stopBridge(ctx);
   }, 60_000);
 
-  it('two starters end with one bridge, and a bridge that lost its lock exits with a record', async () => {
+  it('two starters at once: one wins, and the losers exit without touching status', async () => {
     const ctx = machine();
     createNetwork(ctx, { name: 'two-starters', person: 'kt', relay: 'off' });
-    fs.mkdirSync(path.dirname(lockPath(ctx.dataDir)), { recursive: true });
-    fs.writeFileSync(lockPath(ctx.dataDir), `${2 ** 30}\n`);
     const [a, b] = await Promise.all([startBridge(ctx), startBridge(ctx)]);
     expect(a.pid).toBe(b.pid);
-    expect(getNetworkStatus(ctx).bridge.pid).toBe(a.pid);
-    expect([a.started, b.started].filter(Boolean).length).toBeLessThanOrEqual(1);
+    expect((await getNetworkStatus(ctx)).bridge.pid).toBe(a.pid);
+    expect([a.started, b.started].filter(Boolean).length).toBe(1);
+    await stopBridge(ctx);
 
-    fs.writeFileSync(lockPath(ctx.dataDir), `${process.pid}\n`);
-    await expect.poll(() => readStatus(ctx.dataDir)?.state, { timeout: 15_000 }).toBe('failed');
-    expect(readStatus(ctx.dataDir)?.last_error).toMatch(/took the network bridge lock/);
-    await expect.poll(() => {
-      try {
-        process.kill(a.pid, 0);
-        return true;
-      } catch {
-        return false;
-      }
-    }, { timeout: 10_000 }).toBe(false);
-    expect(fs.readFileSync(lockPath(ctx.dataDir), 'utf8').trim()).toBe(String(process.pid));
-    fs.rmSync(lockPath(ctx.dataDir));
+    // Bare processes, straight at the race, onto a stale socket left by a killed bridge.
+    const killed = await startBridge(ctx);
+    process.kill(killed.pid, 'SIGKILL');
+    await expect.poll(async () => (await getNetworkStatus(ctx)).bridge.running, { timeout: 10_000 }).toBe(false);
+    const children = Array.from({ length: 6 }, () => spawn(process.execPath, [ctx.bridgeEntry, 'serve'], { env: childEnv(ctx), stdio: 'ignore' }));
+    const exits: Array<number | null> = [];
+    children.forEach((child) => child.on('exit', (code) => exits.push(code)));
+    await expect.poll(() => exits.length, { timeout: 30_000 }).toBe(5);
+    expect(exits).toEqual([3, 3, 3, 3, 3]);
+    await expect.poll(async () => (await getNetworkStatus(ctx)).bridge.running, { timeout: 10_000 }).toBe(true);
+    const winner = children.find((child) => child.exitCode === null);
+    expect((await getNetworkStatus(ctx)).bridge.pid).toBe(winner?.pid);
+    expect(readStatus(ctx.dataDir)?.pid).toBe(winner?.pid);
+    await stopBridge(ctx);
+  }, 120_000);
+
+  it('a data dir with a space, a quote and non-ASCII works under a C locale, with the real bridge', async () => {
+    const home = makeHome();
+    homes.push(home);
+    const dataDir = path.join(home, 'q"uo te 測試');
+    const ctx: NetworkContext = { ...contextFor(tree, home), dataDir, dbPath: path.join(dataDir, 'knowledge-graph.db') };
+    ctx.env = { ...ctx.env, LC_ALL: 'C', LANG: 'C' };
+    linkRuntime(ctx, runtime);
+    contexts.push(ctx);
+    createNetwork(ctx, { name: 'odd-path', person: 'kt', relay: 'off' });
+    const started = await startBridge(ctx);
+    expect(started.started).toBe(true);
+    expect((await getNetworkStatus(ctx)).bridge).toMatchObject({ running: true, pid: started.pid });
+    const { link } = await createLink(ctx, { includeAddresses: true, ttlHours: 1 });
+    expect(await refusal(joinWith(link, 'odd-member'))).toBe('joined');
+    expect(await stopBridge(ctx)).toEqual({ stopped: true, pid: started.pid });
+  }, 60_000);
+
+  it('relay state follows its /ping: 200, then 500, before the startup allowance could say the same', async () => {
+    const answers = { status: 200 };
+    const hits: string[] = [];
+    const stub = spawn(process.execPath, ['-e', `
+const http = require('http');
+let status = 200;
+process.stdin.on('data', (d) => { status = Number(d.toString()); });
+http.createServer((req, res) => { console.log(req.url); res.statusCode = status; res.end(); }).listen(0, '127.0.0.1', function () { console.log('port=' + this.address().port); });`], { stdio: ['pipe', 'pipe', 'inherit'] });
+    stub.stdout.setEncoding('utf8').on('data', (chunk: string) => hits.push(...chunk.trim().split('\n')));
+    try {
+      await expect.poll(() => hits.some((line) => line.startsWith('port='))).toBe(true);
+      const port = (hits.find((line) => line.startsWith('port=')) as string).slice(5);
+      const ctx = machine();
+      createNetwork(ctx, { name: 'ping-owner', person: 'kt', relay: `http://127.0.0.1:${port}/` });
+      await startBridge(ctx);
+      await expect.poll(() => hits.includes('/ping'), { timeout: 5_000 }).toBe(true);
+      expect(readStatus(ctx.dataDir)).toMatchObject({ relay_state: 'connecting', last_error: null });
+
+      answers.status = 500;
+      stub.stdin.write(String(answers.status));
+      await expect.poll(() => readStatus(ctx.dataDir)?.relay_state, { timeout: 18_000, interval: 200 }).toBe('unreachable');
+      const status = readStatus(ctx.dataDir) as BridgeStatus;
+      // Within 20 s of the start, so the ping did this and not the startup allowance.
+      expect(Date.parse(status.last_error_at as string) - Date.parse(status.started_at)).toBeLessThan(19_000);
+      expect(status.last_error).toMatch(/not answering/);
+      await stopBridge(ctx);
+    } finally {
+      stub.kill('SIGKILL');
+    }
   }, 60_000);
 
   describe('the bridge\'s early exits leave a record', () => {
@@ -473,7 +521,7 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
       expect(err?.code).toBe('bridge_failed');
       expect(err?.message).toMatch(pattern);
       expect(readStatus(ctx.dataDir)).toMatchObject({ state: 'failed', last_error: expect.stringMatching(pattern) });
-      expect(fs.existsSync(lockPath(ctx.dataDir))).toBe(false);
+      expect(fs.existsSync(controlPath(ctx.dataDir))).toBe(false);
     };
 
     it('database', async () => {
@@ -512,14 +560,14 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
       await expectFailed(ctx, /Cannot open a network connection/);
     });
 
-    it('a failure outside those is caught too, not left as a bare stack', () => {
+    it('a failure before it holds the socket goes to stderr, not a bare stack, and writes no status', () => {
       const ctx = machine();
-      // A file where the network folder should be: the lock cannot even be attempted.
-      fs.rmSync(path.dirname(lockPath(ctx.dataDir)), { recursive: true });
-      fs.writeFileSync(path.dirname(lockPath(ctx.dataDir)), 'in the way');
-      const result = spawnSync(process.execPath, [ctx.bridgeEntry, 'serve', ctx.dataDir], { env: childEnv(ctx), encoding: 'utf8', timeout: 30_000 });
+      // A file where the network folder should be: the socket cannot even be attempted.
+      fs.rmSync(path.dirname(controlPath(ctx.dataDir)), { recursive: true });
+      fs.writeFileSync(path.dirname(controlPath(ctx.dataDir)), 'in the way');
+      const result = spawnSync(process.execPath, [ctx.bridgeEntry, 'serve'], { env: childEnv(ctx), encoding: 'utf8', timeout: 30_000 });
       expect(result.status).toBe(1);
-      expect(result.stderr).toMatch(/could not record it/);
+      expect(result.stderr).toMatch(/failed before it could start/);
       expect(result.stderr).not.toMatch(/\n\s+at /);
     });
   });
@@ -544,20 +592,59 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
       expect(start).toBeInstanceOf(NetworkError);
       expect(start?.code).toBe('bridge_failed');
       expect(start?.message).toMatch(/network up --reinstall/);
-      expect(start?.message).not.toMatch(/npm has a bug/);
 
       ensureRuntime(ctx, { force: true });
       expect(() => checkRuntime(ctx)).not.toThrow();
     }, 180_000);
 
-    it('a missing platform package is explained without the misleading npm message', () => {
+    it('start waits until the bridge is really accepting, not just holding its socket', async () => {
+      const ctx = machine();
+      createNetwork(ctx, { name: 'slow-native', person: 'kt', relay: 'off' });
+      const nativePackage = copyRuntime(ctx);
+      const manifest = path.join(nativePackage, 'package.json');
+      const { main } = JSON.parse(fs.readFileSync(manifest, 'utf8')) as { main: string };
+      fs.writeFileSync(path.join(nativePackage, 'slow.js'), `const until = Date.now() + 2500; while (Date.now() < until); module.exports = require('./${main}');`);
+      fs.writeFileSync(manifest, JSON.stringify({ name: 'slow', version: '1.2.0', main: 'slow.js' }));
+      const started = await startBridge(ctx);
+      expect(started.started).toBe(true);
+      expect(readStatus(ctx.dataDir)).toMatchObject({ pid: started.pid, state: 'running' });
+      await stopBridge(ctx);
+    }, 60_000);
+
+    it('a missing platform package is explained plainly', () => {
       const ctx = machine();
       const nativePackage = copyRuntime(ctx);
       fs.rmSync(nativePackage, { recursive: true });
       const check = spawnSync(process.execPath, [ctx.bridgeEntry, 'check'], { env: childEnv(ctx), encoding: 'utf8' });
       expect(check.status).toBe(1);
-      expect(JSON.parse(check.stdout).reason).toMatch(/missing from the install/);
+      expect((JSON.parse(check.stdout) as { reason: string }).reason).toMatch(/missing from the install/);
       expect(check.stdout).not.toMatch(/npm has a bug/);
+    });
+
+    it('the real wrapper\'s other names are never tried: planted copies and its environment override do not load', () => {
+      const ctx = machine();
+      const nativePackage = copyRuntime(ctx);
+      const home = ctx.env?.HOME as string;
+      const proof = path.join(home, 'PLANTED-LOADED');
+      for (const name of ['iroh-darwin-universal', 'iroh-wasm32-wasi', 'iroh-linux-x64-gnu', 'iroh-darwin-arm64']) {
+        const planted = path.join(home, 'node_modules/@number0', name);
+        fs.mkdirSync(planted, { recursive: true });
+        fs.writeFileSync(path.join(planted, 'package.json'), JSON.stringify({ name: `@number0/${name}`, version: '1.2.0', main: 'index.js' }));
+        fs.writeFileSync(path.join(planted, 'index.js'), `require('fs').writeFileSync(${JSON.stringify(proof)}, ${JSON.stringify(name)}); module.exports = { Endpoint: { builder() { return {}; } } };`);
+      }
+      const byVariable = path.join(home, 'by-variable.js');
+      fs.writeFileSync(byVariable, `require('fs').writeFileSync(${JSON.stringify(proof)}, 'variable'); module.exports = { Endpoint: { builder() { return {}; } } };`);
+      const env = { ...childEnv(ctx), NAPI_RS_NATIVE_LIBRARY_PATH: byVariable };
+      const healthy = spawnSync(process.execPath, [ctx.bridgeEntry, 'check'], { env, encoding: 'utf8' });
+      expect(healthy.status).toBe(0);
+      expect(fs.existsSync(proof)).toBe(false);
+
+      // And with the pinned file damaged, which is when the wrapper would fall back.
+      const nativeFile = fs.readdirSync(nativePackage).find((name) => name.endsWith('.node')) as string;
+      fs.truncateSync(path.join(nativePackage, nativeFile), 4096);
+      const damaged = spawnSync(process.execPath, [ctx.bridgeEntry, 'check'], { env, encoding: 'utf8' });
+      expect(damaged.status).not.toBe(0);
+      expect(fs.existsSync(proof)).toBe(false);
     });
   });
 
@@ -580,7 +667,7 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
       argvLog = path.join(tree.root, 'argv.jsonl');
     });
 
-    it('create, link and join work end to end, the link is prompted for, and it stays out of every argv', async () => {
+    it('create, link and join work end to end, the link is prompted for, and it stays out of the CLI\'s argv', async () => {
       const a = machine();
       const b = machine();
       const c = machine();

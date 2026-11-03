@@ -13,4 +13,8 @@ export function platformPackages(lockText, platform, arch, libc) {
         && (entry.libc === undefined || libc === null || entry.libc.includes(libc)))
         .map(([key]) => key.replace(/^node_modules\//, ''));
 }
+export function platformPackage(lockText, platform, arch, libc) {
+    const names = platformPackages(lockText, platform, arch, libc);
+    return names.find((name) => name.includes('musl') === (libc === 'musl')) ?? names[0] ?? null;
+}
 //# sourceMappingURL=runtime-platform.js.map

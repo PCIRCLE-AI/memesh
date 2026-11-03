@@ -151,6 +151,11 @@
       "reason": "empty tokens yield null match expression and hasSearchableTerms false",
       "triaged": "2026-08-04"
     },
+    "C6 tests/network/isolation.test.ts": {
+      "class": "DATA-EXTRACTION",
+      "reason": "Reads source to extract data the assertions run over: table names from CREATE TABLE statements and what each file loads, through the TypeScript parser. The text is the input to a boundary check, not the behaviour under test.",
+      "triaged": "2026-11-03 cross-machine network"
+    },
     "C6 tests/consolidate-retired.test.ts": {
       "class": "WIRING-PIN",
       "reason": "retired message lives in RETIRED_ROUTES; remaining source asserts pin the wiring, behavior tested via route test",

@@ -5,9 +5,8 @@
 
 import fs from 'node:fs';
 import type { MemeshDatabase } from '../storage/sqlite.js';
-import {
-  acquireLock, logPath, readLockPid, releaseLock, writeStatus, type BridgeStatus,
-} from './bridge-state.js';
+import { logPath, writeStatus, type BridgeStatus } from './bridge-state.js';
+import { holdControlSocket } from './control-socket.js';
 import { bindEndpoint, deadline, toBytes } from './endpoint.js';
 import { ensureNetworkDir, loadIdentity, type Identity } from './identity.js';
 import type { Connection, Endpoint, Incoming, IrohModule } from './iroh-types.js';
@@ -17,7 +16,7 @@ import { RELAY_PING_INTERVAL_MS, applyRelayState, pingRelay, relayComplaint, typ
 import { findMember, verifyRoster } from './roster.js';
 import { openNetworkStore, readConfig, signedRosterOf, type NetworkConfig } from './store.js';
 import {
-  EXIT_ALREADY_RUNNING, EXIT_LOCK_UNCONFIRMED, JOIN_ALPN, NET_ALPN, RELAY_OFF, errorMessage, runtimeDir,
+  EXIT_ALREADY_RUNNING, EXIT_HOLDER_UNRESPONSIVE, JOIN_ALPN, NET_ALPN, RELAY_OFF, errorMessage, runtimeDir,
 } from './types.js';
 
 const RELAY_ONLINE_DEADLINE_MS = 20_000;
@@ -46,10 +45,24 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
   try { process.umask(0o077); } catch { /* non-POSIX */ }
 
   ensureNetworkDir(dataDir);
-  const lock = await acquireLock(dataDir);
-  if (lock !== 'acquired') {
-    appendLog(dataDir, lock === 'held' ? 'exit_already_running' : 'exit_lock_unconfirmed');
-    return lock === 'held' ? EXIT_ALREADY_RUNNING : EXIT_LOCK_UNCONFIRMED;
+  // Replaced by the real stop once there is an endpoint to close.
+  let requestStop = (): void => {
+    appendLog(dataDir, 'stopped', { reason: 'asked during startup' });
+    process.exit(0);
+  };
+  let ready = false;
+  const control = await holdControlSocket(dataDir, {
+    isReady: () => ready,
+    stop: () => requestStop(),
+    onProblem: (message) => appendLog(dataDir, 'control_problem', { error: message }),
+  });
+  if (control.kind === 'already-running') {
+    appendLog(dataDir, 'exit_already_running');
+    return EXIT_ALREADY_RUNNING;
+  }
+  if (control.kind === 'holder-unresponsive') {
+    appendLog(dataDir, 'exit_holder_unresponsive');
+    return EXIT_HOLDER_UNRESPONSIVE;
   }
 
   const startedAt = new Date().toISOString();
@@ -84,7 +97,7 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
   const fail = (event: string, message: string): number => {
     status.state = 'failed';
     recordError(event, message);
-    releaseLock(dataDir);
+    control.close();
     return 1;
   };
   publish();
@@ -133,6 +146,7 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
   }
 
   status.state = 'running';
+  ready = true;
   status.relay_state = relayUrl === RELAY_OFF ? 'off' : 'connecting';
   publish();
   appendLog(dataDir, 'running', { relay_state: status.relay_state, owner: isOwner });
@@ -158,7 +172,7 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
       refreshRelayState();
     }, RELAY_ONLINE_DEADLINE_MS));
     let pingInFlight = false;
-    relayTimers.push(setInterval(() => {
+    const ping = (): void => {
       if (pingInFlight) return;
       pingInFlight = true;
       void pingRelay(relayUrl).then((reachable) => {
@@ -166,19 +180,14 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
         relaySignals.reachable = reachable;
         refreshRelayState();
       });
-    }, RELAY_PING_INTERVAL_MS));
+    };
+    ping();
+    relayTimers.push(setInterval(ping, RELAY_PING_INTERVAL_MS));
   }
 
-  // Native handles do not keep Node's event loop alive (measured), so this timer
-  // does. It also publishes direct addresses as they appear after bind, and checks
-  // this process still owns the lock: a bridge that lost it must not keep running.
+  // This timer also publishes direct addresses as they appear after bind.
   let lastPublished = Date.now();
   const heartbeat = setInterval(() => {
-    if (readLockPid(dataDir) !== process.pid) {
-      recordError('lock_lost', 'Another process took the network bridge lock, so this bridge stopped.');
-      void stop('lock_lost', 1);
-      return;
-    }
     let addresses: string[] | null = null;
     try {
       addresses = endpoint.addr().directAddresses();
@@ -208,9 +217,10 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
     appendLog(dataDir, 'stopped', { reason });
     publish();
     try { db.close(); } catch { /* exiting */ }
-    releaseLock(dataDir);
+    control.close();
     process.exit(exitCode);
   };
+  requestStop = () => { void stop('asked over the control socket', 0); };
   for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) {
     process.on(signal, () => { void stop(signal, 0); });
   }

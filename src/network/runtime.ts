@@ -66,15 +66,14 @@ export function checkRuntime(ctx: NetworkContext, timeoutMs: number = CHECK_TIME
     env: childEnv(ctx), encoding: 'utf8', timeout: timeoutMs,
   });
   if (result.status === 0) return;
-  let reason: string;
   if ((result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') {
-    reason = `the check did not finish within ${timeoutMs / 1000} s, so nothing is known about the files; try again when this computer is less busy`;
-  } else {
-    try {
-      reason = (JSON.parse(result.stdout) as { reason: string }).reason;
-    } catch {
-      reason = `the networking component could not start: ${describeChildDeath(result.status, result.signal)}`;
-    }
+    throw new NetworkError('runtime_check_timeout', `The check of the networking component did not finish within ${timeoutMs / 1000} s, so nothing is known about its files and they were left alone. Try again when this computer is less busy. ${SINGLE_MACHINE_NOTE}`);
+  }
+  let reason: string;
+  try {
+    reason = (JSON.parse(result.stdout) as { reason: string }).reason;
+  } catch {
+    reason = `the networking component could not start: ${describeChildDeath(result.status, result.signal)}`;
   }
   throw new NetworkError('runtime_load_failed', `The networking component did not load: ${reason}. ${SINGLE_MACHINE_NOTE}`);
 }
@@ -108,21 +107,26 @@ function assertPlatformPackageInstalled(lockText: string, directory: string): vo
   );
 }
 
-/** Undo what a failed install created, so a failed `create` leaves no trace on a machine that had none. */
+/**
+ * Undo what a failed install created, so a failed `create` leaves no trace on a
+ * machine that had none. Best effort: the caller is about to report why the install
+ * failed, and a problem here must not replace that.
+ */
 function removeFailedInstall(dataDir: string, directory: string, created: { network: boolean; data: boolean }): void {
-  fs.rmSync(directory, { recursive: true, force: true });
   try {
+    fs.rmSync(directory, { recursive: true, force: true });
     if (created.network) fs.rmdirSync(path.dirname(directory));
     if (created.data) fs.rmdirSync(dataDir);
   } catch (err) {
-    // Something else now lives there (a concurrent command's files): leave it.
-    if ((err as NodeJS.ErrnoException).code !== 'ENOTEMPTY') throw err;
+    process.stderr.write(`MeMesh could not clean up after the failed install: ${(err as Error).message}\n`);
   }
 }
 
 export interface InstallOptions {
   /** Reinstall even when the installed files pass the load check. */
   force?: boolean;
+  /** How long the load check may take. */
+  checkTimeoutMs?: number;
   onProgress?: (message: string) => void;
 }
 
@@ -145,9 +149,11 @@ export function ensureRuntime(ctx: NetworkContext, options: InstallOptions = {})
   const marker = path.join(directory, MARKER);
   if (!options.force && fs.existsSync(marker) && fs.readFileSync(marker, 'utf8').trim() === wanted) {
     try {
-      checkRuntime(ctx);
+      checkRuntime(ctx, options.checkTimeoutMs);
       return;
     } catch (err) {
+      // A check that ran out of time says nothing about the files: no reinstall.
+      if ((err as NetworkError).code === 'runtime_check_timeout') throw err;
       options.onProgress?.(`The installed networking component is not usable (${(err as Error).message}) Reinstalling.`);
     }
   }
@@ -160,9 +166,10 @@ export function ensureRuntime(ctx: NetworkContext, options: InstallOptions = {})
   try {
     runNpmCi(ctx, directory);
     assertPlatformPackageInstalled(lockText, directory);
-    checkRuntime(ctx);
+    checkRuntime(ctx, options.checkTimeoutMs);
   } catch (err) {
-    removeFailedInstall(ctx.dataDir, directory, created);
+    // A freshly installed runtime whose check ran out of time is not a failed install.
+    if ((err as NetworkError).code !== 'runtime_check_timeout') removeFailedInstall(ctx.dataDir, directory, created);
     throw err;
   }
   fs.writeFileSync(marker, `${wanted}\n`);

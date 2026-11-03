@@ -80,7 +80,7 @@ describe('machine identity', () => {
     expect(fs.readFileSync(identityPath(dataDir)).equals(damaged)).toBe(true);
   });
 
-  it('a public key that is not on the curve is a false, not a throw', () => {
+  it('a signature that does not check out under a well-formed id is a false', () => {
     const identity = ensureIdentity(dataDir);
     const message = Buffer.from('m');
     expect(verifySignature('f'.repeat(64), message, identity.sign(message))).toBe(false);

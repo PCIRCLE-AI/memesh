@@ -6,7 +6,8 @@ import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import { describeChildDeath, startBridge } from './bridge-control.js';
 import type { JoinChildInput, JoinChildResult } from './bridge-join.js';
-import { bridgeHolder, readStatus, type BridgeStatus } from './bridge-state.js';
+import { readStatus, type BridgeStatus } from './bridge-state.js';
+import { assertControlPathFits, probeBridge } from './control-socket.js';
 import { ensureIdentity, loadIdentity } from './identity.js';
 import { DEFAULT_INVITE_TTL_HOURS, MAX_INVITE_TTL_HOURS, createInvite, encodeLink, parseLink, type InviteLink } from './invites.js';
 import { parseJoinReply, refusalMessage } from './join-protocol.js';
@@ -75,6 +76,7 @@ export function createNetwork(ctx: NetworkContext, options: CreateOptions): { co
   assertValidName('machine name', options.name);
   assertValidName('person', options.person);
   const relay = resolveRelay(options.relay, DEFAULT_RELAY_URL);
+  assertControlPathFits(ctx.dataDir);
   refuseIfAlreadyJoined(ctx);
   ensureRuntime(ctx, options);
 
@@ -254,6 +256,7 @@ export async function joinNetwork(ctx: NetworkContext, options: JoinOptions): Pr
   if (relay === RELAY_OFF && !link.addrs?.length) {
     throw new NetworkError('invalid_option', 'This link can only be reached through a relay, so it cannot be used with --relay off. Ask for a link made with --include-addresses.');
   }
+  assertControlPathFits(ctx.dataDir);
   refuseIfAlreadyJoined(ctx);
   ensureRuntime(ctx, options);
 
@@ -274,7 +277,10 @@ export async function joinNetwork(ctx: NetworkContext, options: JoinOptions): Pr
       throw new NetworkError('relay_unreachable', `This machine could not reach its relay (${safeForTerminal(result.detail)}). The invite was not used and nothing was saved. Check this machine's connection and the relay address, then try again.`);
     }
     if (result.code === 'owner_unreachable') {
-      throw new NetworkError('owner_unreachable', `Could not reach the network owner's machine (${safeForTerminal(result.detail)}). Its bridge must be running: on that machine, run \`memesh network up\`. The invite was not used.`);
+      const advice = result.relay_reached === false
+        ? 'This machine could not reach its relay either, so check this machine\'s connection first.'
+        : 'Its bridge must be running: on that machine, run `memesh network up`.';
+      throw new NetworkError('owner_unreachable', `Could not reach the network owner's machine (${safeForTerminal(result.detail)}). ${advice} The invite was not used.`);
     }
     if (result.code === 'join_interrupted') {
       throw new NetworkError('join_interrupted', `Reached the network owner's machine, but the join did not finish (${safeForTerminal(result.detail)}). Running join again with the same link is safe.`);
@@ -313,7 +319,13 @@ export async function joinNetwork(ctx: NetworkContext, options: JoinOptions): Pr
 /** Starting the bridge needs a network to serve. */
 export async function bridgeUp(ctx: NetworkContext, options: InstallOptions = {}): Promise<{ pid: number; started: boolean }> {
   withConfig(ctx, () => undefined);
-  if (options.force) ensureRuntime(ctx, options);
+  if (options.force) {
+    // Its files are loaded in that process, and replacing them under it helps nobody.
+    if ((await probeBridge(ctx.dataDir)).kind !== 'not-running') {
+      throw new NetworkError('bridge_unresponsive', 'The network bridge is running, so its files cannot be reinstalled. Stop it first with `memesh network down`.');
+    }
+    ensureRuntime(ctx, options);
+  }
   return startBridge(ctx);
 }
 
@@ -331,8 +343,8 @@ export interface JoinedStatus {
   members: RosterMember[];
   bridge: {
     running: boolean;
-    /** A live process holds the lock and it could not be confirmed as this bridge. */
-    cannot_tell: boolean;
+    /** Something holds the control socket and did not answer. */
+    unresponsive: boolean;
     pid: number | null;
     started_at: string | null;
     relay_state: BridgeStatus['relay_state'] | null;
@@ -348,7 +360,7 @@ export interface JoinedStatus {
  * Read-only for someone who never opted in: with no network folder this returns
  * before opening anything, so `status` cannot itself create network state.
  */
-export function getNetworkStatus(ctx: NetworkContext): NetworkStatus {
+export async function getNetworkStatus(ctx: NetworkContext): Promise<NetworkStatus> {
   if (!fs.existsSync(networkDir(ctx.dataDir)) || !fs.existsSync(ctx.dbPath)) return { joined: false };
   const db = openNetworkStore(ctx.dbPath);
   let config: NetworkConfig | null;
@@ -362,12 +374,11 @@ export function getNetworkStatus(ctx: NetworkContext): NetworkStatus {
   if (!config) return { joined: false };
 
   const roster = parseRoster(config.roster_json);
-  const holder = bridgeHolder(ctx.dataDir);
-  const running = holder.kind === 'bridge';
-  const pid = holder.kind === 'none' ? null : holder.pid;
+  const probe = await probeBridge(ctx.dataDir);
+  const running = probe.kind === 'running';
   const status = readStatus(ctx.dataDir);
-  // The status file can be an earlier bridge's: its live fields count only if it is this one's.
-  const current = running && status?.pid === pid ? status : null;
+  // The status file can be an earlier bridge's: its live fields count only if this one answered with its pid.
+  const current = running && status?.pid === probe.pid ? status : null;
   return {
     joined: true,
     network_id: config.network_id,
@@ -380,8 +391,9 @@ export function getNetworkStatus(ctx: NetworkContext): NetworkStatus {
     members: roster.members,
     bridge: {
       running,
-      cannot_tell: holder.kind === 'unknown',
-      pid,
+      unresponsive: probe.kind === 'unresponsive',
+      // When it does not answer, its own earlier status is all there is to go on.
+      pid: running ? probe.pid : probe.kind === 'unresponsive' ? status?.pid ?? null : null,
       started_at: current?.started_at ?? null,
       relay_state: current?.relay_state ?? null,
       last_error: status?.last_error ?? null,

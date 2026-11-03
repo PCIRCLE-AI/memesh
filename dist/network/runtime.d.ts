@@ -4,6 +4,7 @@ export declare function explainInstallFailure(spawnError: NodeJS.ErrnoException 
 export declare function checkRuntime(ctx: NetworkContext, timeoutMs?: number): void;
 export interface InstallOptions {
     force?: boolean;
+    checkTimeoutMs?: number;
     onProgress?: (message: string) => void;
 }
 export declare function ensureRuntime(ctx: NetworkContext, options?: InstallOptions): void;

@@ -11,9 +11,6 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 const repoRoot = path.resolve(import.meta.dirname, '..', '..');
 const srcRoot = path.join(repoRoot, 'src');
 const networkRoot = path.join(srcRoot, 'network');
-const SCHEMA_SOURCE = path.join(srcRoot, 'storage/schema.ts');
-const NETWORK_SCHEMA_SOURCE = path.join(srcRoot, 'storage/agent-network-schema.ts');
-const NATIVE_LOADER_SOURCE = path.join(networkRoot, 'native-loader.ts');
 const relative = (file: string): string => path.relative(repoRoot, file).split(path.sep).join('/');
 
 function sourceFiles(dir: string): string[] {
@@ -34,17 +31,33 @@ function loadsIn(text: string): Loads {
   const source = ts.createSourceFile('x.ts', text, ts.ScriptTarget.Latest, true);
   const loads: Loads = { literal: [], computed: [] };
   const isLiteral = (node: ts.Node | undefined): node is ts.StringLiteralLike => node !== undefined && ts.isStringLiteralLike(node);
+  // Every name this file binds to node:module, however it is spelled.
+  const moduleBindings = new Set<string>();
   const visit = (node: ts.Node): void => {
     if (ts.isImportDeclaration(node) && !node.importClause?.isTypeOnly && isLiteral(node.moduleSpecifier)) {
       loads.literal.push(node.moduleSpecifier.text);
+      if (/^(?:node:)?module$/.test(node.moduleSpecifier.text)) {
+        const clause = node.importClause;
+        if (clause?.name) moduleBindings.add(clause.name.text);
+        const bindings = clause?.namedBindings;
+        if (bindings && ts.isNamespaceImport(bindings)) moduleBindings.add(bindings.name.text);
+        if (bindings && ts.isNamedImports(bindings)) bindings.elements.forEach((element) => moduleBindings.add(element.name.text));
+      }
     }
     if (ts.isExportDeclaration(node) && !node.isTypeOnly && node.moduleSpecifier && isLiteral(node.moduleSpecifier)) {
       loads.literal.push(node.moduleSpecifier.text);
     }
     if (ts.isCallExpression(node)) {
-      const isImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
-      const isRequireLike = ts.isIdentifier(node.expression) && /require/i.test(node.expression.text);
-      if (isImport || isRequireLike) {
+      const callee = node.expression;
+      const isImport = callee.kind === ts.SyntaxKind.ImportKeyword;
+      const isRequireLike = ts.isIdentifier(callee) && /require/i.test(callee.text);
+      const root = ts.isPropertyAccessExpression(callee) ? callee.expression : callee;
+      const isModuleCall = ts.isIdentifier(root) && moduleBindings.has(root.text);
+      const isDlopen = ts.isPropertyAccessExpression(callee) && callee.name.text === 'dlopen';
+      const isModuleLoad = ts.isPropertyAccessExpression(callee) && callee.name.text === '_load';
+      if (isModuleCall || isDlopen || isModuleLoad) {
+        loads.computed.push(node.getText());
+      } else if (isImport || isRequireLike) {
         const [argument] = node.arguments;
         if (isLiteral(argument)) loads.literal.push(argument.text);
         else loads.computed.push(node.getText());
@@ -90,20 +103,23 @@ describe('the parser sees every way of loading a module', () => {
     ["await import('../' + 'db.js');", [], ["import('../' + 'db.js')"]],
     ["createRequire(import.meta.url)(p);", [], ['createRequire(import.meta.url)']],
     ["require(p);", [], ['require(p)']],
+    ["import { createRequire as cr } from 'node:module'; const r = cr(import.meta.url);", ['node:module'], ['cr(import.meta.url)']],
+    ["import * as nm from 'node:module'; nm.createRequire(u);", ['node:module'], ['nm.createRequire(u)']],
+    ["import Module from 'module'; Module._load(p);", ['module'], ['Module._load(p)']],
+    ["process.dlopen(m, p);", [], ['process.dlopen(m, p)']],
   ])('%s', (text, literal, computed) => {
     expect(loadsIn(text)).toEqual({ literal, computed });
   });
 });
 
 describe('native isolation', () => {
-  it('only the native loader names the native package, in all of src/', () => {
+  it('no code in src/ names the native package: the loader takes it from the lock', () => {
     const naming = sourceFiles(srcRoot)
       .filter((file) => fs.readFileSync(file, 'utf8').includes('@number0'))
       .map(relative)
       .sort();
     // The two pin files are data npm reads; they are never imported.
     expect(naming).toEqual([
-      'src/network/native-loader.ts',
       'src/network/runtime-lock.json',
       'src/network/runtime-package.json',
     ]);
@@ -135,7 +151,7 @@ describe('native isolation', () => {
       .filter((file) => !file.endsWith('native-loader.ts'))
       .flatMap((file) => loadsIn(fs.readFileSync(file, 'utf8')).computed.map((load) => `${relative(file)}: ${load}`));
     expect(computed).toEqual([]);
-    expect(loadsIn(fs.readFileSync(NATIVE_LOADER_SOURCE, 'utf8')).computed.length).toBeGreaterThan(0);
+    expect(loadsIn(fs.readFileSync(path.join(networkRoot, 'native-loader.ts'), 'utf8')).computed.length).toBeGreaterThan(0);
   });
 });
 
@@ -157,15 +173,38 @@ describe('memory stays out of the network path', () => {
     expect([...external].sort()).toEqual(['commander']);
   });
 
-  const tablesIn = (sql: string): string[] => [...sql.matchAll(/CREATE\s+(?:VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)/gi)].map((match) => match[1]);
-  const memoryTables = tablesIn(fs.readFileSync(SCHEMA_SOURCE, 'utf8')).filter((name) => !name.startsWith('agent_network_'));
+  const tablesIn = (sql: string): string[] => [...sql.matchAll(/CREATE\s+(?:VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?["'`[]?(\w+)/gi)].map((match) => match[1]);
+  // Everywhere a table is created, not only SCHEMA_SQL: src/db.ts and others make their own.
+  const memoryTables = [...new Set([
+    ...tablesIn(fs.readFileSync(path.join(srcRoot, 'storage/schema.ts'), 'utf8')),
+    ...sourceFiles(srcRoot).filter((file) => file.endsWith('.ts') && !file.startsWith(networkRoot + path.sep)).flatMap((file) => tablesIn(fs.readFileSync(file, 'utf8'))),
+  ])].filter((name) => !name.startsWith('agent_network_'));
   const touchesMemoryTable = (text: string): string[] => memoryTables.filter((table) =>
-    new RegExp(`\\b(?:FROM|INTO|UPDATE|JOIN|TABLE)\\s+${table}\\b`, 'i').test(text));
+    new RegExp(`\\b(?:FROM|INTO|UPDATE|JOIN|TABLE)\\s+(?:[\\w"'\`\\[\\]]+\\.)?["'\`[]?${table}\\b`, 'i').test(text));
+  /** SQL handed to prepare() that is built at runtime: a table name there cannot be read from the code. */
+  const computedSql = (text: string): string[] => {
+    const found: string[] = [];
+    const visit = (node: ts.Node): void => {
+      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === 'prepare') {
+        const [argument] = node.arguments;
+        if (!argument || !ts.isStringLiteralLike(argument)) found.push(node.getText());
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(ts.createSourceFile('x.ts', text, ts.ScriptTarget.Latest, true));
+    return found;
+  };
 
   it('knows the memory tables', () => {
     expect(memoryTables).toEqual(expect.arrayContaining(['entities', 'observations', 'relations', 'tags']));
     expect(memoryTables.length).toBeGreaterThan(10);
-    expect(touchesMemoryTable("db.prepare('SELECT name FROM entities').all()")).toEqual(['entities']);
+    expect(memoryTables).toContain('dream_proposals');
+    for (const sql of ['SELECT name FROM entities', 'SELECT name FROM "entities"', 'SELECT name FROM main.entities', 'select * from main."entities"', 'SELECT * FROM `entities`', 'SELECT * FROM [entities]']) {
+      expect(touchesMemoryTable(sql)).toEqual(['entities']);
+    }
+    expect(touchesMemoryTable('SELECT 1 FROM agent_network_config')).toEqual([]);
+    expect(computedSql('const t = "entities"; db.prepare(`SELECT name FROM ${t}`);').length).toBe(1);
+    expect(computedSql("db.prepare('SELECT 1');").length).toBe(0);
   });
 
   it('no SQL in src/network touches a table outside agent_network_*', () => {
@@ -173,8 +212,13 @@ describe('memory stays out of the network path', () => {
     expect(hits).toEqual([]);
   });
 
+  it('every SQL statement in src/network can be read from the code', () => {
+    const computed = networkSources.flatMap((file) => computedSql(fs.readFileSync(file, 'utf8')).map((call) => `${relative(file)}: ${call}`));
+    expect(computed).toEqual([]);
+  });
+
   it('the schema the bridge opens with names only network tables', () => {
-    const text = fs.readFileSync(NETWORK_SCHEMA_SOURCE, 'utf8');
+    const text = fs.readFileSync(path.join(srcRoot, 'storage/agent-network-schema.ts'), 'utf8');
     expect(tablesIn(text)).toEqual(['agent_network_config', 'agent_network_invites']);
     expect(loadsIn(text)).toEqual({ literal: [], computed: [] });
   });

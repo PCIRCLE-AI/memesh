@@ -1,40 +1,27 @@
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
-import { currentLibc, platformPackages } from './runtime-platform.js';
+import { currentLibc, platformPackage } from './runtime-platform.js';
 import { errorMessage } from './types.js';
 export function loadNative(runtimeDirectory) {
     const lockText = fs.readFileSync(path.join(runtimeDirectory, 'package-lock.json'), 'utf8');
-    const packages = platformPackages(lockText, process.platform, process.arch, currentLibc());
-    if (!packages.some((name) => fs.existsSync(path.join(runtimeDirectory, 'node_modules', name, 'package.json')))) {
+    const name = platformPackage(lockText, process.platform, process.arch, currentLibc());
+    const directory = path.join(runtimeDirectory, 'node_modules', name ?? 'none');
+    let main;
+    try {
+        main = JSON.parse(fs.readFileSync(path.join(directory, 'package.json'), 'utf8')).main;
+    }
+    catch {
         throw new Error(`the native networking file for ${process.platform}-${process.arch} is missing from the install`);
     }
-    const requireFromRuntime = createRequire(path.join(runtimeDirectory, 'package.json'));
-    return requireFromRuntime(path.join(runtimeDirectory, 'node_modules', '@number0', 'iroh'));
+    return createRequire(path.join(runtimeDirectory, 'package.json'))(path.join(directory, main));
 }
 export function explainLoadFailure(err) {
-    const messages = [];
-    for (let at = err; at instanceof Error && messages.length < 16; at = at.cause) {
-        messages.push(at.message);
-    }
-    const specific = messages.find((message) => /^Unsupported /.test(message));
-    if (specific)
-        return `this computer is not supported (${specific})`;
-    if (messages.length === 1 && ['MODULE_NOT_FOUND', 'ENOENT'].includes(String(err.code))) {
+    const message = errorMessage(err).split('\n')[0];
+    if (/is missing from the install$/.test(message))
+        return message;
+    if (err.code === 'ENOENT')
         return 'the networking component is not installed';
-    }
-    const absent = messages.find((message) => /is missing from the install$/.test(message));
-    if (absent)
-        return absent;
-    const mismatch = messages.find((message) => /version mismatch/.test(message));
-    if (mismatch)
-        return `the installed networking files do not match each other (${mismatch})`;
-    const damaged = messages.find((message) => /dlopen|slice is not valid|too short|file too|not a mach-o|invalid ELF|wrong ELF|code signature/i.test(message));
-    if (damaged)
-        return `the native networking file is damaged or cannot run here (${damaged.split('\n')[0].slice(0, 200)})`;
-    if (messages.some((message) => /npm has a bug|Cannot find native binding/.test(message))) {
-        return `the native networking file for ${process.platform}-${process.arch} is missing from the install`;
-    }
-    return errorMessage(err).split('\n')[0];
+    return `the native networking file is damaged or cannot run here (${message.slice(0, 200)})`;
 }
 //# sourceMappingURL=native-loader.js.map

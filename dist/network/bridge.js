@@ -1,7 +1,7 @@
 import { createRequire as __memeshCreateRequire } from 'node:module'; const require = __memeshCreateRequire(import.meta.url);
 
 // dist/network/bridge.js
-import path7 from "node:path";
+import path8 from "node:path";
 
 // dist/core/paths.js
 import os from "os";
@@ -61,7 +61,7 @@ var JOIN_ALPN = "memesh/join/1";
 var NET_ALPN = "memesh/net/1";
 var RELAY_OFF = "off";
 var EXIT_ALREADY_RUNNING = 3;
-var EXIT_LOCK_UNCONFIRMED = 4;
+var EXIT_HOLDER_UNRESPONSIVE = 4;
 var NetworkError = class extends Error {
   code;
   constructor(code, message) {
@@ -436,8 +436,8 @@ var { DatabaseSync } = loadNodeSqlite();
 var BUSY_TIMEOUT_MS = 3e4;
 var MemeshDatabase = class extends DatabaseSync {
   #depth = 0;
-  constructor(path8, options = {}) {
-    super(path8, options);
+  constructor(path9, options = {}) {
+    super(path9, options);
     this.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
   }
   pragma(statement) {
@@ -509,8 +509,8 @@ function signedRosterOf(config) {
 var JOIN_REQUEST_MAX_BYTES = 4 * 1024;
 var JOIN_REPLY_MAX_BYTES = SIGNED_ROSTER_MAX_BYTES + 1024;
 var OWNER_SIDE_FAULTS = /* @__PURE__ */ new Set(["roster_invalid", "not_owner", "identity_invalid"]);
-function encodeJoinRequest(request) {
-  return Buffer.from(JSON.stringify(request));
+function encodeJoinRequest(request2) {
+  return Buffer.from(JSON.stringify(request2));
 }
 function parseJoinRequest(bytes) {
   let raw;
@@ -532,19 +532,19 @@ function handleJoinRequest(db, identity, remoteMachineId, bytes, now) {
     if (!config || config.owner_id !== identity.machineId) {
       throw new NetworkError("not_owner", "This machine does not own a network.");
     }
-    const request = parseJoinRequest(bytes);
-    if (request.network_id !== config.network_id) {
+    const request2 = parseJoinRequest(bytes);
+    if (request2.network_id !== config.network_id) {
       throw new NetworkError("wrong_network", "This link is for a different network.");
     }
     const current = signedRosterOf(config);
     const roster = verifyRoster(current, config.owner_id, config.network_id);
     if (findMember(roster, remoteMachineId))
       return current;
-    consumeInvite(db, hashToken(request.token), now);
+    consumeInvite(db, hashToken(request2.token), now);
     const next = signRoster(identity, addMember(roster, {
       machine_id: remoteMachineId,
-      name: request.name,
-      person: request.person,
+      name: request2.name,
+      person: request2.person,
       joined_at: new Date(now).toISOString()
     }));
     saveRoster(db, next);
@@ -576,41 +576,31 @@ function platformPackages(lockText, platform, arch, libc) {
   const { packages } = JSON.parse(lockText);
   return Object.entries(packages).filter(([, entry]) => entry.os?.includes(platform) && entry.cpu?.includes(arch) && (entry.libc === void 0 || libc === null || entry.libc.includes(libc))).map(([key]) => key.replace(/^node_modules\//, ""));
 }
+function platformPackage(lockText, platform, arch, libc) {
+  const names = platformPackages(lockText, platform, arch, libc);
+  return names.find((name) => name.includes("musl") === (libc === "musl")) ?? names[0] ?? null;
+}
 
 // dist/network/native-loader.js
 function loadNative(runtimeDirectory) {
   const lockText = fs4.readFileSync(path5.join(runtimeDirectory, "package-lock.json"), "utf8");
-  const packages = platformPackages(lockText, process.platform, process.arch, currentLibc());
-  if (!packages.some((name) => fs4.existsSync(path5.join(runtimeDirectory, "node_modules", name, "package.json")))) {
+  const name = platformPackage(lockText, process.platform, process.arch, currentLibc());
+  const directory = path5.join(runtimeDirectory, "node_modules", name ?? "none");
+  let main;
+  try {
+    main = JSON.parse(fs4.readFileSync(path5.join(directory, "package.json"), "utf8")).main;
+  } catch {
     throw new Error(`the native networking file for ${process.platform}-${process.arch} is missing from the install`);
   }
-  const requireFromRuntime = createRequire2(path5.join(runtimeDirectory, "package.json"));
-  return requireFromRuntime(path5.join(runtimeDirectory, "node_modules", "@number0", "iroh"));
+  return createRequire2(path5.join(runtimeDirectory, "package.json"))(path5.join(directory, main));
 }
 function explainLoadFailure(err) {
-  const messages = [];
-  for (let at = err; at instanceof Error && messages.length < 16; at = at.cause) {
-    messages.push(at.message);
-  }
-  const specific = messages.find((message) => /^Unsupported /.test(message));
-  if (specific)
-    return `this computer is not supported (${specific})`;
-  if (messages.length === 1 && ["MODULE_NOT_FOUND", "ENOENT"].includes(String(err.code))) {
+  const message = errorMessage(err).split("\n")[0];
+  if (/is missing from the install$/.test(message))
+    return message;
+  if (err.code === "ENOENT")
     return "the networking component is not installed";
-  }
-  const absent = messages.find((message) => /is missing from the install$/.test(message));
-  if (absent)
-    return absent;
-  const mismatch = messages.find((message) => /version mismatch/.test(message));
-  if (mismatch)
-    return `the installed networking files do not match each other (${mismatch})`;
-  const damaged = messages.find((message) => /dlopen|slice is not valid|too short|file too|not a mach-o|invalid ELF|wrong ELF|code signature/i.test(message));
-  if (damaged)
-    return `the native networking file is damaged or cannot run here (${damaged.split("\n")[0].slice(0, 200)})`;
-  if (messages.some((message) => /npm has a bug|Cannot find native binding/.test(message))) {
-    return `the native networking file for ${process.platform}-${process.arch} is missing from the install`;
-  }
-  return errorMessage(err).split("\n")[0];
+  return `the native networking file is damaged or cannot run here (${message.slice(0, 200)})`;
 }
 
 // dist/network/bridge-join.js
@@ -660,17 +650,13 @@ async function runJoinClient(dataDir2, input) {
 }
 
 // dist/network/bridge-serve.js
-import fs6 from "node:fs";
+import fs7 from "node:fs";
 
 // dist/network/bridge-state.js
-import { execFileSync } from "node:child_process";
 import fs5 from "node:fs";
 import path6 from "node:path";
 function statusPath(dataDir2) {
   return path6.join(networkDir(dataDir2), "bridge-status.json");
-}
-function lockPath(dataDir2) {
-  return path6.join(networkDir(dataDir2), "bridge.pid");
 }
 function logPath(dataDir2) {
   return path6.join(networkDir(dataDir2), "bridge.log");
@@ -682,117 +668,202 @@ function writeStatus(dataDir2, status) {
 `, { mode: 384 });
   fs5.renameSync(temporary, file);
 }
-function isThisBridge(command, dataDir2) {
-  return command.replace(/"/g, "").trimEnd().endsWith(`bridge.js serve ${dataDir2}`);
-}
-function isProcessAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-function linuxCommandLine(pid) {
-  try {
-    return fs5.readFileSync(`/proc/${pid}/cmdline`).toString("utf8").split("\0").join(" ");
-  } catch {
-    return null;
-  }
-}
-function commandLineFrom(program, args) {
-  try {
-    return execFileSync(program, args, { encoding: "utf8", timeout: 5e3, stdio: ["ignore", "pipe", "ignore"] });
-  } catch {
-    return null;
-  }
-}
-function commandLineOf(pid) {
-  if (process.platform === "linux") {
-    const command = linuxCommandLine(pid);
-    if (command !== null)
-      return command;
-  }
+
+// dist/network/control-socket.js
+import { createHash as createHash2 } from "node:crypto";
+import fs6 from "node:fs";
+import net from "node:net";
+import path7 from "node:path";
+var SOCKET_PATH_MAX_BYTES = 103;
+var PROBE_DEADLINE_MS = 4e3;
+var REQUEST_DEADLINE_MS = 2e3;
+var REQUEST_MAX_BYTES = 256;
+var REPLY_MAX_BYTES = 8 * 1024;
+var STARTUP_LOCK_WAIT_MS = 5e3;
+var STARTUP_LOCK_STALE_MS = 3e4;
+function controlPath(dataDir2) {
   if (process.platform === "win32") {
-    return commandLineFrom("powershell", [
-      "-NoProfile",
-      "-NonInteractive",
-      "-Command",
-      `(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine`
-    ]);
+    return `\\\\.\\pipe\\memesh-bridge-${createHash2("sha256").update(dataDir2).digest("hex").slice(0, 32)}`;
   }
-  return commandLineFrom("ps", ["-ww", "-o", "command=", "-p", String(pid)]);
+  return path7.join(networkDir(dataDir2), "bridge.sock");
 }
-function identifyProcess(pid, dataDir2) {
-  if (!isProcessAlive(pid))
-    return "not-bridge";
-  const command = commandLineOf(pid);
-  if (command === null)
-    return isProcessAlive(pid) ? "unknown" : "not-bridge";
-  return isThisBridge(command, dataDir2) ? "bridge" : "not-bridge";
+function controlPathFits(dataDir2) {
+  return Buffer.byteLength(controlPath(dataDir2)) <= SOCKET_PATH_MAX_BYTES;
 }
-function readLockPid(dataDir2) {
+function assertControlPathFits(dataDir2) {
+  if (controlPathFits(dataDir2))
+    return;
+  throw new NetworkError("invalid_option", `The MeMesh data folder's path is too long for this computer's local sockets (${dataDir2}). Use a shorter one with MEMESH_DIR or MEMESH_DB_PATH.`);
+}
+function dataDirIdentity(dataDir2) {
   try {
-    const pid = Number(fs5.readFileSync(lockPath(dataDir2), "utf8").trim());
-    return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
+    return fs6.realpathSync(dataDir2);
+  } catch {
+    return dataDir2;
+  }
+}
+function parseReply(line, dataDir2) {
+  try {
+    const reply2 = JSON.parse(line);
+    const valid = Number.isSafeInteger(reply2?.pid) && typeof reply2?.ready === "boolean";
+    return valid && reply2?.data_dir === dataDirIdentity(dataDir2) ? reply2 : null;
   } catch {
     return null;
   }
 }
-function removeStaleLock(dataDir2, stalePid) {
-  const file = lockPath(dataDir2);
-  const aside = `${file}.stale-${process.pid}`;
-  try {
-    fs5.renameSync(file, aside);
-  } catch (err) {
-    if (err.code === "ENOENT")
-      return false;
-    throw err;
-  }
-  try {
-    const value = Number(fs5.readFileSync(aside, "utf8").trim());
-    const taken = Number.isSafeInteger(value) && value > 0 ? value : null;
-    if (taken === stalePid)
-      return true;
-    try {
-      fs5.linkSync(aside, file);
-    } catch (err) {
-      if (err.code !== "EEXIST")
-        throw err;
-    }
-    return false;
-  } finally {
-    fs5.rmSync(aside, { force: true });
-  }
+function request(dataDir2, op, deadlineMs) {
+  return new Promise((resolve) => {
+    const socket = net.createConnection(controlPath(dataDir2));
+    let text = "";
+    const finish = (result) => {
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(result);
+    };
+    const timer = setTimeout(() => finish(null), deadlineMs);
+    socket.once("connect", () => socket.write(`${JSON.stringify({ op })}
+`));
+    socket.on("data", (chunk) => {
+      text += chunk.toString("utf8");
+      if (text.length > REPLY_MAX_BYTES)
+        finish(null);
+      const newline = text.indexOf("\n");
+      if (newline === -1)
+        return;
+      finish(parseReply(text.slice(0, newline), dataDir2));
+    });
+    socket.once("error", (err) => {
+      finish(["ECONNREFUSED", "ENOENT", "ENOTDIR"].includes(String(err.code)) ? "not-running" : null);
+    });
+    socket.once("close", () => finish(null));
+  });
 }
-async function acquireLock(dataDir2) {
-  const file = lockPath(dataDir2);
-  for (let attempt = 0; attempt < 5; attempt++) {
+async function probeBridge(dataDir2, deadlineMs = PROBE_DEADLINE_MS) {
+  if (!controlPathFits(dataDir2))
+    return { kind: "not-running" };
+  const reply2 = await request(dataDir2, "hello", deadlineMs);
+  if (reply2 === "not-running")
+    return { kind: "not-running" };
+  return reply2 === null ? { kind: "unresponsive" } : { kind: "running", pid: reply2.pid, ready: reply2.ready };
+}
+async function withStartupLock(dataDir2, use) {
+  const lock = path7.join(networkDir(dataDir2), "bridge.sock.startup.lock");
+  const giveUpAt = Date.now() + STARTUP_LOCK_WAIT_MS;
+  for (; ; ) {
     try {
-      fs5.writeFileSync(file, `${process.pid}
+      fs6.writeFileSync(lock, `${process.pid}
 `, { flag: "wx", mode: 384 });
+      break;
     } catch (err) {
       if (err.code !== "EEXIST")
         throw err;
-      const pid = readLockPid(dataDir2);
-      if (pid !== null && pid !== process.pid) {
-        const identity = identifyProcess(pid, dataDir2);
-        if (identity === "bridge")
-          return "held";
-        if (identity === "unknown")
-          return "unconfirmed";
+      if (startupLockIsStale(lock)) {
+        fs6.rmSync(lock, { force: true });
+        continue;
       }
-      removeStaleLock(dataDir2, pid);
-      continue;
+      if (Date.now() >= giveUpAt)
+        throw new Error("Another network bridge is starting and did not finish.", { cause: err });
+      await new Promise((resolve) => setTimeout(resolve, 20));
     }
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    return readLockPid(dataDir2) === process.pid ? "acquired" : "held";
   }
-  return "held";
+  try {
+    return await use();
+  } finally {
+    fs6.rmSync(lock, { force: true });
+  }
 }
-function releaseLock(dataDir2) {
-  if (readLockPid(dataDir2) === process.pid)
-    fs5.rmSync(lockPath(dataDir2), { force: true });
+function startupLockIsStale(lock) {
+  try {
+    if (Date.now() - fs6.statSync(lock).mtimeMs >= STARTUP_LOCK_STALE_MS)
+      return true;
+    process.kill(Number(fs6.readFileSync(lock, "utf8").trim()), 0);
+    return false;
+  } catch (err) {
+    return err.code === "ESRCH";
+  }
+}
+function listen(server, target) {
+  return new Promise((resolve, reject) => {
+    const onError = (err) => {
+      server.off("listening", onListening);
+      if (err.code === "EADDRINUSE")
+        resolve("in-use");
+      else
+        reject(err);
+    };
+    const onListening = () => {
+      server.off("error", onError);
+      resolve("listening");
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(target);
+  });
+}
+function removeStaleSocket(target) {
+  if (process.platform === "win32")
+    return;
+  if (!fs6.lstatSync(target).isSocket()) {
+    throw new Error(`${target} exists and is not a socket, so the network bridge cannot use it.`);
+  }
+  fs6.unlinkSync(target);
+}
+function parseOp(line) {
+  try {
+    const { op } = JSON.parse(line);
+    return op === "hello" || op === "stop" ? op : null;
+  } catch {
+    return null;
+  }
+}
+function serveConnection(socket, identity, handlers) {
+  let text = "";
+  socket.setTimeout(REQUEST_DEADLINE_MS, () => socket.destroy());
+  socket.on("error", (err) => handlers.onProblem(`Control connection failed: ${err.message}`));
+  socket.on("data", (chunk) => {
+    text += chunk.toString("utf8");
+    if (text.length > REQUEST_MAX_BYTES) {
+      socket.destroy();
+      return;
+    }
+    const newline = text.indexOf("\n");
+    if (newline === -1)
+      return;
+    const op = parseOp(text.slice(0, newline));
+    if (op === null) {
+      socket.destroy();
+      return;
+    }
+    const reply2 = { data_dir: identity, pid: process.pid, ready: handlers.isReady() };
+    socket.end(`${JSON.stringify(reply2)}
+`, () => {
+      if (op === "stop")
+        handlers.stop();
+    });
+  });
+}
+async function holdControlSocket(dataDir2, handlers) {
+  assertControlPathFits(dataDir2);
+  const identity = dataDirIdentity(dataDir2);
+  const target = controlPath(dataDir2);
+  const server = net.createServer((socket) => serveConnection(socket, identity, handlers));
+  server.on("error", (err) => handlers.onProblem(`Control socket failed: ${err.message}`));
+  return withStartupLock(dataDir2, async () => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (await listen(server, target) === "listening") {
+        return { kind: "held", close: () => {
+          server.close();
+        } };
+      }
+      const probe = await probeBridge(dataDir2);
+      if (probe.kind === "running")
+        return { kind: "already-running" };
+      if (probe.kind === "unresponsive")
+        return { kind: "holder-unresponsive" };
+      removeStaleSocket(target);
+    }
+    throw new Error("The network bridge control socket stayed in use.");
+  });
 }
 
 // dist/network/relay-monitor.js
@@ -843,9 +914,9 @@ var MEMBER_STUB_REPLY = JSON.stringify({ ok: false, error: "not_implemented" });
 function appendLog(dataDir2, event, detail = {}) {
   try {
     const file = logPath(dataDir2);
-    if (fs6.existsSync(file) && fs6.statSync(file).size > LOG_MAX_BYTES)
-      fs6.renameSync(file, `${file}.1`);
-    fs6.appendFileSync(file, `${JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), pid: process.pid, event, ...detail })}
+    if (fs7.existsSync(file) && fs7.statSync(file).size > LOG_MAX_BYTES)
+      fs7.renameSync(file, `${file}.1`);
+    fs7.appendFileSync(file, `${JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), pid: process.pid, event, ...detail })}
 `, { mode: 384 });
   } catch {
   }
@@ -856,10 +927,23 @@ async function serve(dataDir2, dbPath) {
   } catch {
   }
   ensureNetworkDir(dataDir2);
-  const lock = await acquireLock(dataDir2);
-  if (lock !== "acquired") {
-    appendLog(dataDir2, lock === "held" ? "exit_already_running" : "exit_lock_unconfirmed");
-    return lock === "held" ? EXIT_ALREADY_RUNNING : EXIT_LOCK_UNCONFIRMED;
+  let requestStop = () => {
+    appendLog(dataDir2, "stopped", { reason: "asked during startup" });
+    process.exit(0);
+  };
+  let ready = false;
+  const control = await holdControlSocket(dataDir2, {
+    isReady: () => ready,
+    stop: () => requestStop(),
+    onProblem: (message) => appendLog(dataDir2, "control_problem", { error: message })
+  });
+  if (control.kind === "already-running") {
+    appendLog(dataDir2, "exit_already_running");
+    return EXIT_ALREADY_RUNNING;
+  }
+  if (control.kind === "holder-unresponsive") {
+    appendLog(dataDir2, "exit_holder_unresponsive");
+    return EXIT_HOLDER_UNRESPONSIVE;
   }
   const startedAt = (/* @__PURE__ */ new Date()).toISOString();
   const status = {
@@ -893,7 +977,7 @@ async function serve(dataDir2, dbPath) {
   const fail = (event, message) => {
     status.state = "failed";
     recordError(event, message);
-    releaseLock(dataDir2);
+    control.close();
     return 1;
   };
   publish();
@@ -937,6 +1021,7 @@ async function serve(dataDir2, dbPath) {
     return fail("exit_bind", `Cannot open a network connection: ${errorMessage(err)}`);
   }
   status.state = "running";
+  ready = true;
   status.relay_state = relayUrl === RELAY_OFF ? "off" : "connecting";
   publish();
   appendLog(dataDir2, "running", { relay_state: status.relay_state, owner: isOwner });
@@ -963,7 +1048,7 @@ async function serve(dataDir2, dbPath) {
       refreshRelayState();
     }, RELAY_ONLINE_DEADLINE_MS2));
     let pingInFlight = false;
-    relayTimers.push(setInterval(() => {
+    const ping = () => {
       if (pingInFlight)
         return;
       pingInFlight = true;
@@ -972,15 +1057,12 @@ async function serve(dataDir2, dbPath) {
         relaySignals.reachable = reachable;
         refreshRelayState();
       });
-    }, RELAY_PING_INTERVAL_MS));
+    };
+    ping();
+    relayTimers.push(setInterval(ping, RELAY_PING_INTERVAL_MS));
   }
   let lastPublished = Date.now();
   const heartbeat = setInterval(() => {
-    if (readLockPid(dataDir2) !== process.pid) {
-      recordError("lock_lost", "Another process took the network bridge lock, so this bridge stopped.");
-      void stop("lock_lost", 1);
-      return;
-    }
     let addresses = null;
     try {
       addresses = endpoint.addr().directAddresses();
@@ -1015,8 +1097,11 @@ async function serve(dataDir2, dbPath) {
       db.close();
     } catch {
     }
-    releaseLock(dataDir2);
+    control.close();
     process.exit(exitCode);
+  };
+  requestStop = () => {
+    void stop("asked over the control socket", 0);
   };
   for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
     process.on(signal, () => {
@@ -1037,10 +1122,10 @@ async function serve(dataDir2, dbPath) {
   };
   const answerJoin = async (connection, remoteId) => {
     const stream = await deadline(connection.acceptBi(), STREAM_DEADLINE_MS, "waiting for the join request");
-    const request = Buffer.from(await deadline(stream.recv.readToEnd(JOIN_REQUEST_MAX_BYTES), STREAM_DEADLINE_MS, "reading the join request"));
+    const request2 = Buffer.from(await deadline(stream.recv.readToEnd(JOIN_REQUEST_MAX_BYTES), STREAM_DEADLINE_MS, "reading the join request"));
     let reply2;
     try {
-      reply2 = handleJoinRequest(db, identity, remoteId, request, Date.now());
+      reply2 = handleJoinRequest(db, identity, remoteId, request2, Date.now());
     } catch (err) {
       recordError("join_failed", errorMessage(err));
       reply2 = { ok: false, error: "internal" };
@@ -1124,32 +1209,6 @@ async function serve(dataDir2, dbPath) {
   }
 }
 
-// dist/network/bridge-startup-failure.js
-function recordStartupFailure(dataDir2, message) {
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  try {
-    ensureNetworkDir(dataDir2);
-    writeStatus(dataDir2, {
-      pid: process.pid,
-      started_at: now,
-      updated_at: now,
-      state: "failed",
-      relay_state: "off",
-      last_error: message,
-      last_error_at: now,
-      direct_addresses: [],
-      joins_accepted: 0,
-      joins_refused: 0,
-      non_member_refused: 0,
-      member_stub_served: 0
-    });
-    releaseLock(dataDir2);
-  } catch (err) {
-    process.stderr.write(`The network bridge failed (${message}) and could not record it: ${err.message}
-`);
-  }
-}
-
 // dist/network/bridge.js
 function reply(result) {
   return new Promise((resolve) => {
@@ -1178,7 +1237,7 @@ async function readBoundedStdin(limit) {
   return Buffer.concat(chunks).toString("utf8");
 }
 var mode = process.argv[2];
-var dataDir = path7.resolve(getMemeshDirFromDbPath());
+var dataDir = path8.resolve(getMemeshDirFromDbPath());
 if (mode === "check") {
   const result = check(dataDir);
   await reply(result);
@@ -1192,15 +1251,16 @@ if (mode === "check") {
     await reply({ ok: false, code: "internal", detail: errorMessage(err), relay_reached: null });
     process.exit(1);
   }
-} else if (mode === "serve" && process.argv[3] === dataDir) {
+} else if (mode === "serve") {
   try {
     process.exit(await serve(dataDir, getDbPath()));
   } catch (err) {
-    recordStartupFailure(dataDir, errorMessage(err));
+    process.stderr.write(`The network bridge failed before it could start: ${errorMessage(err)}
+`);
     process.exit(1);
   }
 } else {
-  process.stderr.write("Usage: bridge.js check | join | serve <data dir>\n");
+  process.stderr.write("Usage: bridge.js check | join | serve\n");
   process.exit(2);
 }
 //# sourceMappingURL=bridge.js.map

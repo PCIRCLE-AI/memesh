@@ -1,10 +1,11 @@
 // The real command line, built from current source, under throwaway HOMEs.
 import { spawnSync } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { action, assertPersonAtTerminal } from '../../src/network/command.js';
-import { buildTree, makeHome, removeTree, type Tree } from './helpers.js';
+import { action, assertPersonAtTerminal, promptForLink } from '../../src/network/command.js';
+import { buildTree, makeHome, removeTree, writeTtyPreload, type Tree } from './helpers.js';
 
 describe('memesh network, as a person or script runs it', () => {
   let tree: Tree;
@@ -130,6 +131,84 @@ describe('memesh network, as a person or script runs it', () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/not in a network yet/);
     expect(fs.existsSync(path.join(home, '.memesh'))).toBe(false);
+  });
+
+  describe('the no-echo prompt', () => {
+    class FakeTerminal extends EventEmitter {
+      raw: boolean[] = [];
+      paused = false;
+      setRawMode(on: boolean): this {
+        this.raw.push(on);
+        return this;
+      }
+      pause(): this {
+        this.paused = true;
+        return this;
+      }
+      resume(): this {
+        return this;
+      }
+    }
+    const prompt = (terminal: FakeTerminal): Promise<string> => {
+      const quiet = new EventEmitter() as unknown as NodeJS.WritableStream;
+      (quiet as unknown as { write: () => boolean }).write = () => true;
+      return promptForLink(terminal as unknown as NodeJS.ReadStream, quiet);
+    };
+    const finished = (terminal: FakeTerminal): void => {
+      expect(terminal.raw).toEqual([true, false]);
+      expect(terminal.paused).toBe(true);
+      expect(terminal.listenerCount('data')).toBe(0);
+      expect(terminal.listenerCount('end')).toBe(0);
+    };
+
+    it.each([['Ctrl-C', '\u0003'], ['Ctrl-D', '\u0004']])('%s cancels, even mid-paste, and restores the terminal', async (_name, key) => {
+      const terminal = new FakeTerminal();
+      const answer = prompt(terminal);
+      terminal.emit('data', `memesh://join/abc${key}more`);
+      await expect(answer).rejects.toMatchObject({ code: 'needs_person', message: expect.stringMatching(/Cancelled/) });
+      finished(terminal);
+    });
+
+    it('trims what was pasted, ignores a leading newline, and handles backspace', async () => {
+      const terminal = new FakeTerminal();
+      const answer = prompt(terminal);
+      terminal.emit('data', '\r\n');
+      terminal.emit('data', '  abcX\u007fd  \r');
+      expect(await answer).toBe('abcd');
+      finished(terminal);
+    });
+
+    it('stops at 16K', async () => {
+      const terminal = new FakeTerminal();
+      const answer = prompt(terminal);
+      terminal.emit('data', `${'a'.repeat(30_000)}\n`);
+      expect((await answer).length).toBe(16 * 1024);
+      finished(terminal);
+    });
+
+    it('end of input without a newline takes what came', async () => {
+      const terminal = new FakeTerminal();
+      const answer = prompt(terminal);
+      terminal.emit('data', 'abc');
+      terminal.emit('end');
+      expect(await answer).toBe('abc');
+      finished(terminal);
+    });
+
+    it('the real CLI cancels at Ctrl-C with nothing created', () => {
+      const preload = writeTtyPreload(tree.root);
+      const home = makeHome();
+      homes.push(home);
+      const { MEMESH_DIR: _dir, MEMESH_DB_PATH: _db, ...env } = process.env;
+      const result = spawnSync(process.execPath, [`--import=${preload}`, tree.cli, 'network', 'join', '--name', 'mac', '--person', 'kt'], {
+        encoding: 'utf8', env: { ...env, HOME: home, USERPROFILE: home }, input: 'memesh://join/abc\u0003', timeout: 60_000,
+      });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toMatch(/Cancelled/);
+      expect(result.stderr.indexOf('RAW:false')).toBeGreaterThan(result.stderr.indexOf('RAW:true'));
+      expect(result.stderr).not.toContain('memesh://join/abc');
+      expect(fs.existsSync(path.join(home, '.memesh'))).toBe(false);
+    });
   });
 
   it('other commands do not create any network state', () => {
