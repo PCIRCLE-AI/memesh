@@ -13,12 +13,19 @@ import path from 'path';
 import { inspectHosts, allWired, type SetupSeams, type RunResult } from '../../src/core/setup.js';
 
 let home: string;
+let savedConfigDir: string | undefined;
 
 beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-setup-'));
+  // setup looks where install-hooks writes: CLAUDE_CONFIG_DIR when set. These
+  // tests describe the seam's home, so a developer's shell must not move them.
+  savedConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  delete process.env.CLAUDE_CONFIG_DIR;
 });
 
 afterEach(() => {
+  if (savedConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+  else process.env.CLAUDE_CONFIG_DIR = savedConfigDir;
   fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 

@@ -31,6 +31,7 @@ import {
 } from '../../core/delegation.js';
 import { inspectHosts, allWired, type SetupSeams, type HostStatus } from '../../core/setup.js';
 import { installHooks } from '../../core/install-hooks.js';
+import { formatJourney, refreshExistingJourneyRecord, runInstallJourney, runPostInstallJourney } from '../../core/doctor-journey.js';
 import { getTaskState, setTaskState, TaskStateUnreadableError } from '../../core/task-state-store.js';
 import { TASK_STATE_FIELDS, taskStateLines, type TaskStateField } from '../../core/task-state.js';
 import type { LessonSeverity, MergeStrategy, ExportResult } from '../../core/types.js';
@@ -1695,6 +1696,7 @@ program
   .description('Detect Claude Code / Codex / Gemini on this machine, wire memesh into each, and verify')
   .option('--check', 'Only report wiring status per host; change nothing (exit 1 if a present host is unwired)')
   .option('--yes', 'Apply every wiring action without asking')
+  .option('--no-journey', 'Do not run the install journey afterwards (same as MEMESH_SKIP_POST_INSTALL_JOURNEY=1)')
   .action(async (opts) => {
     const { spawnSync, execFileSync } = await import('child_process');
 
@@ -1738,9 +1740,15 @@ program
     const pending = statuses.filter((st) => st.present && st.actions.length > 0);
     if (pending.length === 0) {
       render(statuses);
+      if (!statuses.some((st) => st.present)) {
+        console.log('\nNo supported host was found (looked for Claude Code, Codex CLI and Gemini CLI), so nothing was set up and the install journey was not run. Check the core features any time: memesh doctor --journey');
+        process.exit(0);
+      }
       console.log(allWired(statuses)
         ? '\nEverything present is wired. Nothing to do.'
         : '\nNothing to wire automatically — see the lines above.');
+      // A host is present and wired: that is a real install to check.
+      if (allWired(statuses)) await runPostInstallJourney({ packageRoot, version: pkg.version, trigger: 'setup', journeyFlag: opts.journey });
       process.exit(allWired(statuses) ? 0 : 1);
     }
 
@@ -1767,6 +1775,7 @@ program
     }
 
     let failed = false;
+    let hooksWritten = false;
     for (const st of pending) {
       for (const action of st.actions) {
         if (!confirmAll && rl) {
@@ -1775,6 +1784,7 @@ program
         }
         if (action.kind === 'install-hooks') {
           console.log(`  ✅ ${wireUserHooks()}`);
+          hooksWritten = true;
         } else if (action.cmd) {
           const actionArgs = Array.isArray(action.args) ? action.args : [];
           const r = runSeam(action.cmd, actionArgs);
@@ -1789,6 +1799,9 @@ program
     console.log('\nAfter wiring:');
     statuses = inspectHosts(seams);
     render(statuses);
+    // The hooks are in settings.json now; a Claude Code session that is already open does not have them.
+    if (hooksWritten) console.log('\nRestart Claude Code (or open a new session) for hooks to take effect.');
+    if (!failed && allWired(statuses)) await runPostInstallJourney({ packageRoot, version: pkg.version, trigger: 'setup', journeyFlag: opts.journey });
     process.exit(failed || !allWired(statuses) ? 1 : 0);
   });
 
@@ -2630,7 +2643,21 @@ program
   .option('--url <url>', 'Base URL for --probe-http', 'http://127.0.0.1:3737')
   .option('--fix', 'Apply the whitelisted fixes doctor prescribes (asks per fix; --yes skips asking)')
   .option('--yes', 'With --fix: apply without asking')
+  .option('--journey', 'Instead of the health report, run the install journey once (store, search, send, read back) in a throwaway folder; exit 1 if any step fails. Never opens your memory database. It reads the saved journey result (post-install-journey.json in ~/.memesh) and replaces it only if it is already there and valid.')
   .action(async (opts) => {
+    if (opts.journey) {
+      const clash = [opts.fix && '--fix', opts.yes && '--yes', opts.probeHttp && '--probe-http'].filter(Boolean);
+      if (clash.length > 0) {
+        console.error(`Error: --journey runs on its own and cannot be combined with ${clash.join(', ')}.`);
+        process.exit(1);
+      }
+      const journey = await runInstallJourney({ packageRoot });
+      refreshExistingJourneyRecord(journey, pkg.version);
+      if (opts.json) console.log(JSON.stringify(journey, null, 2));
+      else for (const line of formatJourney(journey)) (journey.ok ? console.log : console.error)(line);
+      process.exitCode = journey.ok ? 0 : 1;
+      return;
+    }
     const { formatDoctorReport, runDoctor } = await import('../../core/doctor.js');
     let result = await runDoctor({
       packageRoot,
@@ -2927,6 +2954,7 @@ program
   .option('--scope <scope>', 'user (default) or project — project writes to ./.claude/settings.json', 'user')
   .option('--dry-run', 'Show what would change without modifying any file')
   .option('--force-over-plugin', 'Write user-level hooks even when Claude Code\'s plugin runtime already wires them. Causes double-firing — only use if you genuinely want both surfaces.')
+  .option('--no-journey', 'Do not run the install journey afterwards (same as MEMESH_SKIP_POST_INSTALL_JOURNEY=1)')
   .action(async (opts) => {
     requireOneOf(opts.scope, ['user', 'project'], '--scope');
     const { installHooks } = await import('../../core/install-hooks.js');
@@ -2960,6 +2988,7 @@ program
         console.log(`Citation contract ${result.citationRule.action}: ${result.citationRule.path}`);
       }
 
+        if (!opts.dryRun) await runPostInstallJourney({ packageRoot, version: pkg.version, trigger: 'install-hooks', journeyFlag: opts.journey });
         return;
       }
       console.log(`${opts.dryRun ? '[dry-run] ' : ''}Settings: ${result.settingsPath}`);
@@ -3006,6 +3035,7 @@ program
         console.log('');
         console.log('Restart Claude Code (or open a new session) for hooks to take effect.');
         console.log('Verify with: memesh doctor');
+        await runPostInstallJourney({ packageRoot, version: pkg.version, trigger: 'install-hooks', journeyFlag: opts.journey });
       }
     } catch (err) {
       console.error(`install-hooks failed: ${err instanceof Error ? err.message : String(err)}`);

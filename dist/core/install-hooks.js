@@ -112,6 +112,49 @@ function entryAlreadyPresent(existing, desired) {
 }
 export function installHooks(opts) {
     const cwd = opts.cwd ?? process.cwd();
+    const rulePath = citationRulePath(opts.scope, homeDir(), cwd);
+    const ruleBefore = readBytesOrNull(rulePath);
+    const folders = [...new Set([path.dirname(rulePath), path.dirname(path.dirname(rulePath)), path.dirname(settingsPathFor(opts.scope, cwd))])];
+    const folderExisted = new Map(folders.map((folder) => [folder, fs.existsSync(folder)]));
+    try {
+        return installHooksUnguarded(opts, cwd);
+    }
+    catch (err) {
+        if (!opts.dryRun) {
+            try {
+                const current = readBytesOrNull(rulePath);
+                if (ruleBefore === null) {
+                    if (current !== null)
+                        fs.rmSync(rulePath, { force: true });
+                }
+                else if (current === null || !current.equals(ruleBefore)) {
+                    fs.writeFileSync(rulePath, ruleBefore);
+                }
+            }
+            catch { }
+            for (const folder of [...folders].sort((a, b) => b.length - a.length)) {
+                if (folderExisted.get(folder))
+                    continue;
+                try {
+                    fs.rmdirSync(folder);
+                }
+                catch { }
+            }
+        }
+        throw err;
+    }
+}
+function readBytesOrNull(file) {
+    try {
+        return fs.readFileSync(file);
+    }
+    catch (err) {
+        if (err.code === 'ENOENT')
+            return null;
+        throw err;
+    }
+}
+function installHooksUnguarded(opts, cwd) {
     const settingsPath = settingsPathFor(opts.scope, cwd);
     const citationRule = opts.dryRun
         ? { path: citationRulePath(opts.scope, homeDir(), cwd), action: 'unchanged' }
@@ -177,17 +220,30 @@ export function installHooks(opts) {
     let backupPath = null;
     if (!opts.dryRun && (added > 0 || skipped > 0)) {
         backupPath = backupSettings(settingsPath);
+        const settingsBefore = readBytesOrNull(settingsPath);
         settings.hooks = existing;
         fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
         writeSettingsSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
-        fs.mkdirSync(path.dirname(markerPath), { recursive: true });
-        fs.writeFileSync(markerPath, JSON.stringify({
-            installed_at: new Date().toISOString(),
-            version: opts.pluginVersion,
-            plugin_root: opts.pluginRoot,
-            scope: opts.scope,
-            settings_path: settingsPath,
-        }, null, 2) + '\n', 'utf8');
+        try {
+            fs.mkdirSync(path.dirname(markerPath), { recursive: true });
+            fs.writeFileSync(markerPath, JSON.stringify({
+                installed_at: new Date().toISOString(),
+                version: opts.pluginVersion,
+                plugin_root: opts.pluginRoot,
+                scope: opts.scope,
+                settings_path: settingsPath,
+            }, null, 2) + '\n', 'utf8');
+        }
+        catch (err) {
+            try {
+                if (settingsBefore === null)
+                    fs.rmSync(settingsPath, { force: true });
+                else
+                    fs.writeFileSync(settingsPath, settingsBefore);
+            }
+            catch { }
+            throw err;
+        }
     }
     return {
         citationRule,

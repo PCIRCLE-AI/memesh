@@ -144,6 +144,7 @@ are helpers, not hook commands. `_shared.js` resolves Claude's configured recipi
 | `src/core/replaced-history.ts` | Previous versions a replaced memory keeps |
 | `src/core/product-improvements.ts` | Product-improvement proposals (redacted, bounded) |
 | `src/core/doctor-fixes.ts` | Doctor fix that removes retired config keys, with backup |
+| `src/core/doctor-journey.ts` | Install journey: store, search, send, read back through the packaged CLI in a throwaway folder; its saved result |
 | `src/core/database-diagnosis.ts` | Why the database will not open, and the one fix to print |
 | `src/core/transcript-source.ts` | Read-only, project-scoped transcript discovery |
 | `src/core/project-attribution.ts` | Which project a memory belongs to (pure functions) |

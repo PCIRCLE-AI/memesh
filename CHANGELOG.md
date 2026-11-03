@@ -6,8 +6,15 @@ are not part of a published npm release yet.
 
 ## [Unreleased]
 
+### Added
+
+- `memesh doctor --journey` runs one full pass of the core features in a throwaway folder and exits 1 if any step fails: store a note, search for it, send a message to a local agent, and read it back. Each step runs this package's own CLI entry, prints what it did and what came back, and on failure says why and how to fix it. Your memory database is never opened; the only file in `~/.memesh` it reads is the saved journey result `post-install-journey.json`, and it replaces that only if it is already there and valid. It proves the saved inbox, not live delivery to a running agent.
+- `memesh install-hooks` and `memesh setup` run that journey automatically after a successful install. A failed journey is printed and shown by `memesh doctor`, and does not change the install's exit code. Skip it with `--no-journey` or `MEMESH_SKIP_POST_INSTALL_JOURNEY=1`. `memesh setup` now says to restart Claude Code after it wires the hooks, and says plainly when it finds no supported host.
+
 ### Fixed
 
+- `memesh setup` follows `CLAUDE_CONFIG_DIR`. It used to look only in `~/.claude`: with no such folder it found no host and did nothing (exit 0); with one, it wrote the hooks into the relocated folder and then reported them as not wired (exit 1). `memesh setup --yes` now works there, and `memesh setup --check` changes the same way: a relocated Claude Code that has no hooks yet reports as unwired (exit 1) instead of "not found" (exit 0). The plan names the settings file it will really write.
+- `memesh install-hooks` leaves `settings.json` exactly as it was when it cannot write its marker file under `~/.memesh`, instead of reporting a failure with the hooks already written.
 - Codex sessions now produce session insights like Claude sessions do, built from Codex's own record of each command and file change: tool calls, files changed, commands run and failed commands. A failure that Codex printed but did not record as a command is reported too, by a best-effort match that can occasionally miss a failure or count one twice. Previously every Codex session was skipped as too little activity. Files written under the temporary folders (`/tmp`, `/private/tmp`, `/var/folders`) are not remembered as edited files: not those Codex changes with its patch tool, and not shell writes in Codex or Claude sessions. A session insight lists at most 30 edited file names and counts the rest.
 
 ## [4.13.0] — 2026-11-02
