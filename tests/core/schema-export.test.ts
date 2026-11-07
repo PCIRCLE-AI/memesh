@@ -13,6 +13,28 @@ const objectVariants = (schema: any): any[] => Array.isArray(schema.oneOf) ? sch
 describe('exportOpenAITools', () => {
   const tools = exportOpenAITools();
 
+  it('describes user_patterns without fields the result no longer has', () => {
+    // `toolPreferences` and `avgSessionMinutes` were removed in 4.7.0, but the
+    // description kept promising them until nothing but a reader noticed. Both
+    // registries describe the same tool, so both are held to the same list.
+    const mcp = TOOL_DEFINITIONS.find((t) => t.name === 'user_patterns')?.description ?? '';
+    const openai = (tools as Array<{ function: { name: string; description: string } }>)
+      .find((t) => t.function.name === 'memesh_user_patterns')?.function.description ?? '';
+    expect(mcp.length, 'user_patterns is missing from the MCP registry').toBeGreaterThan(0);
+    expect(openai.length, 'memesh_user_patterns is missing from the OpenAI export').toBeGreaterThan(0);
+    for (const description of [mcp, openai]) {
+      expect(description).not.toMatch(/tool preference|session duration|toolPreferences|avgSessionMinutes/i);
+    }
+  });
+
+  it('says in both registries that sender is trimmed of surrounding whitespace and otherwise stored as given', () => {
+    const mcp = TOOL_DEFINITIONS.find((t) => t.name === 'message') as any;
+    const openai = (tools as any[]).find((t) => t.function.name === 'memesh_message');
+    for (const description of [mcp.inputSchema.properties.sender.description, openai.function.parameters.properties.sender.description]) {
+      expect(description).toContain('trimmed of surrounding whitespace but otherwise stored as given');
+    }
+  });
+
   it('exports one tool per MCP tool, counted from the registry itself', () => {
     // This used to assert the literal 9, next to a name list that was also a
     // literal, under a title claiming it "matches MCP registry" — it matched

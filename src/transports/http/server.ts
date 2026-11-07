@@ -5,6 +5,7 @@ import type { Request, Response, NextFunction } from 'express';
 import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
 import { randomBytes, timingSafeEqual } from 'crypto';
+import { isIP } from 'net';
 import {
   openDatabase,
   closeDatabase,
@@ -44,6 +45,7 @@ import {
   HttpLearnSchema as LearnBody,
   WhySchema as WhyBody,
   MessageSchema as MessageBody,
+  UserPatternsSchema,
 } from '../schemas.js';
 import { executeAgentMessageAction } from '../agent-messaging.js';
 import { checkForUpdate, getLastUpdateCheck, getUpdateCheck } from '../../core/version-check.js';
@@ -166,13 +168,24 @@ function memeshDir(): string {
   return getMemeshDirFromDbPath();
 }
 
-function loadOrCreateRemoteToken(): { token: Buffer; freshlyCreated: boolean } {
+/** Where the remote token came from, and whether a set-but-too-short MEMESH_REMOTE_TOKEN was passed over. */
+export interface RemoteTokenLoad {
+  token: Buffer;
+  freshlyCreated: boolean;
+  source: 'env' | 'file';
+  envIgnored: boolean;
+  tokenPath: string;
+}
+
+export function loadOrCreateRemoteToken(): RemoteTokenLoad {
   const fromEnv = process.env.MEMESH_REMOTE_TOKEN;
+  const tokenPath = path.join(memeshDir(), 'remote-token');
   if (fromEnv && fromEnv.length >= 16) {
-    return { token: Buffer.from(fromEnv, 'utf8'), freshlyCreated: false };
+    return { token: Buffer.from(fromEnv, 'utf8'), freshlyCreated: false, source: 'env', envIgnored: false, tokenPath };
   }
+  // A variable that is set but too short is ignored, not an error: say so.
+  const envIgnored = fromEnv !== undefined && fromEnv !== '';
   const dir = memeshDir();
-  const tokenPath = path.join(dir, 'remote-token');
   fs.mkdirSync(dir, { recursive: true });
   // #520: other users lose access; the owner's own bits stay as set.
   removeGroupAndOtherAccess(dir);
@@ -191,7 +204,7 @@ function loadOrCreateRemoteToken(): { token: Buffer; freshlyCreated: boolean } {
       fs.closeSync(fd);
     }
     try { fs.chmodSync(tokenPath, 0o600); } catch { /* non-POSIX */ }
-    return { token: Buffer.from(generated, 'utf8'), freshlyCreated: true };
+    return { token: Buffer.from(generated, 'utf8'), freshlyCreated: true, source: 'file', envIgnored, tokenPath };
   } catch (err) {
     if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') throw err;
     // File already exists — fall through to read it.
@@ -208,7 +221,26 @@ function loadOrCreateRemoteToken(): { token: Buffer; freshlyCreated: boolean } {
   // An existing token is only read, never rewritten: it loses group/other
   // access and keeps the owner's bits, so a 0400 token stays 0400 (#520).
   removeGroupAndOtherAccess(tokenPath);
-  return { token: Buffer.from(value, 'utf8'), freshlyCreated: false };
+  return { token: Buffer.from(value, 'utf8'), freshlyCreated: false, source: 'file', envIgnored, tokenPath };
+}
+
+/** The line(s) printed at startup about the remote token — true to where it was loaded from. */
+export function remoteTokenStartupNotice(load: Pick<RemoteTokenLoad, 'freshlyCreated' | 'source' | 'envIgnored' | 'tokenPath'>): string {
+  if (load.freshlyCreated) {
+    return (
+      `\nMeMesh HTTP: bearer token generated for remote access.\n` +
+      (load.envIgnored ? `  MEMESH_REMOTE_TOKEN is shorter than 16 characters and was ignored.\n` : '') +
+      `  Token file: ${load.tokenPath} (mode 600)\n` +
+      `  Use header: Authorization: Bearer <token>\n` +
+      `  Rotate by deleting ${load.tokenPath} and restarting.\n` +
+      `  Override: set MEMESH_REMOTE_TOKEN (at least 16 characters).\n\n`
+    );
+  }
+  return (
+    `MeMesh HTTP: remote bind requires Authorization: Bearer <token>. ` +
+    `Token loaded from ${load.source === 'env' ? 'MEMESH_REMOTE_TOKEN' : load.tokenPath}.\n` +
+    (load.envIgnored ? `  MEMESH_REMOTE_TOKEN is shorter than 16 characters and was ignored.\n` : '')
+  );
 }
 
 function constantTimeEquals(a: Buffer, b: Buffer): boolean {
@@ -1018,7 +1050,23 @@ app.post('/v1/demo/reset', (_req, res) => handleGet(res, async () => {
 app.get('/v1/projects', (_req, res) => handleGet(res, () => computeProjects(getDatabase())));
 
 // --- Patterns ---
-app.get('/v1/patterns', (_req, res) => handleGet(res, () => computePatterns(getDatabase())));
+// `categories` is the MCP tool's filter: comma-separated or repeated.
+const PatternsQuerySchema = z.object({
+  categories: z.union([z.string(), z.array(z.string())]).optional()
+    .transform((v) => (v === undefined ? undefined : (Array.isArray(v) ? v : [v]).flatMap((s) => s.split(',')).map((s) => s.trim()).filter(Boolean)))
+    .pipe(UserPatternsSchema.shape.categories),
+});
+app.get('/v1/patterns', (req, res) => {
+  // `categories[]=x` and `categories[a]=x` are other keys to this parser; ignored,
+  // they would answer 200 with every category, as if no filter had been asked for.
+  if (Object.keys(req.query).some((key) => key.startsWith('categories['))) {
+    res.status(400).json({ success: false, errorCode: 'validation.bad-param' satisfies ErrorCode, error: 'categories: use ?categories=a,b or repeat ?categories=a&categories=b' });
+    return;
+  }
+  const query = parseQuery(PatternsQuerySchema, req, res);
+  if (!query) return;
+  handleGet(res, () => computePatterns(getDatabase(), query.categories));
+});
 
 // --- Dream proposals (Insights tab) ---
 //
@@ -1196,13 +1244,27 @@ function normalizeHost(host: string): string {
   return host.trim().toLowerCase().replace(/^\[(.*)\]$/, '$1');
 }
 
-function isLoopbackHost(host: string): boolean {
+/**
+ * Loopback by name or by address. An IPv6 address is compared in its canonical
+ * form, so `0:0:0:0:0:0:0:1` and `::ffff:7f00:1` count like `::1` and
+ * `::ffff:127.0.0.1`; a name that merely starts with `127.` (`127.evil.example`)
+ * is a hostname, not an address, and does not.
+ */
+export function isLoopbackHost(host: string): boolean {
   const normalized = normalizeHost(host);
-  return normalized === 'localhost'
-    || normalized === '::1'
-    || normalized === '127.0.0.1'
-    || normalized.startsWith('127.')
-    || normalized.startsWith('::ffff:127.');
+  if (normalized === 'localhost') return true;
+  const family = isIP(normalized);
+  if (family === 4) return normalized.startsWith('127.');
+  if (family !== 6) return false;
+  let canonical: string;
+  try {
+    canonical = new URL(`http://[${normalized}]/`).hostname.replace(/^\[|\]$/g, '');
+  } catch {
+    return false;
+  }
+  if (canonical === '::1') return true;
+  const mapped = /^::ffff:([0-9a-f]{1,4}):[0-9a-f]{1,4}$/.exec(canonical);
+  return mapped !== null && (parseInt(mapped[1], 16) >> 8) === 127;
 }
 
 // JSON 404 catch-all — MUST be registered after every route + middleware.
@@ -1262,24 +1324,9 @@ export function startServer(
     // We load (or generate-and-persist) the token before app.listen so a
     // freshly-installed user is not silently exposed during the moment
     // between listen() resolving and the first 401-emitting request.
-    const { token, freshlyCreated } = loadOrCreateRemoteToken();
-    remoteToken = token;
-    if (freshlyCreated) {
-      const dir = memeshDir();
-      const tokenPath = path.join(dir, 'remote-token');
-      process.stderr.write(
-        `\nMeMesh HTTP: bearer token generated for remote access.\n` +
-        `  Token file: ${tokenPath} (mode 600)\n` +
-        `  Use header: Authorization: Bearer <token>\n` +
-        `  Rotate by deleting ${tokenPath} and restarting.\n` +
-        `  Override: set MEMESH_REMOTE_TOKEN.\n\n`
-      );
-    } else {
-      process.stderr.write(
-        `MeMesh HTTP: remote bind requires Authorization: Bearer <token>. ` +
-        `Token loaded from ${process.env.MEMESH_REMOTE_TOKEN ? 'MEMESH_REMOTE_TOKEN' : path.join(memeshDir(), 'remote-token')}.\n`
-      );
-    }
+    const loaded = loadOrCreateRemoteToken();
+    remoteToken = loaded.token;
+    process.stderr.write(remoteTokenStartupNotice(loaded));
   }
   // NB: previously this `else` branch unconditionally set `remoteToken
   // = null`, which would silently de-authenticate any *already-running*

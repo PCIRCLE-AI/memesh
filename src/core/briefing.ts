@@ -29,7 +29,7 @@ import { getProjectName } from './paths.js';
 import { readConfig } from './config.js';
 import { readRepoState, repoStateLines } from './repo-state.js';
 import { getTaskState, TaskStateUnreadableError } from './task-state-store.js';
-import { recipientEverSeen, unreadDeliveryCount, unreadInboxLines } from './agent-message-inbox.js';
+import { inboxUnreadableLine, recipientEverSeen, unreadDeliveryCount, unreadInboxLines } from './agent-message-inbox.js';
 import { hostSessionFromEnv } from './host-session.js';
 import { canonicalAgentScopeId } from './agent-scope-id.js';
 import { briefingTaskStateLines } from './task-state.js';
@@ -197,11 +197,19 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
   // entity tags, written by a different path, not this key.
   // #497: a message meant for one session of a shared principal counts only
   // in that session; this process's session is the one Claude Code started it in.
-  const unreadCount = unreadDeliveryCount(db, canonicalAgentScopeId(projectName), inboxRecipient, hostSessionFromEnv());
+  let unreadCount = 0;
+  let inboxUnreadable: string | undefined;
+  try {
+    unreadCount = unreadDeliveryCount(db, canonicalAgentScopeId(projectName), inboxRecipient, hostSessionFromEnv());
+  } catch (err) {
+    // An inbox that cannot be read must not read as an empty one, and the
+    // reason goes with it: "run memesh doctor" alone sends the reader nowhere.
+    inboxUnreadable = err instanceof Error ? err.message : 'unknown error';
+  }
   // D8: only worth asking when it can change the answer — a nonzero count
   // already proves the recipient is real, and with no recipient at all
   // `unreadInboxLines` never looks at it.
-  const everSeen = inboxRecipient !== undefined && unreadCount === 0
+  const everSeen = inboxRecipient !== undefined && unreadCount === 0 && inboxUnreadable === undefined
     ? recipientEverSeen(db, canonicalAgentScopeId(projectName), inboxRecipient)
     : undefined;
   // The session handoff leads everything: it is what the last session in this
@@ -218,12 +226,14 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
   const stateLines = [
     ...handoff,
     ...taskLines,
-    ...unreadInboxLines(
-      unreadCount,
-      canonicalAgentScopeId(projectName),
-      inboxRecipient,
-      everSeen,
-    ),
+    ...(inboxUnreadable !== undefined && inboxRecipient
+      ? [inboxUnreadableLine(canonicalAgentScopeId(projectName), inboxRecipient, inboxUnreadable)]
+      : unreadInboxLines(
+        unreadCount,
+        canonicalAgentScopeId(projectName),
+        inboxRecipient,
+        everSeen,
+      )),
   ];
 
   const snippets = readSnippets(db, [...pools.lessons, ...pools.project, ...pools.noProject, ...pools.global, ...pools.recent].map((row) => row.id));

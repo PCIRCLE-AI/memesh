@@ -18,7 +18,7 @@ import {
 } from './install-channel.js';
 import { getInstallRecord } from './install-id.js';
 import { ownerWriteCommand, runOrSay, shellQuote } from './file-mode.js';
-import { diagnoseDatabaseFailure } from './database-diagnosis.js';
+import { damagedDatabaseFix, diagnoseDatabaseFailure } from './database-diagnosis.js';
 import { citationRulePath, citationRuleState, type CitationRuleScope } from './citation-rule.js';
 import { getAgentRouterSocketPath, getDbPath, getMemeshDirFromDbPath, homeDir, memeshDir } from './paths.js';
 import { findProjectIdentitySplits, type ProjectIdentitySplit } from './project-identity-split.js';
@@ -360,6 +360,17 @@ function queryFailedFix(err: unknown): string {
     return 'Another process has the database locked; wait for it to finish, or stop it, then retry.';
   }
   return 'The error is quoted above. Check that ~/.memesh is readable and that the disk is not full.';
+}
+
+/** `ok`, or one line naming what SQLite's quick_check found (or the error it raised while looking). */
+function quickIntegrityVerdict(db: DatabaseLike): string {
+  try {
+    const row = db.prepare('PRAGMA quick_check(1)').get() as { quick_check?: unknown } | undefined;
+    if (typeof row?.quick_check !== 'string') return 'quick_check returned no verdict';
+    return row.quick_check.replace(/\s+/g, ' ').slice(0, 200);
+  } catch (err) {
+    return (err instanceof Error ? err.message : 'quick_check raised an error').replace(/\s+/g, ' ').slice(0, 200);
+  }
 }
 
 function createCheck(
@@ -3101,7 +3112,9 @@ async function inspectMessageRouterStatus(
         'Live message router / host registration',
         'fail',
         `The router socket path is ${result.detail} — over the ${AGENT_ROUTER_SOCKET_PATH_MAX_BYTES}-byte limit a Unix domain socket allows, so \`memesh-router\` cannot create it at ${result.socket_path}. Starting the router again fails the same way.`,
-        'Set MEMESH_ROUTER_SOCKET to a shorter absolute path, or move HOME / MEMESH_DIR somewhere with a shorter path, then start `memesh-router` again.',
+        process.env.MEMESH_ROUTER_SOCKET !== undefined
+          ? 'Set MEMESH_ROUTER_SOCKET to a shorter absolute path in a folder only you can access (owner-private), then start `memesh-router` again. It reaches `memesh-router`, `memesh doctor`, senders and ordinary Claude MCP sessions. Host configs written by `memesh agent setup` (`hosts/codex-session.json` included) keep the default path, and ordinary Codex sessions use the default path, so shorten HOME / MEMESH_DIR instead if they must reach this router.'
+          : 'Move HOME / MEMESH_DIR somewhere with a shorter path, then start `memesh-router` again. With MEMESH_DB_PATH set, the default socket sits in that database\'s folder, so move the database; the socket\'s folder must be owner-private. Setting MEMESH_ROUTER_SOCKET alone is not enough: it does not reach host configs written by `memesh agent setup` (`hosts/codex-session.json` included) or ordinary Codex sessions, which use the default path.',
         { code: 'message-router.socket-path-too-long', params: { path: result.socket_path, bytes: result.detail ?? 'unknown' } },
       );
     case 'insecure':
@@ -3208,6 +3221,22 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   const dbChecks: DoctorCheck[] = [];
   try {
     const db = openDatabaseImpl(databasePath) as unknown as DatabaseLike;
+    // A file can open and count its entities while another table's pages are
+    // damaged; briefing, recall and the message inbox then fail on those pages
+    // and tell the user to run doctor. quick_check(1) stops at the first
+    // problem; it still reads the whole file on a healthy database (about 0.2 s
+    // for 470 MB measured) and names the damage on a broken one. Anything but
+    // "ok" goes through the catch below as one `database` row, with the
+    // advice that fits damage (not "start fresh").
+    const integrity = quickIntegrityVerdict(db);
+    if (integrity !== 'ok') {
+      throw Object.assign(
+        new Error(`Database at ${databasePath} opened, but SQLite's quick integrity check failed: ${integrity}`),
+        {
+          fix: damagedDatabaseFix(databasePath),
+        },
+      );
+    }
     const count =
       (db.prepare('SELECT COUNT(*) as c FROM entities').get() as { c?: number } | undefined)?.c ?? 0;
     // #520: a database the owner made read-only opens for reads, so say it

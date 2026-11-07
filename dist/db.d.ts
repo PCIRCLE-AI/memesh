@@ -6,6 +6,7 @@ export declare function openDatabase(dbPath?: string, opts?: {
 }): MemeshDatabase;
 export declare function openInitialisedDatabase(resolvedPath: string, opts?: {
     busyTimeoutMs?: number;
+    maintenance?: boolean;
 }): MemeshDatabase;
 export declare function reindexFts(): {
     entities: number;

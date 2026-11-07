@@ -1,6 +1,16 @@
 import fs from 'fs';
 import path from 'path';
 import { databaseFiles, runOrSay, shellQuote } from './file-mode.js';
+export function damagedDatabaseFix(databasePath, existsSyncImpl = fs.existsSync) {
+    const db = shellQuote(databasePath);
+    const damaged = shellQuote(`${databasePath}.damaged`);
+    const recovered = shellQuote(`${databasePath}.recovered.db`);
+    const backups = path.join(path.dirname(databasePath), 'backups');
+    const restore = existsSyncImpl(backups)
+        ? ` To go back to a backup instead, restore the newest copy in ${shellQuote(backups)}: sqlite3 ${db} ".restore '<backup>'" (this overwrites the file, which is why the copy comes first).`
+        : '';
+    return `Stop every memesh process, then copy the damaged file so nothing is lost: cp ${db} ${damaged}.${restore} To salvage what is readable: sqlite3 ${damaged} .recover | sqlite3 ${recovered}, check the result, then move it to ${db}.`;
+}
 export function diagnoseDatabaseFailure(err, databasePath, existsSyncImpl = fs.existsSync, statSyncImpl = fs.statSync) {
     const message = err instanceof Error ? err.message : 'unknown database error';
     let diagnosis;
@@ -27,6 +37,10 @@ export function diagnoseDatabaseFailure(err, databasePath, existsSyncImpl = fs.e
             else if (stat.size === 0) {
                 diagnosis = 'Database file is empty (0 bytes) — likely corrupted';
                 fix = `Delete it; the next memesh command creates a fresh database: rm ${shellQuote(databasePath)} && memesh recall`;
+            }
+            else if (/malformed|SQLITE_CORRUPT|not a database|SQLITE_NOTADB/i.test(message)) {
+                diagnosis = `Database file exists (${stat.size} bytes) but cannot be opened: ${message}`;
+                fix = damagedDatabaseFix(databasePath, existsSyncImpl);
             }
             else {
                 diagnosis = `Database file exists (${stat.size} bytes) but cannot be opened: ${message}`;

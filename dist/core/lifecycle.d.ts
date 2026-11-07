@@ -12,5 +12,12 @@ export declare function compressWeeklyNoise(db: MemeshDatabase): {
     compressed: number;
     weeksProcessed: number;
 };
+export declare function markCompressedRows(db: MemeshDatabase, opts?: {
+    dryRun?: boolean;
+}): {
+    marked: number;
+    unresolved: number;
+};
+export declare function backfillCompressionMarkers(db: MemeshDatabase): void;
 export { PRESERVED_TYPES, NOISE_TYPES };
 //# sourceMappingURL=lifecycle.d.ts.map

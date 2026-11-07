@@ -1,7 +1,7 @@
 import { MemeshDatabase } from './storage/sqlite.js';
 import path from 'path';
 import fs from 'fs';
-import { runAutoDecay } from './core/lifecycle.js';
+import { backfillCompressionMarkers, runAutoDecay } from './core/lifecycle.js';
 import { computeSignalScore } from './core/signal-scorer.js';
 import { getDbPath } from './core/paths.js';
 import { belongsToAnotherUser, databaseFiles, guardDatabaseFiles, ownerWriteCommand, removeGroupAndOtherAccess, shellQuote } from './core/file-mode.js';
@@ -118,7 +118,9 @@ export function openDatabase(dbPath?: string, opts: { busyTimeoutMs?: number } =
   // `insertFtsRow`'s current segmentation rules into an index that was never
   // migrated, which is the contentless-FTS delete mismatch the rest of this
   // release exists to eliminate.
-  db = openInitialisedDatabase(resolvedPath, opts);
+  // A caller that passed `busyTimeoutMs` has a time limit (a hook). Heavy one-time
+  // maintenance — a database backup and a backfill — waits for a process with none.
+  db = openInitialisedDatabase(resolvedPath, { ...opts, maintenance: opts.busyTimeoutMs === undefined });
   // Opened read-only because the owner took write access away: every later
   // write will be refused, so say once, here, what gives it back.
   const writeBack = ownerWriteCommand(resolvedPath);
@@ -141,14 +143,14 @@ export function openDatabase(dbPath?: string, opts: { busyTimeoutMs?: number } =
  * a caller opening anything but a file it just created in a private folder
  * must run guardDatabaseFiles (with an owner-only umask) first.
  */
-export function openInitialisedDatabase(resolvedPath: string, opts: { busyTimeoutMs?: number } = {}): MemeshDatabase {
+export function openInitialisedDatabase(resolvedPath: string, opts: { busyTimeoutMs?: number; maintenance?: boolean } = {}): MemeshDatabase {
   const opening = new MemeshDatabase(resolvedPath);
   try {
     if (opts.busyTimeoutMs !== undefined) {
       opening.pragma(`busy_timeout = ${opts.busyTimeoutMs}`);
       giveUpIfWriteLocked(opening);
     }
-    initialiseDatabase(opening);
+    initialiseDatabase(opening, { maintenance: opts.maintenance === true });
   } catch (err) {
     try { opening.close(); } catch { /* already closing down */ }
     throw err;
@@ -188,7 +190,7 @@ function isReadonlyDbError(err: unknown): boolean {
   return /readonly database|SQLITE_READONLY/i.test(msg);
 }
 
-function initialiseDatabase(db: MemeshDatabase): MemeshDatabase {
+function initialiseDatabase(db: MemeshDatabase, opts: { maintenance: boolean }): MemeshDatabase {
   // VACUUM backups use DELETE mode; changing their mode is itself a write.
   // Keep a read-only backup readable without hiding other open failures.
   try {
@@ -208,7 +210,7 @@ function initialiseDatabase(db: MemeshDatabase): MemeshDatabase {
   // an incomplete migration is survivable, because nothing can write to
   // the old shape either.
   try {
-    migrateToCurrentSchema(db);
+    migrateToCurrentSchema(db, opts);
   } catch (err) {
     if (!isReadonlyDbError(err)) throw err;
     try {
@@ -229,7 +231,7 @@ function initialiseDatabase(db: MemeshDatabase): MemeshDatabase {
  * is load-bearing for reading what the database already holds.
  */
 
-function migrateToCurrentSchema(db: MemeshDatabase): void {
+function migrateToCurrentSchema(db: MemeshDatabase, opts: { maintenance: boolean }): void {
   db.exec(SCHEMA_SQL);
   db.exec(FTS_SQL);
   ensureTagsUniqueIndex(db);
@@ -319,6 +321,11 @@ function migrateToCurrentSchema(db: MemeshDatabase): void {
   // from the keyword index. It rebuilds from active entities only and has no
   // dependency on an optional secondary index.
   dropArchivedIndexRows(db);
+
+  // Mark the archived records that compression (not forget) archived before
+  // the marker existed, where the weekly summaries prove it. Backs up first, so
+  // only a process without a time limit does it (not a hook, not a throwaway copy).
+  if (opts.maintenance) backfillCompressionMarkers(db);
 
 }
 

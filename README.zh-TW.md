@@ -47,7 +47,7 @@ memesh doctor
 一個 session 實作，另一個審查、提問或回報結果。MeMesh 提供共用的本機訊息收件匣；Claude Channel 可將訊息即時送進正在執行的 Claude Code session。Codex 使用自己的原生通知路徑，再擷取訊息正文。
 
 1. 安裝上方插件，以相同作業系統使用者、相同 MeMesh 資料庫設定，在同一個 repository 啟動兩個工具。
-2. 符合條件的一般 Claude MCP 對話可在 macOS／Linux 不開 Channel 接收原生通知；選配的 [Claude Channel](docs/platforms/agent-messaging.md#claude-channel-runner) 可傳遞完整封套。一般 Codex CLI session 在插件 SessionStart hook 執行時自動註冊。
+2. 符合條件的一般 Claude MCP 對話可在 macOS／Linux 不開 Channel 接收原生通知；選配的 [Claude Channel](docs/platforms/agent-messaging.md#claude-channel-runner) 可傳遞完整封套。一般 Codex CLI session 在插件 SessionStart hook 執行時自動註冊（macOS／Linux）。
 3. 請 agent：「用 `message discover` 找到這個專案正在執行的 Claude／Codex session，送出審查請求，並回報對方回覆。」使用實際查到的收件者，不猜 session ID。接收方讀取訊息、記錄 `intake`，再回覆審查結果。
 
 未啟用 Claude Channel 時，仍可使用持久收件匣與 Claude Code hook 提醒。送達不代表對方已接下或完成工作；已停止的 session 不會自動恢復。Codex Desktop 是否參與，須以 `message discover` 查到的實際 session 為準。本機 channel 不負責跨電腦傳遞訊息。
@@ -70,7 +70,7 @@ Claude Code 的收件提醒不需設定 Channel：沒有自訂身分時，hooks 
 
 一般 Claude Code MCP 對話會自動登記到 `message discover`，不需啟用 Channel。原生收訊 socket 可用時可收到通知，再擷取正文；否則仍可使用持久收件匣與 hook 提醒。上線本身不證明通知已送達。
 
-尚未發布的原始碼版本新增 Claude Code `/memesh-memories` 入口，可查看及修改專案記憶。Claude Desktop 在面板內編輯；終端 Claude Code 與 Codex 使用原生表單。Codex 可請 `$memesh` 查找並編輯記憶。只填要改的標題或段落，留白保留原文。儲存後讀回結果，取消不寫入；不支援的宿主仍可用原本的對話操作。
+MeMesh 4.11.0 起在 Claude Code 新增 `/memesh-memories` 入口，可查看及修改專案記憶。Claude Desktop 在面板內編輯；終端 Claude Code 與 Codex 使用原生表單。Codex 可請 `$memesh` 查找並編輯記憶。只填要改的標題或段落，留白保留原文。儲存後讀回結果，取消不寫入；不支援的宿主仍可用原本的對話操作。
 
 [完整工具與指令說明](docs/api/API_REFERENCE.md) · [Agent 訊息](docs/platforms/agent-messaging.md) · [運作方式](docs/ARCHITECTURE.md) · [參與開發](CONTRIBUTING.md)
 
@@ -96,7 +96,7 @@ Claude Code 的收件提醒不需設定 Channel：沒有自訂身分時，hooks 
 
 ---
 
-插件共有 10 個 hook 指令。「記住這件事」提醒支援 5 種語言。
+Claude Code 插件共有 10 個 hook 指令；Codex 插件另有 2 個 Codex 專用的 hook。「記住這件事」提醒支援 5 種語言。
 記憶介面在 Claude Code／Claude Desktop Code 使用 MeMesh Mod，Codex 使用 MCP／原生表單；不再提供獨立 Web Dashboard。
 
 排序權重：相關性 30%、新近程度 25%、使用頻率 18%、信心 17%、回憶影響 10%。詳見[架構說明](docs/ARCHITECTURE.md)。

@@ -205,7 +205,7 @@ export function exportOpenAITools(): object[] {
       type: 'function',
       function: {
         name: 'memesh_user_patterns',
-        description: 'Analyze user work patterns from existing memory. Returns work schedule, tool preferences, focus areas, workflow metrics, strengths, and learning areas.',
+        description: 'Analyze user work patterns from existing memory. Returns work schedule, focus areas, workflow metrics, strengths, and learning areas.',
         parameters: {
           type: 'object',
           properties: {
@@ -269,7 +269,7 @@ export function exportOpenAITools(): object[] {
               description: 'Message lifecycle or live-directory action; required fields depend on the selected action.',
             },
             project: { type: 'string', description: 'Local project scope. A stable identifier, never a filesystem path; compared exactly, after Unicode NFC normalisation.' },
-            sender: { type: 'string', description: 'Required for send. Stable local sender identifier; provenance only, and stored exactly as given.' },
+            sender: { type: 'string', description: 'Required for send. Stable local sender identifier; provenance only, trimmed of surrounding whitespace but otherwise stored as given.' },
             recipient: { type: 'string', description: 'Required except discover and send with recipient_handle. Stable target identifier, never a filesystem path; compared exactly after Unicode NFC normalisation.' },
             recipient_handle: { type: 'string', description: 'Send only: a discovered project-scoped session handle, mutually exclusive with recipient. Offline registered sessions can also be addressed.' },
             target_kind: { type: 'string', enum: ['principal', 'session'], description: 'Recipient identity kind for send and fetch. Defaults to principal; exact-session delivery and fetch require session.' },

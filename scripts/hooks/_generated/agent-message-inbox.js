@@ -92,9 +92,15 @@ export function unreadDeliveryCount(db, project, recipient, session) {
         const n = row?.n;
         return typeof n === 'number' && n > 0 ? n : 0;
     }
-    catch {
-        return 0;
+    catch (err) {
+        if (isMissingDeliveriesTableError(err))
+            return 0;
+        throw err;
     }
+}
+export function inboxUnreadableLine(project, recipient, reason) {
+    const shown = JSON.stringify(reason.replace(/\s+/g, ' ').trim().slice(0, 200));
+    return `The inbox for ${JSON.stringify(recipient)} in project ${jsonStringLiteral(project)} could not be read: ${shown} — that is not the same as no messages waiting; run memesh doctor.`;
 }
 function recipientSeenQuery(db, recipient, project, onError) {
     try {

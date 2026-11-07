@@ -1,7 +1,7 @@
 import { MemeshDatabase } from './storage/sqlite.js';
 import path from 'path';
 import fs from 'fs';
-import { runAutoDecay } from './core/lifecycle.js';
+import { backfillCompressionMarkers, runAutoDecay } from './core/lifecycle.js';
 import { computeSignalScore } from './core/signal-scorer.js';
 import { getDbPath } from './core/paths.js';
 import { belongsToAnotherUser, databaseFiles, guardDatabaseFiles, ownerWriteCommand, removeGroupAndOtherAccess, shellQuote } from './core/file-mode.js';
@@ -42,7 +42,7 @@ export function openDatabase(dbPath, opts = {}) {
                 ? `${realDir} belongs to another user, so you cannot make it writable. ${fix}`
                 : `Copy the database to a writable folder and point MEMESH_DB_PATH at the copy, or make the folder writable: ${fix}`)), { fix });
     }
-    db = openInitialisedDatabase(resolvedPath, opts);
+    db = openInitialisedDatabase(resolvedPath, { ...opts, maintenance: opts.busyTimeoutMs === undefined });
     const writeBack = ownerWriteCommand(resolvedPath);
     if (writeBack) {
         try {
@@ -60,7 +60,7 @@ export function openInitialisedDatabase(resolvedPath, opts = {}) {
             opening.pragma(`busy_timeout = ${opts.busyTimeoutMs}`);
             giveUpIfWriteLocked(opening);
         }
-        initialiseDatabase(opening);
+        initialiseDatabase(opening, { maintenance: opts.maintenance === true });
     }
     catch (err) {
         try {
@@ -86,7 +86,7 @@ function isReadonlyDbError(err) {
     const msg = err instanceof Error ? err.message : String(err);
     return /readonly database|SQLITE_READONLY/i.test(msg);
 }
-function initialiseDatabase(db) {
+function initialiseDatabase(db, opts) {
     try {
         db.pragma('journal_mode = WAL');
     }
@@ -96,7 +96,7 @@ function initialiseDatabase(db) {
     }
     db.pragma('foreign_keys = ON');
     try {
-        migrateToCurrentSchema(db);
+        migrateToCurrentSchema(db, opts);
     }
     catch (err) {
         if (!isReadonlyDbError(err))
@@ -109,7 +109,7 @@ function initialiseDatabase(db) {
     }
     return db;
 }
-function migrateToCurrentSchema(db) {
+function migrateToCurrentSchema(db, opts) {
     db.exec(SCHEMA_SQL);
     db.exec(FTS_SQL);
     ensureTagsUniqueIndex(db);
@@ -136,6 +136,8 @@ function migrateToCurrentSchema(db) {
     repairFusedLessonShellHistory(db);
     ensureDreamProposalsTable(db);
     dropArchivedIndexRows(db);
+    if (opts.maintenance)
+        backfillCompressionMarkers(db);
 }
 export function reindexFts() {
     const database = getDatabase();

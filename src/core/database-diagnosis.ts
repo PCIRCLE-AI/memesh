@@ -3,6 +3,27 @@ import path from 'path';
 import { databaseFiles, runOrSay, shellQuote } from './file-mode.js';
 
 /**
+ * The one fix for a database file whose pages are damaged (it opens, or fails
+ * to open, with "malformed"/"not a database"). Moving it aside and starting
+ * fresh would throw away whatever is still readable, so the first step is to
+ * copy the damaged file, and the restore choice appears only when a `backups`
+ * folder exists (plain installs have none: only the maintenance commands make it).
+ */
+export function damagedDatabaseFix(
+  databasePath: string,
+  existsSyncImpl: (p: fs.PathLike) => boolean = fs.existsSync,
+): string {
+  const db = shellQuote(databasePath);
+  const damaged = shellQuote(`${databasePath}.damaged`);
+  const recovered = shellQuote(`${databasePath}.recovered.db`);
+  const backups = path.join(path.dirname(databasePath), 'backups');
+  const restore = existsSyncImpl(backups)
+    ? ` To go back to a backup instead, restore the newest copy in ${shellQuote(backups)}: sqlite3 ${db} ".restore '<backup>'" (this overwrites the file, which is why the copy comes first).`
+    : '';
+  return `Stop every memesh process, then copy the damaged file so nothing is lost: cp ${db} ${damaged}.${restore} To salvage what is readable: sqlite3 ${damaged} .recover | sqlite3 ${recovered}, check the result, then move it to ${db}.`;
+}
+
+/**
  * Why a database would not open, and the one fix to print for it. `memesh
  * doctor`'s database row and `memesh serve`'s startup error both say this, so
  * the two never disagree (#520): a permission problem gets the chmod that
@@ -49,6 +70,11 @@ export function diagnoseDatabaseFailure(
       } else if (stat.size === 0) {
         diagnosis = 'Database file is empty (0 bytes) — likely corrupted';
         fix = `Delete it; the next memesh command creates a fresh database: rm ${shellQuote(databasePath)} && memesh recall`;
+      } else if (/malformed|SQLITE_CORRUPT|not a database|SQLITE_NOTADB/i.test(message)) {
+        // Damaged pages (a truncated file, say): the same advice as a file
+        // that opens but fails its integrity check, never "move it away".
+        diagnosis = `Database file exists (${stat.size} bytes) but cannot be opened: ${message}`;
+        fix = damagedDatabaseFix(databasePath, existsSyncImpl);
       } else {
         diagnosis = `Database file exists (${stat.size} bytes) but cannot be opened: ${message}`;
         fix = `Backup and reset: mv ${shellQuote(databasePath)} ${shellQuote(`${databasePath}.backup`)} && memesh recall`;

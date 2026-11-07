@@ -70,7 +70,7 @@ Claude Code inbox reminders work without Channel setup: hooks use the local `cla
 
 Ordinary Claude Code MCP sessions register in `message discover` without enabling Channel. When the native inbox socket is available, they receive a notice and fetch the body; otherwise the durable inbox and hook reminders remain available. Online alone does not prove notification delivery.
 
-Unreleased source builds add `/memesh-memories` in Claude Code to view and edit project memories. Claude Desktop edits inside the pane; terminal Claude Code and Codex use a native form. In Codex, ask `$memesh` to find and edit a memory. Fill only the title or paragraphs you want to change, leaving other fields blank. Save reads back the stored result; Cancel saves nothing. Unsupported hosts keep the existing conversation workflow.
+MeMesh 4.11.0 and later add `/memesh-memories` in Claude Code to view and edit project memories. Claude Desktop edits inside the pane; terminal Claude Code and Codex use a native form. In Codex, ask `$memesh` to find and edit a memory. Fill only the title or paragraphs you want to change, leaving other fields blank. Save reads back the stored result; Cancel saves nothing. Unsupported hosts keep the existing conversation workflow.
 
 [Full tool and command reference](docs/api/API_REFERENCE.md) · [Agent messaging](docs/platforms/agent-messaging.md) · [How it works](docs/ARCHITECTURE.md) · [Contributing](CONTRIBUTING.md)
 
@@ -96,7 +96,7 @@ Unreleased source builds add `/memesh-memories` in Claude Code to view and edit 
 
 ---
 
-Plugins ship **10 hooks**. The intent reminder recognizes "remember this"
+The Claude Code plugin ships **10 hooks**; the Codex plugin adds two Codex-only ones. The intent reminder recognizes "remember this"
 (5 languages). Memory editing lives in Claude Code/Claude Desktop Code
 through the MeMesh Mod, and in Codex through MCP/native forms. There is no
 standalone Web Dashboard.

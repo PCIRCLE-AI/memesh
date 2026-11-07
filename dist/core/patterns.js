@@ -1,5 +1,19 @@
-import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
-const AUTO_TYPES = ['session_keypoint', 'commit', 'session_identity', 'workflow_checkpoint', 'session-insight', SESSION_HANDOFF_TYPE];
+import { NOISE_TYPES } from './analytics.js';
+import { NOISE_TYPES as COMPRESSED_TYPES } from './lifecycle.js';
+const AUTO_TYPES = [...NOISE_TYPES, 'workflow_checkpoint'];
+const SESSION_TYPES = ['session_keypoint', 'session-insight'];
+const COMPRESSED_TYPE_LIST = [...COMPRESSED_TYPES].map((t) => `'${t.replace(/'/g, "''")}'`).join(',');
+function countedSql(alias) {
+    return `(${alias}.type != 'weekly-summary' AND (${alias}.status = 'active' OR (${alias}.status = 'archived'
+    AND ${alias}.type IN (${COMPRESSED_TYPE_LIST})
+    AND json_type(CASE WHEN json_valid(${alias}.metadata) THEN ${alias}.metadata ELSE '{}' END, '$.compacted_into') = 'integer')))`;
+}
+const SYSTEM_TAG_PREFIXES = ['date:', 'session:', 'project:', 'source:', 'severity:', 'error-pattern:'];
+const SYSTEM_TAG_LITERALS = [
+    'auto', 'auto-captured', 'auto-tracked', 'auto_saved',
+    'session_end', 'session-summary', 'session-insight', 'session_keypoint', 'workflow_checkpoint',
+    'scope:project',
+];
 const LEARNING_TYPES = ['lesson_learned', 'mistake', 'bug_fix', 'lesson'];
 export function computePatterns(db, categories) {
     const allCategories = !categories || categories.length === 0;
@@ -8,13 +22,13 @@ export function computePatterns(db, categories) {
     if (allCategories || categories.includes('workSchedule')) {
         hourDistribution = db.prepare(`
       SELECT CAST(strftime('%H', created_at, 'localtime') AS INTEGER) as hour, COUNT(*) as count
-      FROM entities
+      FROM entities e WHERE ${countedSql('e')}
       GROUP BY hour ORDER BY hour
     `).all();
         dayDistribution = db.prepare(`
       SELECT CAST(strftime('%w', created_at, 'localtime') AS INTEGER) as dayNum,
         COUNT(*) as count
-      FROM entities GROUP BY dayNum ORDER BY dayNum
+      FROM entities e WHERE ${countedSql('e')} GROUP BY dayNum ORDER BY dayNum
     `).all();
     }
     let focusAreas = [];
@@ -29,8 +43,18 @@ export function computePatterns(db, categories) {
     let totalSessions = 0;
     let totalCommits = 0;
     if (allCategories || categories.includes('workflow')) {
-        totalCommits = db.prepare("SELECT COUNT(*) as c FROM entities WHERE type = 'commit'").get().c;
-        totalSessions = db.prepare("SELECT COUNT(*) as c FROM entities WHERE type IN ('session_keypoint', 'session-insight')").get().c;
+        totalCommits = db.prepare(`SELECT COUNT(*) as c FROM entities e WHERE e.type = 'commit' AND ${countedSql('e')}`).get().c;
+        const sessionTypes = SESSION_TYPES.map(() => '?').join(',');
+        totalSessions = db.prepare(`
+      SELECT
+        (SELECT COUNT(DISTINCT t.tag) FROM tags t JOIN entities e ON e.id = t.entity_id
+          WHERE ${countedSql('e')} AND e.type IN (${sessionTypes}) AND t.tag LIKE 'session:%')
+        +
+        (SELECT COUNT(*) FROM entities e
+          WHERE ${countedSql('e')} AND e.type IN (${sessionTypes})
+            AND NOT EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag LIKE 'session:%'))
+        AS c
+    `).get(...SESSION_TYPES, ...SESSION_TYPES).c;
         commitsPerSession = totalSessions > 0 ? Math.round((totalCommits / totalSessions) * 10) / 10 : 0;
     }
     let strengths = [];
@@ -48,10 +72,11 @@ export function computePatterns(db, categories) {
       SELECT t.tag, COUNT(*) as count FROM tags t
       JOIN entities e ON t.entity_id = e.id
       WHERE e.type IN (${LEARNING_TYPES.map(() => '?').join(',')})
-        AND t.tag NOT LIKE 'date:%' AND t.tag NOT LIKE 'auto%' AND t.tag NOT LIKE 'session%'
-        AND t.tag != 'scope:project'
+        AND e.status = 'active'
+        ${SYSTEM_TAG_PREFIXES.map(() => 'AND t.tag NOT LIKE ?').join('\n        ')}
+        AND t.tag NOT IN (${SYSTEM_TAG_LITERALS.map(() => '?').join(',')})
       GROUP BY t.tag ORDER BY count DESC LIMIT 10
-    `).all(...LEARNING_TYPES);
+    `).all(...LEARNING_TYPES, ...SYSTEM_TAG_PREFIXES.map((p) => `${p}%`), ...SYSTEM_TAG_LITERALS);
     }
     return {
         workSchedule: { hourDistribution, dayDistribution },

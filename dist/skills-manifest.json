@@ -48,8 +48,8 @@
     },
     {
       "path": "scripts/hooks/_generated/agent-message-inbox.js",
-      "sha256": "a217d5939e352fc34146737bff9687a845ae0417bad36976ba97c69c44abf9ed",
-      "bytes": 11278
+      "sha256": "8024c7dabdac42c8baccccce046f5e20d9c9f94bf9486aa152dd0cf4027a98b4",
+      "bytes": 11701
     },
     {
       "path": "scripts/hooks/_generated/agent-scope-id.js",
@@ -248,8 +248,8 @@
     },
     {
       "path": "scripts/hooks/stop-message-gate.js",
-      "sha256": "3532533dd6741b06bcd91aafb3c41b79869171c5317f42ae50057df9db051b3a",
-      "bytes": 8184
+      "sha256": "4f68b84a0424145c907118f52e0d6706f04df8e0e7cdaa6a4af5314678d1f5af",
+      "bytes": 8225
     },
     {
       "path": "scripts/hooks/user-prompt-intent.js",
@@ -263,8 +263,8 @@
     },
     {
       "path": "skills/memesh/SKILL.md",
-      "sha256": "ddba4b49790e7c31c378ae55a013164cdbbf43a9d03c7d8eafd74a9f2fee8705",
-      "bytes": 30127
+      "sha256": "08690a5cf340a6a70f0920792bb3e2ca56eb20162f54c8c9117c8e37e11f218e",
+      "bytes": 30225
     }
   ]
 }
