@@ -17390,7 +17390,7 @@ try {
   const tool = (await client.listTools()).tools.find((candidate) => candidate.name === "message");
   assert2.ok(tool, "installed MCP did not advertise message");
   const actions = tool.inputSchema?.properties?.action?.enum;
-  assert2.deepEqual(actions, ["send", "poll", "discover", "fetch", "intake", "ack", "disposition", "activation", "receipts"]);
+  assert2.deepEqual(actions, ["send", "poll", "discover", "fetch", "intake", "ack", "disposition", "activation", "receipts", "status"]);
 } finally {
   await client.close();
 }

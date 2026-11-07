@@ -59,9 +59,9 @@ match like this names the target session as the recipient to use, not the
 principal: `... waiting for the live session "<session id>" ... fetch each
 message_id with target_kind "session" (fetch or intake using your own
 principal id instead of "<session id>" will not match this session-targeted
-message) ...`. `intake` or a `disposition` for such a delivery from a caller
-that is itself another registered session of the project
-(`CLAUDE_CODE_SESSION_ID` / `CODEX_THREAD_ID`) is refused with
+message) ...`. `intake`, a `disposition`, an `ack` or an `activation` for such
+a delivery from a caller that is itself another registered session of the
+project (`CLAUDE_CODE_SESSION_ID` / `CODEX_THREAD_ID`) is refused with
 `intended_for_other_session` (#497). A caller with no session id, or with an
 id no session registered, still can — a Codex MCP process has none. The
 reminder and the Stop gate follow the same line (#566): a hook that knows its
@@ -119,14 +119,20 @@ when the session has come back since or the retry leaves out
   MCP tool under Claude Code, or the CLI run from a Codex shell. Every other
   session of the principal does not, and neither does a caller with no
   session id;
-- only that session can record `intake` or a `disposition` for it. The MCP
-  tool and the CLI take the caller's session from `CLAUDE_CODE_SESSION_ID`,
-  else `CODEX_THREAD_ID`. Any other caller — another session, or HTTP and the
-  HTTP clients, which have no session — gets `intended_for_other_session`, and
-  the message stays waiting for the session it is meant for. A Codex session
-  records it with the CLI from its shell (`memesh message intake ...`),
-  because Codex does not pass its thread id to MCP servers. `poll`, `fetch`,
-  `ack` and `activation` are not restricted;
+- only that session can record `intake` or a `disposition` for it, and a
+  caller that names another session is refused an `ack` or an `activation`
+  too. The MCP tool and the CLI take the caller's session from
+  `CLAUDE_CODE_SESSION_ID`, else `CODEX_THREAD_ID`. Any other caller for
+  `intake` or a `disposition` — another session, or HTTP and the HTTP clients,
+  which have no session — gets an error that starts `intended_for_other_session`
+  (over HTTP it is a 400 whose `errorCode` is the generic `operation.failed`; the
+  code is in the `error` text), and the message
+  stays waiting for the session it is meant for; an `ack` or an `activation`
+  from a caller with no session id (HTTP, the router itself) is not refused. A
+  Codex session records it with the CLI from its shell
+  (`memesh message intake ...`), because Codex does not pass its thread id to
+  MCP servers. `poll`, `fetch` and `receipts` are not restricted for the
+  principal's other sessions;
 - the router pushes it only to that session's connection. With that session
   not connected it stays durable, for the hooks to surface.
 
@@ -181,7 +187,30 @@ The size failure is permanent for that exact envelope and is reported as
 unavailability.
 `poll`/`watch` are compatibility and diagnostic APIs. A queue admission or
 `host_accept` is not proof that an agent read the payload, acknowledged it, or
-accepted the work.
+accepted the work. What `host_accept` means depends on the host. For the Claude Code inbox it is
+recorded only after the notice is seen in the session's conversation. For the
+Claude Code Channel it means the notice was handed over and queued, and for
+Codex that it was queued for the thread; MeMesh does not see either one shown.
+Claude Code holds a peer message
+back for its user in several cases, for example when the sender does not state
+its permission mode and the session bypasses permission prompts, when the two
+sessions' permission modes differ, or when a `crossSessionInbound` setting says
+to hold; MeMesh does not state a mode on anyone's behalf.
+The attempt is then recorded as `notice_held` (Claude Code wrote its "Held peer message" line; it waits for
+its user to approve or deny, which MeMesh cannot see, and within the same MCP process the same notice is not sent
+again; it is read on from where it stopped, so a notice approved later is taken as delivered the next time the host is handed it; if the conversation record cannot be read on from where the hold stopped (it grew by more than 1 MiB between two hand-overs, was replaced, shrank or changed owner) the notice is sent once more, and this process never sends it a third time: a notice sent again that is then neither confirmed nor held stays unconfirmed, and a hold that cannot be followed a second time, or that this process forgot to stay within its limit of 500 holds, stays held; Claude Code's hold line shows only the start of a notice, so a notice that merely arrives late while another is held is reported as held until the next hand-over, and one that Claude Code dropped stays reported as held until the MCP server restarts, the message waiting in the inbox meanwhile) or `notice_not_confirmed`, there is no `host_accept`, and `memesh doctor`
+reports it. If MeMesh cannot read the session's conversation record at all, the attempt is
+recorded as `transcript_unavailable` or `transcript_not_found` instead, and `memesh doctor` reports that in a row of its own (it counts a message under its latest attempt only). The message stays in the inbox
+and is raised at that session's next prompt or turn end. To receive the live
+notice, set `crossSessionInbound` to `accept` in that Claude Code session or
+install the MeMesh Channel. `status` shows this as `queued` with the failure
+code. A notice Claude Code is holding for a message the agent never answers is
+sent again when the MCP server starts afresh (a new session or a restart), because
+the record of the hold lives only in the process that saw it. An agent only
+needs to record `intake`; `ack` and `disposition` are optional, but `memesh message
+storage prune --apply`, which the owner runs, removes a payload only once a
+terminal disposition (`completed`, `cancelled` or `rejected`) is recorded, so
+record one when the work is done.
 A delivery attempt that the router stopped waiting for (`host_outcome_timeout`)
 does not mean the host did not run it: a host that finishes later still sends
 its acceptance, and the router records it for exactly that attempt on that
@@ -575,10 +604,10 @@ for active Codex-session delivery.
 - MCP, HTTP, and CLI use the same message lifecycle and SQLite system of record.
 - A pair of participants in one project can send 30 new logical messages within 10 minutes, counting both directions. The next send fails with `conversation_loop_suspected` without storing any new message rows; ask your user before continuing. Known sessions keep different conversations separate, `/clear` aliases stay one session, and comparisons without a known session use the principal name. Exact retries still work at the limit, and automatic principal fallback counts only once.
 - `send` creates one canonical message, recipient delivery, and payload-free notification event under an idempotency key. Exact-session success additionally requires native host acceptance; an oversized envelope returns `native_message_too_large`, an unreachable local router returns `router_unreachable`, and other unavailable or rejected sessions return `recipient_unavailable`, with recovery state preserved for all three outcomes. A principal send may name `intended_session`; a session send may set `fallback_to_principal` (#497, above).
-- Successful sends include `delivery_note`: principal delivery confirms storage and says whether a session of the recipient is connected at that moment (when the send names `intended_session`, whether that session is; if it is not, only it can take the message in, and a session id that never registered here or belongs to another principal is called out as such), and exact-session delivery confirms adapter acceptance, neither implies the recipient or model read or accepted the message. Reusing an existing message reports its previous ID without creating another message; an unconfirmed notification may still be attempted again. A retry that first creates a principal fallback reports that new stored message. Fallback details remain in `fallback`; when the intended session is not connected, `fallback.note` explains that only it can take the message in, separate from the principal-delivery note.
+- Successful sends include `delivery_note`: principal delivery confirms storage and says whether a session of the recipient is connected at that moment (when the send names `intended_session`, whether that session is; if it is not, only it can take the message in, and a session id that never registered here or belongs to another principal is called out as such; a fallback result is the exception: read `fallback.intended_session_connected`), and exact-session delivery confirms adapter acceptance, neither implies the recipient or model read or accepted the message. Reusing an existing message reports its previous ID without creating another message; an unconfirmed notification may still be attempted again. A retry that first creates a principal fallback reports that new stored message. Fallback details remain in `fallback`; when the intended session is not connected, `fallback.note` explains that only it can take the message in, separate from the principal-delivery note.
 - `poll` and `memesh message watch` return only events for the exact project and recipient. They are compatibility and diagnostic paths; the opaque cursor can be persisted and reused after a timeout, dropped hint, duplicate delivery, or process restart.
 - `fetch` returns the payload only to the named recipient and matching `target_kind` in the named project. Exact-session messages require `target_kind=session`; polling and fetching do not acknowledge the message.
-- `intake`, `ack`, `disposition`, and `activation` are explicit, separate, idempotent receipt facts. `intake` and `disposition` for a delivery with an `intended_session` are refused (`intended_for_other_session`) unless the caller is that session. Inbox/MCP ACK is valid without a host-native acceptance; host-native ACK remains bound to its `host_accept`. `receipts` returns one ordered projection and identifies each underlying fact source. For example, `manual_resume_required` does not imply ACK, acceptance, rejection, cancellation, or completion.
+- `intake`, `ack`, `disposition`, and `activation` are explicit, separate, idempotent receipt facts. `intake` and `disposition` for a delivery with an `intended_session` are refused (`intended_for_other_session`) unless the caller is that session, and an `ack` or an `activation` is refused when the caller names another session. Inbox/MCP ACK is valid without a host-native acceptance; host-native ACK remains bound to its `host_accept`. `receipts` returns one ordered projection and identifies each underlying fact source. For example, `manual_resume_required` does not imply ACK, acceptance, rejection, cancellation, or completion. A call that names a session registered under a different principal than the message's is refused by these actions, and by `status`, `fetch` and `receipts` (except that the message's sender may read `status` of what it sent), in the words used for a message that does not exist; `poll` shows such a session an empty inbox. For a message meant for one session, another session of the same principal is refused by `intake`, `disposition`, `ack` and `activation`, while `status`, `fetch` and `receipts` stay open to the principal's sessions; a call with no session id (HTTP has none) is refused `intake` and `disposition` for such a message too, but not `ack` or `activation`. The refusal of a session registered under another principal is cooperative, not a security boundary, and not "only the recipient can write": it does not apply to a call with no session id (HTTP has none), a session id nobody registered, an id from another project, a caller that only claims to be the recipient, or any process that opens the database file. An `intended_session` written in other letters than its registration is stored as registered (an id nobody registered, in lower case); a session id must be ASCII (a non-ASCII one is refused at registration, at send and in `CLAUDE_CODE_SESSION_ID` / `CODEX_THREAD_ID`); session ids are compared without regard to case, but two registrations that differ only in case are two sessions, and an id written exactly as one of them names that one. A receipt's `actor` is the recipient the call names (the router's own `activation` receipts use `memesh-router`); `detail.caller_session` records the session that made the call, or `null`, outside the idempotency check.
 - The `host_accept` fact in `receipts` carries a `delivery_state` observed at read time: whether intake is `recorded` or `pending`, and whether the session it was accepted for is `live`, `not_live`, `unknown` (no registry row names it) or `not_applicable` (plain principal delivery). A session-target or `intended_session` message whose session ended before intake shows `pending` with `not_live`; nobody else is reminded of it and MeMesh does not resend or reroute it, and a MeMesh send cannot wake or resume that session. The sender can resume it in its own host (which may not succeed at once) and read receipts again, or decide to send it again to the principal, knowing the original session may still take the first message if it comes back. `not_live` is an observation, not a permanent end. Nothing is stored for this; older readers see the same stored facts.
 - The transport, rather than model-provided payload data, records sender-host provenance.
 
@@ -682,9 +711,10 @@ memesh message storage prune --cutoff 2026-08-01T00:00:00Z --batch-size 100
 memesh message storage prune --cutoff 2026-08-01T00:00:00Z --batch-size 100 --apply
 ```
 
-Applied pruning replaces only payload content whose every delivery has an
-explicit ACK and a terminal workflow disposition older than the cutoff with a hash-bound
-tombstone. Message identity, routing, receipts, ACK, workflow, presence, and
+Applied pruning replaces only payload content whose every delivery has a
+terminal workflow disposition (`completed`, `cancelled` or `rejected`) older than the
+cutoff, with or without an ACK, with a hash-bound tombstone. A message the agent
+only took in (`intake`) is not cleaned up until a terminal disposition is recorded. Message identity, routing, receipts, ACK, workflow, presence, and
 retention audit facts remain queryable. Freed SQLite pages become reusable;
 the main database file is a high-watermark and is not promised to shrink.
 Full `VACUUM` is never run by a hook or this bounded command.

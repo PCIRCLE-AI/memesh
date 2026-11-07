@@ -11,7 +11,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { markdownSection } from './lib/markdown-section.mjs';
 
-const ACTIONS = ['send', 'poll', 'discover', 'fetch', 'intake', 'ack', 'disposition', 'activation', 'receipts'];
+const ACTIONS = ['send', 'poll', 'discover', 'fetch', 'intake', 'ack', 'disposition', 'activation', 'receipts', 'status'];
 const here = path.dirname(fileURLToPath(import.meta.url));
 const defaultRoot = path.resolve(here, '..');
 const option = process.argv.indexOf('--root');
@@ -70,6 +70,18 @@ requirePattern(
   publicMessageTargetKind,
   'public MCP message target_kind principal/session schema',
 );
+// The MCP tool's own list of actions must be exactly the one above, in the source and in the installed artifact.
+const messageToolActions = (text) => {
+  const at = text.indexOf("name: 'message'");
+  const list = at < 0 ? null : /action:\s*\{[^}]*?enum:\s*\[([^\]]*)\]/s.exec(text.slice(at, at + 8000));
+  return list ? [...list[1].matchAll(/'([a-z_]+)'/g)].map((entry) => entry[1]) : null;
+};
+for (const file of ['src/transports/mcp/handlers.ts', 'dist/transports/mcp/handlers.js']) {
+  const found = messageToolActions(read(file));
+  if (!found || found.join(',') !== ACTIONS.join(',')) {
+    missing.push(`${file} (MCP message tool action enum must be exactly ${ACTIONS.join(', ')}; found ${found ? found.join(', ') : 'none'})`);
+  }
+}
 requireText('src/transports/http/server.ts', ['executeAgentMessageAction', "transport: 'http'"]);
 const CLI_ACTIONS = {
   send: 'send',
@@ -81,6 +93,7 @@ const CLI_ACTIONS = {
   disposition: 'disposition',
   activation: 'activation',
   receipts: 'receipts',
+  status: 'status',
 };
 // dist/transports/cli/cli.js is a self-contained esbuild artifact for
 // node_modules-free marketplace installs. Its transformed command syntax is
@@ -220,8 +233,15 @@ requirePattern(
 requireText('dist/transports/http/server.js', ['MessageBody', 'executeAgentMessageAction']);
 requireText('dist/transports/agent-messaging.js', ['executeAgentMessageAction']);
 
+// Each action's table row must be in the `message` section: a row (or a CLI row of the same name) elsewhere does not count.
+const messageSection = markdownSection(read('docs/api/API_REFERENCE.md'), 'message');
+for (const action of ACTIONS) {
+  if (messageSection === null || !new RegExp(`^\\| \`${action}\` \\|`, 'm').test(messageSection)) {
+    missing.push(`docs/api/API_REFERENCE.md (section "message" is missing a table row for the \`${action}\` action)`);
+  }
+}
 requireText('docs/api/API_REFERENCE.md', [
-  ...ACTIONS, 'principal', 'session', 'generation', 'host_kind', 'work_summary',
+  'principal', 'session', 'generation', 'host_kind', 'work_summary',
   'lease_expires_at_ms', 'Local', 'Cloud', 'message storage', 'storage_quota_exceeded',
 ]);
 requireText('docs/platforms/agent-messaging.md', [

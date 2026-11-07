@@ -266,8 +266,11 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     const pkg = JSON.parse(read('package.json'));
     expect(pkg.scripts['verify:release']).toContain('node scripts/check-agent-message-sync.mjs');
     const gate = read('scripts/check-agent-message-sync.mjs');
-    for (const action of ['send', 'poll', 'discover', 'fetch', 'intake', 'ack', 'disposition', 'activation', 'receipts']) {
-      expect(gate).toContain(`'${action}'`);
+    const actionsLine = /const ACTIONS = \[([^\]]*)\];/.exec(gate)?.[1] ?? '';
+    const cliActions = /const CLI_ACTIONS = \{([^}]*)\};/.exec(gate)?.[1] ?? '';
+    for (const action of ['send', 'poll', 'discover', 'fetch', 'intake', 'ack', 'disposition', 'activation', 'receipts', 'status']) {
+      expect(actionsLine, `ACTIONS lists ${action}`).toContain(`'${action}'`);
+      expect(cliActions, `CLI_ACTIONS maps ${action}`).toMatch(new RegExp(`\\b${action}: '`));
     }
     expect(gate).toContain('dist/host-adapters/acp-client.js');
     expect(gate).toContain('dist/transports/agent-messaging.js');
@@ -453,17 +456,18 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       fs.mkdirSync(path.dirname(file), { recursive: true });
       fs.writeFileSync(file, content);
     };
-    const actions = ['send', 'poll', 'discover', 'fetch', 'intake', 'ack', 'disposition', 'activation', 'receipts'];
+    const actions = ['send', 'poll', 'discover', 'fetch', 'intake', 'ack', 'disposition', 'activation', 'receipts', 'status'];
     try {
       write('src/transports/schemas.ts', actions.map(action => `action: z.literal('${action}')`).join('\n') + "\ntarget_kind z.enum(['principal', 'session'])");
-      const mcpMessageSchema = "name: 'message' target_kind: { type: 'string', enum: ['principal', 'session'] } name === 'message' MessageSchema executeAgentMessageAction";
+      const messageEnum = (list: string[]) => `name: 'message' inputSchema: { properties: { action: { type: 'string', enum: [${list.map(action => `'${action}'`).join(', ')}], description: 'x' }, target_kind: { type: 'string', enum: ['principal', 'session'] } } } name === 'message' MessageSchema executeAgentMessageAction`;
+      const mcpMessageSchema = messageEnum(actions);
       write('src/transports/mcp/handlers.ts', mcpMessageSchema);
       write('src/core/schema-export.ts', actions.map(action => `'${action}'`).join(' '));
       write('dist/core/schema-export.js', actions.map(action => `'${action}'`).join(' '));
       write('src/transports/http/server.ts', "executeAgentMessageAction\ntransport: 'http'");
       const cliMappings = [
         ['send', 'send'], ['watch', 'poll'], ['discover', 'discover'], ['fetch', 'fetch'], ['intake', 'intake'],
-        ['ack', 'ack'], ['disposition', 'disposition'], ['activation', 'activation'], ['receipts', 'receipts'],
+        ['ack', 'ack'], ['disposition', 'disposition'], ['activation', 'activation'], ['receipts', 'receipts'], ['status', 'status'],
       ].map(([command, action]) => `.command('${command}')\n.action(() => ({ action: '${action}' }))`).join('\n');
       const cliRequired = "\n--payload-stdin\nnever argv\nreadCliMessagePayloadFromStdin\nmessageStorageCmd storage report prune automatic_pruning\n'codex-session'\nmode: host === 'codex-session'\n'ordinary-session-native-queue'";
       write('src/transports/cli/cli.ts', cliMappings + cliRequired);
@@ -509,7 +513,8 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       write('tests/core/agent-router.test.ts', 'never reroutes or later replays an exact-session delivery and drains principal pending after router restart');
       write('src/host-runtime/acp.ts', 'session_update_file O_NOFOLLOW');
       write('dist/host-runtime/acp.js', 'session_update_file O_NOFOLLOW');
-      write('docs/api/API_REFERENCE.md', actions.join(' ') + ' principal session generation host_kind work_summary lease_expires_at_ms Local Cloud message storage storage_quota_exceeded');
+      const apiReference = (list: string[], heading = 'message') => `### ${heading}\n` + list.map(action => `| \`${action}\` | fields | what it does |`).join('\n') + '\nprincipal session generation host_kind work_summary lease_expires_at_ms Local Cloud message storage storage_quota_exceeded';
+      write('docs/api/API_REFERENCE.md', apiReference(actions));
       const canonicalMessageDoc = [
         '# Message contract',
         'principal session generation host_kind work_summary lease_expires_at_ms exact-session principal target Local Cloud Bounded storage and audit retention',
@@ -567,6 +572,20 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       }));
       const pass = spawnSync(process.execPath, ['scripts/check-agent-message-sync.mjs', '--root', root], { cwd: repoRoot, encoding: 'utf8' });
       expect(pass.status, pass.stderr).toBe(0);
+      const withoutStatus = actions.filter(action => action !== 'status');
+      const gateWith = (files: Record<string, string>, expected: string) => {
+        for (const [file, content] of Object.entries(files)) write(file, content);
+        const result = spawnSync(process.execPath, ['scripts/check-agent-message-sync.mjs', '--root', root], { cwd: repoRoot, encoding: 'utf8' });
+        expect(result.status, `${expected}: ${result.stderr}`).toBe(1);
+        expect(result.stderr).toContain(expected);
+        write('src/transports/mcp/handlers.ts', mcpMessageSchema); write('dist/transports/mcp/handlers.js', mcpMessageSchema);
+        write('docs/api/API_REFERENCE.md', apiReference(actions));
+      };
+      gateWith({ 'src/transports/mcp/handlers.ts': messageEnum(withoutStatus) }, 'src/transports/mcp/handlers.ts (MCP message tool action enum');
+      gateWith({ 'dist/transports/mcp/handlers.js': messageEnum(withoutStatus) }, 'dist/transports/mcp/handlers.js (MCP message tool action enum');
+      gateWith({ 'docs/api/API_REFERENCE.md': apiReference(withoutStatus) + ' status' }, 'a table row for the `status` action');
+      // The rows exist, but under another heading: the `message` section does not have them.
+      gateWith({ 'docs/api/API_REFERENCE.md': apiReference(actions, 'memesh message') }, 'section "message" is missing a table row');
       write('src/host-adapters/codex-cli-queue.ts', codexQueueAdapter.replace('messageNotice(input.envelope, input.dispatch_id)', 'input.envelope'));
       const missingNoticeCall = spawnSync(process.execPath, ['scripts/check-agent-message-sync.mjs', '--root', root], { cwd: repoRoot, encoding: 'utf8' });
       expect(missingNoticeCall.status).toBe(1);

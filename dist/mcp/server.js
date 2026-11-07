@@ -35893,17 +35893,17 @@ function intendedSessionFilter(db2, session) {
     return { sql: "", params: [] };
   if (session === void 0)
     return { sql: "AND d.intended_session IS NULL", params: [] };
-  const ids = [...sessionAliasChain(db2, session)];
+  const ids = [...sessionAliasChain(db2, session)].map((id) => id.toLowerCase());
   return {
-    sql: `AND (d.intended_session IS NULL OR d.intended_session IN (${ids.map(() => "?").join(", ")}))`,
+    sql: `AND (d.intended_session IS NULL OR lower(d.intended_session) IN (${ids.map(() => "?").join(", ")}))`,
     params: ids
   };
 }
 function sessionAliasChain(db2, session) {
   const chain = /* @__PURE__ */ new Set([session]);
   try {
-    const previous = db2.prepare("SELECT previous_session_id AS id FROM agent_session_aliases WHERE session_id = ?");
-    const next = db2.prepare("SELECT session_id AS id FROM agent_session_aliases WHERE previous_session_id = ?");
+    const previous = db2.prepare("SELECT previous_session_id AS id FROM agent_session_aliases WHERE lower(session_id) = lower(?)");
+    const next = db2.prepare("SELECT session_id AS id FROM agent_session_aliases WHERE lower(previous_session_id) = lower(?)");
     for (const step of [previous, next]) {
       let current = session;
       for (; ; ) {
@@ -36014,6 +36014,15 @@ function agentScopeIdRejection(field, value) {
   const example = suggestion === null ? "reviewer-agent" : suggestion;
   return `${field} must be a stable identifier, not a filesystem path (received ${JSON.stringify(canonicalAgentScopeId(value))}). Use the name on its own, for example ${JSON.stringify(example)}.`;
 }
+function sessionIdRejection(field, value) {
+  const path15 = agentScopeIdRejection(field, value);
+  if (path15)
+    return path15;
+  if (/[\u0080-\uffff]/.test(value)) {
+    return `${field} must contain only ASCII characters: a session id is the UUID or thread id its host gives it (received ${JSON.stringify(canonicalAgentScopeId(value))}).`;
+  }
+  return null;
+}
 function projectScopeRejection(value) {
   if (value.trim() === "")
     return "project must not be empty.";
@@ -36052,7 +36061,7 @@ function sessionFromVariable(env, name) {
   if (!raw)
     return void 0;
   const session = canonicalAgentScopeId(raw);
-  if (agentScopeIdRejection(name, session) === null)
+  if (sessionIdRejection(name, session) === null)
     return session;
   try {
     process.stderr.write(`[memesh] ignoring ${name}: set but not a valid session id
@@ -36635,6 +36644,7 @@ function normalizeNonNegativeInteger(label, value) {
 var AGENT_MESSAGE_TERMINAL_WORKFLOW_STATES = [...TERMINAL_WORKFLOW_STATES];
 
 // dist/core/agent-messaging.js
+var HANDLED_RECEIPT_KINDS_SQL = "('intake', 'ack', 'disposition')";
 var MAX_SCOPE_FIELD = AGENT_SCOPE_ID_MAX_LENGTH;
 var MAX_IDEMPOTENCY_KEY = 200;
 var MAX_CURSOR_TOKEN = 160;
@@ -36661,7 +36671,7 @@ var AgentIntendedForOtherSessionError = class extends AgentMessageAccessError {
   code = "intended_for_other_session";
   constructor(messageId2, intendedSession, callerSession) {
     const caller = callerSession === null ? "this caller has no session id (CLAUDE_CODE_SESSION_ID / CODEX_THREAD_ID not set or not a valid session id, or the request came over HTTP). If you are that session in Codex, record it with the CLI from your shell (`memesh message intake ...`): Codex does not pass its thread id to MCP servers" : `this caller is session ${JSON.stringify(callerSession)}`;
-    super(`intended_for_other_session: message ${messageId2} is meant for session ${JSON.stringify(intendedSession)}, and ${caller}. Otherwise leave it for that session: do not record intake or a disposition for it.`);
+    super(`intended_for_other_session: message ${messageId2} is meant for session ${JSON.stringify(intendedSession)}, and ${caller}. Otherwise leave it for that session: do not record intake, a disposition, an ack or an activation for it.`);
   }
 };
 var INTENDED_SESSION_ADAPTERS = /* @__PURE__ */ new Set(["claude-channel", "claude-inbox", "codex-cli-queue"]);
@@ -36758,12 +36768,22 @@ function enforceConversationLoopLimit(db2, input2) {
     }
   }
 }
+function canonicalIntendedSession(db2, project, session) {
+  const ids = [...sessionAliasChain(db2, session)];
+  const exact = db2.prepare(`SELECT 1 AS present FROM agent_session_instances WHERE project = ? AND session_instance_id IN (${ids.map(() => "?").join(", ")}) LIMIT 1`).get(project, ...ids);
+  if (exact !== void 0)
+    return session;
+  const folded = db2.prepare("SELECT session_instance_id FROM agent_session_instances WHERE project = ? AND lower(session_instance_id) = ?").all(project, session.toLowerCase());
+  return folded.length === 1 ? folded[0].session_instance_id : session.toLowerCase();
+}
 function sendAgentMessage(db2, input2, options = {}) {
   const normalized = normalizeSendInput(options.fallback_of_message_id === void 0 ? input2 : {
     ...input2,
     provenance: { ...input2.provenance, fallback_of_message_id: options.fallback_of_message_id }
   });
+  const requestedIntendedSession = normalized.intended_session;
   if (normalized.intended_session !== null) {
+    normalized.intended_session = canonicalIntendedSession(db2, normalized.project, normalized.intended_session);
     const ids = [...sessionAliasChain(db2, normalized.intended_session)];
     const registered = db2.prepare(`
       SELECT adapter_kind FROM agent_session_instances
@@ -36782,7 +36802,7 @@ function sendAgentMessage(db2, input2, options = {}) {
     sender: normalized.sender,
     recipient: normalized.recipient,
     target_kind: normalized.target_kind,
-    ...normalized.intended_session === null ? {} : { intended_session: normalized.intended_session },
+    ...requestedIntendedSession === null ? {} : { intended_session: requestedIntendedSession },
     idempotency_key: normalized.idempotency_key,
     content_type: normalized.content_type,
     sender_host: normalized.sender_host,
@@ -36857,6 +36877,9 @@ function pollAgentEvents(db2, input2) {
   const recipient = requireScopeId("recipient", input2.recipient);
   const limit = normalizeLimit(input2.limit);
   const cursor = resolveCursor(db2, project, recipient, input2.cursor ?? null);
+  if (!callerMayReadRecipient(db2, project, recipient, input2.caller_session)) {
+    return { events: [], next_cursor: cursor.cursor_token || createCursor(db2, project, recipient, cursor.event_sequence) };
+  }
   const rows = db2.prepare(`
     SELECT
       e.event_sequence,
@@ -36900,7 +36923,8 @@ async function waitForAgentEvents(db2, input2, signal) {
       project: input2.project,
       recipient: input2.recipient,
       cursor: currentCursor,
-      limit: input2.limit
+      limit: input2.limit,
+      caller_session: input2.caller_session
     });
     if (result.events.length > 0)
       return result;
@@ -36929,6 +36953,7 @@ function fetchAgentMessage(db2, input2) {
       m.reply_to_message_id,
       m.privacy,
       m.payload_json,
+      m.payload_tombstoned_at,
       m.provenance_json,
       m.created_at
     FROM agent_messages m
@@ -36938,6 +36963,7 @@ function fetchAgentMessage(db2, input2) {
   if (!row) {
     throw new AgentMessageAccessError(`Agent message ${messageId2} is not available to recipient ${recipient} in project ${project}.`);
   }
+  assertCallerMayUseDelivery(db2, { project, recipient, message_id: messageId2, target_kind: row.target_kind }, input2.caller_session);
   return {
     message_id: row.message_id,
     project: row.project,
@@ -36951,20 +36977,25 @@ function fetchAgentMessage(db2, input2) {
     privacy: parsePrivacy(row.privacy),
     created_at: sqliteUtcToIso(row.created_at),
     payload: parseJsonObjectOrValue(row.payload_json),
-    provenance: parseJsonObject(row.provenance_json, "provenance_json")
+    provenance: parseJsonObject(row.provenance_json, "provenance_json"),
+    ...row.payload_tombstoned_at ? { note: "This message is past its retention period and its content was deleted; payload keeps only the marker with its original size and checksum." } : {}
   };
 }
 function recordAgentReceipt(db2, input2) {
   const normalized = normalizeReceiptInput(input2);
   const delivery = assertMessageAccess(db2, normalized.project, normalized.recipient, normalized.message_id);
-  if (normalized.receipt_kind === "intake" || normalized.receipt_kind === "disposition") {
-    const callerSession = input2.caller_session?.trim() ? canonicalAgentScopeId(input2.caller_session.trim()) : null;
-    if (delivery.intended_session !== null && (callerSession === null || !sessionAliasChain(db2, delivery.intended_session).has(callerSession))) {
+  assertCallerMayUseDelivery(db2, { project: normalized.project, recipient: normalized.recipient, message_id: normalized.message_id, target_kind: delivery.target_kind }, input2.caller_session);
+  const callerSession = input2.caller_session?.trim() ? canonicalAgentScopeId(input2.caller_session.trim()) : null;
+  const kind = normalized.receipt_kind;
+  if (delivery.intended_session !== null) {
+    const meantFor = sessionAliasChain(db2, delivery.intended_session);
+    const strict = kind === "intake" || kind === "disposition";
+    if (strict && callerSession === null || callerSession !== null && !isOneOf(meantFor, callerSession, { db: db2, project: normalized.project })) {
       throw new AgentIntendedForOtherSessionError(normalized.message_id, delivery.intended_session, callerSession);
     }
-    if (delivery.target_kind === "session" && callerSession !== null && !sessionAliasChain(db2, normalized.recipient).has(callerSession) && db2.prepare("SELECT 1 FROM agent_session_instances WHERE project = ? AND session_instance_id = ?").get(normalized.project, callerSession) !== void 0) {
-      throw new AgentIntendedForOtherSessionError(normalized.message_id, normalized.recipient, callerSession);
-    }
+  }
+  if (delivery.target_kind === "session" && callerSession !== null && !isOneOf(sessionAliasChain(db2, normalized.recipient), callerSession, { db: db2, project: normalized.project }) && db2.prepare("SELECT 1 FROM agent_session_instances WHERE project = ? AND lower(session_instance_id) = ?").get(normalized.project, callerSession.toLowerCase()) !== void 0) {
+    throw new AgentIntendedForOtherSessionError(normalized.message_id, normalized.recipient, callerSession);
   }
   const detail = buildReceiptDetail(normalized);
   const requestHash = hashCanonical({
@@ -36986,7 +37017,7 @@ function recordAgentReceipt(db2, input2) {
       INSERT INTO agent_message_receipts (
         receipt_id, message_id, project, recipient, receipt_kind, actor, idempotency_key, request_hash, detail_json
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(receiptId, normalized.message_id, normalized.project, normalized.recipient, normalized.receipt_kind, normalized.actor, normalized.idempotency_key, requestHash, stableStringify(detail));
+    `).run(receiptId, normalized.message_id, normalized.project, normalized.recipient, normalized.receipt_kind, normalized.actor, normalized.idempotency_key, requestHash, stableStringify({ ...detail, caller_session: callerSession }));
   });
   try {
     tx.immediate();
@@ -37010,7 +37041,8 @@ function readAgentMessageReceipts(db2, input2) {
   const project = requireScopeId("project", input2.project);
   const recipient = requireScopeId("recipient", input2.recipient);
   const messageId2 = requireText("message_id", input2.message_id, MAX_SCOPE_FIELD);
-  assertMessageAccess(db2, project, recipient, messageId2);
+  const delivery = assertMessageAccess(db2, project, recipient, messageId2);
+  assertCallerMayUseDelivery(db2, { project, recipient, message_id: messageId2, target_kind: delivery.target_kind }, input2.caller_session);
   const rows = db2.prepare(`
     SELECT receipt_id, message_id, project, recipient, receipt_kind, actor, idempotency_key, detail_json, created_at, request_hash
     FROM agent_message_receipts
@@ -37025,6 +37057,9 @@ function normalizeSendInput(input2) {
   const recipient = requireScopeId("recipient", input2.recipient);
   const target_kind = parseTargetKind(input2.target_kind ?? "principal");
   const intended_session = input2.intended_session === void 0 || input2.intended_session === null ? null : requireScopeId("intended_session", input2.intended_session);
+  const sessionRejection = (intended_session !== null ? sessionIdRejection("intended_session", intended_session) : null) ?? (target_kind === "session" ? sessionIdRejection("recipient", recipient) : null);
+  if (sessionRejection)
+    throw new AgentMessagingError(sessionRejection);
   if (intended_session !== null && target_kind !== "principal") {
     throw new AgentMessagingError('intended_session is only valid with target_kind "principal".');
   }
@@ -37231,6 +37266,60 @@ function loadSentMessage(db2, project, recipient, messageId2) {
     ORDER BY e.event_sequence ASC
     LIMIT 1
   `).get(project, project, recipient, messageId2);
+}
+function principalsOfSession(db2, project, session) {
+  const named = canonicalAgentScopeId(session);
+  const exact = [...sessionAliasChain(db2, named)];
+  let rows = db2.prepare(`SELECT DISTINCT principal_id FROM agent_session_instances WHERE project = ? AND session_instance_id IN (${exact.map(() => "?").join(", ")})`).all(project, ...exact);
+  if (rows.length === 0) {
+    const folded = [...new Set([...exact, ...sessionAliasChain(db2, named.toLowerCase())].map((id) => id.toLowerCase()))];
+    rows = db2.prepare(`SELECT DISTINCT principal_id FROM agent_session_instances WHERE project = ? AND lower(session_instance_id) IN (${folded.map(() => "?").join(", ")})`).all(project, ...folded);
+  }
+  return [...new Set(rows.map((row) => canonicalAgentScopeId(row.principal_id)))];
+}
+function isOneOf(chain, session, scope) {
+  const ids = [...chain];
+  if (ids.includes(session))
+    return true;
+  if (scope.db.prepare("SELECT 1 FROM agent_session_instances WHERE project = ? AND session_instance_id = ?").get(scope.project, session) !== void 0)
+    return false;
+  const wanted = session.toLowerCase();
+  return ids.some((id) => id.toLowerCase() === wanted);
+}
+function callerMayReadRecipient(db2, project, recipient, callerSession) {
+  const caller = callerSession?.trim();
+  if (!caller)
+    return true;
+  const callerPrincipals = principalsOfSession(db2, project, caller);
+  if (callerPrincipals.length === 0)
+    return true;
+  const owners = [canonicalAgentScopeId(recipient), ...principalsOfSession(db2, project, recipient)];
+  return callerPrincipals.some((principal) => owners.includes(principal));
+}
+function assertCallerMayUseDelivery(db2, delivery, callerSession, options = {}) {
+  const caller = callerSession?.trim();
+  if (!caller)
+    return;
+  const callerPrincipals = principalsOfSession(db2, delivery.project, caller);
+  if (callerPrincipals.length === 0)
+    return;
+  const owners = delivery.target_kind === "principal" ? [canonicalAgentScopeId(delivery.recipient)] : principalsOfSession(db2, delivery.project, delivery.recipient);
+  if (owners.length === 0 || callerPrincipals.some((principal) => owners.includes(principal)))
+    return;
+  if (options.allowSender) {
+    const sent = db2.prepare("SELECT sender, provenance_json FROM agent_messages WHERE message_id = ? AND project = ?").get(delivery.message_id, delivery.project);
+    if (sent && callerPrincipals.includes(canonicalAgentScopeId(sent.sender)))
+      return;
+    let senderSession;
+    try {
+      senderSession = JSON.parse(sent?.provenance_json ?? "{}").sender_session;
+    } catch {
+      senderSession = void 0;
+    }
+    if (typeof senderSession === "string" && isOneOf(sessionAliasChain(db2, senderSession), canonicalAgentScopeId(caller), { db: db2, project: delivery.project }))
+      return;
+  }
+  throw new AgentMessageAccessError(`Agent message ${delivery.message_id} is not available to recipient ${delivery.recipient} in project ${delivery.project}.`);
 }
 function assertMessageAccess(db2, project, recipient, messageId2) {
   const row = db2.prepare(`
@@ -37790,6 +37879,12 @@ var MessageSchema = external_exports.discriminatedUnion("action", [
     detail: external_exports.string().trim().max(1e3).optional()
   }).strict(),
   external_exports.object({
+    action: external_exports.literal("status"),
+    project: messageProject,
+    recipient: messageRecipient,
+    message_id: messageId
+  }).strict(),
+  external_exports.object({
     action: external_exports.literal("receipts"),
     project: messageProject,
     recipient: messageRecipient,
@@ -38101,30 +38196,30 @@ function intendedSessionNote(session, principal) {
   return `Session ${session} is not connected now. Only it can take this message in, the next time it runs; no other session of ${principal} will. If it has ended for good, send to ${principal} without intended_session instead.`;
 }
 function principalAvailability(db2, sent) {
-  const ids = sent.intended_session ? [...sessionAliasChain(db2, sent.intended_session)] : [];
+  const recipient = canonicalAgentScopeId(sent.recipient);
+  const meant = sent.intended_session ? sessionAliasChain(db2, sent.intended_session) : void 0;
+  const wanted = meant === void 0 ? [] : [...meant].map((id) => id.toLowerCase());
+  const inWanted = meant === void 0 ? "" : ` AND lower(session_instance_id) IN (${wanted.map(() => "?").join(", ")})`;
   const live = db2.prepare(`
-    SELECT 1 FROM agent_session_connections
-    WHERE project = ? AND principal_id = ?${ids.length > 0 ? ` AND session_instance_id IN (${ids.map(() => "?").join(", ")})` : ""}
-      AND disconnected_at IS NULL AND lease_expires_at_ms > ?
-    LIMIT 1
-  `).get(sent.project, sent.recipient, ...ids, Date.now()) !== void 0;
+    SELECT principal_id FROM agent_session_connections
+    WHERE project = ? AND disconnected_at IS NULL AND lease_expires_at_ms > ?${inWanted}
+  `).all(sent.project, Date.now(), ...wanted).some((row) => canonicalAgentScopeId(row.principal_id) === recipient);
   if (sent.intended_session) {
     if (live)
-      return ` Session ${sent.intended_session} is connected now.`;
+      return ` Session ${sent.intended_session} is connected now; use status to see whether its notice reached the conversation.`;
     const registered = db2.prepare(`
-      SELECT principal_id FROM agent_session_instances
-      WHERE project = ? AND session_instance_id IN (${ids.map(() => "?").join(", ")})
-    `).all(sent.project, ...ids);
+      SELECT principal_id FROM agent_session_instances WHERE project = ?${inWanted}
+    `).all(sent.project, ...wanted).map((row) => canonicalAgentScopeId(row.principal_id));
     if (registered.length === 0) {
       return ` Session ${sent.intended_session} has not registered in this project, so MeMesh cannot tell whether it exists. Only a session with that id can take this message in; no other session of ${sent.recipient} will. Check the id; if it is wrong or the session has ended, send to ${sent.recipient} without intended_session instead.`;
     }
-    if (!registered.some((row) => row.principal_id === sent.recipient)) {
-      const other = [...new Set(registered.map((row) => row.principal_id))].join(", ");
-      return ` Session ${sent.intended_session} is registered under ${other}, not ${sent.recipient}, so it will not take this message in. Send to ${other}, or send to ${sent.recipient} without intended_session.`;
+    if (!registered.includes(recipient)) {
+      const other = [...new Set(registered)].join(", ");
+      return ` Session ${sent.intended_session} is a session of ${other}; ${sent.recipient}'s notices do not reach it. Send to ${other}, or send to ${sent.recipient} without intended_session.`;
     }
     return ` ${intendedSessionNote(sent.intended_session, sent.recipient)}`;
   }
-  return live ? ` A session of ${sent.recipient} is connected now.` : ` No session of ${sent.recipient} is connected now; the message waits in the inbox.`;
+  return live ? ` A session of ${sent.recipient} is connected now; use status to see whether its notice reached the conversation.` : ` No session of ${sent.recipient} is connected now; the message waits in the inbox.`;
 }
 function publicSentMessage(sent, adapter, availability = "") {
   const { reused, ...message } = sent;
@@ -38149,7 +38244,7 @@ async function requireExactSessionNativeAcceptance(db2, sent, dependencies) {
       const accepted2 = readHostAccept(db2, sent.delivery_id);
       if (accepted2)
         return nativeAcceptance(accepted2);
-      if (readLatestDispatchFailureCode(db2, sent.delivery_id) === "native_message_too_large") {
+      if (readLatestDispatchFailure(db2, sent.delivery_id)?.failure_code === "native_message_too_large") {
         throw new AgentNativeMessageTooLargeError();
       }
       throw new AgentRecipientUnavailableError();
@@ -38168,15 +38263,15 @@ async function requireExactSessionNativeAcceptance(db2, sent, dependencies) {
     throw new AgentRecipientUnavailableError();
   return nativeAcceptance(accepted);
 }
-function readLatestDispatchFailureCode(db2, deliveryId) {
-  const row = db2.prepare(`
-    SELECT failure_code
-    FROM agent_dispatch_attempts
-    WHERE delivery_id = ? AND result = 'adapter_rejected' AND failure_code IS NOT NULL
-    ORDER BY attempt_number DESC
+function readLatestDispatchFailure(db2, deliveryId) {
+  return db2.prepare(`
+    SELECT a.failure_code AS failure_code, c.adapter_kind AS adapter_kind
+    FROM agent_dispatch_attempts a
+    LEFT JOIN agent_session_connections c ON c.connection_id = a.connection_id
+    WHERE a.delivery_id = ? AND a.result = 'adapter_rejected' AND a.failure_code IS NOT NULL
+    ORDER BY a.attempt_number DESC
     LIMIT 1
   `).get(deliveryId);
-  return row?.failure_code;
 }
 function receiptDetail(note2, context) {
   return {
@@ -38211,7 +38306,8 @@ function recordPublicAck(db2, input2, context) {
     actor: input2.recipient,
     idempotency_key: input2.idempotency_key,
     receipt_kind: "ack",
-    detail: receiptDetail(void 0, context)
+    detail: receiptDetail(void 0, context),
+    caller_session: context.hostSession
   });
 }
 function recordPublicWorkflow(db2, input2, context) {
@@ -38227,8 +38323,94 @@ function recordPublicWorkflow(db2, input2, context) {
     caller_session: context.hostSession
   });
 }
-function readPublicReceipts(db2, input2) {
-  return db2.transaction(() => readPublicReceiptsSnapshot(db2, input2))();
+function acceptedNote(adapterKind) {
+  if (adapterKind === "claude-inbox") {
+    return "A notice is in the recipient's conversation; the agent has not recorded intake, an ack or a disposition yet.";
+  }
+  if (adapterKind === "claude-channel") {
+    return "The notice was handed to the recipient's Claude Code Channel and queued; MeMesh does not see it shown there, and the agent has not recorded intake, an ack or a disposition yet.";
+  }
+  if (adapterKind === "codex-cli-queue" || adapterKind === "codex-app-server") {
+    return "The notice was queued for the recipient's Codex thread; MeMesh does not see it shown there, and the agent has not recorded intake, an ack or a disposition yet.";
+  }
+  return "The host accepted the notice; whether the agent has seen it is not recorded here.";
+}
+function queuedNote(failure2, adapterKind) {
+  const claude = adapterKind === void 0 || adapterKind.startsWith("claude-");
+  const later = claude ? "the message appears at the session's next prompt or turn end" : "the message waits in the inbox until the recipient reads it";
+  switch (failure2) {
+    case void 0:
+      return "Stored in the inbox; no notice has been confirmed in the recipient's conversation.";
+    case "notice_held":
+      return `Stored in the inbox. Claude Code is holding the notice for its user to approve or deny, and MeMesh cannot see which; either way ${later}.`;
+    case "notice_not_confirmed":
+      return `Stored in the inbox. The notice reached the session but was not shown in its conversation (Claude Code may be holding it); ${later}.`;
+    case "transcript_unavailable":
+    case "transcript_not_found":
+      return `Stored in the inbox. MeMesh could not read the session's conversation record, so it cannot tell whether the notice arrived; ${later}.`;
+    case "frame_too_large":
+      return `Stored in the inbox. The notice was too large to be sent and was not delivered; ${later}.`;
+    default:
+      return `Stored in the inbox. A delivery attempt ended without a result, so the notice may or may not have reached the session and nothing confirms it; ${later}.`;
+  }
+}
+function hasReplyFromRecipient(db2, delivery) {
+  const original = db2.prepare("SELECT sender FROM agent_messages WHERE message_id = ? AND project = ?").get(delivery.message_id, delivery.project);
+  if (!original)
+    return false;
+  const originalSender = canonicalAgentScopeId(original.sender);
+  const recipients = new Set(delivery.target_kind === "principal" ? [canonicalAgentScopeId(delivery.recipient)] : [canonicalAgentScopeId(delivery.recipient), ...principalsOfSession(db2, delivery.project, delivery.recipient)]);
+  const replies = db2.prepare(`
+    SELECT m.sender AS sender, d.recipient AS recipient, d.target_kind AS target_kind
+    FROM agent_messages m JOIN agent_message_deliveries d ON d.message_id = m.message_id
+    WHERE m.project = ? AND m.reply_to_message_id = ?
+  `).all(delivery.project, delivery.message_id);
+  return replies.some((reply) => recipients.has(canonicalAgentScopeId(reply.sender)) && (canonicalAgentScopeId(reply.recipient) === originalSender || reply.target_kind === "session" && principalsOfSession(db2, delivery.project, reply.recipient).includes(originalSender)));
+}
+function readMessageStatus(db2, input2, callerSession) {
+  return db2.transaction(() => {
+    const delivery = resolveCanonicalDelivery(db2, input2.project, input2.recipient, input2.message_id);
+    assertCallerMayUseDelivery(db2, delivery, callerSession, { allowSender: true });
+    const state = readDeliveryState(db2, delivery);
+    const replied = hasReplyFromRecipient(db2, delivery);
+    const handled = db2.prepare(`
+      SELECT 1 FROM agent_message_receipts
+      WHERE project = ? AND recipient = ? AND message_id = ? AND receipt_kind IN ${HANDLED_RECEIPT_KINDS_SQL}
+      LIMIT 1
+    `).get(delivery.project, delivery.recipient, delivery.message_id) !== void 0;
+    const hostAccept = readHostAccept(db2, delivery.delivery_id);
+    const status = replied ? "replied" : handled ? "handed_to_agent" : hostAccept ? "accepted" : "queued";
+    const latestFailure = status === "queued" ? readLatestDispatchFailure(db2, delivery.delivery_id) : void 0;
+    const failure2 = latestFailure?.failure_code;
+    const lastHost = latestFailure?.adapter_kind ?? void 0;
+    let note2;
+    if (status === "replied")
+      note2 = "A reply addressed back to the sender and linked to this message exists.";
+    else if (status === "handed_to_agent")
+      note2 = "The agent recorded intake, an ack or a disposition for this message; no reply is linked to it yet.";
+    else if (status === "accepted")
+      note2 = acceptedNote(hostAccept?.adapter_kind);
+    else {
+      note2 = queuedNote(failure2, lastHost);
+      if (failure2 === void 0 && delivery.target_kind === "principal") {
+        const availability = principalAvailability(db2, delivery);
+        if (!availability.includes("is connected now; use status"))
+          note2 += availability;
+      } else if (failure2 === void 0 && state.target_session === "not_live") {
+        note2 = "Stored in the inbox. The target session is not connected now; the message is delivered when it next connects.";
+      }
+    }
+    return {
+      message_id: delivery.message_id,
+      status,
+      note: note2,
+      ...failure2 ? { last_failure: failure2 } : {},
+      delivery_state: state
+    };
+  })();
+}
+function readPublicReceipts(db2, input2, callerSession) {
+  return db2.transaction(() => readPublicReceiptsSnapshot(db2, { ...input2, caller_session: callerSession }))();
 }
 function readPublicReceiptsSnapshot(db2, input2) {
   const delivery = resolveCanonicalDelivery(db2, input2.project, input2.recipient, input2.message_id);
@@ -38307,17 +38489,17 @@ function readDeliveryState(db2, delivery) {
   return { observed_at, intake, target_session: sessionLiveness(db2, delivery.project, session, observedAtMs), session };
 }
 function sessionLiveness(db2, project, session, observedAtMs) {
-  const ids = [...sessionAliasChain(db2, session)];
+  const ids = [...sessionAliasChain(db2, session)].map((id) => id.toLowerCase());
   const marks = ids.map(() => "?").join(", ");
   try {
     const registered = db2.prepare(`
-      SELECT 1 FROM agent_session_instances WHERE project = ? AND session_instance_id IN (${marks}) LIMIT 1
+      SELECT 1 FROM agent_session_instances WHERE project = ? AND lower(session_instance_id) IN (${marks}) LIMIT 1
     `).get(project, ...ids) !== void 0;
     if (!registered)
       return "unknown";
     const live = db2.prepare(`
       SELECT 1 FROM agent_session_connections
-      WHERE project = ? AND session_instance_id IN (${marks})
+      WHERE project = ? AND lower(session_instance_id) IN (${marks})
         AND disconnected_at IS NULL AND lease_expires_at_ms > ?
       LIMIT 1
     `).get(project, ...ids, observedAtMs) !== void 0;
@@ -38510,7 +38692,8 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
         project: input2.project,
         recipient: input2.recipient,
         cursor: input2.cursor,
-        limit: input2.limit
+        limit: input2.limit,
+        caller_session: context.hostSession
       };
       return input2.wait_ms > 0 ? waitForAgentEvents(db2, { ...query, wait_ms: input2.wait_ms }, context.signal) : pollAgentEvents(db2, query);
     }
@@ -38533,7 +38716,7 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
       }
     }
     case "fetch":
-      return fetchAgentMessage(db2, input2);
+      return fetchAgentMessage(db2, { ...input2, caller_session: context.hostSession });
     case "intake":
       return recordAgentReceipt(db2, {
         project: input2.project,
@@ -38559,10 +38742,13 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
         idempotency_key: input2.idempotency_key,
         receipt_kind: "host_activation",
         host_activation: input2.activation,
-        detail: receiptDetail(input2.detail, context)
+        detail: receiptDetail(input2.detail, context),
+        caller_session: context.hostSession
       });
     case "receipts":
-      return readPublicReceipts(db2, input2);
+      return readPublicReceipts(db2, input2, context.hostSession);
+    case "status":
+      return readMessageStatus(db2, input2, context.hostSession);
   }
 }
 
@@ -39436,13 +39622,13 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "message",
-    description: `Use this to contact or discover another local agent on the same MeMesh instance. discover is a bounded, project-scoped live-directory read of active leases and returns only the router result; it performs no send, fetch, ACK, replay, or receipt work. An empty discover result does not predict whether a principal-target send/fetch will work: those use a separate durable store-and-forward path to a named recipient that does not require the router or any live registration (an exact target_kind=session send still does, and still needs the router). send durably stores one untrusted JSON-encoded payload of at most ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes (64 KiB) idempotently. Native delivery has a separate ${AGENT_NATIVE_MESSAGE_MAX_BYTES}-byte (16 KiB) cap for the complete envelope, including routing metadata and payload. For target_kind=session, success requires the exact active native host to accept the message: Claude Channel receives the full envelope; Claude inbox and the Codex CLI queue receive only a notice, after which the agent checks receipts and fetches the body. An oversized envelope returns native_message_too_large; an unreachable local router returns router_unreachable; an unavailable or rejected exact session returns recipient_unavailable. Both sender-side failures preserve scoped recovery data. Principal targets retain durable store-and-forward behavior even when native delivery is unavailable. Every session of one principal shares its inbox: a principal send with intended_session is meant for that one session, which alone is reminded of it and alone may record intake or a disposition (any other caller, including one with no session id, gets intended_for_other_session). A session send with fallback_to_principal that the session refuses (recipient_unavailable) is sent to its principal with intended_session set to that session instead. For a full native envelope, poll/fetch remain compatibility and recovery reads; after a notice, fetch is the required read of the body. intake, ack, disposition, and activation are separate explicit facts. Native acceptance, polling, fetching, and discovery never imply agent acknowledgement or workflow completion. In receipts, the host_accept fact's delivery_state.target_session "not_live" only means that session had no live registration when read; it is not a permanent end. A MeMesh send cannot wake or resume an offline session (an exact-session send to it returns recipient_unavailable). Resume that session in its own host, which may not succeed at once, and read receipts again; or decide to send to the principal instead, knowing the original session may still take the first message if it comes back. MeMesh does neither automatically.`,
+    description: `Use this to contact or discover another local agent on the same MeMesh instance. discover is a bounded, project-scoped live-directory read of active leases and returns only the router result; it performs no send, fetch, ACK, replay, or receipt work. An empty discover result does not predict whether a principal-target send/fetch will work: those use a separate durable store-and-forward path to a named recipient that does not require the router or any live registration (an exact target_kind=session send still does, and still needs the router). send durably stores one untrusted JSON-encoded payload of at most ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes (64 KiB) idempotently. Native delivery has a separate ${AGENT_NATIVE_MESSAGE_MAX_BYTES}-byte (16 KiB) cap for the complete envelope, including routing metadata and payload. For target_kind=session, success requires the exact active native host to accept the message: Claude Channel receives the full envelope; Claude inbox and the Codex CLI queue receive only a notice, after which the agent checks receipts and fetches the body. An oversized envelope returns native_message_too_large; an unreachable local router returns router_unreachable; an unavailable or rejected exact session returns recipient_unavailable. Both sender-side failures preserve scoped recovery data. Principal targets retain durable store-and-forward behavior even when native delivery is unavailable. Every session of one principal shares its inbox: a principal send with intended_session is meant for that one session, which alone is reminded of it and alone may record intake or a disposition (any other caller, including one with no session id, gets intended_for_other_session). A session send with fallback_to_principal that the session refuses (recipient_unavailable) is sent to its principal with intended_session set to that session instead. For a full native envelope, poll/fetch remain compatibility and recovery reads; after a notice, fetch is the required read of the body. intake, ack, disposition, and activation are separate explicit facts; an agent only needs to record intake, while ack and disposition are optional. A host accept means the host took the notice: for the Claude Code inbox it was seen in the conversation (a notice Claude Code holds back is not an accept, and the message waits in the inbox until the session's next prompt or turn end); for the Claude Code Channel it was handed over and queued, and MeMesh cannot see whether it was shown; for Codex it was queued for the thread. It never means the agent read it. status reads where one message stands from what MeMesh recorded and from any intake, ack, disposition or reply the agent made: queued, accepted, handed_to_agent (intake, ack or disposition recorded) or replied. Native acceptance, polling, fetching, and discovery never imply agent acknowledgement or workflow completion. In receipts, the host_accept fact's delivery_state.target_session "not_live" only means that session had no live registration when read; it is not a permanent end. A MeMesh send cannot wake or resume an offline session (an exact-session send to it returns recipient_unavailable). Resume that session in its own host, which may not succeed at once, and read receipts again; or decide to send to the principal instead, knowing the original session may still take the first message if it comes back. MeMesh does neither automatically.`,
     inputSchema: {
       type: "object",
       properties: {
         action: {
           type: "string",
-          enum: ["send", "poll", "discover", "fetch", "intake", "ack", "disposition", "activation", "receipts"],
+          enum: ["send", "poll", "discover", "fetch", "intake", "ack", "disposition", "activation", "receipts", "status"],
           description: "Message lifecycle or live-directory action. Each action validates only its documented fields and rejects unknown fields."
         },
         project: { type: "string", description: "Local project scope shared by sender and recipient. A stable identifier, never a filesystem path; compared exactly, after Unicode NFC normalisation." },
@@ -39474,7 +39660,7 @@ var TOOL_DEFINITIONS = [
         cursor: { type: "string", description: "Optional opaque cursor returned by poll. Clients must not parse it." },
         wait_ms: { type: "number", description: "Poll wait in milliseconds, 0-30000. Defaults to 0." },
         limit: { type: "number", description: "Maximum poll or discovery rows, 1-100. Defaults to 20 for poll and 50 for discover." },
-        message_id: { type: "string", description: "Required for fetch, receipt writes, and receipt readback." },
+        message_id: { type: "string", description: "Required for fetch, status, receipt writes, and receipt readback." },
         intake_state: { type: "string", enum: ["fetched", "ingested"], description: "Required only for intake. Neither value implies ACK." },
         disposition: { type: "string", enum: ["accepted", "rejected", "completed", "cancelled", "deferred"], description: "Required only for disposition." },
         activation: { type: "string", enum: ["woken", "manual_resume_required", "unsupported", "failed"], description: "Required only for activation; manual_resume_required never implies ACK or workflow disposition." },
@@ -40536,6 +40722,7 @@ import { execFileSync as execFileSync3 } from "node:child_process";
 import fs16 from "node:fs";
 import path11 from "node:path";
 var MAX_BYTES = 1024 * 1024;
+var SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
 var ClaudeTranscriptReader = class {
   projectsDir;
   projectSlug;
@@ -40551,7 +40738,7 @@ var ClaudeTranscriptReader = class {
     this.projectSlug = projectSlug;
   }
   locate(session) {
-    if (!/^[A-Za-z0-9_-]{1,128}$/.test(session))
+    if (!SESSION_ID.test(session))
       return void 0;
     try {
       for (const entry of fs16.readdirSync(this.projectsDir, { withFileTypes: true })) {
@@ -40570,8 +40757,11 @@ var ClaudeTranscriptReader = class {
   }
   mark(session) {
     const file2 = this.locate(session);
-    if (!file2)
-      return void 0;
+    if (!file2) {
+      if (!this.projectSlug || !SESSION_ID.test(session))
+        return void 0;
+      return { session, file: path11.join(this.projectsDir, this.projectSlug, `${session}.jsonl`), offset: 0, pending: Buffer.alloc(0), discardPartial: false };
+    }
     let fd;
     try {
       if (!fs16.lstatSync(path11.dirname(file2)).isDirectory())
@@ -40596,6 +40786,18 @@ var ClaudeTranscriptReader = class {
       return void 0;
     let fd;
     try {
+      if (mark.ino === void 0) {
+        let named2;
+        try {
+          named2 = fs16.lstatSync(mark.file);
+        } catch (error62) {
+          return error62.code === "ENOENT" ? [] : void 0;
+        }
+        if (!named2.isFile() || typeof process.getuid === "function" && named2.uid !== process.getuid())
+          return void 0;
+        mark.dev = named2.dev;
+        mark.ino = named2.ino;
+      }
       if (!fs16.lstatSync(path11.dirname(mark.file)).isDirectory())
         return void 0;
       fd = fs16.openSync(mark.file, fs16.constants.O_RDONLY | (fs16.constants.O_NOFOLLOW ?? 0) | (fs16.constants.O_NONBLOCK ?? 0));
@@ -40631,7 +40833,7 @@ var ClaudeTranscriptReader = class {
     }
   }
   currentTask(session) {
-    if (!/^[A-Za-z0-9_-]{1,128}$/.test(session))
+    if (!SESSION_ID.test(session))
       return void 0;
     if (session !== this.session) {
       this.session = session;
@@ -40785,10 +40987,15 @@ function repoLabel(workspace) {
 var defaultClaudeDir = () => process.env.CLAUDE_CONFIG_DIR || path12.join(homeDir(), ".claude");
 var startByPid = /* @__PURE__ */ new Map();
 var unreadableLogged = /* @__PURE__ */ new Set();
+var unreadableUntil = /* @__PURE__ */ new Map();
+var UNREADABLE_RETRY_MS = 3e4;
 function processStart(pid) {
   const known = startByPid.get(pid);
   if (known !== void 0)
     return known;
+  const retryAt = unreadableUntil.get(pid);
+  if (retryAt !== void 0 && Date.now() < retryAt)
+    return void 0;
   try {
     const text = execFileSync3("ps", ["-o", "lstart=", "-p", String(pid)], {
       encoding: "utf8",
@@ -40805,6 +41012,9 @@ function processStart(pid) {
   } catch (error62) {
     if (error62.status === 1)
       return null;
+    if (unreadableUntil.size >= 64)
+      unreadableUntil.clear();
+    unreadableUntil.set(pid, Date.now() + UNREADABLE_RETRY_MS);
     if (!unreadableLogged.has(pid)) {
       unreadableLogged.add(pid);
       try {
@@ -40929,7 +41139,45 @@ function confirmedNotice(record2, session, notice) {
   }
   return void 0;
 }
+var NoticeNotConfirmedError = class extends Error {
+  code = "notice_not_confirmed";
+  constructor() {
+    super("Claude session notice was not confirmed.");
+    this.name = "NoticeNotConfirmedError";
+  }
+};
+var NoticeHeldError = class extends Error {
+  code = "notice_held";
+  constructor() {
+    super("Claude Code is holding the notice for its user; MeMesh cannot see whether it was approved or denied.");
+    this.name = "NoticeHeldError";
+  }
+};
+var TranscriptUnreadableError = class extends Error {
+  code;
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+    this.name = "TranscriptUnreadableError";
+  }
+};
+function heldNotice(record2, session) {
+  if (!record2 || typeof record2 !== "object")
+    return false;
+  const entry = record2;
+  return entry.type === "system" && entry.sessionId === session && typeof entry.content === "string" && entry.content.startsWith("Held peer message") && entry.content.includes("memesh_message_notice");
+}
+var HELD_LIMIT = 500;
 function createClaudeInboxDeliver(options) {
+  const limit = options.heldLimit ?? HELD_LIMIT;
+  const held = /* @__PURE__ */ new Map();
+  const settled = /* @__PURE__ */ new Map();
+  const settle2 = (id, how) => {
+    settled.delete(id);
+    settled.set(id, how);
+    if (settled.size > limit * 4)
+      settled.delete(settled.keys().next().value);
+  };
   return async (delivery) => {
     const timeoutMs = options.timeoutMs ?? 3e3;
     const notice = messageNotice(delivery.envelope, delivery.delivery_id);
@@ -40939,28 +41187,70 @@ function createClaudeInboxDeliver(options) {
       throw new Error("Claude session changed or does not match the delivery target.");
     }
     const reader = typeof options.reader === "function" ? options.reader() : options.reader;
-    const mark = delivery.envelope.target_kind === "session" && session ? reader.mark(session) : void 0;
-    if (delivery.envelope.target_kind === "session" && (!session || !mark))
-      throw new Error("Claude session transcript is unavailable.");
+    const confirmationIn = (records) => {
+      for (const record2 of records) {
+        const confirmation = confirmedNotice(record2, session, notice);
+        if (confirmation)
+          return confirmation;
+      }
+      return void 0;
+    };
+    const closed = settled.get(delivery.delivery_id);
+    if (closed === "held")
+      throw new NoticeHeldError();
+    if (closed === "unconfirmed")
+      throw new NoticeNotConfirmedError();
+    const earlier = held.get(delivery.delivery_id);
+    let resent = false;
+    if (earlier) {
+      const later = reader.readNew(session, earlier.mark);
+      if (later === void 0) {
+        if (earlier.resent) {
+          held.delete(delivery.delivery_id);
+          settle2(delivery.delivery_id, "held");
+          throw new NoticeHeldError();
+        }
+        held.delete(delivery.delivery_id);
+        resent = true;
+      } else {
+        const confirmation = confirmationIn(later);
+        if (confirmation) {
+          held.delete(delivery.delivery_id);
+          return { host: "claude-inbox", status: "queued", content: "notice", confirmation };
+        }
+        throw new NoticeHeldError();
+      }
+    }
+    const mark = session ? reader.mark(session) : void 0;
+    if (!session || !mark)
+      throw new TranscriptUnreadableError("transcript_unavailable", "Claude session transcript is unavailable: there is no project folder to look in.");
     const until = Date.now() + timeoutMs;
     await sendNativeNotice(options.socketPath, JSON.stringify(notice), timeoutMs);
-    if (delivery.envelope.target_kind === "session") {
-      while (Date.now() < until) {
-        if (currentSession() !== session)
-          throw new Error("Claude session changed before notice confirmation.");
-        const records = reader.readNew(session, mark);
-        if (!records)
-          throw new Error("Claude session transcript is unavailable.");
-        for (const record2 of records) {
-          const confirmation = confirmedNotice(record2, session, notice);
-          if (confirmation)
-            return { host: "claude-inbox", status: "queued", content: "notice", confirmation };
+    while (Date.now() < until) {
+      if (currentSession() !== session)
+        throw new Error("Claude session changed before notice confirmation.");
+      const records = reader.readNew(session, mark);
+      if (!records)
+        throw new TranscriptUnreadableError("transcript_unavailable", "Claude session transcript is unavailable.");
+      const confirmation = confirmationIn(records);
+      if (confirmation)
+        return { host: "claude-inbox", status: "queued", content: "notice", confirmation };
+      if (records.some((record2) => heldNotice(record2, session))) {
+        held.set(delivery.delivery_id, { mark, resent });
+        if (held.size > limit) {
+          const oldest = held.keys().next().value;
+          held.delete(oldest);
+          settle2(oldest, "held");
         }
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        throw new NoticeHeldError();
       }
-      throw new Error("Claude session notice was not confirmed.");
+      await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    return { host: "claude-inbox", status: "queued", content: "notice" };
+    if (mark.ino === void 0)
+      throw new TranscriptUnreadableError("transcript_not_found", "Claude session transcript was not found, so the notice could not be confirmed.");
+    if (resent)
+      settle2(delivery.delivery_id, "unconfirmed");
+    throw new NoticeNotConfirmedError();
   };
 }
 async function startClaudeInboxPresence(rootUris) {

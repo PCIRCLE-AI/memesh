@@ -4646,7 +4646,7 @@ describe('doctor rows that had no assertion', () => {
 
       expect(check.status).toBe('pass');
       expect(check.informational).toBeFalsy();
-      expect(check.summary).toContain('nine-action message schema');
+      expect(check.summary).toContain('ten-action message schema');
       expect(check.summary).toContain('No live router socket');
     });
 

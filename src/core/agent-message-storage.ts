@@ -316,6 +316,10 @@ function readMessageStates(db: MemeshDatabase, cutoff: string): MessageStateCoun
       JOIN agent_message_deliveries d
         ON d.message_id = r.message_id AND d.project = r.project AND d.recipient = r.recipient
       WHERE r.receipt_kind = 'ack'
+      UNION
+      SELECT delivery_id
+      FROM latest_workflow
+      WHERE is_terminal = 1
     ), delivery_states AS (
       SELECT d.message_id,
         COUNT(*) AS delivery_count,
@@ -395,6 +399,10 @@ function selectPrunableMessages(db: MemeshDatabase, cutoff: string, batchSize: n
       JOIN agent_message_deliveries d
         ON d.message_id = r.message_id AND d.project = r.project AND d.recipient = r.recipient
       WHERE r.receipt_kind = 'ack'
+      UNION
+      SELECT delivery_id
+      FROM latest_workflow
+      WHERE is_terminal = 1
     ), delivery_states AS (
       SELECT d.message_id,
         COUNT(*) AS delivery_count,

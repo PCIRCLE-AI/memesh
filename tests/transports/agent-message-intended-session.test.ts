@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { executeAgentMessageAction } from '../../src/transports/agent-messaging.js';
 import { handleTool } from '../../src/transports/mcp/handlers.js';
 import { MessageSchema } from '../../src/transports/schemas.js';
+import { app } from '../../src/transports/http/server.js';
 import { hostSessionFromEnv } from '../../src/core/host-session.js';
 import { unreadMessageRefsFor } from '../../src/core/agent-message-inbox.js';
 import { getDatabase } from '../../src/db.js';
@@ -312,6 +313,19 @@ describe('Feature: #497 only the intended session can record intake or a disposi
     })).rejects.toMatchObject({ code: 'intended_for_other_session' });
   });
 
+  it('over HTTP the refusal is a 400 with the generic errorCode and the code in the error text', async () => {
+    const sent = sendIntendedPrincipalMessage(PROJECT, PRINCIPAL, SESSION_A, 'k-http-body');
+    const server = app.listen(0, '127.0.0.1');
+    try {
+      await new Promise<void>(resolve => server.once('listening', resolve));
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Missing HTTP port');
+      const response = await fetch(`http://127.0.0.1:${address.port}/v1/message`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(intake(sent.message_id)) });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ success: false, errorCode: 'operation.failed', error: expect.stringContaining('intended_for_other_session') });
+    } finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
+  });
+
   it('the MCP tool takes the caller\'s session from CLAUDE_CODE_SESSION_ID', async () => {
     const sent = sendIntendedPrincipalMessage(PROJECT, PRINCIPAL, SESSION_A, 'k-mcp');
 
@@ -328,9 +342,11 @@ describe('Feature: #497 only the intended session can record intake or a disposi
 });
 
 describe('hostSessionFromEnv', () => {
-  it('reads CLAUDE_CODE_SESSION_ID, trimmed and NFC-normalised, and nothing when unset or blank', () => {
+  it('reads CLAUDE_CODE_SESSION_ID, trimmed, nothing when unset or blank, and nothing for a non-ASCII value', () => {
     expect(hostSessionFromEnv({ CLAUDE_CODE_SESSION_ID: ` ${SESSION_A} ` })).toBe(SESSION_A);
-    expect(hostSessionFromEnv({ CLAUDE_CODE_SESSION_ID: 'Café' })).toBe('Café');
+    // A session id is ASCII (the hosts give UUIDs and thread ids); anything else is not one.
+    expect(hostSessionFromEnv({ CLAUDE_CODE_SESSION_ID: 'Cafe\u0301' })).toBeUndefined();
+    expect(hostSessionFromEnv({ CODEX_THREAD_ID: 'Caf\u00e9' })).toBeUndefined();
     expect(hostSessionFromEnv({ CLAUDE_CODE_SESSION_ID: '  ' })).toBeUndefined();
     expect(hostSessionFromEnv({})).toBeUndefined();
   });

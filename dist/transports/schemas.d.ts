@@ -372,6 +372,11 @@ export declare const MessageSchema: z.ZodDiscriminatedUnion<[z.ZodObject<{
     idempotency_key: z.ZodString;
     action: z.ZodLiteral<"activation">;
 }, z.core.$strict>, z.ZodObject<{
+    action: z.ZodLiteral<"status">;
+    project: z.ZodPipe<z.ZodString, z.ZodTransform<string, string>>;
+    recipient: z.ZodPipe<z.ZodString, z.ZodTransform<string, string>>;
+    message_id: z.ZodString;
+}, z.core.$strict>, z.ZodObject<{
     action: z.ZodLiteral<"receipts">;
     project: z.ZodPipe<z.ZodString, z.ZodTransform<string, string>>;
     recipient: z.ZodPipe<z.ZodString, z.ZodTransform<string, string>>;

@@ -91,7 +91,7 @@ describe.skipIf(process.platform === 'win32')('Claude registry file protections'
   it('reads a well-formed registry file', () => {
     const t = setup(); try { expect(t.read()).toMatchObject({ pid, sessionId: 'sess-1' }); } finally { t.done(); }
   });
-  it.each([0o666, 0o664, 0o646, 0o622])('refuses a file that others can write to (mode %o)', mode => {
+  it.each([0o666, 0o664, 0o646, 0o622].map(mode => [mode.toString(8), mode] as const))('refuses a file that others can write to (mode 0o%s)', (_label, mode) => {
     const t = setup({ pid, ...fields }, mode); try { expect(t.read()).toBeUndefined(); } finally { t.done(); }
   });
   it('refuses a file owned by someone else', () => {
@@ -145,7 +145,7 @@ describe.skipIf(process.platform === 'win32')('Claude registry file protections'
   it('refuses an opened file that is not a regular file', () => {
     const t = setup();
     try {
-      // Mocked: with a real pipe or directory the read itself ends up empty or failing, which hides this check.
+      // This state can only be built with a mock: a real pipe or directory makes the read itself come back empty or fail before this check is reached.
       const real = fs.statSync(t.file);
       vi.spyOn(fs, 'fstatSync').mockReturnValue({ isFile: () => false, dev: real.dev, ino: real.ino, size: real.size, uid: real.uid, mode: real.mode } as fs.Stats);
       expect(t.read()).toBeUndefined();
@@ -215,6 +215,26 @@ describe.skipIf(process.platform === 'win32')('Claude registry file protections'
         expect(write).not.toHaveBeenCalled();
       } finally { t.done(); fs.rmSync(empty, { recursive: true, force: true }); }
     });
+    it('does not ask a hung or failing ps again for every read of the same session', () => {
+      const child = liveProcess();
+      const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'bad-ps-'));
+      const counter = path.join(bin, 'calls');
+      fs.writeFileSync(path.join(bin, 'ps'), `#!/bin/sh\necho x >> '${counter}'\nexit 2\n`, { mode: 0o755 });
+      const t = registryFor(child, psStart(child));
+      try {
+        vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+        withEnv({ PATH: bin }, () => { for (let i = 0; i < 4; i++) expect(t.read()).toMatchObject({ sessionId: 'sess-1' }); });
+        expect(fs.readFileSync(counter, 'utf8').trim().split('\n')).toHaveLength(1);
+      } finally { t.done(); fs.rmSync(bin, { recursive: true, force: true }); }
+    });
+    it('treats a ps that succeeds but prints nothing as "no such process" and refuses the registry file', () => {
+      const child = liveProcess();
+      const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'silent-ps-'));
+      fs.writeFileSync(path.join(bin, 'ps'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      const t = registryFor(child, psStart(child));
+      try { withEnv({ PATH: bin }, () => expect(t.read()).toBeUndefined()); }
+      finally { t.done(); fs.rmSync(bin, { recursive: true, force: true }); }
+    });
     it('says so, once, when ps cannot tell, and uses the registry without that check instead of calling it stale', () => {
       const child = liveProcess(); const real = psStart(child);
       const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'no-ps-'));
@@ -228,8 +248,10 @@ describe.skipIf(process.platform === 'win32')('Claude registry file protections'
         const lines = write.mock.calls.map(call => String(call[0])).filter(line => line.includes(`start time of process ${child}`));
         expect(lines).toHaveLength(1);
         expect(lines[0]).toMatch(/without that check/);
-        // Once ps works, the check applies.
-        expect(t.read()).toMatchObject({ sessionId: 'sess-1' });
+        // After the retry window, with ps working again, the check applies: a wrong start time is refused.
+        vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 60_000);
+        fs.writeFileSync(t.file, JSON.stringify({ pid: child, ...fields, procStart: 'Mon Jan  1 00:00:00 2001' }));
+        expect(t.read()).toBeUndefined();
       } finally { t.done(); fs.rmSync(empty, { recursive: true, force: true }); }
     });
   });

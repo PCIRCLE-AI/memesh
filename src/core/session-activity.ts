@@ -59,6 +59,9 @@ export const defaultClaudeDir = () => process.env.CLAUDE_CONFIG_DIR || path.join
 
 const startByPid = new Map<number, string>();
 const unreadableLogged = new Set<number>();
+/** When `ps` last failed for a pid; it is not asked again until then, so a hung `ps` costs one wait, not one per read. */
+const unreadableUntil = new Map<number, number>();
+const UNREADABLE_RETRY_MS = 30_000;
 
 /**
  * When `pid` started, in the form Claude Code writes as `procStart` (`ps`
@@ -73,6 +76,8 @@ const unreadableLogged = new Set<number>();
 function processStart(pid: number): string | null | undefined {
   const known = startByPid.get(pid);
   if (known !== undefined) return known;
+  const retryAt = unreadableUntil.get(pid);
+  if (retryAt !== undefined && Date.now() < retryAt) return undefined;
   try {
     const text = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
       encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, TZ: 'UTC', LC_ALL: 'C' },
@@ -84,6 +89,8 @@ function processStart(pid: number): string | null | undefined {
   } catch (error) {
     // `ps` ran and found no such process: exit status 1.
     if ((error as { status?: unknown }).status === 1) return null;
+    if (unreadableUntil.size >= 64) unreadableUntil.clear();
+    unreadableUntil.set(pid, Date.now() + UNREADABLE_RETRY_MS);
     if (!unreadableLogged.has(pid)) {
       unreadableLogged.add(pid);
       try { process.stderr.write(`[memesh] could not read the start time of process ${pid} (${(error as Error).message.split('\n')[0]}); its Claude session registry file is used without that check\n`); } catch { /* stderr gone */ }

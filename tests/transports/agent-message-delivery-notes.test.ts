@@ -53,7 +53,46 @@ describe('delivery explanations', () => {
     // And a live session of another principal in this project does not count either.
     registerAgentSession(project, 'carol', { sessionId: 'dededede-dede-4ede-8ede-dededededede', adapterKind: 'claude-channel' });
     const foreign = (await send({ idempotency_key: 'other-principal-intended', intended_session: 'dededede-dede-4ede-8ede-dededededede' })).delivery_note;
-    expect(foreign).not.toMatch(/connected now\.$/);
+    expect(foreign).toContain("is a session of carol; bob's notices do not reach it");
+    expect(foreign).not.toContain('is connected now');
+  });
+  it('looks up the intended session only in the project of the send', async () => {
+    registerAgentSession('some-other-project', 'carol', { sessionId: 'abababab-abab-4bab-8bab-abababababab', adapterKind: 'claude-channel', disconnected: true });
+    const note = (await send({ idempotency_key: 'registered-elsewhere', intended_session: 'abababab-abab-4bab-8bab-abababababab' })).delivery_note;
+    expect(note).toContain('has not registered in this project');
+    expect(note).not.toContain('is a session of carol');
+  });
+  it('judges whether a session is connected by its canonical principal name and without regard to the case of a session id', async () => {
+    registerAgentSession(project, 'jose\u0301', { sessionId: 'ababab00-abab-4bab-8bab-abababababab', adapterKind: 'claude-channel' });
+    const toJose = (await send({ recipient: 'jos\u00e9', idempotency_key: 'nfd-live' })).delivery_note;
+    expect(toJose).toContain('A session of josé is connected now');
+    expect(toJose).not.toMatch(/No session/);
+    const upper = (await send({ recipient: 'jos\u00e9', idempotency_key: 'upper-intended', intended_session: 'ABABAB00-ABAB-4BAB-8BAB-ABABABABABAB' })).delivery_note;
+    expect(upper).toContain('is connected now');
+  });
+
+  it('knows an offline registered session whatever the case of its id on either side, and does not call it unregistered', async () => {
+    registerAgentSession(project, 'bob', { sessionId: 'ABCDEF00-ABCD-4BCD-8BCD-ABCDEFABCDEF', adapterKind: 'claude-channel', disconnected: true });
+    const lower = (await send({ idempotency_key: 'offline-upper-registered', intended_session: 'abcdef00-abcd-4bcd-8bcd-abcdefabcdef' })).delivery_note;
+    expect(lower).toContain('is not connected now. Only it can take this message in');
+    expect(lower).not.toContain('has not registered');
+    registerAgentSession(project, 'bob', { sessionId: 'abcdef11-abcd-4bcd-8bcd-abcdefabcdef', adapterKind: 'claude-channel', disconnected: true });
+    const upper = (await send({ idempotency_key: 'offline-lower-registered', intended_session: 'ABCDEF11-ABCD-4BCD-8BCD-ABCDEFABCDEF' })).delivery_note;
+    expect(upper).toContain('is not connected now. Only it can take this message in');
+    expect(upper).not.toContain('has not registered');
+  });
+  it('reads a session registered in capitals as connected when the sender writes the id the same way', async () => {
+    registerAgentSession(project, 'bob', { sessionId: 'ABCDEF44-ABCD-4BCD-8BCD-ABCDEFABCDEF', adapterKind: 'claude-channel' });
+    const note = (await send({ idempotency_key: 'live-capitals', intended_session: 'ABCDEF44-ABCD-4BCD-8BCD-ABCDEFABCDEF' })).delivery_note;
+    expect(note).toContain('is connected now');
+    expect(note).not.toContain('is not connected now');
+  });
+  it('compares the principal of an offline registered session in canonical form, so an NFD registration is not another principal', async () => {
+    const id = 'abcdef22-abcd-4bcd-8bcd-abcdefabcdef';
+    registerAgentSession(project, 'jose\u0301', { sessionId: id, adapterKind: 'claude-channel', disconnected: true });
+    const note = (await send({ recipient: 'jos\u00e9', idempotency_key: 'offline-nfd', intended_session: id })).delivery_note;
+    expect(note).toContain('is not connected now. Only it can take this message in');
+    expect(note).not.toContain('is a session of');
   });
   it('does not say a mistyped, unregistered or foreign intended session will take the message in', async () => {
     const typo = (await send({ idempotency_key: 'typo', intended_session: 'cccccccc-cccc-4ccc-8ccc-cccccccccc00' })).delivery_note;
@@ -61,7 +100,7 @@ describe('delivery explanations', () => {
     expect(typo).not.toMatch(/next time it runs|is connected now/i);
     registerAgentSession(project, 'carol', { sessionId: 'dededede-dede-4ede-8ede-dededededede', adapterKind: 'claude-channel' });
     const foreign = (await send({ idempotency_key: 'foreign', intended_session: 'dededede-dede-4ede-8ede-dededededede' })).delivery_note;
-    expect(foreign).toContain('is registered under carol, not bob, so it will not take this message in');
+    expect(foreign).toContain('is a session of carol; bob\'s notices do not reach it');
     expect(foreign).not.toMatch(/next time it runs|is connected now/i);
   });
   it('tells a send by handle to an offline session the same as one by intended_session', async () => {
@@ -71,7 +110,7 @@ describe('delivery explanations', () => {
     expect(byHandle.delivery_note).toContain(`Session ${gone} is not connected now. Only it can take this message in, the next time it runs; no other session of bob will.`);
     expect(byHandle.delivery_note).not.toMatch(/A session of bob is connected now/i);
     const live = await executeAgentMessageAction(getDatabase(), { action: 'send', project, sender: 'alice', recipient_handle: 'note-project-claude-bbbb', idempotency_key: 'by-handle-live', payload: 'hello' }, context, refused) as Result;
-    expect(live.delivery_note).toContain(`Session ${session} is connected now.`);
+    expect(live.delivery_note).toContain(`Session ${session} is connected now; use status to see whether its notice reached the conversation.`);
   });
   it('never promises delivery when a session next connects, in any kind of note', async () => {
     const notes: string[] = [];
@@ -112,7 +151,7 @@ describe('delivery explanations', () => {
     expect(offline).toContain(`Session ${gone} is not connected now. Only it can take this message in, the next time it runs; no other session of bob will.`);
     expect(offline).not.toMatch(/A session of bob is connected now/i);
     const online = (await send({ idempotency_key: 'to-live', intended_session: live })).delivery_note;
-    expect(online).toContain(`Session ${live} is connected now.`);
+    expect(online).toContain(`Session ${live} is connected now; use status to see whether its notice reached the conversation.`);
     expect(online).not.toMatch(/not connected|no other session/i);
   });
   it('finds the intended session through its /clear aliases', async () => {
@@ -120,7 +159,7 @@ describe('delivery explanations', () => {
     const cleared = '99999999-9999-4999-8999-999999999999';
     getDatabase().prepare('INSERT INTO agent_session_aliases (session_id, previous_session_id, created_at_ms) VALUES (?, ?, ?)').run(cleared, original, Date.now());
     const note = (await send({ idempotency_key: 'to-cleared', intended_session: cleared })).delivery_note;
-    expect(note).toContain(`Session ${cleared} is connected now.`);
+    expect(note).toContain(`Session ${cleared} is connected now; use status to see whether its notice reached the conversation.`);
   });
   it('reports exact adapter acceptance without claiming model read or acceptance', async () => {
     registerAgentSession(project, 'bob', { sessionId: session, adapterKind: 'claude-channel' });

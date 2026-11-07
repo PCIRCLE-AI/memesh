@@ -1,8 +1,8 @@
 export interface ClaudeTranscriptMark {
     session: string;
     file: string;
-    dev: number;
-    ino: number;
+    dev?: number;
+    ino?: number;
     offset: number;
     pending: Buffer;
     discardPartial: boolean;

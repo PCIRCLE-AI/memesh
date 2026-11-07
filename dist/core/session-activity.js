@@ -75,10 +75,15 @@ function repoLabel(workspace) {
 export const defaultClaudeDir = () => process.env.CLAUDE_CONFIG_DIR || path.join(homeDir(), '.claude');
 const startByPid = new Map();
 const unreadableLogged = new Set();
+const unreadableUntil = new Map();
+const UNREADABLE_RETRY_MS = 30_000;
 function processStart(pid) {
     const known = startByPid.get(pid);
     if (known !== undefined)
         return known;
+    const retryAt = unreadableUntil.get(pid);
+    if (retryAt !== undefined && Date.now() < retryAt)
+        return undefined;
     try {
         const text = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
             encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, TZ: 'UTC', LC_ALL: 'C' },
@@ -93,6 +98,9 @@ function processStart(pid) {
     catch (error) {
         if (error.status === 1)
             return null;
+        if (unreadableUntil.size >= 64)
+            unreadableUntil.clear();
+        unreadableUntil.set(pid, Date.now() + UNREADABLE_RETRY_MS);
         if (!unreadableLogged.has(pid)) {
             unreadableLogged.add(pid);
             try {

@@ -330,6 +330,12 @@ export const MessageSchema = z.discriminatedUnion('action', [
         detail: z.string().trim().max(1000).optional(),
     }).strict(),
     z.object({
+        action: z.literal('status'),
+        project: messageProject,
+        recipient: messageRecipient,
+        message_id: messageId,
+    }).strict(),
+    z.object({
         action: z.literal('receipts'),
         project: messageProject,
         recipient: messageRecipient,

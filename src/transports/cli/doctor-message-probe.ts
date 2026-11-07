@@ -25,7 +25,7 @@ try {
   const tool = (await client.listTools()).tools.find((candidate) => candidate.name === 'message');
   assert.ok(tool, 'installed MCP did not advertise message');
   const actions = (tool.inputSchema?.properties?.action as { enum?: unknown } | undefined)?.enum;
-  assert.deepEqual(actions, ['send', 'poll', 'discover', 'fetch', 'intake', 'ack', 'disposition', 'activation', 'receipts']);
+  assert.deepEqual(actions, ['send', 'poll', 'discover', 'fetch', 'intake', 'ack', 'disposition', 'activation', 'receipts', 'status']);
 } finally {
   await client.close();
 }

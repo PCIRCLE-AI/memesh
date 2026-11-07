@@ -12,7 +12,7 @@
 //     `session_id` and `codex-session.ts` registers as `session_instance_id`.
 //     So a Codex session records intake for such a message with the CLI.
 
-import { agentScopeIdRejection, canonicalAgentScopeId } from './agent-scope-id.js';
+import { canonicalAgentScopeId, sessionIdRejection } from './agent-scope-id.js';
 
 /**
  * The session a caller of the message tool (MCP or CLI) is running in:
@@ -37,7 +37,7 @@ function sessionFromVariable(env: NodeJS.ProcessEnv, name: string): string | und
   const raw = env[name]?.trim();
   if (!raw) return undefined;
   const session = canonicalAgentScopeId(raw);
-  if (agentScopeIdRejection(name, session) === null) return session;
+  if (sessionIdRejection(name, session) === null) return session;
   // Set but unusable: say so, or "no session" reads exactly like "not set".
   // The variable only, never its value.
   try {

@@ -36,17 +36,17 @@ function intendedSessionFilter(db, session) {
         return { sql: '', params: [] };
     if (session === undefined)
         return { sql: 'AND d.intended_session IS NULL', params: [] };
-    const ids = [...sessionAliasChain(db, session)];
+    const ids = [...sessionAliasChain(db, session)].map((id) => id.toLowerCase());
     return {
-        sql: `AND (d.intended_session IS NULL OR d.intended_session IN (${ids.map(() => '?').join(', ')}))`,
+        sql: `AND (d.intended_session IS NULL OR lower(d.intended_session) IN (${ids.map(() => '?').join(', ')}))`,
         params: ids,
     };
 }
 export function sessionAliasChain(db, session) {
     const chain = new Set([session]);
     try {
-        const previous = db.prepare('SELECT previous_session_id AS id FROM agent_session_aliases WHERE session_id = ?');
-        const next = db.prepare('SELECT session_id AS id FROM agent_session_aliases WHERE previous_session_id = ?');
+        const previous = db.prepare('SELECT previous_session_id AS id FROM agent_session_aliases WHERE lower(session_id) = lower(?)');
+        const next = db.prepare('SELECT session_id AS id FROM agent_session_aliases WHERE lower(previous_session_id) = lower(?)');
         for (const step of [previous, next]) {
             let current = session;
             for (;;) {

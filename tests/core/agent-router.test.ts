@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { closeDatabase, openDatabase } from '../../src/db.js';
-import { sendAgentMessage } from '../../src/core/agent-messaging.js';
+import { recordAgentReceipt, sendAgentMessage } from '../../src/core/agent-messaging.js';
 import {
   AGENT_ROUTER_PROTOCOL_VERSION,
   AgentRouter,
@@ -563,6 +563,45 @@ describe.runIf(process.platform !== 'win32').sequential('AgentRouter real SQLite
     ).get(current.delivery_id)).toEqual({ count: 1 }));
   });
 
+  it('does not hand a host a stored message the agent already took in, acknowledged or answered, each time it registers', async () => {
+    const { db, socketPath, token } = setup();
+    await startRouter(db, socketPath, token);
+    const first = await RouterHostClient.connect({ socketPath, token, project: 'project-a', principal: 'principal-a', session: 'session-first' });
+    first.close();
+    await vi.waitFor(() => expect(db.prepare('SELECT disconnected_at FROM agent_session_connections WHERE connection_id = ?').get(first.connectionId)).toMatchObject({ disconnected_at: expect.any(String) }));
+    const send = (key: string) => sendAgentMessage(db, { project: 'project-a', sender: 'sender-a', recipient: 'principal-a', idempotency_key: key, payload: { text: key }, content_type: 'application/json' });
+    const handled = ['intake', 'ack', 'disposition'].map((kind) => {
+      const message = send(`handled-${kind}`);
+      recordAgentReceipt(db, { project: 'project-a', recipient: 'principal-a', message_id: message.message_id, actor: 'principal-a', idempotency_key: `r-${kind}`, receipt_kind: kind,
+        ...(kind === 'intake' ? { intake_state: 'ingested' } : {}), ...(kind === 'disposition' ? { disposition: 'completed' } : {}) } as Parameters<typeof recordAgentReceipt>[1]);
+      return message;
+    });
+    const waiting = send('still-waiting');
+    const host = await RouterHostClient.connect({ socketPath, token, project: 'project-a', principal: 'principal-a', session: 'session-resend' });
+    await vi.waitFor(() => expect(host.deliveries.map((delivery) => String(delivery.delivery_id))).toEqual([waiting.delivery_id]));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(host.deliveries).toHaveLength(1);
+    // None of the three handled messages was even tried: no dispatch attempt exists for them.
+    const tried = db.prepare(`SELECT COUNT(*) AS n FROM agent_dispatch_attempts WHERE delivery_id IN (${handled.map(() => '?').join(', ')})`).get(...handled.map((message) => message.delivery_id)) as { n: number };
+    expect(tried.n).toBe(0);
+    const triedWaiting = db.prepare('SELECT COUNT(*) AS n FROM agent_dispatch_attempts WHERE delivery_id = ?').get(waiting.delivery_id) as { n: number };
+    expect(triedWaiting.n).toBeGreaterThanOrEqual(1);
+  });
+
+  it('registers a principal written in decomposed Unicode under its composed (NFC) name, so a message to that name reaches it', async () => {
+    const { db, socketPath, token } = setup();
+    await startRouter(db, socketPath, token);
+    const host = await RouterHostClient.connect({
+      socketPath, token, project: 'project-a', principal: 'jose\u0301', session: 'session-nfd',
+    });
+    expect(db.prepare('SELECT principal_id FROM agent_session_instances WHERE session_instance_id = ?').get('session-nfd')).toEqual({ principal_id: 'jos\u00e9' });
+    sendAgentMessage(db, {
+      project: 'project-a', sender: 'sender-a', recipient: 'jos\u00e9',
+      idempotency_key: 'to-jose', payload: { text: 'hola' }, content_type: 'application/json',
+    }, { notifier: createAgentRouterNotifier(socketPath) });
+    await vi.waitFor(() => expect(host.deliveries).toHaveLength(1));
+  });
+
   it('sends the full untrusted envelope to one native adapter with a live companion socket', async () => {
     const { db, socketPath, token } = setup();
     const nativeDispatch = vi.fn<(
@@ -742,6 +781,105 @@ describe.runIf(process.platform !== 'win32').sequential('AgentRouter real SQLite
     });
     await vi.waitFor(() => expect(a.deliveries).toHaveLength(1));
     expect(a.deliveries[0].delivery_id).toBe(meantForA.delivery_id);
+  });
+
+  it('pushes a delivery whose intended session was written in capitals to the session registered in lower case, and to no other', async () => {
+    const { db, socketPath, token } = setup();
+    await startClaudeChannelRouter(db, socketPath, token);
+    const a = await RouterHostClient.connect({ socketPath, token, project: 'project-a', principal: 'principal-a', session: 'session-a', adapterKind: 'claude-channel' });
+    const b = await RouterHostClient.connect({ socketPath, token, project: 'project-a', principal: 'principal-a', session: 'session-b', adapterKind: 'claude-channel' });
+    const sent = sendAgentMessage(db, {
+      project: 'project-a', sender: 'sender-a', recipient: 'principal-a', intended_session: 'SESSION-A',
+      idempotency_key: 'meant-for-capital-a', payload: { text: 'for A' }, content_type: 'application/json',
+    }, { notifier: createAgentRouterNotifier(socketPath) });
+    // Stored as the session registered it, so every later match is exact.
+    expect(db.prepare('SELECT intended_session FROM agent_message_deliveries WHERE delivery_id = ?').get(sent.delivery_id)).toEqual({ intended_session: 'session-a' });
+    await vi.waitFor(() => expect(a.deliveries).toHaveLength(1));
+    expect(a.deliveries[0].delivery_id).toBe(sent.delivery_id);
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(b.deliveries).toHaveLength(0);
+  });
+
+  it('hands a stored delivery whose intended session is in capitals (written before ids were normalised) to the session that connects in lower case', async () => {
+    const { db, socketPath, token } = setup();
+    await startClaudeChannelRouter(db, socketPath, token);
+    const b = await RouterHostClient.connect({ socketPath, token, project: 'project-a', principal: 'principal-a', session: 'session-b', adapterKind: 'claude-channel' });
+    const sent = sendAgentMessage(db, {
+      project: 'project-a', sender: 'sender-a', recipient: 'principal-a', intended_session: 'session-a',
+      idempotency_key: 'legacy-capital', payload: { text: 'for A' }, content_type: 'application/json',
+    }, { notifier: createAgentRouterNotifier(socketPath) });
+    db.prepare('UPDATE agent_message_deliveries SET intended_session = ? WHERE delivery_id = ?').run('SESSION-A', sent.delivery_id);
+    const bAgain = await RouterHostClient.connect({ socketPath, token, project: 'project-a', principal: 'principal-a', session: 'session-b', adapterKind: 'claude-channel' });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(b.deliveries).toHaveLength(0);
+    expect(bAgain.deliveries).toHaveLength(0);
+    const a = await RouterHostClient.connect({ socketPath, token, project: 'project-a', principal: 'principal-a', session: 'session-a', adapterKind: 'claude-channel' });
+    await vi.waitFor(() => expect(a.deliveries).toHaveLength(1));
+    expect(a.deliveries[0].delivery_id).toBe(sent.delivery_id);
+  });
+
+  it('pushes a stored delivery whose intended session is in capitals when the router is told to deliver it, to the connected session in lower case only', async () => {
+    const { db, socketPath, token } = setup();
+    await startClaudeChannelRouter(db, socketPath, token);
+    const a = await RouterHostClient.connect({ socketPath, token, project: 'project-a', principal: 'principal-a', session: 'session-a', adapterKind: 'claude-channel' });
+    const b = await RouterHostClient.connect({ socketPath, token, project: 'project-a', principal: 'principal-a', session: 'session-b', adapterKind: 'claude-channel' });
+    const sent = sendAgentMessage(db, {
+      project: 'project-a', sender: 'sender-a', recipient: 'principal-a', intended_session: 'session-a',
+      idempotency_key: 'legacy-capital-notify', payload: { text: 'for A' }, content_type: 'application/json',
+    });
+    db.prepare('UPDATE agent_message_deliveries SET intended_session = ? WHERE delivery_id = ?').run('SESSION-A', sent.delivery_id);
+    await sendAgentRouterRequest(socketPath, {
+      version: AGENT_ROUTER_PROTOCOL_VERSION, type: 'notify', request_id: randomUUID(),
+      project: 'project-a', delivery_id: sent.delivery_id, hops: 0,
+    });
+    await vi.waitFor(() => expect(a.deliveries).toHaveLength(1));
+    expect(a.deliveries[0].delivery_id).toBe(sent.delivery_id);
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(b.deliveries).toHaveLength(0);
+  });
+
+  it('gives a delivery meant for session-t to the session registered exactly so, not to its twin that differs only in case', async () => {
+    const { db, socketPath, token } = setup();
+    await startClaudeChannelRouter(db, socketPath, token);
+    const lower = await RouterHostClient.connect({ socketPath, token, project: 'project-a', principal: 'principal-a', session: 'session-t', adapterKind: 'claude-channel' });
+    const upper = await RouterHostClient.connect({ socketPath, token, project: 'project-a', principal: 'principal-a', session: 'SESSION-T', adapterKind: 'claude-channel' });
+    const sent = sendAgentMessage(db, {
+      project: 'project-a', sender: 'sender-a', recipient: 'principal-a', intended_session: 'session-t',
+      idempotency_key: 'twin-push', payload: { text: 'for session-t' }, content_type: 'application/json',
+    }, { notifier: createAgentRouterNotifier(socketPath) });
+    await vi.waitFor(() => expect(lower.deliveries).toHaveLength(1));
+    expect(lower.deliveries[0].delivery_id).toBe(sent.delivery_id);
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(upper.deliveries).toHaveLength(0);
+  });
+
+  it('refuses to register a session whose id has a non-ASCII character', async () => {
+    const { db, socketPath, token } = setup();
+    await startClaudeChannelRouter(db, socketPath, token);
+    const socket = net.createConnection(socketPath);
+    await new Promise<void>((resolve, reject) => { socket.once('connect', resolve); socket.once('error', reject); });
+    let buffered = '';
+    const responses: Frame[] = [];
+    socket.on('data', (chunk) => {
+      buffered += chunk.toString();
+      for (let at = buffered.indexOf('\n'); at >= 0; at = buffered.indexOf('\n')) {
+        responses.push(JSON.parse(buffered.slice(0, at)) as Frame);
+        buffered = buffered.slice(at + 1);
+      }
+    });
+    const requestId = randomUUID();
+    socket.write(JSON.stringify({
+      version: AGENT_ROUTER_PROTOCOL_VERSION, type: 'register', request_id: requestId, project: 'project-a',
+      principal_id: 'principal-a', session_instance_id: 'sess\u00c9-1', adapter_kind: 'claude-channel', auth_token: token, hops: 0,
+    }) + '\n');
+    try {
+      // The frame is refused while it is parsed, before its request id is read, so the answer carries none.
+      await vi.waitFor(() => expect(responses.find((frame) => frame.ok === false)).toMatchObject({
+        request_id: '',
+        ok: false, error: { code: 'invalid_field', message: expect.stringContaining('only ASCII') },
+      }));
+      expect(db.prepare('SELECT COUNT(*) AS n FROM agent_session_instances').get()).toEqual({ n: 0 });
+    } finally { socket.destroy(); }
   });
 
   it('never reroutes or later replays an exact-session delivery and drains principal pending after router restart', async () => {

@@ -237,7 +237,7 @@ export function exportOpenAITools() {
                     properties: {
                         action: {
                             type: 'string',
-                            enum: ['send', 'poll', 'discover', 'fetch', 'intake', 'ack', 'disposition', 'activation', 'receipts'],
+                            enum: ['send', 'poll', 'discover', 'fetch', 'intake', 'ack', 'disposition', 'activation', 'receipts', 'status'],
                             description: 'Message lifecycle or live-directory action; required fields depend on the selected action.',
                         },
                         project: { type: 'string', description: 'Local project scope. A stable identifier, never a filesystem path; compared exactly, after Unicode NFC normalisation.' },
