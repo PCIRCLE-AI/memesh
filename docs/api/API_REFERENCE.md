@@ -387,6 +387,8 @@ neither.
 **The HTTP API (`POST /v1/recall`) is NOT capped**, for word and ID retrieval. It returns `file:*`
 tags and full observation text; the cap protects only agent-context responses.
 
+**Relations in results stay inside the project searched.** A recall limited to one project (the bound project, `project`, or a `project:<name>` `tag`) shows only relations whose far end is in that project's default scope: that project's memories, memories with no project, and global ones. A relation to another project's memory is left out and is indistinguishable from one that does not exist. Every recall except `cross_project` also leaves out a relation to an archived memory unless `include_archived` is set, and a relation to a memory outside the requested `namespace`. The exception is a `supersedes` link: its archived far end is kept (in the same project scope), so a reader of the new memory sees what it replaced. `cross_project` is the explicit way to see relations into other projects, and it narrows nothing. A `tag` that is not a project tag, and a CLI or HTTP recall with no selector, search every project, so they do not narrow by project, but the archived and namespace rules above still apply. The `GET /v1/entities` routes and `export` return relations as stored.
+
 **Conflict detection**: When any pair of returned entities have a `contradicts` relation, the object gains a `conflicts` array beside `entities`. Nothing creates that relation for you — a caller states it via `remember`'s `relations` (see [remember](#remember)), so an absent `conflicts` means "none stated between these results", not "checked and clean":
 
 ```json

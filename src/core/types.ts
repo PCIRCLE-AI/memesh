@@ -145,6 +145,13 @@ export interface SearchOptions {
    * Internal, not a public parameter. Ignored when `tag` is given.
    */
   projectScope?: string | null;
+  /**
+   * Narrow the relations a result shows, as recall does: a far end in another
+   * project is left out (when the search is limited to a project), an archived
+   * one unless `includeArchived` or the link is `supersedes`, and one outside
+   * `namespace`. Set by recall, the surface an agent reads.
+   */
+  scopeRelations?: boolean;
   limit?: number;
   includeArchived?: boolean;
   namespace?: string;  // filter by namespace; omit to search all namespaces

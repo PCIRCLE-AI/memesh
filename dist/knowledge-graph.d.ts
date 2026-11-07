@@ -5,6 +5,11 @@ export interface SearchResult {
     entities: Entity[];
     fallback: 'index_out_of_date' | null;
 }
+export interface RelationView {
+    scope?: string | null;
+    namespace?: string;
+    includeArchived?: boolean;
+}
 export declare class KnowledgeGraph {
     private db;
     constructor(db: MemeshDatabase);
@@ -29,16 +34,16 @@ export declare class KnowledgeGraph {
         namespace?: string;
         tag?: string;
         projectScope?: string | null;
-        filterRelations?: boolean;
-        relationIncludeArchived?: boolean;
+        relations?: RelationView;
     }): Entity[];
     getRelations(entityName: string): Relation[];
     search(query?: string, opts?: SearchOptions): Entity[];
+    private relationViewFor;
     searchWithFacts(query?: string, opts?: SearchOptions): SearchResult;
     private scanActiveRows;
     trackAccess(entityIds: number[]): void;
     findConflicts(entityNames: string[]): string[];
-    listRecent(limit?: number, includeArchived?: boolean, namespace?: string, countAsAccess?: boolean, offset?: number): Entity[];
+    listRecent(limit?: number, includeArchived?: boolean, namespace?: string, countAsAccess?: boolean, offset?: number, relations?: RelationView): Entity[];
     listByType(type: string, limit?: number, includeArchived?: boolean, namespace?: string, offset?: number): Entity[];
     listByProject(project: string, limit?: number, includeArchived?: boolean, namespace?: string, offset?: number): Entity[];
     private listRecentInScope;

@@ -8,6 +8,7 @@ are not part of a published npm release yet.
 
 ### Fixed
 
+- `recall` limited to one project no longer shows relations to another project's memories, which exposed that memory's name and the relation type (#634). This covers recall by word, by tag and with no query, over MCP, the CLI and HTTP. A relation to an archived memory is now shown only with `include_archived`, except a `supersedes` link, whose archived far end stays visible so a reader knows what the memory replaced: in the same project for a recall limited to one project, and in any project for a recall with no project selector, which already spans projects. A relation to a memory outside the requested `namespace` is left out, as recall by ID already did. `cross_project` still shows every relation.
 - Codex sessions now produce session insights like Claude sessions do, built from Codex's own record of each command and file change: tool calls, files changed, commands run and failed commands. A failure that Codex printed but did not record as a command is reported too, by a best-effort match that can occasionally miss a failure or count one twice. Previously every Codex session was skipped as too little activity. Files written under the temporary folders (`/tmp`, `/private/tmp`, `/var/folders`) are not remembered as edited files: not those Codex changes with its patch tool, and not shell writes in Codex or Claude sessions. A session insight lists at most 30 edited file names and counts the rest.
 
 ## [4.13.0] — 2026-11-02
