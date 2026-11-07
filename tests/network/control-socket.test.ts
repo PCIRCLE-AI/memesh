@@ -349,6 +349,48 @@ describe.skipIf(process.platform === 'win32')('the bridge control socket', () =>
       fs.rmSync(lock);
     }, 20_000);
 
+    it('a stale lock replaced by another starter while it is judged is not deleted (through the real start path)', async () => {
+      const lock = `${controlPath(ctx.dataDir)}.startup.lock`;
+      fs.writeFileSync(lock, `${2 ** 30}\n`, { mode: 0o600 });
+      const realRead = fs.readFileSync;
+      let swapped = false;
+      // As this starter reads the dead pid, another starter takes the lock over and writes its own, live.
+      const read = vi.spyOn(fs, 'readFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, options?: unknown) => {
+        const result = realRead(file, options as BufferEncoding);
+        if (file === lock && !swapped) {
+          swapped = true;
+          fs.writeFileSync(`${lock}.fresh`, `${process.pid}\n`, { mode: 0o600 });
+          fs.renameSync(`${lock}.fresh`, lock);
+        }
+        return result;
+      }) as typeof fs.readFileSync);
+      try {
+        await expect(holdControlSocket(ctx.dataDir, handlers)).rejects.toThrowError(/is starting/);
+      } finally {
+        read.mockRestore();
+      }
+      expect(swapped).toBe(true);
+      // The fresh lock survived, so this starter never got in.
+      expect(fs.readFileSync(lock, 'utf8')).toBe(`${process.pid}\n`);
+      expect(fs.existsSync(controlPath(ctx.dataDir))).toBe(false);
+      fs.rmSync(lock);
+    }, 20_000);
+
+    it('a read error on the socket path is "unreadable", not "lost"', async () => {
+      const held = await holdControlSocket(ctx.dataDir, handlers);
+      if (held.kind !== 'held') throw new Error(held.kind);
+      const folder = path.dirname(controlPath(ctx.dataDir));
+      fs.chmodSync(folder, 0o000);
+      try {
+        expect(held.ownership()).toBe('unreadable');
+        expect(held.stillOurs()).toBe(true);
+      } finally {
+        fs.chmodSync(folder, 0o700);
+      }
+      expect(held.ownership()).toBe('ours');
+      held.close();
+    });
+
     it('taking over a stale startup lock leaves a lock another starter just took', () => {
       const lock = `${controlPath(ctx.dataDir)}.startup.lock`;
       fs.writeFileSync(lock, '111\n');

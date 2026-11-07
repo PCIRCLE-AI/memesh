@@ -28,6 +28,8 @@ const CLOSE_DEADLINE_MS = 5_000;
 export const BRIDGE_BUSY_TIMEOUT_MS = 3_000;
 const HEARTBEAT_MS = 1_000;
 const STATUS_REFRESH_MS = 30_000;
+// How long the control socket may stay unreadable (not gone) before the bridge gives up.
+const SOCKET_UNREADABLE_LIMIT_MS = 30_000;
 const LOG_MAX_BYTES = 1024 * 1024;
 const MAX_CONCURRENT_CONNECTIONS = 32;
 const MEMBER_STUB_MAX_BYTES = 1024;
@@ -37,8 +39,16 @@ function appendLog(dataDir: string, event: string, detail: Record<string, unknow
   try {
     const file = logPath(dataDir);
     if (fs.existsSync(file) && fs.statSync(file).size > LOG_MAX_BYTES) fs.renameSync(file, `${file}.1`);
-    fs.appendFileSync(file, `${JSON.stringify({ at: new Date().toISOString(), pid: process.pid, event, ...detail })}\n`, { mode: 0o600 });
-  } catch { /* the status file still carries last_error */ }
+    fs.appendFileSync(file, line(event, detail), { mode: 0o600 });
+  } catch {
+    // The folder itself may be what failed. Stderr was opened onto bridge.log at
+    // spawn, so it still reaches the same file.
+    try { process.stderr.write(line(event, detail)); } catch { /* nowhere left to write */ }
+  }
+}
+
+function line(event: string, detail: Record<string, unknown>): string {
+  return `${JSON.stringify({ at: new Date().toISOString(), pid: process.pid, event, ...detail })}\n`;
 }
 
 export async function serve(dataDir: string, dbPath: string): Promise<number> {
@@ -80,7 +90,9 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
     non_member_refused: 0,
     member_stub_served: 0,
   };
+  // Once the socket is gone or someone else's, the status file may be theirs too.
   const publish = (): void => {
+    if (control.ownership() === 'lost') return;
     status.updated_at = new Date().toISOString();
     try {
       writeStatus(dataDir, status);
@@ -187,10 +199,28 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
 
   // This timer also publishes direct addresses as they appear after bind.
   let lastPublished = Date.now();
+  let unreadableSince: number | null = null;
   const heartbeat = setInterval(() => {
-    if (!control.stillOurs()) {
+    const ownership = control.ownership();
+    if (ownership === 'lost') {
       void abandon();
       return;
+    }
+    if (ownership === 'unreadable') {
+      // A brief read error says nothing about who owns the socket: keep serving and look again.
+      if (unreadableSince === null) {
+        unreadableSince = Date.now();
+        appendLog(dataDir, 'control_socket_unreadable_retrying');
+      } else if (Date.now() - unreadableSince >= SOCKET_UNREADABLE_LIMIT_MS) {
+        clearInterval(heartbeat);
+        recordError('control_socket_unreadable', `The control socket could not be read for ${SOCKET_UNREADABLE_LIMIT_MS / 1000} s, so this bridge stopped.`);
+        void stop('control_socket_unreadable', 1);
+      }
+      return;
+    }
+    if (unreadableSince !== null) {
+      unreadableSince = null;
+      appendLog(dataDir, 'control_socket_readable_again');
     }
     let addresses: string[] | null = null;
     try {

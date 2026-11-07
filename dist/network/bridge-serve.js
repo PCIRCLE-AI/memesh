@@ -16,6 +16,7 @@ const CLOSE_DEADLINE_MS = 5_000;
 export const BRIDGE_BUSY_TIMEOUT_MS = 3_000;
 const HEARTBEAT_MS = 1_000;
 const STATUS_REFRESH_MS = 30_000;
+const SOCKET_UNREADABLE_LIMIT_MS = 30_000;
 const LOG_MAX_BYTES = 1024 * 1024;
 const MAX_CONCURRENT_CONNECTIONS = 32;
 const MEMBER_STUB_MAX_BYTES = 1024;
@@ -25,9 +26,17 @@ function appendLog(dataDir, event, detail = {}) {
         const file = logPath(dataDir);
         if (fs.existsSync(file) && fs.statSync(file).size > LOG_MAX_BYTES)
             fs.renameSync(file, `${file}.1`);
-        fs.appendFileSync(file, `${JSON.stringify({ at: new Date().toISOString(), pid: process.pid, event, ...detail })}\n`, { mode: 0o600 });
+        fs.appendFileSync(file, line(event, detail), { mode: 0o600 });
     }
-    catch { }
+    catch {
+        try {
+            process.stderr.write(line(event, detail));
+        }
+        catch { }
+    }
+}
+function line(event, detail) {
+    return `${JSON.stringify({ at: new Date().toISOString(), pid: process.pid, event, ...detail })}\n`;
 }
 export async function serve(dataDir, dbPath) {
     try {
@@ -69,6 +78,8 @@ export async function serve(dataDir, dbPath) {
         member_stub_served: 0,
     };
     const publish = () => {
+        if (control.ownership() === 'lost')
+            return;
         status.updated_at = new Date().toISOString();
         try {
             writeStatus(dataDir, status);
@@ -175,10 +186,28 @@ export async function serve(dataDir, dbPath) {
         relayTimers.push(setInterval(ping, RELAY_PING_INTERVAL_MS));
     }
     let lastPublished = Date.now();
+    let unreadableSince = null;
     const heartbeat = setInterval(() => {
-        if (!control.stillOurs()) {
+        const ownership = control.ownership();
+        if (ownership === 'lost') {
             void abandon();
             return;
+        }
+        if (ownership === 'unreadable') {
+            if (unreadableSince === null) {
+                unreadableSince = Date.now();
+                appendLog(dataDir, 'control_socket_unreadable_retrying');
+            }
+            else if (Date.now() - unreadableSince >= SOCKET_UNREADABLE_LIMIT_MS) {
+                clearInterval(heartbeat);
+                recordError('control_socket_unreadable', `The control socket could not be read for ${SOCKET_UNREADABLE_LIMIT_MS / 1000} s, so this bridge stopped.`);
+                void stop('control_socket_unreadable', 1);
+            }
+            return;
+        }
+        if (unreadableSince !== null) {
+            unreadableSince = null;
+            appendLog(dataDir, 'control_socket_readable_again');
         }
         let addresses = null;
         try {

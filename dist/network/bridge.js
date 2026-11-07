@@ -748,9 +748,9 @@ function tokensMatch(given, expected) {
   const left = createHash2("sha256").update(given).digest();
   return timingSafeEqual(left, createHash2("sha256").update(expected).digest());
 }
-function parseReply(line, dataDir2) {
+function parseReply(line2, dataDir2) {
   try {
-    const reply2 = JSON.parse(line);
+    const reply2 = JSON.parse(line2);
     const valid = Number.isSafeInteger(reply2?.pid) && reply2?.pid > 0 && typeof reply2?.ready === "boolean";
     return valid && reply2?.data_dir === dataDirIdentity(dataDir2) ? reply2 : null;
   } catch {
@@ -892,9 +892,9 @@ function removeStaleSocket(target, judged) {
   }
   fs6.unlinkSync(target);
 }
-function parseOp(line, token) {
+function parseOp(line2, token) {
   try {
-    const request2 = JSON.parse(line);
+    const request2 = JSON.parse(line2);
     if (!tokensMatch(request2.token, token))
       return null;
     return request2.op === "hello" || request2.op === "stop" ? request2.op : null;
@@ -958,10 +958,24 @@ async function holdControlSocket(dataDir2, handlers) {
   throw new Error("Another network bridge kept taking over the start.");
 }
 function heldBy(server, target) {
-  const bound = identityOf(target);
-  const stillOurs = () => process.platform === "win32" || sameFile(identityOf(target), bound);
+  let bound = identityOf(target);
+  const ownership = () => {
+    if (process.platform === "win32")
+      return "ours";
+    let current;
+    try {
+      const { dev, ino } = fs6.lstatSync(target);
+      current = { dev, ino };
+    } catch (err) {
+      return err.code === "ENOENT" ? "lost" : "unreadable";
+    }
+    bound ??= current;
+    return sameFile(current, bound) ? "ours" : "lost";
+  };
+  const stillOurs = () => ownership() !== "lost";
   return {
     kind: "held",
+    ownership,
     stillOurs,
     close: () => {
       if (stillOurs())
@@ -1013,6 +1027,7 @@ var CLOSE_DEADLINE_MS2 = 5e3;
 var BRIDGE_BUSY_TIMEOUT_MS = 3e3;
 var HEARTBEAT_MS = 1e3;
 var STATUS_REFRESH_MS = 3e4;
+var SOCKET_UNREADABLE_LIMIT_MS = 3e4;
 var LOG_MAX_BYTES = 1024 * 1024;
 var MAX_CONCURRENT_CONNECTIONS = 32;
 var MEMBER_STUB_MAX_BYTES = 1024;
@@ -1022,10 +1037,17 @@ function appendLog(dataDir2, event, detail = {}) {
     const file = logPath(dataDir2);
     if (fs7.existsSync(file) && fs7.statSync(file).size > LOG_MAX_BYTES)
       fs7.renameSync(file, `${file}.1`);
-    fs7.appendFileSync(file, `${JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), pid: process.pid, event, ...detail })}
-`, { mode: 384 });
+    fs7.appendFileSync(file, line(event, detail), { mode: 384 });
   } catch {
+    try {
+      process.stderr.write(line(event, detail));
+    } catch {
+    }
   }
+}
+function line(event, detail) {
+  return `${JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), pid: process.pid, event, ...detail })}
+`;
 }
 async function serve(dataDir2, dbPath) {
   try {
@@ -1067,6 +1089,8 @@ async function serve(dataDir2, dbPath) {
     member_stub_served: 0
   };
   const publish = () => {
+    if (control.ownership() === "lost")
+      return;
     status.updated_at = (/* @__PURE__ */ new Date()).toISOString();
     try {
       writeStatus(dataDir2, status);
@@ -1168,10 +1192,27 @@ async function serve(dataDir2, dbPath) {
     relayTimers.push(setInterval(ping, RELAY_PING_INTERVAL_MS));
   }
   let lastPublished = Date.now();
+  let unreadableSince = null;
   const heartbeat = setInterval(() => {
-    if (!control.stillOurs()) {
+    const ownership = control.ownership();
+    if (ownership === "lost") {
       void abandon();
       return;
+    }
+    if (ownership === "unreadable") {
+      if (unreadableSince === null) {
+        unreadableSince = Date.now();
+        appendLog(dataDir2, "control_socket_unreadable_retrying");
+      } else if (Date.now() - unreadableSince >= SOCKET_UNREADABLE_LIMIT_MS) {
+        clearInterval(heartbeat);
+        recordError("control_socket_unreadable", `The control socket could not be read for ${SOCKET_UNREADABLE_LIMIT_MS / 1e3} s, so this bridge stopped.`);
+        void stop("control_socket_unreadable", 1);
+      }
+      return;
+    }
+    if (unreadableSince !== null) {
+      unreadableSince = null;
+      appendLog(dataDir2, "control_socket_readable_again");
     }
     let addresses = null;
     try {

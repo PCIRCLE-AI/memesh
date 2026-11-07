@@ -497,6 +497,92 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
     }
   }, 60_000);
 
+  it('a socket folder unreadable for 1.5 s does not kill the bridge: it stays and answers', async () => {
+    const ctx = machine();
+    createNetwork(ctx, { name: 'blip', person: 'kt', relay: 'off' });
+    const started = await startBridge(ctx);
+    const folder = path.dirname(controlPath(ctx.dataDir));
+    fs.chmodSync(folder, 0o000);
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    fs.chmodSync(folder, 0o700);
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    expect(await probeBridge(ctx.dataDir)).toMatchObject({ kind: 'running', pid: started.pid, ready: true });
+    const log = fs.readFileSync(logPath(ctx.dataDir), 'utf8');
+    expect(log).toContain('control_socket_unreadable_retrying');
+    expect(log).toContain('control_socket_readable_again');
+    expect(log).not.toContain('control_socket_lost');
+    await stopBridge(ctx);
+  }, 60_000);
+
+  it('a socket folder unreadable for good: the bridge gives up after 30 s, records why, and status does not say running', async () => {
+    const ctx = machine();
+    createNetwork(ctx, { name: 'gone-dark', person: 'kt', relay: 'off' });
+    const started = await startBridge(ctx);
+    const folder = path.dirname(controlPath(ctx.dataDir));
+    const isAlive = (pid: number): boolean => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    fs.chmodSync(folder, 0o000);
+    try {
+      await expect.poll(() => isAlive(started.pid), { timeout: 45_000, interval: 500 }).toBe(false);
+    } finally {
+      fs.chmodSync(folder, 0o700);
+    }
+    expect(fs.readFileSync(logPath(ctx.dataDir), 'utf8')).toContain('control_socket_unreadable');
+    // The status file could not be written while its folder was unreadable; what status reports comes from the socket.
+    expect((await getNetworkStatus(ctx)).bridge).toMatchObject({ running: false, unresponsive: false });
+  }, 90_000);
+
+  it('a socket lost while a connection is in flight: the old bridge does not overwrite the new one\'s status', async () => {
+    const ctx = machine();
+    createNetwork(ctx, { name: 'in-flight', person: 'kt', relay: 'off' });
+    const member = machine();
+    const { link } = await createLink(ctx, { includeAddresses: true, ttlHours: 1 });
+    await joinWith(link, 'in-flight-member', member);
+    const first = (await getNetworkStatus(ctx)).bridge.pid as number;
+    // Connected as a member and silent: the old bridge sits waiting for a stream.
+    const builder = iroh.Endpoint.builder();
+    builder.applyMinimal();
+    builder.secretKey(bytes(loadIdentity(member.dataDir).secret));
+    builder.relayMode(iroh.RelayMode.disabled());
+    const endpoint = await builder.bind();
+    endpoints.push(endpoint);
+    const target = new iroh.EndpointAddr(iroh.EndpointId.fromString(loadIdentity(ctx.dataDir).machineId), null, readStatus(ctx.dataDir)?.direct_addresses);
+    await endpoint.connect(target, bytes(NET_ALPN));
+
+    fs.rmSync(controlPath(ctx.dataDir));
+    const second = await startBridge(ctx);
+    expect(second.pid).not.toBe(first);
+    const isAlive = (pid: number): boolean => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const owners = new Set<number>();
+    const until = Date.now() + 8_000;
+    while (Date.now() < until && (isAlive(first) || owners.size === 0)) {
+      const pid = readStatus(ctx.dataDir)?.pid;
+      if (pid) owners.add(pid);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    for (let i = 0; i < 100; i++) {
+      const pid = readStatus(ctx.dataDir)?.pid;
+      if (pid) owners.add(pid);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(isAlive(first)).toBe(false);
+    expect([...owners]).toEqual([second.pid]);
+    await stopBridge(ctx);
+  }, 90_000);
+
   it('stale startup lock, stale socket and 8 real bridges: every round settles to one holder that answers', async () => {
     // Each layer has its own deterministic test in control-socket.test.ts. This is the
     // end-to-end check, kept short for CI; 1000 rounds settled when it was introduced.

@@ -299,10 +299,17 @@ function serveConnection(socket: net.Socket, identity: string, token: string, ha
   });
 }
 
+export type Ownership = 'ours' | 'lost' | 'unreadable';
+
 export type ControlHold =
   | {
     kind: 'held';
-    /** Is the socket path still the file this process bound? On Windows a pipe has no file: always. */
+    /**
+     * Is the socket path still the file this process bound? Lost only when it is gone
+     * or is a different file; any other error is "unreadable", which says nothing
+     * about who owns it. On Windows a pipe has no file: always ours.
+     */
+    ownership(): Ownership;
     stillOurs(): boolean;
     close(): void;
   }
@@ -340,10 +347,23 @@ export async function holdControlSocket(dataDir: string, handlers: ControlHandle
 }
 
 function heldBy(server: net.Server, target: string): ControlHold {
-  const bound = identityOf(target);
-  const stillOurs = (): boolean => process.platform === 'win32' || sameFile(identityOf(target), bound);
+  let bound = identityOf(target);
+  const ownership = (): Ownership => {
+    if (process.platform === 'win32') return 'ours';
+    let current: FileIdentity;
+    try {
+      const { dev, ino } = fs.lstatSync(target);
+      current = { dev, ino };
+    } catch (err) {
+      return (err as NodeJS.ErrnoException).code === 'ENOENT' ? 'lost' : 'unreadable';
+    }
+    bound ??= current; // Unreadable right after binding: the first readable look decides.
+    return sameFile(current, bound) ? 'ours' : 'lost';
+  };
+  const stillOurs = (): boolean => ownership() !== 'lost';
   return {
     kind: 'held',
+    ownership,
     stillOurs,
     close: () => {
       // Closing unlinks the path by name, whoever's file it is now. A newer bridge's stays.

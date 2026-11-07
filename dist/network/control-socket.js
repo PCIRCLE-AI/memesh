@@ -293,10 +293,25 @@ export async function holdControlSocket(dataDir, handlers) {
     throw new Error('Another network bridge kept taking over the start.');
 }
 function heldBy(server, target) {
-    const bound = identityOf(target);
-    const stillOurs = () => process.platform === 'win32' || sameFile(identityOf(target), bound);
+    let bound = identityOf(target);
+    const ownership = () => {
+        if (process.platform === 'win32')
+            return 'ours';
+        let current;
+        try {
+            const { dev, ino } = fs.lstatSync(target);
+            current = { dev, ino };
+        }
+        catch (err) {
+            return err.code === 'ENOENT' ? 'lost' : 'unreadable';
+        }
+        bound ??= current;
+        return sameFile(current, bound) ? 'ours' : 'lost';
+    };
+    const stillOurs = () => ownership() !== 'lost';
     return {
         kind: 'held',
+        ownership,
         stillOurs,
         close: () => {
             if (stillOurs())

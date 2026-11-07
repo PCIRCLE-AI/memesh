@@ -24,8 +24,10 @@ export interface ControlHandlers {
     stop(): void;
     onProblem(message: string): void;
 }
+export type Ownership = 'ours' | 'lost' | 'unreadable';
 export type ControlHold = {
     kind: 'held';
+    ownership(): Ownership;
     stillOurs(): boolean;
     close(): void;
 } | {
