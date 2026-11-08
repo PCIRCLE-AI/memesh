@@ -8,6 +8,7 @@ are not part of a published npm release yet.
 
 ### Fixed
 
+- Several Claude Code or Codex sessions opened at the same moment on a data folder that did not exist yet no longer lose a memory server: about one in ten exited at start with `database is locked`, leaving that session without memory tools. The open now retries for up to the usual 30-second lock wait, and if the database is still locked after that the error names the data folder. Hooks that fire together on a new data folder lose the same race and used to give up on their capture; they now retry within their 2-second budget, and one that still cannot open records a `MEMESH_DB_LOCKED` error instead of vanishing.
 - Codex sessions now produce session insights like Claude sessions do, built from Codex's own record of each command and file change: tool calls, files changed, commands run and failed commands. A failure that Codex printed but did not record as a command is reported too, by a best-effort match that can occasionally miss a failure or count one twice. Previously every Codex session was skipped as too little activity. Files written under the temporary folders (`/tmp`, `/private/tmp`, `/var/folders`) are not remembered as edited files: not those Codex changes with its patch tool, and not shell writes in Codex or Claude sessions. A session insight lists at most 30 edited file names and counts the rest.
 
 ## [4.13.0] — 2026-11-02

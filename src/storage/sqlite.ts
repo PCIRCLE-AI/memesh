@@ -109,7 +109,7 @@ export interface OpenOptions {
  * Thirty seconds leaves bounded maintenance and migrations enough time to
  * finish while concurrent hooks wait instead of losing a capture.
  */
-const BUSY_TIMEOUT_MS = 30_000;
+export const BUSY_TIMEOUT_MS = 30_000;
 
 /** What a `transaction()` wrapper can be called as. */
 export interface TransactionFunction<A extends unknown[], R> {

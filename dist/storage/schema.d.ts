@@ -6,6 +6,7 @@ export declare function migrateEntitiesSchema(db: MemeshDatabase): void;
 export declare function ensureTagsUniqueIndex(db: MemeshDatabase): void;
 export declare function ensureHookRunsSince(db: MemeshDatabase): void;
 export declare function isTransientDbError(err: unknown): boolean;
+export declare function retryWhileLocked<T>(step: () => T, deadlineMs: number, where: string): T;
 export declare const MIGRATION_RETRY_BACKOFF_MS: number;
 export declare function runOnceMigration(db: MemeshDatabase, opts: {
     key: string;

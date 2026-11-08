@@ -1,4 +1,4 @@
-import { MemeshDatabase } from './storage/sqlite.js';
+import { BUSY_TIMEOUT_MS, MemeshDatabase } from './storage/sqlite.js';
 import path from 'path';
 import fs from 'fs';
 import { runAutoDecay } from './core/lifecycle.js';
@@ -19,6 +19,7 @@ import {
   rebuildFtsIndex,
   runOnceMigration,
   isTransientDbError,
+  retryWhileLocked,
   FTS_SEGMENTATION_VERSION,
 } from './storage/schema.js';
 
@@ -148,7 +149,7 @@ export function openInitialisedDatabase(resolvedPath: string, opts: { busyTimeou
       opening.pragma(`busy_timeout = ${opts.busyTimeoutMs}`);
       giveUpIfWriteLocked(opening);
     }
-    initialiseDatabase(opening);
+    retryWhileLocked(() => initialiseDatabase(opening), opts.busyTimeoutMs ?? BUSY_TIMEOUT_MS, `${resolvedPath} (data folder ${path.dirname(resolvedPath)})`);
   } catch (err) {
     try { opening.close(); } catch { /* already closing down */ }
     throw err;

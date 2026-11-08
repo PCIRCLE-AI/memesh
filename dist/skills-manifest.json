@@ -128,8 +128,8 @@
     },
     {
       "path": "scripts/hooks/_generated/schema.js",
-      "sha256": "b993c195b8917773310f8db3f59ccd9f01aa5cda72e064a350d5f2be7b270760",
-      "bytes": 26359
+      "sha256": "cd69b2262af237d5a44d643abdf485211adba1491639bae1e613450dda9b1aa1",
+      "bytes": 27279
     },
     {
       "path": "scripts/hooks/_generated/scoring.js",
@@ -153,8 +153,8 @@
     },
     {
       "path": "scripts/hooks/_generated/sqlite.js",
-      "sha256": "445d3fe3058e2f0bf4fb5359a3a6e9584e377a0794880859ba9cafdddedde9a6",
-      "bytes": 2840
+      "sha256": "37cb269696367b10369e8dc0eef487a92c403e32fb0ac6d655f14e181d5e3bf3",
+      "bytes": 2847
     },
     {
       "path": "scripts/hooks/_generated/task-state.js",
@@ -183,8 +183,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "a9efd05e201f6224a2496d8e2cd582a11186cca0250c4564ba1290385d28efcc",
-      "bytes": 127314
+      "sha256": "389ff903b22b48a8eb0d5f342547caf0f5e6bb9edac67d199115b36a9e931b44",
+      "bytes": 128262
     },
     {
       "path": "scripts/hooks/_stop-handoff.js",

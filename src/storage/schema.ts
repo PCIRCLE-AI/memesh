@@ -632,6 +632,52 @@ export function isTransientDbError(err: unknown): boolean {
   );
 }
 
+/**
+ * Run `step`, repeating it while another process holds the database, until
+ * `deadlineMs` have passed.
+ *
+ * Several processes (one MCP server per Claude Code / Codex session, plus the
+ * hooks) open a data folder that does not exist yet in the same second, and
+ * each one runs `PRAGMA journal_mode = WAL`, the schema and the migrations.
+ * SQLite does not always call the busy handler for those steps: switching to
+ * WAL needs an exclusive lock on the file, and when a peer holds a lock in the
+ * middle of the same switch the answer is "database is locked" at once, however
+ * large `busy_timeout` is. The condition lasts milliseconds, because the peer
+ * is finishing the same idempotent work, so the step is repeated after a short,
+ * growing, jittered sleep (5 ms doubling to a 200 ms cap).
+ *
+ * `step` must be safe to run again. Only errors {@link isTransientDbError}
+ * accepts are retried; anything else is thrown untouched. Once the deadline has
+ * passed the error is thrown with `code` MEMESH_DB_LOCKED and a message
+ * that names `where`, so a caller records or prints a cause instead of exiting
+ * silently. `deadlineMs` is the wait the caller already agreed to for a held
+ * lock (30 s for the CLI and servers, 2 s for a hook), so this never keeps a
+ * caller waiting longer than the busy timeout would have.
+ */
+export function retryWhileLocked<T>(step: () => T, deadlineMs: number, where: string): T {
+  const deadline = Date.now() + deadlineMs;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return step();
+    } catch (err) {
+      if (!isTransientDbError(err)) throw err;
+      if (Date.now() >= deadline) {
+        const detail = err instanceof Error ? err.message : String(err);
+        throw Object.assign(
+          new Error(
+            `MeMesh: could not open ${where}: it stayed locked by another process for ${deadlineMs} ms ` +
+              `(${detail}). Close the other MeMesh processes using that folder and try again.`,
+            { cause: err },
+          ),
+          { code: 'MEMESH_DB_LOCKED' },
+        );
+      }
+      const backoffMs = Math.min(200, 5 * 2 ** attempt);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, backoffMs / 2 + Math.random() * (backoffMs / 2));
+    }
+  }
+}
+
 /** How long a failed migration waits before trying again. */
 export const MIGRATION_RETRY_BACKOFF_MS = 24 * 60 * 60 * 1000;
 
