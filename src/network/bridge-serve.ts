@@ -1,19 +1,31 @@
-// The long-running bridge. Holds the data dir's pid lock, answers joins when this
-// machine owns the network, and enforces membership on memesh/net/1. Every refusal
-// and every early exit leaves a record: a background process that fails quietly
-// looks exactly like one that is working.
+// The long-running bridge. Holds the data dir's control socket, answers joins when
+// this machine owns the network, carries messages and presence between members on
+// memesh/net/1, and refuses everyone else before reading a byte. Every refusal and
+// every early exit leaves a record: a background process that fails quietly looks
+// exactly like one that is working.
 
 import fs from 'node:fs';
 import type { MemeshDatabase } from '../storage/sqlite.js';
 import { logPath, writeStatus, type BridgeStatus } from './bridge-state.js';
 import { holdControlSocket } from './control-socket.js';
-import { bindEndpoint, deadline, toBytes } from './endpoint.js';
+import { advertisedAddresses, bindEndpoint, deadline, toBytes } from './endpoint.js';
 import { ensureNetworkDir, loadIdentity, type Identity } from './identity.js';
 import type { Connection, Endpoint, Incoming, IrohModule } from './iroh-types.js';
 import { JOIN_REQUEST_MAX_BYTES, handleJoinRequest, type JoinReply } from './join-protocol.js';
 import { explainLoadFailure, loadNative } from './native-loader.js';
 import { RELAY_PING_INTERVAL_MS, applyRelayState, pingRelay, relayComplaint, type RelaySignals } from './relay-monitor.js';
 import { findMember, verifyRoster } from './roster.js';
+import { appendTestFrameLog } from './test-frame-log.js';
+import { createAgentRouterNotifier } from '../core/agent-router.js';
+import { getAgentRouterSocketPath } from '../core/paths.js';
+import {
+  buildMessageFrame, dueMachines, dueOutgoingFor, enqueueOutgoing, expireOverdue, frameLabel, localPresence, messagingAvailable,
+  peerRoute, receiveMessage, receivePresence, recordAttempt, recordUnsendable, retryNowFor, type Joined, type OutboxEntry,
+} from './courier.js';
+import {
+  ACK_MAX_BYTES, FRAME_MAX_BYTES, FRAME_VERSION, FrameError, encodeFrame, parseAck, parseFrame, type Ack, type Frame,
+} from './frames.js';
+import type { AgentMessagePostCommitNotifier } from '../core/agent-messaging.js';
 import { openNetworkStore, readConfig, signedRosterOf, type NetworkConfig } from './store.js';
 import {
   EXIT_ALREADY_RUNNING, EXIT_HOLDER_UNRESPONSIVE, JOIN_ALPN, NET_ALPN, RELAY_OFF, errorMessage, runtimeDir,
@@ -32,8 +44,9 @@ const STATUS_REFRESH_MS = 30_000;
 const SOCKET_UNREADABLE_LIMIT_MS = 30_000;
 const LOG_MAX_BYTES = 1024 * 1024;
 const MAX_CONCURRENT_CONNECTIONS = 32;
-const MEMBER_STUB_MAX_BYTES = 1024;
-const MEMBER_STUB_REPLY = JSON.stringify({ ok: false, error: 'not_implemented' });
+const COURIER_INTERVAL_MS = 1_000;
+const PRESENCE_INTERVAL_MS = 60_000;
+const SEND_CONNECT_DEADLINE_MS = 20_000;
 
 function appendLog(dataDir: string, event: string, detail: Record<string, unknown> = {}): void {
   try {
@@ -88,7 +101,7 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
     joins_accepted: 0,
     joins_refused: 0,
     non_member_refused: 0,
-    member_stub_served: 0,
+    frames_received: 0,
   };
   // Once the socket is gone or someone else's, the status file may be theirs too.
   const publish = (): void => {
@@ -224,7 +237,7 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
     }
     let addresses: string[] | null = null;
     try {
-      addresses = endpoint.addr().directAddresses();
+      addresses = advertisedAddresses(endpoint);
     } catch (err) {
       appendLog(dataDir, 'addresses_failed', { error: errorMessage(err) });
     }
@@ -309,14 +322,42 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
     await finishConnection(connection);
   };
 
-  /** Slice stub: membership is enforced here for real; carrying messages comes later. */
-  const answerMember = async (connection: Connection, remoteId: string): Promise<void> => {
-    // Read fresh for every connection, so a machine that just joined is let in.
-    // Verified like any roster: a list whose signature does not check out admits nobody.
+  /** The roster as it is now: read fresh, verified, so a machine that just joined is let in. */
+  const joinedNow = (): Joined => {
     const current = readConfig(db);
     if (!current) throw new Error('The network settings are gone from the database.');
-    const roster = verifyRoster(signedRosterOf(current), ownerId, current.network_id);
-    if (!findMember(roster, remoteId)) {
+    return { config: current, roster: verifyRoster(signedRosterOf(current), ownerId, current.network_id) };
+  };
+
+  let notifier: AgentMessagePostCommitNotifier | undefined;
+  try {
+    notifier = createAgentRouterNotifier(getAgentRouterSocketPath());
+  } catch {
+    notifier = undefined; // No usable router path: the message is stored and found on the next drain.
+  }
+
+  let lastPresenceAt = 0;
+  const answer = (frame: Frame, joined: Joined, remoteId: string): Ack => {
+    const member = findMember(joined.roster, remoteId);
+    if (!member) return { result: 'rejected', code: 'not_a_member' };
+    if (frame.kind === 'presence') {
+      const firstContact = !peerRoute(db, remoteId);
+      receivePresence(db, member, frame, Date.now());
+      retryNowFor(db, remoteId, Date.now());
+      if (firstContact) lastPresenceAt = 0; // A machine heard from for the first time hears back on the next round, not in a minute.
+      return { result: 'accepted' };
+    }
+    if (!messagingAvailable(db)) {
+      recordError('messaging_unavailable', 'A message arrived, but the message tables do not exist here yet; it will be retried.');
+      return { result: 'retry', code: 'messaging_unavailable' };
+    }
+    return receiveMessage(db, joined, member, frame, notifier);
+  };
+
+  const answerMember = async (connection: Connection, remoteId: string): Promise<void> => {
+    // Membership comes before anything is read: a non-member is closed with no data read.
+    const joined = joinedNow();
+    if (!findMember(joined.roster, remoteId)) {
       connection.close(1n, toBytes('not_a_member'));
       status.non_member_refused++;
       appendLog(dataDir, 'non_member_refused', { machine_id: remoteId });
@@ -324,14 +365,145 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
       return;
     }
     const stream = await deadline(connection.acceptBi(), STREAM_DEADLINE_MS, 'waiting for a member stream');
-    await deadline(stream.recv.readToEnd(MEMBER_STUB_MAX_BYTES), STREAM_DEADLINE_MS, 'reading a member stream');
-    await deadline(stream.send.writeAll(toBytes(MEMBER_STUB_REPLY)), STREAM_DEADLINE_MS, 'answering a member');
+    const bytes = Buffer.from(await deadline(stream.recv.readToEnd(FRAME_MAX_BYTES), STREAM_DEADLINE_MS, 'reading a member stream'));
+    // TEST HOOK, off unless this variable is set: every frame read, as read (see test-frame-log.ts).
+    const frameLog = process.env.MEMESH_TEST_NETWORK_FRAME_LOG;
+    if (frameLog) {
+      const refused = appendTestFrameLog(frameLog, bytes);
+      if (refused) recordError('test_frame_log_refused', refused);
+    }
+    let ack: Ack;
+    try {
+      const frame = parseFrame(bytes);
+      ack = answer(frame, joined, remoteId);
+      appendLog(dataDir, 'frame_received', { machine_id: remoteId, frame: frameLabel(frame), result: ack.result, code: ack.code ?? null });
+    } catch (err) {
+      if (err instanceof FrameError) ack = { result: 'rejected', code: err.code };
+      else {
+        recordError('frame_failed', errorMessage(err));
+        ack = { result: 'retry', code: 'internal' };
+      }
+    }
+    await deadline(stream.send.writeAll(toBytes(JSON.stringify(ack))), STREAM_DEADLINE_MS, 'answering a member');
     await stream.send.finish();
-    status.member_stub_served++;
-    appendLog(dataDir, 'member_stub_served', { machine_id: remoteId });
+    status.frames_received++;
     publish();
     await finishConnection(connection);
   };
+
+  /** One frame to one member on its own stream; the answer, and whether it went through the relay. */
+  const sendFrame = async (target: string, frame: Frame): Promise<{ ack: Ack; path: string | null }> => {
+    const route = peerRoute(db, target);
+    const relay = route?.relay ?? (relayUrl === RELAY_OFF ? null : relayUrl);
+    const address = new iroh.EndpointAddr(iroh.EndpointId.fromString(target), relay, route?.addrs ?? []);
+    const connection = await deadline(endpoint.connect(address, toBytes(NET_ALPN)), SEND_CONNECT_DEADLINE_MS, 'connecting to a member');
+    try {
+      const stream = await deadline(connection.openBi(), STREAM_DEADLINE_MS, 'opening a stream');
+      await deadline(stream.send.writeAll(toBytes(encodeFrame(frame))), STREAM_DEADLINE_MS, 'sending a frame');
+      await deadline(stream.send.finish(), STREAM_DEADLINE_MS, 'sending a frame');
+      const ack = parseAck(Buffer.from(await deadline(stream.recv.readToEnd(ACK_MAX_BYTES), STREAM_DEADLINE_MS, 'waiting for the answer')));
+      let path: string | null = null;
+      try {
+        const selected = connection.paths().find((candidate) => candidate.isSelected);
+        path = selected ? (selected.isRelay ? 'relay' : 'direct') : null;
+      } catch { /* the path is informational */ }
+      return { ack, path };
+    } finally {
+      connection.close(0n, toBytes('done'));
+    }
+  };
+
+  let courierBusy = false;
+  /** One attempt; false when the machine could not be reached, so its run stops there. */
+  const deliver = async (joined: Joined, entry: OutboxEntry): Promise<boolean> => {
+    const frame = buildMessageFrame(db, joined, entry);
+    if (typeof frame === 'string') {
+      recordUnsendable(db, entry, frame, notifier);
+      appendLog(dataDir, 'message_unsendable', { delivery_id: entry.delivery_id, code: frame });
+      return true;
+    }
+    try {
+      const { ack, path } = await sendFrame(entry.machine_id, frame);
+      const outcome = recordAttempt(db, entry, { ack, path }, Date.now(), notifier);
+      appendLog(dataDir, 'message_attempt', { delivery_id: entry.delivery_id, outcome, code: ack.code ?? null, path });
+      return true;
+    } catch (err) {
+      if (stopping) return false; // The endpoint closed under it: not an attempt that says anything.
+      const outcome = recordAttempt(db, entry, { failure: 'unreachable' }, Date.now(), notifier);
+      appendLog(dataDir, 'message_attempt', { delivery_id: entry.delivery_id, outcome, code: 'unreachable', error: errorMessage(err) });
+      return false;
+    }
+  };
+  // Each machine is handled on its own: a member that does not answer costs its own
+  // connect deadline, never another member's message or presence.
+  const sendingTo = new Set<string>();
+  const announcingTo = new Set<string>();
+  /** One machine's due messages, in order; stops at the first it cannot reach. */
+  const deliverTo = async (joined: Joined, target: string): Promise<void> => {
+    sendingTo.add(target);
+    try {
+      for (const entry of dueOutgoingFor(db, target, Date.now())) {
+        if (stopping) return;
+        if (!(await deliver(joined, entry))) return;
+      }
+    } catch (err) {
+      if (!stopping) recordError('courier_failed', errorMessage(err));
+    } finally {
+      sendingTo.delete(target);
+    }
+  };
+  // What each member was last sent, as text: presence goes out when it changes (an
+  // agent here connected, disconnected or let its lease run out), plus a heartbeat.
+  const sentTo = new Map<string, string>();
+  /** Send presence to every member whose last copy differs, or to all on a heartbeat. */
+  const announce = (joined: Joined, heartbeat: boolean): void => {
+    const frame: Frame = {
+      version: FRAME_VERSION,
+      kind: 'presence',
+      relay: relayUrl === RELAY_OFF ? null : relayUrl,
+      addrs: advertisedAddresses(endpoint),
+      entries: localPresence(db, joined, Date.now()),
+    };
+    const content = JSON.stringify(frame);
+    for (const member of joined.roster.members) {
+      const target = member.machine_id;
+      if (target === machineId || announcingTo.has(target)) continue;
+      if (!heartbeat && sentTo.get(target) === content) continue; // Nothing new for it.
+      if (!peerRoute(db, target) && relayUrl === RELAY_OFF) continue; // No way to reach it yet.
+      // Recorded when sent, so a member that does not answer is tried again on the
+      // heartbeat or the next change, not every second.
+      sentTo.set(target, content);
+      announcingTo.add(target);
+      void sendFrame(target, frame)
+        .catch((err: unknown) => { if (!stopping) appendLog(dataDir, 'presence_unreachable', { machine_id: target, error: errorMessage(err) }); })
+        .finally(() => { announcingTo.delete(target); });
+    }
+  };
+  /** Forward what is waiting, expire what has waited too long, and say who is live here. */
+  const courier = async (): Promise<void> => {
+    if (courierBusy || stopping) return;
+    courierBusy = true;
+    try {
+      if (!messagingAvailable(db)) return;
+      const joined = joinedNow();
+      const now = Date.now();
+      enqueueOutgoing(db, joined, now);
+      expireOverdue(db, now, notifier);
+      // Started, not awaited: each machine runs on its own, at most one run each at a time.
+      for (const target of dueMachines(db, now)) {
+        if (!sendingTo.has(target)) void deliverTo(joined, target);
+      }
+      const heartbeat = now - lastPresenceAt >= PRESENCE_INTERVAL_MS;
+      if (heartbeat) lastPresenceAt = now;
+      announce(joined, heartbeat);
+    } catch (err) {
+      recordError('courier_failed', errorMessage(err));
+    } finally {
+      courierBusy = false;
+    }
+  };
+  relayTimers.push(setInterval(() => { void courier(); }, COURIER_INTERVAL_MS));
+  void courier();
 
   const handleIncoming = async (incoming: Incoming): Promise<void> => {
     let connection: Connection | undefined;

@@ -10,6 +10,9 @@ import { getAgentRouterSocketPath, getMemeshDirFromDbPath } from '../core/paths.
 import { assertSecureLocalHostRuntimeSupported, ensureRouterTokenFile } from './config.js';
 import { memeshPackageVersion } from './package-version.js';
 import { requirePrivateWritableDirectory } from '../core/file-mode.js';
+import { fileURLToPath } from 'node:url';
+import { maybeStartNetworkBridge } from '../network/auto-start.js';
+import { getDbPath } from '../core/paths.js';
 
 const dataDir = getMemeshDirFromDbPath();
 const socketFromEnv = process.env.MEMESH_ROUTER_SOCKET;
@@ -60,6 +63,10 @@ try {
     // A host of a newer MeMesh registered: this process runs old code, so it
     // steps aside and the next host connection starts the installed one (#518).
     on_superseded: () => { void shutdown().finally(() => process.exit(0)); },
+    // A machine that has joined a network gets its bridge started; one that never joined costs one stat.
+    on_host_connected: () => {
+      maybeStartNetworkBridge({ dataDir, dbPath: getDbPath(), db, networkDistDir: fileURLToPath(new URL('../network/', import.meta.url)) });
+    },
     adapters: [
       createCodexCliQueueAdapter({ authenticate, release_watch: { db } }),
       ...['claude-channel', 'claude-inbox', 'codex-app-server', 'acp'].map(kind => ({ kind, authenticate })),

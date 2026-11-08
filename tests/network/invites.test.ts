@@ -109,7 +109,7 @@ describe('invites', () => {
     const opened = openDatabase(memoryDbPath);
     try {
       const names = (opened.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'agent_network_%' ORDER BY name").all() as Array<{ name: string }>).map((row) => row.name);
-      expect(names).toEqual(['agent_network_config', 'agent_network_invites']);
+      expect(names).toEqual(['agent_network_config', 'agent_network_invites', 'agent_network_outbox', 'agent_network_peers', 'agent_network_presence']);
       createInvite(opened, HOUR, NOW);
     } finally {
       closeDatabase();

@@ -125,25 +125,31 @@ describe('native isolation', () => {
     ]);
   });
 
-  it('the loader is reachable from the bridge and not from the CLI command', () => {
-    const loader = path.join(networkRoot, 'native-loader.ts');
-    expect(reachableFrom(path.join(networkRoot, 'bridge.ts'))).toContain(loader);
-    expect(reachableFrom(path.join(srcRoot, 'transports/cli/cli.ts'))).not.toContain(loader);
+  // The bridge's own entry code: only the bridge child process may load it.
+  const bridgeOnly = ['native-loader.ts', 'bridge.ts', 'bridge-serve.ts', 'bridge-join.ts'].map((name) => path.join(networkRoot, name));
+
+  it('the loader is reachable from the bridge', () => {
+    expect(reachableFrom(path.join(networkRoot, 'bridge.ts'))).toContain(path.join(networkRoot, 'native-loader.ts'));
   });
 
-  it('the entry points other than the CLI do not reach the network module at all', () => {
-    for (const entry of ['mcp/server.ts', 'transports/http/server.ts', 'host-runtime/router.ts']) {
-      const reached = [...reachableFrom(path.join(srcRoot, entry))].filter((file) => file.startsWith(networkRoot + path.sep));
-      expect({ entry, reached }).toEqual({ entry, reached: [] });
-    }
+  it('no file outside the bridge reaches the native loader or the bridge entry code', () => {
+    const outside = sourceFiles(srcRoot).filter((file) => file.endsWith('.ts') && !bridgeOnly.includes(file));
+    const crossing = outside.flatMap((file) => [...reachableFrom(file)]
+      .filter((reached) => bridgeOnly.includes(reached))
+      .map((reached) => `${relative(file)} -> ${relative(reached)}`));
+    expect(crossing).toEqual([]);
+    // The guard sees the entry points, so it is not passing on an empty list.
+    expect(outside).toEqual(expect.arrayContaining(['transports/cli/cli.ts', 'mcp/server.ts', 'transports/http/server.ts', 'host-runtime/router.ts'].map((entry) => path.join(srcRoot, entry))));
   });
 
-  it('only the CLI imports the network module from outside it', () => {
+  it('outside the network module, exactly these files import it', () => {
     const importers = sourceFiles(srcRoot)
       .filter((file) => file.endsWith('.ts') && !file.startsWith(networkRoot + path.sep))
       .filter((file) => localImports(file).some((target) => target.startsWith(networkRoot + path.sep)))
-      .map(relative);
-    expect(importers).toEqual(['src/transports/cli/cli.ts']);
+      .map(relative)
+      .sort();
+    // The CLI command, the message tool (network addresses, receipts, remote cards) and the router (auto-start).
+    expect(importers).toEqual(['src/host-runtime/router.ts', 'src/transports/agent-messaging.ts', 'src/transports/cli/cli.ts']);
   });
 
   it('nothing in src/network loads a module whose name is not in the code, except the native loader', () => {
@@ -156,12 +162,23 @@ describe('native isolation', () => {
 });
 
 describe('memory stays out of the network path', () => {
+  // The agent messaging modules are allowed (a network message is stored and read
+  // through them); no memory module is on this list.
   it('everything src/network can reach outside itself is exactly this list', () => {
     const reached = new Set(networkSources.flatMap((file) => [...reachableFrom(file)]));
     const outside = [...reached].filter((file) => !file.startsWith(networkRoot + path.sep)).map(relative).sort();
     expect(outside).toEqual([
+      'src/core/agent-message-inbox.ts',
+      'src/core/agent-message-storage.ts',
+      'src/core/agent-messaging.ts',
+      'src/core/agent-router.ts',
+      'src/core/agent-scope-id.ts',
       'src/core/file-mode.ts',
       'src/core/paths.ts',
+      'src/core/semver.ts',
+      'src/core/time-utils.ts',
+      // Reached only for jsonStringLiteral, through the inbox: it has no imports and no SQL.
+      'src/core/work-topology.ts',
       'src/storage/agent-network-schema.ts',
       'src/storage/sqlite.ts',
     ]);
@@ -173,12 +190,14 @@ describe('memory stays out of the network path', () => {
     expect([...external].sort()).toEqual(['commander']);
   });
 
+  /** Code without its comments: prose like "the CREATE TABLE any release adds" names no table. */
+  const code = (text: string): string => ts.createPrinter({ removeComments: true }).printFile(ts.createSourceFile('x.ts', text, ts.ScriptTarget.Latest, true));
   const tablesIn = (sql: string): string[] => [...sql.matchAll(/CREATE\s+(?:VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?["'`[]?(\w+)/gi)].map((match) => match[1]);
   // Everywhere a table is created, not only SCHEMA_SQL: src/db.ts and others make their own.
   const memoryTables = [...new Set([
-    ...tablesIn(fs.readFileSync(path.join(srcRoot, 'storage/schema.ts'), 'utf8')),
-    ...sourceFiles(srcRoot).filter((file) => file.endsWith('.ts') && !file.startsWith(networkRoot + path.sep)).flatMap((file) => tablesIn(fs.readFileSync(file, 'utf8'))),
-  ])].filter((name) => !name.startsWith('agent_network_'));
+    ...tablesIn(code(fs.readFileSync(path.join(srcRoot, 'storage/schema.ts'), 'utf8'))),
+    ...sourceFiles(srcRoot).filter((file) => file.endsWith('.ts') && !file.startsWith(networkRoot + path.sep)).flatMap((file) => tablesIn(code(fs.readFileSync(file, 'utf8')))),
+  ])].filter((name) => !name.startsWith('agent_'));
   const touchesMemoryTable = (text: string): string[] => memoryTables.filter((table) =>
     new RegExp(`\\b(?:FROM|INTO|UPDATE|JOIN|TABLE)\\s+(?:[\\w"'\`\\[\\]]+\\.)?["'\`[]?${table}\\b`, 'i').test(text));
   /** SQL handed to prepare() that is built at runtime: a table name there cannot be read from the code. */
@@ -197,19 +216,28 @@ describe('memory stays out of the network path', () => {
 
   it('knows the memory tables', () => {
     expect(memoryTables).toEqual(expect.arrayContaining(['entities', 'observations', 'relations', 'tags']));
-    expect(memoryTables.length).toBeGreaterThan(10);
-    expect(memoryTables).toContain('dream_proposals');
+    // Every table that is not agent_*; prose in comments names none.
+    expect(memoryTables.length).toBeGreaterThanOrEqual(10);
+    expect(memoryTables).toEqual(expect.arrayContaining(['dream_proposals', 'entities_fts', 'memesh_metadata']));
+    expect(memoryTables).not.toEqual(expect.arrayContaining(['any']));
     for (const sql of ['SELECT name FROM entities', 'SELECT name FROM "entities"', 'SELECT name FROM main.entities', 'select * from main."entities"', 'SELECT * FROM `entities`', 'SELECT * FROM [entities]']) {
       expect(touchesMemoryTable(sql)).toEqual(['entities']);
     }
     expect(touchesMemoryTable('SELECT 1 FROM agent_network_config')).toEqual([]);
+    expect(touchesMemoryTable('SELECT 1 FROM agent_messages')).toEqual([]);
     expect(computedSql('const t = "entities"; db.prepare(`SELECT name FROM ${t}`);').length).toBe(1);
     expect(computedSql("db.prepare('SELECT 1');").length).toBe(0);
   });
 
-  it('no SQL in src/network touches a table outside agent_network_*', () => {
-    const hits = networkSources.flatMap((file) => touchesMemoryTable(fs.readFileSync(file, 'utf8')).map((table) => `${relative(file)}: ${table}`));
-    expect(hits).toEqual([]);
+  // Everything the network code can run, including the messaging modules it reaches.
+  const reachedSources = [...new Set(networkSources.flatMap((file) => [...reachableFrom(file)]))];
+
+  it('no SQL that src/network can reach touches a table outside the agent_* messaging and network tables', () => {
+    expect(reachedSources).toContain(path.join(srcRoot, 'core/agent-messaging.ts'));
+    const hits = reachedSources.flatMap((file) => touchesMemoryTable(code(fs.readFileSync(file, 'utf8'))).map((table) => `${relative(file)}: ${table}`));
+    // The router class keeps its version hold in memesh_metadata. The bridge reaches
+    // that file only for the notifier and never builds a router; no memory table is here.
+    expect(hits).toEqual(['src/core/agent-router.ts: memesh_metadata']);
   });
 
   it('every SQL statement in src/network can be read from the code', () => {
@@ -219,7 +247,7 @@ describe('memory stays out of the network path', () => {
 
   it('the schema the bridge opens with names only network tables', () => {
     const text = fs.readFileSync(path.join(srcRoot, 'storage/agent-network-schema.ts'), 'utf8');
-    expect(tablesIn(text)).toEqual(['agent_network_config', 'agent_network_invites']);
+    expect(tablesIn(text)).toEqual(['agent_network_config', 'agent_network_invites', 'agent_network_outbox', 'agent_network_presence', 'agent_network_peers']);
     expect(loadsIn(text)).toEqual({ literal: [], computed: [] });
   });
 });

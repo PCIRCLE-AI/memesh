@@ -25,7 +25,8 @@ export function explainLoadFailure(err) {
     const message = errorMessage(err).split('\n')[0];
     if (/is missing from the install$|points outside the install/.test(message))
         return message;
-    if (err.code === 'ENOENT')
+    const windowsDamaged = /is not a valid Win32 application|dynamic link library \(DLL\) initialization routine failed/i.test(errorMessage(err));
+    if (!windowsDamaged && err.code === 'ENOENT')
         return 'the networking component is not installed';
     return `the native networking file is damaged or cannot run here (${message.slice(0, 200)})`;
 }

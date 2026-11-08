@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import { describeChildDeath, startBridge } from './bridge-control.js';
 import { readStatus, reportedPid } from './bridge-state.js';
 import { assertControlPathFits, probeBridge } from './control-socket.js';
+import { rememberPeer } from './courier.js';
 import { ensureIdentity, loadIdentity } from './identity.js';
 import { DEFAULT_INVITE_TTL_HOURS, MAX_INVITE_TTL_HOURS, createInvite, encodeLink, parseLink } from './invites.js';
 import { parseJoinReply, refusalMessage } from './join-protocol.js';
@@ -254,7 +255,10 @@ export async function joinNetwork(ctx, options) {
     };
     const db = openNetworkStore(ctx.dbPath);
     try {
-        insertConfig(db, config, Date.now());
+        db.transaction(() => {
+            insertConfig(db, config, Date.now());
+            rememberPeer(db, link.owner_id, link.relay, link.addrs ?? [], Date.now());
+        }).immediate();
     }
     finally {
         db.close();
@@ -308,8 +312,9 @@ export async function getNetworkStatus(ctx) {
             pid: running ? probe.pid : probe.kind === 'unresponsive' ? reportedPid(status) : null,
             started_at: current?.started_at ?? null,
             relay_state: current?.relay_state ?? null,
-            last_error: status?.last_error ?? null,
-            last_error_at: status?.last_error_at ?? null,
+            last_error: running || probe.kind === 'unresponsive' ? status?.last_error ?? null : null,
+            last_error_at: running || probe.kind === 'unresponsive' ? status?.last_error_at ?? null : null,
+            earlier_error: running || probe.kind === 'unresponsive' ? null : status?.last_error ?? null,
             joins_accepted: current?.joins_accepted ?? 0,
             joins_refused: current?.joins_refused ?? 0,
             non_member_refused: current?.non_member_refused ?? 0,

@@ -22,6 +22,8 @@ export function readStatus(dataDir) {
     }
 }
 export function reportedPid(status) {
+    if (status?.state === 'stopped')
+        return null;
     const pid = status?.pid;
     return typeof pid === 'number' && Number.isSafeInteger(pid) && pid > 0 ? pid : null;
 }

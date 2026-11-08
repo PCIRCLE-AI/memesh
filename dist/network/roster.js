@@ -2,7 +2,7 @@ import { isMachineId, verifySignature } from './identity.js';
 import { NetworkError } from './types.js';
 const SIGNATURE_DOMAIN = 'memesh-roster-v1\n';
 const MAX_MEMBERS = 256;
-const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+export const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const NETWORK_ID = /^[0-9a-f]{32}$/;
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 export const SIGNED_ROSTER_MAX_BYTES = 128 * 1024;

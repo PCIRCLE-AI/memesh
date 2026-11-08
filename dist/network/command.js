@@ -21,6 +21,8 @@ export function assertPersonAtTerminal(command, stdin = process.stdin, stdout = 
     }
 }
 const LINK_INPUT_MAX_CHARS = 16 * 1024;
+const PASTE_WRAPPERS = new RegExp(`${String.fromCharCode(0x1b)}\\[20[01]~`, 'g');
+const pasted = (text) => text.replace(PASTE_WRAPPERS, '').trim();
 export function promptForLink(stdin = process.stdin, stderr = process.stderr) {
     return new Promise((resolve, reject) => {
         let text = '';
@@ -32,7 +34,7 @@ export function promptForLink(stdin = process.stdin, stderr = process.stderr) {
             stderr.write('\n');
             settle();
         };
-        const onEnd = () => finish(() => resolve(text.trim()));
+        const onEnd = () => finish(() => resolve(pasted(text)));
         const onData = (chunk) => {
             for (const character of chunk.toString()) {
                 if (character === '\u0003' || character === '\u0004') {
@@ -42,7 +44,7 @@ export function promptForLink(stdin = process.stdin, stderr = process.stderr) {
                 if (character === '\r' || character === '\n') {
                     if (text.length === 0)
                         continue;
-                    finish(() => resolve(text.trim()));
+                    finish(() => resolve(pasted(text)));
                     return;
                 }
                 if (character === '\u007f' || character === '\b')
@@ -95,6 +97,8 @@ function printStatus(status) {
     }
     if (bridge.last_error)
         console.log(`Last error:   ${safeForTerminal(bridge.last_error)} (${bridge.last_error_at})`);
+    if (bridge.earlier_error)
+        console.log(`Before it stopped: ${safeForTerminal(bridge.earlier_error)}`);
 }
 export function registerNetworkCommand(program, networkDistDir) {
     const network = program

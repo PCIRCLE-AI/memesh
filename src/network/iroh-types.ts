@@ -24,6 +24,8 @@ export interface Connection {
   acceptBi(): Promise<BiStream>;
   closed(): Promise<string>;
   close(errorCode: bigint, reason: number[]): void;
+  /** The paths this connection uses; the selected one says whether it goes through the relay. */
+  paths(): Array<{ isRelay: boolean; isSelected: boolean }>;
 }
 
 export interface Incoming {
@@ -50,6 +52,7 @@ export interface EndpointBuilder {
   secretKey(bytes: number[]): void;
   alpns(alpns: number[][]): void;
   relayMode(mode: RelayMode): void;
+  bindAddr(addr: string): void;
   bind(): Promise<Endpoint>;
 }
 

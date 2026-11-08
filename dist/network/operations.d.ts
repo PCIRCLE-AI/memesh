@@ -63,6 +63,7 @@ export interface JoinedStatus {
         relay_state: BridgeStatus['relay_state'] | null;
         last_error: string | null;
         last_error_at: string | null;
+        earlier_error: string | null;
         joins_accepted: number;
         joins_refused: number;
         non_member_refused: number;

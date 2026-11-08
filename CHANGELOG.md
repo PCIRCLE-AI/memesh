@@ -6,6 +6,15 @@ are not part of a published npm release yet.
 
 ## [Unreleased]
 
+### Added
+
+- Agents on different computers can now message each other. Only messages cross between computers: memory, tasks and work summaries stay on each computer, and the receiving computer stores each message in its own MeMesh like a local one.
+- `memesh network create` starts a team on one computer. `memesh network link` makes a single-use invite link that expires after 24 hours (`--ttl-hours` to change), and `memesh network join` adds another computer with it. Both `link` and `join` must be run by a person at a terminal, and `join` asks for the link at a prompt that does not echo it. The team's member list is signed by the computer that created it. `memesh network status` shows this computer, the members and the bridge.
+- Messages travel through the relay `relay.memesh.ai` by default, or directly when the two computers can reach each other. The relay only forwards encrypted traffic and needs no account. Use `--relay <url>` on `create` or `join` to use your own relay, or `--relay off` for direct connections only (then `link --include-addresses` puts this computer's addresses in the link).
+- In the `message` tool, a send to `person/handle@machine` goes to an agent on that member computer. MeMesh keeps the message and retries for up to one day while that computer is offline. `receipts` adds a network entry with the delivery state, the number of attempts, the last error and whether it went through the relay or directly. If the other computer refuses the message or it expires, the sender is told. The sender's name on the receiving side comes from the signed member list, not from the message.
+- `discover` also lists live agents on the other member computers in the same project, marked `remote: true`, with no work summary. An agent that connects or disconnects shows up on the other computers within a few seconds.
+- A background bridge process carries the messages. It starts with `memesh network up` and, on a computer that joined a team, when an agent host connects; `memesh network down` stops it. The first `create` or `join` downloads the networking component (a pinned version) into the MeMesh data folder; `memesh network up --reinstall` installs it again.
+
 ### Fixed
 
 - Codex sessions now produce session insights like Claude sessions do, built from Codex's own record of each command and file change: tool calls, files changed, commands run and failed commands. A failure that Codex printed but did not record as a command is reported too, by a best-effort match that can occasionally miss a failure or count one twice. Previously every Codex session was skipped as too little activity. Files written under the temporary folders (`/tmp`, `/private/tmp`, `/var/folders`) are not remembered as edited files: not those Codex changes with its patch tool, and not shell writes in Codex or Claude sessions. A session insight lists at most 30 edited file names and counts the rest.

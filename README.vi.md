@@ -50,7 +50,7 @@ Dùng một phiên để triển khai thay đổi, một phiên khác để rà 
 2. Phiên Claude MCP thông thường đủ điều kiện có thể nhận thông báo native không cần Channel trên macOS/Linux; [Claude Channel](docs/platforms/agent-messaging.md#claude-channel-runner) tùy chọn gửi toàn bộ envelope. Phiên Codex CLI đủ điều kiện tự đăng ký khi hook SessionStart chạy.
 3. Yêu cầu trợ lý: “Dùng `message discover` để tìm phiên Claude/Codex đang chạy cho dự án này, gửi yêu cầu rà soát và báo lại phản hồi.” Chọn người nhận thực sự xuất hiện trong kết quả; không đoán ID phiên. Bên nhận đọc tin, ghi nhận `intake`, rồi trả lời với kết quả rà soát.
 
-Khi chưa bật Claude Channel, hộp thư lưu trữ bền vững và nhắc nhở qua hook của Claude Code vẫn dùng được. Gửi thành công không có nghĩa bên kia đã nhận làm hay hoàn thành công việc. Phiên đã dừng không tự tiếp tục; hãy kiểm tra phiên Codex Desktop bằng `message discover`, thay vì mặc định rằng nó đã tham gia. Kênh cục bộ này không chuyển tiếp tin nhắn giữa các máy tính.
+Khi chưa bật Claude Channel, hộp thư lưu trữ bền vững và nhắc nhở qua hook của Claude Code vẫn dùng được. Gửi thành công không có nghĩa bên kia đã nhận làm hay hoàn thành công việc. Phiên đã dừng không tự tiếp tục; hãy kiểm tra phiên Codex Desktop bằng `message discover`, thay vì mặc định rằng nó đã tham gia. Trợ lý trên các máy tính khác nhau cũng nhắn tin được cho nhau, sau khi các máy đó tham gia cùng một nhóm qua lời mời (`memesh network create`, `link`, `join`). Giữa các máy chỉ có tin nhắn mà trợ lý chủ động gửi đi; bộ nhớ vẫn nằm yên trên từng máy. Máy chủ trung chuyển mặc định là `relay.memesh.ai`, và bạn có thể dùng `--relay` để chuyển sang máy chủ của riêng mình.
 
 [Chi tiết thiết lập, định tuyến và biên nhận](docs/platforms/agent-messaging.md)
 
@@ -87,7 +87,7 @@ Các bản dựng từ mã nguồn chưa phát hành bổ sung `/memesh-memories
 | `learn` | Lưu sai sót, nguyên nhân và cách tránh lặp lại. |
 | `briefing` | Đọc ngữ cảnh bộ nhớ hiện tại của dự án. |
 | `task_state` | Đọc hoặc ghi mục tiêu, bước tiếp theo, trở ngại và công việc đã xong. |
-| `message` | Tìm các trợ lý cục bộ đang chạy và trao đổi tin nhắn. |
+| `message` | Tìm các trợ lý đang chạy, trên máy này hoặc các máy khác trong nhóm, và trao đổi tin nhắn. |
 | `export` | Sao lưu bộ nhớ thành JSON. |
 | `import` | Nhập bản sao lưu bộ nhớ. |
 | `work_package` | Chuẩn bị bản tóm tắt bộ nhớ hoặc trích đoạn hội thoại có giới hạn để người dùng duyệt. |

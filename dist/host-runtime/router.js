@@ -9,6 +9,9 @@ import { getAgentRouterSocketPath, getMemeshDirFromDbPath } from '../core/paths.
 import { assertSecureLocalHostRuntimeSupported, ensureRouterTokenFile } from './config.js';
 import { memeshPackageVersion } from './package-version.js';
 import { requirePrivateWritableDirectory } from '../core/file-mode.js';
+import { fileURLToPath } from 'node:url';
+import { maybeStartNetworkBridge } from '../network/auto-start.js';
+import { getDbPath } from '../core/paths.js';
 const dataDir = getMemeshDirFromDbPath();
 const socketFromEnv = process.env.MEMESH_ROUTER_SOCKET;
 const socketPath = socketFromEnv ?? getAgentRouterSocketPath();
@@ -54,6 +57,9 @@ try {
         socket_path: socketPath,
         memesh_version: memeshPackageVersion(),
         on_superseded: () => { void shutdown().finally(() => process.exit(0)); },
+        on_host_connected: () => {
+            maybeStartNetworkBridge({ dataDir, dbPath: getDbPath(), db, networkDistDir: fileURLToPath(new URL('../network/', import.meta.url)) });
+        },
         adapters: [
             createCodexCliQueueAdapter({ authenticate, release_watch: { db } }),
             ...['claude-channel', 'claude-inbox', 'codex-app-server', 'acp'].map(kind => ({ kind, authenticate })),

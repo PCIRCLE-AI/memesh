@@ -19,7 +19,7 @@ export interface BridgeStatus {
   joins_accepted: number;
   joins_refused: number;
   non_member_refused: number;
-  member_stub_served: number;
+  frames_received: number;
 }
 
 export function statusPath(dataDir: string): string {
@@ -48,6 +48,8 @@ export function readStatus(dataDir: string): BridgeStatus | null {
 
 /** The pid the bridge last reported, only if the file really holds one. */
 export function reportedPid(status: BridgeStatus | null): number | null {
+  // A bridge that wrote "stopped" has exited: its pid may belong to anything by now.
+  if (status?.state === 'stopped') return null;
   const pid: unknown = status?.pid;
   return typeof pid === 'number' && Number.isSafeInteger(pid) && pid > 0 ? pid : null;
 }

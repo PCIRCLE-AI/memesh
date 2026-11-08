@@ -48,6 +48,7 @@ export interface AgentRouterOptions {
     adapters: readonly AgentHostAdapter[];
     memesh_version: string;
     on_superseded?: () => void;
+    on_host_connected?: () => void;
     router_instance_id?: string;
     limits?: AgentRouterLimits;
 }
@@ -168,6 +169,7 @@ export declare class AgentRouter {
     readonly memesh_version: string;
     private readonly db;
     private readonly onSuperseded;
+    private readonly onHostConnected;
     private readonly adapters;
     private readonly limits;
     private server;

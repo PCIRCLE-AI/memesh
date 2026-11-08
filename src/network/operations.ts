@@ -8,6 +8,7 @@ import { describeChildDeath, startBridge } from './bridge-control.js';
 import type { JoinChildInput, JoinChildResult } from './bridge-join.js';
 import { readStatus, reportedPid, type BridgeStatus } from './bridge-state.js';
 import { assertControlPathFits, probeBridge } from './control-socket.js';
+import { rememberPeer } from './courier.js';
 import { ensureIdentity, loadIdentity } from './identity.js';
 import { DEFAULT_INVITE_TTL_HOURS, MAX_INVITE_TTL_HOURS, createInvite, encodeLink, parseLink, type InviteLink } from './invites.js';
 import { parseJoinReply, refusalMessage } from './join-protocol.js';
@@ -309,7 +310,11 @@ export async function joinNetwork(ctx: NetworkContext, options: JoinOptions): Pr
   };
   const db = openNetworkStore(ctx.dbPath);
   try {
-    insertConfig(db, config, Date.now());
+    db.transaction(() => {
+      insertConfig(db, config, Date.now());
+      // The owner's route, from the link: the first machine this one can reach.
+      rememberPeer(db, link.owner_id, link.relay, link.addrs ?? [], Date.now());
+    }).immediate();
   } finally {
     db.close();
   }
@@ -350,6 +355,8 @@ export interface JoinedStatus {
     relay_state: BridgeStatus['relay_state'] | null;
     last_error: string | null;
     last_error_at: string | null;
+    /** When no bridge runs: the last error the one before wrote, which is history, not current. */
+    earlier_error: string | null;
     joins_accepted: number;
     joins_refused: number;
     non_member_refused: number;
@@ -396,8 +403,10 @@ export async function getNetworkStatus(ctx: NetworkContext): Promise<NetworkStat
       pid: running ? probe.pid : probe.kind === 'unresponsive' ? reportedPid(status) : null,
       started_at: current?.started_at ?? null,
       relay_state: current?.relay_state ?? null,
-      last_error: status?.last_error ?? null,
-      last_error_at: status?.last_error_at ?? null,
+      // A bridge that is gone (crashed or stopped) has no current error; what it wrote is earlier history.
+      last_error: running || probe.kind === 'unresponsive' ? status?.last_error ?? null : null,
+      last_error_at: running || probe.kind === 'unresponsive' ? status?.last_error_at ?? null : null,
+      earlier_error: running || probe.kind === 'unresponsive' ? null : status?.last_error ?? null,
       joins_accepted: current?.joins_accepted ?? 0,
       joins_refused: current?.joins_refused ?? 0,
       non_member_refused: current?.non_member_refused ?? 0,

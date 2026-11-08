@@ -10,6 +10,7 @@ const REQUEST_MAX_BYTES = 512;
 const REPLY_MAX_BYTES = 8 * 1024;
 const STARTUP_LOCK_WAIT_MS = 5_000;
 const STARTUP_LOCK_STALE_MS = 30_000;
+const STARTUP_LOCK_EMPTY_STALE_MS = 1_500;
 export function controlPath(dataDir) {
     if (process.platform === 'win32') {
         return `\\\\.\\pipe\\memesh-bridge-${createHash('sha256').update(dataDir).digest('hex').slice(0, 32)}`;
@@ -26,7 +27,7 @@ export function assertControlPathFits(dataDir) {
 }
 function dataDirIdentity(dataDir) {
     try {
-        return fs.realpathSync(dataDir);
+        return fs.realpathSync.native(dataDir);
     }
     catch {
         return dataDir;
@@ -190,9 +191,13 @@ async function withStartupLock(dataDir, use) {
 }
 function startupLockIsStale(lock) {
     try {
-        if (Date.now() - fs.statSync(lock).mtimeMs >= STARTUP_LOCK_STALE_MS)
+        const age = Date.now() - fs.statSync(lock).mtimeMs;
+        if (age >= STARTUP_LOCK_STALE_MS)
             return true;
-        process.kill(Number(fs.readFileSync(lock, 'utf8').trim()), 0);
+        const raw = fs.readFileSync(lock, 'utf8').trim();
+        if (!/^[1-9][0-9]*$/.test(raw))
+            return age >= STARTUP_LOCK_EMPTY_STALE_MS;
+        process.kill(Number(raw), 0);
         return false;
     }
     catch (err) {

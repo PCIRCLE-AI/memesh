@@ -48,9 +48,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 
-// node_modules/commander/lib/error.js
+// ../suspicious-lichterman-760154/node_modules/commander/lib/error.js
 var require_error = __commonJS({
-  "node_modules/commander/lib/error.js"(exports) {
+  "../suspicious-lichterman-760154/node_modules/commander/lib/error.js"(exports) {
     var CommanderError2 = class extends Error {
       /**
        * Constructs the CommanderError class
@@ -83,9 +83,9 @@ var require_error = __commonJS({
   }
 });
 
-// node_modules/commander/lib/argument.js
+// ../suspicious-lichterman-760154/node_modules/commander/lib/argument.js
 var require_argument = __commonJS({
-  "node_modules/commander/lib/argument.js"(exports) {
+  "../suspicious-lichterman-760154/node_modules/commander/lib/argument.js"(exports) {
     var { InvalidArgumentError: InvalidArgumentError2 } = require_error();
     var Argument2 = class {
       /**
@@ -211,9 +211,9 @@ var require_argument = __commonJS({
   }
 });
 
-// node_modules/commander/lib/help.js
+// ../suspicious-lichterman-760154/node_modules/commander/lib/help.js
 var require_help = __commonJS({
-  "node_modules/commander/lib/help.js"(exports) {
+  "../suspicious-lichterman-760154/node_modules/commander/lib/help.js"(exports) {
     var { humanReadableArgName } = require_argument();
     var Help2 = class {
       constructor() {
@@ -813,9 +813,9 @@ ${itemIndentStr}`);
   }
 });
 
-// node_modules/commander/lib/option.js
+// ../suspicious-lichterman-760154/node_modules/commander/lib/option.js
 var require_option = __commonJS({
-  "node_modules/commander/lib/option.js"(exports) {
+  "../suspicious-lichterman-760154/node_modules/commander/lib/option.js"(exports) {
     var { InvalidArgumentError: InvalidArgumentError2 } = require_error();
     var Option2 = class {
       /**
@@ -1126,9 +1126,9 @@ var require_option = __commonJS({
   }
 });
 
-// node_modules/commander/lib/suggestSimilar.js
+// ../suspicious-lichterman-760154/node_modules/commander/lib/suggestSimilar.js
 var require_suggestSimilar = __commonJS({
-  "node_modules/commander/lib/suggestSimilar.js"(exports) {
+  "../suspicious-lichterman-760154/node_modules/commander/lib/suggestSimilar.js"(exports) {
     var maxDistance = 3;
     function editDistance(a, b) {
       if (Math.abs(a.length - b.length) > maxDistance)
@@ -1206,9 +1206,9 @@ var require_suggestSimilar = __commonJS({
   }
 });
 
-// node_modules/commander/lib/command.js
+// ../suspicious-lichterman-760154/node_modules/commander/lib/command.js
 var require_command = __commonJS({
-  "node_modules/commander/lib/command.js"(exports) {
+  "../suspicious-lichterman-760154/node_modules/commander/lib/command.js"(exports) {
     var EventEmitter = __require("node:events").EventEmitter;
     var childProcess = __require("node:child_process");
     var path29 = __require("node:path");
@@ -3452,9 +3452,9 @@ Expecting one of '${allowedValues.join("', '")}'`);
   }
 });
 
-// node_modules/commander/index.js
+// ../suspicious-lichterman-760154/node_modules/commander/index.js
 var require_commander = __commonJS({
-  "node_modules/commander/index.js"(exports) {
+  "../suspicious-lichterman-760154/node_modules/commander/index.js"(exports) {
     var { Argument: Argument2 } = require_argument();
     var { Command: Command2 } = require_command();
     var { CommanderError: CommanderError2, InvalidArgumentError: InvalidArgumentError2 } = require_error();
@@ -3804,6 +3804,43 @@ CREATE TABLE IF NOT EXISTS agent_network_invites (
   hash          TEXT PRIMARY KEY,
   expires_at_ms INTEGER NOT NULL,
   used_at       INTEGER
+);
+
+-- One row per delivery addressed to another machine. state: pending, delivered,
+-- rejected, expired; or local when the address names no member and the delivery
+-- stays an ordinary local one.
+CREATE TABLE IF NOT EXISTS agent_network_outbox (
+  delivery_id        TEXT PRIMARY KEY REFERENCES agent_message_deliveries(delivery_id) ON DELETE CASCADE,
+  message_id         TEXT NOT NULL,
+  machine_id         TEXT,
+  state              TEXT NOT NULL,
+  attempts           INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at_ms INTEGER NOT NULL DEFAULT 0,
+  expires_at_ms      INTEGER NOT NULL,
+  last_error_code    TEXT,
+  delivered_at_ms    INTEGER,
+  path               TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_agent_network_outbox_due ON agent_network_outbox(state, next_attempt_at_ms);
+
+-- Who is live on other machines, by project hash only. Expires on its own.
+CREATE TABLE IF NOT EXISTS agent_network_presence (
+  machine_id    TEXT NOT NULL,
+  project_hash  TEXT NOT NULL,
+  principal     TEXT NOT NULL,
+  handle        TEXT NOT NULL,
+  host_kind     TEXT NOT NULL,
+  connected     INTEGER NOT NULL,
+  expires_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (machine_id, project_hash, handle)
+);
+
+-- How to reach another member: learned from the invite link and from its presence.
+CREATE TABLE IF NOT EXISTS agent_network_peers (
+  machine_id  TEXT PRIMARY KEY,
+  relay_url   TEXT,
+  addrs_json  TEXT NOT NULL,
+  seen_at_ms  INTEGER NOT NULL
 );
 `;
   }
@@ -9417,7 +9454,7 @@ var init_agent_scope_id = __esm({
   }
 });
 
-// node_modules/zod/v4/core/util.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/core/util.js
 var util_exports = {};
 __export(util_exports, {
   BIGINT_FORMAT_RANGES: () => BIGINT_FORMAT_RANGES,
@@ -10163,7 +10200,7 @@ function constantCatch(value) {
 }
 var Cached, EVALUATING, captureStackTrace, allowsEval, getParsedType, propertyKeyTypes, primitiveTypes, NUMBER_FORMAT_RANGES, BIGINT_FORMAT_RANGES, highSurrogate, Class, installing, broke, breaker, CONSTANT_CATCH;
 var init_util = __esm({
-  "node_modules/zod/v4/core/util.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/core/util.js"() {
     init_core();
     Cached = class {
       constructor(getter) {
@@ -10278,7 +10315,7 @@ var init_util = __esm({
   }
 });
 
-// node_modules/zod/v4/core/core.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/core/core.js
 function newError(Definition) {
   const E = _E;
   if (E) {
@@ -10381,7 +10418,7 @@ function config(newConfig) {
 }
 var _a, NEVER, _zodDesc, _E, $brand, $ZodAsyncError, $ZodEncodeError, globalConfig;
 var init_core = __esm({
-  "node_modules/zod/v4/core/core.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/core/core.js"() {
     init_util();
     NEVER = /* @__PURE__ */ Object.freeze({
       status: "aborted"
@@ -10405,7 +10442,7 @@ var init_core = __esm({
   }
 });
 
-// node_modules/zod/v4/core/errors.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/core/errors.js
 function _getMessage() {
   const internals = this._zod;
   internals.message ?? (internals.message = JSON.stringify(internals.def, jsonStringifyReplacer, 2));
@@ -10563,7 +10600,7 @@ function prettifyError(error62) {
 }
 var _messageDesc, _issuesDesc, _installedToString, initializer, $ZodError, $ZodRealError;
 var init_errors = __esm({
-  "node_modules/zod/v4/core/errors.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/core/errors.js"() {
     init_core();
     init_util();
     _messageDesc = {
@@ -10604,7 +10641,7 @@ var init_errors = __esm({
   }
 });
 
-// node_modules/zod/v4/core/parse.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/core/parse.js
 function finalizeParams(callee, params) {
   return { callee: params?.callee ?? callee, Err: params?.Err };
 }
@@ -10644,7 +10681,7 @@ function validateFallback(schema, value, _ctx) {
 }
 var _parse, parse, _parseAsync, parseAsync, _safeParse, safeParse, _safeParseAsync, safeParseAsync, COMPILE_INVALID, COMPILE_FALLBACK, validate, validateAsync, _encode, encode, _decode, decode, _encodeAsync, encodeAsync, _decodeAsync, decodeAsync, _safeEncode, safeEncode, _safeDecode, safeDecode, _safeEncodeAsync, safeEncodeAsync, _safeDecodeAsync, safeDecodeAsync;
 var init_parse = __esm({
-  "node_modules/zod/v4/core/parse.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/core/parse.js"() {
     init_core();
     init_errors();
     init_util();
@@ -10772,7 +10809,7 @@ var init_parse = __esm({
   }
 });
 
-// node_modules/zod/v4/core/regexes.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/core/regexes.js
 var regexes_exports = {};
 __export(regexes_exports, {
   anyString: () => anyString,
@@ -10873,7 +10910,7 @@ function fixedBase64url(length) {
 }
 var cuid, cuid2, ulid, xid, ksuid, nanoid, duration, extendedDuration, guid, uuid, uuid4, uuid6, uuid7, email, html5Email, rfc5322Email, unicodeEmail, idnEmail, browserEmail, _emoji, ipv4, ipv6, mac, cidrv4, cidrv6, base64, base64url, hostname, domain, httpProtocol, e164, creditCard, currencyCode, iban, dateSource, date, anyString, string, bigint, integer, number, boolean, _null, _undefined, lowercase, uppercase, hex, md5_hex, md5_base64, md5_base64url, sha1_hex, sha1_base64, sha1_base64url, sha256_hex, sha256_base64, sha256_base64url, sha384_hex, sha384_base64, sha384_base64url, sha512_hex, sha512_base64, sha512_base64url;
 var init_regexes = __esm({
-  "node_modules/zod/v4/core/regexes.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/core/regexes.js"() {
     init_util();
     cuid = /^[cC][0-9a-z]{6,}$/;
     cuid2 = /^[0-9a-z]+$/;
@@ -10950,7 +10987,7 @@ var init_regexes = __esm({
   }
 });
 
-// node_modules/zod/v4/core/checks.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/core/checks.js
 function handleCheckPropertyResult(result, payload, property) {
   if (result.issues.length) {
     payload.issues.push(...prefixIssues(property, result.issues));
@@ -10958,7 +10995,7 @@ function handleCheckPropertyResult(result, payload, property) {
 }
 var $ZodCheck, _whenHasSize, _whenHasLength, numericOriginMap, $ZodCheckLessThan, $ZodCheckGreaterThan, $ZodCheckMultipleOf, $ZodCheckNumberFormat, $ZodCheckBigIntFormat, $ZodCheckMaxSize, $ZodCheckMinSize, $ZodCheckSizeEquals, $ZodCheckMaxLength, $ZodCheckMinLength, $ZodCheckLengthEquals, $ZodCheckStringFormat, $ZodCheckRegex, $ZodCheckLowerCase, $ZodCheckUpperCase, $ZodCheckIncludes, $ZodCheckStartsWith, $ZodCheckEndsWith, $ZodCheckProperty, $ZodCheckProperties, $ZodCheckMimeType, $ZodCheckOverwrite;
 var init_checks = __esm({
-  "node_modules/zod/v4/core/checks.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/core/checks.js"() {
     init_core();
     init_regexes();
     init_util();
@@ -11434,10 +11471,10 @@ var init_checks = __esm({
   }
 });
 
-// node_modules/zod/v4/core/doc.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/core/doc.js
 var Doc;
 var init_doc = __esm({
-  "node_modules/zod/v4/core/doc.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/core/doc.js"() {
     Doc = class {
       constructor(args = [], closed = {}) {
         this.content = [];
@@ -11480,10 +11517,10 @@ ${content.join("\n")}
   }
 });
 
-// node_modules/zod/v4/core/versions.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/core/versions.js
 var version;
 var init_versions = __esm({
-  "node_modules/zod/v4/core/versions.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/core/versions.js"() {
     version = {
       major: 4,
       minor: 6,
@@ -11492,7 +11529,7 @@ var init_versions = __esm({
   }
 });
 
-// node_modules/zod/v4/core/schemas.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/core/schemas.js
 async function validateAsync2(inst, value) {
   const ctx = { async: true };
   return toStandardResult(await inst._zod.run({ value, issues: [] }, ctx), ctx);
@@ -12173,7 +12210,7 @@ function handleRefineResult(result, payload, input2, inst) {
 }
 var $ZodType, toStandardResult, $ZodString, $ZodStringFormat, $ZodGUID, $ZodUUID, $ZodEmail, URL_BAD_FORMAT, URL_UNPARSEABLE, asciiTabOrNewline, $ZodURL, $ZodEmoji, $ZodNanoID, $ZodCUID, $ZodCUID2, $ZodULID, $ZodXID, $ZodKSUID, $ZodISODateTime, $ZodISODate, $ZodISOTime, $ZodISODuration, $ZodIPv4, ipv6Alphabet, $ZodIPv6, $ZodMAC, $ZodCIDRv4, $ZodCIDRv6, base64Charset, $ZodBase64, base64urlCharset, $ZodBase64URL, $ZodE164, CC_SANITIZE, $ZodCreditCard, $ZodIBAN, $ZodJWT, $ZodCustomStringFormat, $ZodNumber, $ZodNumberFormat, $ZodBoolean, $ZodBigInt, $ZodBigIntFormat, $ZodSymbol, $ZodUndefined, $ZodNull, $ZodAny, $ZodUnknown, $ZodNever, $ZodVoid, $ZodDate, arraySize, mapSize, setSize, $ZodArray, NO_SYMBOL_KEYS, $ZodObject, $ZodObjectJIT, $ZodUnion, $ZodXor, $ZodDiscriminatedUnion, $ZodIntersection, $ZodTuple, $ZodRecord, $ZodMap, $ZodSet, $ZodEnum, $ZodLiteral, $ZodFile, $ZodTransform, $ZodOptional, $ZodExactOptional, $ZodNullable, $ZodDefault, $ZodPrefault, $ZodNonOptional, $ZodSuccess, $ZodCatch, $ZodNaN, $ZodPipe, $ZodCodec, $ZodPreprocess, $ZodReadonly, $ZodTemplateLiteral, $ZodFunction, $ZodPromise, $ZodLazy, $ZodCustom;
 var init_schemas = __esm({
-  "node_modules/zod/v4/core/schemas.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/core/schemas.js"() {
     init_checks();
     init_core();
     init_doc();
@@ -13947,7 +13984,7 @@ var init_schemas = __esm({
   }
 });
 
-// node_modules/zod/v4/core/memoizer.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/core/memoizer.js
 function isRef(value) {
   return value !== null && typeof value === "object";
 }
@@ -14111,7 +14148,7 @@ function isBackEdge(ctx, value) {
 }
 var $ZodCyclicError, STATE, NO_ISSUES, recursive, NONE, ASSUMED, PROVEN, handoff, open, memo;
 var init_memoizer = __esm({
-  "node_modules/zod/v4/core/memoizer.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/core/memoizer.js"() {
     init_util();
     $ZodCyclicError = class extends Error {
       constructor() {
@@ -14229,7 +14266,7 @@ var init_memoizer = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/ar.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/ar.js
 function ar_default() {
   return {
     localeError: error()
@@ -14237,7 +14274,7 @@ function ar_default() {
 }
 var error;
 var init_ar = __esm({
-  "node_modules/zod/v4/locales/ar.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/ar.js"() {
     init_util();
     error = () => {
       const Sizable = {
@@ -14347,7 +14384,7 @@ var init_ar = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/az.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/az.js
 function az_default() {
   return {
     localeError: error2()
@@ -14355,7 +14392,7 @@ function az_default() {
 }
 var error2;
 var init_az = __esm({
-  "node_modules/zod/v4/locales/az.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/az.js"() {
     init_util();
     error2 = () => {
       const Sizable = {
@@ -14464,7 +14501,7 @@ var init_az = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/be.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/be.js
 function getBelarusianPlural(count, one, few, many) {
   const absCount = Math.abs(count);
   const lastDigit = absCount % 10;
@@ -14487,7 +14524,7 @@ function be_default() {
 }
 var error3;
 var init_be = __esm({
-  "node_modules/zod/v4/locales/be.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/be.js"() {
     init_util();
     error3 = () => {
       const Sizable = {
@@ -14639,7 +14676,7 @@ var init_be = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/bg.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/bg.js
 function bg_default() {
   return {
     localeError: error4()
@@ -14647,7 +14684,7 @@ function bg_default() {
 }
 var error4;
 var init_bg = __esm({
-  "node_modules/zod/v4/locales/bg.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/bg.js"() {
     init_util();
     error4 = () => {
       const Sizable = {
@@ -14771,7 +14808,7 @@ var init_bg = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/bn.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/bn.js
 function bn_default() {
   return {
     localeError: error5()
@@ -14779,7 +14816,7 @@ function bn_default() {
 }
 var error5;
 var init_bn = __esm({
-  "node_modules/zod/v4/locales/bn.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/bn.js"() {
     init_util();
     error5 = () => {
       const Sizable = {
@@ -14891,7 +14928,7 @@ var init_bn = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/ca.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/ca.js
 function ca_default() {
   return {
     localeError: error6()
@@ -14899,7 +14936,7 @@ function ca_default() {
 }
 var error6;
 var init_ca = __esm({
-  "node_modules/zod/v4/locales/ca.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/ca.js"() {
     init_util();
     error6 = () => {
       const Sizable = {
@@ -15011,7 +15048,7 @@ var init_ca = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/ckb.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/ckb.js
 function ckb_default() {
   return {
     localeError: error7()
@@ -15019,7 +15056,7 @@ function ckb_default() {
 }
 var error7;
 var init_ckb = __esm({
-  "node_modules/zod/v4/locales/ckb.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/ckb.js"() {
     init_util();
     error7 = () => {
       const Sizable = {
@@ -15150,7 +15187,7 @@ var init_ckb = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/cs.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/cs.js
 function cs_default() {
   return {
     localeError: error8()
@@ -15158,7 +15195,7 @@ function cs_default() {
 }
 var error8;
 var init_cs = __esm({
-  "node_modules/zod/v4/locales/cs.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/cs.js"() {
     init_util();
     error8 = () => {
       const Sizable = {
@@ -15273,7 +15310,7 @@ var init_cs = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/da.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/da.js
 function da_default() {
   return {
     localeError: error9()
@@ -15281,7 +15318,7 @@ function da_default() {
 }
 var error9;
 var init_da = __esm({
-  "node_modules/zod/v4/locales/da.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/da.js"() {
     init_util();
     error9 = () => {
       const Sizable = {
@@ -15400,7 +15437,7 @@ var init_da = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/de.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/de.js
 function de_default() {
   return {
     localeError: error10()
@@ -15408,7 +15445,7 @@ function de_default() {
 }
 var error10;
 var init_de = __esm({
-  "node_modules/zod/v4/locales/de.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/de.js"() {
     init_util();
     error10 = () => {
       const Sizable = {
@@ -15520,7 +15557,7 @@ var init_de = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/el.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/el.js
 function el_default() {
   return {
     localeError: error11()
@@ -15528,7 +15565,7 @@ function el_default() {
 }
 var error11;
 var init_el = __esm({
-  "node_modules/zod/v4/locales/el.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/el.js"() {
     init_util();
     error11 = () => {
       const Sizable = {
@@ -15639,7 +15676,7 @@ var init_el = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/en.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/en.js
 function en_default() {
   return {
     localeError: error12()
@@ -15647,7 +15684,7 @@ function en_default() {
 }
 var error12;
 var init_en = __esm({
-  "node_modules/zod/v4/locales/en.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/en.js"() {
     init_util();
     error12 = () => {
       const Sizable = {
@@ -15770,7 +15807,7 @@ var init_en = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/eo.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/eo.js
 function eo_default() {
   return {
     localeError: error13()
@@ -15778,7 +15815,7 @@ function eo_default() {
 }
 var error13;
 var init_eo = __esm({
-  "node_modules/zod/v4/locales/eo.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/eo.js"() {
     init_util();
     error13 = () => {
       const Sizable = {
@@ -15891,7 +15928,7 @@ var init_eo = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/es.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/es.js
 function es_default() {
   return {
     localeError: error14()
@@ -15899,7 +15936,7 @@ function es_default() {
 }
 var error14;
 var init_es = __esm({
-  "node_modules/zod/v4/locales/es.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/es.js"() {
     init_util();
     error14 = () => {
       const Sizable = {
@@ -16034,7 +16071,7 @@ var init_es = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/fa.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/fa.js
 function fa_default() {
   return {
     localeError: error15()
@@ -16042,7 +16079,7 @@ function fa_default() {
 }
 var error15;
 var init_fa = __esm({
-  "node_modules/zod/v4/locales/fa.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/fa.js"() {
     init_util();
     error15 = () => {
       const Sizable = {
@@ -16160,7 +16197,7 @@ var init_fa = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/fi.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/fi.js
 function fi_default() {
   return {
     localeError: error16()
@@ -16168,7 +16205,7 @@ function fi_default() {
 }
 var error16;
 var init_fi = __esm({
-  "node_modules/zod/v4/locales/fi.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/fi.js"() {
     init_util();
     error16 = () => {
       const Sizable = {
@@ -16284,7 +16321,7 @@ var init_fi = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/fr.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/fr.js
 function fr_default() {
   return {
     localeError: error17()
@@ -16292,7 +16329,7 @@ function fr_default() {
 }
 var error17;
 var init_fr = __esm({
-  "node_modules/zod/v4/locales/fr.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/fr.js"() {
     init_util();
     error17 = () => {
       const Sizable = {
@@ -16420,7 +16457,7 @@ var init_fr = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/fr-CA.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/fr-CA.js
 function fr_CA_default() {
   return {
     localeError: error18()
@@ -16428,7 +16465,7 @@ function fr_CA_default() {
 }
 var error18;
 var init_fr_CA = __esm({
-  "node_modules/zod/v4/locales/fr-CA.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/fr-CA.js"() {
     init_util();
     error18 = () => {
       const Sizable = {
@@ -16539,7 +16576,7 @@ var init_fr_CA = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/gu.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/gu.js
 function gu_default() {
   return {
     localeError: error19()
@@ -16547,7 +16584,7 @@ function gu_default() {
 }
 var error19;
 var init_gu = __esm({
-  "node_modules/zod/v4/locales/gu.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/gu.js"() {
     init_util();
     error19 = () => {
       const Sizable = {
@@ -16659,7 +16696,7 @@ var init_gu = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/he.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/he.js
 function he_default() {
   return {
     localeError: error20()
@@ -16667,7 +16704,7 @@ function he_default() {
 }
 var error20;
 var init_he = __esm({
-  "node_modules/zod/v4/locales/he.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/he.js"() {
     init_util();
     error20 = () => {
       const TypeNames = {
@@ -16867,7 +16904,7 @@ var init_he = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/hi.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/hi.js
 function hi_default() {
   return {
     localeError: error21()
@@ -16875,7 +16912,7 @@ function hi_default() {
 }
 var error21;
 var init_hi = __esm({
-  "node_modules/zod/v4/locales/hi.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/hi.js"() {
     init_util();
     error21 = () => {
       const Sizable = {
@@ -16985,7 +17022,7 @@ var init_hi = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/hr.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/hr.js
 function hr_default() {
   return {
     localeError: error22()
@@ -16993,7 +17030,7 @@ function hr_default() {
 }
 var error22;
 var init_hr = __esm({
-  "node_modules/zod/v4/locales/hr.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/hr.js"() {
     init_util();
     error22 = () => {
       const Sizable = {
@@ -17118,7 +17155,7 @@ var init_hr = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/hu.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/hu.js
 function hu_default() {
   return {
     localeError: error23()
@@ -17126,7 +17163,7 @@ function hu_default() {
 }
 var error23;
 var init_hu = __esm({
-  "node_modules/zod/v4/locales/hu.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/hu.js"() {
     init_util();
     error23 = () => {
       const Sizable = {
@@ -17238,7 +17275,7 @@ var init_hu = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/hy.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/hy.js
 function getArmenianPlural(count, one, many) {
   return Math.abs(count) === 1 ? one : many;
 }
@@ -17256,7 +17293,7 @@ function hy_default() {
 }
 var error24;
 var init_hy = __esm({
-  "node_modules/zod/v4/locales/hy.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/hy.js"() {
     init_util();
     error24 = () => {
       const Sizable = {
@@ -17403,7 +17440,7 @@ var init_hy = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/id.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/id.js
 function id_default() {
   return {
     localeError: error25()
@@ -17411,7 +17448,7 @@ function id_default() {
 }
 var error25;
 var init_id = __esm({
-  "node_modules/zod/v4/locales/id.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/id.js"() {
     init_util();
     error25 = () => {
       const Sizable = {
@@ -17521,7 +17558,7 @@ var init_id = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/is.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/is.js
 function is_default() {
   return {
     localeError: error26()
@@ -17529,7 +17566,7 @@ function is_default() {
 }
 var error26;
 var init_is = __esm({
-  "node_modules/zod/v4/locales/is.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/is.js"() {
     init_util();
     error26 = () => {
       const Sizable = {
@@ -17642,7 +17679,7 @@ var init_is = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/it.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/it.js
 function it_default() {
   return {
     localeError: error27()
@@ -17650,7 +17687,7 @@ function it_default() {
 }
 var error27;
 var init_it = __esm({
-  "node_modules/zod/v4/locales/it.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/it.js"() {
     init_util();
     error27 = () => {
       const Sizable = {
@@ -17762,7 +17799,7 @@ var init_it = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/ja.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/ja.js
 function ja_default() {
   return {
     localeError: error28()
@@ -17770,7 +17807,7 @@ function ja_default() {
 }
 var error28;
 var init_ja = __esm({
-  "node_modules/zod/v4/locales/ja.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/ja.js"() {
     init_util();
     error28 = () => {
       const Sizable = {
@@ -17881,7 +17918,7 @@ var init_ja = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/ka.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/ka.js
 function ka_default() {
   return {
     localeError: error29()
@@ -17889,7 +17926,7 @@ function ka_default() {
 }
 var error29;
 var init_ka = __esm({
-  "node_modules/zod/v4/locales/ka.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/ka.js"() {
     init_util();
     error29 = () => {
       const Sizable = {
@@ -18005,7 +18042,7 @@ var init_ka = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/km.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/km.js
 function km_default() {
   return {
     localeError: error30()
@@ -18013,7 +18050,7 @@ function km_default() {
 }
 var error30;
 var init_km = __esm({
-  "node_modules/zod/v4/locales/km.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/km.js"() {
     init_util();
     error30 = () => {
       const Sizable = {
@@ -18127,17 +18164,17 @@ var init_km = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/kh.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/kh.js
 function kh_default() {
   return km_default();
 }
 var init_kh = __esm({
-  "node_modules/zod/v4/locales/kh.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/kh.js"() {
     init_km();
   }
 });
 
-// node_modules/zod/v4/locales/kn.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/kn.js
 function kn_default() {
   return {
     localeError: error31()
@@ -18145,7 +18182,7 @@ function kn_default() {
 }
 var error31;
 var init_kn = __esm({
-  "node_modules/zod/v4/locales/kn.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/kn.js"() {
     init_util();
     error31 = () => {
       const Sizable = {
@@ -18259,7 +18296,7 @@ var init_kn = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/ko.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/ko.js
 function ko_default() {
   return {
     localeError: error32()
@@ -18267,7 +18304,7 @@ function ko_default() {
 }
 var error32;
 var init_ko = __esm({
-  "node_modules/zod/v4/locales/ko.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/ko.js"() {
     init_util();
     error32 = () => {
       const Sizable = {
@@ -18382,7 +18419,7 @@ var init_ko = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/lt.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/lt.js
 function getUnitTypeFromNumber(number4) {
   const abs = Math.abs(number4);
   const last = abs % 10;
@@ -18400,7 +18437,7 @@ function lt_default() {
 }
 var capitalizeFirstCharacter, error33;
 var init_lt = __esm({
-  "node_modules/zod/v4/locales/lt.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/lt.js"() {
     init_util();
     capitalizeFirstCharacter = (text) => {
       return text.charAt(0).toUpperCase() + text.slice(1);
@@ -18596,7 +18633,7 @@ var init_lt = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/mk.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/mk.js
 function mk_default() {
   return {
     localeError: error34()
@@ -18604,7 +18641,7 @@ function mk_default() {
 }
 var error34;
 var init_mk = __esm({
-  "node_modules/zod/v4/locales/mk.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/mk.js"() {
     init_util();
     error34 = () => {
       const Sizable = {
@@ -18717,7 +18754,7 @@ var init_mk = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/ms.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/ms.js
 function ms_default() {
   return {
     localeError: error35()
@@ -18725,7 +18762,7 @@ function ms_default() {
 }
 var error35;
 var init_ms = __esm({
-  "node_modules/zod/v4/locales/ms.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/ms.js"() {
     init_util();
     error35 = () => {
       const Sizable = {
@@ -18836,7 +18873,7 @@ var init_ms = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/ne.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/ne.js
 function ne_default() {
   return {
     localeError: error36()
@@ -18844,7 +18881,7 @@ function ne_default() {
 }
 var error36;
 var init_ne = __esm({
-  "node_modules/zod/v4/locales/ne.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/ne.js"() {
     init_util();
     error36 = () => {
       const Sizable = {
@@ -18954,7 +18991,7 @@ var init_ne = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/nl.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/nl.js
 function nl_default() {
   return {
     localeError: error37()
@@ -18962,7 +18999,7 @@ function nl_default() {
 }
 var error37;
 var init_nl = __esm({
-  "node_modules/zod/v4/locales/nl.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/nl.js"() {
     init_util();
     error37 = () => {
       const Sizable = {
@@ -19076,7 +19113,7 @@ var init_nl = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/nn.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/nn.js
 function nn_default() {
   return {
     localeError: error38()
@@ -19084,7 +19121,7 @@ function nn_default() {
 }
 var error38;
 var init_nn = __esm({
-  "node_modules/zod/v4/locales/nn.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/nn.js"() {
     init_util();
     error38 = () => {
       const Sizable = {
@@ -19196,7 +19233,7 @@ var init_nn = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/no.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/no.js
 function no_default() {
   return {
     localeError: error39()
@@ -19204,7 +19241,7 @@ function no_default() {
 }
 var error39;
 var init_no = __esm({
-  "node_modules/zod/v4/locales/no.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/no.js"() {
     init_util();
     error39 = () => {
       const Sizable = {
@@ -19316,7 +19353,7 @@ var init_no = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/ota.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/ota.js
 function ota_default() {
   return {
     localeError: error40()
@@ -19324,7 +19361,7 @@ function ota_default() {
 }
 var error40;
 var init_ota = __esm({
-  "node_modules/zod/v4/locales/ota.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/ota.js"() {
     init_util();
     error40 = () => {
       const Sizable = {
@@ -19437,7 +19474,7 @@ var init_ota = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/ps.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/ps.js
 function ps_default() {
   return {
     localeError: error41()
@@ -19445,7 +19482,7 @@ function ps_default() {
 }
 var error41;
 var init_ps = __esm({
-  "node_modules/zod/v4/locales/ps.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/ps.js"() {
     init_util();
     error41 = () => {
       const Sizable = {
@@ -19563,7 +19600,7 @@ var init_ps = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/pl.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/pl.js
 function pl_default() {
   return {
     localeError: error42()
@@ -19571,7 +19608,7 @@ function pl_default() {
 }
 var error42;
 var init_pl = __esm({
-  "node_modules/zod/v4/locales/pl.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/pl.js"() {
     init_util();
     error42 = () => {
       const Sizable = {
@@ -19684,7 +19721,7 @@ var init_pl = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/pt.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/pt.js
 function pt_default() {
   return {
     localeError: error43()
@@ -19692,7 +19729,7 @@ function pt_default() {
 }
 var error43;
 var init_pt = __esm({
-  "node_modules/zod/v4/locales/pt.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/pt.js"() {
     init_util();
     error43 = () => {
       const Sizable = {
@@ -19834,7 +19871,7 @@ var init_pt = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/pt-BR.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/pt-BR.js
 function pt_BR_default() {
   return {
     localeError: error44()
@@ -19842,7 +19879,7 @@ function pt_BR_default() {
 }
 var error44;
 var init_pt_BR = __esm({
-  "node_modules/zod/v4/locales/pt-BR.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/pt-BR.js"() {
     init_util();
     error44 = () => {
       const Sizable = {
@@ -19985,7 +20022,7 @@ var init_pt_BR = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/ro.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/ro.js
 function ro_default() {
   return {
     localeError: error45()
@@ -19993,7 +20030,7 @@ function ro_default() {
 }
 var error45;
 var init_ro = __esm({
-  "node_modules/zod/v4/locales/ro.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/ro.js"() {
     init_util();
     error45 = () => {
       const Sizable = {
@@ -20114,7 +20151,7 @@ var init_ro = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/ru.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/ru.js
 function getRussianPlural(count, one, few, many) {
   const absCount = Math.abs(count);
   const lastDigit = absCount % 10;
@@ -20137,7 +20174,7 @@ function ru_default() {
 }
 var error46;
 var init_ru = __esm({
-  "node_modules/zod/v4/locales/ru.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/ru.js"() {
     init_util();
     error46 = () => {
       const Sizable = {
@@ -20289,7 +20326,7 @@ var init_ru = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/sk.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/sk.js
 function sk_default() {
   return {
     localeError: error47()
@@ -20297,7 +20334,7 @@ function sk_default() {
 }
 var error47;
 var init_sk = __esm({
-  "node_modules/zod/v4/locales/sk.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/sk.js"() {
     init_util();
     error47 = () => {
       const Sizable = {
@@ -20412,7 +20449,7 @@ var init_sk = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/sl.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/sl.js
 function sl_default() {
   return {
     localeError: error48()
@@ -20420,7 +20457,7 @@ function sl_default() {
 }
 var error48;
 var init_sl = __esm({
-  "node_modules/zod/v4/locales/sl.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/sl.js"() {
     init_util();
     error48 = () => {
       const Sizable = {
@@ -20533,7 +20570,7 @@ var init_sl = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/sv.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/sv.js
 function sv_default() {
   return {
     localeError: error49()
@@ -20541,7 +20578,7 @@ function sv_default() {
 }
 var error49;
 var init_sv = __esm({
-  "node_modules/zod/v4/locales/sv.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/sv.js"() {
     init_util();
     error49 = () => {
       const Sizable = {
@@ -20655,7 +20692,7 @@ var init_sv = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/ta.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/ta.js
 function ta_default() {
   return {
     localeError: error50()
@@ -20663,7 +20700,7 @@ function ta_default() {
 }
 var error50;
 var init_ta = __esm({
-  "node_modules/zod/v4/locales/ta.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/ta.js"() {
     init_util();
     error50 = () => {
       const Sizable = {
@@ -20777,7 +20814,7 @@ var init_ta = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/tg.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/tg.js
 function tg_default() {
   return {
     localeError: error51()
@@ -20785,7 +20822,7 @@ function tg_default() {
 }
 var error51;
 var init_tg = __esm({
-  "node_modules/zod/v4/locales/tg.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/tg.js"() {
     init_util();
     error51 = () => {
       const Sizable = {
@@ -20900,7 +20937,7 @@ var init_tg = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/th.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/th.js
 function th_default() {
   return {
     localeError: error52()
@@ -20908,7 +20945,7 @@ function th_default() {
 }
 var error52;
 var init_th = __esm({
-  "node_modules/zod/v4/locales/th.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/th.js"() {
     init_util();
     error52 = () => {
       const Sizable = {
@@ -21022,7 +21059,7 @@ var init_th = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/tk.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/tk.js
 function tk_default() {
   return {
     localeError: error53()
@@ -21030,7 +21067,7 @@ function tk_default() {
 }
 var error53;
 var init_tk = __esm({
-  "node_modules/zod/v4/locales/tk.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/tk.js"() {
     init_util();
     error53 = () => {
       const Sizable = {
@@ -21136,7 +21173,7 @@ var init_tk = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/tr.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/tr.js
 function tr_default() {
   return {
     localeError: error54()
@@ -21144,7 +21181,7 @@ function tr_default() {
 }
 var error54;
 var init_tr = __esm({
-  "node_modules/zod/v4/locales/tr.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/tr.js"() {
     init_util();
     error54 = () => {
       const Sizable = {
@@ -21253,7 +21290,7 @@ var init_tr = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/uk.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/uk.js
 function uk_default() {
   return {
     localeError: error55()
@@ -21261,7 +21298,7 @@ function uk_default() {
 }
 var error55;
 var init_uk = __esm({
-  "node_modules/zod/v4/locales/uk.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/uk.js"() {
     init_util();
     error55 = () => {
       const Sizable = {
@@ -21373,17 +21410,17 @@ var init_uk = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/ua.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/ua.js
 function ua_default() {
   return uk_default();
 }
 var init_ua = __esm({
-  "node_modules/zod/v4/locales/ua.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/ua.js"() {
     init_uk();
   }
 });
 
-// node_modules/zod/v4/locales/ur.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/ur.js
 function ur_default() {
   return {
     localeError: error56()
@@ -21391,7 +21428,7 @@ function ur_default() {
 }
 var error56;
 var init_ur = __esm({
-  "node_modules/zod/v4/locales/ur.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/ur.js"() {
     init_util();
     error56 = () => {
       const Sizable = {
@@ -21505,7 +21542,7 @@ var init_ur = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/uz.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/uz.js
 function uz_default() {
   return {
     localeError: error57()
@@ -21513,7 +21550,7 @@ function uz_default() {
 }
 var error57;
 var init_uz = __esm({
-  "node_modules/zod/v4/locales/uz.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/uz.js"() {
     init_util();
     error57 = () => {
       const Sizable = {
@@ -21625,7 +21662,7 @@ var init_uz = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/vi.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/vi.js
 function vi_default() {
   return {
     localeError: error58()
@@ -21633,7 +21670,7 @@ function vi_default() {
 }
 var error58;
 var init_vi = __esm({
-  "node_modules/zod/v4/locales/vi.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/vi.js"() {
     init_util();
     error58 = () => {
       const Sizable = {
@@ -21745,7 +21782,7 @@ var init_vi = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/zh-CN.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/zh-CN.js
 function zh_CN_default() {
   return {
     localeError: error59()
@@ -21753,7 +21790,7 @@ function zh_CN_default() {
 }
 var error59;
 var init_zh_CN = __esm({
-  "node_modules/zod/v4/locales/zh-CN.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/zh-CN.js"() {
     init_util();
     error59 = () => {
       const Sizable = {
@@ -21866,7 +21903,7 @@ var init_zh_CN = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/zh-TW.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/zh-TW.js
 function zh_TW_default() {
   return {
     localeError: error60()
@@ -21874,7 +21911,7 @@ function zh_TW_default() {
 }
 var error60;
 var init_zh_TW = __esm({
-  "node_modules/zod/v4/locales/zh-TW.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/zh-TW.js"() {
     init_util();
     error60 = () => {
       const Sizable = {
@@ -21985,7 +22022,7 @@ var init_zh_TW = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/yo.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/yo.js
 function yo_default() {
   return {
     localeError: error61()
@@ -21993,7 +22030,7 @@ function yo_default() {
 }
 var error61;
 var init_yo = __esm({
-  "node_modules/zod/v4/locales/yo.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/yo.js"() {
     init_util();
     error61 = () => {
       const Sizable = {
@@ -22104,7 +22141,7 @@ var init_yo = __esm({
   }
 });
 
-// node_modules/zod/v4/locales/index.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/locales/index.js
 var locales_exports = {};
 __export(locales_exports, {
   ar: () => ar_default,
@@ -22172,7 +22209,7 @@ __export(locales_exports, {
   zhTW: () => zh_TW_default
 });
 var init_locales = __esm({
-  "node_modules/zod/v4/locales/index.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/locales/index.js"() {
     init_ar();
     init_az();
     init_be();
@@ -22239,13 +22276,13 @@ var init_locales = __esm({
   }
 });
 
-// node_modules/zod/v4/core/registries.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/core/registries.js
 function registry() {
   return new $ZodRegistry();
 }
 var _a2, $output, $input, $ZodRegistry, globalRegistry;
 var init_registries = __esm({
-  "node_modules/zod/v4/core/registries.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/core/registries.js"() {
     $output = /* @__PURE__ */ Symbol("ZodOutput");
     $input = /* @__PURE__ */ Symbol("ZodInput");
     $ZodRegistry = class {
@@ -22293,7 +22330,7 @@ var init_registries = __esm({
   }
 });
 
-// node_modules/zod/v4/core/compile.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/core/compile.js
 function compileValidator(schema, parser) {
   try {
     return compileFn(schema, { assertOnly: true });
@@ -23855,7 +23892,7 @@ function generateTransformCheck(doc, ctx, schema, accessor) {
 }
 var INVALID, FALLBACK_FLAG, ZodCompileAsyncError, ZodCompileUnsupportedError, WHEN_DEFAULTED_CHECKS, PATTERN_IS_COMPLETE;
 var init_compile = __esm({
-  "node_modules/zod/v4/core/compile.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/core/compile.js"() {
     init_core();
     init_doc();
     init_memoizer();
@@ -23914,7 +23951,7 @@ var init_compile = __esm({
   }
 });
 
-// node_modules/zod/v4/core/api.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/core/api.js
 function snapshotChecks(def) {
   if (def.checks)
     def.checks = [...def.checks];
@@ -24967,7 +25004,7 @@ function _stringFormat(Class2, format, fnOrRegex, _params = {}) {
 }
 var TimePrecision;
 var init_api = __esm({
-  "node_modules/zod/v4/core/api.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/core/api.js"() {
     init_checks();
     init_registries();
     init_schemas();
@@ -24982,7 +25019,7 @@ var init_api = __esm({
   }
 });
 
-// node_modules/zod/v4/core/to-json-schema.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/core/to-json-schema.js
 function assignProps(target, ...sources) {
   for (const source of sources) {
     for (const key of Reflect.ownKeys(source)) {
@@ -25498,7 +25535,7 @@ function isTransforming(_schema, _ctx) {
 }
 var FOLDABLE_KEYS, UNION_KEYS, createToJSONSchemaMethod, createStandardJSONSchemaMethod;
 var init_to_json_schema = __esm({
-  "node_modules/zod/v4/core/to-json-schema.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/core/to-json-schema.js"() {
     init_registries();
     init_util();
     FOLDABLE_KEYS = /* @__PURE__ */ new Set(["type", "properties", "required", "additionalProperties"]);
@@ -25519,7 +25556,7 @@ var init_to_json_schema = __esm({
   }
 });
 
-// node_modules/zod/v4/core/json-schema-processors.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/core/json-schema-processors.js
 function aggregateChecks(schema) {
   const agg = {};
   const def = schema._zod.def;
@@ -25669,7 +25706,7 @@ function toJSONSchema(input2, params) {
 }
 var narrowMin, narrowMax, narrowBoth, addDivisor, addPattern, intersectMime, setFormat, minContributor, maxContributor, formatContributor, contributors, formatMap, exactPatterns, exactPattern, stringProcessor, numberProcessor, booleanProcessor, bigintProcessor, symbolProcessor, nullProcessor, undefinedProcessor, voidProcessor, neverProcessor, anyProcessor, unknownProcessor, dateProcessor, enumProcessor, literalProcessor, nanProcessor, templateLiteralProcessor, fileProcessor, successProcessor, customProcessor, functionProcessor, transformProcessor, mapProcessor, setProcessor, arrayProcessor, objectProcessor, unionProcessor, intersectionProcessor, tupleProcessor, pendingRecords, recordProcessor, nullableProcessor, nonoptionalProcessor, UNREPRESENTABLE_DEFAULT, defaultProcessor, prefaultProcessor, catchProcessor, pipeProcessor, readonlyProcessor, promiseProcessor, optionalProcessor, lazyProcessor, allProcessors;
 var init_json_schema_processors = __esm({
-  "node_modules/zod/v4/core/json-schema-processors.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/core/json-schema-processors.js"() {
     init_regexes();
     init_schemas();
     init_to_json_schema();
@@ -26276,10 +26313,10 @@ var init_json_schema_processors = __esm({
   }
 });
 
-// node_modules/zod/v4/core/json-schema-generator.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/core/json-schema-generator.js
 var JSONSchemaGenerator;
 var init_json_schema_generator = __esm({
-  "node_modules/zod/v4/core/json-schema-generator.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/core/json-schema-generator.js"() {
     init_json_schema_processors();
     init_to_json_schema();
     JSONSchemaGenerator = class {
@@ -26361,14 +26398,14 @@ var init_json_schema_generator = __esm({
   }
 });
 
-// node_modules/zod/v4/core/json-schema.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/core/json-schema.js
 var json_schema_exports = {};
 var init_json_schema = __esm({
-  "node_modules/zod/v4/core/json-schema.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/core/json-schema.js"() {
   }
 });
 
-// node_modules/zod/v4/core/index.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/core/index.js
 var core_exports2 = {};
 __export(core_exports2, {
   $ZodAny: () => $ZodAny,
@@ -26685,7 +26722,7 @@ __export(core_exports2, {
   withParser: () => withParser
 });
 var init_core2 = __esm({
-  "node_modules/zod/v4/core/index.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/core/index.js"() {
     init_core();
     init_parse();
     init_errors();
@@ -26708,7 +26745,7 @@ var init_core2 = __esm({
   }
 });
 
-// node_modules/zod/v4/classic/checks.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/classic/checks.js
 var checks_exports2 = {};
 __export(checks_exports2, {
   endsWith: () => _endsWith,
@@ -26743,12 +26780,12 @@ __export(checks_exports2, {
   uppercase: () => _uppercase
 });
 var init_checks2 = __esm({
-  "node_modules/zod/v4/classic/checks.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/classic/checks.js"() {
     init_core2();
   }
 });
 
-// node_modules/zod/v4/classic/errors.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/classic/errors.js
 function _lazyMethod(proto, key, make) {
   Object.defineProperty(proto, key, {
     configurable: true,
@@ -26765,7 +26802,7 @@ function _lazyMethod(proto, key, make) {
 }
 var _installedErrorProtos, initializer2, ZodError, ZodRealError;
 var init_errors2 = __esm({
-  "node_modules/zod/v4/classic/errors.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/classic/errors.js"() {
     init_core2();
     init_core2();
     init_util();
@@ -26802,10 +26839,10 @@ var init_errors2 = __esm({
   }
 });
 
-// node_modules/zod/v4/classic/parse.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/classic/parse.js
 var parse2, parseAsync2, safeParse2, safeParseAsync2, encode2, decode2, encodeAsync2, decodeAsync2, safeEncode2, safeDecode2, safeEncodeAsync2, safeDecodeAsync2;
 var init_parse2 = __esm({
-  "node_modules/zod/v4/classic/parse.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/classic/parse.js"() {
     init_core2();
     init_errors2();
     init_core2();
@@ -26824,7 +26861,7 @@ var init_parse2 = __esm({
   }
 });
 
-// node_modules/zod/v4/classic/schemas.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/classic/schemas.js
 var schemas_exports2 = {};
 __export(schemas_exports2, {
   ZodAny: () => ZodAny,
@@ -27498,7 +27535,7 @@ function preprocess(fn, schema) {
 }
 var ZodType, _ZodString, ZodString, ZodStringFormat, ZodISODateTime, ZodISODate, ZodISOTime, ZodISODuration, ZodEmail, ZodGUID, ZodUUID, ZodURL, ZodEmoji, ZodNanoID, ZodCUID, ZodCUID2, ZodULID, ZodXID, ZodKSUID, ZodIPv4, ZodMAC, ZodIPv6, ZodCIDRv4, ZodCIDRv6, ZodBase64, ZodBase64URL, ZodE164, ZodCreditCard, ZodIBAN, ZodJWT, ZodCustomStringFormat, ZodNumber, ZodNumberFormat, ZodBoolean, ZodBigInt, ZodBigIntFormat, ZodSymbol, ZodUndefined, ZodNull, ZodAny, ZodUnknown, ZodNever, ZodVoid, ZodDate, ZodArray, ZodObject, ZodUnion, ZodXor, ZodDiscriminatedUnion, ZodIntersection, ZodTuple, ZodRecord, ZodMap, ZodSet, ZodEnum, ZodLiteral, ZodFile, ZodTransform, ZodOptional, ZodExactOptional, ZodNullable, ZodDefault, ZodPrefault, ZodNonOptional, ZodSuccess, ZodCatch, ZodNaN, ZodPipe, ZodCodec, ZodPreprocess, ZodReadonly, ZodTemplateLiteral, ZodLazy, ZodPromise, ZodFunction, ZodCustom, describe2, meta2, ZodInstanceOf, stringbool;
 var init_schemas2 = __esm({
-  "node_modules/zod/v4/classic/schemas.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/classic/schemas.js"() {
     init_core2();
     init_core2();
     init_json_schema_processors();
@@ -28481,7 +28518,7 @@ var init_schemas2 = __esm({
   }
 });
 
-// node_modules/zod/v4/classic/compat.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/classic/compat.js
 function setErrorMap(map2) {
   config({
     customError: map2
@@ -28492,7 +28529,7 @@ function getErrorMap() {
 }
 var ZodIssueCode, ZodFirstPartyTypeKind;
 var init_compat = __esm({
-  "node_modules/zod/v4/classic/compat.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/classic/compat.js"() {
     init_core2();
     ZodIssueCode = {
       invalid_type: "invalid_type",
@@ -28512,7 +28549,7 @@ var init_compat = __esm({
   }
 });
 
-// node_modules/zod/v4/classic/iso.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/classic/iso.js
 var iso_exports = {};
 __export(iso_exports, {
   ZodISODate: () => ZodISODate,
@@ -28537,14 +28574,14 @@ function duration2(params) {
   return _isoDuration(ZodISODuration, params);
 }
 var init_iso = __esm({
-  "node_modules/zod/v4/classic/iso.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/classic/iso.js"() {
     init_core2();
     init_schemas2();
     init_schemas2();
   }
 });
 
-// node_modules/zod/v4/classic/from-json-schema.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/classic/from-json-schema.js
 function detectVersion(schema, defaultTarget) {
   const $schema = schema.$schema;
   if ($schema === "https://json-schema.org/draft/2020-12/schema") {
@@ -29175,7 +29212,7 @@ function fromJSONSchema(schema, params) {
 }
 var z, RECOGNIZED_KEYS, SCHEMA_KEYWORDS, SCHEMA_MAP_KEYWORDS, fullTime;
 var init_from_json_schema = __esm({
-  "node_modules/zod/v4/classic/from-json-schema.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/classic/from-json-schema.js"() {
     init_registries();
     init_util();
     init_checks2();
@@ -29287,7 +29324,7 @@ var init_from_json_schema = __esm({
   }
 });
 
-// node_modules/zod/v4/core/visit.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/core/visit.js
 function visit(schema, fnOrHandlers) {
   const fn = typeof fnOrHandlers === "function" ? fnOrHandlers : (node2, rewritten) => {
     const h = fnOrHandlers[node2._zod.def.type];
@@ -29442,14 +29479,14 @@ function visit(schema, fnOrHandlers) {
 }
 var RESOLVING;
 var init_visit = __esm({
-  "node_modules/zod/v4/core/visit.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/core/visit.js"() {
     init_schemas();
     init_util();
     RESOLVING = /* @__PURE__ */ Symbol("z.visit/resolving");
   }
 });
 
-// node_modules/zod/v4/classic/deep-partial.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/classic/deep-partial.js
 function deepPartial(schema) {
   return visit(schema, {
     object: (s) => s.partial(),
@@ -29461,13 +29498,13 @@ function deepPartial(schema) {
   });
 }
 var init_deep_partial = __esm({
-  "node_modules/zod/v4/classic/deep-partial.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/classic/deep-partial.js"() {
     init_visit();
     init_schemas2();
   }
 });
 
-// node_modules/zod/v4/classic/in-out.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/classic/in-out.js
 function withChecks(side, checks) {
   if (!checks?.length)
     return side;
@@ -29497,14 +29534,14 @@ function output(schema) {
   });
 }
 var init_in_out = __esm({
-  "node_modules/zod/v4/classic/in-out.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/classic/in-out.js"() {
     init_util();
     init_visit();
     init_schemas2();
   }
 });
 
-// node_modules/zod/v4/classic/coerce.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/classic/coerce.js
 var coerce_exports = {};
 __export(coerce_exports, {
   bigint: () => bigint3,
@@ -29529,13 +29566,13 @@ function date4(params) {
   return _coercedDate(ZodDate, params);
 }
 var init_coerce = __esm({
-  "node_modules/zod/v4/classic/coerce.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/classic/coerce.js"() {
     init_core2();
     init_schemas2();
   }
 });
 
-// node_modules/zod/v4/classic/external.js
+// ../suspicious-lichterman-760154/node_modules/zod/v4/classic/external.js
 var external_exports = {};
 __export(external_exports, {
   $brand: () => $brand,
@@ -29798,7 +29835,7 @@ __export(external_exports, {
   xor: () => xor
 });
 var init_external = __esm({
-  "node_modules/zod/v4/classic/external.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/v4/classic/external.js"() {
     init_core2();
     init_schemas2();
     init_checks2();
@@ -29817,9 +29854,9 @@ var init_external = __esm({
   }
 });
 
-// node_modules/zod/index.js
+// ../suspicious-lichterman-760154/node_modules/zod/index.js
 var init_zod = __esm({
-  "node_modules/zod/index.js"() {
+  "../suspicious-lichterman-760154/node_modules/zod/index.js"() {
     init_external();
     init_external();
   }
@@ -33001,8 +33038,438 @@ var init_agent_router = __esm({
   }
 });
 
+// dist/network/types.js
+import path15 from "node:path";
+function networkDir(dataDir) {
+  return path15.join(dataDir, "network");
+}
+function runtimeDir(dataDir) {
+  return path15.join(networkDir(dataDir), "runtime");
+}
+function childEnv(ctx) {
+  const inherited = Object.entries(ctx.env ?? process.env).filter(([key]) => key.toUpperCase() !== "NODE_PATH");
+  return { ...Object.fromEntries(inherited), MEMESH_DIR: ctx.dataDir, MEMESH_DB_PATH: ctx.dbPath };
+}
+function safeForTerminal(text) {
+  return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
+}
+function errorMessage2(err) {
+  return err instanceof Error ? err.message : String(err);
+}
+var DEFAULT_RELAY_URL, RELAY_OFF, EXIT_ALREADY_RUNNING, EXIT_HOLDER_UNRESPONSIVE, SINGLE_MACHINE_NOTE, NetworkError;
+var init_types2 = __esm({
+  "dist/network/types.js"() {
+    "use strict";
+    DEFAULT_RELAY_URL = "https://relay.memesh.ai/";
+    RELAY_OFF = "off";
+    EXIT_ALREADY_RUNNING = 3;
+    EXIT_HOLDER_UNRESPONSIVE = 4;
+    SINGLE_MACHINE_NOTE = "Single-machine MeMesh keeps working.";
+    NetworkError = class extends Error {
+      code;
+      constructor(code, message) {
+        super(message);
+        this.name = "NetworkError";
+        this.code = code;
+      }
+    };
+  }
+});
+
+// dist/network/identity.js
+import { createPrivateKey, createPublicKey, randomBytes as randomBytes4, sign, verify } from "node:crypto";
+import fs17 from "node:fs";
+import path16 from "node:path";
+function isMachineId(value) {
+  return typeof value === "string" && MACHINE_ID.test(value);
+}
+function identityPath(dataDir) {
+  return path16.join(networkDir(dataDir), "identity.key");
+}
+function ensureNetworkDir(dataDir) {
+  const dir = networkDir(dataDir);
+  fs17.mkdirSync(dir, { recursive: true, mode: 448 });
+  removeGroupAndOtherAccess(dir);
+  return dir;
+}
+function identityFromSeed(secret) {
+  const privateKey = createPrivateKey({ key: Buffer.concat([PKCS8_PREFIX, secret]), format: "der", type: "pkcs8" });
+  const spki = createPublicKey(privateKey).export({ format: "der", type: "spki" });
+  return {
+    secret,
+    machineId: spki.subarray(-SEED_BYTES).toString("hex"),
+    sign: (message) => sign(null, message, privateKey).toString("base64url")
+  };
+}
+function loadIdentity(dataDir) {
+  const file2 = identityPath(dataDir);
+  let secret;
+  try {
+    secret = fs17.readFileSync(file2);
+  } catch (err) {
+    const code = err.code;
+    throw new NetworkError(code === "ENOENT" ? "not_joined" : "identity_invalid", code === "ENOENT" ? "This machine has not joined a network." : `Cannot read ${file2} (${code}).`);
+  }
+  if (secret.length !== SEED_BYTES) {
+    throw new NetworkError("identity_invalid", `${file2} is not a valid machine key (${secret.length} bytes, expected ${SEED_BYTES}).`);
+  }
+  removeGroupAndOtherAccess(file2);
+  return identityFromSeed(secret);
+}
+function ensureIdentity(dataDir) {
+  ensureNetworkDir(dataDir);
+  const file2 = identityPath(dataDir);
+  if (!fs17.existsSync(file2)) {
+    const temporary = `${file2}.tmp-${process.pid}`;
+    fs17.writeFileSync(temporary, randomBytes4(SEED_BYTES), { mode: 384, flag: "wx" });
+    try {
+      fs17.chmodSync(temporary, 384);
+      fs17.linkSync(temporary, file2);
+    } catch (err) {
+      if (err.code !== "EEXIST")
+        throw err;
+    } finally {
+      fs17.rmSync(temporary, { force: true });
+    }
+  }
+  return loadIdentity(dataDir);
+}
+function verifySignature(machineId, message, signature) {
+  if (!isMachineId(machineId) || typeof signature !== "string")
+    return false;
+  try {
+    const publicKey = createPublicKey({
+      key: Buffer.concat([SPKI_PREFIX, Buffer.from(machineId, "hex")]),
+      format: "der",
+      type: "spki"
+    });
+    return verify(null, message, publicKey, Buffer.from(signature, "base64url"));
+  } catch {
+    return false;
+  }
+}
+var SEED_BYTES, PKCS8_PREFIX, SPKI_PREFIX, MACHINE_ID;
+var init_identity = __esm({
+  "dist/network/identity.js"() {
+    "use strict";
+    init_file_mode();
+    init_types2();
+    SEED_BYTES = 32;
+    PKCS8_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
+    SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
+    MACHINE_ID = /^[0-9a-f]{64}$/;
+  }
+});
+
+// dist/network/roster.js
+function canonicalJson(value) {
+  if (Array.isArray(value))
+    return `[${value.map(canonicalJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const record2 = value;
+    const fields = Object.keys(record2).filter((key) => record2[key] !== void 0).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record2[key])}`);
+    return `{${fields.join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+function isNetworkId(value) {
+  return typeof value === "string" && NETWORK_ID.test(value);
+}
+function assertValidName(kind, value) {
+  if (typeof value !== "string" || !NAME.test(value)) {
+    throw new NetworkError("invalid_name", `The ${kind} must start with a letter or digit and use only letters, digits, ".", "_" and "-" (at most 64 characters).`);
+  }
+}
+function invalid(detail) {
+  return new NetworkError("roster_invalid", `The team list is not valid: ${detail}.`);
+}
+function parseMember(raw) {
+  const member = raw;
+  if (member === null || typeof member !== "object")
+    throw invalid("a member is not an object");
+  if (!isMachineId(member.machine_id))
+    throw invalid("a member has a bad machine id");
+  try {
+    assertValidName("machine name", member.name);
+    assertValidName("person", member.person);
+  } catch {
+    throw invalid("a member has a bad name or person");
+  }
+  if (typeof member.joined_at !== "string" || !ISO_TIMESTAMP.test(member.joined_at) || !Number.isFinite(Date.parse(member.joined_at))) {
+    throw invalid("a member has a bad joined_at");
+  }
+  return { machine_id: member.machine_id, name: member.name, person: member.person, joined_at: member.joined_at };
+}
+function parseRoster(rosterJson) {
+  let raw;
+  try {
+    raw = JSON.parse(rosterJson);
+  } catch {
+    throw invalid("it is not JSON");
+  }
+  if (raw === null || typeof raw !== "object")
+    throw invalid("it is not an object");
+  if (!isNetworkId(raw.network_id))
+    throw invalid("bad network id");
+  if (!isMachineId(raw.owner_id))
+    throw invalid("bad owner id");
+  if (!Number.isSafeInteger(raw.version) || raw.version < 1)
+    throw invalid("bad version");
+  if (!Array.isArray(raw.members) || raw.members.length > MAX_MEMBERS)
+    throw invalid("bad member list");
+  const members2 = raw.members.map(parseMember);
+  const names = new Set(members2.map((member) => member.name.toLowerCase()));
+  const ids = new Set(members2.map((member) => member.machine_id));
+  if (names.size !== members2.length)
+    throw invalid("two machines share a name");
+  if (ids.size !== members2.length)
+    throw invalid("a machine is listed twice");
+  if (!ids.has(raw.owner_id))
+    throw invalid("the owner is not a member");
+  return {
+    network_id: raw.network_id,
+    owner_id: raw.owner_id,
+    version: raw.version,
+    members: members2
+  };
+}
+function createRoster(networkId, owner) {
+  return { network_id: networkId, owner_id: owner.machine_id, version: 1, members: [owner] };
+}
+function signRoster(identity, roster) {
+  const rosterJson = canonicalJson(roster);
+  return { roster_json: rosterJson, signature: identity.sign(Buffer.from(SIGNATURE_DOMAIN + rosterJson)) };
+}
+function verifyRoster(signed, expectedOwnerId, expectedNetworkId) {
+  if (typeof signed?.roster_json !== "string" || !verifySignature(expectedOwnerId, Buffer.from(SIGNATURE_DOMAIN + signed.roster_json), signed.signature)) {
+    throw new NetworkError("roster_invalid", "The team list is not signed by the network owner.");
+  }
+  const roster = parseRoster(signed.roster_json);
+  if (roster.owner_id !== expectedOwnerId)
+    throw invalid("it names a different owner");
+  if (roster.network_id !== expectedNetworkId)
+    throw invalid("it belongs to a different network");
+  return roster;
+}
+function acceptRoster(current, incoming, ownerId, networkId) {
+  const roster = verifyRoster(incoming, ownerId, networkId);
+  if (current) {
+    const held = verifyRoster(current, ownerId, networkId);
+    if (roster.version < held.version) {
+      throw new NetworkError("roster_downgrade", `Refused an older team list (version ${roster.version}, this machine has ${held.version}).`);
+    }
+    if (roster.version === held.version && incoming.roster_json !== current.roster_json) {
+      throw new NetworkError("roster_downgrade", `Refused a team list that differs from the one this machine has at version ${held.version}.`);
+    }
+  }
+  return roster;
+}
+function findMember(roster, machineId) {
+  return roster.members.find((member) => member.machine_id === machineId);
+}
+var SIGNATURE_DOMAIN, MAX_MEMBERS, NAME, NETWORK_ID, ISO_TIMESTAMP, SIGNED_ROSTER_MAX_BYTES;
+var init_roster = __esm({
+  "dist/network/roster.js"() {
+    "use strict";
+    init_identity();
+    init_types2();
+    SIGNATURE_DOMAIN = "memesh-roster-v1\n";
+    MAX_MEMBERS = 256;
+    NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+    NETWORK_ID = /^[0-9a-f]{32}$/;
+    ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+    SIGNED_ROSTER_MAX_BYTES = 128 * 1024;
+  }
+});
+
+// dist/network/address.js
+import { createHash as createHash10 } from "node:crypto";
+function parseNetworkAddress(value) {
+  const at = value.lastIndexOf("@");
+  if (at <= 0)
+    return null;
+  const machine = value.slice(at + 1);
+  const left = value.slice(0, at);
+  const slash = left.indexOf("/");
+  if (slash <= 0)
+    return null;
+  const person = left.slice(0, slash);
+  const target = left.slice(slash + 1);
+  if (!NAME.test(person) || !NAME.test(machine) || !TARGET.test(target))
+    return null;
+  return { person, target, machine };
+}
+function formatNetworkAddress(person, target, machine) {
+  return `${person}/${target}@${machine}`;
+}
+function projectHash(networkId, project) {
+  return createHash10("sha256").update(`${networkId}:${project}`).digest("hex");
+}
+var TARGET;
+var init_address = __esm({
+  "dist/network/address.js"() {
+    "use strict";
+    init_roster();
+    TARGET = /^[^/@\s]{1,200}$/;
+  }
+});
+
+// dist/network/store.js
+import fs18 from "node:fs";
+import path17 from "node:path";
+function openNetworkStore(dbPath, options = {}) {
+  const dir = path17.dirname(dbPath);
+  fs18.mkdirSync(dir, { recursive: true });
+  try {
+    process.umask(63);
+  } catch {
+  }
+  removeGroupAndOtherAccess(dir);
+  guardDatabaseFiles(dbPath);
+  const db2 = new MemeshDatabase(dbPath);
+  try {
+    if (options.busyTimeoutMs !== void 0)
+      db2.pragma(`busy_timeout = ${options.busyTimeoutMs}`);
+    db2.pragma("journal_mode = WAL");
+    db2.exec(AGENT_NETWORK_SCHEMA_SQL);
+  } catch (err) {
+    db2.close();
+    throw err;
+  }
+  return db2;
+}
+function databaseExists(dbPath) {
+  return fs18.existsSync(dbPath);
+}
+function readConfig2(db2) {
+  const row = db2.prepare(`SELECT network_id, owner_id, machine_id, machine_name, person, relay_url, roster_json, roster_signature
+       FROM agent_network_config WHERE id = 1`).get();
+  return row ?? null;
+}
+function insertConfig(db2, config2, now) {
+  db2.prepare(`INSERT INTO agent_network_config
+       (id, network_id, owner_id, machine_id, machine_name, person, relay_url, roster_json, roster_signature, created_at_ms)
+     VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(config2.network_id, config2.owner_id, config2.machine_id, config2.machine_name, config2.person, config2.relay_url, config2.roster_json, config2.roster_signature, now);
+}
+function signedRosterOf(config2) {
+  return { roster_json: config2.roster_json, signature: config2.roster_signature };
+}
+var init_store = __esm({
+  "dist/network/store.js"() {
+    "use strict";
+    init_file_mode();
+    init_agent_network_schema();
+    init_sqlite();
+  }
+});
+
+// dist/network/outbound.js
+function joinedNetwork(db2) {
+  let config2;
+  try {
+    config2 = readConfig2(db2);
+  } catch {
+    return null;
+  }
+  if (!config2)
+    return null;
+  return { config: config2, roster: verifyRoster(signedRosterOf(config2), config2.owner_id, config2.network_id) };
+}
+function resolveNetworkRecipient(db2, recipient) {
+  const address = parseNetworkAddress(recipient);
+  if (address === null)
+    return null;
+  const joined = joinedNetwork(db2);
+  if (joined === null)
+    return null;
+  const member = joined.roster.members.find((candidate) => candidate.name === address.machine);
+  if (!member)
+    return null;
+  if (member.machine_id === joined.config.machine_id) {
+    throw new NetworkRecipientError(`${recipient} is this machine. Send to ${JSON.stringify(address.target)} directly.`);
+  }
+  if (member.person !== address.person) {
+    throw new NetworkRecipientError(`Machine ${JSON.stringify(address.machine)} belongs to ${JSON.stringify(member.person)} in this network, not ${JSON.stringify(address.person)}. Use ${formatNetworkAddress(member.person, address.target, address.machine)}.`);
+  }
+  const path29 = joined.config.relay_url === RELAY_OFF ? "directly" : "through the relay or directly";
+  return {
+    address,
+    member,
+    note: `This goes to machine ${address.machine} ${path29}; while that machine is offline it is retried for up to one day.`
+  };
+}
+function networkReceiptFact(db2, deliveryId) {
+  let row;
+  try {
+    row = db2.prepare(`
+      SELECT delivery_id, message_id, state, attempts, last_error_code, delivered_at_ms, path
+      FROM agent_network_outbox WHERE delivery_id = ? AND state != 'local'
+    `).get(deliveryId);
+  } catch {
+    return null;
+  }
+  if (!row)
+    return null;
+  const deliveredAt = row.delivered_at_ms === null ? null : new Date(row.delivered_at_ms).toISOString();
+  return {
+    receipt_kind: "network",
+    fact_source: "agent_network_outbox",
+    message_id: row.message_id,
+    delivery_id: row.delivery_id,
+    network: {
+      state: row.state,
+      attempts: row.attempts,
+      last_error_code: row.last_error_code,
+      delivered_at: deliveredAt,
+      path: row.path
+    },
+    created_at: deliveredAt ?? (/* @__PURE__ */ new Date()).toISOString()
+  };
+}
+function remoteDiscoverCards(db2, project, now = Date.now()) {
+  const joined = joinedNetwork(db2);
+  if (joined === null)
+    return [];
+  const rows = db2.prepare(`
+    SELECT machine_id, principal, handle, host_kind, connected FROM agent_network_presence
+    WHERE project_hash = ? AND expires_at_ms > ? ORDER BY machine_id, handle
+  `).all(projectHash(joined.config.network_id, project), now);
+  const cards = [];
+  for (const row of rows) {
+    const member = joined.roster.members.find((candidate) => candidate.machine_id === row.machine_id);
+    if (!member || member.machine_id === joined.config.machine_id)
+      continue;
+    cards.push({
+      remote: true,
+      address: formatNetworkAddress(member.person, row.handle, member.name),
+      principal_address: formatNetworkAddress(member.person, row.principal, member.name),
+      machine: member.name,
+      person: member.person,
+      principal_id: row.principal,
+      handle: row.handle,
+      host_kind: row.host_kind,
+      active: row.connected === 1
+    });
+  }
+  return cards;
+}
+var PRESENCE_TTL_MS, NetworkRecipientError;
+var init_outbound = __esm({
+  "dist/network/outbound.js"() {
+    "use strict";
+    init_agent_messaging();
+    init_address();
+    init_roster();
+    init_store();
+    init_types2();
+    PRESENCE_TTL_MS = 3 * 6e4;
+    NetworkRecipientError = class extends AgentMessagingError {
+    };
+  }
+});
+
 // dist/transports/agent-messaging.js
-import { createHash as createHash10, randomUUID as randomUUID4 } from "node:crypto";
+import { createHash as createHash11, randomUUID as randomUUID4 } from "node:crypto";
 function configuredAgentMessageStorageQuotaBytes() {
   const raw = process.env[AGENT_MESSAGE_STORAGE_QUOTA_ENV];
   if (raw === void 0 || raw === "")
@@ -33300,7 +33767,7 @@ function parseStoredObject(raw, label) {
   throw new AgentMessagingError(`Invalid stored JSON object in ${label}.`);
 }
 function principalFallbackKey(idempotencyKey) {
-  return `principal-fallback:${createHash10("sha256").update(idempotencyKey).digest("hex")}`;
+  return `principal-fallback:${createHash11("sha256").update(idempotencyKey).digest("hex")}`;
 }
 function hasPrincipalFallback(db2, sent, idempotencyKey) {
   return db2.prepare(`
@@ -33377,6 +33844,10 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
       if (input2.fallback_to_principal !== void 0 && resolved.target_kind !== "session") {
         throw new AgentMessagingError('fallback_to_principal is only valid with target_kind "session".');
       }
+      const network = input2.recipient_handle === void 0 ? resolveNetworkRecipient(db2, resolved.recipient) : null;
+      if (network && (resolved.target_kind !== "principal" || resolved.intended_session !== void 0 || input2.fallback_to_principal !== void 0)) {
+        throw new AgentMessagingError("A message to another machine goes to a principal or a handle there: target_kind session, intended_session and fallback_to_principal do not apply.");
+      }
       const message = {
         project: input2.project,
         sender: input2.sender,
@@ -33397,9 +33868,11 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
         ...message,
         ...resolved
       }, {
-        notifier: resolved.target_kind === "session" ? void 0 : optionalRouterNotifier(),
+        notifier: resolved.target_kind === "session" || network ? void 0 : optionalRouterNotifier(),
         storage_quota_bytes: configuredAgentMessageStorageQuotaBytes()
       });
+      if (network)
+        return { ...publicSentMessage(sent), delivery_note: network.note };
       if (sent.target_kind !== "session")
         return publicSentMessage(sent);
       if (hasPrincipalFallback(db2, sent, input2.idempotency_key)) {
@@ -33432,13 +33905,23 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
         limit: input2.limit,
         hops: 0
       };
+      let local;
       try {
-        return await (dependencies.sendRouterRequest ?? sendAgentRouterRequest)(routerSocketPath(), request2);
+        local = await (dependencies.sendRouterRequest ?? sendAgentRouterRequest)(routerSocketPath(), request2);
       } catch (error62) {
         if (error62 instanceof AgentRouterError && !["timeout", "connection_closed"].includes(error62.code)) {
           throw error62;
         }
         throw new AgentDiscoveryUnavailableError();
+      }
+      try {
+        const remote = remoteDiscoverCards(db2, input2.project);
+        if (remote.length === 0)
+          return local;
+        const cards = Array.isArray(local.cards) ? local.cards : [];
+        return { ...local, cards: [...cards, ...remote] };
+      } catch (error62) {
+        return { ...local, network_note: `Agents on other machines could not be listed: ${error62 instanceof Error ? error62.message : String(error62)}` };
       }
     }
     case "fetch":
@@ -33470,8 +33953,12 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
         host_activation: input2.activation,
         detail: receiptDetail(input2.detail, context)
       });
-    case "receipts":
-      return readPublicReceipts(db2, input2);
+    case "receipts": {
+      const facts = readPublicReceipts(db2, input2);
+      const delivery = resolveCanonicalDelivery(db2, input2.project, input2.recipient, input2.message_id);
+      const network = networkReceiptFact(db2, delivery.delivery_id);
+      return network ? [...facts, network] : facts;
+    }
   }
 }
 var AgentRecipientUnavailableError, AgentRouterUnavailableError, AgentDiscoveryUnavailableError, AGENT_MESSAGE_STORAGE_QUOTA_ENV, EXACT_SESSION_NATIVE_TIMEOUT_MS, PUBLIC_DISPOSITIONS;
@@ -33485,6 +33972,7 @@ var init_agent_messaging2 = __esm({
     init_agent_message_inbox();
     init_work_topology();
     init_time_utils();
+    init_outbound();
     AgentRecipientUnavailableError = class extends AgentMessagingError {
       code = "recipient_unavailable";
       constructor(detail) {
@@ -33510,8 +33998,8 @@ var init_agent_messaging2 = __esm({
 });
 
 // dist/host-runtime/config.js
-import { randomBytes as randomBytes4 } from "node:crypto";
-import fs17 from "node:fs";
+import { randomBytes as randomBytes5 } from "node:crypto";
+import fs19 from "node:fs";
 function assertSecureLocalHostRuntimeSupported() {
   if (process.platform === "win32") {
     throw new Error(SECURE_LOCAL_HOST_RUNTIME_UNSUPPORTED);
@@ -33530,7 +34018,7 @@ function readTokenFile(tokenFile) {
 function ensureRouterTokenFile(tokenFile) {
   assertSecureLocalHostRuntimeSupported();
   try {
-    fs17.writeFileSync(tokenFile, `${randomBytes4(32).toString("hex")}
+    fs19.writeFileSync(tokenFile, `${randomBytes5(32).toString("hex")}
 `, { mode: 384, flag: "wx" });
   } catch (error62) {
     if (error62.code !== "EEXIST")
@@ -33546,12 +34034,12 @@ function requiredString(value, field) {
 }
 function readOwnerPrivateFile(file2, label, maxBytes) {
   assertSecureLocalHostRuntimeSupported();
-  if (typeof fs17.constants.O_NOFOLLOW !== "number") {
+  if (typeof fs19.constants.O_NOFOLLOW !== "number") {
     throw new Error(`This platform cannot safely reject a symlink ${label}.`);
   }
-  const descriptor = fs17.openSync(file2, fs17.constants.O_RDONLY | fs17.constants.O_NOFOLLOW | fs17.constants.O_NONBLOCK);
+  const descriptor = fs19.openSync(file2, fs19.constants.O_RDONLY | fs19.constants.O_NOFOLLOW | fs19.constants.O_NONBLOCK);
   try {
-    const stat = fs17.fstatSync(descriptor);
+    const stat = fs19.fstatSync(descriptor);
     if (!stat.isFile())
       throw new Error(`The ${label} must be an owner-private regular file.`);
     assertOwnerPrivate(stat, label);
@@ -33560,7 +34048,7 @@ function readOwnerPrivateFile(file2, label, maxBytes) {
     const content = Buffer.allocUnsafe(maxBytes + 1);
     let bytesRead = 0;
     while (bytesRead < content.length) {
-      const chunkBytes = fs17.readSync(descriptor, content, bytesRead, content.length - bytesRead, null);
+      const chunkBytes = fs19.readSync(descriptor, content, bytesRead, content.length - bytesRead, null);
       if (chunkBytes === 0)
         break;
       bytesRead += chunkBytes;
@@ -33569,7 +34057,7 @@ function readOwnerPrivateFile(file2, label, maxBytes) {
       throw new Error(`The ${label} exceeds its ${maxBytes}-byte limit.`);
     return content.subarray(0, bytesRead).toString("utf8");
   } finally {
-    fs17.closeSync(descriptor);
+    fs19.closeSync(descriptor);
   }
 }
 function assertOwnerPrivate(stat, label) {
@@ -34194,9 +34682,9 @@ var init_demo = __esm({
   }
 });
 
-// node_modules/ms/index.js
+// ../suspicious-lichterman-760154/node_modules/ms/index.js
 var require_ms = __commonJS({
-  "node_modules/ms/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/ms/index.js"(exports, module) {
     var s = 1e3;
     var m = s * 60;
     var h = m * 60;
@@ -34310,9 +34798,9 @@ var require_ms = __commonJS({
   }
 });
 
-// node_modules/debug/src/common.js
+// ../suspicious-lichterman-760154/node_modules/debug/src/common.js
 var require_common = __commonJS({
-  "node_modules/debug/src/common.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/debug/src/common.js"(exports, module) {
     function setup(env) {
       createDebug.debug = createDebug;
       createDebug.default = createDebug;
@@ -34487,9 +34975,9 @@ var require_common = __commonJS({
   }
 });
 
-// node_modules/debug/src/browser.js
+// ../suspicious-lichterman-760154/node_modules/debug/src/browser.js
 var require_browser = __commonJS({
-  "node_modules/debug/src/browser.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/debug/src/browser.js"(exports, module) {
     exports.formatArgs = formatArgs;
     exports.save = save;
     exports.load = load;
@@ -34657,9 +35145,9 @@ var require_browser = __commonJS({
   }
 });
 
-// node_modules/has-flag/index.js
+// ../suspicious-lichterman-760154/node_modules/has-flag/index.js
 var require_has_flag = __commonJS({
-  "node_modules/has-flag/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/has-flag/index.js"(exports, module) {
     "use strict";
     module.exports = (flag, argv = process.argv) => {
       const prefix = flag.startsWith("-") ? "" : flag.length === 1 ? "-" : "--";
@@ -34670,9 +35158,9 @@ var require_has_flag = __commonJS({
   }
 });
 
-// node_modules/supports-color/index.js
+// ../suspicious-lichterman-760154/node_modules/supports-color/index.js
 var require_supports_color = __commonJS({
-  "node_modules/supports-color/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/supports-color/index.js"(exports, module) {
     "use strict";
     var os4 = __require("os");
     var tty = __require("tty");
@@ -34772,9 +35260,9 @@ var require_supports_color = __commonJS({
   }
 });
 
-// node_modules/debug/src/node.js
+// ../suspicious-lichterman-760154/node_modules/debug/src/node.js
 var require_node = __commonJS({
-  "node_modules/debug/src/node.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/debug/src/node.js"(exports, module) {
     var tty = __require("tty");
     var util = __require("util");
     exports.init = init;
@@ -34946,9 +35434,9 @@ var require_node = __commonJS({
   }
 });
 
-// node_modules/debug/src/index.js
+// ../suspicious-lichterman-760154/node_modules/debug/src/index.js
 var require_src = __commonJS({
-  "node_modules/debug/src/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/debug/src/index.js"(exports, module) {
     if (typeof process === "undefined" || process.type === "renderer" || process.browser === true || process.__nwjs) {
       module.exports = require_browser();
     } else {
@@ -34957,9 +35445,9 @@ var require_src = __commonJS({
   }
 });
 
-// node_modules/depd/index.js
+// ../suspicious-lichterman-760154/node_modules/depd/index.js
 var require_depd = __commonJS({
-  "node_modules/depd/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/depd/index.js"(exports, module) {
     var relative = __require("path").relative;
     module.exports = depd;
     var basePath = process.cwd();
@@ -35263,9 +35751,9 @@ var require_depd = __commonJS({
   }
 });
 
-// node_modules/setprototypeof/index.js
+// ../suspicious-lichterman-760154/node_modules/setprototypeof/index.js
 var require_setprototypeof = __commonJS({
-  "node_modules/setprototypeof/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/setprototypeof/index.js"(exports, module) {
     "use strict";
     module.exports = Object.setPrototypeOf || ({ __proto__: [] } instanceof Array ? setProtoOf : mixinProperties);
     function setProtoOf(obj, proto) {
@@ -35283,9 +35771,9 @@ var require_setprototypeof = __commonJS({
   }
 });
 
-// node_modules/statuses/codes.json
+// ../suspicious-lichterman-760154/node_modules/statuses/codes.json
 var require_codes = __commonJS({
-  "node_modules/statuses/codes.json"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/statuses/codes.json"(exports, module) {
     module.exports = {
       "100": "Continue",
       "101": "Switching Protocols",
@@ -35354,9 +35842,9 @@ var require_codes = __commonJS({
   }
 });
 
-// node_modules/statuses/index.js
+// ../suspicious-lichterman-760154/node_modules/statuses/index.js
 var require_statuses = __commonJS({
-  "node_modules/statuses/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/statuses/index.js"(exports, module) {
     "use strict";
     var codes = require_codes();
     module.exports = status;
@@ -35425,9 +35913,9 @@ var require_statuses = __commonJS({
   }
 });
 
-// node_modules/inherits/inherits_browser.js
+// ../suspicious-lichterman-760154/node_modules/inherits/inherits_browser.js
 var require_inherits_browser = __commonJS({
-  "node_modules/inherits/inherits_browser.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/inherits/inherits_browser.js"(exports, module) {
     if (typeof Object.create === "function") {
       module.exports = function inherits(ctor, superCtor) {
         if (superCtor) {
@@ -35457,9 +35945,9 @@ var require_inherits_browser = __commonJS({
   }
 });
 
-// node_modules/inherits/inherits.js
+// ../suspicious-lichterman-760154/node_modules/inherits/inherits.js
 var require_inherits = __commonJS({
-  "node_modules/inherits/inherits.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/inherits/inherits.js"(exports, module) {
     try {
       util = __require("util");
       if (typeof util.inherits !== "function") throw "";
@@ -35471,9 +35959,9 @@ var require_inherits = __commonJS({
   }
 });
 
-// node_modules/toidentifier/index.js
+// ../suspicious-lichterman-760154/node_modules/toidentifier/index.js
 var require_toidentifier = __commonJS({
-  "node_modules/toidentifier/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/toidentifier/index.js"(exports, module) {
     "use strict";
     module.exports = toIdentifier;
     function toIdentifier(str) {
@@ -35484,9 +35972,9 @@ var require_toidentifier = __commonJS({
   }
 });
 
-// node_modules/http-errors/index.js
+// ../suspicious-lichterman-760154/node_modules/http-errors/index.js
 var require_http_errors = __commonJS({
-  "node_modules/http-errors/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/http-errors/index.js"(exports, module) {
     "use strict";
     var deprecate = require_depd()("http-errors");
     var setPrototypeOf = require_setprototypeof();
@@ -35648,9 +36136,9 @@ var require_http_errors = __commonJS({
   }
 });
 
-// node_modules/bytes/index.js
+// ../suspicious-lichterman-760154/node_modules/bytes/index.js
 var require_bytes = __commonJS({
-  "node_modules/bytes/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/bytes/index.js"(exports, module) {
     "use strict";
     module.exports = bytes;
     module.exports.format = format;
@@ -35737,9 +36225,9 @@ var require_bytes = __commonJS({
   }
 });
 
-// node_modules/safer-buffer/safer.js
+// ../suspicious-lichterman-760154/node_modules/safer-buffer/safer.js
 var require_safer = __commonJS({
-  "node_modules/safer-buffer/safer.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/safer-buffer/safer.js"(exports, module) {
     "use strict";
     var buffer = __require("buffer");
     var Buffer3 = buffer.Buffer;
@@ -35805,9 +36293,9 @@ var require_safer = __commonJS({
   }
 });
 
-// node_modules/iconv-lite/lib/bom-handling.js
+// ../suspicious-lichterman-760154/node_modules/iconv-lite/lib/bom-handling.js
 var require_bom_handling = __commonJS({
-  "node_modules/iconv-lite/lib/bom-handling.js"(exports) {
+  "../suspicious-lichterman-760154/node_modules/iconv-lite/lib/bom-handling.js"(exports) {
     "use strict";
     var BOMChar = "\uFEFF";
     exports.PrependBOM = PrependBOMWrapper;
@@ -35851,9 +36339,9 @@ var require_bom_handling = __commonJS({
   }
 });
 
-// node_modules/iconv-lite/lib/helpers/merge-exports.js
+// ../suspicious-lichterman-760154/node_modules/iconv-lite/lib/helpers/merge-exports.js
 var require_merge_exports = __commonJS({
-  "node_modules/iconv-lite/lib/helpers/merge-exports.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/iconv-lite/lib/helpers/merge-exports.js"(exports, module) {
     "use strict";
     var hasOwn = typeof Object.hasOwn === "undefined" ? Function.call.bind(Object.prototype.hasOwnProperty) : Object.hasOwn;
     function mergeModules(target, module2) {
@@ -35867,9 +36355,9 @@ var require_merge_exports = __commonJS({
   }
 });
 
-// node_modules/iconv-lite/encodings/internal.js
+// ../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/internal.js
 var require_internal = __commonJS({
-  "node_modules/iconv-lite/encodings/internal.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/internal.js"(exports, module) {
     "use strict";
     var Buffer3 = require_safer().Buffer;
     module.exports = {
@@ -36048,9 +36536,9 @@ var require_internal = __commonJS({
   }
 });
 
-// node_modules/iconv-lite/encodings/utf32.js
+// ../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/utf32.js
 var require_utf32 = __commonJS({
-  "node_modules/iconv-lite/encodings/utf32.js"(exports) {
+  "../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/utf32.js"(exports) {
     "use strict";
     var Buffer3 = require_safer().Buffer;
     exports._utf32 = Utf32Codec;
@@ -36279,9 +36767,9 @@ var require_utf32 = __commonJS({
   }
 });
 
-// node_modules/iconv-lite/encodings/utf16.js
+// ../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/utf16.js
 var require_utf16 = __commonJS({
-  "node_modules/iconv-lite/encodings/utf16.js"(exports) {
+  "../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/utf16.js"(exports) {
     "use strict";
     var Buffer3 = require_safer().Buffer;
     exports.utf16be = Utf16BECodec;
@@ -36422,9 +36910,9 @@ var require_utf16 = __commonJS({
   }
 });
 
-// node_modules/iconv-lite/encodings/utf7.js
+// ../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/utf7.js
 var require_utf7 = __commonJS({
-  "node_modules/iconv-lite/encodings/utf7.js"(exports) {
+  "../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/utf7.js"(exports) {
     "use strict";
     var Buffer3 = require_safer().Buffer;
     exports.utf7 = Utf7Codec;
@@ -36640,9 +37128,9 @@ var require_utf7 = __commonJS({
   }
 });
 
-// node_modules/iconv-lite/encodings/sbcs-codec.js
+// ../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/sbcs-codec.js
 var require_sbcs_codec = __commonJS({
-  "node_modules/iconv-lite/encodings/sbcs-codec.js"(exports) {
+  "../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/sbcs-codec.js"(exports) {
     "use strict";
     var Buffer3 = require_safer().Buffer;
     exports._sbcs = SBCSCodec;
@@ -36702,9 +37190,9 @@ var require_sbcs_codec = __commonJS({
   }
 });
 
-// node_modules/iconv-lite/encodings/sbcs-data.js
+// ../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/sbcs-data.js
 var require_sbcs_data = __commonJS({
-  "node_modules/iconv-lite/encodings/sbcs-data.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/sbcs-data.js"(exports, module) {
     "use strict";
     module.exports = {
       // Not supported by iconv, not sure why.
@@ -36855,9 +37343,9 @@ var require_sbcs_data = __commonJS({
   }
 });
 
-// node_modules/iconv-lite/encodings/sbcs-data-generated.js
+// ../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/sbcs-data-generated.js
 var require_sbcs_data_generated = __commonJS({
-  "node_modules/iconv-lite/encodings/sbcs-data-generated.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/sbcs-data-generated.js"(exports, module) {
     "use strict";
     module.exports = {
       "437": "cp437",
@@ -37310,9 +37798,9 @@ var require_sbcs_data_generated = __commonJS({
   }
 });
 
-// node_modules/iconv-lite/encodings/dbcs-codec.js
+// ../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/dbcs-codec.js
 var require_dbcs_codec = __commonJS({
-  "node_modules/iconv-lite/encodings/dbcs-codec.js"(exports) {
+  "../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/dbcs-codec.js"(exports) {
     "use strict";
     var Buffer3 = require_safer().Buffer;
     exports._dbcs = DBCSCodec;
@@ -37770,9 +38258,9 @@ var require_dbcs_codec = __commonJS({
   }
 });
 
-// node_modules/iconv-lite/encodings/tables/shiftjis.json
+// ../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/tables/shiftjis.json
 var require_shiftjis = __commonJS({
-  "node_modules/iconv-lite/encodings/tables/shiftjis.json"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/tables/shiftjis.json"(exports, module) {
     module.exports = [
       ["0", "\0", 128],
       ["a1", "\uFF61", 62],
@@ -37901,9 +38389,9 @@ var require_shiftjis = __commonJS({
   }
 });
 
-// node_modules/iconv-lite/encodings/tables/eucjp.json
+// ../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/tables/eucjp.json
 var require_eucjp = __commonJS({
-  "node_modules/iconv-lite/encodings/tables/eucjp.json"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/tables/eucjp.json"(exports, module) {
     module.exports = [
       ["0", "\0", 127],
       ["8ea1", "\uFF61", 62],
@@ -38089,9 +38577,9 @@ var require_eucjp = __commonJS({
   }
 });
 
-// node_modules/iconv-lite/encodings/tables/cp936.json
+// ../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/tables/cp936.json
 var require_cp936 = __commonJS({
-  "node_modules/iconv-lite/encodings/tables/cp936.json"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/tables/cp936.json"(exports, module) {
     module.exports = [
       ["0", "\0", 127, "\u20AC"],
       ["8140", "\u4E02\u4E04\u4E05\u4E06\u4E0F\u4E12\u4E17\u4E1F\u4E20\u4E21\u4E23\u4E26\u4E29\u4E2E\u4E2F\u4E31\u4E33\u4E35\u4E37\u4E3C\u4E40\u4E41\u4E42\u4E44\u4E46\u4E4A\u4E51\u4E55\u4E57\u4E5A\u4E5B\u4E62\u4E63\u4E64\u4E65\u4E67\u4E68\u4E6A", 5, "\u4E72\u4E74", 9, "\u4E7F", 6, "\u4E87\u4E8A"],
@@ -38359,9 +38847,9 @@ var require_cp936 = __commonJS({
   }
 });
 
-// node_modules/iconv-lite/encodings/tables/gbk-added.json
+// ../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/tables/gbk-added.json
 var require_gbk_added = __commonJS({
-  "node_modules/iconv-lite/encodings/tables/gbk-added.json"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/tables/gbk-added.json"(exports, module) {
     module.exports = [
       ["a140", "\uE4C6", 62],
       ["a180", "\uE505", 32],
@@ -38421,16 +38909,16 @@ var require_gbk_added = __commonJS({
   }
 });
 
-// node_modules/iconv-lite/encodings/tables/gb18030-ranges.json
+// ../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/tables/gb18030-ranges.json
 var require_gb18030_ranges = __commonJS({
-  "node_modules/iconv-lite/encodings/tables/gb18030-ranges.json"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/tables/gb18030-ranges.json"(exports, module) {
     module.exports = { uChars: [128, 165, 169, 178, 184, 216, 226, 235, 238, 244, 248, 251, 253, 258, 276, 284, 300, 325, 329, 334, 364, 463, 465, 467, 469, 471, 473, 475, 477, 506, 594, 610, 712, 716, 730, 930, 938, 962, 970, 1026, 1104, 1106, 8209, 8215, 8218, 8222, 8231, 8241, 8244, 8246, 8252, 8365, 8452, 8454, 8458, 8471, 8482, 8556, 8570, 8596, 8602, 8713, 8720, 8722, 8726, 8731, 8737, 8740, 8742, 8748, 8751, 8760, 8766, 8777, 8781, 8787, 8802, 8808, 8816, 8854, 8858, 8870, 8896, 8979, 9322, 9372, 9548, 9588, 9616, 9622, 9634, 9652, 9662, 9672, 9676, 9680, 9702, 9735, 9738, 9793, 9795, 11906, 11909, 11913, 11917, 11928, 11944, 11947, 11951, 11956, 11960, 11964, 11979, 12284, 12292, 12312, 12319, 12330, 12351, 12436, 12447, 12535, 12543, 12586, 12842, 12850, 12964, 13200, 13215, 13218, 13253, 13263, 13267, 13270, 13384, 13428, 13727, 13839, 13851, 14617, 14703, 14801, 14816, 14964, 15183, 15471, 15585, 16471, 16736, 17208, 17325, 17330, 17374, 17623, 17997, 18018, 18212, 18218, 18301, 18318, 18760, 18811, 18814, 18820, 18823, 18844, 18848, 18872, 19576, 19620, 19738, 19887, 40870, 59244, 59336, 59367, 59413, 59417, 59423, 59431, 59437, 59443, 59452, 59460, 59478, 59493, 63789, 63866, 63894, 63976, 63986, 64016, 64018, 64021, 64025, 64034, 64037, 64042, 65074, 65093, 65107, 65112, 65127, 65132, 65375, 65510, 65536], gbChars: [0, 36, 38, 45, 50, 81, 89, 95, 96, 100, 103, 104, 105, 109, 126, 133, 148, 172, 175, 179, 208, 306, 307, 308, 309, 310, 311, 312, 313, 341, 428, 443, 544, 545, 558, 741, 742, 749, 750, 805, 819, 820, 7922, 7924, 7925, 7927, 7934, 7943, 7944, 7945, 7950, 8062, 8148, 8149, 8152, 8164, 8174, 8236, 8240, 8262, 8264, 8374, 8380, 8381, 8384, 8388, 8390, 8392, 8393, 8394, 8396, 8401, 8406, 8416, 8419, 8424, 8437, 8439, 8445, 8482, 8485, 8496, 8521, 8603, 8936, 8946, 9046, 9050, 9063, 9066, 9076, 9092, 9100, 9108, 9111, 9113, 9131, 9162, 9164, 9218, 9219, 11329, 11331, 11334, 11336, 11346, 11361, 11363, 11366, 11370, 11372, 11375, 11389, 11682, 11686, 11687, 11692, 11694, 11714, 11716, 11723, 11725, 11730, 11736, 11982, 11989, 12102, 12336, 12348, 12350, 12384, 12393, 12395, 12397, 12510, 12553, 12851, 12962, 12973, 13738, 13823, 13919, 13933, 14080, 14298, 14585, 14698, 15583, 15847, 16318, 16434, 16438, 16481, 16729, 17102, 17122, 17315, 17320, 17402, 17418, 17859, 17909, 17911, 17915, 17916, 17936, 17939, 17961, 18664, 18703, 18814, 18962, 19043, 33469, 33470, 33471, 33484, 33485, 33490, 33497, 33501, 33505, 33513, 33520, 33536, 33550, 37845, 37921, 37948, 38029, 38038, 38064, 38065, 38066, 38069, 38075, 38076, 38078, 39108, 39109, 39113, 39114, 39115, 39116, 39265, 39394, 189e3] };
   }
 });
 
-// node_modules/iconv-lite/encodings/tables/cp949.json
+// ../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/tables/cp949.json
 var require_cp949 = __commonJS({
-  "node_modules/iconv-lite/encodings/tables/cp949.json"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/tables/cp949.json"(exports, module) {
     module.exports = [
       ["0", "\0", 127],
       ["8141", "\uAC02\uAC03\uAC05\uAC06\uAC0B", 4, "\uAC18\uAC1E\uAC1F\uAC21\uAC22\uAC23\uAC25", 6, "\uAC2E\uAC32\uAC33\uAC34"],
@@ -38707,9 +39195,9 @@ var require_cp949 = __commonJS({
   }
 });
 
-// node_modules/iconv-lite/encodings/tables/cp950.json
+// ../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/tables/cp950.json
 var require_cp950 = __commonJS({
-  "node_modules/iconv-lite/encodings/tables/cp950.json"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/tables/cp950.json"(exports, module) {
     module.exports = [
       ["0", "\0", 127],
       ["a140", "\u3000\uFF0C\u3001\u3002\uFF0E\u2027\uFF1B\uFF1A\uFF1F\uFF01\uFE30\u2026\u2025\uFE50\uFE51\uFE52\xB7\uFE54\uFE55\uFE56\uFE57\uFF5C\u2013\uFE31\u2014\uFE33\u2574\uFE34\uFE4F\uFF08\uFF09\uFE35\uFE36\uFF5B\uFF5D\uFE37\uFE38\u3014\u3015\uFE39\uFE3A\u3010\u3011\uFE3B\uFE3C\u300A\u300B\uFE3D\uFE3E\u3008\u3009\uFE3F\uFE40\u300C\u300D\uFE41\uFE42\u300E\u300F\uFE43\uFE44\uFE59\uFE5A"],
@@ -38890,9 +39378,9 @@ var require_cp950 = __commonJS({
   }
 });
 
-// node_modules/iconv-lite/encodings/tables/big5-added.json
+// ../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/tables/big5-added.json
 var require_big5_added = __commonJS({
-  "node_modules/iconv-lite/encodings/tables/big5-added.json"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/tables/big5-added.json"(exports, module) {
     module.exports = [
       ["8740", "\u43F0\u4C32\u4603\u45A6\u4578\u{27267}\u4D77\u45B3\u{27CB1}\u4CE2\u{27CC5}\u3B95\u4736\u4744\u4C47\u4C40\u{242BF}\u{23617}\u{27352}\u{26E8B}\u{270D2}\u4C57\u{2A351}\u474F\u45DA\u4C85\u{27C6C}\u4D07\u4AA4\u46A1\u{26B23}\u7225\u{25A54}\u{21A63}\u{23E06}\u{23F61}\u664D\u56FB"],
       ["8767", "\u7D95\u591D\u{28BB9}\u3DF4\u9734\u{27BEF}\u5BDB\u{21D5E}\u5AA4\u3625\u{29EB0}\u5AD1\u5BB7\u5CFC\u676E\u8593\u{29945}\u7461\u749D\u3875\u{21D53}\u{2369E}\u{26021}\u3EEC"],
@@ -39018,9 +39506,9 @@ var require_big5_added = __commonJS({
   }
 });
 
-// node_modules/iconv-lite/encodings/dbcs-data.js
+// ../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/dbcs-data.js
 var require_dbcs_data = __commonJS({
-  "node_modules/iconv-lite/encodings/dbcs-data.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/dbcs-data.js"(exports, module) {
     "use strict";
     module.exports = {
       // == Japanese/ShiftJIS ====================================================
@@ -39265,9 +39753,9 @@ var require_dbcs_data = __commonJS({
   }
 });
 
-// node_modules/iconv-lite/encodings/index.js
+// ../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/index.js
 var require_encodings = __commonJS({
-  "node_modules/iconv-lite/encodings/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/iconv-lite/encodings/index.js"(exports, module) {
     "use strict";
     var mergeModules = require_merge_exports();
     var modules = [
@@ -39290,9 +39778,9 @@ var require_encodings = __commonJS({
   }
 });
 
-// node_modules/iconv-lite/lib/streams.js
+// ../suspicious-lichterman-760154/node_modules/iconv-lite/lib/streams.js
 var require_streams = __commonJS({
-  "node_modules/iconv-lite/lib/streams.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/iconv-lite/lib/streams.js"(exports, module) {
     "use strict";
     var Buffer3 = require_safer().Buffer;
     module.exports = function(streamModule) {
@@ -39387,9 +39875,9 @@ var require_streams = __commonJS({
   }
 });
 
-// node_modules/iconv-lite/lib/index.js
+// ../suspicious-lichterman-760154/node_modules/iconv-lite/lib/index.js
 var require_lib = __commonJS({
-  "node_modules/iconv-lite/lib/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/iconv-lite/lib/index.js"(exports, module) {
     "use strict";
     var Buffer3 = require_safer().Buffer;
     var bomHandling = require_bom_handling();
@@ -39519,9 +40007,9 @@ var require_lib = __commonJS({
   }
 });
 
-// node_modules/unpipe/index.js
+// ../suspicious-lichterman-760154/node_modules/unpipe/index.js
 var require_unpipe = __commonJS({
-  "node_modules/unpipe/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/unpipe/index.js"(exports, module) {
     "use strict";
     module.exports = unpipe;
     function hasPipeDataListeners(stream) {
@@ -39557,9 +40045,9 @@ var require_unpipe = __commonJS({
   }
 });
 
-// node_modules/raw-body/index.js
+// ../suspicious-lichterman-760154/node_modules/raw-body/index.js
 var require_raw_body = __commonJS({
-  "node_modules/raw-body/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/raw-body/index.js"(exports, module) {
     "use strict";
     var asyncHooks = tryRequireAsyncHooks();
     var bytes = require_bytes();
@@ -39746,9 +40234,9 @@ var require_raw_body = __commonJS({
   }
 });
 
-// node_modules/ee-first/index.js
+// ../suspicious-lichterman-760154/node_modules/ee-first/index.js
 var require_ee_first = __commonJS({
-  "node_modules/ee-first/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/ee-first/index.js"(exports, module) {
     "use strict";
     module.exports = first;
     function first(stuff, done) {
@@ -39802,9 +40290,9 @@ var require_ee_first = __commonJS({
   }
 });
 
-// node_modules/on-finished/index.js
+// ../suspicious-lichterman-760154/node_modules/on-finished/index.js
 var require_on_finished = __commonJS({
-  "node_modules/on-finished/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/on-finished/index.js"(exports, module) {
     "use strict";
     module.exports = onFinished;
     module.exports.isFinished = isFinished;
@@ -39906,9 +40394,9 @@ var require_on_finished = __commonJS({
   }
 });
 
-// node_modules/type-is/node_modules/content-type/dist/index.js
+// ../suspicious-lichterman-760154/node_modules/type-is/node_modules/content-type/dist/index.js
 var require_dist = __commonJS({
-  "node_modules/type-is/node_modules/content-type/dist/index.js"(exports) {
+  "../suspicious-lichterman-760154/node_modules/type-is/node_modules/content-type/dist/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.format = format;
@@ -40037,9 +40525,9 @@ var require_dist = __commonJS({
   }
 });
 
-// node_modules/mime-db/db.json
+// ../suspicious-lichterman-760154/node_modules/mime-db/db.json
 var require_db = __commonJS({
-  "node_modules/mime-db/db.json"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/mime-db/db.json"(exports, module) {
     module.exports = {
       "application/1d-interleaved-parityfec": {
         source: "iana"
@@ -49385,16 +49873,16 @@ var require_db = __commonJS({
   }
 });
 
-// node_modules/mime-db/index.js
+// ../suspicious-lichterman-760154/node_modules/mime-db/index.js
 var require_mime_db = __commonJS({
-  "node_modules/mime-db/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/mime-db/index.js"(exports, module) {
     module.exports = require_db();
   }
 });
 
-// node_modules/mime-types/mimeScore.js
+// ../suspicious-lichterman-760154/node_modules/mime-types/mimeScore.js
 var require_mimeScore = __commonJS({
-  "node_modules/mime-types/mimeScore.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/mime-types/mimeScore.js"(exports, module) {
     var FACET_SCORES = {
       "prs.": 100,
       "x-": 200,
@@ -49436,9 +49924,9 @@ var require_mimeScore = __commonJS({
   }
 });
 
-// node_modules/mime-types/index.js
+// ../suspicious-lichterman-760154/node_modules/mime-types/index.js
 var require_mime_types = __commonJS({
-  "node_modules/mime-types/index.js"(exports) {
+  "../suspicious-lichterman-760154/node_modules/mime-types/index.js"(exports) {
     "use strict";
     var db2 = require_mime_db();
     var extname = __require("path").extname;
@@ -49542,9 +50030,9 @@ var require_mime_types = __commonJS({
   }
 });
 
-// node_modules/media-typer/index.js
+// ../suspicious-lichterman-760154/node_modules/media-typer/index.js
 var require_media_typer = __commonJS({
-  "node_modules/media-typer/index.js"(exports) {
+  "../suspicious-lichterman-760154/node_modules/media-typer/index.js"(exports) {
     "use strict";
     var SUBTYPE_NAME_REGEXP = /^[A-Za-z0-9][A-Za-z0-9!#$&^_.-]{0,126}$/;
     var TYPE_NAME_REGEXP = /^[A-Za-z0-9][A-Za-z0-9!#$&^_-]{0,126}$/;
@@ -49612,9 +50100,9 @@ var require_media_typer = __commonJS({
   }
 });
 
-// node_modules/type-is/index.js
+// ../suspicious-lichterman-760154/node_modules/type-is/index.js
 var require_type_is = __commonJS({
-  "node_modules/type-is/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/type-is/index.js"(exports, module) {
     "use strict";
     var contentType = require_dist();
     var mime = require_mime_types();
@@ -49703,9 +50191,9 @@ var require_type_is = __commonJS({
   }
 });
 
-// node_modules/body-parser/node_modules/content-type/dist/index.js
+// ../suspicious-lichterman-760154/node_modules/body-parser/node_modules/content-type/dist/index.js
 var require_dist2 = __commonJS({
-  "node_modules/body-parser/node_modules/content-type/dist/index.js"(exports) {
+  "../suspicious-lichterman-760154/node_modules/body-parser/node_modules/content-type/dist/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.format = format;
@@ -49834,9 +50322,9 @@ var require_dist2 = __commonJS({
   }
 });
 
-// node_modules/body-parser/lib/utils.js
+// ../suspicious-lichterman-760154/node_modules/body-parser/lib/utils.js
 var require_utils = __commonJS({
-  "node_modules/body-parser/lib/utils.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/body-parser/lib/utils.js"(exports, module) {
     "use strict";
     var bytes = require_bytes();
     var contentType = require_dist2();
@@ -49886,9 +50374,9 @@ var require_utils = __commonJS({
   }
 });
 
-// node_modules/body-parser/lib/read.js
+// ../suspicious-lichterman-760154/node_modules/body-parser/lib/read.js
 var require_read = __commonJS({
-  "node_modules/body-parser/lib/read.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/body-parser/lib/read.js"(exports, module) {
     "use strict";
     var createError = require_http_errors();
     var getBody = require_raw_body();
@@ -50044,9 +50532,9 @@ var require_read = __commonJS({
   }
 });
 
-// node_modules/body-parser/lib/types/json.js
+// ../suspicious-lichterman-760154/node_modules/body-parser/lib/types/json.js
 var require_json = __commonJS({
-  "node_modules/body-parser/lib/types/json.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/body-parser/lib/types/json.js"(exports, module) {
     "use strict";
     var debug = require_src()("body-parser:json");
     var read = require_read();
@@ -50143,9 +50631,9 @@ var require_json = __commonJS({
   }
 });
 
-// node_modules/body-parser/lib/types/raw.js
+// ../suspicious-lichterman-760154/node_modules/body-parser/lib/types/raw.js
 var require_raw = __commonJS({
-  "node_modules/body-parser/lib/types/raw.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/body-parser/lib/types/raw.js"(exports, module) {
     "use strict";
     var debug = require_src()("body-parser:raw");
     var read = require_read();
@@ -50165,9 +50653,9 @@ var require_raw = __commonJS({
   }
 });
 
-// node_modules/body-parser/lib/types/text.js
+// ../suspicious-lichterman-760154/node_modules/body-parser/lib/types/text.js
 var require_text = __commonJS({
-  "node_modules/body-parser/lib/types/text.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/body-parser/lib/types/text.js"(exports, module) {
     "use strict";
     var debug = require_src()("body-parser:text");
     var read = require_read();
@@ -50182,24 +50670,24 @@ var require_text = __commonJS({
   }
 });
 
-// node_modules/es-errors/type.js
+// ../suspicious-lichterman-760154/node_modules/es-errors/type.js
 var require_type = __commonJS({
-  "node_modules/es-errors/type.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/es-errors/type.js"(exports, module) {
     "use strict";
     module.exports = TypeError;
   }
 });
 
-// node_modules/object-inspect/util.inspect.js
+// ../suspicious-lichterman-760154/node_modules/object-inspect/util.inspect.js
 var require_util_inspect = __commonJS({
-  "node_modules/object-inspect/util.inspect.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/object-inspect/util.inspect.js"(exports, module) {
     module.exports = __require("util").inspect;
   }
 });
 
-// node_modules/object-inspect/index.js
+// ../suspicious-lichterman-760154/node_modules/object-inspect/index.js
 var require_object_inspect = __commonJS({
-  "node_modules/object-inspect/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/object-inspect/index.js"(exports, module) {
     var hasMap = typeof Map === "function" && Map.prototype;
     var mapSizeDescriptor = Object.getOwnPropertyDescriptor && hasMap ? Object.getOwnPropertyDescriptor(Map.prototype, "size") : null;
     var mapSize2 = hasMap && mapSizeDescriptor && typeof mapSizeDescriptor.get === "function" ? mapSizeDescriptor.get : null;
@@ -50728,9 +51216,9 @@ var require_object_inspect = __commonJS({
   }
 });
 
-// node_modules/side-channel-list/index.js
+// ../suspicious-lichterman-760154/node_modules/side-channel-list/index.js
 var require_side_channel_list = __commonJS({
-  "node_modules/side-channel-list/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/side-channel-list/index.js"(exports, module) {
     "use strict";
     var inspect = require_object_inspect();
     var $TypeError = require_type();
@@ -50821,113 +51309,113 @@ var require_side_channel_list = __commonJS({
   }
 });
 
-// node_modules/es-object-atoms/index.js
+// ../suspicious-lichterman-760154/node_modules/es-object-atoms/index.js
 var require_es_object_atoms = __commonJS({
-  "node_modules/es-object-atoms/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/es-object-atoms/index.js"(exports, module) {
     "use strict";
     module.exports = Object;
   }
 });
 
-// node_modules/es-errors/index.js
+// ../suspicious-lichterman-760154/node_modules/es-errors/index.js
 var require_es_errors = __commonJS({
-  "node_modules/es-errors/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/es-errors/index.js"(exports, module) {
     "use strict";
     module.exports = Error;
   }
 });
 
-// node_modules/es-errors/eval.js
+// ../suspicious-lichterman-760154/node_modules/es-errors/eval.js
 var require_eval = __commonJS({
-  "node_modules/es-errors/eval.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/es-errors/eval.js"(exports, module) {
     "use strict";
     module.exports = EvalError;
   }
 });
 
-// node_modules/es-errors/range.js
+// ../suspicious-lichterman-760154/node_modules/es-errors/range.js
 var require_range = __commonJS({
-  "node_modules/es-errors/range.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/es-errors/range.js"(exports, module) {
     "use strict";
     module.exports = RangeError;
   }
 });
 
-// node_modules/es-errors/ref.js
+// ../suspicious-lichterman-760154/node_modules/es-errors/ref.js
 var require_ref = __commonJS({
-  "node_modules/es-errors/ref.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/es-errors/ref.js"(exports, module) {
     "use strict";
     module.exports = ReferenceError;
   }
 });
 
-// node_modules/es-errors/syntax.js
+// ../suspicious-lichterman-760154/node_modules/es-errors/syntax.js
 var require_syntax = __commonJS({
-  "node_modules/es-errors/syntax.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/es-errors/syntax.js"(exports, module) {
     "use strict";
     module.exports = SyntaxError;
   }
 });
 
-// node_modules/es-errors/uri.js
+// ../suspicious-lichterman-760154/node_modules/es-errors/uri.js
 var require_uri = __commonJS({
-  "node_modules/es-errors/uri.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/es-errors/uri.js"(exports, module) {
     "use strict";
     module.exports = URIError;
   }
 });
 
-// node_modules/math-intrinsics/abs.js
+// ../suspicious-lichterman-760154/node_modules/math-intrinsics/abs.js
 var require_abs = __commonJS({
-  "node_modules/math-intrinsics/abs.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/math-intrinsics/abs.js"(exports, module) {
     "use strict";
     module.exports = Math.abs;
   }
 });
 
-// node_modules/math-intrinsics/floor.js
+// ../suspicious-lichterman-760154/node_modules/math-intrinsics/floor.js
 var require_floor = __commonJS({
-  "node_modules/math-intrinsics/floor.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/math-intrinsics/floor.js"(exports, module) {
     "use strict";
     module.exports = Math.floor;
   }
 });
 
-// node_modules/math-intrinsics/max.js
+// ../suspicious-lichterman-760154/node_modules/math-intrinsics/max.js
 var require_max = __commonJS({
-  "node_modules/math-intrinsics/max.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/math-intrinsics/max.js"(exports, module) {
     "use strict";
     module.exports = Math.max;
   }
 });
 
-// node_modules/math-intrinsics/min.js
+// ../suspicious-lichterman-760154/node_modules/math-intrinsics/min.js
 var require_min = __commonJS({
-  "node_modules/math-intrinsics/min.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/math-intrinsics/min.js"(exports, module) {
     "use strict";
     module.exports = Math.min;
   }
 });
 
-// node_modules/math-intrinsics/pow.js
+// ../suspicious-lichterman-760154/node_modules/math-intrinsics/pow.js
 var require_pow = __commonJS({
-  "node_modules/math-intrinsics/pow.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/math-intrinsics/pow.js"(exports, module) {
     "use strict";
     module.exports = Math.pow;
   }
 });
 
-// node_modules/math-intrinsics/round.js
+// ../suspicious-lichterman-760154/node_modules/math-intrinsics/round.js
 var require_round = __commonJS({
-  "node_modules/math-intrinsics/round.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/math-intrinsics/round.js"(exports, module) {
     "use strict";
     module.exports = Math.round;
   }
 });
 
-// node_modules/math-intrinsics/isNaN.js
+// ../suspicious-lichterman-760154/node_modules/math-intrinsics/isNaN.js
 var require_isNaN = __commonJS({
-  "node_modules/math-intrinsics/isNaN.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/math-intrinsics/isNaN.js"(exports, module) {
     "use strict";
     module.exports = Number.isNaN || function isNaN2(a) {
       return a !== a;
@@ -50935,9 +51423,9 @@ var require_isNaN = __commonJS({
   }
 });
 
-// node_modules/math-intrinsics/sign.js
+// ../suspicious-lichterman-760154/node_modules/math-intrinsics/sign.js
 var require_sign = __commonJS({
-  "node_modules/math-intrinsics/sign.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/math-intrinsics/sign.js"(exports, module) {
     "use strict";
     var $isNaN = require_isNaN();
     module.exports = function sign2(number4) {
@@ -50949,17 +51437,17 @@ var require_sign = __commonJS({
   }
 });
 
-// node_modules/gopd/gOPD.js
+// ../suspicious-lichterman-760154/node_modules/gopd/gOPD.js
 var require_gOPD = __commonJS({
-  "node_modules/gopd/gOPD.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/gopd/gOPD.js"(exports, module) {
     "use strict";
     module.exports = Object.getOwnPropertyDescriptor;
   }
 });
 
-// node_modules/gopd/index.js
+// ../suspicious-lichterman-760154/node_modules/gopd/index.js
 var require_gopd = __commonJS({
-  "node_modules/gopd/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/gopd/index.js"(exports, module) {
     "use strict";
     var $gOPD = require_gOPD();
     if ($gOPD) {
@@ -50973,9 +51461,9 @@ var require_gopd = __commonJS({
   }
 });
 
-// node_modules/es-define-property/index.js
+// ../suspicious-lichterman-760154/node_modules/es-define-property/index.js
 var require_es_define_property = __commonJS({
-  "node_modules/es-define-property/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/es-define-property/index.js"(exports, module) {
     "use strict";
     var $defineProperty = Object.defineProperty || false;
     if ($defineProperty) {
@@ -50989,9 +51477,9 @@ var require_es_define_property = __commonJS({
   }
 });
 
-// node_modules/has-symbols/shams.js
+// ../suspicious-lichterman-760154/node_modules/has-symbols/shams.js
 var require_shams = __commonJS({
-  "node_modules/has-symbols/shams.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/has-symbols/shams.js"(exports, module) {
     "use strict";
     module.exports = function hasSymbols() {
       if (typeof Symbol !== "function" || typeof Object.getOwnPropertySymbols !== "function") {
@@ -51044,9 +51532,9 @@ var require_shams = __commonJS({
   }
 });
 
-// node_modules/has-symbols/index.js
+// ../suspicious-lichterman-760154/node_modules/has-symbols/index.js
 var require_has_symbols = __commonJS({
-  "node_modules/has-symbols/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/has-symbols/index.js"(exports, module) {
     "use strict";
     var origSymbol = typeof Symbol !== "undefined" && Symbol;
     var hasSymbolSham = require_shams();
@@ -51068,26 +51556,26 @@ var require_has_symbols = __commonJS({
   }
 });
 
-// node_modules/get-proto/Reflect.getPrototypeOf.js
+// ../suspicious-lichterman-760154/node_modules/get-proto/Reflect.getPrototypeOf.js
 var require_Reflect_getPrototypeOf = __commonJS({
-  "node_modules/get-proto/Reflect.getPrototypeOf.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/get-proto/Reflect.getPrototypeOf.js"(exports, module) {
     "use strict";
     module.exports = typeof Reflect !== "undefined" && Reflect.getPrototypeOf || null;
   }
 });
 
-// node_modules/get-proto/Object.getPrototypeOf.js
+// ../suspicious-lichterman-760154/node_modules/get-proto/Object.getPrototypeOf.js
 var require_Object_getPrototypeOf = __commonJS({
-  "node_modules/get-proto/Object.getPrototypeOf.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/get-proto/Object.getPrototypeOf.js"(exports, module) {
     "use strict";
     var $Object = require_es_object_atoms();
     module.exports = $Object.getPrototypeOf || null;
   }
 });
 
-// node_modules/function-bind/implementation.js
+// ../suspicious-lichterman-760154/node_modules/function-bind/implementation.js
 var require_implementation = __commonJS({
-  "node_modules/function-bind/implementation.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/function-bind/implementation.js"(exports, module) {
     "use strict";
     var ERROR_MESSAGE = "Function.prototype.bind called on incompatible ";
     var toStr = Object.prototype.toString;
@@ -51161,42 +51649,42 @@ var require_implementation = __commonJS({
   }
 });
 
-// node_modules/function-bind/index.js
+// ../suspicious-lichterman-760154/node_modules/function-bind/index.js
 var require_function_bind = __commonJS({
-  "node_modules/function-bind/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/function-bind/index.js"(exports, module) {
     "use strict";
     var implementation = require_implementation();
     module.exports = Function.prototype.bind || implementation;
   }
 });
 
-// node_modules/call-bind-apply-helpers/functionCall.js
+// ../suspicious-lichterman-760154/node_modules/call-bind-apply-helpers/functionCall.js
 var require_functionCall = __commonJS({
-  "node_modules/call-bind-apply-helpers/functionCall.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/call-bind-apply-helpers/functionCall.js"(exports, module) {
     "use strict";
     module.exports = Function.prototype.call;
   }
 });
 
-// node_modules/call-bind-apply-helpers/functionApply.js
+// ../suspicious-lichterman-760154/node_modules/call-bind-apply-helpers/functionApply.js
 var require_functionApply = __commonJS({
-  "node_modules/call-bind-apply-helpers/functionApply.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/call-bind-apply-helpers/functionApply.js"(exports, module) {
     "use strict";
     module.exports = Function.prototype.apply;
   }
 });
 
-// node_modules/call-bind-apply-helpers/reflectApply.js
+// ../suspicious-lichterman-760154/node_modules/call-bind-apply-helpers/reflectApply.js
 var require_reflectApply = __commonJS({
-  "node_modules/call-bind-apply-helpers/reflectApply.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/call-bind-apply-helpers/reflectApply.js"(exports, module) {
     "use strict";
     module.exports = typeof Reflect !== "undefined" && Reflect && Reflect.apply;
   }
 });
 
-// node_modules/call-bind-apply-helpers/actualApply.js
+// ../suspicious-lichterman-760154/node_modules/call-bind-apply-helpers/actualApply.js
 var require_actualApply = __commonJS({
-  "node_modules/call-bind-apply-helpers/actualApply.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/call-bind-apply-helpers/actualApply.js"(exports, module) {
     "use strict";
     var bind = require_function_bind();
     var $apply = require_functionApply();
@@ -51206,9 +51694,9 @@ var require_actualApply = __commonJS({
   }
 });
 
-// node_modules/call-bind-apply-helpers/index.js
+// ../suspicious-lichterman-760154/node_modules/call-bind-apply-helpers/index.js
 var require_call_bind_apply_helpers = __commonJS({
-  "node_modules/call-bind-apply-helpers/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/call-bind-apply-helpers/index.js"(exports, module) {
     "use strict";
     var bind = require_function_bind();
     var $TypeError = require_type();
@@ -51223,9 +51711,9 @@ var require_call_bind_apply_helpers = __commonJS({
   }
 });
 
-// node_modules/dunder-proto/get.js
+// ../suspicious-lichterman-760154/node_modules/dunder-proto/get.js
 var require_get = __commonJS({
-  "node_modules/dunder-proto/get.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/dunder-proto/get.js"(exports, module) {
     "use strict";
     var callBind = require_call_bind_apply_helpers();
     var gOPD = require_gopd();
@@ -51254,9 +51742,9 @@ var require_get = __commonJS({
   }
 });
 
-// node_modules/get-proto/index.js
+// ../suspicious-lichterman-760154/node_modules/get-proto/index.js
 var require_get_proto = __commonJS({
-  "node_modules/get-proto/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/get-proto/index.js"(exports, module) {
     "use strict";
     var reflectGetProto = require_Reflect_getPrototypeOf();
     var originalGetProto = require_Object_getPrototypeOf();
@@ -51274,9 +51762,9 @@ var require_get_proto = __commonJS({
   }
 });
 
-// node_modules/hasown/index.js
+// ../suspicious-lichterman-760154/node_modules/hasown/index.js
 var require_hasown = __commonJS({
-  "node_modules/hasown/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/hasown/index.js"(exports, module) {
     "use strict";
     var call = Function.prototype.call;
     var $hasOwn = Object.prototype.hasOwnProperty;
@@ -51285,9 +51773,9 @@ var require_hasown = __commonJS({
   }
 });
 
-// node_modules/get-intrinsic/index.js
+// ../suspicious-lichterman-760154/node_modules/get-intrinsic/index.js
 var require_get_intrinsic = __commonJS({
-  "node_modules/get-intrinsic/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/get-intrinsic/index.js"(exports, module) {
     "use strict";
     var undefined2;
     var $Object = require_es_object_atoms();
@@ -51616,9 +52104,9 @@ var require_get_intrinsic = __commonJS({
   }
 });
 
-// node_modules/call-bound/index.js
+// ../suspicious-lichterman-760154/node_modules/call-bound/index.js
 var require_call_bound = __commonJS({
-  "node_modules/call-bound/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/call-bound/index.js"(exports, module) {
     "use strict";
     var GetIntrinsic = require_get_intrinsic();
     var callBindBasic = require_call_bind_apply_helpers();
@@ -51639,9 +52127,9 @@ var require_call_bound = __commonJS({
   }
 });
 
-// node_modules/side-channel-map/index.js
+// ../suspicious-lichterman-760154/node_modules/side-channel-map/index.js
 var require_side_channel_map = __commonJS({
-  "node_modules/side-channel-map/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/side-channel-map/index.js"(exports, module) {
     "use strict";
     var GetIntrinsic = require_get_intrinsic();
     var callBound = require_call_bound();
@@ -51695,9 +52183,9 @@ var require_side_channel_map = __commonJS({
   }
 });
 
-// node_modules/side-channel-weakmap/index.js
+// ../suspicious-lichterman-760154/node_modules/side-channel-weakmap/index.js
 var require_side_channel_weakmap = __commonJS({
-  "node_modules/side-channel-weakmap/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/side-channel-weakmap/index.js"(exports, module) {
     "use strict";
     var GetIntrinsic = require_get_intrinsic();
     var callBound = require_call_bound();
@@ -51768,9 +52256,9 @@ var require_side_channel_weakmap = __commonJS({
   }
 });
 
-// node_modules/side-channel/index.js
+// ../suspicious-lichterman-760154/node_modules/side-channel/index.js
 var require_side_channel = __commonJS({
-  "node_modules/side-channel/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/side-channel/index.js"(exports, module) {
     "use strict";
     var $TypeError = require_type();
     var inspect = require_object_inspect();
@@ -51808,9 +52296,9 @@ var require_side_channel = __commonJS({
   }
 });
 
-// node_modules/qs/lib/formats.js
+// ../suspicious-lichterman-760154/node_modules/qs/lib/formats.js
 var require_formats = __commonJS({
-  "node_modules/qs/lib/formats.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/qs/lib/formats.js"(exports, module) {
     "use strict";
     var replace = String.prototype.replace;
     var percentTwenties = /%20/g;
@@ -51834,9 +52322,9 @@ var require_formats = __commonJS({
   }
 });
 
-// node_modules/qs/lib/utils.js
+// ../suspicious-lichterman-760154/node_modules/qs/lib/utils.js
 var require_utils2 = __commonJS({
-  "node_modules/qs/lib/utils.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/qs/lib/utils.js"(exports, module) {
     "use strict";
     var formats = require_formats();
     var getSideChannel = require_side_channel();
@@ -52136,9 +52624,9 @@ var require_utils2 = __commonJS({
   }
 });
 
-// node_modules/qs/lib/stringify.js
+// ../suspicious-lichterman-760154/node_modules/qs/lib/stringify.js
 var require_stringify = __commonJS({
-  "node_modules/qs/lib/stringify.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/qs/lib/stringify.js"(exports, module) {
     "use strict";
     var getSideChannel = require_side_channel();
     var utils = require_utils2();
@@ -52424,9 +52912,9 @@ var require_stringify = __commonJS({
   }
 });
 
-// node_modules/qs/lib/parse.js
+// ../suspicious-lichterman-760154/node_modules/qs/lib/parse.js
 var require_parse = __commonJS({
-  "node_modules/qs/lib/parse.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/qs/lib/parse.js"(exports, module) {
     "use strict";
     var utils = require_utils2();
     var has = Object.prototype.hasOwnProperty;
@@ -52753,9 +53241,9 @@ var require_parse = __commonJS({
   }
 });
 
-// node_modules/qs/lib/index.js
+// ../suspicious-lichterman-760154/node_modules/qs/lib/index.js
 var require_lib2 = __commonJS({
-  "node_modules/qs/lib/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/qs/lib/index.js"(exports, module) {
     "use strict";
     var stringify = require_stringify();
     var parse3 = require_parse();
@@ -52768,9 +53256,9 @@ var require_lib2 = __commonJS({
   }
 });
 
-// node_modules/body-parser/lib/types/urlencoded.js
+// ../suspicious-lichterman-760154/node_modules/body-parser/lib/types/urlencoded.js
 var require_urlencoded = __commonJS({
-  "node_modules/body-parser/lib/types/urlencoded.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/body-parser/lib/types/urlencoded.js"(exports, module) {
     "use strict";
     var createError = require_http_errors();
     var debug = require_src()("body-parser:urlencoded");
@@ -52854,9 +53342,9 @@ var require_urlencoded = __commonJS({
   }
 });
 
-// node_modules/body-parser/index.js
+// ../suspicious-lichterman-760154/node_modules/body-parser/index.js
 var require_body_parser = __commonJS({
-  "node_modules/body-parser/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/body-parser/index.js"(exports, module) {
     "use strict";
     exports = module.exports = bodyParser;
     exports.json = require_json();
@@ -52869,9 +53357,9 @@ var require_body_parser = __commonJS({
   }
 });
 
-// node_modules/merge-descriptors/index.js
+// ../suspicious-lichterman-760154/node_modules/merge-descriptors/index.js
 var require_merge_descriptors = __commonJS({
-  "node_modules/merge-descriptors/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/merge-descriptors/index.js"(exports, module) {
     "use strict";
     function mergeDescriptors(destination, source, overwrite = true) {
       if (!destination) {
@@ -52893,9 +53381,9 @@ var require_merge_descriptors = __commonJS({
   }
 });
 
-// node_modules/encodeurl/index.js
+// ../suspicious-lichterman-760154/node_modules/encodeurl/index.js
 var require_encodeurl = __commonJS({
-  "node_modules/encodeurl/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/encodeurl/index.js"(exports, module) {
     "use strict";
     module.exports = encodeUrl;
     var ENCODE_CHARS_REGEXP = /(?:[^\x21\x23-\x3B\x3D\x3F-\x5F\x61-\x7A\x7C\x7E]|%(?:[^0-9A-Fa-f]|[0-9A-Fa-f][^0-9A-Fa-f]|$))+/g;
@@ -52907,9 +53395,9 @@ var require_encodeurl = __commonJS({
   }
 });
 
-// node_modules/escape-html/index.js
+// ../suspicious-lichterman-760154/node_modules/escape-html/index.js
 var require_escape_html = __commonJS({
-  "node_modules/escape-html/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/escape-html/index.js"(exports, module) {
     "use strict";
     var matchHtmlRegExp = /["'&<>]/;
     module.exports = escapeHtml;
@@ -52954,9 +53442,9 @@ var require_escape_html = __commonJS({
   }
 });
 
-// node_modules/parseurl/index.js
+// ../suspicious-lichterman-760154/node_modules/parseurl/index.js
 var require_parseurl = __commonJS({
-  "node_modules/parseurl/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/parseurl/index.js"(exports, module) {
     "use strict";
     var url2 = __require("url");
     var parse3 = url2.parse;
@@ -53038,9 +53526,9 @@ var require_parseurl = __commonJS({
   }
 });
 
-// node_modules/finalhandler/index.js
+// ../suspicious-lichterman-760154/node_modules/finalhandler/index.js
 var require_finalhandler = __commonJS({
-  "node_modules/finalhandler/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/finalhandler/index.js"(exports, module) {
     "use strict";
     var debug = require_src()("finalhandler");
     var encodeUrl = require_encodeurl();
@@ -53165,9 +53653,9 @@ var require_finalhandler = __commonJS({
   }
 });
 
-// node_modules/express/lib/view.js
+// ../suspicious-lichterman-760154/node_modules/express/lib/view.js
 var require_view = __commonJS({
-  "node_modules/express/lib/view.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/express/lib/view.js"(exports, module) {
     "use strict";
     var debug = require_src()("express:view");
     var path29 = __require("node:path");
@@ -53259,9 +53747,9 @@ var require_view = __commonJS({
   }
 });
 
-// node_modules/content-type/index.js
+// ../suspicious-lichterman-760154/node_modules/content-type/index.js
 var require_content_type = __commonJS({
-  "node_modules/content-type/index.js"(exports) {
+  "../suspicious-lichterman-760154/node_modules/content-type/index.js"(exports) {
     "use strict";
     var PARAM_REGEXP = /; *([!#$%&'*+.^_`|~0-9A-Za-z-]+) *= *("(?:[\u000b\u0020\u0021\u0023-\u005b\u005d-\u007e\u0080-\u00ff]|\\[\u000b\u0020-\u00ff])*"|[!#$%&'*+.^_`|~0-9A-Za-z-]+) */g;
     var TEXT_REGEXP = /^[\u000b\u0020-\u007e\u0080-\u00ff]+$/;
@@ -53363,9 +53851,9 @@ var require_content_type = __commonJS({
   }
 });
 
-// node_modules/etag/index.js
+// ../suspicious-lichterman-760154/node_modules/etag/index.js
 var require_etag = __commonJS({
-  "node_modules/etag/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/etag/index.js"(exports, module) {
     "use strict";
     module.exports = etag;
     var crypto = __require("crypto");
@@ -53405,9 +53893,9 @@ var require_etag = __commonJS({
   }
 });
 
-// node_modules/forwarded/index.js
+// ../suspicious-lichterman-760154/node_modules/forwarded/index.js
 var require_forwarded = __commonJS({
-  "node_modules/forwarded/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/forwarded/index.js"(exports, module) {
     "use strict";
     module.exports = forwarded;
     function forwarded(req) {
@@ -53452,9 +53940,9 @@ var require_forwarded = __commonJS({
   }
 });
 
-// node_modules/ipaddr.js/lib/ipaddr.js
+// ../suspicious-lichterman-760154/node_modules/ipaddr.js/lib/ipaddr.js
 var require_ipaddr = __commonJS({
-  "node_modules/ipaddr.js/lib/ipaddr.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/ipaddr.js/lib/ipaddr.js"(exports, module) {
     (function() {
       var expandIPv6, ipaddr, ipv4Part, ipv4Regexes, ipv6Part, ipv6Regexes, matchCIDR, root, zoneIndex;
       ipaddr = {};
@@ -54074,9 +54562,9 @@ var require_ipaddr = __commonJS({
   }
 });
 
-// node_modules/proxy-addr/index.js
+// ../suspicious-lichterman-760154/node_modules/proxy-addr/index.js
 var require_proxy_addr = __commonJS({
-  "node_modules/proxy-addr/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/proxy-addr/index.js"(exports, module) {
     "use strict";
     module.exports = proxyaddr;
     module.exports.all = alladdrs;
@@ -54233,9 +54721,9 @@ var require_proxy_addr = __commonJS({
   }
 });
 
-// node_modules/express/lib/utils.js
+// ../suspicious-lichterman-760154/node_modules/express/lib/utils.js
 var require_utils3 = __commonJS({
-  "node_modules/express/lib/utils.js"(exports) {
+  "../suspicious-lichterman-760154/node_modules/express/lib/utils.js"(exports) {
     "use strict";
     var { METHODS } = __require("node:http");
     var contentType = require_content_type();
@@ -54360,9 +54848,9 @@ var require_utils3 = __commonJS({
   }
 });
 
-// node_modules/wrappy/wrappy.js
+// ../suspicious-lichterman-760154/node_modules/wrappy/wrappy.js
 var require_wrappy = __commonJS({
-  "node_modules/wrappy/wrappy.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/wrappy/wrappy.js"(exports, module) {
     module.exports = wrappy;
     function wrappy(fn, cb) {
       if (fn && cb) return wrappy(fn)(cb);
@@ -54390,9 +54878,9 @@ var require_wrappy = __commonJS({
   }
 });
 
-// node_modules/once/once.js
+// ../suspicious-lichterman-760154/node_modules/once/once.js
 var require_once = __commonJS({
-  "node_modules/once/once.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/once/once.js"(exports, module) {
     var wrappy = require_wrappy();
     module.exports = wrappy(once);
     module.exports.strict = wrappy(onceStrict);
@@ -54434,9 +54922,9 @@ var require_once = __commonJS({
   }
 });
 
-// node_modules/is-promise/index.js
+// ../suspicious-lichterman-760154/node_modules/is-promise/index.js
 var require_is_promise = __commonJS({
-  "node_modules/is-promise/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/is-promise/index.js"(exports, module) {
     module.exports = isPromise;
     module.exports.default = isPromise;
     function isPromise(obj) {
@@ -54445,9 +54933,9 @@ var require_is_promise = __commonJS({
   }
 });
 
-// node_modules/path-to-regexp/dist/index.js
+// ../suspicious-lichterman-760154/node_modules/path-to-regexp/dist/index.js
 var require_dist3 = __commonJS({
-  "node_modules/path-to-regexp/dist/index.js"(exports) {
+  "../suspicious-lichterman-760154/node_modules/path-to-regexp/dist/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.PathError = exports.TokenData = void 0;
@@ -54814,9 +55302,9 @@ var require_dist3 = __commonJS({
   }
 });
 
-// node_modules/router/lib/layer.js
+// ../suspicious-lichterman-760154/node_modules/router/lib/layer.js
 var require_layer = __commonJS({
-  "node_modules/router/lib/layer.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/router/lib/layer.js"(exports, module) {
     "use strict";
     var isPromise = require_is_promise();
     var pathRegexp = require_dist3();
@@ -54964,9 +55452,9 @@ var require_layer = __commonJS({
   }
 });
 
-// node_modules/router/lib/route.js
+// ../suspicious-lichterman-760154/node_modules/router/lib/route.js
 var require_route = __commonJS({
-  "node_modules/router/lib/route.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/router/lib/route.js"(exports, module) {
     "use strict";
     var debug = require_src()("router:route");
     var Layer = require_layer();
@@ -55084,9 +55572,9 @@ var require_route = __commonJS({
   }
 });
 
-// node_modules/router/index.js
+// ../suspicious-lichterman-760154/node_modules/router/index.js
 var require_router = __commonJS({
-  "node_modules/router/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/router/index.js"(exports, module) {
     "use strict";
     var isPromise = require_is_promise();
     var Layer = require_layer();
@@ -55482,9 +55970,9 @@ var require_router = __commonJS({
   }
 });
 
-// node_modules/express/lib/application.js
+// ../suspicious-lichterman-760154/node_modules/express/lib/application.js
 var require_application = __commonJS({
-  "node_modules/express/lib/application.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/express/lib/application.js"(exports, module) {
     "use strict";
     var finalhandler = require_finalhandler();
     var debug = require_src()("express:application");
@@ -55743,9 +56231,9 @@ var require_application = __commonJS({
   }
 });
 
-// node_modules/negotiator/lib/charset.js
+// ../suspicious-lichterman-760154/node_modules/negotiator/lib/charset.js
 var require_charset = __commonJS({
-  "node_modules/negotiator/lib/charset.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/negotiator/lib/charset.js"(exports, module) {
     "use strict";
     module.exports = preferredCharsets;
     module.exports.preferredCharsets = preferredCharsets;
@@ -55830,9 +56318,9 @@ var require_charset = __commonJS({
   }
 });
 
-// node_modules/negotiator/lib/encoding.js
+// ../suspicious-lichterman-760154/node_modules/negotiator/lib/encoding.js
 var require_encoding = __commonJS({
-  "node_modules/negotiator/lib/encoding.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/negotiator/lib/encoding.js"(exports, module) {
     "use strict";
     module.exports = preferredEncodings;
     module.exports.preferredEncodings = preferredEncodings;
@@ -55943,9 +56431,9 @@ var require_encoding = __commonJS({
   }
 });
 
-// node_modules/negotiator/lib/language.js
+// ../suspicious-lichterman-760154/node_modules/negotiator/lib/language.js
 var require_language = __commonJS({
-  "node_modules/negotiator/lib/language.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/negotiator/lib/language.js"(exports, module) {
     "use strict";
     module.exports = preferredLanguages;
     module.exports.preferredLanguages = preferredLanguages;
@@ -56038,9 +56526,9 @@ var require_language = __commonJS({
   }
 });
 
-// node_modules/negotiator/lib/mediaType.js
+// ../suspicious-lichterman-760154/node_modules/negotiator/lib/mediaType.js
 var require_mediaType = __commonJS({
-  "node_modules/negotiator/lib/mediaType.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/negotiator/lib/mediaType.js"(exports, module) {
     "use strict";
     module.exports = preferredMediaTypes;
     module.exports.preferredMediaTypes = preferredMediaTypes;
@@ -56200,9 +56688,9 @@ var require_mediaType = __commonJS({
   }
 });
 
-// node_modules/negotiator/index.js
+// ../suspicious-lichterman-760154/node_modules/negotiator/index.js
 var require_negotiator = __commonJS({
-  "node_modules/negotiator/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/negotiator/index.js"(exports, module) {
     "use strict";
     var preferredCharsets = require_charset();
     var preferredEncodings = require_encoding();
@@ -56256,9 +56744,9 @@ var require_negotiator = __commonJS({
   }
 });
 
-// node_modules/accepts/index.js
+// ../suspicious-lichterman-760154/node_modules/accepts/index.js
 var require_accepts = __commonJS({
-  "node_modules/accepts/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/accepts/index.js"(exports, module) {
     "use strict";
     var Negotiator = require_negotiator();
     var mime = require_mime_types();
@@ -56337,9 +56825,9 @@ var require_accepts = __commonJS({
   }
 });
 
-// node_modules/fresh/index.js
+// ../suspicious-lichterman-760154/node_modules/fresh/index.js
 var require_fresh = __commonJS({
-  "node_modules/fresh/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/fresh/index.js"(exports, module) {
     "use strict";
     var CACHE_CONTROL_NO_CACHE_REGEXP = /(?:^|,)\s*?no-cache\s*?(?:,|$)/;
     module.exports = fresh;
@@ -56409,9 +56897,9 @@ var require_fresh = __commonJS({
   }
 });
 
-// node_modules/range-parser/index.js
+// ../suspicious-lichterman-760154/node_modules/range-parser/index.js
 var require_range_parser = __commonJS({
-  "node_modules/range-parser/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/range-parser/index.js"(exports, module) {
     "use strict";
     module.exports = rangeParser;
     function rangeParser(size, str, options) {
@@ -56490,9 +56978,9 @@ var require_range_parser = __commonJS({
   }
 });
 
-// node_modules/express/lib/request.js
+// ../suspicious-lichterman-760154/node_modules/express/lib/request.js
 var require_request = __commonJS({
-  "node_modules/express/lib/request.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/express/lib/request.js"(exports, module) {
     "use strict";
     var accepts = require_accepts();
     var isIP2 = __require("node:net").isIP;
@@ -56638,9 +57126,9 @@ var require_request = __commonJS({
   }
 });
 
-// node_modules/content-disposition/index.js
+// ../suspicious-lichterman-760154/node_modules/content-disposition/index.js
 var require_content_disposition = __commonJS({
-  "node_modules/content-disposition/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/content-disposition/index.js"(exports, module) {
     "use strict";
     module.exports = contentDisposition;
     module.exports.parse = parse3;
@@ -56801,9 +57289,9 @@ var require_content_disposition = __commonJS({
   }
 });
 
-// node_modules/cookie-signature/index.js
+// ../suspicious-lichterman-760154/node_modules/cookie-signature/index.js
 var require_cookie_signature = __commonJS({
-  "node_modules/cookie-signature/index.js"(exports) {
+  "../suspicious-lichterman-760154/node_modules/cookie-signature/index.js"(exports) {
     var crypto = __require("crypto");
     exports.sign = function(val, secret) {
       if ("string" != typeof val) throw new TypeError("Cookie value must be provided as a string.");
@@ -56819,9 +57307,9 @@ var require_cookie_signature = __commonJS({
   }
 });
 
-// node_modules/cookie/index.js
+// ../suspicious-lichterman-760154/node_modules/cookie/index.js
 var require_cookie = __commonJS({
-  "node_modules/cookie/index.js"(exports) {
+  "../suspicious-lichterman-760154/node_modules/cookie/index.js"(exports) {
     "use strict";
     exports.parse = parse3;
     exports.serialize = serialize;
@@ -56985,9 +57473,9 @@ var require_cookie = __commonJS({
   }
 });
 
-// node_modules/send/index.js
+// ../suspicious-lichterman-760154/node_modules/send/index.js
 var require_send = __commonJS({
-  "node_modules/send/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/send/index.js"(exports, module) {
     "use strict";
     var createError = require_http_errors();
     var debug = require_src()("send");
@@ -57468,9 +57956,9 @@ var require_send = __commonJS({
   }
 });
 
-// node_modules/vary/index.js
+// ../suspicious-lichterman-760154/node_modules/vary/index.js
 var require_vary = __commonJS({
-  "node_modules/vary/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/vary/index.js"(exports, module) {
     "use strict";
     module.exports = vary;
     module.exports.append = append;
@@ -57541,9 +58029,9 @@ var require_vary = __commonJS({
   }
 });
 
-// node_modules/express/lib/response.js
+// ../suspicious-lichterman-760154/node_modules/express/lib/response.js
 var require_response = __commonJS({
-  "node_modules/express/lib/response.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/express/lib/response.js"(exports, module) {
     "use strict";
     var contentDisposition = require_content_disposition();
     var createError = require_http_errors();
@@ -58011,9 +58499,9 @@ var require_response = __commonJS({
   }
 });
 
-// node_modules/serve-static/index.js
+// ../suspicious-lichterman-760154/node_modules/serve-static/index.js
 var require_serve_static = __commonJS({
-  "node_modules/serve-static/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/serve-static/index.js"(exports, module) {
     "use strict";
     var encodeUrl = require_encodeurl();
     var escapeHtml = require_escape_html();
@@ -58115,9 +58603,9 @@ var require_serve_static = __commonJS({
   }
 });
 
-// node_modules/express/lib/express.js
+// ../suspicious-lichterman-760154/node_modules/express/lib/express.js
 var require_express = __commonJS({
-  "node_modules/express/lib/express.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/express/lib/express.js"(exports, module) {
     "use strict";
     var bodyParser = require_body_parser();
     var EventEmitter = __require("node:events").EventEmitter;
@@ -58155,17 +58643,17 @@ var require_express = __commonJS({
   }
 });
 
-// node_modules/express/index.js
+// ../suspicious-lichterman-760154/node_modules/express/index.js
 var require_express2 = __commonJS({
-  "node_modules/express/index.js"(exports, module) {
+  "../suspicious-lichterman-760154/node_modules/express/index.js"(exports, module) {
     "use strict";
     module.exports = require_express();
   }
 });
 
-// node_modules/ip-address/dist/address-error.js
+// ../suspicious-lichterman-760154/node_modules/ip-address/dist/address-error.js
 var require_address_error = __commonJS({
-  "node_modules/ip-address/dist/address-error.js"(exports) {
+  "../suspicious-lichterman-760154/node_modules/ip-address/dist/address-error.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.AddressError = void 0;
@@ -58180,9 +58668,9 @@ var require_address_error = __commonJS({
   }
 });
 
-// node_modules/ip-address/dist/common.js
+// ../suspicious-lichterman-760154/node_modules/ip-address/dist/common.js
 var require_common2 = __commonJS({
-  "node_modules/ip-address/dist/common.js"(exports) {
+  "../suspicious-lichterman-760154/node_modules/ip-address/dist/common.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.isInSubnet = isInSubnet;
@@ -58255,9 +58743,9 @@ var require_common2 = __commonJS({
   }
 });
 
-// node_modules/ip-address/dist/v4/constants.js
+// ../suspicious-lichterman-760154/node_modules/ip-address/dist/v4/constants.js
 var require_constants = __commonJS({
-  "node_modules/ip-address/dist/v4/constants.js"(exports) {
+  "../suspicious-lichterman-760154/node_modules/ip-address/dist/v4/constants.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.RE_SUBNET_STRING = exports.RE_ADDRESS = exports.GROUPS = exports.BITS = void 0;
@@ -58268,9 +58756,9 @@ var require_constants = __commonJS({
   }
 });
 
-// node_modules/ip-address/dist/ipv4.js
+// ../suspicious-lichterman-760154/node_modules/ip-address/dist/ipv4.js
 var require_ipv4 = __commonJS({
-  "node_modules/ip-address/dist/ipv4.js"(exports) {
+  "../suspicious-lichterman-760154/node_modules/ip-address/dist/ipv4.js"(exports) {
     "use strict";
     var __createBinding = exports && exports.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -58737,9 +59225,9 @@ var require_ipv4 = __commonJS({
   }
 });
 
-// node_modules/ip-address/dist/v6/constants.js
+// ../suspicious-lichterman-760154/node_modules/ip-address/dist/v6/constants.js
 var require_constants2 = __commonJS({
-  "node_modules/ip-address/dist/v6/constants.js"(exports) {
+  "../suspicious-lichterman-760154/node_modules/ip-address/dist/v6/constants.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.RE_URL_WITH_PORT = exports.RE_URL = exports.RE_ZONE_STRING = exports.RE_SUBNET_STRING = exports.RE_BAD_ADDRESS = exports.RE_BAD_CHARACTERS = exports.TYPES = exports.SCOPES = exports.GROUPS = exports.BITS = void 0;
@@ -58794,9 +59282,9 @@ var require_constants2 = __commonJS({
   }
 });
 
-// node_modules/ip-address/dist/v6/helpers.js
+// ../suspicious-lichterman-760154/node_modules/ip-address/dist/v6/helpers.js
 var require_helpers = __commonJS({
-  "node_modules/ip-address/dist/v6/helpers.js"(exports) {
+  "../suspicious-lichterman-760154/node_modules/ip-address/dist/v6/helpers.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.escapeHtml = escapeHtml;
@@ -58833,9 +59321,9 @@ var require_helpers = __commonJS({
   }
 });
 
-// node_modules/ip-address/dist/v6/regular-expressions.js
+// ../suspicious-lichterman-760154/node_modules/ip-address/dist/v6/regular-expressions.js
 var require_regular_expressions = __commonJS({
-  "node_modules/ip-address/dist/v6/regular-expressions.js"(exports) {
+  "../suspicious-lichterman-760154/node_modules/ip-address/dist/v6/regular-expressions.js"(exports) {
     "use strict";
     var __createBinding = exports && exports.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -58925,9 +59413,9 @@ var require_regular_expressions = __commonJS({
   }
 });
 
-// node_modules/ip-address/dist/ipv6.js
+// ../suspicious-lichterman-760154/node_modules/ip-address/dist/ipv6.js
 var require_ipv6 = __commonJS({
-  "node_modules/ip-address/dist/ipv6.js"(exports) {
+  "../suspicious-lichterman-760154/node_modules/ip-address/dist/ipv6.js"(exports) {
     "use strict";
     var __createBinding = exports && exports.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -60159,9 +60647,9 @@ var require_ipv6 = __commonJS({
   }
 });
 
-// node_modules/ip-address/dist/ip-address.js
+// ../suspicious-lichterman-760154/node_modules/ip-address/dist/ip-address.js
 var require_ip_address = __commonJS({
-  "node_modules/ip-address/dist/ip-address.js"(exports) {
+  "../suspicious-lichterman-760154/node_modules/ip-address/dist/ip-address.js"(exports) {
     "use strict";
     var __createBinding = exports && exports.__createBinding || (Object.create ? (function(o, m, k, k2) {
       if (k2 === void 0) k2 = k;
@@ -60209,11 +60697,11 @@ var require_ip_address = __commonJS({
   }
 });
 
-// node_modules/express-rate-limit/dist/index.mjs
+// ../suspicious-lichterman-760154/node_modules/express-rate-limit/dist/index.mjs
 import { isIPv6 } from "node:net";
 import { isIPv6 as isIPv62 } from "node:net";
 import { Buffer as Buffer2 } from "node:buffer";
-import { createHash as createHash14 } from "node:crypto";
+import { createHash as createHash16 } from "node:crypto";
 import { isIP } from "node:net";
 function ipKeyGenerator(ip, ipv6Subnet = 56) {
   if (isIPv6(ip)) {
@@ -60235,7 +60723,7 @@ function validateLogger(logger) {
 }
 var import_ip_address, MemoryStore, ConsoleLogger, SUPPORTED_DRAFT_VERSIONS, getResetSeconds, getPartitionKey, setLegacyHeaders, setDraft6Headers, setDraft7Headers, setDraft8Headers, setRetryAfterHeader, omitUndefinedProperties, ValidationError, ChangeWarning, usedStores, singleCountKeys, validations, getValidations, isLegacyStore, promisifyStore, getOptionsFromConfig, parseOptions, handleAsyncErrors, rateLimit, rate_limit_default;
 var init_dist = __esm({
-  "node_modules/express-rate-limit/dist/index.mjs"() {
+  "../suspicious-lichterman-760154/node_modules/express-rate-limit/dist/index.mjs"() {
     import_ip_address = __toESM(require_ip_address(), 1);
     MemoryStore = class {
       constructor(validations2) {
@@ -60401,7 +60889,7 @@ var init_dist = __esm({
       return resetSeconds;
     };
     getPartitionKey = (key) => {
-      const hash2 = createHash14("sha256");
+      const hash2 = createHash16("sha256");
       hash2.update(key);
       const partitionKey = hash2.digest("hex").slice(0, 12);
       return Buffer2.from(partitionKey).toString("base64");
@@ -62252,7 +62740,7 @@ import fs27 from "fs";
 import os2 from "os";
 import path24 from "path";
 import net3 from "node:net";
-import { createHash as createHash15 } from "crypto";
+import { createHash as createHash17 } from "crypto";
 import { createRequire as createRequire2 } from "module";
 import { execFileSync as execFileSync7 } from "child_process";
 function countH2Headings(content) {
@@ -63404,7 +63892,7 @@ function verifySkillsManifest(packageRoot3, existsSyncImpl, readFileSyncImpl, in
     let actualHash;
     try {
       const buf = readFileSyncImpl(full);
-      actualHash = createHash15("sha256").update(buf).digest("hex");
+      actualHash = createHash17("sha256").update(buf).digest("hex");
     } catch (err) {
       mismatches.push(`${entry.path} (read error: ${err instanceof Error ? err.message : "unknown"})`);
       continue;
@@ -63731,7 +64219,7 @@ var init_doctor = __esm({
 
 // dist/core/transcript-source.js
 import fs28 from "fs";
-import { createHash as createHash16 } from "node:crypto";
+import { createHash as createHash18 } from "node:crypto";
 import path25 from "path";
 function readTranscriptSnapshot(transcriptPath, expected) {
   return readTranscriptSnapshotWithin(transcriptPath, expected, MAX_TRANSCRIPT_SOURCE_BYTES).snapshot;
@@ -63771,7 +64259,7 @@ function readTranscriptSnapshotWithin(transcriptPath, expected, aggregateBytesRe
     if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) {
       return { snapshot: null, aggregateLimitExceeded: false };
     }
-    const contentHash = createHash16("sha256").update(bytes).digest("hex");
+    const contentHash = createHash18("sha256").update(bytes).digest("hex");
     if (expected && contentHash !== expected.contentHash)
       return { snapshot: null, aggregateLimitExceeded: false };
     return { snapshot: { bytes, contentHash, ...identity }, aggregateLimitExceeded: false };
@@ -64002,7 +64490,7 @@ var init_transcript_extractor = __esm({
 });
 
 // dist/core/product-improvements.js
-import { createHash as createHash17 } from "node:crypto";
+import { createHash as createHash19 } from "node:crypto";
 function clean2(label, value, max) {
   const normalized = value.replace(/\s+/g, " ").trim();
   if (!normalized)
@@ -64073,7 +64561,7 @@ __export(dreamer_exports, {
   listProposals: () => listProposals,
   rejectProposal: () => rejectProposal
 });
-import { createHash as createHash18 } from "node:crypto";
+import { createHash as createHash20 } from "node:crypto";
 function collisionSafeName(db2, proposed, kind, proposalId2) {
   const taken = db2.prepare("SELECT 1 FROM entities WHERE name = ?").get(proposed) !== void 0;
   return taken ? `${proposed} (${kind} #${proposalId2})` : proposed;
@@ -64191,7 +64679,7 @@ function executeWorkPackage(db2, input2, context = {}) {
   const execute = () => {
     const project = input2.action === "prepare" ? input2.project : input2.ref.project;
     const kind = input2.action === "prepare" ? input2.kind : input2.ref.kind;
-    const hash2 = (value) => createHash18("sha256").update(JSON.stringify(value)).digest("hex");
+    const hash2 = (value) => createHash20("sha256").update(JSON.stringify(value)).digest("hex");
     if (input2.action !== "prepare") {
       const submitted = input2.action === "submit" ? input2.result : void 0;
       if (submitted && holdsSecret([submitted.name, ...submitted.observations, ...submitted.tags])) {
@@ -66501,7 +66989,7 @@ var init_project_tags = __esm({
   }
 });
 
-// node_modules/commander/esm.mjs
+// ../suspicious-lichterman-760154/node_modules/commander/esm.mjs
 var import_index = __toESM(require_commander(), 1);
 var {
   program,
@@ -66524,7 +67012,7 @@ init_operations();
 init_recall_agent_view();
 init_config();
 init_session_limit();
-import { createHash as createHash19 } from "crypto";
+import { createHash as createHash21 } from "crypto";
 import fs31 from "fs";
 import path28 from "path";
 import { fileURLToPath as fileURLToPath4 } from "url";
@@ -67997,76 +68485,46 @@ import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // dist/network/bridge-control.js
 import { spawn as spawn2 } from "node:child_process";
-import fs21 from "node:fs";
+import fs22 from "node:fs";
 
 // dist/network/bridge-state.js
-import fs18 from "node:fs";
-import path16 from "node:path";
-
-// dist/network/types.js
-import path15 from "node:path";
-var DEFAULT_RELAY_URL = "https://relay.memesh.ai/";
-var RELAY_OFF = "off";
-var EXIT_ALREADY_RUNNING = 3;
-var EXIT_HOLDER_UNRESPONSIVE = 4;
-var SINGLE_MACHINE_NOTE = "Single-machine MeMesh keeps working.";
-var NetworkError = class extends Error {
-  code;
-  constructor(code, message) {
-    super(message);
-    this.name = "NetworkError";
-    this.code = code;
-  }
-};
-function networkDir(dataDir) {
-  return path15.join(dataDir, "network");
-}
-function runtimeDir(dataDir) {
-  return path15.join(networkDir(dataDir), "runtime");
-}
-function childEnv(ctx) {
-  const inherited = Object.entries(ctx.env ?? process.env).filter(([key]) => key.toUpperCase() !== "NODE_PATH");
-  return { ...Object.fromEntries(inherited), MEMESH_DIR: ctx.dataDir, MEMESH_DB_PATH: ctx.dbPath };
-}
-function safeForTerminal(text) {
-  return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
-}
-function errorMessage2(err) {
-  return err instanceof Error ? err.message : String(err);
-}
-
-// dist/network/bridge-state.js
+init_types2();
+import fs20 from "node:fs";
+import path18 from "node:path";
 function statusPath(dataDir) {
-  return path16.join(networkDir(dataDir), "bridge-status.json");
+  return path18.join(networkDir(dataDir), "bridge-status.json");
 }
 function logPath(dataDir) {
-  return path16.join(networkDir(dataDir), "bridge.log");
+  return path18.join(networkDir(dataDir), "bridge.log");
 }
 function readStatus(dataDir) {
   try {
-    return JSON.parse(fs18.readFileSync(statusPath(dataDir), "utf8"));
+    return JSON.parse(fs20.readFileSync(statusPath(dataDir), "utf8"));
   } catch {
     return null;
   }
 }
 function reportedPid(status) {
+  if (status?.state === "stopped")
+    return null;
   const pid = status?.pid;
   return typeof pid === "number" && Number.isSafeInteger(pid) && pid > 0 ? pid : null;
 }
 
 // dist/network/control-socket.js
-import { createHash as createHash11, randomBytes as randomBytes5, timingSafeEqual } from "node:crypto";
-import fs19 from "node:fs";
+init_types2();
+import { createHash as createHash12, randomBytes as randomBytes6, timingSafeEqual } from "node:crypto";
+import fs21 from "node:fs";
 import net2 from "node:net";
-import path17 from "node:path";
+import path19 from "node:path";
 var SOCKET_PATH_MAX_BYTES = 103;
 var PROBE_DEADLINE_MS = 4e3;
 var REPLY_MAX_BYTES = 8 * 1024;
 function controlPath(dataDir) {
   if (process.platform === "win32") {
-    return `\\\\.\\pipe\\memesh-bridge-${createHash11("sha256").update(dataDir).digest("hex").slice(0, 32)}`;
+    return `\\\\.\\pipe\\memesh-bridge-${createHash12("sha256").update(dataDir).digest("hex").slice(0, 32)}`;
   }
-  return path17.join(networkDir(dataDir), "bridge.sock");
+  return path19.join(networkDir(dataDir), "bridge.sock");
 }
 function controlPathFits(dataDir) {
   return Buffer.byteLength(controlPath(dataDir)) <= SOCKET_PATH_MAX_BYTES;
@@ -68078,18 +68536,18 @@ function assertControlPathFits(dataDir) {
 }
 function dataDirIdentity(dataDir) {
   try {
-    return fs19.realpathSync(dataDir);
+    return fs21.realpathSync.native(dataDir);
   } catch {
     return dataDir;
   }
 }
 function tokenPath(dataDir) {
-  return path17.join(networkDir(dataDir), "control.token");
+  return path19.join(networkDir(dataDir), "control.token");
 }
 var TOKEN_FORMAT = /^[0-9a-f]{64}$/;
 function readControlToken(dataDir) {
   try {
-    const token = fs19.readFileSync(tokenPath(dataDir), "utf8");
+    const token = fs21.readFileSync(tokenPath(dataDir), "utf8");
     return TOKEN_FORMAT.test(token) ? token : null;
   } catch {
     return null;
@@ -68143,86 +68601,39 @@ async function askBridgeToStop(dataDir) {
   const reply = await request(dataDir, "stop", PROBE_DEADLINE_MS);
   return reply !== null && reply !== "not-running";
 }
-
-// dist/network/identity.js
-init_file_mode();
-import { createPrivateKey, createPublicKey, randomBytes as randomBytes6, sign, verify } from "node:crypto";
-import fs20 from "node:fs";
-import path18 from "node:path";
-var SEED_BYTES = 32;
-var PKCS8_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
-var SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
-var MACHINE_ID = /^[0-9a-f]{64}$/;
-function isMachineId(value) {
-  return typeof value === "string" && MACHINE_ID.test(value);
-}
-function identityPath(dataDir) {
-  return path18.join(networkDir(dataDir), "identity.key");
-}
-function ensureNetworkDir(dataDir) {
-  const dir = networkDir(dataDir);
-  fs20.mkdirSync(dir, { recursive: true, mode: 448 });
-  removeGroupAndOtherAccess(dir);
-  return dir;
-}
-function identityFromSeed(secret) {
-  const privateKey = createPrivateKey({ key: Buffer.concat([PKCS8_PREFIX, secret]), format: "der", type: "pkcs8" });
-  const spki = createPublicKey(privateKey).export({ format: "der", type: "spki" });
-  return {
-    secret,
-    machineId: spki.subarray(-SEED_BYTES).toString("hex"),
-    sign: (message) => sign(null, message, privateKey).toString("base64url")
-  };
-}
-function loadIdentity(dataDir) {
-  const file2 = identityPath(dataDir);
-  let secret;
+function identityOf(file2) {
   try {
-    secret = fs20.readFileSync(file2);
-  } catch (err) {
-    const code = err.code;
-    throw new NetworkError(code === "ENOENT" ? "not_joined" : "identity_invalid", code === "ENOENT" ? "This machine has not joined a network." : `Cannot read ${file2} (${code}).`);
-  }
-  if (secret.length !== SEED_BYTES) {
-    throw new NetworkError("identity_invalid", `${file2} is not a valid machine key (${secret.length} bytes, expected ${SEED_BYTES}).`);
-  }
-  removeGroupAndOtherAccess(file2);
-  return identityFromSeed(secret);
-}
-function ensureIdentity(dataDir) {
-  ensureNetworkDir(dataDir);
-  const file2 = identityPath(dataDir);
-  if (!fs20.existsSync(file2)) {
-    const temporary = `${file2}.tmp-${process.pid}`;
-    fs20.writeFileSync(temporary, randomBytes6(SEED_BYTES), { mode: 384, flag: "wx" });
-    try {
-      fs20.chmodSync(temporary, 384);
-      fs20.linkSync(temporary, file2);
-    } catch (err) {
-      if (err.code !== "EEXIST")
-        throw err;
-    } finally {
-      fs20.rmSync(temporary, { force: true });
-    }
-  }
-  return loadIdentity(dataDir);
-}
-function verifySignature(machineId, message, signature) {
-  if (!isMachineId(machineId) || typeof signature !== "string")
-    return false;
-  try {
-    const publicKey = createPublicKey({
-      key: Buffer.concat([SPKI_PREFIX, Buffer.from(machineId, "hex")]),
-      format: "der",
-      type: "spki"
-    });
-    return verify(null, message, publicKey, Buffer.from(signature, "base64url"));
+    const { dev, ino } = fs21.lstatSync(file2);
+    return { dev, ino };
   } catch {
-    return false;
+    return null;
+  }
+}
+var sameFile = (a, b) => a !== null && b !== null && a.dev === b.dev && a.ino === b.ino;
+function takeOverStaleLock(lock, judged) {
+  const aside = `${lock}.stale-${process.pid}`;
+  try {
+    fs21.renameSync(lock, aside);
+  } catch (err) {
+    if (err.code === "ENOENT")
+      return;
+    throw err;
+  }
+  try {
+    if (sameFile(identityOf(aside), judged))
+      return;
+    fs21.linkSync(aside, lock);
+  } catch (err) {
+    if (err.code !== "EEXIST")
+      throw err;
+  } finally {
+    fs21.rmSync(aside, { force: true });
   }
 }
 
 // dist/network/bridge-control.js
+init_identity();
+init_types2();
 var START_DEADLINE_MS = 2e4;
 var UNRESPONSIVE_DEADLINE_MS = 8e3;
 var STOP_DEADLINE_MS = 1e4;
@@ -68244,7 +68655,7 @@ function unresponsive(ctx) {
 }
 function spawnBridge(ctx) {
   ensureNetworkDir(ctx.dataDir);
-  const log = fs21.openSync(logPath(ctx.dataDir), "a", 384);
+  const log = fs22.openSync(logPath(ctx.dataDir), "a", 384);
   try {
     const child = spawn2(process.execPath, [ctx.bridgeEntry, "serve"], {
       detached: true,
@@ -68261,7 +68672,7 @@ function spawnBridge(ctx) {
     });
     return { child, exited: () => exit };
   } finally {
-    fs21.closeSync(log);
+    fs22.closeSync(log);
   }
 }
 function describeFailedStart(ctx, exit, pid) {
@@ -68322,7 +68733,8 @@ async function stopBridge(ctx) {
 }
 
 // dist/network/invites.js
-import { createHash as createHash12, randomBytes as randomBytes7 } from "node:crypto";
+init_identity();
+import { createHash as createHash13, randomBytes as randomBytes7 } from "node:crypto";
 
 // dist/network/relay-url.js
 var LOOPBACK_HOST = /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])$/;
@@ -68342,120 +68754,9 @@ function parseRelayUrl(value) {
   return null;
 }
 
-// dist/network/roster.js
-var SIGNATURE_DOMAIN = "memesh-roster-v1\n";
-var MAX_MEMBERS = 256;
-var NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-var NETWORK_ID = /^[0-9a-f]{32}$/;
-var ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
-var SIGNED_ROSTER_MAX_BYTES = 128 * 1024;
-function canonicalJson(value) {
-  if (Array.isArray(value))
-    return `[${value.map(canonicalJson).join(",")}]`;
-  if (value !== null && typeof value === "object") {
-    const record2 = value;
-    const fields = Object.keys(record2).filter((key) => record2[key] !== void 0).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record2[key])}`);
-    return `{${fields.join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-function isNetworkId(value) {
-  return typeof value === "string" && NETWORK_ID.test(value);
-}
-function assertValidName(kind, value) {
-  if (typeof value !== "string" || !NAME.test(value)) {
-    throw new NetworkError("invalid_name", `The ${kind} must start with a letter or digit and use only letters, digits, ".", "_" and "-" (at most 64 characters).`);
-  }
-}
-function invalid(detail) {
-  return new NetworkError("roster_invalid", `The team list is not valid: ${detail}.`);
-}
-function parseMember(raw) {
-  const member = raw;
-  if (member === null || typeof member !== "object")
-    throw invalid("a member is not an object");
-  if (!isMachineId(member.machine_id))
-    throw invalid("a member has a bad machine id");
-  try {
-    assertValidName("machine name", member.name);
-    assertValidName("person", member.person);
-  } catch {
-    throw invalid("a member has a bad name or person");
-  }
-  if (typeof member.joined_at !== "string" || !ISO_TIMESTAMP.test(member.joined_at) || !Number.isFinite(Date.parse(member.joined_at))) {
-    throw invalid("a member has a bad joined_at");
-  }
-  return { machine_id: member.machine_id, name: member.name, person: member.person, joined_at: member.joined_at };
-}
-function parseRoster(rosterJson) {
-  let raw;
-  try {
-    raw = JSON.parse(rosterJson);
-  } catch {
-    throw invalid("it is not JSON");
-  }
-  if (raw === null || typeof raw !== "object")
-    throw invalid("it is not an object");
-  if (!isNetworkId(raw.network_id))
-    throw invalid("bad network id");
-  if (!isMachineId(raw.owner_id))
-    throw invalid("bad owner id");
-  if (!Number.isSafeInteger(raw.version) || raw.version < 1)
-    throw invalid("bad version");
-  if (!Array.isArray(raw.members) || raw.members.length > MAX_MEMBERS)
-    throw invalid("bad member list");
-  const members2 = raw.members.map(parseMember);
-  const names = new Set(members2.map((member) => member.name.toLowerCase()));
-  const ids = new Set(members2.map((member) => member.machine_id));
-  if (names.size !== members2.length)
-    throw invalid("two machines share a name");
-  if (ids.size !== members2.length)
-    throw invalid("a machine is listed twice");
-  if (!ids.has(raw.owner_id))
-    throw invalid("the owner is not a member");
-  return {
-    network_id: raw.network_id,
-    owner_id: raw.owner_id,
-    version: raw.version,
-    members: members2
-  };
-}
-function createRoster(networkId, owner) {
-  return { network_id: networkId, owner_id: owner.machine_id, version: 1, members: [owner] };
-}
-function signRoster(identity, roster) {
-  const rosterJson = canonicalJson(roster);
-  return { roster_json: rosterJson, signature: identity.sign(Buffer.from(SIGNATURE_DOMAIN + rosterJson)) };
-}
-function verifyRoster(signed, expectedOwnerId, expectedNetworkId) {
-  if (typeof signed?.roster_json !== "string" || !verifySignature(expectedOwnerId, Buffer.from(SIGNATURE_DOMAIN + signed.roster_json), signed.signature)) {
-    throw new NetworkError("roster_invalid", "The team list is not signed by the network owner.");
-  }
-  const roster = parseRoster(signed.roster_json);
-  if (roster.owner_id !== expectedOwnerId)
-    throw invalid("it names a different owner");
-  if (roster.network_id !== expectedNetworkId)
-    throw invalid("it belongs to a different network");
-  return roster;
-}
-function acceptRoster(current, incoming, ownerId, networkId) {
-  const roster = verifyRoster(incoming, ownerId, networkId);
-  if (current) {
-    const held = verifyRoster(current, ownerId, networkId);
-    if (roster.version < held.version) {
-      throw new NetworkError("roster_downgrade", `Refused an older team list (version ${roster.version}, this machine has ${held.version}).`);
-    }
-    if (roster.version === held.version && incoming.roster_json !== current.roster_json) {
-      throw new NetworkError("roster_downgrade", `Refused a team list that differs from the one this machine has at version ${held.version}.`);
-    }
-  }
-  return roster;
-}
-function findMember(roster, machineId) {
-  return roster.members.find((member) => member.machine_id === machineId);
-}
-
 // dist/network/invites.js
+init_roster();
+init_types2();
 var LINK_PREFIX = "memesh://join/";
 var LINK_VERSION = 1;
 var LINK_MAX_CHARS = 8192;
@@ -68466,7 +68767,7 @@ var ADDRESS = /^(?:\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-fA-F:.%a-zA-Z]+\]):\d{1,5}$/;
 var DEFAULT_INVITE_TTL_HOURS = 24;
 var MAX_INVITE_TTL_HOURS = 24 * 30;
 function hashToken(token) {
-  return createHash12("sha256").update(token).digest("hex");
+  return createHash13("sha256").update(token).digest("hex");
 }
 function createInvite(db2, ttlMs, now) {
   const token = randomBytes7(TOKEN_BYTES).toString("base64url");
@@ -68537,48 +68838,34 @@ import { spawn as spawn3 } from "node:child_process";
 import { randomBytes as randomBytes8 } from "node:crypto";
 import fs24 from "node:fs";
 
-// dist/network/store.js
-init_file_mode();
-init_agent_network_schema();
-init_sqlite();
-import fs22 from "node:fs";
-import path19 from "node:path";
-function openNetworkStore(dbPath, options = {}) {
-  const dir = path19.dirname(dbPath);
-  fs22.mkdirSync(dir, { recursive: true });
-  try {
-    process.umask(63);
-  } catch {
-  }
-  removeGroupAndOtherAccess(dir);
-  guardDatabaseFiles(dbPath);
-  const db2 = new MemeshDatabase(dbPath);
-  try {
-    if (options.busyTimeoutMs !== void 0)
-      db2.pragma(`busy_timeout = ${options.busyTimeoutMs}`);
-    db2.pragma("journal_mode = WAL");
-    db2.exec(AGENT_NETWORK_SCHEMA_SQL);
-  } catch (err) {
-    db2.close();
-    throw err;
-  }
-  return db2;
-}
-function databaseExists(dbPath) {
-  return fs22.existsSync(dbPath);
-}
-function readConfig2(db2) {
-  const row = db2.prepare(`SELECT network_id, owner_id, machine_id, machine_name, person, relay_url, roster_json, roster_signature
-       FROM agent_network_config WHERE id = 1`).get();
-  return row ?? null;
-}
-function insertConfig(db2, config2, now) {
-  db2.prepare(`INSERT INTO agent_network_config
-       (id, network_id, owner_id, machine_id, machine_name, person, relay_url, roster_json, roster_signature, created_at_ms)
-     VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(config2.network_id, config2.owner_id, config2.machine_id, config2.machine_name, config2.person, config2.relay_url, config2.roster_json, config2.roster_signature, now);
+// dist/network/courier.js
+init_agent_messaging();
+init_time_utils();
+init_address();
+import { createHash as createHash14 } from "node:crypto";
+
+// dist/network/frames.js
+init_agent_messaging();
+var FRAME_MAX_BYTES = AGENT_MESSAGE_JSON_MAX_BYTES + 8 * 1024;
+
+// dist/network/courier.js
+init_outbound();
+var DELIVERY_WINDOW_MS = 24 * 60 * 6e4;
+var BACKOFF_MAX_MS = 5 * 6e4;
+function rememberPeer(db2, machineId, relay, addrs, now) {
+  db2.prepare(`
+    INSERT INTO agent_network_peers (machine_id, relay_url, addrs_json, seen_at_ms) VALUES (?, ?, ?, ?)
+    ON CONFLICT(machine_id) DO UPDATE SET relay_url = excluded.relay_url, addrs_json = excluded.addrs_json, seen_at_ms = excluded.seen_at_ms
+  `).run(machineId, relay, JSON.stringify(addrs), now);
 }
 
+// dist/network/operations.js
+init_identity();
+
 // dist/network/join-protocol.js
+init_roster();
+init_store();
+init_types2();
 var JOIN_REQUEST_MAX_BYTES = 4 * 1024;
 var JOIN_REPLY_MAX_BYTES = SIGNED_ROSTER_MAX_BYTES + 1024;
 var REFUSALS = /* @__PURE__ */ new Map([
@@ -68613,11 +68900,15 @@ function refusalMessage(code) {
   return REFUSALS.get(code) ?? REFUSALS.get("unknown_refusal");
 }
 
+// dist/network/operations.js
+init_roster();
+
 // dist/network/runtime.js
 import { spawnSync } from "node:child_process";
-import { createHash as createHash13 } from "node:crypto";
+import { createHash as createHash15 } from "node:crypto";
 import fs23 from "node:fs";
 import path20 from "node:path";
+init_identity();
 
 // dist/network/runtime-platform.js
 function currentLibc() {
@@ -68633,7 +68924,10 @@ function platformPackages(lockText, platform, arch, libc) {
 }
 
 // dist/network/runtime.js
+init_types2();
 var INSTALL_TIMEOUT_MS = 5 * 6e4;
+var INSTALL_LOCK_STALE_MS = INSTALL_TIMEOUT_MS + 2 * 6e4;
+var INSTALL_LOCK_EMPTY_STALE_MS = 1500;
 var CHECK_TIMEOUT_MS = 3e4;
 var MARKER = ".installed-lock-sha256";
 function assetText(ctx, name) {
@@ -68689,10 +68983,20 @@ function checkRuntime(ctx, timeoutMs = CHECK_TIMEOUT_MS) {
   }
   throw new NetworkError("runtime_load_failed", `The networking component did not load: ${reason}. ${SINGLE_MACHINE_NOTE}`);
 }
+function npmInvocation(args, platform = process.platform, execPath = process.execPath, exists = fs23.existsSync) {
+  if (platform !== "win32")
+    return { command: "npm", args };
+  const cli = path20.win32.join(path20.win32.dirname(execPath), "node_modules", "npm", "bin", "npm-cli.js");
+  return exists(cli) ? { command: execPath, args: [cli, ...args] } : null;
+}
 function runNpmCi(ctx, directory) {
   const args = ["ci", "--ignore-scripts", "--include=optional", "--no-audit", "--no-fund", "--no-update-notifier", "--loglevel=error"];
   const options = { cwd: directory, env: childEnv(ctx), encoding: "utf8", timeout: INSTALL_TIMEOUT_MS };
-  const result = process.platform === "win32" ? spawnSync(["npm.cmd", ...args].join(" "), { ...options, shell: true }) : spawnSync("npm", args, options);
+  const npm = npmInvocation(args);
+  if (npm === null) {
+    throw new NetworkError("runtime_install_failed", explainInstallFailure(Object.assign(new Error("npm not found"), { code: "ENOENT" }), ""));
+  }
+  const result = spawnSync(npm.command, npm.args, options);
   if (result.status === 0 && !result.error)
     return;
   throw new NetworkError("runtime_install_failed", explainInstallFailure(result.error, `${result.stderr ?? ""}
@@ -68707,6 +69011,14 @@ function assertPlatformPackageInstalled(lockText, directory) {
 function removeFailedInstall(dataDir, directory, created) {
   try {
     fs23.rmSync(directory, { recursive: true, force: true });
+  } catch (err) {
+    process.stderr.write(`MeMesh could not clean up after the failed install: ${err.message}
+`);
+  }
+  removeCreatedFolders(dataDir, directory, created);
+}
+function removeCreatedFolders(dataDir, directory, created) {
+  try {
     if (created.network)
       fs23.rmdirSync(path20.dirname(directory));
     if (created.data)
@@ -68714,6 +69026,60 @@ function removeFailedInstall(dataDir, directory, created) {
   } catch (err) {
     process.stderr.write(`MeMesh could not clean up after the failed install: ${err.message}
 `);
+  }
+}
+var sleepSync = (ms) => {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+};
+function installLockIsStale(lock) {
+  try {
+    const age = Date.now() - fs23.statSync(lock).mtimeMs;
+    if (age >= INSTALL_LOCK_STALE_MS)
+      return true;
+    const raw = fs23.readFileSync(lock, "utf8").trim();
+    if (!/^[1-9][0-9]*$/.test(raw))
+      return age >= INSTALL_LOCK_EMPTY_STALE_MS;
+    process.kill(Number(raw), 0);
+    return false;
+  } catch (err) {
+    return err.code === "ESRCH";
+  }
+}
+function withInstallLock(dataDir, use) {
+  const lock = path20.join(path20.dirname(runtimeDir(dataDir)), "runtime.install.lock");
+  const giveUpAt = Date.now() + INSTALL_LOCK_STALE_MS;
+  let waited = false;
+  let mine;
+  for (; ; ) {
+    try {
+      const fd = fs23.openSync(lock, "wx", 384);
+      const { dev, ino } = fs23.fstatSync(fd);
+      mine = { dev, ino };
+      fs23.writeSync(fd, `${process.pid}
+`);
+      fs23.closeSync(fd);
+      break;
+    } catch (err) {
+      if (err.code !== "EEXIST")
+        throw err;
+      const judged = identityOf(lock);
+      if (judged !== null && installLockIsStale(lock)) {
+        takeOverStaleLock(lock, judged);
+        continue;
+      }
+      if (Date.now() >= giveUpAt) {
+        throw new NetworkError("runtime_install_failed", `Another MeMesh install of the networking component is still running and did not finish. Try again when it has. ${SINGLE_MACHINE_NOTE}`);
+      }
+      waited = true;
+      sleepSync(200);
+    }
+  }
+  try {
+    return use(waited);
+  } finally {
+    const current = identityOf(lock);
+    if (current && current.dev === mine.dev && current.ino === mine.ino)
+      fs23.rmSync(lock, { force: true });
   }
 }
 function ensureRuntime(ctx, options = {}) {
@@ -68725,7 +69091,26 @@ function ensureRuntime(ctx, options = {}) {
   const directory = runtimeDir(ctx.dataDir);
   const created = { network: !fs23.existsSync(path20.dirname(directory)), data: !fs23.existsSync(ctx.dataDir) };
   ensureNetworkDir(ctx.dataDir);
-  const wanted = createHash13("sha256").update(lockText).digest("hex");
+  let failed = null;
+  withInstallLock(ctx.dataDir, (waited) => {
+    try {
+      installOrReuse(ctx, lockText, packageText, directory, waited ? { ...options, force: false } : options);
+    } catch (err) {
+      failed = err;
+      if (err.code !== "runtime_check_timeout" && err.installed === false) {
+        removeFailedInstall(ctx.dataDir, directory, { network: false, data: false });
+      }
+    }
+  });
+  if (failed === null)
+    return;
+  if (failed.code !== "runtime_check_timeout" && failed.installed === false) {
+    removeCreatedFolders(ctx.dataDir, directory, created);
+  }
+  throw failed;
+}
+function installOrReuse(ctx, lockText, packageText, directory, options) {
+  const wanted = createHash15("sha256").update(lockText).digest("hex");
   const marker = path20.join(directory, MARKER);
   if (!options.force && fs23.existsSync(marker) && fs23.readFileSync(marker, "utf8").trim() === wanted) {
     try {
@@ -68747,15 +69132,15 @@ function ensureRuntime(ctx, options = {}) {
     assertPlatformPackageInstalled(lockText, directory);
     checkRuntime(ctx, options.checkTimeoutMs);
   } catch (err) {
-    if (err.code !== "runtime_check_timeout")
-      removeFailedInstall(ctx.dataDir, directory, created);
-    throw err;
+    throw Object.assign(err, { installed: false });
   }
   fs23.writeFileSync(marker, `${wanted}
 `);
 }
 
 // dist/network/operations.js
+init_store();
+init_types2();
 var JOIN_CHILD_DEADLINE_MS = 9e4;
 var JOIN_CHILD_OUTPUT_MAX_BYTES = 1024 * 1024;
 var ADDRESS_WAIT_MS = 1e4;
@@ -68995,7 +69380,10 @@ async function joinNetwork(ctx, options) {
   };
   const db2 = openNetworkStore(ctx.dbPath);
   try {
-    insertConfig(db2, config2, Date.now());
+    db2.transaction(() => {
+      insertConfig(db2, config2, Date.now());
+      rememberPeer(db2, link.owner_id, link.relay, link.addrs ?? [], Date.now());
+    }).immediate();
   } finally {
     db2.close();
   }
@@ -69046,8 +69434,9 @@ async function getNetworkStatus(ctx) {
       pid: running ? probe.pid : probe.kind === "unresponsive" ? reportedPid(status) : null,
       started_at: current?.started_at ?? null,
       relay_state: current?.relay_state ?? null,
-      last_error: status?.last_error ?? null,
-      last_error_at: status?.last_error_at ?? null,
+      last_error: running || probe.kind === "unresponsive" ? status?.last_error ?? null : null,
+      last_error_at: running || probe.kind === "unresponsive" ? status?.last_error_at ?? null : null,
+      earlier_error: running || probe.kind === "unresponsive" ? null : status?.last_error ?? null,
       joins_accepted: current?.joins_accepted ?? 0,
       joins_refused: current?.joins_refused ?? 0,
       non_member_refused: current?.non_member_refused ?? 0
@@ -69056,6 +69445,7 @@ async function getNetworkStatus(ctx) {
 }
 
 // dist/network/command.js
+init_types2();
 function contextFrom(networkDistDir) {
   const assetsDir = fileURLToPath2(networkDistDir);
   return {
@@ -69071,6 +69461,8 @@ function assertPersonAtTerminal(command, stdin = process.stdin, stdout = process
   }
 }
 var LINK_INPUT_MAX_CHARS = 16 * 1024;
+var PASTE_WRAPPERS = new RegExp(`${String.fromCharCode(27)}\\[20[01]~`, "g");
+var pasted = (text) => text.replace(PASTE_WRAPPERS, "").trim();
 function promptForLink(stdin = process.stdin, stderr = process.stderr) {
   return new Promise((resolve2, reject) => {
     let text = "";
@@ -69082,7 +69474,7 @@ function promptForLink(stdin = process.stdin, stderr = process.stderr) {
       stderr.write("\n");
       settle2();
     };
-    const onEnd = () => finish(() => resolve2(text.trim()));
+    const onEnd = () => finish(() => resolve2(pasted(text)));
     const onData = (chunk) => {
       for (const character of chunk.toString()) {
         if (character === "" || character === "") {
@@ -69092,7 +69484,7 @@ function promptForLink(stdin = process.stdin, stderr = process.stderr) {
         if (character === "\r" || character === "\n") {
           if (text.length === 0)
             continue;
-          finish(() => resolve2(text.trim()));
+          finish(() => resolve2(pasted(text)));
           return;
         }
         if (character === "\x7F" || character === "\b")
@@ -69145,6 +69537,8 @@ function printStatus(status) {
   }
   if (bridge.last_error)
     console.log(`Last error:   ${safeForTerminal(bridge.last_error)} (${bridge.last_error_at})`);
+  if (bridge.earlier_error)
+    console.log(`Before it stopped: ${safeForTerminal(bridge.earlier_error)}`);
 }
 function registerNetworkCommand(program3, networkDistDir) {
   const network = program3.command("network").description("Connect this machine to other machines for agent messages. Memory is never shared.");
@@ -71338,7 +71732,7 @@ delegationCmd.command("record").description("Turn a worker JSON envelope into on
   }
   requireOneOf(opts.verdict, DELEGATION_VERDICTS, "--verdict");
   const envelopeText = readLocalFile("--envelope", opts.envelope, ENVELOPE_MAX_BYTES).toString("utf8");
-  const promptSha256 = createHash19("sha256").update(readLocalFile("--prompt-file", opts.promptFile, 64 * 1024 * 1024)).digest("hex");
+  const promptSha256 = createHash21("sha256").update(readLocalFile("--prompt-file", opts.promptFile, 64 * 1024 * 1024)).digest("hex");
   await withDatabase(() => {
     let result;
     try {

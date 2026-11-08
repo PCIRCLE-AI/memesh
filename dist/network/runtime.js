@@ -3,10 +3,13 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { describeChildDeath } from './bridge-control.js';
+import { identityOf, takeOverStaleLock } from './control-socket.js';
 import { ensureNetworkDir } from './identity.js';
 import { currentLibc, platformPackages } from './runtime-platform.js';
 import { NetworkError, SINGLE_MACHINE_NOTE, childEnv, runtimeDir } from './types.js';
 const INSTALL_TIMEOUT_MS = 5 * 60_000;
+const INSTALL_LOCK_STALE_MS = INSTALL_TIMEOUT_MS + 2 * 60_000;
+const INSTALL_LOCK_EMPTY_STALE_MS = 1_500;
 const CHECK_TIMEOUT_MS = 30_000;
 const MARKER = '.installed-lock-sha256';
 function assetText(ctx, name) {
@@ -70,12 +73,20 @@ export function checkRuntime(ctx, timeoutMs = CHECK_TIMEOUT_MS) {
     }
     throw new NetworkError('runtime_load_failed', `The networking component did not load: ${reason}. ${SINGLE_MACHINE_NOTE}`);
 }
+export function npmInvocation(args, platform = process.platform, execPath = process.execPath, exists = fs.existsSync) {
+    if (platform !== 'win32')
+        return { command: 'npm', args };
+    const cli = path.win32.join(path.win32.dirname(execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+    return exists(cli) ? { command: execPath, args: [cli, ...args] } : null;
+}
 function runNpmCi(ctx, directory) {
     const args = ['ci', '--ignore-scripts', '--include=optional', '--no-audit', '--no-fund', '--no-update-notifier', '--loglevel=error'];
     const options = { cwd: directory, env: childEnv(ctx), encoding: 'utf8', timeout: INSTALL_TIMEOUT_MS };
-    const result = process.platform === 'win32'
-        ? spawnSync(['npm.cmd', ...args].join(' '), { ...options, shell: true })
-        : spawnSync('npm', args, options);
+    const npm = npmInvocation(args);
+    if (npm === null) {
+        throw new NetworkError('runtime_install_failed', explainInstallFailure(Object.assign(new Error('npm not found'), { code: 'ENOENT' }), ''));
+    }
+    const result = spawnSync(npm.command, npm.args, options);
     if (result.status === 0 && !result.error)
         return;
     throw new NetworkError('runtime_install_failed', explainInstallFailure(result.error, `${result.stderr ?? ''}\n${result.stdout ?? ''}`));
@@ -89,6 +100,14 @@ function assertPlatformPackageInstalled(lockText, directory) {
 function removeFailedInstall(dataDir, directory, created) {
     try {
         fs.rmSync(directory, { recursive: true, force: true });
+    }
+    catch (err) {
+        process.stderr.write(`MeMesh could not clean up after the failed install: ${err.message}\n`);
+    }
+    removeCreatedFolders(dataDir, directory, created);
+}
+function removeCreatedFolders(dataDir, directory, created) {
+    try {
         if (created.network)
             fs.rmdirSync(path.dirname(directory));
         if (created.data)
@@ -96,6 +115,60 @@ function removeFailedInstall(dataDir, directory, created) {
     }
     catch (err) {
         process.stderr.write(`MeMesh could not clean up after the failed install: ${err.message}\n`);
+    }
+}
+const sleepSync = (ms) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };
+function installLockIsStale(lock) {
+    try {
+        const age = Date.now() - fs.statSync(lock).mtimeMs;
+        if (age >= INSTALL_LOCK_STALE_MS)
+            return true;
+        const raw = fs.readFileSync(lock, 'utf8').trim();
+        if (!/^[1-9][0-9]*$/.test(raw))
+            return age >= INSTALL_LOCK_EMPTY_STALE_MS;
+        process.kill(Number(raw), 0);
+        return false;
+    }
+    catch (err) {
+        return err.code === 'ESRCH';
+    }
+}
+function withInstallLock(dataDir, use) {
+    const lock = path.join(path.dirname(runtimeDir(dataDir)), 'runtime.install.lock');
+    const giveUpAt = Date.now() + INSTALL_LOCK_STALE_MS;
+    let waited = false;
+    let mine;
+    for (;;) {
+        try {
+            const fd = fs.openSync(lock, 'wx', 0o600);
+            const { dev, ino } = fs.fstatSync(fd);
+            mine = { dev, ino };
+            fs.writeSync(fd, `${process.pid}\n`);
+            fs.closeSync(fd);
+            break;
+        }
+        catch (err) {
+            if (err.code !== 'EEXIST')
+                throw err;
+            const judged = identityOf(lock);
+            if (judged !== null && installLockIsStale(lock)) {
+                takeOverStaleLock(lock, judged);
+                continue;
+            }
+            if (Date.now() >= giveUpAt) {
+                throw new NetworkError('runtime_install_failed', `Another MeMesh install of the networking component is still running and did not finish. Try again when it has. ${SINGLE_MACHINE_NOTE}`);
+            }
+            waited = true;
+            sleepSync(200);
+        }
+    }
+    try {
+        return use(waited);
+    }
+    finally {
+        const current = identityOf(lock);
+        if (current && current.dev === mine.dev && current.ino === mine.ino)
+            fs.rmSync(lock, { force: true });
     }
 }
 export function ensureRuntime(ctx, options = {}) {
@@ -107,6 +180,26 @@ export function ensureRuntime(ctx, options = {}) {
     const directory = runtimeDir(ctx.dataDir);
     const created = { network: !fs.existsSync(path.dirname(directory)), data: !fs.existsSync(ctx.dataDir) };
     ensureNetworkDir(ctx.dataDir);
+    let failed = null;
+    withInstallLock(ctx.dataDir, (waited) => {
+        try {
+            installOrReuse(ctx, lockText, packageText, directory, waited ? { ...options, force: false } : options);
+        }
+        catch (err) {
+            failed = err;
+            if (err.code !== 'runtime_check_timeout' && err.installed === false) {
+                removeFailedInstall(ctx.dataDir, directory, { network: false, data: false });
+            }
+        }
+    });
+    if (failed === null)
+        return;
+    if (failed.code !== 'runtime_check_timeout' && failed.installed === false) {
+        removeCreatedFolders(ctx.dataDir, directory, created);
+    }
+    throw failed;
+}
+function installOrReuse(ctx, lockText, packageText, directory, options) {
     const wanted = createHash('sha256').update(lockText).digest('hex');
     const marker = path.join(directory, MARKER);
     if (!options.force && fs.existsSync(marker) && fs.readFileSync(marker, 'utf8').trim() === wanted) {
@@ -131,9 +224,7 @@ export function ensureRuntime(ctx, options = {}) {
         checkRuntime(ctx, options.checkTimeoutMs);
     }
     catch (err) {
-        if (err.code !== 'runtime_check_timeout')
-            removeFailedInstall(ctx.dataDir, directory, created);
-        throw err;
+        throw Object.assign(err, { installed: false });
     }
     fs.writeFileSync(marker, `${wanted}\n`);
 }

@@ -240,22 +240,22 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
     }
     expect(reply).toBeNull();
     expect(streamError).not.toBeNull();
-    expect(ownerStatus().member_stub_served).toBe(0);
+    expect(ownerStatus().frames_received).toBe(0);
     expect(fs.readFileSync(logPath(owner.dataDir), 'utf8')).not.toContain(marker);
   });
 
-  it('a member gets through to the stub', async () => {
+  it('a member gets through, and bytes that are not a frame are refused with a code', async () => {
     const member = machine();
     const { link } = await inviteFrom(owner);
-    await joinWith(link, 'stub-member', member);
+    await joinWith(link, 'frame-member', member);
     const connection = await dial(NET_ALPN, loadIdentity(member.dataDir).secret);
     const stream = await connection.openBi();
     await stream.send.writeAll(bytes('hello'));
     await stream.send.finish();
     const reply = Buffer.from(await stream.recv.readToEnd(1024)).toString();
     connection.close(0n, bytes('done'));
-    expect(JSON.parse(reply)).toEqual({ ok: false, error: 'not_implemented' });
-    await expect.poll(() => ownerStatus().member_stub_served).toBeGreaterThan(0);
+    expect(JSON.parse(reply)).toEqual({ result: 'rejected', code: 'frame_invalid' });
+    await expect.poll(() => ownerStatus().frames_received).toBeGreaterThan(0);
   });
 
   it('an oversized join request is bounded: refused, recorded, and the bridge survives', async () => {
@@ -275,6 +275,27 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
     const { link } = await inviteFrom(owner);
     expect(await refusal(joinWith(link, 'after-oversize'))).toBe('joined');
   });
+
+  it('a bad MEMESH_TEST_NETWORK_BIND stops the bridge with a recorded reason; a loopback one advertises no addresses', async () => {
+    const bad = machine();
+    createNetwork(bad, { name: 'bad-bind', person: 'kt', relay: 'off' });
+    bad.env = { ...bad.env, MEMESH_TEST_NETWORK_BIND: 'localhost:0' };
+    await expect(startBridge(bad)).rejects.toThrowError(/MEMESH_TEST_NETWORK_BIND must be an IP address and port/);
+    expect(readStatus(bad.dataDir)).toMatchObject({ state: 'failed', last_error: expect.stringMatching(/MEMESH_TEST_NETWORK_BIND/) });
+
+    const loop = machine();
+    createNetwork(loop, { name: 'loop-bind', person: 'kt', relay: 'off' });
+    loop.env = { ...loop.env, MEMESH_TEST_NETWORK_BIND: '127.0.0.1:0' };
+    await startBridge(loop);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 3_000)); // past a heartbeat
+      expect(readStatus(loop.dataDir)?.direct_addresses).toHaveLength(0);
+      // Without the hook a bridge here does advertise addresses, so the empty list above is the hook's doing.
+      expect(ownerStatus().direct_addresses.length).toBeGreaterThan(0);
+    } finally {
+      await stopBridge(loop);
+    }
+  }, 60_000);
 
   it('one bridge per data dir: a second exits and the first keeps running', async () => {
     const first = (await getNetworkStatus(owner)).bridge.pid;
@@ -418,11 +439,11 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
       const target = new iroh.EndpointAddr(iroh.EndpointId.fromString(loadIdentity(ctx.dataDir).machineId), null, readStatus(ctx.dataDir)?.direct_addresses);
       return endpoint.connect(target, bytes(NET_ALPN));
     };
-    const servedBefore = readStatus(ctx.dataDir)?.member_stub_served;
+    const servedBefore = readStatus(ctx.dataDir)?.frames_received;
     const connection = await dialOwner();
     const reason = await Promise.race([connection.closed(), new Promise((resolve) => setTimeout(() => resolve('still open'), 5_000))]);
     expect(String(reason)).not.toBe('still open');
-    expect(readStatus(ctx.dataDir)?.member_stub_served).toBe(servedBefore);
+    expect(readStatus(ctx.dataDir)?.frames_received).toBe(servedBefore);
     await stopBridge(ctx);
   }, 60_000);
 
@@ -528,12 +549,21 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
       }
     };
     fs.chmodSync(folder, 0o000);
+    const darkAt = Date.now();
+    let gaveUpAfterMs: number;
     try {
       await expect.poll(() => isAlive(started.pid), { timeout: 45_000, interval: 500 }).toBe(false);
+      gaveUpAfterMs = Date.now() - darkAt;
     } finally {
       fs.chmodSync(folder, 0o700);
     }
-    expect(fs.readFileSync(logPath(ctx.dataDir), 'utf8')).toContain('control_socket_unreadable');
+    // Not much earlier than the 30 s it promises: a brief read error must not stop a healthy bridge.
+    // (The bridge checks every few seconds, so it may notice the folder up to one check late.)
+    expect(gaveUpAfterMs).toBeGreaterThanOrEqual(27_000);
+    // Exact events: the retrying line also contains "control_socket_unreadable" as a substring.
+    const log = fs.readFileSync(logPath(ctx.dataDir), 'utf8');
+    expect(log).toContain('"event":"control_socket_unreadable"');
+    expect(log).toMatch(/"event":"stopped","reason":"control_socket_unreadable"/);
     // The status file could not be written while its folder was unreadable; what status reports comes from the socket.
     expect((await getNetworkStatus(ctx)).bridge).toMatchObject({ running: false, unresponsive: false });
   }, 90_000);
@@ -897,7 +927,9 @@ http.createServer((req, res) => { console.log(req.url); res.statusCode = status;
       fs.mkdirSync(path.dirname(statusPath(ctx.dataDir)), { recursive: true });
       fs.writeFileSync(statusPath(ctx.dataDir), JSON.stringify({ pid: 1, state: 'failed', last_error: 'boom\u001b]0;PWNED\u0007', last_error_at: 'then' }));
       const status = cliFor(ctx, ['status']);
-      expect(status.stdout).toMatch(/Last error: +boom/);
+      // No bridge runs, so its error is history, not current (and still stripped).
+      expect(status.stdout).toMatch(/Before it stopped: boom/);
+      expect(status.stdout).not.toMatch(/Last error:/);
       expect(status.stdout).not.toMatch(/\u001b/);
     });
 

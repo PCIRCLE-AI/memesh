@@ -7,11 +7,16 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { describeChildDeath } from './bridge-control.js';
+import { identityOf, takeOverStaleLock } from './control-socket.js';
 import { ensureNetworkDir } from './identity.js';
 import { currentLibc, platformPackages } from './runtime-platform.js';
 import { NetworkError, SINGLE_MACHINE_NOTE, childEnv, runtimeDir, type NetworkContext } from './types.js';
 
 const INSTALL_TIMEOUT_MS = 5 * 60_000;
+/** Longer than any install and its load check: a lock this old belongs to nobody. */
+const INSTALL_LOCK_STALE_MS = INSTALL_TIMEOUT_MS + 2 * 60_000;
+/** A holder writes its pid right after creating the lock; one still empty after this never will. */
+const INSTALL_LOCK_EMPTY_STALE_MS = 1_500;
 const CHECK_TIMEOUT_MS = 30_000;
 const MARKER = '.installed-lock-sha256';
 
@@ -78,15 +83,34 @@ export function checkRuntime(ctx: NetworkContext, timeoutMs: number = CHECK_TIME
   throw new NetworkError('runtime_load_failed', `The networking component did not load: ${reason}. ${SINGLE_MACHINE_NOTE}`);
 }
 
+/**
+ * How to run npm. On Windows npm is npm.cmd, which Node runs only through cmd.exe;
+ * a timeout then kills cmd.exe and leaves npm writing into the runtime folder. So
+ * Windows runs npm's own script with this Node, no shell in between: a timeout
+ * kills npm itself. Node's Windows installs keep it beside node.exe. If it is not
+ * there, npm counts as not found rather than falling back to a shell.
+ */
+export function npmInvocation(
+  args: string[],
+  platform: NodeJS.Platform = process.platform,
+  execPath: string = process.execPath,
+  exists: (file: string) => boolean = fs.existsSync,
+): { command: string; args: string[] } | null {
+  if (platform !== 'win32') return { command: 'npm', args };
+  const cli = path.win32.join(path.win32.dirname(execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  return exists(cli) ? { command: execPath, args: [cli, ...args] } : null;
+}
+
 function runNpmCi(ctx: NetworkContext, directory: string): void {
   // --include=optional: the native files are optional packages, and a user's
   // `omit=optional` npm setting would otherwise install none of them and exit 0.
   const args = ['ci', '--ignore-scripts', '--include=optional', '--no-audit', '--no-fund', '--no-update-notifier', '--loglevel=error'];
   const options = { cwd: directory, env: childEnv(ctx), encoding: 'utf8', timeout: INSTALL_TIMEOUT_MS } as const;
-  // Windows cannot run npm.cmd without a shell. Every word here is a literal from this file.
-  const result = process.platform === 'win32'
-    ? spawnSync(['npm.cmd', ...args].join(' '), { ...options, shell: true })
-    : spawnSync('npm', args, options);
+  const npm = npmInvocation(args);
+  if (npm === null) {
+    throw new NetworkError('runtime_install_failed', explainInstallFailure(Object.assign(new Error('npm not found'), { code: 'ENOENT' }), ''));
+  }
+  const result = spawnSync(npm.command, npm.args, options);
   if (result.status === 0 && !result.error) return;
   throw new NetworkError('runtime_install_failed', explainInstallFailure(
     result.error as NodeJS.ErrnoException | undefined,
@@ -115,10 +139,75 @@ function assertPlatformPackageInstalled(lockText: string, directory: string): vo
 function removeFailedInstall(dataDir: string, directory: string, created: { network: boolean; data: boolean }): void {
   try {
     fs.rmSync(directory, { recursive: true, force: true });
+  } catch (err) {
+    process.stderr.write(`MeMesh could not clean up after the failed install: ${(err as Error).message}\n`);
+  }
+  removeCreatedFolders(dataDir, directory, created);
+}
+
+function removeCreatedFolders(dataDir: string, directory: string, created: { network: boolean; data: boolean }): void {
+  try {
     if (created.network) fs.rmdirSync(path.dirname(directory));
     if (created.data) fs.rmdirSync(dataDir);
   } catch (err) {
     process.stderr.write(`MeMesh could not clean up after the failed install: ${(err as Error).message}\n`);
+  }
+}
+
+const sleepSync = (ms: number): void => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };
+
+function installLockIsStale(lock: string): boolean {
+  try {
+    const age = Date.now() - fs.statSync(lock).mtimeMs;
+    if (age >= INSTALL_LOCK_STALE_MS) return true;
+    const raw = fs.readFileSync(lock, 'utf8').trim();
+    if (!/^[1-9][0-9]*$/.test(raw)) return age >= INSTALL_LOCK_EMPTY_STALE_MS;
+    process.kill(Number(raw), 0);
+    return false;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'ESRCH';
+  }
+}
+
+/**
+ * One install at a time per data dir: two `create`/`join` runs would otherwise run
+ * npm into the same folder. The lock sits beside the runtime folder, since a failed
+ * install removes that folder. A second installer waits, and is told it waited, so
+ * it can use the first one's result. A stale lock is cleared the same safe way as
+ * the bridge's: moved aside and checked, so a fresh one is never deleted.
+ */
+function withInstallLock<T>(dataDir: string, use: (waited: boolean) => T): T {
+  const lock = path.join(path.dirname(runtimeDir(dataDir)), 'runtime.install.lock');
+  const giveUpAt = Date.now() + INSTALL_LOCK_STALE_MS;
+  let waited = false;
+  let mine: { dev: number; ino: number };
+  for (;;) {
+    try {
+      const fd = fs.openSync(lock, 'wx', 0o600);
+      const { dev, ino } = fs.fstatSync(fd);
+      mine = { dev, ino };
+      fs.writeSync(fd, `${process.pid}\n`);
+      fs.closeSync(fd);
+      break;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+      const judged = identityOf(lock);
+      if (judged !== null && installLockIsStale(lock)) {
+        takeOverStaleLock(lock, judged);
+        continue;
+      }
+      if (Date.now() >= giveUpAt) {
+        throw new NetworkError('runtime_install_failed', `Another MeMesh install of the networking component is still running and did not finish. Try again when it has. ${SINGLE_MACHINE_NOTE}`);
+      }
+      waited = true;
+      sleepSync(200);
+    }
+  }
+  try {
+    return use(waited);
+  } finally {
+    const current = identityOf(lock);
+    if (current && current.dev === mine.dev && current.ino === mine.ino) fs.rmSync(lock, { force: true });
   }
 }
 
@@ -145,6 +234,27 @@ export function ensureRuntime(ctx: NetworkContext, options: InstallOptions = {})
   const directory = runtimeDir(ctx.dataDir);
   const created = { network: !fs.existsSync(path.dirname(directory)), data: !fs.existsSync(ctx.dataDir) };
   ensureNetworkDir(ctx.dataDir);
+  let failed: unknown = null;
+  withInstallLock(ctx.dataDir, (waited) => {
+    try {
+      // Someone else just installed: use what they made instead of forcing a second install.
+      installOrReuse(ctx, lockText, packageText, directory, waited ? { ...options, force: false } : options);
+    } catch (err) {
+      failed = err;
+      if ((err as NetworkError).code !== 'runtime_check_timeout' && (err as { installed?: boolean }).installed === false) {
+        removeFailedInstall(ctx.dataDir, directory, { network: false, data: false });
+      }
+    }
+  });
+  if (failed === null) return;
+  // Folders this run created go only once the lock is gone, or the lock file would keep them.
+  if ((failed as NetworkError).code !== 'runtime_check_timeout' && (failed as { installed?: boolean }).installed === false) {
+    removeCreatedFolders(ctx.dataDir, directory, created);
+  }
+  throw failed;
+}
+
+function installOrReuse(ctx: NetworkContext, lockText: string, packageText: string, directory: string, options: InstallOptions): void {
   const wanted = createHash('sha256').update(lockText).digest('hex');
   const marker = path.join(directory, MARKER);
   if (!options.force && fs.existsSync(marker) && fs.readFileSync(marker, 'utf8').trim() === wanted) {
@@ -169,8 +279,7 @@ export function ensureRuntime(ctx: NetworkContext, options: InstallOptions = {})
     checkRuntime(ctx, options.checkTimeoutMs);
   } catch (err) {
     // A freshly installed runtime whose check ran out of time is not a failed install.
-    if ((err as NetworkError).code !== 'runtime_check_timeout') removeFailedInstall(ctx.dataDir, directory, created);
-    throw err;
+    throw Object.assign(err as object, { installed: false });
   }
   fs.writeFileSync(marker, `${wanted}\n`);
 }

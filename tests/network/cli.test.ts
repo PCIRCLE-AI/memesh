@@ -192,6 +192,19 @@ describe('memesh network, as a person or script runs it', () => {
       finished(terminal);
     });
 
+    it.each([
+      ['both wrappers', '\u001b[200~memesh://join/abc\u001b[201~\r'],
+      ['the opening wrapper', '\u001b[200~memesh://join/abc\r'],
+      ['the closing wrapper', 'memesh://join/abc\u001b[201~\r'],
+      ['wrappers split across chunks', ['\u001b[20', '0~memesh://join/', 'abc\u001b[2', '01~', '\r']],
+    ])('strips a bracketed paste: %s', async (_name, input) => {
+      const terminal = new FakeTerminal();
+      const answer = prompt(terminal);
+      for (const chunk of Array.isArray(input) ? input : [input]) terminal.emit('data', chunk);
+      expect(await answer).toBe('memesh://join/abc');
+      finished(terminal);
+    });
+
     it('stops at 16K', async () => {
       const terminal = new FakeTerminal();
       const answer = prompt(terminal);

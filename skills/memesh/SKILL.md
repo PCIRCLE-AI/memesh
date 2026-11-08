@@ -117,7 +117,7 @@ uses the local FTS5 keyword index for words and exact lookups for `ids`
 
 ## Durable messages and active-host delivery
 
-Use the `message` tool when another local agent needs a durable, exact-recipient handoff rather than an inferred memory. `discover` is a bounded project-scoped read of live registrations (session/principal/host/project, declared work or explicit unknown, `model` always null, active lease); it performs no send, fetch, ACK, replay, or receipt work and reports router outages explicitly. `send`, `poll`, `fetch`, `intake`, `ack`, `disposition`, `activation`, and `receipts` are independent lifecycle actions: fetching or host acceptance never implies acknowledgement or workflow acceptance.
+Use the `message` tool when another agent (local, or on a team member's computer, addressed `person/handle@machine`) needs a durable, exact-recipient handoff rather than an inferred memory. `discover` is a bounded project-scoped read of live registrations (session/principal/host/project, declared work or explicit unknown, `model` always null, active lease); it performs no send, fetch, ACK, replay, or receipt work and reports router outages explicitly. `send`, `poll`, `fetch`, `intake`, `ack`, `disposition`, `activation`, and `receipts` are independent lifecycle actions: fetching or host acceptance never implies acknowledgement or workflow acceptance.
 
 Size and routing rules:
 

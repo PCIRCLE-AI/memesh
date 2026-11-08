@@ -11,7 +11,7 @@ export interface BridgeStatus {
     joins_accepted: number;
     joins_refused: number;
     non_member_refused: number;
-    member_stub_served: number;
+    frames_received: number;
 }
 export declare function statusPath(dataDir: string): string;
 export declare function logPath(dataDir: string): string;

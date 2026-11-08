@@ -49,8 +49,9 @@ export function applyRelayState(
 
 export async function pingRelay(relayUrl: string, fetchImpl: typeof fetch = fetch): Promise<boolean> {
   try {
-    const response = await fetchImpl(new URL('ping', relayUrl), { signal: AbortSignal.timeout(RELAY_PING_TIMEOUT_MS) });
-    return response.status === 200;
+    // Not followed: a redirect to a portal or any page that answers 200 is not the relay answering.
+    const response = await fetchImpl(new URL('ping', relayUrl), { redirect: 'manual', signal: AbortSignal.timeout(RELAY_PING_TIMEOUT_MS) });
+    return response.status >= 200 && response.status < 300;
   } catch {
     return false;
   }

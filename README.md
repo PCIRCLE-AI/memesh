@@ -50,7 +50,7 @@ Use one session to implement a change and another to review it, ask questions, o
 2. Eligible ordinary Claude MCP sessions can receive a native notice without Channel on macOS/Linux; the optional [Claude Channel setup](docs/platforms/agent-messaging.md#claude-channel-runner) delivers the full envelope. Eligible ordinary Codex CLI sessions register automatically when the plugin's SessionStart hook runs (macOS/Linux).
 3. Ask your agent: “Find the running Claude/Codex session for this project with `message discover`, send it a review request, and report its reply.” Select the actual discovered recipient; do not guess a session ID. The receiver reads the message, records `intake`, and replies with findings.
 
-Without Claude Channel, the durable inbox and Claude Code hook reminders still work. Delivery does not mean the other agent accepted or completed the work. Stopped sessions are not automatically resumed; verify Codex Desktop participation in `message discover` rather than assuming it. This local channel does not relay messages across computers.
+Without Claude Channel, the durable inbox and Claude Code hook reminders still work. Delivery does not mean the other agent accepted or completed the work. Stopped sessions are not automatically resumed; verify Codex Desktop participation in `message discover` rather than assuming it. Agents on different computers can message each other too, once those computers join one team by invite (`memesh network create`, `link`, `join`). Only the messages an agent sends cross between machines; memory stays on each machine. The relay defaults to `relay.memesh.ai`, and `--relay` points it at your own.
 
 [Setup, routing, and receipt details](docs/platforms/agent-messaging.md)
 
@@ -87,7 +87,7 @@ Unreleased source builds add `/memesh-memories` in Claude Code to view and edit 
 | `learn` | Save a mistake, its cause, and how to avoid it. |
 | `briefing` | Read the project's current memory context. |
 | `task_state` | Read or record the goal, next step, blocker, and done work. |
-| `message` | Find running local agents and exchange messages. |
+| `message` | Find running agents, on this computer or your team's others, and exchange messages. |
 | `export` | Back up memories as JSON. |
 | `import` | Import a memory backup. |
 | `work_package` | Prepare a bounded memory digest or transcript package for human review. |

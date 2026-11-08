@@ -90,6 +90,14 @@ describe.skipIf(process.platform === 'win32')('the bridge control socket', () =>
       expect(await probeBridge(ctx.dataDir)).toEqual({ kind: 'not-running' });
     });
 
+    it('the same data dir in other letter case is the same bridge on a case-insensitive disk', async () => {
+      const upper = path.join(path.dirname(ctx.dataDir), path.basename(ctx.dataDir).toUpperCase());
+      const caseInsensitive = upper !== ctx.dataDir && fs.existsSync(upper);
+      if (!caseInsensitive) return; // Nothing to compare on a case-sensitive disk.
+      const child = await startFake('running');
+      expect(await probeBridge(upper)).toEqual({ kind: 'running', pid: child.pid, ready: true });
+    });
+
     it('a socket file nobody holds: not running', async () => {
       await leaveStaleSocket(ctx);
       expect(await probeBridge(ctx.dataDir)).toEqual({ kind: 'not-running' });
@@ -349,6 +357,19 @@ describe.skipIf(process.platform === 'win32')('the bridge control socket', () =>
       fs.rmSync(lock);
     }, 20_000);
 
+    it('an empty startup lock older than a moment is stale: no wait for a starter that never wrote its pid', async () => {
+      const lock = `${controlPath(ctx.dataDir)}.startup.lock`;
+      fs.writeFileSync(lock, '', { mode: 0o600 });
+      const past = new Date(Date.now() - 3_000);
+      fs.utimesSync(lock, past, past);
+      const started = Date.now();
+      const held = await holdControlSocket(ctx.dataDir, handlers);
+      expect(held.kind).toBe('held');
+      expect(Date.now() - started).toBeLessThan(2_000);
+      if (held.kind === 'held') held.close();
+      expect(fs.existsSync(lock)).toBe(false);
+    }, 20_000);
+
     it('a stale lock replaced by another starter while it is judged is not deleted (through the real start path)', async () => {
       const lock = `${controlPath(ctx.dataDir)}.startup.lock`;
       fs.writeFileSync(lock, `${2 ** 30}\n`, { mode: 0o600 });
@@ -543,6 +564,31 @@ describe.skipIf(process.platform === 'win32')('the bridge control socket', () =>
       writeStatus(ctx.dataDir, { ...written, pid: 1, relay_state: 'online', started_at: 'stale', joins_accepted: 9 });
       const status = await getNetworkStatus(ctx);
       expect(status.joined && status.bridge).toMatchObject({ running: true, pid: child.pid, started_at: null, relay_state: null, joins_accepted: 0 });
+    });
+
+    it('after a crash, the dead bridge\'s last error is not shown as current', async () => {
+      seedJoined(ctx);
+      await leaveStaleSocket(ctx);
+      const raw = JSON.parse(fs.readFileSync(statusPath(ctx.dataDir), 'utf8')) as Record<string, unknown>;
+      fs.writeFileSync(statusPath(ctx.dataDir), JSON.stringify({ ...raw, last_error: 'the relay went away', last_error_at: '2026-11-08T00:00:00.000Z' }));
+      const status = await getNetworkStatus(ctx);
+      expect(status.joined && status.bridge).toMatchObject({ running: false, last_error: null, earlier_error: 'the relay went away' });
+      const { MEMESH_DIR: _dir, MEMESH_DB_PATH: _db, ...env } = process.env;
+      const result = spawnSync(process.execPath, [tree.cli, 'network', 'status'], { encoding: 'utf8', env: { ...env, HOME: home, USERPROFILE: home }, timeout: 30_000 });
+      expect(result.status).toBe(0);
+      expect(result.stdout).not.toMatch(/Last error:/);
+      expect(result.stdout).toMatch(/Bridge: +not running/);
+      expect(result.stdout).toMatch(/Before it stopped: the relay went away/);
+    }, 40_000);
+
+    it('a status file that says "stopped" gives no pid to act on, even if something holds the socket', async () => {
+      seedJoined(ctx);
+      await startFake('silent');
+      const raw = JSON.parse(fs.readFileSync(statusPath(ctx.dataDir), 'utf8')) as Record<string, unknown>;
+      fs.writeFileSync(statusPath(ctx.dataDir), JSON.stringify({ ...raw, state: 'stopped' }));
+      const status = await getNetworkStatus(ctx);
+      expect(status.joined && status.bridge).toMatchObject({ unresponsive: true, pid: null });
+      await expect(stopBridge(ctx)).rejects.toMatchObject({ message: expect.not.stringMatching(/last reported is/) });
     });
 
     it('a stale socket and a stale status file read as not running', async () => {

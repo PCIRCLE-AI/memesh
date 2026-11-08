@@ -19,6 +19,8 @@ const REQUEST_MAX_BYTES = 512;
 const REPLY_MAX_BYTES = 8 * 1024;
 const STARTUP_LOCK_WAIT_MS = 5_000;
 const STARTUP_LOCK_STALE_MS = 30_000;
+/** A holder writes its pid right after creating the lock; one still empty after this never will. */
+const STARTUP_LOCK_EMPTY_STALE_MS = 1_500;
 
 /** A named pipe on Windows, which has no socket files. Unverified there: no Windows machine has run it. */
 export function controlPath(dataDir: string): string {
@@ -42,7 +44,9 @@ export function assertControlPathFits(dataDir: string): void {
 
 function dataDirIdentity(dataDir: string): string {
   try {
-    return fs.realpathSync(dataDir);
+    // The native call also gives the stored letter case, so on a case-insensitive
+    // disk two spellings of one folder compare equal; the JS one keeps the input's case.
+    return fs.realpathSync.native(dataDir);
   } catch {
     return dataDir; // Nothing there yet.
   }
@@ -224,8 +228,12 @@ async function withStartupLock<T>(dataDir: string, use: (holdsLock: () => boolea
 /** Held by a process that is gone, or for longer than any start takes. Only the holder's existence is asked. */
 function startupLockIsStale(lock: string): boolean {
   try {
-    if (Date.now() - fs.statSync(lock).mtimeMs >= STARTUP_LOCK_STALE_MS) return true;
-    process.kill(Number(fs.readFileSync(lock, 'utf8').trim()), 0);
+    const age = Date.now() - fs.statSync(lock).mtimeMs;
+    if (age >= STARTUP_LOCK_STALE_MS) return true;
+    const raw = fs.readFileSync(lock, 'utf8').trim();
+    // Empty or not a pid: Number('') is 0, and kill(0) would ask about this whole process group.
+    if (!/^[1-9][0-9]*$/.test(raw)) return age >= STARTUP_LOCK_EMPTY_STALE_MS;
+    process.kill(Number(raw), 0);
     return false;
   } catch (err) {
     return (err as NodeJS.ErrnoException).code === 'ESRCH';

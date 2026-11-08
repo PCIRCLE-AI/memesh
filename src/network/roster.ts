@@ -8,7 +8,7 @@ import { NetworkError, type Roster, type RosterMember, type SignedRoster } from 
 const SIGNATURE_DOMAIN = 'memesh-roster-v1\n';
 const MAX_MEMBERS = 256;
 // No `/` and no `@`, so `person/handle@machine` splits exactly one way.
-const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+export const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const NETWORK_ID = /^[0-9a-f]{32}$/;
 // The exact form Date#toISOString writes. Date.parse alone also accepts free text in parentheses.
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;

@@ -40,6 +40,8 @@ export function loadNative(runtimeDirectory: string): IrohModule {
 export function explainLoadFailure(err: unknown): string {
   const message = errorMessage(err).split('\n')[0];
   if (/is missing from the install$|points outside the install/.test(message)) return message;
-  if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'the networking component is not installed';
+  // Windows reports a damaged .node file in words, not in its code: checked before ENOENT.
+  const windowsDamaged = /is not a valid Win32 application|dynamic link library \(DLL\) initialization routine failed/i.test(errorMessage(err));
+  if (!windowsDamaged && (err as NodeJS.ErrnoException).code === 'ENOENT') return 'the networking component is not installed';
   return `the native networking file is damaged or cannot run here (${message.slice(0, 200)})`;
 }

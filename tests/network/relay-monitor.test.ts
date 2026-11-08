@@ -38,7 +38,7 @@ describe('relay state', () => {
     expect(status.last_error).toBe('something else broke');
   });
 
-  it('a ping is true only for a 200 from the relay\'s ping path, and never throws', async () => {
+  it('a ping is true only for a 2xx from the relay\'s ping path, and never throws', async () => {
     const seen: string[] = [];
     let code = 200;
     const server = http.createServer((request, response) => {
@@ -57,6 +57,49 @@ describe('relay state', () => {
       await new Promise((resolve) => { server.close(resolve); });
     }
     expect(await pingRelay(url)).toBe(false);
+  });
+});
+
+describe('a relay that redirects', () => {
+  it('a redirect to a page that answers 200 is not "online", and the redirect is not followed', async () => {
+    const elsewhere: string[] = [];
+    const page = http.createServer((request, response) => {
+      elsewhere.push(request.url as string);
+      response.statusCode = 200;
+      response.end('a captive portal, or any web page');
+    });
+    await new Promise<void>((resolve) => { page.listen(0, '127.0.0.1', resolve); });
+    const pageUrl = `http://127.0.0.1:${(page.address() as AddressInfo).port}/welcome`;
+    const relay = http.createServer((_request, response) => {
+      response.statusCode = 302;
+      response.setHeader('location', pageUrl);
+      response.end();
+    });
+    await new Promise<void>((resolve) => { relay.listen(0, '127.0.0.1', resolve); });
+    try {
+      expect(await pingRelay(`http://127.0.0.1:${(relay.address() as AddressInfo).port}/`)).toBe(false);
+      expect(elsewhere).toHaveLength(0);
+      // The page does answer 200 and its log works: a followed redirect would have shown here.
+      expect((await fetch(pageUrl)).status).toBe(200);
+      expect(elsewhere).toHaveLength(1);
+      expect(elsewhere).toEqual(['/welcome']);
+    } finally {
+      await new Promise((resolve) => { relay.close(resolve); });
+      await new Promise((resolve) => { page.close(resolve); });
+    }
+  });
+
+  it('any 2xx from the relay itself counts', async () => {
+    const relay = http.createServer((_request, response) => {
+      response.statusCode = 204;
+      response.end();
+    });
+    await new Promise<void>((resolve) => { relay.listen(0, '127.0.0.1', resolve); });
+    try {
+      expect(await pingRelay(`http://127.0.0.1:${(relay.address() as AddressInfo).port}/`)).toBe(true);
+    } finally {
+      await new Promise((resolve) => { relay.close(resolve); });
+    }
   });
 });
 

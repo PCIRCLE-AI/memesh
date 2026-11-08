@@ -17,6 +17,10 @@ export interface Connection {
     acceptBi(): Promise<BiStream>;
     closed(): Promise<string>;
     close(errorCode: bigint, reason: number[]): void;
+    paths(): Array<{
+        isRelay: boolean;
+        isSelected: boolean;
+    }>;
 }
 export interface Incoming {
     accept(): Promise<{
@@ -41,6 +45,7 @@ export interface EndpointBuilder {
     secretKey(bytes: number[]): void;
     alpns(alpns: number[][]): void;
     relayMode(mode: RelayMode): void;
+    bindAddr(addr: string): void;
     bind(): Promise<Endpoint>;
 }
 export interface IrohModule {

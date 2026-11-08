@@ -1,6 +1,8 @@
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { build } from 'esbuild';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { startBridge } from '../../src/network/bridge-control.js';
 import { ensureIdentity } from '../../src/network/identity.js';
@@ -8,7 +10,7 @@ import { encodeLink } from '../../src/network/invites.js';
 import { explainLoadFailure } from '../../src/network/native-loader.js';
 import { createNetwork, joinNetwork, runJoinChild } from '../../src/network/operations.js';
 import { currentLibc, nativeFileName, platformPackage } from '../../src/network/runtime-platform.js';
-import { checkRuntime, ensureRuntime, explainInstallFailure, isPlatformSupported } from '../../src/network/runtime.js';
+import { checkRuntime, ensureRuntime, explainInstallFailure, isPlatformSupported, npmInvocation } from '../../src/network/runtime.js';
 import { openNetworkStore, readConfig } from '../../src/network/store.js';
 import { NetworkError, childEnv, runtimeDir } from '../../src/network/types.js';
 import { buildTree, contextFor, makeHome, removeTree, type Tree } from './helpers.js';
@@ -97,11 +99,38 @@ describe('which native file is this computer\'s', () => {
   });
 });
 
+describe('running npm', () => {
+  const args = ['ci', '--ignore-scripts'];
+  it('runs npm directly where it is a real program', () => {
+    expect(npmInvocation(args, 'darwin', '/usr/local/bin/node', () => false)).toEqual({ command: 'npm', args });
+    expect(npmInvocation(args, 'linux', '/usr/bin/node', () => false)).toEqual({ command: 'npm', args });
+  });
+
+  it('on Windows runs npm\'s own script with this Node, with no shell to outlive a timeout', () => {
+    const node = 'C:\\Program Files\\nodejs\\node.exe';
+    const cli = 'C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js';
+    expect(npmInvocation(args, 'win32', node, (file) => file === cli)).toEqual({ command: node, args: [cli, ...args] });
+  });
+
+  it('on Windows without npm beside Node it reports npm missing instead of using a shell', () => {
+    expect(npmInvocation(args, 'win32', 'C:\\tools\\node.exe', () => false)).toBeNull();
+  });
+});
+
 describe('explaining failures', () => {
   it('says what a load failure means', () => {
     expect(explainLoadFailure(new Error('the native networking file for darwin-x64 is missing from the install'))).toMatch(/missing from the install/);
     expect(explainLoadFailure(Object.assign(new Error('no such file'), { code: 'ENOENT' }))).toMatch(/not installed/);
     expect(explainLoadFailure(new Error('dlopen(/x/iroh.node, 0x0001): file too short'))).toMatch(/damaged/);
+  });
+
+  it.each([
+    '\\\\?\\C:\\Users\\a\\.memesh\\network\\runtime\\node_modules\\x\\iroh.win32-x64-msvc.node is not a valid Win32 application.',
+    'A dynamic link library (DLL) initialization routine failed.\r\n\\\\?\\C:\\x\\iroh.win32-x64-msvc.node',
+  ])('a damaged native file on Windows is "damaged", whatever code it carries: %s', (message) => {
+    for (const code of [undefined, 'ERR_DLOPEN_FAILED', 'ENOENT']) {
+      expect(explainLoadFailure(Object.assign(new Error(message), code ? { code } : {}))).toMatch(/damaged or cannot run here/);
+    }
   });
 
   it('says what happened to npm in plain terms', () => {
@@ -312,6 +341,46 @@ process.exit(7);`),
       expect(fs.existsSync(markerOf(ctx))).toBe(true);
       expect(fs.existsSync(path.join(runtimeDir(ctx.dataDir), 'node_modules', platformKey()))).toBe(true);
       expect(fs.existsSync(path.join(ctx.env.HOME as string, 'POSTINSTALL-RAN'))).toBe(false);
+    }, 120_000);
+
+    it('two installs at once: the second waits for the first and uses its result', async () => {
+      registry.serve('good');
+      const ctx = { ...installContext(registry.lockWith({ wrapper: true, platform: true })), bridgeEntry: crashingBridge(OK_CHECK) };
+      const runner = path.join(home, 'install-runner.mjs');
+      await build({
+        stdin: {
+          contents: `import { ensureRuntime } from ${JSON.stringify(path.join(repoRoot, 'src/network/runtime.ts'))};
+            const ctx = JSON.parse(process.argv[2]);
+            try { ensureRuntime(ctx, { onProgress: (m) => console.log('progress ' + m) }); console.log('done'); }
+            catch (err) { console.log('failed ' + err.message); process.exitCode = 1; }`,
+          resolveDir: repoRoot, loader: 'ts',
+        },
+        outfile: runner, bundle: true, platform: 'node', format: 'esm', target: 'node22.13', logLevel: 'silent', packages: 'external',
+      });
+      const run = () => new Promise<{ code: number | null; out: string }>((resolve) => {
+        const child = spawn(process.execPath, [runner, JSON.stringify(ctx)], { env: ctx.env });
+        let out = '';
+        child.stdout.on('data', (chunk) => { out += chunk; });
+        child.stderr.on('data', (chunk) => { out += chunk; });
+        child.on('exit', (code) => resolve({ code, out }));
+      });
+      const results = await Promise.all([run(), run()]);
+      expect(results.map((result) => result.code)).toEqual([0, 0]);
+      // Exactly one of them ran npm; the other found the finished install.
+      expect(results.filter((result) => result.out.includes('Installing the networking component'))).toHaveLength(1);
+      expect(fs.existsSync(markerOf(ctx))).toBe(true);
+      expect(fs.readdirSync(path.dirname(runtimeDir(ctx.dataDir))).filter((name) => name.includes('install.lock'))).toEqual([]);
+    }, 180_000);
+
+    it('an install lock left by a process that is gone does not block the next install', async () => {
+      registry.serve('good');
+      const ctx = { ...installContext(registry.lockWith({ wrapper: true, platform: true })), bridgeEntry: crashingBridge(OK_CHECK) };
+      const lock = path.join(path.dirname(runtimeDir(ctx.dataDir)), 'runtime.install.lock');
+      fs.mkdirSync(path.dirname(lock), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(lock, '2147483647\n', { mode: 0o600 });
+      ensureRuntime(ctx);
+      expect(fs.existsSync(markerOf(ctx))).toBe(true);
+      expect(fs.existsSync(lock)).toBe(false);
     }, 120_000);
 
     it('only the platform package corrupted: npm exits 0, and this still fails, saying why', async () => {

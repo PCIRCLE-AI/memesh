@@ -33,6 +33,9 @@ export function assertPersonAtTerminal(
 }
 
 const LINK_INPUT_MAX_CHARS = 16 * 1024;
+/** Terminals with bracketed paste wrap a paste in ESC[200~ ... ESC[201~; neither is part of the link. */
+const PASTE_WRAPPERS = new RegExp(`${String.fromCharCode(0x1b)}\\[20[01]~`, 'g');
+const pasted = (text: string): string => text.replace(PASTE_WRAPPERS, '').trim();
 
 /**
  * Ask for the invite link with no echo. It never goes on the command line: there
@@ -53,7 +56,7 @@ export function promptForLink(
       stderr.write('\n');
       settle();
     };
-    const onEnd = (): void => finish(() => resolve(text.trim()));
+    const onEnd = (): void => finish(() => resolve(pasted(text)));
     const onData = (chunk: Buffer | string): void => {
       for (const character of chunk.toString()) {
         if (character === '\u0003' || character === '\u0004') {
@@ -62,7 +65,7 @@ export function promptForLink(
         }
         if (character === '\r' || character === '\n') {
           if (text.length === 0) continue;
-          finish(() => resolve(text.trim()));
+          finish(() => resolve(pasted(text)));
           return;
         }
         if (character === '\u007f' || character === '\b') text = text.slice(0, -1);
@@ -117,6 +120,7 @@ function printStatus(status: NetworkStatus): void {
       : 'Bridge:       not running. Start it with: memesh network up');
   }
   if (bridge.last_error) console.log(`Last error:   ${safeForTerminal(bridge.last_error)} (${bridge.last_error_at})`);
+  if (bridge.earlier_error) console.log(`Before it stopped: ${safeForTerminal(bridge.earlier_error)}`);
 }
 
 export function registerNetworkCommand(program: Command, networkDistDir: URL): void {

@@ -6,6 +6,7 @@ import { getAgentRouterSocketPath } from '../core/paths.js';
 import { sessionAliasChain } from '../core/agent-message-inbox.js';
 import { jsonStringLiteral } from '../core/work-topology.js';
 import { sqliteUtcToIso } from '../core/time-utils.js';
+import { networkReceiptFact, remoteDiscoverCards, resolveNetworkRecipient } from '../network/outbound.js';
 export class AgentRecipientUnavailableError extends AgentMessagingError {
     code = 'recipient_unavailable';
     constructor(detail) {
@@ -427,6 +428,10 @@ export async function executeAgentMessageAction(db, rawInput, context, dependenc
             if (input.fallback_to_principal !== undefined && resolved.target_kind !== 'session') {
                 throw new AgentMessagingError('fallback_to_principal is only valid with target_kind "session".');
             }
+            const network = input.recipient_handle === undefined ? resolveNetworkRecipient(db, resolved.recipient) : null;
+            if (network && (resolved.target_kind !== 'principal' || resolved.intended_session !== undefined || input.fallback_to_principal !== undefined)) {
+                throw new AgentMessagingError('A message to another machine goes to a principal or a handle there: target_kind session, intended_session and fallback_to_principal do not apply.');
+            }
             const message = {
                 project: input.project,
                 sender: input.sender,
@@ -447,9 +452,11 @@ export async function executeAgentMessageAction(db, rawInput, context, dependenc
                 ...message,
                 ...resolved,
             }, {
-                notifier: resolved.target_kind === 'session' ? undefined : optionalRouterNotifier(),
+                notifier: resolved.target_kind === 'session' || network ? undefined : optionalRouterNotifier(),
                 storage_quota_bytes: configuredAgentMessageStorageQuotaBytes(),
             });
+            if (network)
+                return { ...publicSentMessage(sent), delivery_note: network.note };
             if (sent.target_kind !== 'session')
                 return publicSentMessage(sent);
             if (hasPrincipalFallback(db, sent, input.idempotency_key)) {
@@ -485,14 +492,25 @@ export async function executeAgentMessageAction(db, rawInput, context, dependenc
                 limit: input.limit,
                 hops: 0,
             };
+            let local;
             try {
-                return await (dependencies.sendRouterRequest ?? sendAgentRouterRequest)(routerSocketPath(), request);
+                local = await (dependencies.sendRouterRequest ?? sendAgentRouterRequest)(routerSocketPath(), request);
             }
             catch (error) {
                 if (error instanceof AgentRouterError && !['timeout', 'connection_closed'].includes(error.code)) {
                     throw error;
                 }
                 throw new AgentDiscoveryUnavailableError();
+            }
+            try {
+                const remote = remoteDiscoverCards(db, input.project);
+                if (remote.length === 0)
+                    return local;
+                const cards = Array.isArray(local.cards) ? local.cards : [];
+                return { ...local, cards: [...cards, ...remote] };
+            }
+            catch (error) {
+                return { ...local, network_note: `Agents on other machines could not be listed: ${error instanceof Error ? error.message : String(error)}` };
             }
         }
         case 'fetch':
@@ -524,8 +542,12 @@ export async function executeAgentMessageAction(db, rawInput, context, dependenc
                 host_activation: input.activation,
                 detail: receiptDetail(input.detail, context),
             });
-        case 'receipts':
-            return readPublicReceipts(db, input);
+        case 'receipts': {
+            const facts = readPublicReceipts(db, input);
+            const delivery = resolveCanonicalDelivery(db, input.project, input.recipient, input.message_id);
+            const network = networkReceiptFact(db, delivery.delivery_id);
+            return network ? [...facts, network] : facts;
+        }
     }
 }
 //# sourceMappingURL=agent-messaging.js.map

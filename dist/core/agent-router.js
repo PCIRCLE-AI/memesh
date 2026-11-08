@@ -17,6 +17,7 @@ const DEFAULT_CLIENT_TIMEOUT_MS = 2_000;
 const STALE_SOCKET_PROBE_TIMEOUT_MS = 250;
 const STARTUP_LOCK_WAIT_MS = 1_000;
 const STARTUP_LOCK_STALE_MS = 5_000;
+const STARTUP_LOCK_EMPTY_STALE_MS = 1_500;
 const MAX_FIELD_LENGTH = 200;
 const MAX_ADAPTER_RECEIPT_BYTES = 16 * 1024;
 const SUPERSEDED_HOLD_MS = 10 * 60_000;
@@ -48,6 +49,7 @@ export class AgentRouter {
     memesh_version;
     db;
     onSuperseded;
+    onHostConnected;
     adapters;
     limits;
     server = null;
@@ -62,6 +64,7 @@ export class AgentRouter {
         this.socket_path = validateSocketPath(options.socket_path);
         this.memesh_version = validateVersion('memesh_version', options.memesh_version);
         this.onSuperseded = options.on_superseded;
+        this.onHostConnected = options.on_host_connected;
         this.router_instance_id = validateField('router_instance_id', options.router_instance_id ?? randomUUID());
         this.limits = normalizeLimits(options.limits);
         this.adapters = new Map();
@@ -98,6 +101,9 @@ export class AgentRouter {
                 catch (error) {
                     if (error.code !== 'EADDRINUSE')
                         throw error;
+                    if (!holdsStartupLock(startupLock)) {
+                        throw new AgentRouterError('router_start_in_progress', 'Another router process is starting.');
+                    }
                     if (!await removeOrphanedSocket(this.socket_path)) {
                         throw new AgentRouterError('router_already_running', 'A live or indeterminate router already owns the socket.');
                     }
@@ -267,6 +273,15 @@ export class AgentRouter {
             work_summary: registration.work_summary ?? null,
         });
         setImmediate(() => { void this.drainConnection(connection, request.hops + 1).catch(() => undefined); });
+        if (this.onHostConnected) {
+            const onHostConnected = this.onHostConnected;
+            setImmediate(() => {
+                try {
+                    onHostConnected();
+                }
+                catch { }
+            });
+        }
         return {
             connection_id: connection.connection_id,
             generation: connection.generation,
@@ -1162,7 +1177,7 @@ async function acquireStartupLock(socketPath) {
                 throw error;
             const existing = readPrivateLockIdentity(lockPath);
             if (startupLockIsStale(lockPath, existing)) {
-                unlinkPathIfSame(lockPath, existing);
+                takeOverStaleLock(lockPath, existing);
                 continue;
             }
             if (Date.now() >= deadline) {
@@ -1171,6 +1186,34 @@ async function acquireStartupLock(socketPath) {
             await new Promise(resolve => setTimeout(resolve, 10));
         }
     }
+}
+function takeOverStaleLock(lockPath, judged) {
+    const aside = `${lockPath}.stale-${process.pid}-${randomUUID()}`;
+    try {
+        fs.renameSync(lockPath, aside);
+    }
+    catch (error) {
+        if (error.code === 'ENOENT')
+            return;
+        throw error;
+    }
+    try {
+        const moved = lstatIfPresent(aside);
+        if (moved && sameSocketIdentity(judged, moved))
+            return;
+        fs.linkSync(aside, lockPath);
+    }
+    catch (error) {
+        if (error.code !== 'EEXIST')
+            throw error;
+    }
+    finally {
+        fs.rmSync(aside, { force: true });
+    }
+}
+function holdsStartupLock(lock) {
+    const current = lstatIfPresent(lock.path);
+    return current !== undefined && sameSocketIdentity(lock.identity, current);
 }
 function readPrivateLockIdentity(lockPath) {
     const stat = fs.lstatSync(lockPath);
@@ -1188,7 +1231,7 @@ function startupLockIsStale(lockPath, identity) {
     try {
         const raw = fs.readFileSync(lockPath, 'utf8').trim();
         if (!/^[1-9][0-9]*$/.test(raw))
-            return false;
+            return Date.now() - identity.mtimeMs >= STARTUP_LOCK_EMPTY_STALE_MS;
         process.kill(Number(raw), 0);
         return false;
     }

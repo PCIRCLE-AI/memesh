@@ -14,7 +14,7 @@ const status = (state) => {
   const file = path.join(network, 'bridge-status.json');
   fs.writeFileSync(`${file}.tmp`, JSON.stringify({
     pid: process.pid, started_at: now, updated_at: now, state, relay_state: 'off', last_error: null, last_error_at: null,
-    direct_addresses: [], joins_accepted: 0, joins_refused: 0, non_member_refused: 0, member_stub_served: 0,
+    direct_addresses: [], joins_accepted: 0, joins_refused: 0, non_member_refused: 0, frames_received: 0,
   }));
   fs.renameSync(`${file}.tmp`, file);
 };
