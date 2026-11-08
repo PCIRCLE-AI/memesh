@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { isUnsupportedNode, MIN_NODE_SERIES } from '../storage/sqlite.js';
 import { databaseFiles, runOrSay, shellQuote } from './file-mode.js';
 
 /**
@@ -23,7 +24,11 @@ export function diagnoseDatabaseFailure(
   // carry the one command that fixes it; a generic guess below (move the
   // database away and start fresh) would be wrong for every one of them.
   const ownFix = (err as { fix?: unknown } | null)?.fix;
-  if (typeof ownFix === 'string') {
+  if (isUnsupportedNode(err)) {
+    // Not a database problem: this Node lacks FTS5, and no file move fixes that.
+    diagnosis = message;
+    fix = `Upgrade Node to ${MIN_NODE_SERIES} or newer, then run memesh again`;
+  } else if (typeof ownFix === 'string') {
     diagnosis = message;
     fix = runOrSay(ownFix);
   } else if (/database is locked|SQLITE_BUSY/i.test(message)) {

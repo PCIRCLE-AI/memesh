@@ -153,8 +153,8 @@
     },
     {
       "path": "scripts/hooks/_generated/sqlite.js",
-      "sha256": "445d3fe3058e2f0bf4fb5359a3a6e9584e377a0794880859ba9cafdddedde9a6",
-      "bytes": 2840
+      "sha256": "4147743db300e7cbbbfc4dd43337029c4d613445e05d914c53eed503002fb2d6",
+      "bytes": 5246
     },
     {
       "path": "scripts/hooks/_generated/task-state.js",
@@ -183,8 +183,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "a9efd05e201f6224a2496d8e2cd582a11186cca0250c4564ba1290385d28efcc",
-      "bytes": 127314
+      "sha256": "a266c247170caa703cf9425c85319ff6c815d0b9ff5e9346f782cdd39f866b80",
+      "bytes": 128280
     },
     {
       "path": "scripts/hooks/_stop-handoff.js",
@@ -203,8 +203,8 @@
     },
     {
       "path": "scripts/hooks/codex-busy-message-notice.js",
-      "sha256": "67ff0a1f8c06fd2078b77e287e0fd4f36fc186df9c90a4441921df3e2012ed23",
-      "bytes": 6284
+      "sha256": "fd9f5e2a5602a12d3d68d2b9e55f15fdeab30aadbbd8b4ad65b7b24a03fc5dc5",
+      "bytes": 6455
     },
     {
       "path": "scripts/hooks/codex-plan-activity.js",
@@ -218,8 +218,8 @@
     },
     {
       "path": "scripts/hooks/guard-check.js",
-      "sha256": "e080e414c990878d06afc3d3770222b2b644df4a471e49fc9b9869903b957c56",
-      "bytes": 4774
+      "sha256": "2221fadfb43c16bfb6e57f8595195dd296f987fd93da417bdde347838790266c",
+      "bytes": 4929
     },
     {
       "path": "scripts/hooks/post-commit.js",
@@ -233,13 +233,13 @@
     },
     {
       "path": "scripts/hooks/pre-edit-recall.js",
-      "sha256": "9e5abb65c6670784de243889e6e1f89225bf17e1cfb832732ae3f6a2bf239b04",
-      "bytes": 39319
+      "sha256": "537820be4b8fb9a6b1c4fdeabdc7e9e5dfff6412732fb9f2a2e14a0537f615c2",
+      "bytes": 39478
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "d39c7a9f82d54b0f22bc0c9997fc04e945ef073d7a165f5d5b6ee80198b8676b",
-      "bytes": 98712
+      "sha256": "a6f0e34e3c96f15092c1ba1c416f9035105cf4b811a66557afda494f1612f44b",
+      "bytes": 99277
     },
     {
       "path": "scripts/hooks/session-summary.js",
@@ -248,8 +248,8 @@
     },
     {
       "path": "scripts/hooks/stop-message-gate.js",
-      "sha256": "3532533dd6741b06bcd91aafb3c41b79869171c5317f42ae50057df9db051b3a",
-      "bytes": 8184
+      "sha256": "d92a386e2dcc16ec337bbc53eec3691a074f78505ac7377435a1985bd451a128",
+      "bytes": 8346
     },
     {
       "path": "scripts/hooks/user-prompt-intent.js",

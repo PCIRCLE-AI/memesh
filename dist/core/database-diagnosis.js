@@ -1,12 +1,17 @@
 import fs from 'fs';
 import path from 'path';
+import { isUnsupportedNode, MIN_NODE_SERIES } from '../storage/sqlite.js';
 import { databaseFiles, runOrSay, shellQuote } from './file-mode.js';
 export function diagnoseDatabaseFailure(err, databasePath, existsSyncImpl = fs.existsSync, statSyncImpl = fs.statSync) {
     const message = err instanceof Error ? err.message : 'unknown database error';
     let diagnosis;
     let fix;
     const ownFix = err?.fix;
-    if (typeof ownFix === 'string') {
+    if (isUnsupportedNode(err)) {
+        diagnosis = message;
+        fix = `Upgrade Node to ${MIN_NODE_SERIES} or newer, then run memesh again`;
+    }
+    else if (typeof ownFix === 'string') {
         diagnosis = message;
         fix = runOrSay(ownFix);
     }

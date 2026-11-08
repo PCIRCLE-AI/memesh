@@ -30,7 +30,7 @@ const result = await build({
   bundle: true,
   platform: 'node',
   format: 'esm',
-  target: 'node22.13',
+  target: 'node22.16',
   packages: 'bundle',
   // Plugin caches have no optional native ws addons. Keep ws's JavaScript
   // masking and Node's built-in UTF-8 validation instead of external imports.

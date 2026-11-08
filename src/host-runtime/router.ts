@@ -4,6 +4,7 @@ import { timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { closeDatabase, openDatabase } from '../db.js';
+import { assertNodeSupported } from '../storage/sqlite.js';
 import { AgentRouter, AgentRouterError, AGENT_ROUTER_SOCKET_PATH_MAX_BYTES, type AgentHostRegistration } from '../core/agent-router.js';
 import { createCodexCliQueueAdapter } from '../host-adapters/codex-cli-queue.js';
 import { getAgentRouterSocketPath, getMemeshDirFromDbPath } from '../core/paths.js';
@@ -40,6 +41,9 @@ function reportFailure(error: unknown): never {
 
 let router: AgentRouter;
 try {
+  // First, before the token or the data folder are touched: on a Node below
+  // the floor the router cannot run, and must leave nothing behind.
+  assertNodeSupported();
   assertSecureLocalHostRuntimeSupported();
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   requirePrivateWritableDirectory(dataDir, 'the router keeps its socket, token and messages there');

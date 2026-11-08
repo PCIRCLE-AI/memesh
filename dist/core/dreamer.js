@@ -1,3 +1,4 @@
+import { withoutFinalPeriod } from './sentence.js';
 import { createHash } from 'node:crypto';
 import { getProjectName, holdsSecret, redactSecretList, redactSecrets } from './paths.js';
 import { readTranscriptSnapshot, scanTranscripts, transcriptMatchesProject } from './transcript-source.js';
@@ -609,7 +610,7 @@ export class NothingToClaimError extends Error {
     proposalId;
     reason;
     constructor(proposalId, reason) {
-        super(`proposal #${proposalId} claimed nothing: ${reason}. Nothing was written, and the proposal will not be retried.`);
+        super(`proposal #${proposalId} claimed nothing: ${withoutFinalPeriod(reason)}. Nothing was written, and the proposal will not be retried.`);
         this.proposalId = proposalId;
         this.reason = reason;
         this.name = 'NothingToClaimError';

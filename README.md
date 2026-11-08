@@ -31,7 +31,7 @@ codex plugin add memesh@pcircle-memesh
 
 **Hermes Agent** — follow the [MeMesh memory provider guide](docs/platforms/hermes-agent.md) to connect Hermes for memory recall and capture.
 
-To use the command-line tools too, install [Node.js 22.13+](https://nodejs.org), then run:
+To use the command-line tools too, install [Node.js 22.16+](https://nodejs.org), then run:
 
 ```bash
 npm install -g @pcircle/memesh

@@ -528,7 +528,7 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       write('llms-install.md', [
         '# Install',
         '## 2. Terminal / CLI (npm global)',
-        '22.13.0 memesh doctor message memesh-router memesh-host-codex memesh-host-claude memesh-host-acp --config message storage report. The ordinary Codex path below is the documented bounded native queue path.',
+        '22.16.0 memesh doctor message memesh-router memesh-host-codex memesh-host-claude memesh-host-acp --config message storage report. The ordinary Codex path below is the documented bounded native queue path.',
         'If the session is stopped, missing, or disconnected, MeMesh neither starts nor replaces it. Failed exact-session native delivery is not replayed automatically after a later registration; the sender must retry deliberately.',
         '## 3. Codex CLI',
       ].join('\n'));
@@ -555,7 +555,7 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       write('.claude-plugin/marketplace.json', '"name": "pcircle-memesh" "version"');
       write('hooks/hooks.json', 'session-start.js session-summary.js pre-compact.js user-prompt-intent.js pre-edit-recall.js guard-check.js post-commit.js codex-session.js startup|resume SessionEnd');
       write('package.json', JSON.stringify({
-        engines: { node: '>=22.13.0' },
+        engines: { node: '>=22.16.0' },
         scripts: { release: 'check-agent-message-sync.mjs test:packaged' },
         bin: {
           'memesh-router': 'dist/host-runtime/router.js',

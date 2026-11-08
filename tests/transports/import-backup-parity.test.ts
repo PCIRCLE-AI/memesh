@@ -33,7 +33,7 @@ beforeAll(async () => {
       'dist/transports/cli/cli': 'src/transports/cli/cli.ts',
       'dist/mcp/server': 'src/mcp/server.ts',
     },
-    outdir: built, bundle: true, platform: 'node', format: 'esm', target: 'node22.13',
+    outdir: built, bundle: true, platform: 'node', format: 'esm', target: 'node22.16',
     packages: 'bundle', external: ['node:*'], legalComments: 'none',
     banner: { js: "import { createRequire as __memeshCreateRequire } from 'node:module'; const require = __memeshCreateRequire(import.meta.url);" },
   });

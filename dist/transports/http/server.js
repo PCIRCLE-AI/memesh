@@ -26,6 +26,7 @@ import { getCurrentInstallChannel, getInstallChannelSupport } from '../../core/i
 import { getDbPath, getMemeshDirFromDbPath, redactTextValues, redactUserPaths } from '../../core/paths.js';
 import { removeGroupAndOtherAccess } from '../../core/file-mode.js';
 import { diagnoseDatabaseFailure } from '../../core/database-diagnosis.js';
+import { isUnsupportedNode } from '../../storage/sqlite.js';
 import { RETIRED_ROUTES } from './retired-routes.js';
 import fs from 'fs';
 import path from 'path';
@@ -705,6 +706,8 @@ export function startServer(host = HOST, port = PORT, opts) {
         db.prepare('SELECT COUNT(*) FROM entities').get();
     }
     catch (err) {
+        if (isUnsupportedNode(err))
+            throw err;
         const message = err instanceof Error ? err.message : String(err);
         const dbPath = getDbPath();
         console.error('\n❌ MeMesh startup failed: database cannot be opened\n');

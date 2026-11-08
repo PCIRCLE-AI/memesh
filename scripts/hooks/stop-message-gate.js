@@ -30,6 +30,8 @@ import {
   SESSION_ID_MISMATCH_REASON,
   writePrivateJson,
   openMemeshDb,
+  hookNodeProblem,
+  NODE_TOO_OLD_REASON,
 } from './_shared.js';
 import { pruneSessionState, SESSION_ID_RE } from './_stop-notes.js';
 
@@ -92,6 +94,10 @@ process.stdin.on('end', () => {
     }
 
     const dbPath = process.env.MEMESH_DB_PATH ?? getDbPath();
+    if (hookNodeProblem('stop-message-gate')) {
+      record('error', NODE_TOO_OLD_REASON);
+      return exit0();
+    }
     if (!existsSync(dbPath)) {
       record('skipped', SKIP_REASONS.noDatabaseForMessageGate);
       return exit0();

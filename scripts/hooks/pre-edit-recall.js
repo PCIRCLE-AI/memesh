@@ -34,6 +34,8 @@ import {
   SESSION_SNAPSHOT_TYPES,
   recordHookOutcome,
   openMemeshDb,
+  hookNodeProblem,
+  NODE_TOO_OLD_REASON,
 } from './_shared.js';
 import { redactMemoryText } from './_generated/core-paths.js';
 import { pruneSessionState, recallListName, SESSION_ID_RE } from './_stop-notes.js';
@@ -145,6 +147,10 @@ function recallFile(data) {
     }
     const throttled = seenFiles.includes(fileKey);
 
+    if (hookNodeProblem('pre-edit-recall')) {
+      record('error', NODE_TOO_OLD_REASON);
+      return pass();
+    }
     if (!existsSync(dbPath)) {
       record('skipped', SKIP_REASONS.noDatabaseForRecall);
       return pass();

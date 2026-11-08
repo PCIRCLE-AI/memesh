@@ -30012,17 +30012,85 @@ function loadNodeSqlite() {
   try {
     return require2("node:sqlite");
   } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    throw new Error(`memesh needs Node's built-in SQLite, which this runtime (${process.version}) does not provide. It became usable without a flag in Node 22.13.0 \u2014 upgrade Node to 22.13 or newer and run memesh again. (${detail})`, { cause: err });
+    return { missing: err instanceof Error ? err.message : String(err) };
   } finally {
     process.emitWarning = original;
   }
 }
-var { DatabaseSync } = loadNodeSqlite();
+var loadedSqlite = loadNodeSqlite();
+var MissingDatabaseSync = class {
+  constructor() {
+    const detail = "missing" in loadedSqlite ? loadedSqlite.missing : "unknown";
+    throw new UnsupportedNodeError(`memesh needs Node's built-in SQLite, which this runtime (${process.version}) does not provide. Upgrade Node to ${MIN_NODE_SERIES} or newer and run memesh again. (${detail})`);
+  }
+};
+var DatabaseSync = "DatabaseSync" in loadedSqlite ? loadedSqlite.DatabaseSync : MissingDatabaseSync;
+var MIN_NODE_VERSION = "22.16.0";
+var MIN_NODE_SERIES = MIN_NODE_VERSION.split(".").slice(0, 2).join(".");
+var UnsupportedNodeError = class extends Error {
+  code = "NODE_TOO_OLD";
+  constructor(message) {
+    super(message);
+    this.name = "UnsupportedNodeError";
+  }
+};
+function atLeastMinimumNode(version2) {
+  const want = MIN_NODE_VERSION.split(".").map(Number);
+  const have = version2.replace(/^v/, "").split(".").map((part) => Number.parseInt(part, 10));
+  for (let i = 0; i < 3; i++) {
+    const h = have[i];
+    if (!Number.isFinite(h))
+      return false;
+    if (h !== want[i])
+      return h > want[i];
+  }
+  return true;
+}
+function fts5ProbeResult(createFtsTable) {
+  try {
+    createFtsTable();
+    return true;
+  } catch (err) {
+    if (/no such module/i.test(err instanceof Error ? err.message : String(err)))
+      return false;
+    throw err;
+  }
+}
+var ftsProbe;
+function hasFts5() {
+  if (ftsProbe === void 0) {
+    const probe = new DatabaseSync(":memory:");
+    try {
+      ftsProbe = fts5ProbeResult(() => probe.exec("CREATE VIRTUAL TABLE memesh_fts5_probe USING fts5(a)"));
+    } finally {
+      try {
+        probe.close();
+      } catch {
+      }
+    }
+  }
+  return ftsProbe;
+}
+function nodeSupportProblem(version2 = process.versions.node, fts5Available = hasFts5) {
+  const shown = version2.replace(/^v/, "");
+  if (!atLeastMinimumNode(version2)) {
+    return `This Node (v${shown}) lacks the full-text search MeMesh needs; upgrade to Node ${MIN_NODE_SERIES} or newer and run memesh again.`;
+  }
+  if (!fts5Available()) {
+    return `This Node build (v${shown}) lacks the full-text search (FTS5) MeMesh needs; install the official Node ${MIN_NODE_SERIES} or newer from nodejs.org and run memesh again.`;
+  }
+  return null;
+}
+function assertNodeSupported() {
+  const problem = nodeSupportProblem();
+  if (problem)
+    throw new UnsupportedNodeError(problem);
+}
 var BUSY_TIMEOUT_MS = 3e4;
 var MemeshDatabase = class extends DatabaseSync {
   #depth = 0;
   constructor(path15, options = {}) {
+    assertNodeSupported();
     super(path15, options);
     this.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
   }

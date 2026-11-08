@@ -275,7 +275,7 @@ requireText('hooks/hooks.json', [
   'codex-session.js', 'startup|resume', 'SessionEnd',
 ]);
 requireText('llms-install.md', [
-  '22.13.0', 'memesh doctor', 'message', 'memesh-router',
+  '22.16.0', 'memesh doctor', 'message', 'memesh-router',
   'memesh-host-codex', 'memesh-host-claude', 'memesh-host-acp', '--config', 'message storage report',
 ]);
 requireSectionText(
@@ -331,7 +331,7 @@ requireSectionText(
   'qualified ordinary-CLI registration, no-replay, and Desktop evidence boundary in Traditional Chinese',
 );
 const packageJsonText = read('package.json');
-for (const token of ['">=22.13.0"', 'check-agent-message-sync.mjs', 'test:packaged']) {
+for (const token of ['">=22.16.0"', 'check-agent-message-sync.mjs', 'test:packaged']) {
   if (!packageJsonText.includes(token)) missing.push(`package.json (missing ${JSON.stringify(token)})`);
 }
 

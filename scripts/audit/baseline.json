@@ -86,6 +86,11 @@
       "reason": "The detector's `.toBe(0)` matches the spawned shim's process exit status, not an empty collection. Each run test also requires empty stderr and the exact stdout the shim prints (`function`), and fails without the sibling package.json (break-tested: `require is not defined in ES module scope`).",
       "triaged": "2026-10-05 #477"
     },
+    "C1 tests/hooks/node-floor-hooks.test.ts": {
+      "class": "SAFE-HEURISTIC-FALSE-POSITIVE",
+      "reason": "The detector's `.toBe(0)` matches each hook process's exit status (hooks must exit 0 so they never crash the host), not an empty collection. Each test also requires exactly one outcome record with reason `uncaught NODE_TOO_OLD`, the upgrade sentence on stderr or in the banner, and, for session-start, the absence of the false claims. Mutating each hook's Node check to a no-op turned its test red.",
+      "triaged": "2026-11-08 Node 22.16 floor"
+    },
     "C1 tests/cjk-recall.test.ts": {
       "class": "SAFE",
       "reason": "emptiness paired with positive assertions in the same test file (per-file detail in the 2026-08-04 triage)",

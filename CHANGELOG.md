@@ -6,6 +6,10 @@ are not part of a published npm release yet.
 
 ## [Unreleased]
 
+### Changed
+
+- MeMesh now requires Node 22.16 or newer (was 22.13). Node 22.13 to 22.15 has no full-text search in its built-in SQLite, so `memesh remember` and `recall` failed there with "no such module: fts5". On an older Node (including Node 20), the CLI, MCP server and HTTP server now say in one sentence to upgrade to Node 22.16 or newer and exit non-zero. The session-start hook shows the same sentence in the session banner, and every hook records the reason in its outcome record without crashing the host. `memesh doctor` gives the same instruction.
+
 ### Fixed
 
 - Codex sessions now produce session insights like Claude sessions do, built from Codex's own record of each command and file change: tool calls, files changed, commands run and failed commands. A failure that Codex printed but did not record as a command is reported too, by a best-effort match that can occasionally miss a failure or count one twice. Previously every Codex session was skipped as too little activity. Files written under the temporary folders (`/tmp`, `/private/tmp`, `/var/folders`) are not remembered as edited files: not those Codex changes with its patch tool, and not shell writes in Codex or Claude sessions. A session insight lists at most 30 edited file names and counts the rest.

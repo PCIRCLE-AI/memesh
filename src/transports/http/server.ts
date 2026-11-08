@@ -51,6 +51,7 @@ import { getCurrentInstallChannel, getInstallChannelSupport } from '../../core/i
 import { getDbPath, getMemeshDirFromDbPath, redactTextValues, redactUserPaths } from '../../core/paths.js';
 import { removeGroupAndOtherAccess } from '../../core/file-mode.js';
 import { diagnoseDatabaseFailure } from '../../core/database-diagnosis.js';
+import { isUnsupportedNode } from '../../storage/sqlite.js';
 import { RETIRED_ROUTES } from './retired-routes.js';
 
 import fs from 'fs';
@@ -1300,6 +1301,9 @@ export function startServer(
     const db = getDatabase();
     db.prepare('SELECT COUNT(*) FROM entities').get();
   } catch (err) {
+    // A Node below the floor is one sentence, said once: the caller prints the
+    // thrown error. The path, diagnosis and fix below would repeat it.
+    if (isUnsupportedNode(err)) throw err;
     const message = err instanceof Error ? err.message : String(err);
     const dbPath = getDbPath();
     console.error('\n❌ MeMesh startup failed: database cannot be opened\n');

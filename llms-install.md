@@ -48,15 +48,15 @@ the database.
 
 ## 2. Terminal / CLI (npm global)
 
-Check Node **first** — the floor is 22.13.0 (`node:sqlite` is part of Node
-itself; npm only warns on an engine mismatch, so an install onto an old Node
+Check Node **first** — the floor is 22.16.0 (`node:sqlite` is part of Node
+itself, and its full-text search first ships in 22.16; npm only warns on an engine mismatch, so an install onto an old Node
 "succeeds" and fails later at runtime):
 
 ```
 node --version
 ```
 
-Expected: `v22.13.0` or later. If lower, stop and upgrade Node before
+Expected: `v22.16.0` or later. If lower, stop and upgrade Node before
 continuing.
 
 ```
@@ -228,7 +228,7 @@ integration health; it does not prove that a host or model received context.
 | Failure | Remedy |
 |---|---|
 | `command not found: memesh` | npm's global bin dir is not on PATH. Run `npm prefix -g`, append `/bin` to its output, and add that directory to PATH. |
-| `No such built-in module: node:sqlite` | The running Node is older than 22.13.0. Upgrade Node, then re-run `memesh doctor`. |
+| `This Node … lacks the full-text search MeMesh needs` or `No such built-in module: node:sqlite` | The running Node is older than 22.16.0. Upgrade Node, then re-run `memesh doctor`. |
 | `EACCES` during `npm install -g` | The global prefix is not user-writable. Use a user-level Node (nvm/fnm), or `npm config set prefix ~/.npm-global` and add `~/.npm-global/bin` to PATH, then re-install. |
 | `Overall: FAIL` (exit code 1) | The report names the failing check and prints the fix next to it. Apply that fix and re-run `memesh doctor`. |
 

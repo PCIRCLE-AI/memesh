@@ -32,6 +32,8 @@ import {
   SKIP_REASONS,
   recordHookOutcome,
   openMemeshDb,
+  hookNodeProblem,
+  NODE_TOO_OLD_REASON,
 } from './_shared.js';
 
 const dbPath = getDbPath();
@@ -58,6 +60,10 @@ process.stdin.on('end', () => {
     const command = data?.tool_input?.command;
     if (!command || typeof command !== 'string') {
       record('skipped', SKIP_REASONS.noBashCommand);
+      return pass();
+    }
+    if (hookNodeProblem('guard-check')) {
+      record('error', NODE_TOO_OLD_REASON);
       return pass();
     }
     if (!existsSync(dbPath)) {

@@ -8,7 +8,7 @@ import { fileURLToPath } from 'url';
 import {
   openDatabase, closeDatabase, getDatabase, reindexFts,
 } from '../../db.js';
-import type { MemeshDatabase } from '../../storage/sqlite.js';
+import { isUnsupportedNode, type MemeshDatabase } from '../../storage/sqlite.js';
 import { remember, recallForAgent, forget, exportMemories, importMemories, learn, setPinned } from '../../core/operations.js';
 import { agentRecallEnvelope } from '../../core/recall-agent-view.js';
 import { readConfig, updateConfig } from '../../core/config.js';
@@ -50,6 +50,14 @@ import { pluginHostConfigRoot, versionedPluginCacheRoots } from '../../core/inst
 import { shellQuote } from '../../core/file-mode.js';
 import { ZodError } from 'zod';
 
+/** What the kg previews print when the database cannot be opened read-only. */
+function readOnlyOpenFailure(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  return isUnsupportedNode(err)
+    ? `Error: ${message}`
+    : `Error: memesh cannot open its database read-only (${message}). Run \`memesh doctor\`.`;
+}
+
 // DX: every CLI command that touches the DB used to repeat
 //   openDatabase(); try { ...body... } finally { closeDatabase(); }
 // withDatabase factors that into one place so future commands cannot
@@ -67,6 +75,11 @@ async function withDatabase<T>(fn: () => T | Promise<T>): Promise<T> {
     openDatabase();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    // A Node below the floor is not a database problem; one sentence, no doctor hint.
+    if (isUnsupportedNode(err)) {
+      console.error(`Error: ${message}`);
+      process.exit(1);
+    }
     console.error(`Error: memesh cannot open its database.`);
     console.error(`       ${message}`);
     console.error(`       Run \`memesh doctor\` — it names the file, the likely cause and the way back.`);
@@ -2365,7 +2378,7 @@ kgCmd
       try {
         readOnlyDb = (await import('../../core/project-tags.js')).openReadOnlyForPreview(getDbPath());
       } catch (err) {
-        console.error(`Error: memesh cannot open its database read-only (${err instanceof Error ? err.message : String(err)}). Run \`memesh doctor\`.`);
+        console.error(readOnlyOpenFailure(err));
         process.exitCode = 1;
         return;
       }
@@ -2607,7 +2620,7 @@ kgCmd
     try {
       readOnlyDb = (await import('../../core/project-tags.js')).openReadOnlyForPreview(getDbPath());
     } catch (err) {
-      console.error(`Error: memesh cannot open its database read-only (${err instanceof Error ? err.message : String(err)}). Run \`memesh doctor\`.`);
+      console.error(readOnlyOpenFailure(err));
       process.exitCode = 1;
       return;
     }
