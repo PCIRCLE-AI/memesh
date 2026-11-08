@@ -8,6 +8,7 @@ are not part of a published npm release yet.
 
 ### Fixed
 
+- MeMesh no longer treats a Traditional Chinese statement or question such as 「這條已經記下來了」, 「我先記下來」 or 「有記下來嗎」 as a request to save something, and no longer reads messages from other sessions, system notices or pasted blocks as if you had asked it to remember. Requests such as 「記下來」, 「請把這點記下來」 and 「存到記憶」 still work; 「存到記憶體」 (RAM) is no longer mistaken for one.
 - Codex sessions now produce session insights like Claude sessions do, built from Codex's own record of each command and file change: tool calls, files changed, commands run and failed commands. A failure that Codex printed but did not record as a command is reported too, by a best-effort match that can occasionally miss a failure or count one twice. Previously every Codex session was skipped as too little activity. Files written under the temporary folders (`/tmp`, `/private/tmp`, `/var/folders`) are not remembered as edited files: not those Codex changes with its patch tool, and not shell writes in Codex or Claude sessions. A session insight lists at most 30 edited file names and counts the rest.
 
 ## [4.13.0] — 2026-11-02

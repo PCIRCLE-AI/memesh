@@ -163,16 +163,131 @@ export const INTENT_PATTERNS = [
   // Portuguese: "salvar em memesh"
   /(?:^|[.!?\n]\s*)(?:por favor\s+)?(?:salvar|guardar|adicionar|armazenar)\s+(?:(?:isto|isso)\s+)?(?:em|no)\s+memesh\b/im,
 
-  // Traditional Chinese: 記下來, 記到/存到/寫進/存進 memesh|記憶
-  /記下來|記到\s*(?:memesh|記憶)|存到\s*(?:memesh|記憶)|寫進\s*(?:memesh|記憶)|存進\s*(?:memesh|記憶)/,
+  // Traditional Chinese: judged clause by clause in detectRememberIntent, not by a regex here
 ];
+
+// Claude Code puts text the user did not type into the same prompt: messages
+// from other sessions, system notices, task results, pasted blocks. That text
+// must never count as a save request. A block is an opening tag that starts a
+// line, a name from NON_USER_TAGS and a closing tag of the SAME name that ends
+// a line; same-name blocks nest. Everything else is the user's own text and is
+// kept: an unclosed tag (probably quoted), a tag mid-line, in `inline code` or
+// in a ``` fence, a self-closing tag, a mismatched closing tag.
+// Known limit: a closing tag that ends a line INSIDE a block's body cannot be
+// told from the real one, so the rest of that message counts as the user's.
+// Linear time: the tag pattern never scans past the next "<", the character
+// walk visits each character once, and a closing tag finds its opener through
+// `openByName` instead of searching the stack.
+const NON_USER_TAGS = ['cross-session-message', 'system-reminder', 'task-notification', 'pasted_content'];
+const NON_USER_TAG_RE = new RegExp(
+  `<(\\/)?(${NON_USER_TAGS.join('|')})(?=[\\s/>])((?:"[^"<]*"|'[^'<]*'|[^<>"'])*)>`,
+  'gi',
+);
+const LINE_END_AT = /[ \t\r]*(?:\n|$)/y;
+
+export function stripNonUserBlocks(prompt) {
+  const stack = []; // open tags: { name, start }, start = where the tag's line begins
+  const openByName = new Map(NON_USER_TAGS.map((name) => [name, []])); // name -> indices into `stack`
+  let out = '';
+  let kept = 0; // prompt[kept..] is not copied to `out` yet
+  let pos = 0; // the character walk
+  let lineStart = 0;
+  let lineHasText = false;
+  let inInline = false;
+  let inFence = false;
+
+  for (const tag of prompt.matchAll(NON_USER_TAG_RE)) {
+    // Walk up to the tag to learn whether it starts a line or sits in code.
+    for (; pos < tag.index; pos += 1) {
+      const c = prompt[pos];
+      if (c === '\n') {
+        lineStart = pos + 1;
+        lineHasText = false;
+        inInline = false;
+      } else if (c === '`') {
+        if (!lineHasText && prompt.startsWith('```', pos)) {
+          inFence = !inFence;
+          pos += 2;
+        } else {
+          inInline = !inInline;
+        }
+        lineHasText = true;
+      } else if (c !== ' ' && c !== '\t' && c !== '\r') {
+        lineHasText = true;
+      }
+    }
+    if (inFence || inInline) continue;
+
+    const [tagText, closing, rawName, attributes] = tag;
+    const name = rawName.toLowerCase();
+    if (!closing) {
+      if (lineHasText || attributes.trimEnd().endsWith('/')) continue; // mid-line or self-closing
+      openByName.get(name).push(stack.length);
+      stack.push({ name, start: lineStart });
+      continue;
+    }
+
+    const openIndices = openByName.get(name);
+    if (openIndices.length === 0) continue;
+    LINE_END_AT.lastIndex = tag.index + tagText.length;
+    const lineEnd = LINE_END_AT.exec(prompt);
+    if (!lineEnd) continue;
+    // Close the innermost same-name block, and any unclosed tag opened inside it.
+    const blockIndex = openIndices.at(-1);
+    const block = stack[blockIndex];
+    while (stack.length > blockIndex) openByName.get(stack.pop().name).pop();
+    if (blockIndex === 0) {
+      out += prompt.slice(kept, block.start);
+      kept = lineEnd.index + lineEnd[0].length;
+    }
+  }
+  return out + prompt.slice(kept);
+}
+
+// Traditional Chinese has no sentence-initial imperative marker, so "記下來"
+// (a request) looks like "我記下來了" (a statement) or "有記下來嗎" (a question).
+// A save verb is only a candidate: each clause is judged by exclusion.
+const ZH_THIS = '這|那|它|以上|上述';
+const ZH_SAVE_VERBS = [
+  '記下(?!午)來?',
+  '記住',
+  '(?:記到|存到|寫進|存進)\\s*(?:memesh|記憶(?!體))', // 記憶體 is RAM
+  // A bare 存起來 also means saving money or a file. The gap may be any character:
+  // a clause never holds sentence punctuation, ZH_CLAUSE_SPLIT removed it.
+  `把(?:${ZH_THIS}|上面|剛剛)[\\s\\S]{0,15}?存起來`,
+];
+const ZH_SAVE_VERB = new RegExp(ZH_SAVE_VERBS.join('|'), 'g');
+// Right before the verb (先/再/也/都/就/還/又 may sit in between): 我 (but not
+// 幫我/替我/給我), 已經, 已, 有 (so also 沒有), 沒, 剛 (so also 剛剛), 會, 要不要.
+const ZH_STATEMENT_BEFORE_WORDS = ['(?<![幫替給])我', '已經', '已', '有', '沒', '剛', '會', '要不要'];
+const ZH_STATEMENT_BEFORE = new RegExp(`(?:${ZH_STATEMENT_BEFORE_WORDS.join('|')})\\s*(?:[先再也都就還又]\\s*)?$`);
+const ZH_DONE_AFTER = /^\s*[了過沒]/; // done, or "done yet?"
+const ZH_I_WILL_PUT = /^\s*我把/; // "I will put this down"
+// 記得 alone is a work instruction ("記得切勿 over engineer"); only 幫我記得…
+// or 記得 plus a demonstrative object at the clause start is a save request.
+const ZH_REMEMBER_TO = new RegExp(`^\\s*(?:(?:幫我|替我|幫忙)先?記得|(?:請|麻煩)?記得(?:${ZH_THIS}))`);
+const ZH_QUESTION_PARTICLE = /[嗎呢]/; // polite questions with a save verb stay requests; this one does not
+const ZH_CLAUSE_SPLIT = /[。！？!?.\n，,；;：:]+/;
+
+function isChineseSaveRequest(clause) {
+  if (clause.length < 2) return false;
+  if (ZH_REMEMBER_TO.test(clause) && !ZH_QUESTION_PARTICLE.test(clause)) return true;
+  if (ZH_I_WILL_PUT.test(clause)) return false;
+  for (const verb of clause.matchAll(ZH_SAVE_VERB)) {
+    const end = verb.index + verb[0].length;
+    // Only the few characters around the verb count.
+    const before = clause.slice(Math.max(0, verb.index - 12), verb.index);
+    const after = clause.slice(end, end + 6);
+    if (!ZH_STATEMENT_BEFORE.test(before) && !ZH_DONE_AFTER.test(after)) return true;
+  }
+  return false;
+}
 
 export function detectRememberIntent(prompt) {
   if (!prompt || typeof prompt !== 'string') return false;
-  for (const re of INTENT_PATTERNS) {
-    if (re.test(prompt)) return true;
-  }
-  return false;
+  const text = stripNonUserBlocks(prompt);
+  return INTENT_PATTERNS.some((re) => re.test(text))
+    || text.split(ZH_CLAUSE_SPLIT).some(isChineseSaveRequest);
 }
 
 // The returned string is consumed BY THE LLM as additionalContext, NOT by
