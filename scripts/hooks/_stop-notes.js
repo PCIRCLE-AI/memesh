@@ -171,7 +171,8 @@ export async function runNoteIngestion({ memoryDir, project, metaUrl }) {
   const state = readJson(statePath) ?? {};
   const newest = newestNoteMtime(memoryDir);
   const last = typeof state[key]?.at === 'number' ? state[key].at : 0;
-  if (newest <= last && !state[key]?.more) {
+  // A folder read before its notes were trusted is read once more, so the notes already stored are made trusted.
+  if (newest <= last && !state[key]?.more && state[key]?.trusted === true) {
     return { outcome: 'skipped', reason: SKIP_REASONS.noNoteChanged };
   }
 
@@ -186,14 +187,17 @@ export async function runNoteIngestion({ memoryDir, project, metaUrl }) {
   openDatabase(undefined, { busyTimeoutMs: HOOK_BUSY_TIMEOUT_MS });
   let result;
   try {
-    result = ingestNoteDirectory({ dir: memoryDir, project, maxFiles: INGEST_MAX_FILES });
+    // The directory is this session's own memory folder (derived from its transcript path): its notes are trusted.
+    result = ingestNoteDirectory({ dir: memoryDir, project, maxFiles: INGEST_MAX_FILES, trusted: true });
   } finally {
     closeDatabase();
   }
   ensurePrivateDir(memeshDir);
   // `startedAt`, not `newest`: a file edited while this run was reading is
   // newer than the stamp and is picked up next time.
-  writeJsonAtomic(statePath, { ...state, [key]: { at: startedAt, more: result.more > 0 } });
+  // `trusted` is recorded only when the folder's notes are trusted: a run that could not take the copy it needs first leaves it unset, so the next Stop tries again.
+  writeJsonAtomic(statePath, { ...state, [key]: { at: startedAt, more: result.more > 0, trusted: !result.retrustFailed } });
+  if (result.retrustFailed) return { outcome: 'error', reason: `note trust: ${result.retrustFailed}` };
   // Every shape of MEMORY change counts, not only the ones that store text:
   // a move re-points the memory at its file and a restore takes it out of
   // missing, and a record saying "nothing new" about a run that changed a
@@ -207,9 +211,9 @@ export async function runNoteIngestion({ memoryDir, project, metaUrl }) {
   // `lastWriteAt` set and `lastEntity` null — a write with nothing written,
   // which reads as a bug in doctor rather than as the missing field it is.
   const touched = result.created[0] ?? result.replaced[0] ?? result.repathed[0]
-    ?? result.restored[0] ?? result.markedMissing[0];
+    ?? result.restored[0] ?? result.markedMissing[0] ?? result.retrusted[0];
   const changed = result.created.length + result.replaced.length + result.repathed.length
-    + result.restored.length + result.markedMissing.length > 0;
+    + result.restored.length + result.markedMissing.length + result.retrusted.length > 0;
   // A write records the summary (counts only); a skip records a known
   // reason, the only kind doctor will quote.
   // A run that stored nothing but REFUSED files is not the same event as a

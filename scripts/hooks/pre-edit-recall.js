@@ -35,7 +35,7 @@ import {
   recordHookOutcome,
   openMemeshDb,
 } from './_shared.js';
-import { redactMemoryText } from './_generated/core-paths.js';
+import { getProjectIds, redactMemoryText } from './_generated/core-paths.js';
 import { pruneSessionState, recallListName, SESSION_ID_RE } from './_stop-notes.js';
 import { readSnippets, toTopologyEntity } from './_generated/briefing-pools.js';
 import { LESSON_TYPE_LIST } from './_generated/work-topology.js';
@@ -192,6 +192,8 @@ function recallFile(data) {
     // warning names its
     // source lesson either way.
     let projectName = null;
+    // Every id this repository's memories may carry (its remote's id and its path's ids): a read matches all of them, a write uses one.
+    let projectIds = null;
     // The edited file's own path, forward-slash-normalised, for the literal
     // confirmation's path-suffix check (#358 round 3 item 3b) — `relPath` is
     // relative to the file's repo root, `absPath` is always set. `null`
@@ -211,7 +213,9 @@ function recallFile(data) {
         // One call serves both project scoping and the path-suffix check
         // below.
         const repoRoot = gitRepoRoot(fileDir);
-        projectName = repoRoot ? getProjectName(fileDir) : getProjectName(data.cwd);
+        const identityDir = repoRoot ? fileDir : data.cwd;
+        projectName = getProjectName(identityDir);
+        projectIds = getProjectIds(identityDir);
 
         // `fileDir` is only the nearest ancestor that EXISTS — right for
         // project identity, wrong as the file's own directory. A `Write`
@@ -242,6 +246,7 @@ function recallFile(data) {
         editedPath = { relPath, absPath, absPathAsGiven };
       } catch {
         projectName = getProjectName(data.cwd);
+        projectIds = getProjectIds(data.cwd);
       }
     }
 
@@ -337,19 +342,20 @@ function recallFile(data) {
           // satisfy this exact-tag strategy for any file ever edited that
           // session. `commit` stays eligible: a commit can genuinely be about
           // the file being edited.
-          const projectTag = `project:${projectName}`;
+          const projectTags = (projectIds ?? [projectName]).map((id) => `project:${id}`);
+          const projectTagMarks = projectTags.map(() => '?').join(',');
           const tagResults = db.prepare(`
             SELECT DISTINCT e.id, e.name, e.type, e.metadata
             FROM entities e
             JOIN tags t1 ON t1.entity_id = e.id
             JOIN tags t2 ON t2.entity_id = e.id
             WHERE t1.tag = ?
-              AND t2.tag = ?
+              AND t2.tag IN (${projectTagMarks})
               ${SESSION_SNAPSHOT_EXCLUSION_SQL}
             ${statusFilter}
             LIMIT ?
           `).all(
-            `file:${fileName}`, projectTag,
+            `file:${fileName}`, ...projectTags,
             ...SESSION_SNAPSHOT_TYPE_LIST, MAX_RESULTS * 3
           );
           results.push(...tagResults.filter((row) => isTrustedForAutoContext(row.metadata)));
@@ -437,13 +443,13 @@ function recallFile(data) {
                 JOIN entities_fts fts ON fts.rowid = e.id
                 JOIN tags t ON t.entity_id = e.id
                 WHERE entities_fts MATCH ?
-                  AND t.tag = ?
+                  AND t.tag IN (${projectTagMarks})
                   ${SESSION_SNAPSHOT_EXCLUSION_SQL}
                 ${statusFilter}
                 ORDER BY fts.rank, e.id DESC
                 LIMIT ?
               `).all(
-                matchExpr, projectTag,
+                matchExpr, ...projectTags,
                 ...SESSION_SNAPSHOT_TYPE_LIST, CANDIDATE_WINDOW
               );
             } catch (err) {

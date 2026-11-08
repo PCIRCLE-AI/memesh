@@ -317,7 +317,9 @@ describe('memesh remember CLI: quick-capture form', () => {
     const meta = JSON.parse((read.prepare("SELECT metadata FROM entities WHERE name = 'r4'").get() as { metadata: string }).metadata);
     read.close();
     expect(meta.replaced_history).toHaveLength(1);
-    expect(meta.replaced_history[0]).toMatchObject({ observations: ['old line'], tags: [], truncated: true });
+    expect(meta.replaced_history[0]).toMatchObject({ observations: ['old line'], truncated: true });
+    // The 70,000-character tag goes; the memory's own project tag (from the directory) may stay.
+    expect((meta.replaced_history[0].tags as string[]).every((tag) => tag.length < 1000)).toBe(true);
     // A normal replace still says it is kept.
     const again = runCli(['remember', '--name=r5', '--type=note', '--obs=old line'], { HOME: tmpHome });
     expect(again.exitCode).toBe(0);

@@ -1,5 +1,6 @@
 export type McpProjectResolution = {
     project: string;
+    ids?: readonly string[];
 } | {
     error: 'workspace_unavailable' | 'workspace_ambiguous';
     reason: string;

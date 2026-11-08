@@ -3,6 +3,8 @@ import path from 'path';
 import { createHash } from 'crypto';
 import { getDatabase } from '../db.js';
 import { remember } from './operations.js';
+import { DECISION_TYPES, NOTE_FILE_PROVENANCE, WHY_PREFIX } from './work-topology.js';
+import { copyDatabaseBefore } from './db-copy.js';
 import { sanitizeNoteText, splitObservations, NOTE_DEFAULT_TYPE, NOTE_MAX_OBSERVATIONS } from './note-derive.js';
 import { truncateTitle } from './title.js';
 export const NOTE_FILE_TAG = 'source:note-file';
@@ -113,6 +115,9 @@ export function ingestNoteDirectory(opts) {
         created: [],
         replaced: [],
         unchanged: 0,
+        retrusted: [],
+        retrustBackup: null,
+        retrustFailed: null,
         repathed: [],
         restored: [],
         markedMissing: [],
@@ -121,7 +126,8 @@ export function ingestNoteDirectory(opts) {
         more: 0,
     };
     const db = getDatabase();
-    const existingStmt = db.prepare(`SELECT e.id, e.metadata, e.status,
+    const trustFor = (type, observations) => opts.trusted && !(type !== undefined && DECISION_TYPES.has(type) && !observations.some((o) => o.startsWith(WHY_PREFIX))) ? 'trusted' : 'untrusted';
+    const existingStmt = db.prepare(`SELECT e.id, e.metadata, e.status, e.type,
             EXISTS(SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?) AS is_note,
             EXISTS(SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?) AS is_missing
        FROM entities e WHERE e.name = ?`);
@@ -398,7 +404,8 @@ export function ingestNoteDirectory(opts) {
             observations: owner.observations,
             ...(existing ? { project } : { tags: [NOTE_FILE_TAG, ...(opts.project ? [`project:${opts.project}`] : [])] }),
             replace: true,
-            trustOverride: 'untrusted',
+            trustOverride: trustFor(owner.type, owner.observations),
+            reinforceConfidence: false,
             provenanceOverride: {
                 source: 'note-file',
                 note_path: owner.rel,
@@ -453,7 +460,45 @@ export function ingestNoteDirectory(opts) {
         tagMissing.run(row.id, NOTE_FILE_MISSING_TAG);
         result.markedMissing.push(row.name);
     }
+    if (opts.trusted)
+        liftFolderTrust(db, dirId, result);
     return result;
+}
+function liftFolderTrust(db, dirId, result) {
+    const decisionTypes = [...DECISION_TYPES];
+    const rows = db.prepare(`SELECT e.id, e.name FROM entities e
+      WHERE json_extract(e.metadata, '$.provenance.source') = ?
+        AND json_extract(e.metadata, '$.provenance.note_dir_id') = ?
+        AND json_extract(e.metadata, '$.trust') = 'untrusted'
+        AND e.type NOT IN (${decisionTypes.map(() => '?').join(',')})
+      ORDER BY e.id`).all(NOTE_FILE_PROVENANCE, dirId, ...decisionTypes);
+    if (rows.length === 0)
+        return;
+    const copy = copyDatabaseBefore(db, 'knowledge-graph-before-note-trust');
+    if (copy.kind === 'failed') {
+        result.retrustFailed = `${rows.length} note(s) of this folder should become trusted, but ${copy.reason}; nothing was changed`;
+        return;
+    }
+    try {
+        fs.writeFileSync(`${copy.path}.json`, JSON.stringify({
+            at: new Date().toISOString(),
+            change: 'note files of the project\'s own memory folder: metadata.trust untrusted -> trusted',
+            count: rows.length,
+            ids: rows.map((r) => r.id),
+            names: rows.map((r) => r.name),
+            backup: copy.path,
+            undo: `Restore the database from the backup file, or set metadata.trust back to 'untrusted' on the ids listed here: UPDATE entities SET metadata = json_set(metadata, '$.trust', 'untrusted') WHERE id IN (<ids>);`,
+        }, null, 2), { mode: 0o600 });
+    }
+    catch (error) {
+        result.retrustFailed = `${rows.length} note(s) of this folder should become trusted, but the record of the change could not be written (${error instanceof Error ? error.message : String(error)}); nothing was changed`;
+        return;
+    }
+    const lift = db.prepare("UPDATE entities SET metadata = json_set(metadata, '$.trust', 'trusted') WHERE id = ?");
+    db.transaction(() => { for (const row of rows)
+        lift.run(row.id); })();
+    result.retrusted = rows.map((r) => r.name);
+    result.retrustBackup = copy.path;
 }
 export function summarizeNoteIngest(r) {
     const parts = [
@@ -462,6 +507,7 @@ export function summarizeNoteIngest(r) {
         `${r.unchanged} unchanged`,
         ...(r.repathed.length ? [`${r.repathed.length} moved`] : []),
         ...(r.restored.length ? [`${r.restored.length} restored`] : []),
+        ...(r.retrusted.length ? [`${r.retrusted.length} made trusted (copy of the database: ${path.basename(r.retrustBackup ?? '')})`] : []),
         `${r.skipped.length} skipped`,
         ...(r.refusedNow ? [`${r.refusedNow} newly refused`] : []),
     ];

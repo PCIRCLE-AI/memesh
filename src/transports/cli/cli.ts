@@ -15,7 +15,7 @@ import { readConfig, updateConfig } from '../../core/config.js';
 import { SESSION_LIMIT_MIN, SESSION_LIMIT_MAX, resolveSessionLimit } from '../../core/session-limit.js';
 import { updateNoticeForEntryPoint } from '../../core/update-entrypoint.js';
 import { removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
-import { getAgentRouterSocketPath, getDbPath, getProjectName, homeDir, redactSecrets, redactUserPaths } from '../../core/paths.js';
+import { getAgentRouterSocketPath, getDbPath, getProjectIds, getProjectName, homeDir, redactSecrets, redactUserPaths } from '../../core/paths.js';
 import { agentScopeIdRejection, canonicalAgentScopeId, projectScopeRejection } from '../../core/agent-scope-id.js';
 import { NAMESPACES } from '../../core/types.js';
 import { deriveNote, splitObservations, NOTE_DEFAULT_TYPE, NOTE_MAX_OBSERVATIONS } from '../../core/note-derive.js';
@@ -374,6 +374,7 @@ program
   .option('--tags <tags...>', 'Tags (space-separated)')
   .option('--replace', 'Rewrite the memory named by --name instead of appending; its previous version is kept in metadata.replaced_history')
   .option('--namespace <namespace>', 'Namespace: personal, team, or global. On a NEW memory this places it (default personal); on one that already exists it MOVES it out of the scope it is in — omit the flag to leave it alone.')
+  .option('--no-project', 'File the memory under no project (a preference, a general lesson). Without it the memory belongs to this directory\'s project, unless --tags names a project:<id>.')
   // The two relation types that DO something. MCP and HTTP callers could state
   // them through `relations`; the CLI had no way to state any relation at all,
   // so `contradicts` — the thing every recall checks for — was unreachable from
@@ -502,6 +503,12 @@ program
           tags: opts.tags,
           // #511: this directory's project, resolved only when a project tag needs it.
           ...(opts.tags?.some((tag: string) => tag.startsWith('project:')) ? { currentProject: getProjectName() } : {}),
+          // As over MCP: a memory belongs to this directory's project unless its tags
+          // name one or --no-project says it has none. Detail (commits, summaries)
+          // stays in its project; decisions, lessons and preferences are shared by type.
+          ...(opts.project === false
+            ? { project: null }
+            : opts.tags?.some((tag: string) => tag.startsWith('project:') && tag.slice('project:'.length).trim() !== '') ? {} : { project: getProjectName() }),
           namespace: opts.namespace,
           relations: relations.length > 0 ? relations : undefined,
           why: opts.why,
@@ -601,7 +608,7 @@ program
       // recallForAgent: recall + conflicts + the agent-facing size cap (#494); see its docstring.
       const result = await recallForAgent({
         ...input,
-        ...(ids !== undefined ? { projectScope: `project:${getProjectName()}` } : {}),
+        ...(ids !== undefined ? { projectScope: getProjectIds().map(id => `project:${id}`) } : {}),
       });
       const { entities, conflicts, retrieval, entities_omitted } = result;
 

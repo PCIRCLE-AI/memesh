@@ -232,8 +232,10 @@ export function resolveBriefingLevel(envValue: string | undefined, configValue: 
  *   - `minimal` (default): only this project — its decisions, lessons, known
  *     facts and recent activity, with the live repository state in front of
  *     them whenever anything else is injected (the repository state alone is
- *     never injected). No task state, no durable index, nothing from outside
- *     the project.
+ *     never injected). No task state, no durable index, none of another
+ *     project's detail; a few preferences of other projects (at most three,
+ *     labelled with their project, after the project's own and taking only
+ *     the room left) follow the project's own.
  *   - `standard`: `minimal` + the task state when fresh + the capped index of
  *     this project's durable memories.
  *   - `full`: `standard` + memories from your other projects + global

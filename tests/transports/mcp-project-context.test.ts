@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { getProjectName } from '../../src/core/paths.js';
+import { getProjectIds, getProjectName } from '../../src/core/paths.js';
 import { resolveMcpProject } from '../../src/transports/mcp/project-context.js';
 
 const dirs: string[] = [];
@@ -18,7 +18,7 @@ afterEach(() => { for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true
 describe('resolveMcpProject: the project an MCP call belongs to when it names none', () => {
   it('one workspace root is that root\'s project', () => {
     const a = dir('a');
-    expect(resolveMcpProject(undefined, [uri(a)])).toEqual({ project: getProjectName(a) });
+    expect(resolveMcpProject(undefined, [uri(a)])).toEqual({ project: getProjectName(a), ids: getProjectIds(a) });
   });
 
   it('no root and no launch root is unbound', () => {
@@ -31,12 +31,12 @@ describe('resolveMcpProject: the project an MCP call belongs to when it names no
     const sub = path.join(a, 'sub'); fs.mkdirSync(sub);
     // A non-git directory is its own project, so a subdirectory is a different one.
     expect(getProjectName(sub)).not.toBe(getProjectName(a));
-    expect(resolveMcpProject(undefined, [uri(a), uri(a)])).toEqual({ project: getProjectName(a) });
+    expect(resolveMcpProject(undefined, [uri(a), uri(a)])).toEqual({ project: getProjectName(a), ids: getProjectIds(a) });
   });
 
   it('the launch root alone binds the call (a host that sends no roots)', () => {
     const a = dir('a');
-    expect(resolveMcpProject(a, [])).toEqual({ project: getProjectName(a) });
+    expect(resolveMcpProject(a, [])).toEqual({ project: getProjectName(a), ids: getProjectIds(a) });
   });
 
   it('an unusable launch root is refused, never replaced by the roots or the server cwd', () => {
@@ -56,7 +56,7 @@ describe('resolveMcpProject: the project an MCP call belongs to when it names no
     const r = resolveMcpProject(a, [uri(b)]);
     expect(r).toMatchObject({ error: 'workspace_ambiguous' });
     expect('reason' in r && r.reason).toMatch(/MEMESH_PROJECT_ROOT/);
-    expect(resolveMcpProject(a, [uri(a)])).toEqual({ project: getProjectName(a) });
+    expect(resolveMcpProject(a, [uri(a)])).toEqual({ project: getProjectName(a), ids: getProjectIds(a) });
   });
 
   it('roots the client advertised but did not return bind nothing, not even with a launch root', () => {

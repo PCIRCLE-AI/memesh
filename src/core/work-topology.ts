@@ -83,6 +83,41 @@ export const WORK_LAYER_TYPES: ReadonlySet<string> = new Set([
  */
 export const DECISION_TYPES: ReadonlySet<string> = new Set(['decision', 'architecture_decision', 'design_decision']);
 
+/**
+ * The memories that carry experience rather than project detail: a decision,
+ * a lesson, a preference. What was learned in one project helps in every other,
+ * so a recall shows them whichever project asks, labelled with the project they
+ * came from. Everything else (commits, session summaries, handoffs, notes) is
+ * the detail of one project and stays in it. This is the one list; the recall
+ * scope in the graph reads it from here.
+ */
+/** How the user likes to work: the one kind of memory that does not depend on a project's subject. */
+export const PREFERENCE_TYPES: readonly string[] = ['preference', 'user_preference'];
+
+export const SHARED_EXPERIENCE_TYPES: ReadonlySet<string> = new Set([
+  ...LESSON_TYPES,
+  ...DECISION_TYPES,
+  ...PREFERENCE_TYPES,
+]);
+
+/** SHARED_EXPERIENCE_TYPES as a list, for SQL `IN (…)` placeholders. */
+export const SHARED_EXPERIENCE_TYPE_LIST: readonly string[] = [...SHARED_EXPERIENCE_TYPES];
+
+/**
+ * `feedback` is shared only when it came from the user's own memory folder
+ * (`~/.claude/projects/<project>/memory/`, imported by the Stop hook): that is
+ * the user telling the agent how to work. Any other `feedback` (a product's
+ * feedback records, for example) is the detail of one project and stays in it.
+ * "Came from" is the memory's `provenance.source`, which only the note
+ * ingester writes (no tool, route or command can set it, and a rewrite by any
+ * writer replaces it), together with `trust: 'trusted'`, which only the
+ * ingester of the project's own folder sets. A tag says nothing: any writer can
+ * put `source:note-file` on a memory.
+ */
+export const SHARED_FEEDBACK_TYPE = 'feedback';
+/** `provenance.source` of a memory the note ingester stored (note-ingest.ts). */
+export const NOTE_FILE_PROVENANCE = 'note-file';
+
 /** The observation prefix that carries a decision's reason. */
 export const WHY_PREFIX = 'Why: ';
 
@@ -215,6 +250,10 @@ export interface TopologyEntity {
   /** Belongs to no project (a preference, a general lesson): shown to every
    *  project's sessions under its own heading, never as this project's. */
   noProject?: boolean;
+  /** A decision, lesson or preference of ANOTHER project, shown because experience
+   *  is shared; the readable name of the project it came from. Its own section, small
+   *  and filled after the project's, so it cannot take the project's room. */
+  sharedFrom?: string;
   /** A decision's latest `Why: ` observation, without the prefix. `null`:
    *  the decision has none and its line says so. `undefined`: not read (the
    *  dashboard's rows), and the line is unchanged. */
@@ -261,6 +300,8 @@ export function topologyLine(entity: TopologyEntity, maxChars: number): string {
   // handle is budgeted like any other character: the text yields the
   // space; the handle is never cut in half.
   const handle = Number.isInteger(entity.id) && (entity.id as number) > 0 ? ` [mem:${entity.id}]` : '';
+  // Where a shared memory of another project came from. Budgeted like the handle and never cut.
+  const origin = entity.sharedFrom !== undefined ? ` (from ${entity.sharedFrom})` : '';
   // A decision is shown with its reason, or with the fact that it has none,
   // and with how long nobody has confirmed it: the conclusion alone reads as
   // a rule that holds forever. The markers are budgeted like the handle and
@@ -271,8 +312,8 @@ export function topologyLine(entity: TopologyEntity, maxChars: number): string {
   // A decision whose only observation is its reason has nothing else to say:
   // the line shows that reason once, not "Why: x — Why: x".
   const text = reason && isWhyText(given) ? '' : given || (reason ? '' : `${entity.type} memory`);
-  const room = Math.max(8, maxChars - handle.length - unconfirmed.length - noReason.length);
-  return stripControlChars(`- [${entity.type}] ${lineBody(text, reason, room)}${noReason}${unconfirmed}${handle}`);
+  const room = Math.max(8, maxChars - handle.length - unconfirmed.length - noReason.length - origin.length);
+  return stripControlChars(`- [${entity.type}] ${lineBody(text, reason, room)}${noReason}${unconfirmed}${origin}${handle}`);
 }
 
 /** When a decision line must be cut, its title is clipped to this many characters before its reason is. */
@@ -377,6 +418,7 @@ export function groupTopology(entities: TopologyEntity[], projectName: string): 
   const global: TopologyEntity[] = [];
   const noProject: TopologyEntity[] = [];
   const foreign: TopologyEntity[] = [];
+  const shared: TopologyEntity[] = [];
 
   for (const e of entities) {
     // task-state rows are never listed: taskStateLines is that type's sole
@@ -394,6 +436,7 @@ export function groupTopology(entities: TopologyEntity[], projectName: string): 
     if (e.type === 'task-state' || e.type === 'session-handoff') continue;
     if (e.global) { global.push(e); continue; }
     if (e.noProject) { noProject.push(e); continue; }
+    if (e.sharedFrom !== undefined) { shared.push(e); continue; }
     // Scope is checked before layer: a memory from another project must never
     // land under a heading that names this one, whatever its type.
     if (e.foreign) { foreign.push(e); continue; }
@@ -406,6 +449,8 @@ export function groupTopology(entities: TopologyEntity[], projectName: string): 
 
   decisions.sort(byRecency);
   for (const list of [lessons, knowledge, evidence, noProject, global, foreign]) list.sort(bySignal);
+  // Shared experience keeps the order the selection gave it (newest first).
+
 
   const sections: TopologySection[] = [];
   if (decisions.length) sections.push({ heading: `Decisions and direction for ${jsonStringLiteral(projectLabel(projectName))}:`, entities: decisions });
@@ -415,6 +460,7 @@ export function groupTopology(entities: TopologyEntity[], projectName: string): 
   if (noProject.length) sections.push({ heading: 'Your memories with no project (preferences, general lessons):', entities: noProject });
   if (global.length) sections.push({ heading: 'Global memory — applies across projects:', entities: global });
   if (foreign.length) sections.push({ heading: 'From your other projects (may or may not apply here):', entities: foreign });
+  if (shared.length) sections.push({ heading: 'Your preferences from your other projects (may or may not apply here):', entities: shared });
   return sections;
 }
 
@@ -444,6 +490,12 @@ export const DEFAULT_TOPOLOGY_BUDGET: Readonly<Required<TopologyBudget>> = {
  *  capped at GLOBAL_TOPOLOGY_BUDGET. Both injection surfaces share these
  *  through this assembler. */
 export const GLOBAL_TOPOLOGY_LIMIT = 3;
+/** Shared experience of other projects: at most this many, however many there are. */
+export const SHARED_TOPOLOGY_LIMIT = 3;
+const SHARED_TOPOLOGY_BUDGET: Readonly<Required<TopologyBudget>> = {
+  maxChars: 640,
+  maxLineChars: DEFAULT_TOPOLOGY_BUDGET.maxLineChars,
+};
 const GLOBAL_TOPOLOGY_BUDGET: Readonly<Required<TopologyBudget>> = {
   maxChars: 640,
   maxLineChars: DEFAULT_TOPOLOGY_BUDGET.maxLineChars,
@@ -501,6 +553,8 @@ export interface TopologyPool {
   global?: boolean;
   /** True when this pool holds memories that belong to no project. */
   noProject?: boolean;
+  /** True when this pool holds the shared experience of other projects (each entity carries `sharedFrom`). */
+  shared?: boolean;
 }
 
 /**
@@ -541,11 +595,14 @@ export function assembleTopologyBlock(
   const seen = new Set<string>();
   const candidates: TopologyEntity[] = [];
   const globalCandidates: TopologyEntity[] = [];
+  const sharedCandidates: TopologyEntity[] = [];
   for (const pool of pools) {
     for (const e of pool.entities) {
       if (seen.has(e.name)) continue;
       seen.add(e.name);
-      if (pool.global) {
+      if (pool.shared) {
+        sharedCandidates.push(e.sharedFrom !== undefined ? e : { ...e, sharedFrom: 'another project' });
+      } else if (pool.global) {
         globalCandidates.push(e.global ? e : { ...e, global: true });
       } else {
         candidates.push(pool.noProject ? { ...e, noProject: true } : pool.foreign && !e.foreign ? { ...e, foreign: true } : e);
@@ -566,6 +623,16 @@ export function assembleTopologyBlock(
   // Spacers exist only between non-empty blocks — never at either edge.
   if (lines.length > 0 && topologyLines.length > 0) lines.push('');
   lines.push(...topologyLines);
+  // Shared experience of other projects comes after everything of the project's:
+  // it takes only what is left, capped small, so it can never push the project out.
+  const sharedLines = room() > 0
+    ? buildTopologyLines(sharedCandidates.slice(0, SHARED_TOPOLOGY_LIMIT), projectName, {
+      ...budget,
+      maxChars: Math.min(room(), SHARED_TOPOLOGY_BUDGET.maxChars),
+    })
+    : [];
+  if (lines.length > 0 && sharedLines.length > 0) lines.push('');
+  lines.push(...sharedLines);
   // Global rules no longer have an additive allowance of their own: they
   // share what is left, after the project, and are kept small by their own
   // selection window (GLOBAL_TOPOLOGY_LIMIT).

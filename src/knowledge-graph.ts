@@ -2,6 +2,7 @@ import type { MemeshDatabase } from './storage/sqlite.js';
 import { createHash } from 'node:crypto';
 export type { Entity, Relation, CreateEntityInput, SearchOptions } from './core/types.js';
 import type { Entity, Relation, CreateEntityInput, SearchOptions, EntityRow } from './core/types.js';
+import type { ProjectScope } from './core/project-scope.js';
 import { findConflicts, trackAccess } from './storage/conflicts.js';
 import {
   indexedObservationText,
@@ -24,6 +25,7 @@ import { dropEntityFromIndexes } from './storage/entity-index.js';
 import { ftsIndexIsCurrent } from './storage/schema.js';
 import { addTags, appendObservations, insertOrGetEntity, reindexEntityFts, runEntityWrite } from './storage/entity-write.js';
 import { canonicalEntityType } from './core/work-topology.js';
+import { noProjectTag, projectScopeFilter } from './core/project-scope.js';
 import { KNOWN_ERROR_PATTERNS, MIN_NAME_PROJECT_LENGTH, PROJECT_TAG_PREFIX } from './core/project-attribution.js';
 import { NOT_A_PROJECT_MEMORY } from './core/projects.js';
 import { addsNewText, besideRefusal, clearPartsOfKey, metadataRefusal, redactTextValues, redactTitleAndObservations, redactVersionText, textsIn } from './core/paths.js';
@@ -392,35 +394,16 @@ function dropUbiquitousTerms(db: MemeshDatabase, terms: string[]): string[] {
   }
 }
 
-/** Memories that carry no project tag at all (over an entity alias, default `e`). */
-const noProjectTag = (alias = 'e') => `NOT EXISTS (SELECT 1 FROM tags sp WHERE sp.entity_id = ${alias}.id AND sp.tag LIKE 'project:%')`;
-
-/**
- * A default recall's scope over an entity alias (default `e`). A project tag: that
- * project's memories, memories with no project, and global ones. null (no
- * bound project): memories with no project and global ones. Never another
- * project's memories.
- */
-function projectScopeFilter(scope: string | null, alias = 'e'): { sql: string; params: string[] } {
-  const noProject = noProjectTag(alias);
-  return scope === null
-    ? { sql: `AND (${noProject} OR ${alias}.namespace = 'global')`, params: [] }
-    : {
-      sql: `AND (EXISTS (SELECT 1 FROM tags st WHERE st.entity_id = ${alias}.id AND st.tag = ?) OR ${noProject} OR ${alias}.namespace = 'global')`,
-      params: [scope],
-    };
-}
-
 /**
  * Which relations a read may show. A relation names the memory at its far end,
  * so a read that is limited to one project must not show a far end outside that
  * project's default scope: a foreign far end is left out as if it did not
- * exist. `scope` is a project tag (or null: no project) in the sense of
+ * exist. `scope` is a project tag, several, or null (no project) in the sense of
  * `projectScopeFilter`; undefined leaves the project unrestricted, while the
  * archived and namespace rules still apply.
  */
 export interface RelationView {
-  scope?: string | null;
+  scope?: ProjectScope;
   namespace?: string;
   includeArchived?: boolean;
 }
@@ -910,7 +893,7 @@ export class KnowledgeGraph {
 
   getEntitiesByIds(
     ids: number[],
-    opts?: { includeArchived?: boolean; namespace?: string; tag?: string; projectScope?: string | null; relations?: RelationView }
+    opts?: { includeArchived?: boolean; namespace?: string; tag?: string; projectScope?: ProjectScope; relations?: RelationView }
   ): Entity[] {
     if (ids.length === 0) return [];
 
@@ -993,6 +976,24 @@ export class KnowledgeGraph {
       )
       .all(...ids, ...relationScope.params, ...(view?.namespace ? [view.namespace] : [])) as Array<{ from_entity_id: number; from: string; to: string; type: string }>;
 
+    // What the archived rule left out, counted for the same far ends the rule
+    // looks at (in scope, in namespace), so the count never names or counts
+    // another project's memory.
+    const omittedArchived = new Map<number, number>();
+    if (view && !view.includeArchived) {
+      const omittedRows = this.db
+        .prepare(
+          `SELECT r.from_entity_id AS id, COUNT(*) AS n
+           FROM relations r
+           JOIN entities e_to ON r.to_entity_id = e_to.id
+           WHERE r.from_entity_id IN (${placeholders}) ${relationScope.sql} ${relationNamespaceSql}
+             AND e_to.status = 'archived' AND r.relation_type != 'supersedes'
+           GROUP BY r.from_entity_id`
+        )
+        .all(...ids, ...relationScope.params, ...(view.namespace ? [view.namespace] : [])) as Array<{ id: number; n: number }>;
+      for (const row of omittedRows) omittedArchived.set(row.id, row.n);
+    }
+
     const relMap = new Map<number, Relation[]>();
     for (const row of relRows) {
       if (!relMap.has(row.from_entity_id)) relMap.set(row.from_entity_id, []);
@@ -1024,6 +1025,7 @@ export class KnowledgeGraph {
         observations,
         tags,
         relations: relations.length > 0 ? relations : undefined,
+        ...(omittedArchived.has(id) ? { archived_relations_omitted: omittedArchived.get(id) } : {}),
         ...(row.status === 'archived' ? { archived: true } : {}),
         access_count: row.access_count ?? 0,
         recall_hits: row.recall_hits ?? 0,
@@ -1423,7 +1425,7 @@ export class KnowledgeGraph {
   }
 
   /** `listRecentByTag` for a default recall's scope (see projectScopeFilter). */
-  private listRecentInScope(scope: string | null, limit: number, includeArchived?: boolean, namespace?: string, countAsAccess = true, relations?: RelationView): Entity[] {
+  private listRecentInScope(scope: ProjectScope, limit: number, includeArchived?: boolean, namespace?: string, countAsAccess = true, relations?: RelationView): Entity[] {
     const statusFilter = includeArchived ? '' : "AND e.status = 'active'";
     const namespaceFilter = namespace ? 'AND e.namespace = ?' : '';
     const scoped = projectScopeFilter(scope);

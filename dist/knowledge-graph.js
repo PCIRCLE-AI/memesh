@@ -7,6 +7,7 @@ import { dropEntityFromIndexes } from './storage/entity-index.js';
 import { ftsIndexIsCurrent } from './storage/schema.js';
 import { addTags, appendObservations, insertOrGetEntity, reindexEntityFts, runEntityWrite } from './storage/entity-write.js';
 import { canonicalEntityType } from './core/work-topology.js';
+import { noProjectTag, projectScopeFilter } from './core/project-scope.js';
 import { KNOWN_ERROR_PATTERNS, MIN_NAME_PROJECT_LENGTH, PROJECT_TAG_PREFIX } from './core/project-attribution.js';
 import { NOT_A_PROJECT_MEMORY } from './core/projects.js';
 import { addsNewText, besideRefusal, clearPartsOfKey, metadataRefusal, redactTextValues, redactTitleAndObservations, redactVersionText, textsIn } from './core/paths.js';
@@ -124,16 +125,6 @@ function dropUbiquitousTerms(db, terms) {
     catch {
         return terms;
     }
-}
-const noProjectTag = (alias = 'e') => `NOT EXISTS (SELECT 1 FROM tags sp WHERE sp.entity_id = ${alias}.id AND sp.tag LIKE 'project:%')`;
-function projectScopeFilter(scope, alias = 'e') {
-    const noProject = noProjectTag(alias);
-    return scope === null
-        ? { sql: `AND (${noProject} OR ${alias}.namespace = 'global')`, params: [] }
-        : {
-            sql: `AND (EXISTS (SELECT 1 FROM tags st WHERE st.entity_id = ${alias}.id AND st.tag = ?) OR ${noProject} OR ${alias}.namespace = 'global')`,
-            params: [scope],
-        };
 }
 export class KnowledgeGraph {
     db;
@@ -408,6 +399,19 @@ export class KnowledgeGraph {
          JOIN entities e_to ON r.to_entity_id = e_to.id
          WHERE r.from_entity_id IN (${placeholders}) ${relationScope.sql} ${relationNamespaceSql} ${relationStatusSql}`)
             .all(...ids, ...relationScope.params, ...(view?.namespace ? [view.namespace] : []));
+        const omittedArchived = new Map();
+        if (view && !view.includeArchived) {
+            const omittedRows = this.db
+                .prepare(`SELECT r.from_entity_id AS id, COUNT(*) AS n
+           FROM relations r
+           JOIN entities e_to ON r.to_entity_id = e_to.id
+           WHERE r.from_entity_id IN (${placeholders}) ${relationScope.sql} ${relationNamespaceSql}
+             AND e_to.status = 'archived' AND r.relation_type != 'supersedes'
+           GROUP BY r.from_entity_id`)
+                .all(...ids, ...relationScope.params, ...(view.namespace ? [view.namespace] : []));
+            for (const row of omittedRows)
+                omittedArchived.set(row.id, row.n);
+        }
         const relMap = new Map();
         for (const row of relRows) {
             if (!relMap.has(row.from_entity_id))
@@ -438,6 +442,7 @@ export class KnowledgeGraph {
                 observations,
                 tags,
                 relations: relations.length > 0 ? relations : undefined,
+                ...(omittedArchived.has(id) ? { archived_relations_omitted: omittedArchived.get(id) } : {}),
                 ...(row.status === 'archived' ? { archived: true } : {}),
                 access_count: row.access_count ?? 0,
                 recall_hits: row.recall_hits ?? 0,

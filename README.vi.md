@@ -9,7 +9,7 @@ MeMesh giúp các trợ lý lập trình AI chia sẻ ngữ cảnh, trao đổi 
 - **Phân công giữa các phiên.** Các phiên Codex và Claude Code đang chạy có thể trao đổi công việc, câu hỏi, yêu cầu rà soát và kết quả qua hệ thống nhắn tin MeMesh và Claude Channel tùy chọn.
 - **Dùng chung ngữ cảnh dự án.** Các trợ lý trên cùng một máy có thể tra lại quyết định và kinh nghiệm của dự án, thay vì tìm hiểu lại từ đầu.
 - **Bàn giao rõ ràng.** Ghi lại mục tiêu, bước tiếp theo và vướng mắc để phiên sau kiểm tra trước khi tiếp tục.
-- **Giữ lại những điều hữu ích.** Lưu sở thích, quyết định và bài học để tìm lại trong các phiên và công cụ khác nhau.
+- **Giữ lại những điều hữu ích.** Lưu sở thích, quyết định và bài học để tìm lại trong các phiên và công cụ khác nhau. Quyết định, bài học và sở thích được tìm thấy ở mọi dự án, kèm tên dự án gốc; commit và ghi chú phiên của mỗi dự án chỉ ở lại trong dự án đó.
 
 Theo mặc định, bộ nhớ nằm trong một tệp trên máy của bạn: `~/.memesh/knowledge-graph.db`. MeMesh không cần mô hình AI riêng. Nhắc nhở tự động phụ thuộc vào tích hợp của từng công cụ; ghi chú bàn giao cung cấp ngữ cảnh, không bảo đảm công việc sẽ tự khởi động lại.
 

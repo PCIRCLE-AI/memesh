@@ -12,6 +12,7 @@ import {
   ensurePrivateDir,
   getDbPath,
   getMemeshDirFromDbPath,
+  getProjectIds,
   getProjectName,
   HOOK_BUSY_TIMEOUT_MS,
   importFromPluginRoot,
@@ -917,6 +918,9 @@ process.stdin.on('end', async () => {
     hookPayload = data;
 
     const projectName = getProjectName(data.cwd);
+    // Every id this checkout's memories may be filed under (its remote's id, earlier spellings
+    // of it, its path's id): the project's memories are read under all of them, written under one.
+    const projectIds = getProjectIds(data.cwd);
     // Only from the cwd this host reported for this session: without one,
     // getProjectName falls back to this process's own cwd, which under a
     // plugin is the plugin directory, not the user's project.
@@ -1212,6 +1216,7 @@ process.stdin.on('end', async () => {
       // read-only handle needs. A failed handoff, decision or lesson read is
       // recorded and leaves the rest of the context intact.
       const pools = selectBriefingPools(db, projectName, {
+        projectIds,
         projectLimit: sessionLimit,
         global: briefingPolicy.global,
         foreign: briefingPolicy.foreign,
@@ -1223,6 +1228,7 @@ process.stdin.on('end', async () => {
       });
       const projectEntities = pools.project;
       const noProjectEntities = pools.noProject;
+      const sharedEntities = pools.shared;
       const globalEntities = pools.global;
       const recentEntities = pools.recent;
       const lessonCount = pools.lessonCount;
@@ -1247,6 +1253,7 @@ process.stdin.on('end', async () => {
       const memoryFragments = [];
       if (projectCount > 0) memoryFragments.push(`${projectCount} project`);
       if (noProjectEntities.length > 0) memoryFragments.push(`${noProjectEntities.length} no-project`);
+      if (sharedEntities.length > 0) memoryFragments.push(`${sharedEntities.length} from other projects`);
       if (globalCount > 0) memoryFragments.push(`${globalCount} global`);
       if (recentCount > 0) memoryFragments.push(`${recentCount} recent`);
 
@@ -1286,7 +1293,7 @@ process.stdin.on('end', async () => {
       let memoryAssemblyFailed = false;
       try {
         // One query for every snippet, for the rows that will render.
-        const snippets = readSnippets(db, [...topLessons, ...projectEntities, ...noProjectEntities, ...globalEntities, ...recentEntities].map(e => e.id));
+        const snippets = readSnippets(db, [...topLessons, ...projectEntities, ...noProjectEntities, ...sharedEntities, ...globalEntities, ...recentEntities].map(e => e.id));
 
         // "Where we left off" leads the block. It is the one memory a new
         // session needs before any other: everything below is context for
@@ -1386,6 +1393,7 @@ process.stdin.on('end', async () => {
             { entities: topLessons.map(toEntity), foreign: false },
             { entities: projectEntities.map(toEntity), foreign: false },
             { entities: noProjectEntities.map(toEntity), foreign: false, noProject: true },
+            { entities: sharedEntities.map(toEntity), foreign: false, shared: true },
             { entities: globalEntities.map(toEntity), foreign: false, global: true },
             { entities: recentEntities.map(toEntity), foreign: true },
           ],
@@ -1434,7 +1442,7 @@ process.stdin.on('end', async () => {
       if (!briefingPolicy.index) {
         indexLines = [];
       } else try {
-        const { candidates, truncated } = readIndexCandidates(db, projectName);
+        const { candidates, truncated } = readIndexCandidates(db, projectName, projectIds);
         const index = buildBriefingIndex(candidates, projectName, Date.now(), {
           truncated,
           // One shared cap: the index gets what the block above left of it.
@@ -1562,7 +1570,7 @@ process.stdin.on('end', async () => {
           const at = renderedEntityIds.indexOf(id);
           if (at >= 0) renderedEntityIds.splice(at, 1);
         }
-        const poolEntities = [...topLessons, ...projectEntities, ...noProjectEntities, ...globalEntities, ...recentEntities, ...indexEntities,
+        const poolEntities = [...topLessons, ...projectEntities, ...noProjectEntities, ...sharedEntities, ...globalEntities, ...recentEntities, ...indexEntities,
           ...(handoffBlock.length > 0 ? [handoffRow] : [])];
         const entitiesById = new Map(poolEntities.map((entity) => [entity.id, entity]));
         // A memory can appear in the ranked block AND the index; it was

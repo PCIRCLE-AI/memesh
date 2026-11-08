@@ -162,14 +162,29 @@ const projectNameCache = new Map<string, string>();
  * git binary, a non-repo cwd, or a deleted directory must never break capture.
  */
 function resolveProjectIdentity(cwd: string): string {
+  const remote = remoteProjectIdentity(cwd);
+  if (remote) return remote;
+  const real = projectRealPath(cwd);
+  return projectIdentity(path.basename(real), real);
+}
+
+const locatorIdentity = (locator: string) => projectIdentity(path.posix.basename(locator).replace(/\.git$/i, ''), locator);
+
+/** The id of the checkout's remote, or null when it has none an id can be built from. */
+function remoteProjectIdentity(cwd: string): string | null {
   const remote = tryGit(cwd, ['config', '--get', 'remote.origin.url']);
-  if (remote) {
-    const locator = canonicalRemoteLocator(remote);
-    if (locator) {
-      const label = path.posix.basename(locator).replace(/\.git$/i, '');
-      return projectIdentity(label, locator);
-    }
-  }
+  const locator = remote ? canonicalRemoteLocator(remote) : null;
+  return locator ? locatorIdentity(locator) : null;
+}
+
+/** The ids earlier versions (and other spellings of the same remote) filed this checkout's memories under. */
+function remoteAliasIdentities(cwd: string): string[] {
+  const remote = tryGit(cwd, ['config', '--get', 'remote.origin.url']);
+  return remote ? remoteLocatorAliases(remote).map(locatorIdentity) : [];
+}
+
+/** The real path the checkout's path id is built from. */
+function projectRealPath(cwd: string): string {
   const root = tryGit(cwd, ['rev-parse', '--show-toplevel']);
   // A linked worktree has its own top-level path but shares the primary
   // repository's common `.git` directory. Use that directory's parent when
@@ -181,13 +196,35 @@ function resolveProjectIdentity(cwd: string): string {
   const localPath = absoluteCommonDir && path.basename(absoluteCommonDir) === '.git'
     ? path.dirname(absoluteCommonDir)
     : (root ?? cwd);
-  let real: string;
   try {
-    real = fs.realpathSync.native(localPath);
+    return fs.realpathSync.native(localPath);
   } catch {
-    real = path.resolve(localPath);
+    return path.resolve(localPath);
   }
-  return projectIdentity(path.basename(real), real);
+}
+
+/**
+ * Every project id a memory of this checkout may have been written under, the
+ * one a write uses now first. A checkout is written under its remote's id once
+ * it has a remote and under its path's id before, so one repository's memories
+ * can sit under both; the path id also had an earlier form (the label and the
+ * first 8 hex characters of the same hash), and the remote's id had earlier
+ * spellings (`remoteLocatorAliases`). Each id is derived exactly from this
+ * checkout, never matched by name, so another repository with the same name has
+ * none of them. Reads use all of these; a write uses only `getProjectName`.
+ */
+export function getProjectIds(cwdInput?: string | null): string[] {
+  const cwd = cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd();
+  const real = projectRealPath(cwd);
+  const label = path.basename(real).normalize('NFC').slice(0, PROJECT_LABEL_MAX_LENGTH) || 'project';
+  const ids = [
+    getProjectName(cwd),
+    remoteProjectIdentity(cwd),
+    ...remoteAliasIdentities(cwd),
+    projectIdentity(path.basename(real), real),
+    `${label}-${createHash('sha256').update(real).digest('hex').slice(0, 8)}`,
+  ];
+  return [...new Set(ids.filter((id): id is string => id !== null))];
 }
 
 const PROJECT_HASH_HEX_LENGTH = 32;
@@ -231,19 +268,18 @@ export function gitRepoRoot(cwdInput?: string | null): string | null {
   return tryGit(cwd, ['rev-parse', '--show-toplevel']);
 }
 
-/**
- * Canonicalize a network git remote without retaining a password.
- *
- * Only standard GitHub HTTPS and `git@github.com` SSH spellings are known to
- * identify the same repository, so they converge. For a generic SSH host the
- * login and path mode are part of the repository locator: `alice@host:repo`
- * is relative to Alice's home, while `alice@host:/repo` is absolute, and Bob's
- * home may contain another repository with the same name. Other URL schemes
- * remain explicit rather than being guessed equivalent. Host case is
- * DNS-insensitive; repository path case is preserved. Local/file remotes
- * return null and use the repository-root identity instead.
- */
-export function canonicalRemoteLocator(remote: string): string | null {
+interface RemoteParts {
+  /** `https`, `http`, another URL scheme, or `ssh-relative` / `ssh-absolute`. */
+  transport: string;
+  user: string;
+  host: string;
+  /** Explicit port, except an ssh default of 22 (the URL parser already drops 80 and 443). */
+  port: string;
+  /** The repository path without leading or trailing slashes. */
+  path: string;
+}
+
+function parseRemote(remote: string): RemoteParts | null {
   const value = remote.trim();
   if (!value) return null;
   if (path.isAbsolute(value) || /^[A-Za-z]:[\\/]/.test(value) || /^\\\\/.test(value)) return null;
@@ -281,16 +317,74 @@ export function canonicalRemoteLocator(remote: string): string | null {
 
   const pathWithoutSlashes = remotePath.replace(/^\/+|\/+$/g, '');
   if (!host || !pathWithoutSlashes) return null;
-  const endpoint = `${host}${port ? `:${port}` : ''}`;
-  const standardGithub = host === 'github.com'
-    && port === ''
-    && (transport === 'https' || ((transport === 'ssh-relative' || transport === 'ssh-absolute') && user === 'git'));
-  const normalizedPath = standardGithub
-    ? pathWithoutSlashes.replace(/\.git$/i, '')
-    : pathWithoutSlashes;
-  if (standardGithub) return `${endpoint}/${normalizedPath}`;
-  const authority = transport.startsWith('ssh-') && user ? `${user}@${endpoint}` : endpoint;
-  return `${transport}://${authority}/${normalizedPath}`;
+  return { transport, user, host, port, path: pathWithoutSlashes };
+}
+
+const isSsh = (transport: string) => transport === 'ssh-relative' || transport === 'ssh-absolute';
+
+/**
+ * Hosting services whose standard `git@` login and https address are known to name
+ * one repository, and that ignore a trailing `.git`. Nothing else is assumed to:
+ * on any other host a login, a port, an absolute-versus-home-relative path and a
+ * `.git` suffix can each name a different repository.
+ */
+const HOSTING_SERVICES: ReadonlySet<string> = new Set(['github.com', 'gitlab.com', 'bitbucket.org']);
+
+/** The standard https address, or the standard `git@` login without a port, of a hosting service. */
+function onHostingService(parts: RemoteParts): boolean {
+  return HOSTING_SERVICES.has(parts.host)
+    && parts.port === ''
+    && (parts.transport === 'https' || (isSsh(parts.transport) && parts.user === 'git'));
+}
+
+/** A remote read exactly as spelled: transport, ssh login, port, path mode and `.git` all kept (a password never is). */
+function literalLocator(parts: RemoteParts): string {
+  const endpoint = `${parts.host}${parts.port ? `:${parts.port}` : ''}`;
+  const authority = isSsh(parts.transport) && parts.user ? `${parts.user}@${endpoint}` : endpoint;
+  return `${parts.transport}://${authority}/${parts.path}`;
+}
+
+/**
+ * Canonicalize a network git remote without retaining a password.
+ *
+ * Only spellings that are certain to name one repository converge: on GitHub,
+ * GitLab and Bitbucket, the standard `git@host:owner/repo` login and the https
+ * address, with or without `.git` (the hosting service ignores it). On any other
+ * host the remote is read exactly as spelled: the ssh login is part of the
+ * locator (`alice@host:repo` is relative to Alice's home, and Bob's may hold
+ * another repository by that name), and so are the port, the absolute-versus-
+ * relative path mode and a `.git` suffix. Host case is DNS-insensitive; the
+ * repository path keeps its case. Local/file remotes return null and use the
+ * repository-root identity instead.
+ */
+export function canonicalRemoteLocator(remote: string): string | null {
+  const parts = parseRemote(remote);
+  if (!parts) return null;
+  if (onHostingService(parts)) {
+    const bare = parts.path.replace(/\.git$/i, '');
+    return parts.host === 'github.com' ? `github.com/${bare}` : `https://${parts.host}/${bare}.git`;
+  }
+  return literalLocator(parts);
+}
+
+/**
+ * The other locators this remote's memories may have been filed under: the spellings
+ * of the same repository that earlier versions told apart. Only a hosting service has
+ * any (its https address and standard login, with and without `.git`); on any other host
+ * the one locator is the only spelling, so nothing else is read. Derived from this one
+ * remote, never matched by name.
+ */
+export function remoteLocatorAliases(remote: string): string[] {
+  const parts = parseRemote(remote);
+  if (!parts || !onHostingService(parts) || parts.host === 'github.com') return [];
+  const bare = parts.path.replace(/\.git$/i, '');
+  const out = new Set<string>();
+  for (const suffix of ['', '.git']) {
+    out.add(`https://${parts.host}/${bare}${suffix}`);
+    for (const transport of ['ssh-relative', 'ssh-absolute']) out.add(`${transport}://git@${parts.host}/${bare}${suffix}`);
+  }
+  out.delete(canonicalRemoteLocator(remote) ?? '');
+  return [...out];
 }
 
 /** Test seam: clear the per-cwd resolution cache between cases. */

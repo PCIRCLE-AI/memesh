@@ -31,6 +31,7 @@ import {
   memeshDir,
   getDbPath,
   getMemeshDirFromDbPath,
+  getProjectIds,
   getProjectName,
   redactSecretList,
   redactSecrets,
@@ -224,7 +225,7 @@ import {
 } from './_generated/fts-index.js';
 import { addTags, appendObservations, insertOrGetEntity, reindexEntityFts, runEntityWrite } from './_generated/entity-write.js';
 
-export { homeDir, memeshDir, getDbPath, getMemeshDirFromDbPath, getProjectName, redactSecrets, canonicalRemoteLocator, gitRepoRoot };
+export { homeDir, memeshDir, getDbPath, getMemeshDirFromDbPath, getProjectIds, getProjectName, redactSecrets, canonicalRemoteLocator, gitRepoRoot };
 
 /**
  * Resolve the package root from a hook file's `import.meta.url`.

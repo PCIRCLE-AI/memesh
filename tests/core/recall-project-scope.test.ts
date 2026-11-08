@@ -18,11 +18,11 @@ beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-recall-scope-'));
   openDatabase(path.join(dir, 'kg.db'));
   kg = new KnowledgeGraph(getDatabase());
-  kg.createEntity('a-fact', 'decision', { observations: ['zebra in project A'], tags: ['project:A'] });
-  kg.createEntity('a-old', 'decision', { observations: ['zebra old in project A'], tags: ['project:A'] });
-  kg.createEntity('b-fact', 'decision', { observations: ['zebra in project B'], tags: ['project:B'] });
-  kg.createEntity('g-fact', 'decision', { observations: ['zebra known everywhere'], namespace: 'global' });
-  kg.createEntity('g-old', 'decision', { observations: ['zebra global but archived'], namespace: 'global' });
+  kg.createEntity('a-fact', 'fact', { observations: ['zebra in project A'], tags: ['project:A'] });
+  kg.createEntity('a-old', 'fact', { observations: ['zebra old in project A'], tags: ['project:A'] });
+  kg.createEntity('b-fact', 'fact', { observations: ['zebra in project B'], tags: ['project:B'] });
+  kg.createEntity('g-fact', 'fact', { observations: ['zebra known everywhere'], namespace: 'global' });
+  kg.createEntity('g-old', 'fact', { observations: ['zebra global but archived'], namespace: 'global' });
   kg.archiveEntity('a-old');
   kg.archiveEntity('g-old');
 });
@@ -37,6 +37,25 @@ describe('project scope: current project OR eligible global', () => {
     expect(names(rows)).toEqual(['a-fact', 'g-fact']);
     expect(rows.find(r => r.name === 'g-fact')?.namespace).toBe('global');
     expect(rows.find(r => r.name === 'a-fact')?.namespace).toBe('personal');
+  });
+
+  it('the decisions, lessons and preferences of another project are in scope too, its facts are not', () => {
+    kg.createEntity('b-decision', 'decision', { observations: ['zebra decided in project B'], tags: ['project:B'] });
+    kg.createEntity('b-lesson', 'lesson_learned', { observations: ['zebra learned in project B'], tags: ['project:B'] });
+    kg.createEntity('b-pref', 'preference', { observations: ['zebra preferred in project B'], tags: ['project:B'] });
+    expect(names(kg.search('zebra', { projectScope: 'project:A' }))).toEqual(['a-fact', 'b-decision', 'b-lesson', 'b-pref', 'g-fact']);
+    expect(names(kg.search('zebra', { projectScope: null }))).toEqual(['b-decision', 'b-lesson', 'b-pref', 'g-fact']);
+    expect(names(kg.search('zebra', { projectScope: ['project:A', 'project:A-old-id'] }))).toEqual(['a-fact', 'b-decision', 'b-lesson', 'b-pref', 'g-fact']);
+  });
+
+  it('feedback of another project is shared only when it came from the user\'s own memory folder (source:note-file)', () => {
+    kg.createEntity('b-feedback-note', 'feedback', { observations: ['zebra feedback from a memory folder'], tags: ['project:B', 'source:note-file'] });
+    getDatabase().prepare("UPDATE entities SET metadata = json_set(COALESCE(metadata, '{}'), '$.provenance.source', 'note-file', '$.trust', 'trusted') WHERE name = 'b-feedback-note'").run();
+    kg.createEntity('b-feedback-record', 'feedback', { observations: ['zebra product feedback record'], tags: ['project:B'] });
+    // An agent can write the tag a note carries; the note's provenance it cannot write.
+    kg.createEntity('b-feedback-forged', 'feedback', { observations: ['zebra feedback tagged as a note'], tags: ['project:B', 'source:note-file'] });
+    expect(names(kg.search('zebra', { projectScope: 'project:A' }))).toEqual(['a-fact', 'b-feedback-note', 'g-fact']);
+    expect(names(kg.search('zebra', { projectScope: null }))).toEqual(['b-feedback-note', 'g-fact']);
   });
 
   it('B sees its own and global, never A', () => {

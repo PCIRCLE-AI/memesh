@@ -136,7 +136,8 @@ describe('built CLI recall by IDs', () => {
       const found = (id: number) => ({ id, status: 'found', reference: `[mem-fetched:${id}]` });
       expect(cliParsed.results).toEqual(requested.map(found));
       expect(mcpParsed.results).toEqual(cliParsed.results);
-      expect(http.results).toEqual([found(ids.loose), found(ids.global), { id: ids.own, status: 'unavailable' }]);
+      // HTTP has no project binding: an ID reaches a memory of any project, as an HTTP word search does.
+      expect(http.results).toEqual([found(ids.loose), found(ids.global), found(ids.own)]);
       // Each read updates access_count and last_accessed_at; compare the
       // stable content fields rather than those read-dependent counters.
       const content = (entity: { id: number; name: string; title: string | null; type: string; namespace: string; observations: string[]; tags: string[] }) => ({
@@ -146,9 +147,9 @@ describe('built CLI recall by IDs', () => {
       const byId = (entities: Array<{ id: number }>, id: number) => entities.find(entity => entity.id === id)!;
       for (const id of requested) {
         expect(content(byId(mcpParsed.entities, id) as Parameters<typeof content>[0])).toEqual(content(byId(cliParsed.entities, id) as Parameters<typeof content>[0]));
-        if (id !== ids.own) expect(content(byId(http.entities, id) as Parameters<typeof content>[0])).toEqual(content(byId(cliParsed.entities, id) as Parameters<typeof content>[0]));
+        expect(content(byId(http.entities, id) as Parameters<typeof content>[0])).toEqual(content(byId(cliParsed.entities, id) as Parameters<typeof content>[0]));
       }
-      expect(http.entities.some((entity: { id: number }) => entity.id === ids.own)).toBe(false);
+      expect(http.entities.some((entity: { id: number }) => entity.id === ids.own)).toBe(true);
     } finally {
       await new Promise<void>((resolve, reject) => server.close(err => err ? reject(err) : resolve()));
       closeDatabase();

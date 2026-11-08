@@ -45,14 +45,23 @@ export function getProjectName(cwdInput) {
 }
 const projectNameCache = new Map();
 function resolveProjectIdentity(cwd) {
+    const remote = remoteProjectIdentity(cwd);
+    if (remote)
+        return remote;
+    const real = projectRealPath(cwd);
+    return projectIdentity(path.basename(real), real);
+}
+const locatorIdentity = (locator) => projectIdentity(path.posix.basename(locator).replace(/\.git$/i, ''), locator);
+function remoteProjectIdentity(cwd) {
     const remote = tryGit(cwd, ['config', '--get', 'remote.origin.url']);
-    if (remote) {
-        const locator = canonicalRemoteLocator(remote);
-        if (locator) {
-            const label = path.posix.basename(locator).replace(/\.git$/i, '');
-            return projectIdentity(label, locator);
-        }
-    }
+    const locator = remote ? canonicalRemoteLocator(remote) : null;
+    return locator ? locatorIdentity(locator) : null;
+}
+function remoteAliasIdentities(cwd) {
+    const remote = tryGit(cwd, ['config', '--get', 'remote.origin.url']);
+    return remote ? remoteLocatorAliases(remote).map(locatorIdentity) : [];
+}
+function projectRealPath(cwd) {
     const root = tryGit(cwd, ['rev-parse', '--show-toplevel']);
     const commonDir = root
         ? tryGit(cwd, ['rev-parse', '--git-common-dir'])
@@ -61,14 +70,25 @@ function resolveProjectIdentity(cwd) {
     const localPath = absoluteCommonDir && path.basename(absoluteCommonDir) === '.git'
         ? path.dirname(absoluteCommonDir)
         : (root ?? cwd);
-    let real;
     try {
-        real = fs.realpathSync.native(localPath);
+        return fs.realpathSync.native(localPath);
     }
     catch {
-        real = path.resolve(localPath);
+        return path.resolve(localPath);
     }
-    return projectIdentity(path.basename(real), real);
+}
+export function getProjectIds(cwdInput) {
+    const cwd = cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd();
+    const real = projectRealPath(cwd);
+    const label = path.basename(real).normalize('NFC').slice(0, PROJECT_LABEL_MAX_LENGTH) || 'project';
+    const ids = [
+        getProjectName(cwd),
+        remoteProjectIdentity(cwd),
+        ...remoteAliasIdentities(cwd),
+        projectIdentity(path.basename(real), real),
+        `${label}-${createHash('sha256').update(real).digest('hex').slice(0, 8)}`,
+    ];
+    return [...new Set(ids.filter((id) => id !== null))];
 }
 const PROJECT_HASH_HEX_LENGTH = 32;
 const PROJECT_ID_MAX_LENGTH = 200;
@@ -96,7 +116,7 @@ export function gitRepoRoot(cwdInput) {
     const cwd = cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd();
     return tryGit(cwd, ['rev-parse', '--show-toplevel']);
 }
-export function canonicalRemoteLocator(remote) {
+function parseRemote(remote) {
     const value = remote.trim();
     if (!value)
         return null;
@@ -140,17 +160,43 @@ export function canonicalRemoteLocator(remote) {
     const pathWithoutSlashes = remotePath.replace(/^\/+|\/+$/g, '');
     if (!host || !pathWithoutSlashes)
         return null;
-    const endpoint = `${host}${port ? `:${port}` : ''}`;
-    const standardGithub = host === 'github.com'
-        && port === ''
-        && (transport === 'https' || ((transport === 'ssh-relative' || transport === 'ssh-absolute') && user === 'git'));
-    const normalizedPath = standardGithub
-        ? pathWithoutSlashes.replace(/\.git$/i, '')
-        : pathWithoutSlashes;
-    if (standardGithub)
-        return `${endpoint}/${normalizedPath}`;
-    const authority = transport.startsWith('ssh-') && user ? `${user}@${endpoint}` : endpoint;
-    return `${transport}://${authority}/${normalizedPath}`;
+    return { transport, user, host, port, path: pathWithoutSlashes };
+}
+const isSsh = (transport) => transport === 'ssh-relative' || transport === 'ssh-absolute';
+const HOSTING_SERVICES = new Set(['github.com', 'gitlab.com', 'bitbucket.org']);
+function onHostingService(parts) {
+    return HOSTING_SERVICES.has(parts.host)
+        && parts.port === ''
+        && (parts.transport === 'https' || (isSsh(parts.transport) && parts.user === 'git'));
+}
+function literalLocator(parts) {
+    const endpoint = `${parts.host}${parts.port ? `:${parts.port}` : ''}`;
+    const authority = isSsh(parts.transport) && parts.user ? `${parts.user}@${endpoint}` : endpoint;
+    return `${parts.transport}://${authority}/${parts.path}`;
+}
+export function canonicalRemoteLocator(remote) {
+    const parts = parseRemote(remote);
+    if (!parts)
+        return null;
+    if (onHostingService(parts)) {
+        const bare = parts.path.replace(/\.git$/i, '');
+        return parts.host === 'github.com' ? `github.com/${bare}` : `https://${parts.host}/${bare}.git`;
+    }
+    return literalLocator(parts);
+}
+export function remoteLocatorAliases(remote) {
+    const parts = parseRemote(remote);
+    if (!parts || !onHostingService(parts) || parts.host === 'github.com')
+        return [];
+    const bare = parts.path.replace(/\.git$/i, '');
+    const out = new Set();
+    for (const suffix of ['', '.git']) {
+        out.add(`https://${parts.host}/${bare}${suffix}`);
+        for (const transport of ['ssh-relative', 'ssh-absolute'])
+            out.add(`${transport}://git@${parts.host}/${bare}${suffix}`);
+    }
+    out.delete(canonicalRemoteLocator(remote) ?? '');
+    return [...out];
 }
 export function _clearProjectNameCache() {
     projectNameCache.clear();

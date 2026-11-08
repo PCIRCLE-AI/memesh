@@ -6,6 +6,7 @@ export interface NoteIngestOptions {
     dir: string;
     project?: string;
     maxFiles?: number;
+    trusted?: boolean;
     maxBytes?: number;
 }
 export interface NoteIngestResult {
@@ -16,6 +17,9 @@ export interface NoteIngestResult {
     unchanged: number;
     repathed: string[];
     restored: string[];
+    retrusted: string[];
+    retrustBackup: string | null;
+    retrustFailed: string | null;
     markedMissing: string[];
     skipped: Array<{
         path: string;

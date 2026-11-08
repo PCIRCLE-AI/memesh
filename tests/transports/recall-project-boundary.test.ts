@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,17 +6,17 @@ import { openDatabase, closeDatabase, getDatabase } from '../../src/db.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import { handleTool } from '../../src/mcp/tools.js';
 import { app } from '../../src/transports/http/server.js';
+import { runCliFromSource } from '../helpers/cli-source.js';
 
 // A recall scoped to one project must not name a memory of another project as
 // the far end of a relation. A foreign end looks the same as one that does not
 // exist, on every recall route, unless the caller asked for cross_project.
 
-const cli = path.resolve('dist/transports/cli/cli.js');
 let dir: string;
 let previousDir: string | undefined;
 const bound = { projectBinding: { project: 'A' } };
 const idOf = (name: string) => (getDatabase().prepare('SELECT id FROM entities WHERE name = ?').get(name) as { id: number }).id;
-type Shown = { name: string; relations?: Array<{ from: string; to: string; type: string }> };
+type Shown = { name: string; archived_relations_omitted?: number; relations?: Array<{ from: string; to: string; type: string }> };
 type Run = (args: Record<string, unknown>) => Promise<{ text: string; entities: Shown[] }>;
 const targets = (entities: Shown[], name: string) => {
   // The memory must have been recalled at all, or an empty relation list proves nothing.
@@ -40,10 +39,8 @@ const viaCli: Run = async (args) => {
     ...Object.entries(options).flatMap(([k, v]) => v === true ? [`--${k.replaceAll('_', '-')}`] : [`--${k.replaceAll('_', '-')}`, String(v)]),
   ];
   closeDatabase();
-  const result = spawnSync(process.execPath, [cli, 'recall', ...flags, '--json'], {
-    cwd: dir, encoding: 'utf8', timeout: 30000,
-    env: { PATH: process.env.PATH, HOME: dir, USERPROFILE: dir, MEMESH_DIR: dir, MEMESH_DB_PATH: path.join(dir, 'kg.db'), MEMESH_AUTO_CAPTURE: 'false' },
-  });
+  // Run from src, so these cases go red with the source and do not depend on dist/ being built.
+  const result = runCliFromSource(['recall', ...flags, '--json'], { cwd: dir, memeshDir: dir, dbPath: path.join(dir, 'kg.db') });
   openDatabase(path.join(dir, 'kg.db'));
   expect(result.status, result.stderr).toBe(0);
   return { text: result.stdout, entities: JSON.parse(result.stdout).entities as Shown[] };
@@ -131,6 +128,16 @@ describe('recall does not name another project as a relation endpoint', () => {
       expect(text).not.toContain('B-memory');
       expect(text).not.toContain('B-archived');
     });
+    it(`${surface}: says how many relations to archived memories it left out, and counts none into another project`, async () => {
+      const { entities } = await run({ tag: 'project:A', query: 'boundary' });
+      // A-archived is the only archived far end of A-memory in its own project; B-archived is another project's and reads as missing.
+      expect(entities.find(e => e.name === 'A-memory')?.archived_relations_omitted).toBe(1);
+      // A-new: the related_to link to A-archived is left out and counted, both supersedes links are not counted (one is shown, one is another project's).
+      expect(entities.find(e => e.name === 'A-new')?.archived_relations_omitted).toBe(1);
+      expect(entities.find(e => e.name === 'A-other')?.archived_relations_omitted).toBeUndefined();
+      const all = await run({ tag: 'project:A', query: 'boundary', include_archived: true });
+      for (const e of all.entities) expect(e.archived_relations_omitted, e.name).toBeUndefined();
+    });
     it(`${surface}: cross_project narrows nothing, archived endpoints included, without include_archived`, async () => {
       const { entities } = await run({ cross_project: true, query: 'boundary' });
       expect(targets(entities, 'A-memory')).toEqual(['A-archived', 'B-archived', 'B-memory', ...VISIBLE].sort());
@@ -217,6 +224,12 @@ describe('recall does not name another project as a relation endpoint', () => {
     expect(text).not.toContain('B-memory');
     expect(text).not.toContain('contradicts');
     expect(JSON.parse(text).conflicts).toBeUndefined();
+  });
+
+  it('MCP: a recall with no selector keeps a supersedes link to an archived memory of its project, and hides one into another project', async () => {
+    const { text, entities } = await mcp({ query: 'boundary' });
+    expect(targets(entities, 'A-new')).toEqual(['A-old']);
+    expect(text).not.toContain('B-old');
   });
 
   it('MCP: a namespace filter hides endpoints of another namespace', async () => {

@@ -25,7 +25,7 @@
 // unasked" would inflate frequency for whatever happened to be in the window.
 
 import { getDatabase } from '../db.js';
-import { getProjectName } from './paths.js';
+import { getProjectIds, getProjectName } from './paths.js';
 import { readConfig } from './config.js';
 import { readRepoState, repoStateLines } from './repo-state.js';
 import { getTaskState, TaskStateUnreadableError } from './task-state-store.js';
@@ -104,12 +104,18 @@ export interface BriefingResult {
  * includes them: only `global` is excluded, and only rows carrying this
  * project's tag are read, so the index is never cross-project.
  */
+/** Every id this project's memories may be filed under: all of the current checkout's when it is the project asked about. */
+function projectIdsFor(projectName: string): string[] {
+  return projectName === getProjectName() ? getProjectIds() : [projectName];
+}
+
 export function readBriefingIndex(
   db: MemeshDatabase,
   projectName: string,
   now: number = Date.now(),
+  projectIds?: readonly string[],
 ): BriefingIndex {
-  const { candidates, truncated } = readIndexCandidates(db, projectName);
+  const { candidates, truncated } = readIndexCandidates(db, projectName, projectIds ?? projectIdsFor(projectName));
   return buildBriefingIndex(candidates, projectName, now, { truncated });
 }
 
@@ -118,8 +124,9 @@ export function readBriefingIndex(
  * session-start: task state first (the one line someone stated on purpose),
  * then the ranked topology, wrapped in the shared fence.
  */
-export function assembleBriefing(project?: string, recipient?: string): BriefingResult {
+export function assembleBriefing(project?: string, recipient?: string, projectIds?: readonly string[]): BriefingResult {
   const projectName = project ?? getProjectName();
+  const ids = projectIds ?? projectIdsFor(projectName);
   const db = getDatabase();
 
   // #360 — env > config > default('minimal'), the same precedence
@@ -209,6 +216,7 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
   // same trust gate as every other memory. Every pool below comes from the
   // one selection the hook also runs.
   const pools = selectBriefingPools(db, projectName, {
+    projectIds: ids,
     projectLimit: PROJECT_LIMIT,
     global: policy.global,
     foreign: policy.foreign,
@@ -226,7 +234,7 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
     ),
   ];
 
-  const snippets = readSnippets(db, [...pools.lessons, ...pools.project, ...pools.noProject, ...pools.global, ...pools.recent].map((row) => row.id));
+  const snippets = readSnippets(db, [...pools.lessons, ...pools.project, ...pools.noProject, ...pools.shared, ...pools.global, ...pools.recent].map((row) => row.id));
   const toEntities = (pool: PoolRow[]) => pool.map((row) => toTopologyEntity(row, snippets));
 
   // One memory budget for everything inside the fence; when this level shows
@@ -238,6 +246,7 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
       { entities: toEntities(pools.lessons), foreign: false },
       { entities: toEntities(pools.project), foreign: false },
       { entities: toEntities(pools.noProject), foreign: false, noProject: true },
+      { entities: toEntities(pools.shared), foreign: false, shared: true },
       { entities: toEntities(pools.global), foreign: false, global: true },
       { entities: toEntities(pools.recent), foreign: true },
     ],
@@ -266,7 +275,7 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
   // `--index` flag, read it on its own) — but its lines only enter the
   // INJECTED block when the level includes it.
   const now = Date.now();
-  const { candidates: indexCandidates, truncated } = readIndexCandidates(db, projectName);
+  const { candidates: indexCandidates, truncated } = readIndexCandidates(db, projectName, ids);
   const index = buildBriefingIndex(indexCandidates, projectName, now, { truncated });
   // The injected index gets what the block left of the shared budget; the
   // standalone `index` above keeps its own caps (`memesh briefing --index`).

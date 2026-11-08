@@ -47,6 +47,19 @@ describe('canonicalRemoteLocator', () => {
     ['bob@git.example:repo.git', 'ssh-relative://bob@git.example/repo.git'],
     ['alice@git.example:/repo.git', 'ssh-absolute://alice@git.example/repo.git'],
     ['ssh://alice@git.example/repo.git', 'ssh-absolute://alice@git.example/repo.git'],
+    // GitLab and Bitbucket: the standard `git@` login and the https address name one repository, `.git` or not.
+    ['https://gitlab.com/acme/widgets.git', 'https://gitlab.com/acme/widgets.git'],
+    ['https://gitlab.com/acme/widgets', 'https://gitlab.com/acme/widgets.git'],
+    ['git@gitlab.com:acme/widgets.git', 'https://gitlab.com/acme/widgets.git'],
+    ['ssh://git@GITLAB.com/acme/widgets', 'https://gitlab.com/acme/widgets.git'],
+    ['git@bitbucket.org:acme/widgets.git', 'https://bitbucket.org/acme/widgets.git'],
+    // ...but not another login, another port, or http, even there.
+    ['alice@gitlab.com:acme/widgets.git', 'ssh-relative://alice@gitlab.com/acme/widgets.git'],
+    ['ssh://git@gitlab.com:2222/acme/widgets.git', 'ssh-absolute://git@gitlab.com:2222/acme/widgets.git'],
+    ['http://gitlab.com/acme/widgets.git', 'http://gitlab.com/acme/widgets.git'],
+    // Any other host is read as spelled: the https address and the `git@` login are different locators.
+    ['https://example.test/acme/widgets.git', 'https://example.test/acme/widgets.git'],
+    ['git@example.test:acme/widgets.git', 'ssh-relative://git@example.test/acme/widgets.git'],
   ];
   for (const [url, expected] of cases) {
     it(`${url} → ${expected}`, () => {
@@ -110,6 +123,35 @@ describe('getProjectName — layered git identity', () => {
     const ssh = makeRepo('git@GITHUB.COM:Owner/CaseSensitiveRepo.git');
     created.push(https, ssh);
     expect(getProjectName(https)).toBe(getProjectName(ssh));
+  });
+
+  it('gives GitLab and Bitbucket the same id for the standard git@ login and the https address, with or without .git', () => {
+    const repos = [
+      makeRepo('https://gitlab.com/acme/widgets.git'),
+      makeRepo('https://gitlab.com/acme/widgets'),
+      makeRepo('git@gitlab.com:acme/widgets.git'),
+      makeRepo('ssh://git@gitlab.com/acme/widgets'),
+    ];
+    created.push(...repos);
+    const ids = repos.map((repo) => getProjectName(repo));
+    expect(new Set(ids).size).toBe(1);
+    expect(ids[0]).toMatch(/^widgets~[0-9a-f]{32}$/);
+  });
+
+  it('keeps two repositories apart on any other host unless the spelling is the same: login, port, path mode, scheme and .git all count', () => {
+    const repos = [
+      makeRepo('alice@selfhosted.test:acme/widgets.git'),
+      makeRepo('bob@selfhosted.test:acme/widgets.git'),
+      makeRepo('alice@selfhosted.test:/acme/widgets.git'),
+      makeRepo('ssh://alice@selfhosted.test:2222/acme/widgets.git'),
+      makeRepo('ssh://alice@selfhosted.test:2223/acme/widgets.git'),
+      makeRepo('https://selfhosted.test/acme/widgets.git'),
+      makeRepo('https://selfhosted.test/acme/widgets'),
+      makeRepo('http://selfhosted.test/acme/widgets.git'),
+      makeRepo('git@selfhosted.test:acme/widgets.git'),
+    ];
+    created.push(...repos);
+    expect(new Set(repos.map((repo) => getProjectName(repo))).size).toBe(repos.length);
   });
 
   it('keeps generic SSH users and relative-vs-absolute repository paths isolated', () => {

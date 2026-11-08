@@ -75,8 +75,13 @@ const rememberShape = {
         .optional(),
     namespace: z.enum(NAMESPACES).optional(),
 };
+const RESERVED_TAG_PREFIX = 'source:';
 function refineRemember(data, ctx) {
     for (const [index, tag] of (data.tags ?? []).entries()) {
+        if (tag.trim().toLowerCase().startsWith(RESERVED_TAG_PREFIX)) {
+            ctx.addIssue({ code: 'custom', path: ['tags', index], message: `the tag ${JSON.stringify(tag)} is not allowed: tags that start with \`source:\` are reserved for MeMesh, which uses them to record where it got a memory (a note file, its own capture). Choose another prefix, for example \`origin:\`.` });
+            continue;
+        }
         if (!tag.startsWith('project:'))
             continue;
         const project = tag.slice('project:'.length);

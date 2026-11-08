@@ -30881,6 +30881,15 @@ var WORK_LAYER_TYPES = /* @__PURE__ */ new Set([
   "task-state"
 ]);
 var DECISION_TYPES = /* @__PURE__ */ new Set(["decision", "architecture_decision", "design_decision"]);
+var PREFERENCE_TYPES = ["preference", "user_preference"];
+var SHARED_EXPERIENCE_TYPES = /* @__PURE__ */ new Set([
+  ...LESSON_TYPES,
+  ...DECISION_TYPES,
+  ...PREFERENCE_TYPES
+]);
+var SHARED_EXPERIENCE_TYPE_LIST = [...SHARED_EXPERIENCE_TYPES];
+var SHARED_FEEDBACK_TYPE = "feedback";
+var NOTE_FILE_PROVENANCE = "note-file";
 var WHY_PREFIX = "Why: ";
 var UNCONFIRMED_DECISION_DAYS = 30;
 function utcEpoch(at) {
@@ -30934,12 +30943,13 @@ function topologyLine(entity, maxChars) {
   const snippet = entity.snippet?.trim();
   const given = (title || snippet || "").replace(/~[0-9a-f]{32}\b/g, "");
   const handle = Number.isInteger(entity.id) && entity.id > 0 ? ` [mem:${entity.id}]` : "";
+  const origin = entity.sharedFrom !== void 0 ? ` (from ${entity.sharedFrom})` : "";
   const unconfirmed = entity.unconfirmedDays ? ` (unconfirmed ${entity.unconfirmedDays} days: re-check before relying)` : "";
   const reason = entity.why ? `${WHY_PREFIX}${entity.why}` : "";
   const noReason = entity.why === null ? " (no reason recorded)" : "";
   const text = reason && isWhyText(given) ? "" : given || (reason ? "" : `${entity.type} memory`);
-  const room = Math.max(8, maxChars - handle.length - unconfirmed.length - noReason.length);
-  return stripControlChars(`- [${entity.type}] ${lineBody(text, reason, room)}${noReason}${unconfirmed}${handle}`);
+  const room = Math.max(8, maxChars - handle.length - unconfirmed.length - noReason.length - origin.length);
+  return stripControlChars(`- [${entity.type}] ${lineBody(text, reason, room)}${noReason}${unconfirmed}${origin}${handle}`);
 }
 var TITLE_FLOOR_CHARS = 40;
 var REASON_SEPARATOR = " \u2014 ";
@@ -30992,6 +31002,7 @@ function groupTopology(entities, projectName2) {
   const global = [];
   const noProject = [];
   const foreign = [];
+  const shared = [];
   for (const e of entities) {
     if (e.type === "task-state" || e.type === "session-handoff")
       continue;
@@ -31001,6 +31012,10 @@ function groupTopology(entities, projectName2) {
     }
     if (e.noProject) {
       noProject.push(e);
+      continue;
+    }
+    if (e.sharedFrom !== void 0) {
+      shared.push(e);
       continue;
     }
     if (e.foreign) {
@@ -31039,6 +31054,8 @@ function groupTopology(entities, projectName2) {
     sections.push({ heading: "Global memory \u2014 applies across projects:", entities: global });
   if (foreign.length)
     sections.push({ heading: "From your other projects (may or may not apply here):", entities: foreign });
+  if (shared.length)
+    sections.push({ heading: "Your preferences from your other projects (may or may not apply here):", entities: shared });
   return sections;
 }
 var MAX_PER_SECTION = 8;
@@ -31047,6 +31064,11 @@ var DEFAULT_TOPOLOGY_BUDGET = {
   maxLineChars: 160
 };
 var GLOBAL_TOPOLOGY_LIMIT = 3;
+var SHARED_TOPOLOGY_LIMIT = 3;
+var SHARED_TOPOLOGY_BUDGET = {
+  maxChars: 640,
+  maxLineChars: DEFAULT_TOPOLOGY_BUDGET.maxLineChars
+};
 var GLOBAL_TOPOLOGY_BUDGET = {
   maxChars: 640,
   maxLineChars: DEFAULT_TOPOLOGY_BUDGET.maxLineChars
@@ -31085,12 +31107,15 @@ function assembleTopologyBlock(stateLines, pools, projectName2, budget = DEFAULT
   const seen = /* @__PURE__ */ new Set();
   const candidates = [];
   const globalCandidates = [];
+  const sharedCandidates = [];
   for (const pool of pools) {
     for (const e of pool.entities) {
       if (seen.has(e.name))
         continue;
       seen.add(e.name);
-      if (pool.global) {
+      if (pool.shared) {
+        sharedCandidates.push(e.sharedFrom !== void 0 ? e : { ...e, sharedFrom: "another project" });
+      } else if (pool.global) {
         globalCandidates.push(e.global ? e : { ...e, global: true });
       } else {
         candidates.push(pool.noProject ? { ...e, noProject: true } : pool.foreign && !e.foreign ? { ...e, foreign: true } : e);
@@ -31103,6 +31128,13 @@ function assembleTopologyBlock(stateLines, pools, projectName2, budget = DEFAULT
   if (lines.length > 0 && topologyLines.length > 0)
     lines.push("");
   lines.push(...topologyLines);
+  const sharedLines = room() > 0 ? buildTopologyLines(sharedCandidates.slice(0, SHARED_TOPOLOGY_LIMIT), projectName2, {
+    ...budget,
+    maxChars: Math.min(room(), SHARED_TOPOLOGY_BUDGET.maxChars)
+  }) : [];
+  if (lines.length > 0 && sharedLines.length > 0)
+    lines.push("");
+  lines.push(...sharedLines);
   const globalLines = room() > 0 ? buildTopologyLines(globalCandidates, projectName2, {
     ...budget,
     maxChars: Math.min(room(), GLOBAL_TOPOLOGY_BUDGET.maxChars)
@@ -31197,6 +31229,19 @@ function stripControlChars(s) {
   return s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]+/g, " ");
 }
 
+// dist/core/project-scope.js
+var noProjectTag = (alias = "e") => `NOT EXISTS (SELECT 1 FROM tags sp WHERE sp.entity_id = ${alias}.id AND sp.tag LIKE 'project:%')`;
+var ownFolderNote = (alias = "e") => `(json_extract(${alias}.metadata, '$.provenance.source') = '${NOTE_FILE_PROVENANCE}' AND json_extract(${alias}.metadata, '$.trust') = 'trusted')`;
+function projectScopeFilter(scope, alias = "e") {
+  const tags = scope === null ? [] : typeof scope === "string" ? [scope] : scope;
+  const shared = `${alias}.type IN (${SHARED_EXPERIENCE_TYPE_LIST.map(() => "?").join(",")}) OR (${alias}.type = ? AND ${ownFolderNote(alias)})`;
+  const own2 = tags.length === 0 ? "" : `EXISTS (SELECT 1 FROM tags st WHERE st.entity_id = ${alias}.id AND st.tag IN (${tags.map(() => "?").join(",")})) OR `;
+  return {
+    sql: `AND (${own2}${noProjectTag(alias)} OR ${alias}.namespace = 'global' OR ${shared})`,
+    params: [...tags, ...SHARED_EXPERIENCE_TYPE_LIST, SHARED_FEEDBACK_TYPE]
+  };
+}
+
 // dist/core/project-attribution.js
 var PROJECT_TAG_PREFIX = "project:";
 var MIN_NAME_PROJECT_LENGTH = 2;
@@ -31254,25 +31299,45 @@ function getProjectName(cwdInput) {
 }
 var projectNameCache = /* @__PURE__ */ new Map();
 function resolveProjectIdentity(cwd) {
+  const remote = remoteProjectIdentity(cwd);
+  if (remote)
+    return remote;
+  const real = projectRealPath(cwd);
+  return projectIdentity(path.basename(real), real);
+}
+var locatorIdentity = (locator) => projectIdentity(path.posix.basename(locator).replace(/\.git$/i, ""), locator);
+function remoteProjectIdentity(cwd) {
   const remote = tryGit(cwd, ["config", "--get", "remote.origin.url"]);
-  if (remote) {
-    const locator = canonicalRemoteLocator(remote);
-    if (locator) {
-      const label = path.posix.basename(locator).replace(/\.git$/i, "");
-      return projectIdentity(label, locator);
-    }
-  }
+  const locator = remote ? canonicalRemoteLocator(remote) : null;
+  return locator ? locatorIdentity(locator) : null;
+}
+function remoteAliasIdentities(cwd) {
+  const remote = tryGit(cwd, ["config", "--get", "remote.origin.url"]);
+  return remote ? remoteLocatorAliases(remote).map(locatorIdentity) : [];
+}
+function projectRealPath(cwd) {
   const root = tryGit(cwd, ["rev-parse", "--show-toplevel"]);
   const commonDir = root ? tryGit(cwd, ["rev-parse", "--git-common-dir"]) : null;
   const absoluteCommonDir = commonDir ? path.resolve(cwd, commonDir) : null;
   const localPath = absoluteCommonDir && path.basename(absoluteCommonDir) === ".git" ? path.dirname(absoluteCommonDir) : root ?? cwd;
-  let real;
   try {
-    real = fs.realpathSync.native(localPath);
+    return fs.realpathSync.native(localPath);
   } catch {
-    real = path.resolve(localPath);
+    return path.resolve(localPath);
   }
-  return projectIdentity(path.basename(real), real);
+}
+function getProjectIds(cwdInput) {
+  const cwd = cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd();
+  const real = projectRealPath(cwd);
+  const label = path.basename(real).normalize("NFC").slice(0, PROJECT_LABEL_MAX_LENGTH) || "project";
+  const ids = [
+    getProjectName(cwd),
+    remoteProjectIdentity(cwd),
+    ...remoteAliasIdentities(cwd),
+    projectIdentity(path.basename(real), real),
+    `${label}-${createHash("sha256").update(real).digest("hex").slice(0, 8)}`
+  ];
+  return [...new Set(ids.filter((id) => id !== null))];
 }
 var PROJECT_HASH_HEX_LENGTH = 32;
 var PROJECT_ID_MAX_LENGTH = 200;
@@ -31295,7 +31360,7 @@ function tryGit(cwd, args) {
     return null;
   }
 }
-function canonicalRemoteLocator(remote) {
+function parseRemote(remote) {
   const value = remote.trim();
   if (!value)
     return null;
@@ -31335,13 +31400,41 @@ function canonicalRemoteLocator(remote) {
   const pathWithoutSlashes = remotePath.replace(/^\/+|\/+$/g, "");
   if (!host || !pathWithoutSlashes)
     return null;
-  const endpoint = `${host}${port ? `:${port}` : ""}`;
-  const standardGithub = host === "github.com" && port === "" && (transport === "https" || (transport === "ssh-relative" || transport === "ssh-absolute") && user === "git");
-  const normalizedPath = standardGithub ? pathWithoutSlashes.replace(/\.git$/i, "") : pathWithoutSlashes;
-  if (standardGithub)
-    return `${endpoint}/${normalizedPath}`;
-  const authority = transport.startsWith("ssh-") && user ? `${user}@${endpoint}` : endpoint;
-  return `${transport}://${authority}/${normalizedPath}`;
+  return { transport, user, host, port, path: pathWithoutSlashes };
+}
+var isSsh = (transport) => transport === "ssh-relative" || transport === "ssh-absolute";
+var HOSTING_SERVICES = /* @__PURE__ */ new Set(["github.com", "gitlab.com", "bitbucket.org"]);
+function onHostingService(parts) {
+  return HOSTING_SERVICES.has(parts.host) && parts.port === "" && (parts.transport === "https" || isSsh(parts.transport) && parts.user === "git");
+}
+function literalLocator(parts) {
+  const endpoint = `${parts.host}${parts.port ? `:${parts.port}` : ""}`;
+  const authority = isSsh(parts.transport) && parts.user ? `${parts.user}@${endpoint}` : endpoint;
+  return `${parts.transport}://${authority}/${parts.path}`;
+}
+function canonicalRemoteLocator(remote) {
+  const parts = parseRemote(remote);
+  if (!parts)
+    return null;
+  if (onHostingService(parts)) {
+    const bare = parts.path.replace(/\.git$/i, "");
+    return parts.host === "github.com" ? `github.com/${bare}` : `https://${parts.host}/${bare}.git`;
+  }
+  return literalLocator(parts);
+}
+function remoteLocatorAliases(remote) {
+  const parts = parseRemote(remote);
+  if (!parts || !onHostingService(parts) || parts.host === "github.com")
+    return [];
+  const bare = parts.path.replace(/\.git$/i, "");
+  const out = /* @__PURE__ */ new Set();
+  for (const suffix of ["", ".git"]) {
+    out.add(`https://${parts.host}/${bare}${suffix}`);
+    for (const transport of ["ssh-relative", "ssh-absolute"])
+      out.add(`${transport}://git@${parts.host}/${bare}${suffix}`);
+  }
+  out.delete(canonicalRemoteLocator(remote) ?? "");
+  return [...out];
 }
 var SK_KEY = 'sk[-_][^\\s"\\\\]{4,}[A-Za-z0-9]';
 var NAMED_VALUE = `(?:api[-_]?key|access[-_]?token|auth[-_]?token|refresh[-_]?token|session[-_]?token|token|secret|password|passwd|pwd|signature)=[^&\\s"'<>]{8,}`;
@@ -31995,14 +32088,6 @@ function dropUbiquitousTerms(db2, terms) {
     return terms;
   }
 }
-var noProjectTag = (alias = "e") => `NOT EXISTS (SELECT 1 FROM tags sp WHERE sp.entity_id = ${alias}.id AND sp.tag LIKE 'project:%')`;
-function projectScopeFilter(scope, alias = "e") {
-  const noProject = noProjectTag(alias);
-  return scope === null ? { sql: `AND (${noProject} OR ${alias}.namespace = 'global')`, params: [] } : {
-    sql: `AND (EXISTS (SELECT 1 FROM tags st WHERE st.entity_id = ${alias}.id AND st.tag = ?) OR ${noProject} OR ${alias}.namespace = 'global')`,
-    params: [scope]
-  };
-}
 var KnowledgeGraph = class {
   db;
   constructor(db2) {
@@ -32227,6 +32312,17 @@ var KnowledgeGraph = class {
          JOIN entities e_from ON r.from_entity_id = e_from.id
          JOIN entities e_to ON r.to_entity_id = e_to.id
          WHERE r.from_entity_id IN (${placeholders}) ${relationScope.sql} ${relationNamespaceSql} ${relationStatusSql}`).all(...ids, ...relationScope.params, ...view?.namespace ? [view.namespace] : []);
+    const omittedArchived = /* @__PURE__ */ new Map();
+    if (view && !view.includeArchived) {
+      const omittedRows = this.db.prepare(`SELECT r.from_entity_id AS id, COUNT(*) AS n
+           FROM relations r
+           JOIN entities e_to ON r.to_entity_id = e_to.id
+           WHERE r.from_entity_id IN (${placeholders}) ${relationScope.sql} ${relationNamespaceSql}
+             AND e_to.status = 'archived' AND r.relation_type != 'supersedes'
+           GROUP BY r.from_entity_id`).all(...ids, ...relationScope.params, ...view.namespace ? [view.namespace] : []);
+      for (const row of omittedRows)
+        omittedArchived.set(row.id, row.n);
+    }
     const relMap = /* @__PURE__ */ new Map();
     for (const row of relRows) {
       if (!relMap.has(row.from_entity_id))
@@ -32257,6 +32353,7 @@ var KnowledgeGraph = class {
         observations,
         tags,
         relations: relations.length > 0 ? relations : void 0,
+        ...omittedArchived.has(id) ? { archived_relations_omitted: omittedArchived.get(id) } : {},
         ...row.status === "archived" ? { archived: true } : {},
         access_count: row.access_count ?? 0,
         recall_hits: row.recall_hits ?? 0,
@@ -36284,7 +36381,8 @@ var toPoolRow = (row) => ({
   recall_hits: row.recall_hits ?? void 0,
   recall_misses: row.recall_misses ?? void 0,
   created_at: row.created_at ?? void 0,
-  recency: row.recency ?? null
+  recency: row.recency ?? null,
+  ...row.source_project ? { project: row.source_project } : {}
 });
 function selectPool(rows, cap) {
   return rankEntities(rows.map(toPoolRow), /* @__PURE__ */ new Map()).filter((row) => trustedForAutoContext(row.metadata)).slice(0, cap);
@@ -36309,35 +36407,49 @@ function guarded(label, fallback, read, onError) {
 }
 function selectBriefingPools(db2, projectName2, options) {
   const cols = entityColumns(db2);
-  const projectTag = `project:${projectName2}`;
+  const ids = options.projectIds?.length ? [...options.projectIds] : [projectName2];
+  const projectTags = ids.map((id) => `project:${id}`);
+  const tagMarks = projectTags.map(() => "?").join(",");
   const columns = candidateColumns(cols);
   const handoffRead = guarded("handoff", void 0, () => db2.prepare(`SELECT e.id, e.name, e.metadata, o.content AS text, o.created_at AS observedAt
      FROM entities e JOIN observations o ON o.entity_id = e.id
-     WHERE e.name = ? AND e.type = ?${active(cols)}
+     WHERE e.name IN (${ids.map(() => "?").join(",")}) AND e.type = ?${active(cols)}
      ORDER BY o.id DESC
-     LIMIT 1`).get(sessionHandoffName(projectName2), SESSION_HANDOFF_TYPE), options.onError);
+     LIMIT 1`).get(...ids.map(sessionHandoffName), SESSION_HANDOFF_TYPE), options.onError);
   const handoffTrusted = !!handoffRead && trustedForAutoContext(handoffRead.metadata);
   const projectRows = db2.prepare(`SELECT DISTINCT ${columns}
      FROM entities e JOIN tags t ON t.entity_id = e.id
-     WHERE t.tag = ?${active(cols)} AND e.type <> ?${nonGlobal(cols)}
+     WHERE t.tag IN (${tagMarks})${active(cols)} AND e.type <> ?${nonGlobal(cols)}
      ORDER BY e.id DESC
-     LIMIT ?`).all(projectTag, SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP);
+     LIMIT ?`).all(...projectTags, SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP);
   const decisions = guarded("decisions", [], () => db2.prepare(`SELECT DISTINCT ${columns}, ${RECENCY_SQL} AS recency
      FROM entities e JOIN tags t ON t.entity_id = e.id
-     WHERE t.tag = ?${active(cols)}${nonGlobal(cols)}
+     WHERE t.tag IN (${tagMarks})${active(cols)}${nonGlobal(cols)}
        AND e.type IN (${DECISION_LAYER_TYPES.map(() => "?").join(",")})
      ORDER BY recency IS NULL, recency DESC, e.id DESC
-     LIMIT ?`).all(projectTag, ...DECISION_LAYER_TYPES, TOPOLOGY_CANDIDATE_CAP).map(toPoolRow).filter((row) => trustedForAutoContext(row.metadata)), options.onError);
+     LIMIT ?`).all(...projectTags, ...DECISION_LAYER_TYPES, TOPOLOGY_CANDIDATE_CAP).map(toPoolRow).filter((row) => trustedForAutoContext(row.metadata)), options.onError);
   const project = prioritizeDecisions(decisions, selectPool(projectRows, TOPOLOGY_CANDIDATE_CAP), options.projectLimit);
   const lessonRows = guarded("lessons", [], () => db2.prepare(`SELECT DISTINCT ${columns}
      FROM entities e JOIN tags t ON t.entity_id = e.id
-     WHERE e.type IN (${LESSON_TYPE_LIST.map(() => "?").join(", ")})${active(cols)}${nonGlobal(cols)} AND t.tag = ?
+     WHERE e.type IN (${LESSON_TYPE_LIST.map(() => "?").join(", ")})${active(cols)}${nonGlobal(cols)} AND t.tag IN (${tagMarks})
      ORDER BY e.id DESC
-     LIMIT ${LESSON_POOL_LIMIT}`).all(...LESSON_TYPE_LIST, projectTag).map(toPoolRow).filter((row) => trustedForAutoContext(row.metadata)), options.onError);
+     LIMIT ${LESSON_POOL_LIMIT}`).all(...LESSON_TYPE_LIST, ...projectTags).map(toPoolRow).filter((row) => trustedForAutoContext(row.metadata)), options.onError);
   const noProject = selectPool(db2.prepare(`SELECT ${columns} FROM entities e
      WHERE ${NO_PROJECT_TAG} AND e.type <> ?${active(cols)}${nonGlobal(cols)}
      ORDER BY e.id DESC
      LIMIT ?`).all(SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP), NO_PROJECT_LIMIT);
+  const shared = guarded("lessons", [], () => db2.prepare(`SELECT DISTINCT ${columns}, ${RECENCY_SQL} AS recency,
+       (SELECT substr(pt.tag, ${"project:".length + 1}) FROM tags pt
+         WHERE pt.entity_id = e.id AND pt.tag LIKE 'project:%' AND pt.tag NOT IN (${tagMarks})
+         ORDER BY pt.tag LIMIT 1) AS source_project
+     FROM entities e
+     WHERE e.type <> ?${active(cols)}${nonGlobal(cols)}
+       AND (e.type IN (${PREFERENCE_TYPES.map(() => "?").join(",")}) OR e.type = ?)
+       AND ${ownFolderNote("e")}
+       AND EXISTS (SELECT 1 FROM tags pt WHERE pt.entity_id = e.id AND pt.tag LIKE 'project:%')
+       AND NOT EXISTS (SELECT 1 FROM tags pt WHERE pt.entity_id = e.id AND pt.tag IN (${tagMarks}))
+     ORDER BY recency IS NULL, recency DESC, e.id DESC
+     LIMIT ?`).all(...projectTags, SESSION_HANDOFF_TYPE, ...PREFERENCE_TYPES, SHARED_FEEDBACK_TYPE, ...projectTags, TOPOLOGY_CANDIDATE_CAP).map(toPoolRow).filter((row) => trustedForAutoContext(row.metadata)).slice(0, SHARED_TOPOLOGY_LIMIT), options.onError);
   const global = options.global && cols.namespace ? selectPool(db2.prepare(`SELECT ${columns} FROM entities e
        WHERE e.namespace = 'global'${active(cols)}
        ORDER BY e.id DESC
@@ -36353,6 +36465,7 @@ function selectBriefingPools(db2, projectName2, options) {
     lessons: lessonRows.slice(0, LESSON_LIMIT),
     project,
     noProject,
+    shared,
     global,
     recent
   };
@@ -36404,11 +36517,13 @@ function toTopologyEntity(row, snippets, now = Date.now()) {
     snippet: first,
     signalScore: typeof signal === "number" ? signal : null,
     recency: row.recency ?? null,
+    ...row.project !== void 0 ? { sharedFrom: projectLabel(row.project) } : {},
     ...decision ? { why, unconfirmedDays: unconfirmedDaysSince([row.last_accessed_at, snippet?.lastAddedAt, row.recency, row.created_at], now) } : {}
   };
 }
-function readIndexCandidates(db2, projectName2) {
+function readIndexCandidates(db2, projectName2, projectIds) {
   const cols = entityColumns(db2);
+  const projectTags = (projectIds?.length ? [...projectIds] : [projectName2]).map((id) => `project:${id}`);
   const excluded = INDEX_EXCLUDED_TYPES.map(() => "?").join(",");
   const decisionTypes = [...DECISION_TYPES];
   const decisionOnly = `e.type IN (${decisionTypes.map(() => "?").join(",")})`;
@@ -36424,10 +36539,10 @@ function readIndexCandidates(db2, projectName2) {
            ORDER BY o3.id DESC LIMIT 1) END AS why_content,
        CASE WHEN ${decisionOnly} THEN ${RECENCY_SQL} END AS recency
      FROM entities e
-     WHERE e.id IN (SELECT entity_id FROM tags WHERE tag = ?)${active(cols)}${nonGlobal(cols)}
+     WHERE e.id IN (SELECT entity_id FROM tags WHERE tag IN (${projectTags.map(() => "?").join(",")}))${active(cols)}${nonGlobal(cols)}
        AND e.type NOT IN (${excluded})
      ORDER BY last_activity DESC, e.id DESC
-     LIMIT ?`).all(...decisionTypes, ...decisionTypes, `project:${projectName2}`, ...INDEX_EXCLUDED_TYPES, INDEX_CANDIDATE_CAP);
+     LIMIT ?`).all(...decisionTypes, ...decisionTypes, ...projectTags, ...INDEX_EXCLUDED_TYPES, INDEX_CANDIDATE_CAP);
   const candidates = rows.map((row) => ({
     id: row.id,
     name: row.name,
@@ -36520,8 +36635,12 @@ function briefingLevelPolicy(level) {
 
 // dist/core/briefing.js
 var PROJECT_LIMIT = 30;
-function assembleBriefing(project, recipient) {
+function projectIdsFor(projectName2) {
+  return projectName2 === getProjectName() ? getProjectIds() : [projectName2];
+}
+function assembleBriefing(project, recipient, projectIds) {
   const projectName2 = project ?? getProjectName();
+  const ids = projectIds ?? projectIdsFor(projectName2);
   const db2 = getDatabase();
   const resolvedLevel = resolveBriefingLevel(process.env.MEMESH_BRIEFING, readConfig().briefing);
   if (resolvedLevel.invalid) {
@@ -36549,6 +36668,7 @@ function assembleBriefing(project, recipient) {
   const unreadCount = unreadDeliveryCount(db2, canonicalAgentScopeId(projectName2), inboxRecipient, hostSessionFromEnv());
   const everSeen = inboxRecipient !== void 0 && unreadCount === 0 ? recipientEverSeen(db2, canonicalAgentScopeId(projectName2), inboxRecipient) : void 0;
   const pools = selectBriefingPools(db2, projectName2, {
+    projectIds: ids,
     projectLimit: PROJECT_LIMIT,
     global: policy.global,
     foreign: policy.foreign
@@ -36559,19 +36679,20 @@ function assembleBriefing(project, recipient) {
     ...taskLines,
     ...unreadInboxLines(unreadCount, canonicalAgentScopeId(projectName2), inboxRecipient, everSeen)
   ];
-  const snippets = readSnippets(db2, [...pools.lessons, ...pools.project, ...pools.noProject, ...pools.global, ...pools.recent].map((row) => row.id));
+  const snippets = readSnippets(db2, [...pools.lessons, ...pools.project, ...pools.noProject, ...pools.shared, ...pools.global, ...pools.recent].map((row) => row.id));
   const toEntities = (pool) => pool.map((row) => toTopologyEntity(row, snippets));
   const indexReserve = policy.index ? injectedIndexReserve(projectName2) + 2 : 0;
   const lines = assembleTopologyBlock(stateLines, [
     { entities: toEntities(pools.lessons), foreign: false },
     { entities: toEntities(pools.project), foreign: false },
     { entities: toEntities(pools.noProject), foreign: false, noProject: true },
+    { entities: toEntities(pools.shared), foreign: false, shared: true },
     { entities: toEntities(pools.global), foreign: false, global: true },
     { entities: toEntities(pools.recent), foreign: true }
   ], projectName2, DEFAULT_TOPOLOGY_BUDGET, { reserve: indexReserve });
   const withRepo = lines.length > 0 && repoLines.length > 0 ? [...repoLines, "", ...lines] : lines;
   const now = Date.now();
-  const { candidates: indexCandidates, truncated } = readIndexCandidates(db2, projectName2);
+  const { candidates: indexCandidates, truncated } = readIndexCandidates(db2, projectName2, ids);
   const index = buildBriefingIndex(indexCandidates, projectName2, now, { truncated });
   const used = lines.length === 0 ? 0 : joinedLength(lines) + 2;
   const indexLines = policy.index ? buildBriefingIndex(indexCandidates, projectName2, now, { truncated, maxChars: DEFAULT_TOPOLOGY_BUDGET.maxChars - used }).lines : [];
@@ -37551,8 +37672,13 @@ var rememberShape = {
   relations: external_exports.array(external_exports.object({ to: external_exports.string().min(1).max(255), type: external_exports.string().min(1).max(100) }).strict()).max(50).optional(),
   namespace: external_exports.enum(NAMESPACES).optional()
 };
+var RESERVED_TAG_PREFIX = "source:";
 function refineRemember(data, ctx) {
   for (const [index, tag] of (data.tags ?? []).entries()) {
+    if (tag.trim().toLowerCase().startsWith(RESERVED_TAG_PREFIX)) {
+      ctx.addIssue({ code: "custom", path: ["tags", index], message: `the tag ${JSON.stringify(tag)} is not allowed: tags that start with \`source:\` are reserved for MeMesh, which uses them to record where it got a memory (a note file, its own capture). Choose another prefix, for example \`origin:\`.` });
+      continue;
+    }
     if (!tag.startsWith("project:"))
       continue;
     const project = tag.slice("project:".length);
@@ -39207,7 +39333,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "recall",
-    description: "Search stored knowledge with full-text search, or retrieve exact memory IDs. Use ids (1\u201320 positive integers) without query, tag or cross_project. ID results report found, archived, unavailable or omitted; only found memories include content and a mem-fetched reference. Retry omitted results individually; an item still omitted on its own cannot fit the response limit. Selectors: `project` (that project, memories with no project, and global ones; false = only memories with no project and global ones), `tag` (exactly that tag) or `cross_project` (every project; a `tag` given with it is ignored). `project` cannot be combined with `tag` or `cross_project`. With none, it uses the project this session is bound to (MEMESH_PROJECT_ROOT, or the client\u2019s workspace root) the same way, or only memories with no project and global ones when nothing is bound; a launch or workspace root that is set but cannot be resolved is refused with the reason; the response says what it searched (`scope`) and each result carries its `projects` ([] for none). Call with no query to list recent memories. One- and two-term queries use OR matching; queries with three or more terms try strict all-term matching first and fall back to OR only when strict matching has no hits, with results ranked by relevance. Results are capped for size: each entity's observations+tags at 8 KB, the whole response at 32 KB; a capped entity carries `truncated` with the full shown/total counts, and the response carries `truncated`/`entities_omitted` when anything was cut. `file:*` tags are never included \u2014 they exist for pre-edit lookups, not for reading.",
+    description: "Search stored knowledge with full-text search, or retrieve exact memory IDs. Use ids (1\u201320 positive integers) without query, tag or cross_project. ID results report found, archived, unavailable or omitted; only found memories include content and a mem-fetched reference. Retry omitted results individually; an item still omitted on its own cannot fit the response limit. Selectors: `project` (that project, memories with no project, global ones, and the decisions, lessons and preferences of any project; false = the same without a project of its own), `tag` (exactly that tag) or `cross_project` (every project; a `tag` given with it is ignored). `project` cannot be combined with `tag` or `cross_project`. With none, it uses the project this session is bound to (MEMESH_PROJECT_ROOT, or the client\u2019s workspace root) the same way, or the same without a project of its own when nothing is bound; the detail of another project (commits, session summaries, handoffs, notes) is never included; a launch or workspace root that is set but cannot be resolved is refused with the reason; the response says what it searched (`scope`) and each result carries its `projects` ([] for none). A result carries `archived_relations_omitted` when it leaves out relations to archived memories (a `supersedes` link is always shown); add `include_archived` to see them. Call with no query to list recent memories. One- and two-term queries use OR matching; queries with three or more terms try strict all-term matching first and fall back to OR only when strict matching has no hits, with results ranked by relevance. Results are capped for size: each entity's observations+tags at 8 KB, the whole response at 32 KB; a capped entity carries `truncated` with the full shown/total counts, and the response carries `truncated`/`entities_omitted` when anything was cut. `file:*` tags are never included \u2014 they exist for pre-edit lookups, not for reading.",
     inputSchema: {
       type: "object",
       properties: {
@@ -39245,7 +39371,7 @@ var TOOL_DEFINITIONS = [
         },
         project: {
           anyOf: [{ type: "string", minLength: 1 }, { const: false }],
-          description: "Search this project plus memories with no project and global ones; false searches only memories with no project and global ones. Cannot be combined with `tag` or `cross_project`. Omit it to use the bound project."
+          description: "Search this project plus memories with no project, global ones, and the decisions, lessons and preferences of any project; false searches the same without a project of its own. Cannot be combined with `tag` or `cross_project`. Omit it to use the bound project."
         }
       },
       additionalProperties: false
@@ -39346,7 +39472,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "briefing",
-    description: "The work topology for a project, assembled and ready to use \u2014 assembled under the same rules as Claude Code\u2019s session-start memory block (at `full`, the SessionStart hook additionally appends a work-package notice; that notice is a host-agent instruction, not memory, and is never part of this tool\u2019s output). An eligible exact-project handoff precedes ranked memories at every level, after optional repository facts: fresh through 72 hours, marked stale through 14 days, omitted when older, undatable, or implausibly future-dated. Imported or archived handoffs are not auto-injected. Recent project decisions take priority over routine activity; up to five project lessons are selected separately. The handoff, displayed task state, ranked and global memories, and injected index share a 4000-character memory-block limit. How much else is assembled follows the `briefing` setting: `minimal` (the default) includes this project\u2019s decisions and direction, lessons, known facts and recent activity, plus up to five memories that belong to no project, no fresh task state (a stale or unknown-age one still collapses to a one-line flag at every level) and no index, and may be empty; `standard` adds a fresh goal / next / blocked / done and closes with a capped index of durable memories; `full` additionally includes other projects and global memory. Whatever the level, the result\u2019s `index` field carries the standalone index, which can show more than the index inside a crowded briefing. Call it at the start of a session only when the host has not already injected this block (the MeMesh SessionStart hook does under Claude Code, and under the Codex plugin once Codex runs its hooks; it runs again after context compaction), or when the user asks what is remembered; use recall for specific questions. Content is wrapped as untrusted background data.",
+    description: "The work topology for a project, assembled and ready to use \u2014 assembled under the same rules as Claude Code\u2019s session-start memory block (at `full`, the SessionStart hook additionally appends a work-package notice; that notice is a host-agent instruction, not memory, and is never part of this tool\u2019s output). An eligible exact-project handoff precedes ranked memories at every level, after optional repository facts: fresh through 72 hours, marked stale through 14 days, omitted when older, undatable, or implausibly future-dated. Imported or archived handoffs are not auto-injected. Recent project decisions take priority over routine activity; up to five project lessons are selected separately. The handoff, displayed task state, ranked and global memories, and injected index share a 4000-character memory-block limit. How much else is assembled follows the `briefing` setting: `minimal` (the default) includes this project\u2019s decisions and direction, lessons, known facts and recent activity, plus up to five memories that belong to no project and up to three preferences of other projects (labelled with their project, after the project\u2019s own), no fresh task state (a stale or unknown-age one still collapses to a one-line flag at every level) and no index, and may be empty; `standard` adds a fresh goal / next / blocked / done and closes with a capped index of durable memories; `full` additionally includes other projects and global memory. Whatever the level, the result\u2019s `index` field carries the standalone index, which can show more than the index inside a crowded briefing. Call it at the start of a session only when the host has not already injected this block (the MeMesh SessionStart hook does under Claude Code, and under the Codex plugin once Codex runs its hooks; it runs again after context compaction), or when the user asks what is remembered; use recall for specific questions. Content is wrapped as untrusted background data.",
     inputSchema: {
       type: "object",
       properties: {
@@ -39640,26 +39766,30 @@ ${paragraph.text}`)
       const { project: projectArg, ...input2 } = r.data;
       const tag = input2.tag === "" ? void 0 : input2.tag;
       if (projectArg !== void 0 && (tag !== void 0 || input2.cross_project)) {
-        return fail("recall takes one selector: project, tag or cross_project \u2014 not several. Use project for one project plus memories with no project and global ones; tag for exactly one tag; cross_project for every project.");
+        return fail("recall takes one selector: project, tag or cross_project \u2014 not several. Use project for one project plus memories with no project, global ones and the decisions, lessons and preferences of any project; tag for exactly one tag; cross_project for every project.");
       }
       if (tag !== void 0 || input2.cross_project) {
         return ok(agentRecallEnvelope(await recallForAgent({ ...input2, tag })));
       }
       let boundProject;
+      let boundIds = [];
+      const bound = requestContext.projectBinding;
       if (projectArg !== void 0) {
         boundProject = projectArg === false ? null : projectArg;
+        boundIds = boundProject === null ? [] : bound && "project" in bound && bound.project === boundProject ? bound.ids ?? [boundProject] : [boundProject];
       } else {
         const binding = requestContext.projectBinding ?? UNBOUND;
         if ("error" in binding && !binding.unbound) {
           return fail(`${binding.error}: ${binding.reason} Pass project, tag or cross_project.`);
         }
         boundProject = "project" in binding ? binding.project : null;
+        boundIds = "project" in binding ? binding.ids ?? [binding.project] : [];
       }
       const scope = {
         project: boundProject,
-        searched: boundProject === null ? `memories with no project, and global memories${projectArg === false ? "" : " (no project is bound to this session)"}` : `project ${boundProject}, memories with no project, and global memories`
+        searched: boundProject === null ? `memories with no project, global memories, and the decisions, lessons and preferences of any project${projectArg === false ? "" : " (no project is bound to this session)"}` : `project ${boundProject}, memories with no project, global memories, and the decisions, lessons and preferences of any project`
       };
-      return ok(agentRecallEnvelope(await recallForAgent({ ...input2, tag, projectScope: boundProject === null ? null : `project:${boundProject}` }, scope)));
+      return ok(agentRecallEnvelope(await recallForAgent({ ...input2, tag, projectScope: boundProject === null ? null : boundIds.map((id) => `project:${id}`) }, scope)));
     }
     if (name === "forget") {
       const r = parseOrFail(ForgetSchema, args);
@@ -39716,7 +39846,9 @@ ${paragraph.text}`)
       const bound = projectFor(r.data.project, requestContext, "Pass project explicitly.");
       if ("result" in bound)
         return bound.result;
-      return ok(assembleBriefing(bound.project, r.data.recipient));
+      const binding = requestContext.projectBinding;
+      const ids = binding && "project" in binding && binding.project === bound.project ? binding.ids : void 0;
+      return ok(assembleBriefing(bound.project, r.data.recipient, ids));
     }
     if (name === "user_patterns") {
       const r = parseOrFail(UserPatternsSchema, args);
@@ -39833,7 +39965,7 @@ function resolveMcpProject(launchRoot, rootUris) {
       reason: "The client advertises workspace roots but did not return them."
     };
   }
-  const fromRoots = /* @__PURE__ */ new Set();
+  const fromRoots = /* @__PURE__ */ new Map();
   for (const uri of rootUris) {
     const directory = rootDirectory(uri);
     if (!directory) {
@@ -39842,7 +39974,8 @@ function resolveMcpProject(launchRoot, rootUris) {
         reason: `A workspace root from the client is not an existing local directory: ${JSON.stringify(uri)}.`
       };
     }
-    fromRoots.add(getProjectName(directory));
+    const ids = getProjectIds(directory);
+    fromRoots.set(ids[0], ids);
   }
   if (launchRoot !== void 0) {
     const directory = path10.isAbsolute(launchRoot) ? existingDirectory(launchRoot) : null;
@@ -39852,17 +39985,20 @@ function resolveMcpProject(launchRoot, rootUris) {
         reason: `MEMESH_PROJECT_ROOT is not an existing absolute directory: ${JSON.stringify(launchRoot)}.`
       };
     }
-    const project = getProjectName(directory);
-    if ([...fromRoots].some((other) => other !== project)) {
+    const ids = getProjectIds(directory);
+    const project = ids[0];
+    if ([...fromRoots.keys()].some((other) => other !== project)) {
       return {
         error: "workspace_ambiguous",
         reason: "MEMESH_PROJECT_ROOT and the client's workspace root name different projects."
       };
     }
-    return { project };
+    return { project, ids };
   }
-  if (fromRoots.size === 1)
-    return { project: [...fromRoots][0] };
+  if (fromRoots.size === 1) {
+    const [[project, ids]] = [...fromRoots];
+    return { project, ids };
+  }
   if (fromRoots.size > 1) {
     return {
       error: "workspace_ambiguous",

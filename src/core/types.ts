@@ -92,6 +92,13 @@ export interface Entity {
   observations: string[];
   tags: string[];
   relations?: Relation[];
+  /**
+   * How many of this memory's relations to an archived memory a recall left
+   * out (a `supersedes` link is always shown). Present only when above 0; a
+   * recall with `include_archived` shows them. Relations to another project's
+   * memories are not counted: those read as if they did not exist.
+   */
+  archived_relations_omitted?: number;
   archived?: boolean;
   /**
    * How FTS recall matched this entity. Absent on non-recall reads.
@@ -136,15 +143,20 @@ export interface CreateEntityInput {
   namespace?: string;
 }
 
+import type { ProjectScope } from './project-scope.js';
+export type { ProjectScope };
+
 export interface SearchOptions {
   tag?: string;
   /**
-   * A default recall's scope, under every other filter: a project tag means
-   * that project's memories, memories with no project and global ones; null
-   * (no bound project) means memories with no project and global ones.
+   * A default recall's scope, under every other filter: a project tag (or
+   * several, one per id the repository was written under) means that project's
+   * memories; null (no bound project) adds none. Either way also memories with
+   * no project, global ones and the decisions, lessons and preferences of any
+   * project.
    * Internal, not a public parameter. Ignored when `tag` is given.
    */
-  projectScope?: string | null;
+  projectScope?: ProjectScope;
   /**
    * Narrow the relations a result shows, as recall does: a far end in another
    * project is left out (when the search is limited to a project), an archived
@@ -234,7 +246,7 @@ export interface RecallInput {
   cross_project?: boolean;  // search across all project tags (default: false)
   // Transport-set, never model-set: the scope a call that names no tag gets
   // (see SearchOptions.projectScope). Ignored with `tag` or `cross_project`.
-  projectScope?: string | null;
+  projectScope?: ProjectScope;
 }
 
 export interface ForgetInput {

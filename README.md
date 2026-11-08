@@ -9,7 +9,7 @@ MeMesh helps AI coding agents share context, exchange tasks and review results, 
 - **Coordinate work between sessions.** Send tasks, questions, review requests, and results between running Codex and Claude Code sessions through MeMesh messaging and the optional Claude Channel.
 - **Share project context.** Agents on the same computer can reuse project decisions and lessons instead of starting from scratch.
 - **Leave a clear handoff.** Record the goal, next step, and blockers for the next session to check before continuing.
-- **Keep useful memory.** Save preferences, decisions, and lessons so they remain available across sessions and tools.
+- **Keep useful memory.** Save preferences, decisions, and lessons so they remain available across sessions and tools. Decisions, lessons and preferences are found in every project, labelled with the project they came from; each project's commits and session notes stay in that project.
 
 By default, memories live in one file on your computer: `~/.memesh/knowledge-graph.db`. MeMesh needs no separate AI model. Automatic reminders depend on the host integration; a handoff is context, not a guarantee that a task will restart itself.
 

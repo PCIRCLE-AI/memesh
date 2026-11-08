@@ -3,6 +3,11 @@ export declare const LESSON_TYPE_LIST: readonly string[];
 export declare function canonicalEntityType(type: string): string;
 export declare const WORK_LAYER_TYPES: ReadonlySet<string>;
 export declare const DECISION_TYPES: ReadonlySet<string>;
+export declare const PREFERENCE_TYPES: readonly string[];
+export declare const SHARED_EXPERIENCE_TYPES: ReadonlySet<string>;
+export declare const SHARED_EXPERIENCE_TYPE_LIST: readonly string[];
+export declare const SHARED_FEEDBACK_TYPE = "feedback";
+export declare const NOTE_FILE_PROVENANCE = "note-file";
 export declare const WHY_PREFIX = "Why: ";
 export declare const UNCONFIRMED_DECISION_DAYS = 30;
 export declare function utcEpoch(at: string | null | undefined): number;
@@ -24,6 +29,7 @@ export interface TopologyEntity {
     global?: boolean;
     foreign?: boolean;
     noProject?: boolean;
+    sharedFrom?: string;
     why?: string | null;
     unconfirmedDays?: number | null;
 }
@@ -41,6 +47,7 @@ export interface TopologyBudget {
 }
 export declare const DEFAULT_TOPOLOGY_BUDGET: Readonly<Required<TopologyBudget>>;
 export declare const GLOBAL_TOPOLOGY_LIMIT = 3;
+export declare const SHARED_TOPOLOGY_LIMIT = 3;
 export declare const TOPOLOGY_CANDIDATE_CAP = 400;
 export declare const SNIPPET_FETCH_CHARS: number;
 export declare function buildTopologyLines(entities: TopologyEntity[], projectName: string, budget: TopologyBudget): string[];
@@ -49,6 +56,7 @@ export interface TopologyPool {
     foreign: boolean;
     global?: boolean;
     noProject?: boolean;
+    shared?: boolean;
 }
 export declare function assembleTopologyBlock(stateLines: readonly string[], pools: readonly TopologyPool[], projectName: string, budget?: TopologyBudget, { reserve }?: {
     reserve?: number;

@@ -36,7 +36,10 @@ import fs from 'fs';
 import path from 'path';
 import { createHash } from 'crypto';
 import { getDatabase } from '../db.js';
+import type { MemeshDatabase } from '../storage/sqlite.js';
 import { remember } from './operations.js';
+import { DECISION_TYPES, NOTE_FILE_PROVENANCE, WHY_PREFIX } from './work-topology.js';
+import { copyDatabaseBefore } from './db-copy.js';
 import { sanitizeNoteText, splitObservations, NOTE_DEFAULT_TYPE, NOTE_MAX_OBSERVATIONS } from './note-derive.js';
 import { truncateTitle } from './title.js';
 
@@ -51,6 +54,18 @@ export interface NoteIngestOptions {
   /** Adds a `project:<name>` tag to every ingested memory when given. */
   project?: string;
   maxFiles?: number;
+  /**
+   * The directory is this project's OWN memory folder (the Stop hook reads the
+   * one Claude Code keeps next to the session's transcripts): its notes are the
+   * user's own words and are trusted, so the briefing may show them unasked.
+   * Notes from a directory someone pointed at (`--notes <dir>`) stay untrusted.
+   * A note of this folder that an earlier run stored untrusted is made trusted
+   * the next time the folder is read, without a rewrite, after a verified copy of
+   * the database is taken (`backups/`) and with a record of what changed
+   * (`NoteIngestResult.retrusted`, and a `.json` file beside the copy that lists
+   * the ids). Default false.
+   */
+  trusted?: boolean;
   /**
    * Per-file size cap, default NOTE_FILE_MAX_BYTES.
    *
@@ -74,6 +89,12 @@ export interface NoteIngestResult {
   repathed: string[];
   /** Memories that were tagged missing and whose file came back. */
   restored: string[];
+  /** Notes of this project's own folder made trusted in place this run (names). */
+  retrusted: string[];
+  /** The copy of the database taken before they were, when any were. */
+  retrustBackup: string | null;
+  /** Why they were NOT made trusted when they should have been (no copy could be made); nothing was changed. */
+  retrustFailed: string | null;
   /** Memories newly tagged `source:note-file:missing` this run. */
   markedMissing: string[];
   /** Files looked at and not ingested, with the reason, by relative path. */
@@ -172,7 +193,7 @@ function discover(realDir: string): { files: string[]; symlinks: string[] } {
 
 const relPath = (realDir: string, abs: string) => path.relative(realDir, abs).split(path.sep).join('/');
 
-interface ExistingRow { id: number; metadata: string | null; status: string; is_note: number; is_missing: number }
+interface ExistingRow { id: number; metadata: string | null; status: string; type: string | null; is_note: number; is_missing: number }
 
 function parseProvenance(raw: string | null): Record<string, unknown> {
   if (!raw) return {};
@@ -255,6 +276,9 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     created: [],
     replaced: [],
     unchanged: 0,
+    retrusted: [],
+    retrustBackup: null,
+    retrustFailed: null,
     repathed: [],
     restored: [],
     markedMissing: [],
@@ -264,8 +288,12 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
   };
 
   const db = getDatabase();
+  // A decision needs its reason to be stored as trusted (operations.remember); a note
+  // that states none is stored untrusted, as notes always were.
+  const trustFor = (type: string | undefined, observations: readonly string[]): 'trusted' | 'untrusted' =>
+    opts.trusted && !(type !== undefined && DECISION_TYPES.has(type) && !observations.some((o) => o.startsWith(WHY_PREFIX))) ? 'trusted' : 'untrusted';
   const existingStmt = db.prepare(
-    `SELECT e.id, e.metadata, e.status,
+    `SELECT e.id, e.metadata, e.status, e.type,
             EXISTS(SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?) AS is_note,
             EXISTS(SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?) AS is_missing
        FROM entities e WHERE e.name = ?`,
@@ -624,8 +652,11 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
       ...(existing ? { project } : { tags: [NOTE_FILE_TAG, ...(opts.project ? [`project:${opts.project}`] : [])] }),
       replace: true,
       // Same stance as the JSON importer: text from a file is not a trusted
-      // re-assertion and must not lift confidence.
-      trustOverride: 'untrusted',
+      // re-assertion and must not lift confidence. The one exception is this
+      // project's own memory folder (`trusted`): its notes are the user's own
+      // words, trusted, and still never lift confidence by being rewritten.
+      trustOverride: trustFor(owner.type, owner.observations!),
+      reinforceConfidence: false,
       provenanceOverride: {
         source: 'note-file',
         note_path: owner.rel,
@@ -696,7 +727,52 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     result.markedMissing.push(row.name);
   }
 
+  if (opts.trusted) liftFolderTrust(db, dirId, result);
   return result;
+}
+
+/**
+ * The notes of this folder that an earlier run stored untrusted (every note was, before the
+ * project's own folder was trusted) are made trusted, in place: only `metadata.trust` changes.
+ * Before anything is changed a verified copy of the database is taken, and the ids that
+ * change are recorded in a `.json` file beside it, with how to undo it. If no copy can be
+ * made nothing is changed and the run says so (`retrustFailed`); the next run tries again.
+ * A decision note stays untrusted: a decision needs its reason to be trusted.
+ */
+function liftFolderTrust(db: MemeshDatabase, dirId: string, result: NoteIngestResult): void {
+  const decisionTypes = [...DECISION_TYPES];
+  const rows = db.prepare(
+    `SELECT e.id, e.name FROM entities e
+      WHERE json_extract(e.metadata, '$.provenance.source') = ?
+        AND json_extract(e.metadata, '$.provenance.note_dir_id') = ?
+        AND json_extract(e.metadata, '$.trust') = 'untrusted'
+        AND e.type NOT IN (${decisionTypes.map(() => '?').join(',')})
+      ORDER BY e.id`,
+  ).all(NOTE_FILE_PROVENANCE, dirId, ...decisionTypes) as Array<{ id: number; name: string }>;
+  if (rows.length === 0) return;
+  const copy = copyDatabaseBefore(db, 'knowledge-graph-before-note-trust');
+  if (copy.kind === 'failed') {
+    result.retrustFailed = `${rows.length} note(s) of this folder should become trusted, but ${copy.reason}; nothing was changed`;
+    return;
+  }
+  try {
+    fs.writeFileSync(`${copy.path}.json`, JSON.stringify({
+      at: new Date().toISOString(),
+      change: 'note files of the project\'s own memory folder: metadata.trust untrusted -> trusted',
+      count: rows.length,
+      ids: rows.map((r) => r.id),
+      names: rows.map((r) => r.name),
+      backup: copy.path,
+      undo: `Restore the database from the backup file, or set metadata.trust back to 'untrusted' on the ids listed here: UPDATE entities SET metadata = json_set(metadata, '$.trust', 'untrusted') WHERE id IN (<ids>);`,
+    }, null, 2), { mode: 0o600 });
+  } catch (error) {
+    result.retrustFailed = `${rows.length} note(s) of this folder should become trusted, but the record of the change could not be written (${error instanceof Error ? error.message : String(error)}); nothing was changed`;
+    return;
+  }
+  const lift = db.prepare("UPDATE entities SET metadata = json_set(metadata, '$.trust', 'trusted') WHERE id = ?");
+  db.transaction(() => { for (const row of rows) lift.run(row.id); })();
+  result.retrusted = rows.map((r) => r.name);
+  result.retrustBackup = copy.path;
 }
 
 /** One-line human summary, shared by the CLI and the hook's outcome record. */
@@ -707,6 +783,7 @@ export function summarizeNoteIngest(r: NoteIngestResult): string {
     `${r.unchanged} unchanged`,
     ...(r.repathed.length ? [`${r.repathed.length} moved`] : []),
     ...(r.restored.length ? [`${r.restored.length} restored`] : []),
+    ...(r.retrusted.length ? [`${r.retrusted.length} made trusted (copy of the database: ${path.basename(r.retrustBackup ?? '')})`] : []),
     `${r.skipped.length} skipped`,
     ...(r.refusedNow ? [`${r.refusedNow} newly refused`] : []),
   ];

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getProjectName } from '../../core/paths.js';
+import { getProjectIds } from '../../core/paths.js';
 
 /**
  * The project an MCP call belongs to when it names none.
@@ -12,7 +12,9 @@ import { getProjectName } from '../../core/paths.js';
  * starts this server in the plugin directory, so it names no user project.
  */
 export type McpProjectResolution =
-  | { project: string }
+  // `project` is the id a write uses; `ids` are all the ids a read covers
+  // (getProjectIds), `project` first. A binding built without `ids` reads `project` only.
+  | { project: string; ids?: readonly string[] }
   // `unbound`: nothing names a project at all — distinct from a launch root
   // or a client root that was given but cannot be resolved.
   | { error: 'workspace_unavailable' | 'workspace_ambiguous'; reason: string; unbound?: true };
@@ -53,7 +55,7 @@ export function resolveMcpProject(
       reason: 'The client advertises workspace roots but did not return them.',
     };
   }
-  const fromRoots = new Set<string>();
+  const fromRoots = new Map<string, readonly string[]>();
   for (const uri of rootUris) {
     const directory = rootDirectory(uri);
     if (!directory) {
@@ -62,7 +64,8 @@ export function resolveMcpProject(
         reason: `A workspace root from the client is not an existing local directory: ${JSON.stringify(uri)}.`,
       };
     }
-    fromRoots.add(getProjectName(directory));
+    const ids = getProjectIds(directory);
+    fromRoots.set(ids[0], ids);
   }
 
   if (launchRoot !== undefined) {
@@ -73,17 +76,21 @@ export function resolveMcpProject(
         reason: `MEMESH_PROJECT_ROOT is not an existing absolute directory: ${JSON.stringify(launchRoot)}.`,
       };
     }
-    const project = getProjectName(directory);
-    if ([...fromRoots].some(other => other !== project)) {
+    const ids = getProjectIds(directory);
+    const project = ids[0];
+    if ([...fromRoots.keys()].some(other => other !== project)) {
       return {
         error: 'workspace_ambiguous',
         reason: 'MEMESH_PROJECT_ROOT and the client\'s workspace root name different projects.',
       };
     }
-    return { project };
+    return { project, ids };
   }
 
-  if (fromRoots.size === 1) return { project: [...fromRoots][0] };
+  if (fromRoots.size === 1) {
+    const [[project, ids]] = [...fromRoots];
+    return { project, ids };
+  }
   if (fromRoots.size > 1) {
     return {
       error: 'workspace_ambiguous',

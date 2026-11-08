@@ -9,8 +9,9 @@
 import { redactMemoryText, redactShownTogether } from './core-paths.js';
 import { rankEntities } from './scoring.js';
 import { SESSION_HANDOFF_TYPE, sessionHandoffName } from './session-handoff.js';
+import { ownFolderNote } from './project-scope.js';
 import { INDEX_CANDIDATE_CAP, INDEX_EXCLUDED_TYPES, INDEX_SNIPPET_FETCH_CHARS } from './briefing-index.js';
-import { DECISION_LAYER_TYPES, DECISION_TYPES, GLOBAL_TOPOLOGY_LIMIT, LESSON_TYPE_LIST, SNIPPET_FETCH_CHARS, TOPOLOGY_CANDIDATE_CAP, WHY_PREFIX, isAutoInjectable, prioritizeDecisions, unconfirmedDaysSince, } from './work-topology.js';
+import { DECISION_LAYER_TYPES, DECISION_TYPES, GLOBAL_TOPOLOGY_LIMIT, LESSON_TYPE_LIST, PREFERENCE_TYPES, SHARED_FEEDBACK_TYPE, SHARED_TOPOLOGY_LIMIT, SNIPPET_FETCH_CHARS, TOPOLOGY_CANDIDATE_CAP, WHY_PREFIX, isAutoInjectable, prioritizeDecisions, projectLabel, unconfirmedDaysSince, } from './work-topology.js';
 const LESSON_POOL_LIMIT = 50;
 const LESSON_LIMIT = 5;
 const RECENT_LIMIT = 5;
@@ -63,6 +64,7 @@ const toPoolRow = (row) => ({
     recall_misses: row.recall_misses ?? undefined,
     created_at: row.created_at ?? undefined,
     recency: row.recency ?? null,
+    ...(row.source_project ? { project: row.source_project } : {}),
 });
 function selectPool(rows, cap) {
     return rankEntities(rows.map(toPoolRow), new Map())
@@ -90,37 +92,52 @@ function guarded(label, fallback, read, onError) {
 }
 export function selectBriefingPools(db, projectName, options) {
     const cols = entityColumns(db);
-    const projectTag = `project:${projectName}`;
+    const ids = options.projectIds?.length ? [...options.projectIds] : [projectName];
+    const projectTags = ids.map((id) => `project:${id}`);
+    const tagMarks = projectTags.map(() => '?').join(',');
     const columns = candidateColumns(cols);
     const handoffRead = guarded('handoff', undefined, () => db.prepare(`SELECT e.id, e.name, e.metadata, o.content AS text, o.created_at AS observedAt
      FROM entities e JOIN observations o ON o.entity_id = e.id
-     WHERE e.name = ? AND e.type = ?${active(cols)}
+     WHERE e.name IN (${ids.map(() => '?').join(',')}) AND e.type = ?${active(cols)}
      ORDER BY o.id DESC
-     LIMIT 1`).get(sessionHandoffName(projectName), SESSION_HANDOFF_TYPE), options.onError);
+     LIMIT 1`).get(...ids.map(sessionHandoffName), SESSION_HANDOFF_TYPE), options.onError);
     const handoffTrusted = !!handoffRead && trustedForAutoContext(handoffRead.metadata);
     const projectRows = db.prepare(`SELECT DISTINCT ${columns}
      FROM entities e JOIN tags t ON t.entity_id = e.id
-     WHERE t.tag = ?${active(cols)} AND e.type <> ?${nonGlobal(cols)}
+     WHERE t.tag IN (${tagMarks})${active(cols)} AND e.type <> ?${nonGlobal(cols)}
      ORDER BY e.id DESC
-     LIMIT ?`).all(projectTag, SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP);
+     LIMIT ?`).all(...projectTags, SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP);
     const decisions = guarded('decisions', [], () => db.prepare(`SELECT DISTINCT ${columns}, ${RECENCY_SQL} AS recency
      FROM entities e JOIN tags t ON t.entity_id = e.id
-     WHERE t.tag = ?${active(cols)}${nonGlobal(cols)}
+     WHERE t.tag IN (${tagMarks})${active(cols)}${nonGlobal(cols)}
        AND e.type IN (${DECISION_LAYER_TYPES.map(() => '?').join(',')})
      ORDER BY recency IS NULL, recency DESC, e.id DESC
-     LIMIT ?`).all(projectTag, ...DECISION_LAYER_TYPES, TOPOLOGY_CANDIDATE_CAP)
+     LIMIT ?`).all(...projectTags, ...DECISION_LAYER_TYPES, TOPOLOGY_CANDIDATE_CAP)
         .map(toPoolRow).filter((row) => trustedForAutoContext(row.metadata)), options.onError);
     const project = prioritizeDecisions(decisions, selectPool(projectRows, TOPOLOGY_CANDIDATE_CAP), options.projectLimit);
     const lessonRows = guarded('lessons', [], () => db.prepare(`SELECT DISTINCT ${columns}
      FROM entities e JOIN tags t ON t.entity_id = e.id
-     WHERE e.type IN (${LESSON_TYPE_LIST.map(() => '?').join(', ')})${active(cols)}${nonGlobal(cols)} AND t.tag = ?
+     WHERE e.type IN (${LESSON_TYPE_LIST.map(() => '?').join(', ')})${active(cols)}${nonGlobal(cols)} AND t.tag IN (${tagMarks})
      ORDER BY e.id DESC
-     LIMIT ${LESSON_POOL_LIMIT}`).all(...LESSON_TYPE_LIST, projectTag)
+     LIMIT ${LESSON_POOL_LIMIT}`).all(...LESSON_TYPE_LIST, ...projectTags)
         .map(toPoolRow).filter((row) => trustedForAutoContext(row.metadata)), options.onError);
     const noProject = selectPool(db.prepare(`SELECT ${columns} FROM entities e
      WHERE ${NO_PROJECT_TAG} AND e.type <> ?${active(cols)}${nonGlobal(cols)}
      ORDER BY e.id DESC
      LIMIT ?`).all(SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP), NO_PROJECT_LIMIT);
+    const shared = guarded('lessons', [], () => db.prepare(`SELECT DISTINCT ${columns}, ${RECENCY_SQL} AS recency,
+       (SELECT substr(pt.tag, ${'project:'.length + 1}) FROM tags pt
+         WHERE pt.entity_id = e.id AND pt.tag LIKE 'project:%' AND pt.tag NOT IN (${tagMarks})
+         ORDER BY pt.tag LIMIT 1) AS source_project
+     FROM entities e
+     WHERE e.type <> ?${active(cols)}${nonGlobal(cols)}
+       AND (e.type IN (${PREFERENCE_TYPES.map(() => '?').join(',')}) OR e.type = ?)
+       AND ${ownFolderNote('e')}
+       AND EXISTS (SELECT 1 FROM tags pt WHERE pt.entity_id = e.id AND pt.tag LIKE 'project:%')
+       AND NOT EXISTS (SELECT 1 FROM tags pt WHERE pt.entity_id = e.id AND pt.tag IN (${tagMarks}))
+     ORDER BY recency IS NULL, recency DESC, e.id DESC
+     LIMIT ?`).all(...projectTags, SESSION_HANDOFF_TYPE, ...PREFERENCE_TYPES, SHARED_FEEDBACK_TYPE, ...projectTags, TOPOLOGY_CANDIDATE_CAP)
+        .map(toPoolRow).filter((row) => trustedForAutoContext(row.metadata)).slice(0, SHARED_TOPOLOGY_LIMIT), options.onError);
     const global = options.global && cols.namespace
         ? selectPool(db.prepare(`SELECT ${columns} FROM entities e
        WHERE e.namespace = 'global'${active(cols)}
@@ -140,6 +157,7 @@ export function selectBriefingPools(db, projectName, options) {
         lessons: lessonRows.slice(0, LESSON_LIMIT),
         project,
         noProject,
+        shared,
         global,
         recent,
     };
@@ -191,11 +209,13 @@ export function toTopologyEntity(row, snippets, now = Date.now()) {
         snippet: first,
         signalScore: typeof signal === 'number' ? signal : null,
         recency: row.recency ?? null,
+        ...(row.project !== undefined ? { sharedFrom: projectLabel(row.project) } : {}),
         ...(decision ? { why, unconfirmedDays: unconfirmedDaysSince([row.last_accessed_at, snippet?.lastAddedAt, row.recency, row.created_at], now) } : {}),
     };
 }
-export function readIndexCandidates(db, projectName) {
+export function readIndexCandidates(db, projectName, projectIds) {
     const cols = entityColumns(db);
+    const projectTags = (projectIds?.length ? [...projectIds] : [projectName]).map((id) => `project:${id}`);
     const excluded = INDEX_EXCLUDED_TYPES.map(() => '?').join(',');
     const decisionTypes = [...DECISION_TYPES];
     const decisionOnly = `e.type IN (${decisionTypes.map(() => '?').join(',')})`;
@@ -211,10 +231,10 @@ export function readIndexCandidates(db, projectName) {
            ORDER BY o3.id DESC LIMIT 1) END AS why_content,
        CASE WHEN ${decisionOnly} THEN ${RECENCY_SQL} END AS recency
      FROM entities e
-     WHERE e.id IN (SELECT entity_id FROM tags WHERE tag = ?)${active(cols)}${nonGlobal(cols)}
+     WHERE e.id IN (SELECT entity_id FROM tags WHERE tag IN (${projectTags.map(() => '?').join(',')}))${active(cols)}${nonGlobal(cols)}
        AND e.type NOT IN (${excluded})
      ORDER BY last_activity DESC, e.id DESC
-     LIMIT ?`).all(...decisionTypes, ...decisionTypes, `project:${projectName}`, ...INDEX_EXCLUDED_TYPES, INDEX_CANDIDATE_CAP);
+     LIMIT ?`).all(...decisionTypes, ...decisionTypes, ...projectTags, ...INDEX_EXCLUDED_TYPES, INDEX_CANDIDATE_CAP);
     const candidates = rows.map((row) => ({
         id: row.id,
         name: row.name,

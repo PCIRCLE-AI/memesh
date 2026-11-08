@@ -1,12 +1,13 @@
 import type { MemeshDatabase } from './storage/sqlite.js';
 export type { Entity, Relation, CreateEntityInput, SearchOptions } from './core/types.js';
 import type { Entity, Relation, CreateEntityInput, SearchOptions } from './core/types.js';
+import type { ProjectScope } from './core/project-scope.js';
 export interface SearchResult {
     entities: Entity[];
     fallback: 'index_out_of_date' | null;
 }
 export interface RelationView {
-    scope?: string | null;
+    scope?: ProjectScope;
     namespace?: string;
     includeArchived?: boolean;
 }
@@ -33,7 +34,7 @@ export declare class KnowledgeGraph {
         includeArchived?: boolean;
         namespace?: string;
         tag?: string;
-        projectScope?: string | null;
+        projectScope?: ProjectScope;
         relations?: RelationView;
     }): Entity[];
     getRelations(entityName: string): Relation[];

@@ -119,8 +119,20 @@ const rememberShape = {
   namespace: z.enum(NAMESPACES).optional(),
 };
 
+/**
+ * Tags in the `source:` namespace say where MeMesh got a memory (a note file, its own
+ * capture, an explicit lesson). A caller cannot claim one: MCP, HTTP and the CLI all
+ * refuse it here, naming the reason, so no agent can dress its memory as something
+ * MeMesh imported.
+ */
+const RESERVED_TAG_PREFIX = 'source:';
+
 function refineRemember(data: z.infer<z.ZodObject<typeof rememberShape>>, ctx: z.RefinementCtx): void {
   for (const [index, tag] of (data.tags ?? []).entries()) {
+    if (tag.trim().toLowerCase().startsWith(RESERVED_TAG_PREFIX)) {
+      ctx.addIssue({ code: 'custom', path: ['tags', index], message: `the tag ${JSON.stringify(tag)} is not allowed: tags that start with \`source:\` are reserved for MeMesh, which uses them to record where it got a memory (a note file, its own capture). Choose another prefix, for example \`origin:\`.` });
+      continue;
+    }
     if (!tag.startsWith('project:')) continue;
     const project = tag.slice('project:'.length);
     // Empty tags retain the existing binding/core refusal. A non-empty tag
