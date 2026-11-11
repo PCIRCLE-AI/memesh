@@ -7,6 +7,7 @@ import { pathToFileURL } from 'url';
 
 import {
   detectRememberIntent,
+  stripNonUserBlocks,
   buildHint,
   INTENT_PATTERNS,
 } from '../../scripts/hooks/user-prompt-intent.js';
@@ -30,6 +31,7 @@ describe('Feature: User Prompt Intent Hook', () => {
         'Please remember this for later sessions',
         'memorize this preference',
         'Please memorize that detail',
+        'remember this: always run the tests before pushing',
       ])('detects: %s', (prompt) => {
         expect(detectRememberIntent(prompt)).toBe(true);
       });
@@ -86,24 +88,190 @@ describe('Feature: User Prompt Intent Hook', () => {
       });
     });
 
-    describe('CJK', () => {
+    describe('CJK — requests match, statements and questions do not', () => {
       it.each([
-        '把這個記下來',
+        // the brief's requests
         '記下來',
+        '請記下來',
+        '幫我記下來：部署前要先備份',
+        '把這個記下來',
+        '請把這點記下來',
+        '記到 memesh',
+        '存到記憶',
+        '寫進 memesh',
         '請記到 memesh',
         '存到 memesh',
         '寫進記憶',
         '存進記憶',
-      ])('detects: %s', (prompt) => {
+        // other forms of the same request
+        '收到，記下來',
+        '幫我把這個存到 memesh',
+        '你幫我記下來',
+        '你記下來',
+        '您記下來',
+        '你把這個記下來',
+        '我們把這個記下來',
+        '那就記下來',
+        '所以記下來',
+        '拜託記下來',
+        '拜託幫我記下來',
+        '請幫忙記下來',
+        '請將這條記下來',
+        '將這個存到記憶',
+        '這個記下來',
+        '這點要記下來',
+        '這個要記下來',
+        '這個存到 memesh',
+        '這段存進 memesh',
+        '先記下來',
+        '記得存到 memesh',
+        'OK 記下來',
+        '好 記下來',
+        '嗯 記下來',
+        '好，記下來',
+        '記下來吧',
+        '記下來！',
+        '記下來喔',
+        '記下來 謝謝',
+        '這個很重要，記下來',
+        '把剛剛討論的這個重要的架構決策和背後所有的理由都記下來',
+        '把 A 跟 B 的差異記下來',
+        '請把「不要 squash merge」記下來',
+        '對，存到 memesh',
+        '存到 memesh 吧',
+        '存到記憶裡',
+        // polite questions that are requests
+        '可以幫我記下來嗎？',
+        '能不能幫我記下來',
+        '記下來好嗎？',
+        '記下來，好嗎',
+        // verbs the older pattern never covered
+        '幫我記住這個',
+        '請記住這個',
+        '把這個存起來',
+        '把以上存起來',
+        '請記下',
+        '記得這件事',
+        '請記得這個',
+        '請記住：部署前要備份',
+        '幫我記得部署前要備份',
+      ])('detects request: %s', (prompt) => {
         expect(detectRememberIntent(prompt)).toBe(true);
       });
 
       it.each([
-        '我記到他昨天說過這件事',           // narrative recall, not imperative
-        '我記到 console',                    // log-to-console, different verb
-        '他突然記憶起來那段往事',           // narrative (former 記憶起來 false positive)
-      ])('does NOT match CJK narrative: %s', (prompt) => {
+        // the brief's statements and questions
+        '我記下來了',
+        '記下來了',
+        '已經記下來了',
+        '這條已經記下來了',
+        '我先記下來',
+        '我會記下來',
+        '收到，我記下來',
+        '你記下來了嗎？',
+        '要不要記下來？',
+        '有記下來嗎',
+        '我沒有記下來',
+        '這條已經記下來了，現在沒有動 repo',
+        '收到，我先記下來，等審查結果',
+        // done, or asking whether it is done
+        '記下來沒？',
+        '記下來了沒',
+        '你記下來沒',
+        '有沒有記下來',
+        '我剛記下來',
+        '我剛剛記下來了',
+        '我把這個記下來',
+        // storage forms
+        '我已經存到記憶了',
+        '已存到 memesh',
+        '存到 memesh 了',
+        '存到記憶了',
+        '存到記憶體',
+        '把資料存到記憶體裡',
+        // the newer verbs, in statement or question form
+        '我記住了',
+        '你記住了嗎',
+        '把錢存起來',
+        '我把這個存起來了',
+        '我記得部署前要備份',
+        '你還記得嗎',
+        '記得嗎？',
+        '記得這個嗎',
+        // narrative or other uses of the same words
+        '我記到他昨天說過這件事',
+        '我記到 console',
+        '他突然記憶起來那段往事',
+        '記下午三點的會議',
+        // work instructions, not save requests (real prompts from the QA corpus)
+        '記得要要求架構及程式碼 simplification, 不要複雜難懂的架構，要容易維護及清楚簡單的架構',
+        '記得切勿 over engineer',
+        '記得部署前要備份',
+        '一定要記得部署前先備份',
+        '記得',
+      ])('does NOT match statement, question or done-form: %s', (prompt) => {
         expect(detectRememberIntent(prompt)).toBe(false);
+      });
+    });
+
+    describe('Text the user did not type is ignored', () => {
+      // A block is a line-start opening tag plus a same-name closing tag that
+      // ends a line. The text inside would otherwise match, so only the
+      // stripping keeps these false.
+      it.each([
+        ['cross-session statement', '<cross-session-message from="a">我已經記下來了</cross-session-message>'],
+        ['cross-session request', '<cross-session-message from="a">\nremember this\n</cross-session-message>'],
+        ['cross-session one line', '<cross-session-message from="a">remember this</cross-session-message>'],
+        ['system-reminder', '<system-reminder>\nremember this\n</system-reminder>'],
+        ['task-notification', '<task-notification>\n請記下來\n</task-notification>'],
+        ['pasted_content', '<pasted_content id="1" size="9">\nsave this to memesh\n</pasted_content>'],
+        ['attributes on the tag', '<task-notification status="done" id=\'x\'>\n記下來\n</task-notification>'],
+        ['attribute holding >', '<task-notification note="a>b">\n記下來\n</task-notification>'],
+        ['upper-case tag', '<System-Reminder>\nremember this\n</System-Reminder>'],
+        ['indented block', '   <system-reminder>\nremember this\n   </system-reminder>  '],
+        ['CRLF lines', '<system-reminder>\r\nremember this\r\n</system-reminder>\r\n'],
+        ['nested same tag', '<system-reminder>\na\n<system-reminder>\nb\n</system-reminder>\nremember this\n</system-reminder>'],
+        ['block after a block that held an unclosed inner tag', '<system-reminder>\n<task-notification>\nb\n</system-reminder>\n<system-reminder>\nremember this\n</system-reminder>'],
+        ['two blocks', '<system-reminder>\nx\n</system-reminder>\nok\n<cross-session-message>\n記下來\n</cross-session-message>'],
+        ['self-closing tag before a real block', '<system-reminder/>\n<system-reminder>\nremember this\n</system-reminder>'],
+        ['closing tag on the same line (forgery)', '<cross-session-message from="a">x</cross-session-message>remember this</cross-session-message>'],
+      ])('no intent inside %s', (_name, prompt) => {
+        expect(detectRememberIntent(prompt)).toBe(false);
+      });
+
+      it.each([
+        ['request after a block', '<system-reminder>\nnoise\n</system-reminder>\nremember this'],
+        ['request after a block that holds an unclosed inner tag', '<system-reminder>\n<task-notification>\nb\n</system-reminder>\n記下來'],
+        ['opening tag in the middle of a line is not a block', '為什麼 <system-reminder>\nremember this\n</system-reminder>'],
+        ['closing tag of another name does not close', '<system-reminder>\nremember this\n</task-notification>\nstill'],
+        ['closing tag after a code fence opening is not a block', '```\n<system-reminder>\n```\nremember this\n</system-reminder>'],
+        ['a stray backtick keeps the closing tag inline', '<system-reminder>\nremember this `x </system-reminder>\nafter'],
+        ['unclosed outer tag around a closed same-name block', '<system-reminder>\n<system-reminder>\nremember this\n</system-reminder>\nafter'],
+        ['self-closing tag whose attribute holds >', '<system-reminder note="a>b" />\nremember this\n</system-reminder>'],
+        ['request before a block', 'remember this\n<cross-session-message>\nx\n</cross-session-message>'],
+        ['Chinese request after a block', '<pasted_content>\nlog\n</pasted_content>\n把這個記下來'],
+        ['unknown tag is ordinary text', '<note>\nremember this\n</note>'],
+        ['self-closing tag is not a block', '<system-reminder />\nremember this'],
+        ['opening tag never closed', '<system-reminder>\nremember this\nstill inside'],
+        ['user names a tag, then asks', '為什麼 <task-notification> 會出現在 prompt 裡？請記下來'],
+        ['user names a tag in English', 'Why does a <system-reminder> tag show up? remember this'],
+        ['tag in inline code', 'the `<pasted_content>` tag is weird.\nremember this'],
+        ['tag in a code fence', '```\n<system-reminder>\n```\nremember this'],
+        ['misspelled closing tag', '<task-notification>\nx\n</task-notificatio>\nremember this'],
+        ['closing tag inside a line', '<system-reminder>\nx </system-reminder> y\nremember this'],
+        ['text before a mid-line tag, request on the next line', 'note<system-reminder>x</system-reminder>.\nremember this'],
+      ])('still detects the user own request: %s', (_name, prompt) => {
+        expect(detectRememberIntent(prompt)).toBe(true);
+      });
+
+      it('does not turn a mid-line block into a sentence start', () => {
+        expect(detectRememberIntent('note<system-reminder>x</system-reminder>remember this')).toBe(false);
+      });
+
+      it('removes whole lines only and leaves the rest byte for byte', () => {
+        expect(stripNonUserBlocks('a\n<system-reminder>\nx\n</system-reminder>\nb')).toBe('a\nb');
+        expect(stripNonUserBlocks('a\n  <system-reminder>x</system-reminder>  \nb')).toBe('a\nb');
+        expect(stripNonUserBlocks('plain <b> text')).toBe('plain <b> text');
       });
     });
 
@@ -225,6 +393,45 @@ describe('Feature: User Prompt Intent Hook', () => {
       });
     });
 
+    describe('Linear time on tag-shaped input', () => {
+      // Relative thresholds: compare against the same machine's own time on a
+      // plain string and against a smaller input, so a loaded CI runner does
+      // not turn this red but a quadratic scan still does.
+      const time = (fn: () => unknown) => {
+        const runs: number[] = [];
+        for (let i = 0; i < 3; i += 1) {
+          const start = performance.now();
+          fn();
+          runs.push(performance.now() - start);
+        }
+        return Math.min(...runs);
+      };
+
+      it('1 MB of plain text and 1 MB of tag-dense text strip in about the same time', () => {
+        const plain = 'abc def\n'.repeat(131072);
+        const openers = '<system-reminder '.repeat(61681);
+        const blocks = '<system-reminder>\nx\n</system-reminder>\n'.repeat(26214);
+        const stacked = '<system-reminder>\n'.repeat(58254);
+        const lts = '<'.repeat(1048576);
+        const base = time(() => stripNonUserBlocks(plain));
+        for (const input of [openers, blocks, stacked, lts]) {
+          expect(input.length).toBeGreaterThanOrEqual(1000000);
+          expect(time(() => stripNonUserBlocks(input))).toBeLessThan(100 + base * 30);
+        }
+      });
+
+      it('time grows linearly with the number of unclosed tags', () => {
+        const run = (n: number) => time(() => stripNonUserBlocks('<system-reminder '.repeat(n)));
+        expect(run(80000)).toBeLessThan(run(20000) * 8 + 100);
+      });
+
+      it('detectRememberIntent stays fast on 1 MB of repeated Chinese verbs', () => {
+        const base = time(() => detectRememberIntent('abc def\n'.repeat(131072)));
+        expect(time(() => detectRememberIntent('我記下來了'.repeat(200000)))).toBeLessThan(100 + base * 10);
+        expect(time(() => detectRememberIntent('記下來'.repeat(300000)))).toBeLessThan(100 + base * 10);
+      });
+    });
+
     describe('INTENT_PATTERNS export', () => {
       it('is an array of RegExp', () => {
         expect(Array.isArray(INTENT_PATTERNS)).toBe(true);
@@ -342,6 +549,26 @@ describe('Feature: User Prompt Intent Hook', () => {
 
       it('emits hint on legacy user_prompt field', () => {
         expectHint(runHook({ user_prompt: 'remember this fact' }));
+      });
+
+      it('emits no hint for a statement or a cross-session message, only for a request', () => {
+        expectNoOp(runHook({ prompt: '這條已經記下來了，現在沒有動 repo' }));
+        expectNoOp(runHook({
+          prompt: '<cross-session-message from="a">我已經記下來了</cross-session-message>',
+        }));
+        expectHint(runHook({ prompt: '幫我記下來：部署前要先備份' }));
+      });
+
+      it('answers 30,000 unclosed tags well inside the hook timeout, and still sees the request after them', () => {
+        const flood = '<system-reminder '.repeat(30000);
+        const start = Date.now();
+        const result = runHook({ prompt: `${flood}\n請記下來` });
+        const elapsed = Date.now() - start;
+        expectHint(result);
+        expect(elapsed).toBeLessThan(2000);
+        const plainStart = Date.now();
+        expectNoOp(runHook({ prompt: 'x '.repeat(255000) }));
+        expect(elapsed).toBeLessThan(500 + (Date.now() - plainStart) * 5);
       });
 
       it('does not emit hint on conversational prompt', () => {
