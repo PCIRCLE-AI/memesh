@@ -409,6 +409,25 @@ CREATE TABLE IF NOT EXISTS hook_runs (
 -- only when the key is genuinely absent — once per database lifetime.
 ${AGENT_NETWORK_SCHEMA_SQL}`;
 
+/**
+ * The tables every memory read joins. SCHEMA_SQL creates them one statement at
+ * a time, so a reader that opens the file while another process is creating
+ * the schema can see `entities` without `tags`.
+ */
+export const MEMORY_READ_TABLES: readonly string[] = ['entities', 'observations', 'tags'];
+
+/**
+ * Whether every named table exists (a virtual table counts). A reader asks
+ * this before reading memories: a missing table is "no memories yet", not a
+ * failure to report. A file that is not a database still throws.
+ */
+export function hasTables(db: MemeshDatabase, names: readonly string[]): boolean {
+  const row = db
+    .prepare(`SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name IN (${names.map(() => '?').join(', ')})`)
+    .get(...names) as { n: number };
+  return row.n === names.length;
+}
+
 // FTS5 virtual table — separate so opens that don't need it stay lean.
 export const FTS_SQL = `
 CREATE VIRTUAL TABLE IF NOT EXISTS entities_fts USING fts5(
@@ -421,6 +440,27 @@ CREATE VIRTUAL TABLE IF NOT EXISTS entities_fts USING fts5(
 -- which are the ones BM25 already scores near zero. See dropUbiquitousTerms().
 CREATE VIRTUAL TABLE IF NOT EXISTS fts_vocab USING fts5vocab(entities_fts, 'row');
 `;
+
+/**
+ * Create the schema. A database that does not hold every memory table yet
+ * (new, or left half-built by an older version) gets it in ONE transaction, so
+ * no other process opening the file in the meantime sees `entities` without
+ * `tags`. One that is complete only runs the IF-NOT-EXISTS statements for what
+ * a newer version added: no transaction, so an open that only reads never
+ * takes the write lock.
+ */
+export function createSchema(db: MemeshDatabase): void {
+  if (hasTables(db, MEMORY_READ_TABLES)) {
+    db.exec(SCHEMA_SQL);
+    return;
+  }
+  try {
+    db.exec(`BEGIN IMMEDIATE;\n${SCHEMA_SQL}\nCOMMIT;`);
+  } catch (err) {
+    try { db.exec('ROLLBACK'); } catch { /* no transaction open */ }
+    throw err;
+  }
+}
 
 /**
  * Run an ALTER TABLE that tolerates exactly one race. Conditional ALTER

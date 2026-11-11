@@ -474,7 +474,7 @@ export {
   FTS_SEGMENTATION_VERSION,
 } from './_generated/schema.js';
 import {
-  SCHEMA_SQL,
+  createSchema,
   FTS_SQL,
   migrateEntitiesSchema,
   ensureTagsUniqueIndex,
@@ -1067,7 +1067,7 @@ export function openHookDb(env = process.env, opts = {}) {
  * @param {{fts?: boolean}} opts
  */
 function migrateHookDbToCurrent(db, opts) {
-  db.exec(SCHEMA_SQL);
+  createSchema(db);
   ensureTagsUniqueIndex(db);
   ensureHookRunsSince(db);
   if (opts.fts) db.exec(FTS_SQL);

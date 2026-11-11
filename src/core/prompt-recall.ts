@@ -30,6 +30,7 @@
 // has no document frequency and drops out.
 
 import type { MemeshDatabase } from '../storage/sqlite.js';
+import { hasTables, MEMORY_READ_TABLES } from '../storage/schema.js';
 import { renderPhraseExpression, tokenizeQuery, UNSPACED_SCRIPT_CLASS } from '../storage/fts-index.js';
 import { buildReferenceContext, isAutoInjectable } from './work-topology.js';
 import {
@@ -274,6 +275,8 @@ export function scorePrompt(
 ): { scored: ScoredMemory[]; terms: string[] } {
   const all = promptTerms(prompt);
   if (all.length === 0) return { scored: [], terms: [] };
+  // No memories yet (or the schema is still being created): nothing can match.
+  if (!hasTables(db, [...MEMORY_READ_TABLES, 'entities_fts'])) return { scored: [], terms: all.map((t) => t.text) };
 
   const entityCols = tableColumns(db, 'entities');
   const total = (db.prepare(`SELECT count(*) AS c FROM entities${entityCols.has('status') ? " WHERE status = 'active'" : ''}`).get() as { c: number }).c;

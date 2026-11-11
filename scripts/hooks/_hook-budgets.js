@@ -22,6 +22,8 @@ export const HOOK_BUDGET_MS = Object.freeze({
   preCompact: Object.freeze({ decide: 4000, read: 8000 }),
   /** decision-nudge.js and codex-plan-activity.js (PostToolUse): the host's limit is 5 s. */
   postToolUse: Object.freeze({ decide: 2500 }),
+  /** prompt-recall.js (UserPromptSubmit): the host's limit is 5 s. */
+  promptRecall: Object.freeze({ decide: 2500 }),
   /** user-prompt-intent.js (UserPromptSubmit): the host's limit is 3 s. It does not decide; `renew` is when a private session's marker must be renewed. */
   userPrompt: Object.freeze({ renew: 1500 }),
 });

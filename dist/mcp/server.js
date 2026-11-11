@@ -33437,6 +33437,11 @@ CREATE TABLE IF NOT EXISTS hook_runs (
 -- killed recall along with capture). The helper SELECTs first and writes
 -- only when the key is genuinely absent \u2014 once per database lifetime.
 ${AGENT_NETWORK_SCHEMA_SQL}`;
+var MEMORY_READ_TABLES = ["entities", "observations", "tags"];
+function hasTables(db2, names) {
+  const row = db2.prepare(`SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name IN (${names.map(() => "?").join(", ")})`).get(...names);
+  return row.n === names.length;
+}
 var FTS_SQL = `
 CREATE VIRTUAL TABLE IF NOT EXISTS entities_fts USING fts5(
   name, observations, content='',
@@ -33448,6 +33453,23 @@ CREATE VIRTUAL TABLE IF NOT EXISTS entities_fts USING fts5(
 -- which are the ones BM25 already scores near zero. See dropUbiquitousTerms().
 CREATE VIRTUAL TABLE IF NOT EXISTS fts_vocab USING fts5vocab(entities_fts, 'row');
 `;
+function createSchema(db2) {
+  if (hasTables(db2, MEMORY_READ_TABLES)) {
+    db2.exec(SCHEMA_SQL);
+    return;
+  }
+  try {
+    db2.exec(`BEGIN IMMEDIATE;
+${SCHEMA_SQL}
+COMMIT;`);
+  } catch (err) {
+    try {
+      db2.exec("ROLLBACK");
+    } catch {
+    }
+    throw err;
+  }
+}
 function safeAlter(db2, sql) {
   try {
     db2.exec(sql);
@@ -35800,7 +35822,7 @@ function initialiseDatabase(db2) {
   return db2;
 }
 function migrateToCurrentSchema(db2) {
-  db2.exec(SCHEMA_SQL);
+  createSchema(db2);
   db2.exec(FTS_SQL);
   ensureTagsUniqueIndex(db2);
   ensureHookRunsSince(db2);

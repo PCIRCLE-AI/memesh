@@ -391,6 +391,13 @@ CREATE TABLE IF NOT EXISTS hook_runs (
 -- killed recall along with capture). The helper SELECTs first and writes
 -- only when the key is genuinely absent — once per database lifetime.
 ${AGENT_NETWORK_SCHEMA_SQL}`;
+export const MEMORY_READ_TABLES = ['entities', 'observations', 'tags'];
+export function hasTables(db, names) {
+    const row = db
+        .prepare(`SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name IN (${names.map(() => '?').join(', ')})`)
+        .get(...names);
+    return row.n === names.length;
+}
 export const FTS_SQL = `
 CREATE VIRTUAL TABLE IF NOT EXISTS entities_fts USING fts5(
   name, observations, content='',
@@ -402,6 +409,22 @@ CREATE VIRTUAL TABLE IF NOT EXISTS entities_fts USING fts5(
 -- which are the ones BM25 already scores near zero. See dropUbiquitousTerms().
 CREATE VIRTUAL TABLE IF NOT EXISTS fts_vocab USING fts5vocab(entities_fts, 'row');
 `;
+export function createSchema(db) {
+    if (hasTables(db, MEMORY_READ_TABLES)) {
+        db.exec(SCHEMA_SQL);
+        return;
+    }
+    try {
+        db.exec(`BEGIN IMMEDIATE;\n${SCHEMA_SQL}\nCOMMIT;`);
+    }
+    catch (err) {
+        try {
+            db.exec('ROLLBACK');
+        }
+        catch { }
+        throw err;
+    }
+}
 export function safeAlter(db, sql) {
     try {
         db.exec(sql);

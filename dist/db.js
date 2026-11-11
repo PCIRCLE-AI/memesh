@@ -8,7 +8,7 @@ import { belongsToAnotherUser, databaseFiles, guardDatabaseFiles, holdsBytes, im
 import { insertFtsRow, joinIndexedObservations, removeFromFts } from './storage/fts-index.js';
 import { canonicalizeLessonTypes, dedupeObservations, dropArchivedIndexRows, removeJunkFileTags, repairFusedLessonShellHistory, repairOwnNoteFolderTrust, retractZeroEditClaims, splitFusedLessons } from './storage/graph-repairs.js';
 import { ownMemoryDirIds } from './core/note-dirs.js';
-import { SCHEMA_SQL, FTS_SQL, safeAlter, migrateEntitiesSchema, ensureTagsUniqueIndex, ensureHookRunsSince, ensureFtsSegmentation, ftsIndexIsCurrent, rebuildFtsIndex, runOnceMigration, isTransientDbError, retryWhileLocked, FTS_SEGMENTATION_VERSION, } from './storage/schema.js';
+import { createSchema, FTS_SQL, safeAlter, migrateEntitiesSchema, ensureTagsUniqueIndex, ensureHookRunsSince, ensureFtsSegmentation, ftsIndexIsCurrent, rebuildFtsIndex, runOnceMigration, isTransientDbError, retryWhileLocked, FTS_SEGMENTATION_VERSION, } from './storage/schema.js';
 export { runOnceMigration, FTS_SEGMENTATION_VERSION };
 import { truncateTitle, isBoilerplateObservation } from './core/title.js';
 let db = null;
@@ -149,7 +149,7 @@ function initialiseDatabase(db) {
     return db;
 }
 function migrateToCurrentSchema(db) {
-    db.exec(SCHEMA_SQL);
+    createSchema(db);
     db.exec(FTS_SQL);
     ensureTagsUniqueIndex(db);
     ensureHookRunsSince(db);

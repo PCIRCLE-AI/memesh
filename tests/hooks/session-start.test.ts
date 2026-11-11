@@ -620,10 +620,14 @@ describe('Feature: Session Start Hook', () => {
     expect(session?.entityNames, 'global memory must reach a project it was never tagged with').toContain('always-memesh-on-failure');
   });
 
+  /** The stored instant the same-time ordering tests give every row (UTC, in the past). */
+  const TIED_AT = '2026-01-01 00:00:00';
+
   it('the injected block closes with the recent index — every memory by title and handle, bookkeeping left out — and its ids are recorded as shown', () => {
     const db = createTestDb();
-    const ins = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)');
-    const obs = db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)');
+    // One fixed instant for every row: the tie is real, not a second boundary the wall clock may cross.
+    const ins = db.prepare(`INSERT INTO entities (name, type, created_at) VALUES (?, ?, '${TIED_AT}')`);
+    const obs = db.prepare(`INSERT INTO observations (entity_id, content, created_at) VALUES (?, ?, '${TIED_AT}')`);
     const tag = db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)');
     const older = ins.run('idx-decision-older', 'decision').lastInsertRowid as number;
     obs.run(older, 'Keep the index capped at forty lines');
@@ -717,8 +721,8 @@ describe('Feature: Session Start Hook', () => {
   function seedIndexRows(project: string, count: number): void {
     const db = createTestDb();
     db.exec('BEGIN');
-    const ins = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)');
-    const obs = db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)');
+    const ins = db.prepare(`INSERT INTO entities (name, type, created_at) VALUES (?, ?, '${TIED_AT}')`);
+    const obs = db.prepare(`INSERT INTO observations (entity_id, content, created_at) VALUES (?, ?, '${TIED_AT}')`);
     const tag = db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)');
     for (let i = 0; i < count; i++) {
       const id = ins.run(`cap-${i}`, 'decision').lastInsertRowid as number;
@@ -1911,7 +1915,22 @@ syncBuiltinESMExports();
         const record = outcomes.find((r) => typeof r.reason === 'string' && r.reason.includes('nothing to inject'));
         expect(record, 'a "nothing to inject" outcome record must exist for the no-entities-table state').toBeTruthy();
         expect(record.reason).toContain('"minimal"');
-        expect(record.reason).toContain('no entities table yet');
+        expect(record.reason).toContain('no memory tables yet');
+      });
+
+      // The schema is created table by table (no transaction around it), and
+      // a session that opens the file in that window sees `entities` without
+      // `tags`. That is "no memories yet", not a read failure.
+      it('a schema that is only partly created is "no memories yet": no error line, no error record', () => {
+        const partial = new Database(dbPath);
+        partial.exec('CREATE TABLE entities (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, type TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, metadata JSON)');
+        partial.close();
+        const output = runHook({ cwd: EMPTY_CWD }, { MEMESH_BRIEFING: 'minimal' });
+        expect(String(output.systemMessage)).not.toContain('memories not loaded');
+        const outcomes = fs.readFileSync(path.join(path.dirname(dbPath), 'hook-outcomes.jsonl'), 'utf8')
+          .trim().split('\n').map((l) => JSON.parse(l));
+        expect(outcomes.filter((r) => r.outcome === 'error'), 'a half-built schema was recorded as an error').toEqual([]);
+        expect(outcomes.some((r) => typeof r.reason === 'string' && r.reason.includes('no memory tables yet'))).toBe(true);
       });
 
       // Recording a reason adds only a `recorded` argument to output() calls

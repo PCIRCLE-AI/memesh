@@ -48,6 +48,7 @@ import {
 } from './_shared.js';
 import { SESSION_ID_RE, pruneSessionState, recallListName } from './_stop-notes.js';
 import { selectPromptRecall } from './_generated/prompt-recall.js';
+import { HOOK_BUDGET_MS } from './_hook-budgets.js';
 
 /** The hook's own wait for a database lock; the prompt must not stall behind a writer. */
 const LOCK_WAIT_MS = 1000;
@@ -69,8 +70,11 @@ async function defaultReadPrivacy(data) {
     throw Object.assign(new Error('no transcript path'), { code: 'ENOTRANSCRIPT' });
   }
   // Loaded when asked, so a tree without the shared reader fails closed instead of crashing.
-  const { isPrivateSession } = await import('./_private-session.js');
-  return isPrivateSession(data, 'prompt-recall');
+  const { privacyForHook } = await import('./_private-session.js');
+  const answer = privacyForHook(data, 'prompt-recall', { budgetMs: HOOK_BUDGET_MS.promptRecall.decide });
+  // `unchecked` (already recorded as an error by privacyForHook) is "could not read": show nothing.
+  if (answer.state === 'unchecked') throw Object.assign(new Error(answer.reason), { code: answer.reason });
+  return answer.state === 'yes';
 }
 
 /** 'private', 'open', or 'unreadable' (show nothing, and say so). */

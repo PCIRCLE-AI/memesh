@@ -7,6 +7,7 @@ import path from 'path';
 import { createRequire } from 'module';
 import { openDatabase, closeDatabase, getDatabase } from '../../src/db.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
+import { MemeshDatabase } from '../../src/storage/sqlite.js';
 import { SKIP_REASONS } from '../../src/core/capture-liveness.js';
 import { sessionPrivacy } from '../../scripts/hooks/prompt-recall.js';
 
@@ -120,6 +121,40 @@ describe('Feature: prompt-time recall hook', () => {
     const lines = text.split('\n').filter((l) => /^- .* \[mem:\d+\]$/.test(l));
     expect(lines).toEqual([`- Use node:sqlite instead of better-sqlite3 for storage [mem:${decisionId}]`]);
     expect(lastOutcome()).toMatchObject({ outcome: 'notified', entity: 'injected:1:no-recent-index' });
+  });
+
+  // The real process with the real privacy reader: nothing is injected into it. (Every other test hands
+  // the hook a reader, which is how an import of a name the reader does not export went unnoticed.)
+  describe('as Claude Code runs it, with no reader injected', () => {
+    const transcript = (privateCall: boolean) => {
+      const file = path.join(home, 'transcript.jsonl');
+      const lines = [{ type: 'user', message: { role: 'user', content: 'hello' } }];
+      if (privateCall) lines.push({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'mcp__plugin_memesh_memesh__private_session', input: {} }] } } as never);
+      fs.writeFileSync(file, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+      return file;
+    };
+
+    it('an ordinary session is shown the memory its words are about, and the success is recorded', () => {
+      const { decisionId } = seed();
+      const { stdout } = runHook(MATCHING, { transcript_path: transcript(false) });
+      expect(JSON.parse(stdout).hookSpecificOutput.additionalContext).toContain(`[mem:${decisionId}]`);
+      expect(lastOutcome()).toMatchObject({ outcome: 'notified', entity: expect.stringContaining('injected:1') });
+    });
+
+    it('a private session is shown nothing, and the skip is recorded', () => {
+      seed();
+      const { stdout } = runHook(MATCHING, { transcript_path: transcript(true) });
+      expect(stdout).toBe('');
+      expect(lastOutcome()).toMatchObject({ outcome: 'skipped', reason: SKIP_REASONS.promptPrivateSession });
+    });
+
+    it('a transcript that cannot be read is shown nothing, and both the error and the skip are recorded', () => {
+      seed();
+      const { stdout } = runHook(MATCHING, { transcript_path: home /* a directory: reading it fails */ });
+      expect(stdout).toBe('');
+      expect(outcomes().map((o) => o.outcome)).toEqual(expect.arrayContaining(['skipped']));
+      expect(lastOutcome()).toMatchObject({ outcome: 'skipped', reason: SKIP_REASONS.promptPrivacyUnreadable });
+    });
   });
 
   it('by default the hook brings a style note on its words, leaves out a project status gone stale, and still brings a decision', () => {
@@ -329,6 +364,20 @@ describe('Feature: prompt-time recall hook', () => {
       const { stdout } = run(MATCHING);
       expect(stdout).toBe('');
       expect(lastOutcome()).toMatchObject({ outcome: 'error' });
+    });
+
+    it.each([
+      ['no tables at all', ''],
+      ['a schema that is only partly created', 'CREATE TABLE entities (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, type TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, metadata JSON)'],
+    ])('a database with %s has no memories yet: nothing printed, a skip record, no error', (_label, ddl) => {
+      const db = new MemeshDatabase(dbPath);
+      if (ddl) db.exec(ddl);
+      db.close();
+      const { stdout, stderr } = run(MATCHING);
+      expect(stdout).toBe('');
+      expect(stderr).not.toContain('no such table');
+      expect(outcomes().filter((o) => o.outcome === 'error')).toEqual([]);
+      expect(lastOutcome()).toMatchObject({ outcome: 'skipped', reason: SKIP_REASONS.promptNoMatch });
     });
 
     it('records a malformed payload and an empty prompt', () => {

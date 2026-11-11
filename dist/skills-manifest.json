@@ -153,8 +153,8 @@
     },
     {
       "path": "scripts/hooks/_generated/prompt-recall.js",
-      "sha256": "99f893258f8cd9362822aa4a1a05160ce0e1197a487e21f6433da4602fdc361d",
-      "bytes": 12359
+      "sha256": "4eb00de7512e3e7899635b541c48d99d8f0dfdf8915eef5d1fee4d3983c97e92",
+      "bytes": 12547
     },
     {
       "path": "scripts/hooks/_generated/recent-index.js",
@@ -168,8 +168,8 @@
     },
     {
       "path": "scripts/hooks/_generated/schema.js",
-      "sha256": "9e7c15e53a47886a99bf0d278cff16c472bfb0cb87983f9b10bcc2efaf9fc3a0",
-      "bytes": 30666
+      "sha256": "961714663b77447b5b3e92628cea19783ac6b073bfd16d0aa9178e9b88d02f4b",
+      "bytes": 31315
     },
     {
       "path": "scripts/hooks/_generated/scoring.js",
@@ -223,8 +223,8 @@
     },
     {
       "path": "scripts/hooks/_hook-budgets.js",
-      "sha256": "b843561cb078163acc08d34a6163e83f71431b6b265afaed7104b94900543746",
-      "bytes": 2291
+      "sha256": "13400e82b4423c81396d3610b8ce371a43ee8d2ce6ee86a059f5d84153dd7b16",
+      "bytes": 2411
     },
     {
       "path": "scripts/hooks/_private-session.js",
@@ -238,8 +238,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "14169db93a6b5032a1dc3b0c149a601d73469dbb5ffbe93ae2f19faa188e9f23",
-      "bytes": 123680
+      "sha256": "7f161a1950bc5bdec4008e26c32b345994765409f899c20f96e126cab5f28c09",
+      "bytes": 123679
     },
     {
       "path": "scripts/hooks/_stop-handoff.js",
@@ -298,8 +298,8 @@
     },
     {
       "path": "scripts/hooks/prompt-recall.js",
-      "sha256": "fe7437095684f6ac19f0faecc82da66feb3ea2775e40a7e4292e7dc9a36560b2",
-      "bytes": 12116
+      "sha256": "95f91d527e5e3b928b16882ea3d1e49432e737c4516c2a1ebfd1ba3853795df1",
+      "bytes": 12465
     },
     {
       "path": "scripts/hooks/session-end-notes.js",
@@ -308,8 +308,8 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "d16765fbd3f15a11b0f36315b94415b8ee3e95b58f388fb788edc63a32ffa9e8",
-      "bytes": 107786
+      "sha256": "538cd0272d2b7a93a864e6a8246ea3d40440f6b18eb791b4ecf6bb8a17f5cee6",
+      "bytes": 107780
     },
     {
       "path": "scripts/hooks/session-summary.js",

@@ -458,4 +458,60 @@ describe('F5 mirror parity: scripts/hooks/_shared.js vs src/core', () => {
     });
   });
 
+  // A hook that imports a name its sibling does not export crashes only when that line runs. Hook tests
+  // inject their dependencies, so prompt-recall.js asked for `isPrivateSession` (the reader exports
+  // `privacyForHook`) and never showed a memory in the real process.
+  describe('every name a hook imports from a sibling module is exported by it', () => {
+    const hooksDir = path.resolve('scripts/hooks');
+    const listJs = (dir: string) => fs.readdirSync(dir).filter((f) => /\.(js|mjs)$/.test(f)).map((f) => path.join(dir, f));
+    const sources = [...listJs(hooksDir), ...listJs(path.join(hooksDir, '_generated'))];
+
+    function exportsOf(file: string, seen = new Set<string>()): Set<string> {
+      const names = new Set<string>();
+      if (seen.has(file)) return names;
+      seen.add(file);
+      const text = fs.readFileSync(file, 'utf8');
+      for (const m of text.matchAll(/^export\s+(?:async\s+)?(?:function\*?|const|let|var|class)\s+([A-Za-z_$][\w$]*)/gm)) names.add(m[1]);
+      for (const m of text.matchAll(/^export\s*\{([^}]*)\}(?:\s*from\s*['"]([^'"]+)['"])?/gm)) {
+        for (const part of m[1].split(',').map((x) => x.trim()).filter(Boolean)) names.add(part.split(/\s+as\s+/).pop() as string);
+      }
+      if (/^export\s+default\b/m.test(text)) names.add('default');
+      for (const m of text.matchAll(/^export\s*\*\s*from\s*['"](\.[^'"]+)['"]/gm)) {
+        for (const n of exportsOf(path.resolve(path.dirname(file), m[1]), seen)) names.add(n);
+      }
+      return names;
+    }
+
+    const wanted = (text: string): Array<{ from: string; name: string }> => {
+      const out: Array<{ from: string; name: string }> = [];
+      const named = (list: string, from: string, sep: RegExp) => {
+        for (const part of list.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '').split(',').map((x) => x.trim()).filter(Boolean)) out.push({ from, name: part.split(sep)[0] });
+      };
+      for (const m of text.matchAll(/^import\s+([^'";]+?)\s+from\s+['"](\.[^'"]+)['"]/gm)) {
+        const clause = m[1];
+        const braces = clause.match(/\{([^}]*)\}/);
+        if (braces) named(braces[1], m[2], /\s+as\s+/);
+        const lead = clause.replace(/\{[^}]*\}/, '').replace(/,/g, '').trim();
+        if (lead && !lead.startsWith('*')) out.push({ from: m[2], name: 'default' });
+      }
+      for (const m of text.matchAll(/const\s*\{([^}]*)\}\s*=\s*await\s+import\(\s*['"](\.[^'"]+)['"]\s*\)/g)) named(m[1], m[2], /\s*:\s*/);
+      return out;
+    };
+
+    it('finds every import in scripts/hooks (and that there are some to check)', () => {
+      const all = sources.flatMap((f) => wanted(fs.readFileSync(f, 'utf8')));
+      expect(all.length).toBeGreaterThan(50);
+    });
+
+    it.each(sources.map((f) => [path.relative(hooksDir, f), f]))('%s', (_label, file) => {
+      const missing: string[] = [];
+      for (const { from, name } of wanted(fs.readFileSync(file, 'utf8'))) {
+        const target = path.resolve(path.dirname(file), from);
+        if (!fs.existsSync(target)) { missing.push(`${from} (the file does not exist)`); continue; }
+        if (!exportsOf(target).has(name)) missing.push(`${name} from ${from}`);
+      }
+      expect(missing, `${_label} imports names that are not exported`).toEqual([]);
+    });
+  });
+
 });

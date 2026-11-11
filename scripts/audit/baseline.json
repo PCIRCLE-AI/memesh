@@ -490,15 +490,15 @@
       "reason": "A measuring tool run by hand against a copy of a database; it asserts nothing and has no pass/fail verdict.",
       "triaged": "2026-11-03 memory read path; re-keyed 2026-11-08 3464 to 3471 (unreadable-record branch added above; statement byte-identical)"
     },
-    "C5 src/core/prompt-recall.ts:222": {
+    "C5 src/core/prompt-recall.ts:223": {
       "class": "SAFE-OPTIONAL-COLLECTION",
       "reason": "A regex match or an optional match list that is absent means the prompt has no such words; the term list is then empty and nothing is injected.",
-      "triaged": "2026-11-08 memory read path; re-keyed 2026-11-11 220 to 222 (project-alias fix added lines above; same statement)"
+      "triaged": "2026-11-08 memory read path; re-keyed 2026-11-11 220 to 222 (project-alias fix added lines above; same statement); re-keyed 2026-11-11 222 to 223 (table check added above; same statement)"
     },
-    "C5 src/core/prompt-recall.ts:228": {
+    "C5 src/core/prompt-recall.ts:229": {
       "class": "SAFE-OPTIONAL-COLLECTION",
       "reason": "A regex match or an optional match list that is absent means the prompt has no such words; the term list is then empty and nothing is injected.",
-      "triaged": "2026-11-08 memory read path; re-keyed 2026-11-11 226 to 228 (project-alias fix added lines above; same statement)"
+      "triaged": "2026-11-08 memory read path; re-keyed 2026-11-11 226 to 228 (project-alias fix added lines above; same statement); re-keyed 2026-11-11 228 to 229 (table check added above; same statement)"
     },
     "C5 src/core/operations.ts:440": {
       "class": "SAFE-OPTIONAL-OBJECT",
@@ -520,10 +520,10 @@
       "reason": "The detector's `.toBe(0)` matches process exit statuses, not an empty collection. The 'not.toContain' checks on the injected text are paired with a control test that requires a trusted memory of the same kind to appear on the same session-start path, and the stored trust and provenance are asserted exactly.",
       "triaged": "2026-11-08 remember onto an imported memory"
     },
-    "C5 src/core/prompt-recall.ts:376": {
+    "C5 src/core/prompt-recall.ts:379": {
       "class": "SAFE-OPTIONAL-COLLECTION",
       "reason": "No recent-index pool (replay, or a session with no session-start record) means the matches are compared with each other only; the hook records that case on its outcome as `:no-recent-index`.",
-      "triaged": "2026-11-11 recent index; re-keyed 2026-11-11 374 to 376 (project-alias fix added lines above; same statement)"
+      "triaged": "2026-11-11 recent index; re-keyed 2026-11-11 374 to 376 (project-alias fix added lines above; same statement); re-keyed 2026-11-11 376 to 379 (table check added above; same statement)"
     },
     "C5 src/core/serializer.ts:912": {
       "class": "SAFE-GUARDED",

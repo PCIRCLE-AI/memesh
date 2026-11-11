@@ -3917,6 +3917,27 @@ CREATE TABLE IF NOT EXISTS agent_network_peers (
 });
 
 // dist/storage/schema.js
+function hasTables(db2, names) {
+  const row = db2.prepare(`SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name IN (${names.map(() => "?").join(", ")})`).get(...names);
+  return row.n === names.length;
+}
+function createSchema(db2) {
+  if (hasTables(db2, MEMORY_READ_TABLES)) {
+    db2.exec(SCHEMA_SQL);
+    return;
+  }
+  try {
+    db2.exec(`BEGIN IMMEDIATE;
+${SCHEMA_SQL}
+COMMIT;`);
+  } catch (err) {
+    try {
+      db2.exec("ROLLBACK");
+    } catch {
+    }
+    throw err;
+  }
+}
 function safeAlter(db2, sql) {
   try {
     db2.exec(sql);
@@ -4129,7 +4150,7 @@ function ftsIndexIsCurrent(db2) {
   }
   return row !== void 0 && /^\d+$/.test(row.value) && Number(row.value) >= FTS_SEGMENTATION_VERSION;
 }
-var SCHEMA_SQL, FTS_SQL, MIGRATION_RETRY_BACKOFF_MS, FTS_SEGMENTATION_VERSION, FTS_REBUILD_PAGE_SIZE;
+var SCHEMA_SQL, MEMORY_READ_TABLES, FTS_SQL, MIGRATION_RETRY_BACKOFF_MS, FTS_SEGMENTATION_VERSION, FTS_REBUILD_PAGE_SIZE;
 var init_schema = __esm({
   "dist/storage/schema.js"() {
     "use strict";
@@ -4526,6 +4547,7 @@ CREATE TABLE IF NOT EXISTS hook_runs (
 -- killed recall along with capture). The helper SELECTs first and writes
 -- only when the key is genuinely absent \u2014 once per database lifetime.
 ${AGENT_NETWORK_SCHEMA_SQL}`;
+    MEMORY_READ_TABLES = ["entities", "observations", "tags"];
     FTS_SQL = `
 CREATE VIRTUAL TABLE IF NOT EXISTS entities_fts USING fts5(
   name, observations, content='',
@@ -7437,7 +7459,7 @@ function initialiseDatabase(db2) {
   return db2;
 }
 function migrateToCurrentSchema(db2) {
-  db2.exec(SCHEMA_SQL);
+  createSchema(db2);
   db2.exec(FTS_SQL);
   ensureTagsUniqueIndex(db2);
   ensureHookRunsSince(db2);

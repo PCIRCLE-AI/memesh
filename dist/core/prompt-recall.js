@@ -1,3 +1,4 @@
+import { hasTables, MEMORY_READ_TABLES } from '../storage/schema.js';
 import { renderPhraseExpression, tokenizeQuery, UNSPACED_SCRIPT_CLASS } from '../storage/fts-index.js';
 import { buildReferenceContext, isAutoInjectable } from './work-topology.js';
 import { AUTO_CONTEXT_EXCLUDED_TYPES, autoContextScope, projectAliases, readRecentRows, recentLine, staleReason, tableColumns, } from './recent-index.js';
@@ -132,6 +133,8 @@ export function scorePrompt(db, prompt, options) {
     const all = promptTerms(prompt);
     if (all.length === 0)
         return { scored: [], terms: [] };
+    if (!hasTables(db, [...MEMORY_READ_TABLES, 'entities_fts']))
+        return { scored: [], terms: all.map((t) => t.text) };
     const entityCols = tableColumns(db, 'entities');
     const total = db.prepare(`SELECT count(*) AS c FROM entities${entityCols.has('status') ? " WHERE status = 'active'" : ''}`).get().c;
     const df = documentFrequencies(db, all);

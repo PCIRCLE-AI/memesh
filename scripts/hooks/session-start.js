@@ -81,6 +81,7 @@ import {
 import { recordSessionLauncher } from './_clear-alias.js';
 import { recallListName, SESSION_ID_RE } from './_stop-notes.js';
 import { buildRecentIndex } from './_generated/recent-index.js';
+import { hasTables, MEMORY_READ_TABLES } from './_generated/schema.js';
 import { handoffView } from './_generated/session-handoff.js';
 import { recipientEverSeenAnywhere, unknownRecipientHint } from './_generated/agent-message-inbox.js';
 import { boundTaskStateLines } from './_generated/work-topology.js';
@@ -1364,11 +1365,8 @@ process.stdin.on('end', async () => {
     let noiseCompressDue = true;
     let autoArchiveDue = true;
     try {
-      // Check if tables exist (db may exist but be empty)
-      const tableCheck = db.prepare(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='entities'"
-      ).get();
-      if (!tableCheck) {
+      // The database may exist but be empty, or be mid-creation (see MEMORY_READ_TABLES).
+      if (!hasTables(db, MEMORY_READ_TABLES)) {
         const noEntitiesContext = [addressLine, recipientRejectionLine, workPackageNotice].filter(Boolean).join('\n\n') || undefined;
         output(
           withChannelFlagWarning(withRecipientRejectionWarning(withAddressLine(combineWithBanner(captureWarning ?? '◉ MeMesh ready · database initialised but no memories stored yet')))),
@@ -1376,7 +1374,7 @@ process.stdin.on('end', async () => {
           // Same reason mechanism as the no-database exit above and the
           // schema-present exit below — see `nothingToInjectReason`'s own
           // comment for why this is not `minimal`-gated explicitly.
-          !noEntitiesContext ? { outcome: 'notified', reason: nothingToInjectReason(briefingLevel, 'database has no entities table yet') } : null,
+          !noEntitiesContext ? { outcome: 'notified', reason: nothingToInjectReason(briefingLevel, 'database has no memory tables yet') } : null,
         );
         return;
       }

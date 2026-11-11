@@ -1258,6 +1258,7 @@ describe('the hooks, end to end', () => {
           ['private-session-mark.js', 'HOOK_BUDGET_MS.privateMark.notes'], ['pre-compact.js', 'HOOK_BUDGET_MS.preCompact.decide'],
           ['decision-nudge.js', 'HOOK_BUDGET_MS.postToolUse.decide'], ['codex-plan-activity.js', 'HOOK_BUDGET_MS.postToolUse.decide'],
           ['pre-compact.js', 'HOOK_BUDGET_MS.preCompact.read'], ['user-prompt-intent.js', 'HOOK_BUDGET_MS.userPrompt.renew'],
+          ['prompt-recall.js', 'HOOK_BUDGET_MS.promptRecall.decide'],
         ]) expect(fs.readFileSync(path.resolve('scripts/hooks', file), 'utf8'), `${file} passes ${key}`).toContain(key);
         // A budget left out is an error, not a deadline that never passes (NaN), which is what let a read run until the host killed it (Q6_20 F3).
         expect(() => deadlineFor(undefined as unknown as number)).toThrow(/budget must be a number/);
@@ -1476,6 +1477,7 @@ describe('the hooks, end to end', () => {
         ['PreCompact', 'pre-compact.js', HOOK_BUDGET_MS.preCompact],
         ['PostToolUse', 'decision-nudge.js', HOOK_BUDGET_MS.postToolUse],
         ['UserPromptSubmit', 'user-prompt-intent.js', HOOK_BUDGET_MS.userPrompt],
+        ['UserPromptSubmit', 'prompt-recall.js', HOOK_BUDGET_MS.promptRecall],
       ] as const) {
         const timeout = timeoutOf(manifest as never, event, script);
         if (timeout === undefined && manifest !== manifests[0]) continue; // a hook the Codex manifest does not register

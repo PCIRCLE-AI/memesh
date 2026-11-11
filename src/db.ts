@@ -9,7 +9,7 @@ import { insertFtsRow, joinIndexedObservations, removeFromFts } from './storage/
 import { canonicalizeLessonTypes, dedupeObservations, dropArchivedIndexRows, removeJunkFileTags, repairFusedLessonShellHistory, repairOwnNoteFolderTrust, retractZeroEditClaims, splitFusedLessons } from './storage/graph-repairs.js';
 import { ownMemoryDirIds } from './core/note-dirs.js';
 import {
-  SCHEMA_SQL,
+  createSchema,
   FTS_SQL,
   safeAlter,
   migrateEntitiesSchema,
@@ -303,7 +303,7 @@ function initialiseDatabase(db: MemeshDatabase): MemeshDatabase {
  */
 
 function migrateToCurrentSchema(db: MemeshDatabase): void {
-  db.exec(SCHEMA_SQL);
+  createSchema(db);
   db.exec(FTS_SQL);
   ensureTagsUniqueIndex(db);
   ensureHookRunsSince(db);
