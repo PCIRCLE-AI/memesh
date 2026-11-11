@@ -172,6 +172,191 @@ describe('install-hooks', () => {
     expect(fs.readFileSync(settingsPath, 'utf8')).toBe('not json at all');
   });
 
+  it('an install that changes nothing writes nothing: no new backup, no rewritten settings, no new marker (#528)', async () => {
+    const { installHooks } = await freshModule();
+    const first = installHooks({ pluginRoot: pluginDir, pluginVersion: '4.1.4', scope: 'user' });
+    expect(first.settingsWritten).toBe(true);
+    expect(first.markerWritten).toBe(true);
+    const settingsBefore = fs.readFileSync(first.settingsPath, 'utf8');
+    const markerBefore = fs.readFileSync(first.markerPath, 'utf8');
+    const markerMtime = fs.statSync(first.markerPath).mtimeMs;
+    const backupsBefore = fs.readdirSync(path.dirname(first.settingsPath)).filter((f) => f.includes('.bak-pre-memesh-')).length;
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const second = installHooks({ pluginRoot: pluginDir, pluginVersion: '4.1.4', scope: 'user' });
+    expect(second.added).toBe(0);
+    expect(second.skipped).toBe(3);
+    expect(second.settingsWritten).toBe(false);
+    expect(second.markerWritten).toBe(false);
+    expect(second.backupPath).toBeNull();
+    expect(fs.readFileSync(first.settingsPath, 'utf8')).toBe(settingsBefore);
+    expect(fs.readFileSync(first.markerPath, 'utf8')).toBe(markerBefore);
+    expect(fs.statSync(first.markerPath).mtimeMs).toBe(markerMtime);
+    const backupsAfter = fs.readdirSync(path.dirname(first.settingsPath)).filter((f) => f.includes('.bak-pre-memesh-')).length;
+    expect(backupsAfter).toBe(backupsBefore);
+  });
+
+  it('refreshes the marker, and only the marker, when it describes a different install (#528)', async () => {
+    const { installHooks } = await freshModule();
+    const first = installHooks({ pluginRoot: pluginDir, pluginVersion: '4.1.4', scope: 'user' });
+    fs.rmSync(first.markerPath);
+    const again = installHooks({ pluginRoot: pluginDir, pluginVersion: '4.1.4', scope: 'user' });
+    expect(again.settingsWritten).toBe(false);
+    expect(again.markerWritten).toBe(true);
+    expect(fs.existsSync(again.markerPath)).toBe(true);
+  });
+
+  it('the marker is rewritten when only its version differs, and settings.json is left alone (#528)', async () => {
+    const { installHooks, readInstallMarker } = await freshModule();
+    installHooks({ pluginRoot: pluginDir, pluginVersion: '4.1.4', scope: 'user' });
+    const again = installHooks({ pluginRoot: pluginDir, pluginVersion: '4.1.5', scope: 'user' });
+    expect(again.settingsWritten).toBe(false);
+    expect(again.markerWritten).toBe(true);
+    expect(readInstallMarker()!.version).toBe('4.1.5');
+  });
+
+  it('the marker is rewritten when only its scope differs, and settings.json is left alone (#528)', async () => {
+    const { installHooks, readInstallMarker } = await freshModule();
+    installHooks({ pluginRoot: pluginDir, pluginVersion: '4.1.4', scope: 'user' });
+    // With cwd = HOME, the project settings file IS the user settings file: only the recorded scope differs.
+    const again = installHooks({ pluginRoot: pluginDir, pluginVersion: '4.1.4', scope: 'project', cwd: process.env.HOME! });
+    expect(again.settingsWritten).toBe(false);
+    expect(again.markerWritten).toBe(true);
+    expect(readInstallMarker()!.scope).toBe('project');
+  });
+
+  it('a refused install leaves the citation rule unwritten too (#528)', async () => {
+    const settingsPath = path.join(process.env.HOME!, '.claude', 'settings.json');
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(settingsPath, '{not json');
+    const { installHooks } = await freshModule();
+    expect(() => installHooks({ pluginRoot: pluginDir, pluginVersion: '4.1.4', scope: 'user' })).toThrow(/not valid JSON/);
+    const rules = path.join(process.env.HOME!, '.claude', 'rules');
+    expect(fs.existsSync(rules) ? fs.readdirSync(rules) : []).toEqual([]);
+  });
+
+  it('refuses a settings file whose hooks.<event> is not a list, with a sentence, for install and uninstall (#528)', async () => {
+    const settingsPath = path.join(process.env.HOME!, '.claude', 'settings.json');
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    const content = JSON.stringify({ hooks: { Stop: 'oops' } });
+    fs.writeFileSync(settingsPath, content);
+    const { installHooks, uninstallHooks } = await freshModule();
+    expect(() => installHooks({ pluginRoot: pluginDir, pluginVersion: '4.1.4', scope: 'user' })).toThrow(/hooks\.Stop is not a list; refusing to modify/);
+    expect(() => uninstallHooks({ scope: 'user' })).toThrow(/hooks\.Stop is not a list; refusing to modify/);
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe(content);
+    const rules = path.join(process.env.HOME!, '.claude', 'rules');
+    expect(fs.existsSync(rules) ? fs.readdirSync(rules) : []).toEqual([]);
+  });
+
+  it.each([
+    ['[]', /is not a JSON object; refusing to modify/],
+    ['"text"', /is not a JSON object; refusing to modify/],
+    ['null', /is not a JSON object; refusing to modify/],
+    ['{"hooks":[]}', /"hooks" is not an object; refusing to modify/],
+    ['{"hooks":"x"}', /"hooks" is not an object; refusing to modify/],
+    ['{"hooks":null}', /"hooks" is not an object; refusing to modify/],
+  ])('refuses %s with its own sentence, for install and uninstall (#528)', async (body, message) => {
+    const settingsPath = path.join(process.env.HOME!, '.claude', 'settings.json');
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(settingsPath, body);
+    const { installHooks, uninstallHooks } = await freshModule();
+    expect(() => installHooks({ pluginRoot: pluginDir, pluginVersion: '4.1.4', scope: 'user' })).toThrow(message);
+    expect(() => uninstallHooks({ scope: 'user' })).toThrow(message);
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe(body);
+  });
+
+  it.each([
+    ['a null entry', '{"hooks":{"Stop":[null]}}', /hooks\.Stop\[0\] is not an object/],
+    ['an entry without a hooks list', '{"hooks":{"Stop":[{"matcher":"*"}]}}', /hooks\.Stop\[0\]\.hooks is not a list/],
+    ['a string entry', '{"hooks":{"Stop":["x"]}}', /hooks\.Stop\[0\] is not an object/],
+    ['an array entry', '{"hooks":{"Stop":[[]]}}', /hooks\.Stop\[0\] is not an object/],
+    ['a null hook command', '{"hooks":{"Stop":[{"matcher":"*","hooks":[null]}]}}', /hooks\.Stop\[0\]\.hooks\[0\] is not an object; refusing to modify/],
+    ['a string hook command', '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"a","_memesh":true},"x"]}]}}', /hooks\.Stop\[0\]\.hooks\[1\] is not an object; refusing to modify/],
+  ])('refuses %s with a sentence and writes nothing, the citation rule included (#528)', async (_label, body, message) => {
+    const settingsPath = path.join(process.env.HOME!, '.claude', 'settings.json');
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(settingsPath, body);
+    const { installHooks, uninstallHooks } = await freshModule();
+    expect(() => installHooks({ pluginRoot: pluginDir, pluginVersion: '4.1.4', scope: 'user' })).toThrow(message);
+    expect(() => uninstallHooks({ scope: 'user' })).toThrow(message);
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe(body);
+    const rules = path.join(process.env.HOME!, '.claude', 'rules');
+    expect(fs.existsSync(rules) ? fs.readdirSync(rules) : []).toEqual([]);
+    expect(fs.readdirSync(path.dirname(settingsPath)).filter((f) => f.includes('.bak-pre-memesh-'))).toEqual([]);
+
+    // The rule file above was absent, so the uninstall half proved nothing about it. Put a real one in place
+    // (a good install writes it), swap the settings for the bad body, and require the refused uninstall to leave it.
+    fs.writeFileSync(settingsPath, '{}');
+    installHooks({ pluginRoot: pluginDir, pluginVersion: '4.1.4', scope: 'user' });
+    expect(fs.readdirSync(rules)).toEqual(['memesh-citations.md']);
+    fs.writeFileSync(settingsPath, body);
+    expect(() => uninstallHooks({ scope: 'user' })).toThrow(message);
+    expect(fs.readdirSync(rules)).toEqual(['memesh-citations.md']);
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe(body);
+  });
+
+  it.each([
+    ['is not JSON', 'not json at all'],
+    ['has no "hooks" object', '{}'],
+  ])("memesh's own hooks file that %s is refused in one plain sentence and nothing is written (#528)", async (_label, manifest) => {
+    const manifestPath = path.join(pluginDir, 'hooks', 'hooks.json');
+    fs.writeFileSync(manifestPath, manifest);
+    const { installHooks } = await freshModule();
+    expect(() => installHooks({ pluginRoot: pluginDir, pluginVersion: '4.1.4', scope: 'user' })).toThrow(
+      `memesh's own hooks file at ${manifestPath} is damaged and cannot be read; reinstall memesh and run install-hooks again`,
+    );
+    expect(fs.existsSync(path.join(process.env.HOME!, '.claude'))).toBe(false);
+    expect(fs.existsSync(path.join(process.env.MEMESH_DIR!, 'install-hooks.json'))).toBe(false);
+  });
+
+  it('a re-install that only has something to prune still writes the file back, with a backup (#528)', async () => {
+    const { installHooks } = await freshModule();
+    const first = installHooks({ pluginRoot: pluginDir, pluginVersion: '4.1.4', scope: 'user' });
+    const settings = JSON.parse(fs.readFileSync(first.settingsPath, 'utf8'));
+    settings.hooks.PreToolUse.push({ matcher: 'Bash', hooks: [{ type: 'command', command: '/gone/pre-bash.js', _memesh: true }] });
+    fs.writeFileSync(first.settingsPath, JSON.stringify(settings));
+    const again = installHooks({ pluginRoot: pluginDir, pluginVersion: '4.1.4', scope: 'user' });
+    expect(again.added).toBe(0);
+    expect(again.pruned).toBe(1);
+    expect(again.settingsWritten).toBe(true);
+    expect(again.backupPath).not.toBeNull();
+    const after = JSON.parse(fs.readFileSync(first.settingsPath, 'utf8'));
+    expect((after.hooks.PreToolUse as Array<{ matcher: string }>).some((e) => e.matcher === 'Bash')).toBe(false);
+  });
+
+  it('the marker is rewritten when only the settings file it names has changed (#528)', async () => {
+    const { installHooks } = await freshModule();
+    const first = installHooks({ pluginRoot: pluginDir, pluginVersion: '4.1.4', scope: 'user' });
+    // The same hooks already sit in a relocated Claude directory; the marker still names the old one.
+    const relocated = path.join(tmpDir, 'relocated-claude');
+    fs.mkdirSync(relocated, { recursive: true });
+    fs.copyFileSync(first.settingsPath, path.join(relocated, 'settings.json'));
+    process.env.CLAUDE_CONFIG_DIR = relocated;
+    const again = installHooks({ pluginRoot: pluginDir, pluginVersion: '4.1.4', scope: 'user' });
+    expect(again.settingsWritten).toBe(false);
+    expect(again.markerWritten).toBe(true);
+    expect(JSON.parse(fs.readFileSync(again.markerPath, 'utf8')).settings_path).toBe(path.join(relocated, 'settings.json'));
+  });
+
+  it('install-hooks and uninstall-hooks refuse an unknown --scope and touch nothing (#528)', () => {
+    const cli = path.resolve('dist', 'transports', 'cli', 'cli.js');
+    const env = { ...process.env, HOME: process.env.HOME, USERPROFILE: process.env.HOME, CLAUDE_CONFIG_DIR: path.join(tmpDir, 'claude-cfg'), MEMESH_DIR: process.env.MEMESH_DIR };
+    for (const command of ['install-hooks', 'uninstall-hooks']) {
+      let status: number | null = 0;
+      let stderr = '';
+      try {
+        execFileSync('node', [cli, command, '--scope', 'bogus'], { env, encoding: 'utf8', stdio: 'pipe' });
+      } catch (err) {
+        status = (err as { status: number | null }).status;
+        stderr = String((err as { stderr?: unknown }).stderr ?? '');
+      }
+      expect(status, command).toBe(1);
+      // A missing or broken CLI also exits 1; only the CLI's own sentence proves the scope check ran.
+      expect(stderr, command).toContain('Error: --scope "bogus" is not valid. Use one of: user, project.');
+    }
+    expect(fs.existsSync(path.join(tmpDir, 'claude-cfg'))).toBe(false);
+  });
+
   it('upgrade in place: re-installing with a different pluginRoot replaces stale memesh entries', async () => {
     const { installHooks } = await freshModule();
     const oldRoot = pluginDir;
@@ -466,5 +651,39 @@ describe('memesh install-hooks (CLI output) — M-11', () => {
     const markerPath = path.join(memeshDir, 'install-hooks.json');
     expect(fs.existsSync(markerPath), 'fixture: the marker was not actually written').toBe(true);
     expect(out).toContain(`Marker: ${markerPath}`);
+  });
+
+  it('a re-run that changes nothing says so, and does not tell the user to restart; one that only recreates the citation rule does not claim nothing was written (#528)', () => {
+    const run = () => execFileSync('node', [cliPath, 'install-hooks', '--scope', 'project'], {
+      cwd,
+      env: { ...process.env, HOME: cwd, USERPROFILE: cwd, CLAUDE_CONFIG_DIR: path.join(cwd, 'claude-config'), MEMESH_DIR: memeshDir },
+      encoding: 'utf8',
+    });
+    const first = run();
+    expect(first).toContain('Restart Claude Code');
+    const rulePath = /Citation contract created: (.+)/.exec(first)?.[1]?.trim();
+    expect(rulePath, 'fixture: the first run did not report creating the citation rule').toBeTruthy();
+
+    const second = run();
+    expect(second).toContain('Nothing needed to change');
+    expect(second).not.toContain('Restart Claude Code');
+    expect(second).toContain('Nothing to restart');
+    expect(second).not.toContain('Citation contract');
+    expect(second).not.toContain('Marker:');
+
+    // Only the rule file is rewritten: settings.json did not change, so no restart; a new session is enough.
+    fs.rmSync(rulePath as string);
+    const third = run();
+    expect(third).toContain('Citation contract created');
+    expect(third).not.toContain('Nothing needed to change');
+    expect(third).not.toContain('Restart Claude Code');
+    expect(third).not.toContain('Nothing to restart');
+    expect(third).toContain('Open a new Claude Code session for the citation contract');
+
+    // Only the marker is rewritten: still "something was written", and the Marker line names the file.
+    fs.rmSync(path.join(memeshDir, 'install-hooks.json'));
+    const fourth = run();
+    expect(fourth).toContain(`Marker: ${path.join(memeshDir, 'install-hooks.json')}`);
+    expect(fourth).not.toContain('Nothing needed to change');
   });
 });

@@ -27,6 +27,7 @@ import { findProjectIdentitySplits, type ProjectIdentitySplit } from './project-
 import { AGENT_ROUTER_SOCKET_PATH_MAX_BYTES } from './agent-router.js';
 import { detectPluginRuntime, readInstallMarker } from './install-hooks.js';
 import { manifestScope } from './manifest-scope.js';
+import { claudeCodePresent, codexPresent, geminiPresent, isOnPath } from './host-presence.js';
 import { UNSPACED_SCRIPT_GLOB_RUN3 } from '../storage/fts-index.js';
 import { isUnsupportedNode, MemeshDatabase, MIN_NODE_SERIES } from '../storage/sqlite.js';
 import { AUTO_CAPTURE_TAG } from './types.js';
@@ -1335,6 +1336,37 @@ function inspectHookWiring(
         'Wired via the Claude Code plugin runtime (found in installed_plugins.json). This copy is not the one doing the capturing — the plugin manages the hooks.',
       );
     }
+    // A machine without Claude Code but with Codex or Gemini CLI: it has no Claude Code
+    // hooks to connect, and telling it to run `memesh install-hooks` would create a
+    // Claude directory nobody uses. Gemini is judged the way `memesh setup` judges it:
+    // its command is on PATH.
+    const claudeHere = claudeCodePresent(existsSyncImpl, isOnPath);
+    const codexHere = codexPresent(existsSyncImpl, isOnPath);
+    const geminiHere = geminiPresent(isOnPath);
+    if (!claudeHere && (codexHere || geminiHere)) {
+      const hostName = codexHere ? 'Codex' : 'Gemini CLI';
+      return createCheck(
+        'hook-wiring',
+        'Hooks wired into Claude Code',
+        'pass',
+        `Claude Code was not found on this machine (${hostName} is), so there are no Claude Code hooks to wire. This row does not check ${hostName}'s own hooks; the Capture liveness row shows whether any hook has recorded a result.`,
+        undefined,
+        { code: 'hook-wiring.no-claude-code', params: { captureWired: 0 } },
+      );
+    }
+    // No agent host at all. Telling this machine to run `install-hooks` would
+    // connect memesh to a program that is not installed, and `doctor --fix` used to
+    // do exactly that. There is nothing to repair yet, so the row carries no fixId.
+    if (!claudeHere && !codexHere && !geminiHere) {
+      return createCheck(
+        'hook-wiring',
+        'Hooks wired into Claude Code',
+        'warn',
+        'No agent host was found on this machine (looked for Claude Code, Codex and Gemini CLI: their commands on PATH, and the Claude Code and Codex configuration directories), so memesh has nothing to connect to yet.',
+        NO_HOST_NEXT_STEP,
+        { code: 'hook-wiring.no-host' },
+      );
+    }
     return createCheck(
       'hook-wiring',
       'Hooks wired into Claude Code',
@@ -1846,6 +1878,40 @@ function archivedHandoffCheck(title: string, runs: number, name: string | null):
     { code: 'capture-liveness.handoff-archived-unnamed', params: { runs } });
 }
 
+/** What to tell a machine that has no agent host at all, instead of `memesh install-hooks`. */
+const NO_HOST_NEXT_STEP = 'Install Claude Code or Codex (or Gemini CLI), then run `memesh setup` to connect memesh to it.';
+
+/** What to tell a machine whose agent is Codex: Codex's hooks come from its plugin, not from `memesh install-hooks`. */
+const CODEX_NEXT_STEP = `Refresh the Codex plugin (\`${PLUGIN_REFRESH_COMMANDS.codex}\`), restart Codex, start one session, and re-run \`memesh doctor\`. If you just updated, start a session first — the records begin on the next hook run.`;
+
+/** What to tell a machine whose only agent is Gemini CLI: it is an MCP-only host, there is no hook to install. */
+const GEMINI_NEXT_STEP = 'Gemini CLI connects to memesh as an MCP server only, so there are no memesh hooks to install on this machine.';
+
+/**
+ * Which agent the machine has, as far as the rows that prescribe a hook fix are
+ * concerned. It is read off the hook-wiring row, so the rows cannot disagree with it.
+ */
+export type HostFixState = 'claude' | 'no-host' | 'codex' | 'gemini';
+
+export function hostFixState(wiringCode: string | undefined, codexHere: boolean): HostFixState {
+  if (wiringCode === 'hook-wiring.no-host') return 'no-host';
+  if (wiringCode === 'hook-wiring.no-claude-code') return codexHere ? 'codex' : 'gemini';
+  return 'claude';
+}
+
+/**
+ * The ONE place that writes the fix of a row that would otherwise prescribe
+ * `memesh install-hooks`. That command writes Claude Code's settings, so on a
+ * machine that has no Claude Code it would create a directory nobody uses and
+ * contradict the hook-wiring row. Every such row gets the hook-wiring row's
+ * answer for this machine instead (and no fixId, so `doctor --fix` cannot act on it).
+ */
+export function withHostFix(check: DoctorCheck, state: HostFixState): DoctorCheck {
+  if (state === 'claude' || check.status === 'pass' || !check.fix?.includes('install-hooks')) return check;
+  const fix = state === 'no-host' ? NO_HOST_NEXT_STEP : state === 'codex' ? CODEX_NEXT_STEP : GEMINI_NEXT_STEP;
+  return { ...check, fix, fixId: undefined };
+}
+
 /**
  * Name the agent hosts the outcome records came from, on every capture-liveness
  * verdict that has records (#447). The per-hook figure rides `--json`; the
@@ -2077,7 +2143,7 @@ function inspectCaptureLiveness(
   // hooks crash as they load (a missing `_generated` file — the 4.8.2 and
   // 4.9.4 shape) and leave nothing at all, which the old heartbeats from
   // before the crash would otherwise cover.
-  if (hooks.length === 0 && captureWired && stampedCount > 0
+  if (hooks.length === 0 && stampedCount > 0
     && measuringHours !== null && measuringHours > NEVER_RAN_GRACE_HOURS) {
     const lastHeartbeat = newestHeartbeatHours === null ? null : Math.round(newestHeartbeatHours);
     return {
@@ -4160,9 +4226,15 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
     checks.push(await inspectHttpProbe(httpBaseUrl, fetchImpl));
   }
 
+  // Every row that would prescribe `memesh install-hooks` is judged by the same
+  // host state, in this one pass: a row added later (or one built before the
+  // wiring row existed, like the citation rate) cannot keep a second copy.
+  const hostState = hostFixState(wiring.code, codexPresent(existsSyncImpl, isOnPath));
+  const finalChecks = checks.map((check) => withHostFix(check, hostState));
+
   return {
-    status: summarizeOverallStatus(checks),
-    checks,
+    status: summarizeOverallStatus(finalChecks),
+    checks: finalChecks,
     ...(captureReport ? { capture: captureReport } : {}),
   };
 }

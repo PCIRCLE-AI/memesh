@@ -56,16 +56,42 @@ function settingsPathFor(scope, cwd) {
 function writeSettingsSync(targetPath, data) {
     fs.writeFileSync(targetPath, data, 'utf8');
 }
+const isJsonObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+const refuse = (p, what) => new Error(`settings file at ${p}${what}; refusing to modify`);
+function assertHooksShape(hooks, p) {
+    if (!isJsonObject(hooks))
+        throw refuse(p, ': "hooks" is not an object');
+    for (const [event, entries] of Object.entries(hooks)) {
+        if (!Array.isArray(entries))
+            throw refuse(p, `: hooks.${event} is not a list`);
+        entries.forEach((entry, i) => {
+            const where = `hooks.${event}[${i}]`;
+            if (!isJsonObject(entry))
+                throw refuse(p, `: ${where} is not an object`);
+            if (!Array.isArray(entry.hooks))
+                throw refuse(p, `: ${where}.hooks is not a list`);
+            entry.hooks.forEach((h, j) => {
+                if (!isJsonObject(h))
+                    throw refuse(p, `: ${where}.hooks[${j}] is not an object`);
+            });
+        });
+    }
+}
 function readSettings(p) {
     if (!fs.existsSync(p))
         return {};
+    let parsed;
     try {
-        const raw = fs.readFileSync(p, 'utf8');
-        return JSON.parse(raw);
+        parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
     }
     catch {
-        throw new Error(`settings file at ${p} is not valid JSON; refusing to modify`);
+        throw refuse(p, ' is not valid JSON');
     }
+    if (!isJsonObject(parsed))
+        throw refuse(p, ' is not a JSON object');
+    if (parsed.hooks !== undefined)
+        assertHooksShape(parsed.hooks, p);
+    return parsed;
 }
 function backupSettings(settingsPath) {
     if (!fs.existsSync(settingsPath))
@@ -80,7 +106,17 @@ function loadPluginHooks(pluginRoot) {
     if (!fs.existsSync(manifestPath)) {
         throw new Error(`plugin hooks manifest not found at ${manifestPath}`);
     }
-    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const damaged = () => new Error(`memesh's own hooks file at ${manifestPath} is damaged and cannot be read; reinstall memesh and run install-hooks again`);
+    let manifest;
+    try {
+        manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    }
+    catch {
+        throw damaged();
+    }
+    if (manifest === null || typeof manifest !== 'object' || manifest.hooks === null || typeof manifest.hooks !== 'object') {
+        throw damaged();
+    }
     const out = {};
     for (const [event, entries] of Object.entries(manifest.hooks)) {
         out[event] = entries.map((entry) => ({
@@ -156,11 +192,12 @@ function readBytesOrNull(file) {
 }
 function installHooksUnguarded(opts, cwd) {
     const settingsPath = settingsPathFor(opts.scope, cwd);
-    const citationRule = opts.dryRun
+    const writeRule = () => (opts.dryRun
         ? { path: citationRulePath(opts.scope, homeDir(), cwd), action: 'unchanged' }
-        : writeCitationRule(opts.scope, homeDir(), cwd);
+        : writeCitationRule(opts.scope, homeDir(), cwd));
     const pluginRuntime = detectPluginRuntime(opts.installedPluginsPathImpl);
     if (pluginRuntime && !opts.forceOverPlugin) {
+        const citationRule = writeRule();
         return {
             settingsPath,
             backupPath: null,
@@ -172,10 +209,13 @@ function installHooksUnguarded(opts, cwd) {
             markerPath: path.join(memeshDir(), MARKER_FILE),
             pluginRuntimeDetected: pluginRuntime,
             citationRule,
+            settingsWritten: false,
+            markerWritten: false,
         };
     }
     const desired = loadPluginHooks(opts.pluginRoot);
     const settings = readSettings(settingsPath);
+    const citationRule = writeRule();
     const existing = settings.hooks ?? {};
     let added = 0;
     let skipped = 0;
@@ -183,8 +223,6 @@ function installHooksUnguarded(opts, cwd) {
     const conflicts = [];
     const desiredKeys = new Set(Object.entries(desired).flatMap(([event, entries]) => entries.map((e) => `${event}\u0000${e.matcher ?? '*'}`)));
     for (const [event, entries] of Object.entries(existing)) {
-        if (!Array.isArray(entries))
-            continue;
         const kept = entries.filter((e) => !(isMemeshEntry(e) && !desiredKeys.has(`${event}\u0000${e.matcher ?? '*'}`)));
         pruned += entries.length - kept.length;
         if (kept.length === 0)
@@ -218,31 +256,45 @@ function installHooksUnguarded(opts, cwd) {
     }
     const markerPath = path.join(memeshDir(), MARKER_FILE);
     let backupPath = null;
-    if (!opts.dryRun && (added > 0 || skipped > 0)) {
-        backupPath = backupSettings(settingsPath);
-        const settingsBefore = readBytesOrNull(settingsPath);
-        settings.hooks = existing;
-        fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
-        writeSettingsSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
-        try {
-            fs.mkdirSync(path.dirname(markerPath), { recursive: true });
-            fs.writeFileSync(markerPath, JSON.stringify({
-                installed_at: new Date().toISOString(),
-                version: opts.pluginVersion,
-                plugin_root: opts.pluginRoot,
-                scope: opts.scope,
-                settings_path: settingsPath,
-            }, null, 2) + '\n', 'utf8');
+    let settingsWritten = false;
+    let markerWritten = false;
+    if (!opts.dryRun) {
+        let settingsBefore = null;
+        if (added > 0 || pruned > 0) {
+            backupPath = backupSettings(settingsPath);
+            settingsBefore = readBytesOrNull(settingsPath);
+            settings.hooks = existing;
+            fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+            writeSettingsSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+            settingsWritten = true;
         }
-        catch (err) {
+        const marker = {
+            version: opts.pluginVersion,
+            plugin_root: opts.pluginRoot,
+            scope: opts.scope,
+            settings_path: settingsPath,
+        };
+        const current = readInstallMarker();
+        const markerCurrent = current !== null
+            && Object.keys(marker).every((key) => current[key] === marker[key]);
+        if (settingsWritten || !markerCurrent) {
             try {
-                if (settingsBefore === null)
-                    fs.rmSync(settingsPath, { force: true });
-                else
-                    fs.writeFileSync(settingsPath, settingsBefore);
+                fs.mkdirSync(path.dirname(markerPath), { recursive: true });
+                fs.writeFileSync(markerPath, JSON.stringify({ installed_at: new Date().toISOString(), ...marker }, null, 2) + '\n', 'utf8');
+                markerWritten = true;
             }
-            catch { }
-            throw err;
+            catch (err) {
+                if (settingsWritten) {
+                    try {
+                        if (settingsBefore === null)
+                            fs.rmSync(settingsPath, { force: true });
+                        else
+                            fs.writeFileSync(settingsPath, settingsBefore);
+                    }
+                    catch { }
+                }
+                throw err;
+            }
         }
     }
     return {
@@ -255,6 +307,8 @@ function installHooksUnguarded(opts, cwd) {
         pruned,
         conflicts,
         markerPath,
+        settingsWritten,
+        markerWritten,
     };
 }
 export function uninstallHooks(opts) {

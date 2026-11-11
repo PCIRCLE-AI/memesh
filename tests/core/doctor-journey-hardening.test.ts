@@ -728,8 +728,9 @@ describe('the suite environment is an allow-list', () => {
     expect(env.CI).toBe('true');
     expect(env.HOME).toBe('/throwaway');
     expect(env.USERPROFILE).toBe('/throwaway');
-    // A preload from the ambient NODE_OPTIONS is not inherited either.
-    expect(env.NODE_OPTIONS).toBeUndefined();
+    // A preload from the ambient NODE_OPTIONS is not inherited either; the only one is the runner's own account-home preload.
+    expect(env.NODE_OPTIONS).not.toContain('/evil.js');
+    expect(env.NODE_OPTIONS).toMatch(/^--import=file:\/\/.*account-home-preload\.mjs$/);
   });
 });
 
@@ -1112,7 +1113,8 @@ describe.skipIf(!POSIX)('setup runs the journey only when a supported host is pr
     fs.rmSync(path.join(home, '.memesh'), { recursive: true, force: true });
     const again = run(['setup'], home);
     expect(again.status).toBe(0);
-    expect(again.stdout).toContain('Everything present is wired. Nothing to do.');
+    // No `claude` command on this PATH, so the MCP half cannot be probed: setup says what it could check and what it could not.
+    expect(again.stdout).toContain('Everything that could be checked is wired.');
     expect(again.stdout).toContain('Journey PASSED');
     expect(JSON.parse(fs.readFileSync(path.join(home, '.memesh', 'post-install-journey.json'), 'utf8'))).toMatchObject({ ok: true, trigger: 'setup' });
   }, 200_000);
@@ -1152,7 +1154,7 @@ describe.skipIf(!POSIX)('setup runs the journey only when a supported host is pr
     expect(relocated.stdout).not.toContain('~/.claude/settings.json');
     const plain = path.join(work, 'h-label2');
     fs.mkdirSync(path.join(plain, '.claude'), { recursive: true });
-    expect(run(['setup', '--yes'], plain).stdout).toContain('Wire the session hooks into ~/.claude/settings.json');
+    expect(run(['setup', '--yes'], plain).stdout).toContain(`Wire the session hooks into ${path.join(plain, '.claude', 'settings.json')}`);
   }, 120_000);
 
   it('install-hooks on a machine where the Claude Code plugin already wires the hooks: still runs it', () => {
@@ -1171,9 +1173,10 @@ describe.skipIf(!POSIX)('setup runs the journey only when a supported host is pr
     const home = path.join(work, 'h-nohost');
     fs.mkdirSync(home);
     const r = run(['setup'], home);
-    expect(r.status).toBe(0);
+    // A machine with no host is not a machine that is set up: it exits 1 (#528).
+    expect(r.status).toBe(1);
     expect(r.stdout).not.toContain('Journey PASSED');
-    expect(r.stdout).toMatch(/No supported host was found/);
+    expect(`${r.stdout}${r.stderr}`).toMatch(/No supported agent host was found/);
     expect(r.stdout).toContain('memesh doctor --journey');
     // One consistent story: nothing was set up, so it must not also say there is nothing to do because everything is wired.
     expect(r.stdout).not.toContain('Everything present is wired');
