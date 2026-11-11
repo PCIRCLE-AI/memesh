@@ -73,8 +73,8 @@
     },
     {
       "path": "scripts/hooks/_generated/briefing-pools.js",
-      "sha256": "6bfddddec58bfe25741a29db454d6f11f1899113447e706c76b2d679b616cf95",
-      "bytes": 13455
+      "sha256": "5c5986d4f2dc7f60659861b30f7dde1f38438c1f7db021d9bbdb80531a7be69a",
+      "bytes": 13563
     },
     {
       "path": "scripts/hooks/_generated/capture-flag.js",
@@ -83,8 +83,8 @@
     },
     {
       "path": "scripts/hooks/_generated/capture-liveness.js",
-      "sha256": "2f7facc9ac595cfa64c5eb69c7f794fa616c53bdda907e7bd9f3d7ff5defe7ce",
-      "bytes": 22564
+      "sha256": "636095a40a54800e624d46c4c7be601700526da8d5d4352eefc4cd01c08eea51",
+      "bytes": 22682
     },
     {
       "path": "scripts/hooks/_generated/citation-rule.js",
@@ -98,8 +98,8 @@
     },
     {
       "path": "scripts/hooks/_generated/core-paths.js",
-      "sha256": "6ea417906b30ef8f07570323fae2111ae679b2514b40fba7a0bbe17ef85d5ad8",
-      "bytes": 25960
+      "sha256": "ec9611b51b6a2cfa41b34d90822861e478a54dd75c5b834623a97214a7efff99",
+      "bytes": 25581
     },
     {
       "path": "scripts/hooks/_generated/entity-write.js",
@@ -123,8 +123,8 @@
     },
     {
       "path": "scripts/hooks/_generated/project-scope.js",
-      "sha256": "d9c0c0d225ed12468fb6b66243b22d907a03af28311a65421781b44bd7ab16f4",
-      "bytes": 1662
+      "sha256": "e6db2521d657e8c2e51b08ce62993c80615714cc00a9d05349e4a62574314e99",
+      "bytes": 2564
     },
     {
       "path": "scripts/hooks/_generated/repo-state.js",
@@ -183,8 +183,8 @@
     },
     {
       "path": "scripts/hooks/_generated/work-topology.js",
-      "sha256": "015dfc6b5ecb0159d9c104d4cb23d6e637671e18e11d3f8c69a7c5c9da2190c1",
-      "bytes": 15358
+      "sha256": "f1c2fa2c46345d5d728ebce6591b723995ab5ffe237c44eb7730241ce7b91a8e",
+      "bytes": 15521
     },
     {
       "path": "scripts/hooks/_shared.js",
@@ -198,8 +198,8 @@
     },
     {
       "path": "scripts/hooks/_stop-notes.js",
-      "sha256": "a7fc93ba8dfbdf848391695666e69aa75c4afb0ea1b9928461f4edf913e482be",
-      "bytes": 26812
+      "sha256": "6e2af288e8e4fc7f3e906431256a06e182362f2157656a06d65adab12ec329d5",
+      "bytes": 28662
     },
     {
       "path": "scripts/hooks/auto-update-runner.mjs",
@@ -238,13 +238,13 @@
     },
     {
       "path": "scripts/hooks/pre-edit-recall.js",
-      "sha256": "b5a1ad9fa4b990b7806eca8017d2679d41c394aa4bf86cc379a83795cf79a97e",
-      "bytes": 39773
+      "sha256": "e57daa9ccd5d9f3fa07427a30baeb688bbc113a01896cc6875986dc9801af5ba",
+      "bytes": 39365
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "f11e4e54a8467537d549e8732263d733d1d2dc922451838f7f1ff1309640ec7f",
-      "bytes": 99279
+      "sha256": "dea011336606042ecbe1c5ad65706c044d2b9b48384118522656fee30e29ad0a",
+      "bytes": 99437
     },
     {
       "path": "scripts/hooks/session-summary.js",
@@ -268,8 +268,8 @@
     },
     {
       "path": "skills/memesh/SKILL.md",
-      "sha256": "034c68ba96ca281a0edd7f62f98e8a969822261a76c453be7fb1dc9b061c4432",
-      "bytes": 30296
+      "sha256": "ed4f8625541a47c2860be4217a37527b502e6adcf46eb9bc62780ac3c08a80dd",
+      "bytes": 30367
     }
   ]
 }

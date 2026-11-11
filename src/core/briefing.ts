@@ -181,7 +181,7 @@ export function assembleBriefing(project?: string, recipient?: string, projectId
     // #360: briefingTaskStateLines downgrades a stale record to one line
     // (at every level) and, when fresh, honours the level's own
     // taskState flag — `minimal` omits it entirely.
-    taskLines = boundTaskStateLines(briefingTaskStateLines(getTaskState(projectName).state, projectName, new Date(), {
+    taskLines = boundTaskStateLines(briefingTaskStateLines(getTaskState(projectName, ids).state, projectName, new Date(), {
       includeFresh: policy.taskState,
     }));
   } catch (err) {

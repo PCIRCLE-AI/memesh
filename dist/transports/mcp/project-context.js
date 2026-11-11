@@ -39,7 +39,7 @@ export function resolveMcpProject(launchRoot, rootUris) {
             };
         }
         const ids = getProjectIds(directory);
-        fromRoots.set(ids[0], ids);
+        fromRoots.set(ids[0], [...new Set([...(fromRoots.get(ids[0]) ?? []), ...ids])]);
     }
     if (launchRoot !== undefined) {
         const directory = path.isAbsolute(launchRoot) ? existingDirectory(launchRoot) : null;

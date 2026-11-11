@@ -88,3 +88,16 @@ describe('memesh remember files the memory under the current directory\'s projec
     expect(fromB.map(e => e.name).sort()).toEqual(['b-commit', 'b-decision']);
   });
 });
+
+describe('a memory stored before the CLI filed memories under a project', () => {
+  it('refusing to add to it from a project directory says how to: --no-project', () => {
+    getDatabase().prepare("INSERT INTO entities (name, type) VALUES ('Legacy cli note', 'note')").run();
+    closeDatabase();
+    const refused = runCliFromSource(['remember', '--name', 'Legacy cli note', '--type', 'note', '--obs', 'more'], { cwd: dirA, memeshDir: root, dbPath });
+    openDatabase(dbPath);
+    expect(refused.status).toBe(1);
+    expect(refused.stderr).toContain('--no-project');
+    remember(dirA, '--name', 'Legacy cli note', '--type', 'note', '--obs', 'more', '--no-project');
+    expect(projectTags('Legacy cli note')).toEqual([]);
+  });
+});

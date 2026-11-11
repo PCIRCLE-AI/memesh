@@ -11,7 +11,9 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { openDatabase, closeDatabase, getDatabase } from '../../src/db.js';
 import { ingestNoteDirectory } from '../../src/core/note-ingest.js';
-import { runNoteIngestion } from '../../scripts/hooks/_stop-notes.js';
+import { runNoteIngestion, runStopNotes } from '../../scripts/hooks/_stop-notes.js';
+import { spawnSync } from 'node:child_process';
+import { getProjectName } from '../../src/core/paths.js';
 import { SKIP_REASONS } from '../../scripts/hooks/_shared.js';
 
 let root: string;
@@ -81,7 +83,7 @@ describe('the Stop hook\'s note ingestion', () => {
     const blocked = await runNoteIngestion({ memoryDir: folder, project: 'proj-b', metaUrl });
     openDatabase(dbPath);
     expect(blocked.outcome).toBe('error');
-    expect(blocked.reason).toMatch(/nothing was changed/);
+    expect(blocked.reason).toMatch(/none of them was made trusted/);
     expect(trust('feedback-a')).toBe('untrusted');
     closeDatabase();
 
@@ -90,5 +92,52 @@ describe('the Stop hook\'s note ingestion', () => {
     openDatabase(dbPath);
     expect(retried.outcome).toBe('wrote');
     expect(trust('feedback-a')).toBe('trusted');
+  });
+});
+
+// The memory folder comes from the transcript's path (the directory the session started
+// in); the project a note is filed under comes from the payload's cwd. When the session has
+// moved to another project, the folder is not that project's: its notes are not filed there.
+describe('a memory folder is read only for the project it belongs to', () => {
+  const gitInit = (dir: string) => {
+    fs.mkdirSync(dir, { recursive: true });
+    const r = spawnSync('git', ['-C', dir, 'init', '-q'], { encoding: 'utf8' });
+    expect(r.status, r.stderr).toBe(0);
+  };
+  const sessionIn = (startedIn: string) => {
+    const projectDir = path.join(root, 'claude-projects', startedIn.replace(/[^a-zA-Z0-9]/g, '-'));
+    fs.mkdirSync(path.join(projectDir, 'memory'), { recursive: true });
+    fs.writeFileSync(path.join(projectDir, 'memory', 'a.md'), '---\nname: folder-note\ndescription: Prefer small diffs\nmetadata:\n  type: feedback\n---\nPrefer small diffs.\n');
+    const transcript = path.join(projectDir, 'session-1.jsonl');
+    fs.writeFileSync(transcript, `${JSON.stringify({ type: 'user', cwd: startedIn, message: { content: 'hi' } })}\n`);
+    return transcript;
+  };
+  const stop = async (transcript: string, cwd: string) => {
+    closeDatabase();
+    const run = await runStopNotes({ session_id: 'session-1', transcript_path: transcript, cwd }, {
+      captureEnabled: true, project: getProjectName(cwd), metaUrl, env: { ...process.env, MEMESH_DIR: root, MEMESH_DB_PATH: dbPath },
+    });
+    run.settle?.(false);
+    openDatabase(dbPath);
+  };
+  const stored = () => getDatabase().prepare(
+    "SELECT json_extract(e.metadata, '$.trust') AS trust, (SELECT group_concat(tag) FROM tags t WHERE t.entity_id = e.id AND t.tag LIKE 'project:%') AS project FROM entities e WHERE e.name = 'folder-note'",
+  ).get() as { trust: string; project: string } | undefined;
+
+  it('a session that moved to another repository does not file the folder\'s notes under it', async () => {
+    const repoA = path.join(root, 'repo-a');
+    const repoB = path.join(root, 'repo-b');
+    gitInit(repoA);
+    gitInit(repoB);
+    await stop(sessionIn(repoA), repoB);
+    expect(stored()).toBeUndefined();
+  });
+
+  it('a session that moved to a subdirectory of the same repository still files them, trusted', async () => {
+    const repoA = path.join(root, 'repo-a');
+    gitInit(repoA);
+    fs.mkdirSync(path.join(repoA, 'sub'));
+    await stop(sessionIn(repoA), path.join(repoA, 'sub'));
+    expect(stored()).toEqual({ trust: 'trusted', project: `project:${getProjectName(repoA)}` });
   });
 });

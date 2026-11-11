@@ -8,6 +8,8 @@ export declare const SHARED_EXPERIENCE_TYPES: ReadonlySet<string>;
 export declare const SHARED_EXPERIENCE_TYPE_LIST: readonly string[];
 export declare const SHARED_FEEDBACK_TYPE = "feedback";
 export declare const NOTE_FILE_PROVENANCE = "note-file";
+export declare function isReservedTag(tag: string): boolean;
+export declare const NOTE_FILE_MISSING_TAG = "source:note-file:missing";
 export declare const WHY_PREFIX = "Why: ";
 export declare const UNCONFIRMED_DECISION_DAYS = 30;
 export declare function utcEpoch(at: string | null | undefined): number;

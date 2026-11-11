@@ -2,14 +2,15 @@
 // db-copy — a verified copy of the database, taken before MeMesh changes stored memories
 // =============================================================================
 //
-// The same discipline as the agent-message expiry pass: copy to a temporary name,
-// check the copy holds what the database held, rename it into place, keep the newest
-// few. A copy that cannot be made or does not match stops the change: the caller must
-// not touch the data. The copy lives in `backups/` beside the database file.
+// Copy to a temporary name, check the copy holds what the database held, rename it
+// into place, keep the newest few. A copy that cannot be made or does not match stops
+// the change: the caller must not touch the data. The copy lives in `backups/` beside
+// the database file; the `.json` record a caller writes beside a copy (which ids it
+// changed, and how to undo it) is never removed.
 //
-// Unlike that pass this one is synchronous (`VACUUM INTO`, one consistent snapshot):
-// its callers are short-lived processes (the Stop hook, the CLI), where holding the
-// process for the length of the copy costs nothing, and they cannot await.
+// Synchronous (`VACUUM INTO`, one consistent snapshot): its callers are short-lived
+// processes (the Stop hook, the CLI), where holding the process for the length of the
+// copy costs nothing, and they cannot await.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -32,10 +33,13 @@ export function copyDatabaseBefore(db: MemeshDatabase, prefix: string): DbCopyOu
   if (!location) return { kind: 'failed', reason: 'the database has no file path, so no copy can be made' };
   const directory = path.join(path.dirname(location), 'backups');
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const finalPath = path.join(directory, `${prefix}-${stamp}.db`);
-  const partialPath = path.join(directory, `.partial-${prefix}-${process.pid}-${randomUUID().slice(0, 8)}.db`);
+  const unique = randomUUID().slice(0, 8);
+  // The stamp first, so names sort by time; the suffix keeps two copies of one millisecond apart.
+  const finalPath = path.join(directory, `${prefix}-${stamp}-${unique}.db`);
+  const partialPath = path.join(directory, `.partial-${prefix}-${process.pid}-${unique}.db`);
   try {
     fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    removeInterruptedCopies(directory, prefix);
     const expected = (db.prepare('SELECT COUNT(*) AS n FROM entities').get() as { n: number }).n;
     db.prepare('VACUUM INTO ?').run(partialPath);
     fs.chmodSync(partialPath, 0o600);
@@ -49,15 +53,36 @@ export function copyDatabaseBefore(db: MemeshDatabase, prefix: string): DbCopyOu
     if (found < expected) throw new Error(`the copy holds ${found} memories, fewer than the ${expected} the database had`);
     fs.renameSync(partialPath, finalPath);
   } catch (error) {
-    try { fs.rmSync(partialPath, { force: true }); } catch { /* nothing to remove */ }
+    try {
+      for (const name of [partialPath, `${partialPath}-journal`]) fs.rmSync(name, { force: true });
+    } catch { /* nothing to remove */ }
     return { kind: 'failed', reason: `the copy to ${directory} failed (${error instanceof Error ? error.message : String(error)})` };
   }
   try {
-    const mine = fs.readdirSync(directory).filter((name) => name.startsWith(`${prefix}-`) && name.endsWith('.db')).sort();
-    for (const name of mine.slice(0, Math.max(0, mine.length - DB_COPIES_KEPT))) {
-      fs.rmSync(path.join(directory, name), { force: true });
-      fs.rmSync(path.join(directory, `${name}.json`), { force: true });
-    }
+    const mine = fs.readdirSync(directory).filter((name) => copyName(prefix).test(name)).sort();
+    for (const name of mine.slice(0, Math.max(0, mine.length - DB_COPIES_KEPT))) fs.rmSync(path.join(directory, name), { force: true });
   } catch { /* an old copy that stays is not a failure */ }
   return { kind: 'ready', path: finalPath };
+}
+
+const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** A finished copy of this prefix, `<prefix>-<ISO stamp>[-<suffix>].db`: never a longer prefix's. */
+const copyName = (prefix: string) => new RegExp(`^${escaped(prefix)}-\\d{4}-\\d{2}-\\d{2}T[\\d-]+Z(?:-[0-9a-f]{8})?\\.db$`);
+
+/** The partial file and journal a copy of this prefix left when its process was killed. A running copy's are left alone. */
+function removeInterruptedCopies(directory: string, prefix: string): void {
+  const partial = new RegExp(`^\\.partial-${escaped(prefix)}-(\\d+)-[0-9a-f]{8}\\.db(?:-journal)?$`);
+  for (const name of fs.readdirSync(directory)) {
+    const pid = Number(partial.exec(name)?.[1]);
+    if (pid && !processRuns(pid)) fs.rmSync(path.join(directory, name), { force: true });
+  }
+}
+
+function processRuns(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
 }

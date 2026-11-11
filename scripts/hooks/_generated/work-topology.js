@@ -33,6 +33,10 @@ export const SHARED_EXPERIENCE_TYPES = new Set([
 export const SHARED_EXPERIENCE_TYPE_LIST = [...SHARED_EXPERIENCE_TYPES];
 export const SHARED_FEEDBACK_TYPE = 'feedback';
 export const NOTE_FILE_PROVENANCE = 'note-file';
+export function isReservedTag(tag) {
+    return tag.trim().toLowerCase().startsWith('source:');
+}
+export const NOTE_FILE_MISSING_TAG = 'source:note-file:missing';
 export const WHY_PREFIX = 'Why: ';
 export const UNCONFIRMED_DECISION_DAYS = 30;
 export function utcEpoch(at) {

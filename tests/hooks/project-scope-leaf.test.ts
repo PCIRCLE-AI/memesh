@@ -31,6 +31,9 @@ beforeEach(() => {
   add('other-note-feedback', 'feedback', ['project:b', 'source:note-file'], 'personal', fromFolder);
   add('other-forged-feedback', 'feedback', ['project:b', 'source:note-file']);
   add('other-feedback-record', 'feedback', ['project:b']);
+  add('other-untrusted-note-feedback', 'feedback', ['project:b', 'source:note-file'], 'personal', JSON.stringify({ trust: 'untrusted', provenance: { source: 'note-file' } }));
+  add('other-untrusted-decision', 'decision', ['project:b'], 'personal', JSON.stringify({ trust: 'untrusted' }));
+  add('other-bad-metadata-feedback', 'feedback', ['project:b'], 'personal', '{not json');
   add('no-project', 'note', []);
   add('global', 'note', ['project:b'], 'global');
 });
@@ -48,11 +51,8 @@ describe('the mirrored scope fragment', () => {
   it('a hook reads the project under every id, plus shared experience, no project and global', async () => {
     const mirrored = await import(pathToFileURL(path.resolve('scripts/hooks/_generated/project-scope.js')).href) as { projectScopeFilter: typeof coreFilter };
     const expected = ['global', 'no-project', 'other-decision', 'other-note-feedback', 'own-commit', 'own-under-earlier-id'];
+    // Another project's commit, plain feedback record, untrusted memories and unreadable metadata are not in scope.
     expect(read(mirrored.projectScopeFilter, ['project:a-new', 'project:a-old'])).toEqual(expected);
-    // Another project's commit and plain feedback record are not in scope.
-    expect(expected).not.toContain('other-commit');
-    expect(expected).not.toContain('other-feedback-record');
-    expect(expected).not.toContain('other-forged-feedback');
   });
 
   it('is the same fragment core uses', async () => {

@@ -1,5 +1,6 @@
+import { NOTE_FILE_MISSING_TAG } from './work-topology.js';
 export declare const NOTE_FILE_TAG = "source:note-file";
-export declare const NOTE_FILE_MISSING_TAG = "source:note-file:missing";
+export { NOTE_FILE_MISSING_TAG };
 export declare const NOTE_FILE_MAX_BYTES: number;
 export declare const NOTE_DIR_MAX_FILES = 500;
 export interface NoteIngestOptions {

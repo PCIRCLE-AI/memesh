@@ -117,6 +117,16 @@ export const SHARED_EXPERIENCE_TYPE_LIST: readonly string[] = [...SHARED_EXPERIE
 export const SHARED_FEEDBACK_TYPE = 'feedback';
 /** `provenance.source` of a memory the note ingester stored (note-ingest.ts). */
 export const NOTE_FILE_PROVENANCE = 'note-file';
+/**
+ * A tag only MeMesh writes: `source:` records where it got a memory (a note file, its own
+ * capture), in any case and with leading space. `remember` and a work package refuse one;
+ * accepting a proposal drops one.
+ */
+export function isReservedTag(tag: string): boolean {
+  return tag.trim().toLowerCase().startsWith('source:');
+}
+/** The tag note-ingest puts on a memory whose note file is gone. */
+export const NOTE_FILE_MISSING_TAG = 'source:note-file:missing';
 
 /** The observation prefix that carries a decision's reason. */
 export const WHY_PREFIX = 'Why: ';

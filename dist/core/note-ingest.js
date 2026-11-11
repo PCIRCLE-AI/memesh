@@ -3,12 +3,12 @@ import path from 'path';
 import { createHash } from 'crypto';
 import { getDatabase } from '../db.js';
 import { remember } from './operations.js';
-import { DECISION_TYPES, NOTE_FILE_PROVENANCE, WHY_PREFIX } from './work-topology.js';
+import { DECISION_TYPES, NOTE_FILE_MISSING_TAG, NOTE_FILE_PROVENANCE, WHY_PREFIX } from './work-topology.js';
 import { copyDatabaseBefore } from './db-copy.js';
 import { sanitizeNoteText, splitObservations, NOTE_DEFAULT_TYPE, NOTE_MAX_OBSERVATIONS } from './note-derive.js';
 import { truncateTitle } from './title.js';
 export const NOTE_FILE_TAG = 'source:note-file';
-export const NOTE_FILE_MISSING_TAG = 'source:note-file:missing';
+export { NOTE_FILE_MISSING_TAG };
 export const NOTE_FILE_MAX_BYTES = 256 * 1024;
 export const NOTE_DIR_MAX_FILES = 500;
 const SKIPPED_DIRS = new Set(['.git', 'node_modules']);
@@ -128,6 +128,7 @@ export function ingestNoteDirectory(opts) {
     const db = getDatabase();
     const trustFor = (type, observations) => opts.trusted && !(type !== undefined && DECISION_TYPES.has(type) && !observations.some((o) => o.startsWith(WHY_PREFIX))) ? 'trusted' : 'untrusted';
     const existingStmt = db.prepare(`SELECT e.id, e.metadata, e.status, e.type,
+            json_extract(CASE WHEN json_valid(e.metadata) THEN e.metadata END, '$.trust') AS trust,
             EXISTS(SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?) AS is_note,
             EXISTS(SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?) AS is_missing
        FROM entities e WHERE e.name = ?`);
@@ -404,7 +405,7 @@ export function ingestNoteDirectory(opts) {
             observations: owner.observations,
             ...(existing ? { project } : { tags: [NOTE_FILE_TAG, ...(opts.project ? [`project:${opts.project}`] : [])] }),
             replace: true,
-            trustOverride: trustFor(owner.type, owner.observations),
+            trustOverride: existing && existing.trust !== 'trusted' ? 'untrusted' : trustFor(owner.type, owner.observations),
             reinforceConfidence: false,
             provenanceOverride: {
                 source: 'note-file',
@@ -466,17 +467,35 @@ export function ingestNoteDirectory(opts) {
 }
 function liftFolderTrust(db, dirId, result) {
     const decisionTypes = [...DECISION_TYPES];
+    const liftedKey = `note_trust_lifted:${dirId}`;
+    const meta = "CASE WHEN json_valid(e.metadata) THEN e.metadata END";
     const rows = db.prepare(`SELECT e.id, e.name FROM entities e
-      WHERE json_extract(e.metadata, '$.provenance.source') = ?
-        AND json_extract(e.metadata, '$.provenance.note_dir_id') = ?
-        AND json_extract(e.metadata, '$.trust') = 'untrusted'
-        AND e.type NOT IN (${decisionTypes.map(() => '?').join(',')})
-      ORDER BY e.id`).all(NOTE_FILE_PROVENANCE, dirId, ...decisionTypes);
+      WHERE json_extract(${meta}, '$.provenance.source') = ?
+        AND json_extract(${meta}, '$.provenance.note_dir_id') = ?
+        AND json_extract(${meta}, '$.trust') = 'untrusted'
+        AND NOT EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?)
+        AND (e.type NOT IN (${decisionTypes.map(() => '?').join(',')})
+             OR EXISTS (SELECT 1 FROM observations o WHERE o.entity_id = e.id AND substr(o.content, 1, ?) = ?))
+        AND e.id NOT IN (SELECT value FROM json_each((SELECT value FROM memesh_metadata WHERE key = ? AND json_valid(value))))
+      ORDER BY e.id`).all(NOTE_FILE_PROVENANCE, dirId, NOTE_FILE_MISSING_TAG, ...decisionTypes, WHY_PREFIX.length, WHY_PREFIX, liftedKey);
     if (rows.length === 0)
         return;
+    const failed = (why) => `${rows.length} note(s) of this folder should become trusted, but ${why}; none of them was made trusted`;
+    const prior = db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(liftedKey)?.value;
+    const setLifted = db.prepare('INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)');
+    const unsetLifted = () => (prior === undefined
+        ? db.prepare('DELETE FROM memesh_metadata WHERE key = ?').run(liftedKey)
+        : setLifted.run(liftedKey, prior));
+    let priorIds = [];
+    try {
+        priorIds = JSON.parse(prior ?? '[]');
+    }
+    catch { }
+    setLifted.run(liftedKey, JSON.stringify([...(Array.isArray(priorIds) ? priorIds : []), ...rows.map((r) => r.id)]));
     const copy = copyDatabaseBefore(db, 'knowledge-graph-before-note-trust');
     if (copy.kind === 'failed') {
-        result.retrustFailed = `${rows.length} note(s) of this folder should become trusted, but ${copy.reason}; nothing was changed`;
+        unsetLifted();
+        result.retrustFailed = failed(copy.reason);
         return;
     }
     try {
@@ -487,11 +506,12 @@ function liftFolderTrust(db, dirId, result) {
             ids: rows.map((r) => r.id),
             names: rows.map((r) => r.name),
             backup: copy.path,
-            undo: `Restore the database from the backup file, or set metadata.trust back to 'untrusted' on the ids listed here: UPDATE entities SET metadata = json_set(metadata, '$.trust', 'untrusted') WHERE id IN (<ids>);`,
+            undo: `Restore the database from the backup file, or set metadata.trust back to 'untrusted' on the ids listed here (either way they stay untrusted: a memory is made trusted this way only once): UPDATE entities SET metadata = json_set(metadata, '$.trust', 'untrusted') WHERE id IN (<ids>);`,
         }, null, 2), { mode: 0o600 });
     }
     catch (error) {
-        result.retrustFailed = `${rows.length} note(s) of this folder should become trusted, but the record of the change could not be written (${error instanceof Error ? error.message : String(error)}); nothing was changed`;
+        unsetLifted();
+        result.retrustFailed = failed(`the record of the change could not be written (${error instanceof Error ? error.message : String(error)})`);
         return;
     }
     const lift = db.prepare("UPDATE entities SET metadata = json_set(metadata, '$.trust', 'trusted') WHERE id = ?");

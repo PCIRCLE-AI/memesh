@@ -286,7 +286,7 @@ memesh recall --ids 301,302 --json            # read memories named by briefing 
 ```
 
 For a `[mem:301]` handle, use `recall({ ids: [301] })` over MCP. Up to 20
-positive IDs may be requested, within the caller's scope (the project, memories with no project, global ones, and the decisions, lessons and preferences of any project); `query`, `tag` and
+positive IDs may be requested, within the caller's scope (the project, memories with no project, global ones, the decisions, lessons and preferences of any project except untrusted ones, and the preferences and feedback of a memory folder); `query`, `tag` and
 `cross_project` are separate search selectors. Results say `found`, `archived`,
 `unavailable` or `omitted`. Archived content needs `include_archived`; an
 unavailable ID reveals no content or existence outside scope. Retry omitted

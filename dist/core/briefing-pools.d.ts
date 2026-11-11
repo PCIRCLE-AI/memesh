@@ -39,7 +39,7 @@ export interface PoolOptions {
     projectLimit: number;
     global: boolean;
     foreign: boolean;
-    onError?: (label: 'handoff' | 'decisions' | 'lessons', err: unknown) => void;
+    onError?: (label: 'handoff' | 'decisions' | 'lessons' | 'shared', err: unknown) => void;
 }
 export declare function selectBriefingPools(db: MemeshDatabase, projectName: string, options: PoolOptions): BriefingPools;
 export interface Snippet {

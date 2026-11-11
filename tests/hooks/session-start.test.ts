@@ -800,6 +800,10 @@ describe('Feature: Session Start Hook', () => {
     expect(outcomes.some((o) => o.hook === 'session-start' && o.outcome === 'error' && /^handoff: uncaught /.test(String(o.reason)))).toBe(true);
     expect(outcomes.some((o) => o.hook === 'session-start' && o.outcome === 'error' && /^decisions: uncaught /.test(String(o.reason))),
       'a failed decisions-first read must be recorded, not silent').toBe(true);
+    // The shared pool (other projects' preferences) reads the same column: its failure is
+    // recorded under its own label too. Labelled `lessons` it was stderr-only.
+    expect(outcomes.some((o) => o.hook === 'session-start' && o.outcome === 'error' && /^shared: uncaught /.test(String(o.reason))),
+      'a failed shared-pool read must be recorded, not silent').toBe(true);
     expect(run.stderr).toContain('[memesh session-start] decisions:');
     // The locus plus a LABEL, never the exception's message. This file is
     // permanent, exportable and meant to be pasteable into an issue, and the

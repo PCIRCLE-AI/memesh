@@ -7,6 +7,7 @@ import { handleTool } from '../../src/mcp/tools.js';
 import { selectBriefingPools } from '../../src/core/briefing-pools.js';
 import { app } from '../../src/transports/http/server.js';
 import { runCliFromSource } from '../helpers/cli-source.js';
+import { WorkPackageSchema } from '../../src/transports/schemas.js';
 
 // Tags that start with `source:` record where MeMesh got a memory (a note file, its own
 // capture). No caller can claim one, over MCP, HTTP or the CLI, so an agent cannot dress
@@ -110,5 +111,22 @@ describe('a backup that holds source: tags still restores', () => {
     // The tag is kept, but it is only a tag: the briefing's pool reads provenance.
     const pools = selectBriefingPools(getDatabase(), 'some-project', { projectLimit: 10, global: false, foreign: false });
     expect(pools.shared.map(r => r.name)).not.toContain('backed-up');
+  });
+});
+
+describe('a work package result cannot carry a source: tag either', () => {
+  const submit = (tags: string[]) => WorkPackageSchema.safeParse({
+    action: 'submit',
+    package_id: 'a'.repeat(64),
+    ref: { kind: 'digest', project: 'p', source_ids: [1, 2, 3, 4, 5], source_hash: 'b'.repeat(64) },
+    result: { name: 'wp-digest', type: 'digest', observations: ['x'], tags },
+  });
+  it('is refused with the reason, in any spelling, and an ordinary tag still passes', () => {
+    expect(submit(['origin:x']).success).toBe(true);
+    for (const tag of ['source:note-file', 'Source:auto-capture', ' SOURCE:explicit']) {
+      const parsed = submit(['origin:x', tag]);
+      expect(parsed.success, tag).toBe(false);
+      expect(parsed.success ? '' : parsed.error.issues[0].message).toMatch(/reserved for MeMesh/);
+    }
   });
 });

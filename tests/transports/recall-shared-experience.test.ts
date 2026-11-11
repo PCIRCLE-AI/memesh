@@ -62,8 +62,11 @@ const viaCli = (cwd: string): Run => async (args) => {
 };
 
 // `feedback` is shared only when it came from the user's own memory folder (tagged source:note-file).
-const SHARED = ['B-arch', 'B-decision', 'B-design', 'B-feedback-note', 'B-lesson', 'B-pref', 'B-user-pref'];
-const DETAIL = ['B-commit', 'B-feedback', 'B-feedback-forged', 'B-handoff', 'B-insight', 'B-note', 'B-session'];
+// Of the notes from that folder, only preferences and feedback are shared; an untrusted memory never is.
+const SHARED = ['B-arch', 'B-decision', 'B-design', 'B-feedback-note', 'B-lesson', 'B-pref', 'B-pref-folder', 'B-user-pref'];
+const DETAIL = ['B-commit', 'B-feedback', 'B-feedback-forged', 'B-handoff', 'B-insight', 'B-note', 'B-session',
+  'B-decision-untrusted', 'B-pref-untrusted', 'B-feedback-untrusted', 'B-feedback-trust-only', 'B-feedback-gone',
+  'B-decision-folder', 'B-lesson-folder', 'B-pref-bad-metadata'];
 
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-shared-experience-'));
@@ -86,6 +89,21 @@ beforeEach(() => {
   make('B-feedback-note', 'feedback', ['project:B', 'source:note-file']);
   // The note ingester's provenance, which no tool, route or command can write: the tag alone proves nothing.
   getDatabase().prepare("UPDATE entities SET metadata = json_set(COALESCE(metadata, '{}'), '$.provenance.source', 'note-file', '$.trust', 'trusted') WHERE name = 'B-feedback-note'").run();
+  const withMetadata = (name: string, type: string, metadata: Record<string, unknown>, tags = ['project:B']) => {
+    make(name, type, tags);
+    getDatabase().prepare('UPDATE entities SET metadata = ? WHERE name = ?').run(JSON.stringify(metadata), name);
+  };
+  const fromFolder = { provenance: { source: 'note-file' }, trust: 'trusted' };
+  withMetadata('B-pref-folder', 'preference', fromFolder, ['project:B', 'source:note-file']);
+  withMetadata('B-decision-folder', 'decision', fromFolder, ['project:B', 'source:note-file']);
+  withMetadata('B-lesson-folder', 'lesson_learned', fromFolder, ['project:B', 'source:note-file']);
+  withMetadata('B-feedback-gone', 'feedback', fromFolder, ['project:B', 'source:note-file', 'source:note-file:missing']);
+  withMetadata('B-decision-untrusted', 'decision', { provenance: { source: 'import' }, trust: 'untrusted' });
+  withMetadata('B-pref-untrusted', 'preference', { provenance: { source: 'note-file' }, trust: 'untrusted' }, ['project:B', 'source:note-file']);
+  withMetadata('B-feedback-untrusted', 'feedback', { provenance: { source: 'note-file' }, trust: 'untrusted' }, ['project:B', 'source:note-file']);
+  withMetadata('B-feedback-trust-only', 'feedback', { trust: 'trusted' });
+  make('B-pref-bad-metadata', 'preference', ['project:B']);
+  getDatabase().prepare("UPDATE entities SET metadata = '{not json' WHERE name = 'B-pref-bad-metadata'").run();
   make('B-feedback-forged', 'feedback', ['project:B', 'source:note-file']);
   make('B-feedback', 'feedback', ['project:B']);
   make('B-commit', 'commit', ['project:B']);
@@ -148,7 +166,7 @@ describe('default recall shares decisions, lessons and preferences, and keeps pr
   });
 
   it('MCP: cross_project shows everything, as before', async () => {
-    const reply = await mcp({ cross_project: true, query: 'sharedword' });
+    const reply = await mcp({ cross_project: true, query: 'sharedword', limit: 50 });
     expect(names(reply)).toEqual(['A-commit', 'A-decision', ...SHARED, ...DETAIL].sort());
   });
 });
@@ -162,6 +180,11 @@ describe('recall by id', () => {
       expect(reply.results?.map(r => r.status)).toEqual(['found', 'found', 'found', 'unavailable', 'unavailable', 'unavailable']);
       expect(names(reply)).toEqual(['B-decision', 'B-lesson', 'B-pref']);
       for (const name of ['B-commit', 'B-session', 'B-handoff']) expect(reply.text).not.toContain(name);
+    });
+    it(`${surface}: an untrusted memory, and a memory-folder note that is not a preference or feedback, are unavailable to another project`, async () => {
+      const unshared = ['B-decision-untrusted', 'B-pref-untrusted', 'B-feedback-untrusted', 'B-decision-folder', 'B-lesson-folder', 'B-feedback-gone'];
+      const reply = await run()({ ids: [...unshared, 'B-pref-folder'].map(idOf) });
+      expect(reply.results?.map(r => r.status)).toEqual([...unshared.map(() => 'unavailable'), 'found']);
     });
   }
   it('HTTP has no project binding: an ID reaches a memory of any project, as a word search does, and says which project it is', async () => {
@@ -184,7 +207,7 @@ describe('recall by id', () => {
 describe('the CLI and HTTP keep their wide searches', () => {
   it('cross_project over HTTP and the CLI still returns every project', async () => {
     for (const run of [viaHttp, viaCli(dir)]) {
-      const reply = await run({ cross_project: true, query: 'sharedword' });
+      const reply = await run({ cross_project: true, query: 'sharedword', limit: 50 });
       expect(names(reply)).toEqual(['A-commit', 'A-decision', ...SHARED, ...DETAIL].sort());
     }
   });

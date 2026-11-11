@@ -32,10 +32,11 @@ import {
   unlinkSync,
 } from 'fs';
 import { createHash } from 'crypto';
-import { dirname, join } from 'path';
+import { basename, dirname, join } from 'path';
 import {
   ensurePrivateDir,
   getMemeshDirFromDbPath,
+  getProjectName,
   HOOK_BUSY_TIMEOUT_MS,
   SKIP_REASONS,
   hookErrorReason,
@@ -112,6 +113,40 @@ export function claudeMemoryDir(transcriptPath) {
     if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') return null;
     throw err;
   }
+}
+
+/** Transcript bytes read to find the directory the session started in. */
+const START_CWD_SCAN_BYTES = 1024 * 1024;
+
+/**
+ * Whether the memory folder (the one of the directory the session started in) belongs to
+ * `project`, the project of the payload's cwd. A session that moved to another repository
+ * would otherwise file that folder's notes, trusted, under the wrong project. Decided by
+ * project identity, so a move within one repository still matches: the transcript records
+ * the directory each line was written in, and the one whose slug names the folder is where
+ * the session started. No such line: false, and the notes wait for a Stop that can tell.
+ */
+export function memoryDirBelongsTo(memoryDir, { transcriptPath, cwd, project }) {
+  const slug = basename(dirname(memoryDir));
+  const slugOf = (dir) => dir.replace(/[^a-zA-Z0-9]/g, '-');
+  if (typeof cwd === 'string' && slugOf(cwd) === slug) return true;
+  let head;
+  let fd;
+  try {
+    fd = openSync(transcriptPath, 'r');
+    const buf = Buffer.alloc(START_CWD_SCAN_BYTES);
+    head = buf.subarray(0, readSync(fd, buf, 0, buf.length, 0)).toString('utf8');
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+  for (const line of head.split('\n')) {
+    let started;
+    try { started = JSON.parse(line)?.cwd; } catch { continue; }
+    if (typeof started === 'string' && slugOf(started) === slug) return getProjectName(started) === project;
+  }
+  return false;
 }
 
 /** Newest mtime among the directory and its `.md` files (links not followed). */
@@ -486,6 +521,9 @@ export async function runStopNotes(payload, { captureEnabled, project, metaUrl, 
       // with a worse ending, so ingestion waits for a Stop that has a cwd.
       // The nudge below is unaffected: it writes nothing and needs no project.
       recordHookOutcome(env, { hook: 'note-ingest', outcome: 'skipped', reason: SKIP_REASONS.cwdAbsent, payload });
+    } else if (memoryDir && !memoryDirBelongsTo(memoryDir, { transcriptPath: payload?.transcript_path, cwd: payload?.cwd, project })) {
+      // No folder (memoryDir null) is runNoteIngestion's own recorded skip, below.
+      recordHookOutcome(env, { hook: 'note-ingest', outcome: 'skipped', reason: SKIP_REASONS.memoryDirOtherProject, payload });
     } else {
       const r = await runNoteIngestion({ memoryDir, project, metaUrl });
       recordHookOutcome(env, { hook: 'note-ingest', outcome: r.outcome, reason: r.reason, entity: r.entity, payload });

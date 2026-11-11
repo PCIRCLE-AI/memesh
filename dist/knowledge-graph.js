@@ -517,7 +517,7 @@ export class KnowledgeGraph {
             const queryParams = [ftsQuery, ...scopeParams, exactQuery, exactQuery, limit];
             return this.db
                 .prepare(`SELECT e.id FROM entities_fts f
-           JOIN entities e ON e.id = f.rowid
+           CROSS JOIN entities e ON e.id = f.rowid
            WHERE entities_fts MATCH ?
              ${tagFilter}
              ${statusFilter}

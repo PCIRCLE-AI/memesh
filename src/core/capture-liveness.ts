@@ -352,6 +352,8 @@ export const SKIP_REASONS = {
   noSessionOrTranscript: 'neither session_id nor transcript_path in the payload',
   emptyStdin: 'empty stdin',
   cwdAbsent: 'cwd absent in payload — cannot resolve project',
+  /** note-ingest: the session moved to another project than the one its memory folder belongs to. */
+  memoryDirOtherProject: 'the memory folder belongs to the project the session started in, not the one of its cwd',
   /** session-start: no absolute, existing directory as the session cwd, so no project line was shown. */
   projectLineNoCwd: 'no usable session cwd — the project line was not shown',
   notAgenticLoop: 'not an agentic loop',

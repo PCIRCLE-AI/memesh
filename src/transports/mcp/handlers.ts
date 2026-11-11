@@ -57,6 +57,12 @@ function projectFor(explicit: string | undefined, context: McpRequestContext, ac
   return { result: fail(`${binding.error}: ${binding.reason} ${action}`) };
 }
 
+/** Every id a session bound to `project` reads it under (the binding carries them); undefined for another project. */
+function boundIdsFor(project: string, context: McpRequestContext): readonly string[] | undefined {
+  const binding = context.projectBinding;
+  return binding && 'project' in binding && binding.project === project ? binding.ids : undefined;
+}
+
 /** What the caller can do when a write names no project and none is bound. */
 const PROJECT_ACTION = `Pass project ("<id>", or a "project:<id>" tag), or project: false for a memory that belongs to no project (a preference, a general lesson), or bind the session: ${BIND_WORKSPACE}`;
 
@@ -229,7 +235,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'recall',
     description:
-      'Search stored knowledge with full-text search, or retrieve exact memory IDs. Use ids (1–20 positive integers) without query, tag or cross_project. ID results report found, archived, unavailable or omitted; only found memories include content and a mem-fetched reference. Retry omitted results individually; an item still omitted on its own cannot fit the response limit. Selectors: `project` (that project, memories with no project, global ones, and the decisions, lessons and preferences of any project; false = the same without a project of its own), `tag` (exactly that tag) or `cross_project` (every project; a `tag` given with it is ignored). `project` cannot be combined with `tag` or `cross_project`. With none, it uses the project this session is bound to (MEMESH_PROJECT_ROOT, or the client’s workspace root) the same way, or the same without a project of its own when nothing is bound; the detail of another project (commits, session summaries, handoffs, notes) is never included; a launch or workspace root that is set but cannot be resolved is refused with the reason; the response says what it searched (`scope`) and each result carries its `projects` ([] for none). A result carries `archived_relations_omitted` when it leaves out relations to archived memories (a `supersedes` link is always shown); add `include_archived` to see them. Call with no query to list recent memories. One- and two-term queries use OR matching; queries with three or more terms try strict all-term matching first and fall back to OR only when strict matching has no hits, with results ranked by relevance. Results are capped for size: each entity\'s observations+tags at 8 KB, the whole response at 32 KB; a capped entity carries `truncated` with the full shown/total counts, and the response carries `truncated`/`entities_omitted` when anything was cut. `file:*` tags are never included — they exist for pre-edit lookups, not for reading.',
+      'Search stored knowledge with full-text search, or retrieve exact memory IDs. Use ids (1–20 positive integers) without query, tag or cross_project. ID results report found, archived, unavailable or omitted; only found memories include content and a mem-fetched reference. Retry omitted results individually; an item still omitted on its own cannot fit the response limit. Selectors: `project` (that project, memories with no project, global ones, and the decisions, lessons and preferences of any project, untrusted ones excepted; false = the same without a project of its own), `tag` (exactly that tag) or `cross_project` (every project; a `tag` given with it is ignored). `project` cannot be combined with `tag` or `cross_project`. With none, it uses the project this session is bound to (MEMESH_PROJECT_ROOT, or the client’s workspace root) the same way, or the same without a project of its own when nothing is bound; the detail of another project (commits, session summaries, handoffs, notes) is never included; a launch or workspace root that is set but cannot be resolved is refused with the reason; the response says what it searched (`scope`) and each result carries its `projects` ([] for none). A result carries `archived_relations_omitted` when it leaves out relations to archived memories (a `supersedes` link is kept, its archived far end too, when that end is in the scope searched); add `include_archived` to see them. Call with no query to list recent memories. One- and two-term queries use OR matching; queries with three or more terms try strict all-term matching first and fall back to OR only when strict matching has no hits, with results ranked by relevance. Results are capped for size: each entity\'s observations+tags at 8 KB, the whole response at 32 KB; a capped entity carries `truncated` with the full shown/total counts, and the response carries `truncated`/`entities_omitted` when anything was cut. `file:*` tags are never included — they exist for pre-edit lookups, not for reading.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -842,11 +848,10 @@ async function handleToolInner(
       }
       let boundProject: string | null;
       let boundIds: readonly string[] = [];
-      const bound = requestContext.projectBinding;
       if (projectArg !== undefined) {
         boundProject = projectArg === false ? null : projectArg;
         // Naming the session's own project reads every id its repository has.
-        boundIds = boundProject === null ? [] : bound && 'project' in bound && bound.project === boundProject ? bound.ids ?? [boundProject] : [boundProject];
+        boundIds = boundProject === null ? [] : boundIdsFor(boundProject, requestContext) ?? [boundProject];
       } else {
         const binding = requestContext.projectBinding ?? UNBOUND;
         // Only a session with nothing bound falls back to memories with no
@@ -917,21 +922,21 @@ async function handleToolInner(
       const bound = projectFor(explicit, requestContext, 'Pass project explicitly.');
       if ('result' in bound) return bound.result;
       const { project } = bound;
+      // The bound project's state may be stored under an earlier id of its checkout.
+      const ids = boundIdsFor(project, requestContext);
       // No field mentioned at all = a read. Distinguished by which KEYS
       // arrived, not by their values: `blocked: ""` is a write that clears,
       // and treating it as "nothing to do" would make a blocker unremovable.
-      if (Object.keys(patch).length === 0) return ok(getTaskState(project));
-      return ok(setTaskState({ project, patch, sourceHost }));
+      if (Object.keys(patch).length === 0) return ok(getTaskState(project, ids));
+      return ok(setTaskState({ project, ids, patch, sourceHost }));
     }
     if (name === 'briefing') {
       const r = parseOrFail(BriefingSchema, args);
       if (!r.ok) return r.result;
       const bound = projectFor(r.data.project, requestContext, 'Pass project explicitly.');
       if ('result' in bound) return bound.result;
-      // A session bound to this project reads it under every id its checkout has (the binding carries them).
-      const binding = requestContext.projectBinding;
-      const ids = binding && 'project' in binding && binding.project === bound.project ? binding.ids : undefined;
-      return ok(assembleBriefing(bound.project, r.data.recipient, ids));
+      // A session bound to this project reads it under every id its checkout has.
+      return ok(assembleBriefing(bound.project, r.data.recipient, boundIdsFor(bound.project, requestContext)));
     }
     if (name === 'user_patterns') {
       const r = parseOrFail(UserPatternsSchema, args);

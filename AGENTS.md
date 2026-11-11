@@ -149,7 +149,7 @@ hosts should share memories. Not installed yet? Follow
   is refused when none is bound. Pass `project: "<id>"` to name it, or
   `project: false` for a memory that belongs to no project (a preference, a
   general lesson). `recall` searches the bound project (or `project`), memories
-  with no project, global ones, and the decisions, lessons and preferences of any project (each result's `projects` says where it came from; another project's commits, session summaries, handoffs and notes are never included), and says which in `scope`. When you tag by hand (the CLI, or another
+  with no project, global ones, and the decisions, lessons and preferences of any project, except untrusted ones (each result's `projects` says where it came from; another project's commits, session summaries, handoffs and notes are never included, nor the notes of its memory folder other than preferences and feedback), and says which in `scope`. When you tag by hand (the CLI, or another
   project), use `project:<id>`, where `<id>` is the `project` field of the
   `briefing` result (CLI: `memesh briefing --json`). The first line of the
   injected block gives this session's exact project id (readable name plus a

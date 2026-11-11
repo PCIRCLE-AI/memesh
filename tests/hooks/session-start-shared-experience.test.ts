@@ -23,6 +23,7 @@ import { selectBriefingPools } from '../../src/core/briefing-pools.js';
 import { handleTool } from '../../src/mcp/tools.js';
 import { getProjectIds, getProjectName } from '../../src/core/paths.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
+import { setTaskState } from '../../src/core/task-state-store.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
 
 const hookPath = path.resolve('scripts/hooks/session-start.js');
@@ -116,6 +117,31 @@ describe('SessionStart reads the project under every id of its checkout', () => 
     expect(context).toContain('finish the widget parser');
   });
 
+  it('the task state stored under an earlier id is shown by the hook, the briefing and task_state, and a new field keeps it', async () => {
+    openDatabase(dbPath);
+    setTaskState({ project: earlierId, patch: { goal: 'TASKGOALOLD ship v2' } });
+    closeDatabase();
+    expect(hookContext('standard')).toContain('TASKGOALOLD ship v2');
+    openDatabase(dbPath);
+    const binding = { projectBinding: { project: ownId, ids: getProjectIds(repo) } };
+    const read = await handleTool('task_state', {}, undefined, undefined, binding);
+    expect(read.content[0].text).toContain('TASKGOALOLD ship v2');
+    // `minimal` (the default) leaves a fresh task state out; `standard` shows it.
+    const previousLevel = process.env.MEMESH_BRIEFING;
+    process.env.MEMESH_BRIEFING = 'standard';
+    try {
+      const briefing = await handleTool('briefing', {}, undefined, undefined, binding);
+      expect(briefing.content[0].text).toContain('TASKGOALOLD ship v2');
+    } finally {
+      if (previousLevel === undefined) delete process.env.MEMESH_BRIEFING;
+      else process.env.MEMESH_BRIEFING = previousLevel;
+    }
+    const written = await handleTool('task_state', { next: 'write the parser' }, undefined, undefined, binding);
+    closeDatabase();
+    expect(written.content[0].text).toContain('TASKGOALOLD ship v2');
+    expect(written.content[0].text).toContain('write the parser');
+  });
+
   it('the durable-memory index reads the earlier id too', () => {
     const context = hookContext('standard');
     const index = context.split('Index of durable memories for')[1] ?? '';
@@ -183,6 +209,34 @@ describe('SessionStart and briefing carry a few shared experiences of other proj
     expect(context).toContain('Own lesson under an earlier id');
     expect(context).not.toContain('Flood decision');
     expect(sharedSection(context).length).toBe(3);
+  });
+
+  it('a newer untrusted handoff under another id does not hide the trusted one', () => {
+    openDatabase(dbPath);
+    // An import brings a handoff back under the current id, untrusted, newer than the earlier one.
+    new KnowledgeGraph(getDatabase()).createEntity(`session-handoff:${ownId}`, 'session-handoff', { observations: ['Imported handoff text that must not lead'], tags: [`project:${ownId}`] });
+    getDatabase().prepare(`UPDATE entities SET metadata = json_set(COALESCE(metadata, '{}'), '$.trust', 'untrusted', '$.provenance.source', 'import') WHERE name = ?`).run(`session-handoff:${ownId}`);
+    const pools = selectBriefingPools(getDatabase(), ownId, { projectIds: getProjectIds(repo), projectLimit: 10, global: false, foreign: false });
+    closeDatabase();
+    expect(pools.handoff?.text).toContain('finish the widget parser');
+  });
+
+  it('a failed read of the shared pool is reported as the shared pool, so the hook records it', () => {
+    openDatabase(dbPath);
+    const db = getDatabase();
+    const real = db.prepare.bind(db);
+    const labels: string[] = [];
+    (db as unknown as { prepare: (sql: string) => unknown }).prepare = (sql: string) => {
+      if (sql.includes('AS source_project')) throw new Error('shared pool unreadable');
+      return real(sql);
+    };
+    try {
+      selectBriefingPools(db, ownId, { projectIds: getProjectIds(repo), projectLimit: 10, global: false, foreign: false, onError: (label) => { labels.push(label); } });
+    } finally {
+      (db as unknown as { prepare: unknown }).prepare = real;
+      closeDatabase();
+    }
+    expect(labels).toEqual(['shared']);
   });
 
   it('the shared pool itself holds at most three rows, each carrying the project it came from', () => {

@@ -494,6 +494,7 @@ program
       }
     }
 
+    const tagsNameProject = opts.tags?.some((tag: string) => tag.startsWith('project:') && tag.slice('project:'.length).trim() !== '');
     await withDatabase(async () => {
       let result;
       try {
@@ -508,7 +509,7 @@ program
           // stays in its project; decisions, lessons and preferences are shared by type.
           ...(opts.project === false
             ? { project: null }
-            : opts.tags?.some((tag: string) => tag.startsWith('project:') && tag.slice('project:'.length).trim() !== '') ? {} : { project: getProjectName() }),
+            : tagsNameProject ? {} : { project: getProjectName() }),
           namespace: opts.namespace,
           relations: relations.length > 0 ? relations : undefined,
           why: opts.why,
@@ -522,7 +523,13 @@ program
       } catch (err) {
         // remember() refuses an unusable note (e.g. only control characters)
         // with one sentence; a stack trace would bury it.
-        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        const message = err instanceof Error ? err.message : String(err);
+        // The directory's project was added here, and the memory has none (stored before the CLI
+        // filed memories under a project): say how to add to it as it is.
+        const hint = opts.project !== false && !tagsNameProject && message.includes('it has no project tag')
+          ? ' To add to that memory, run the same command with --no-project.'
+          : '';
+        console.error(`Error: ${message}${hint}`);
         process.exit(1);
       }
       if (opts.json) {

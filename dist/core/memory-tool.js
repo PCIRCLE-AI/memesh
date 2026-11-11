@@ -2,6 +2,7 @@ import { getDatabase } from '../db.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { removeFromFts, insertFtsRow, indexedObservationText } from '../storage/fts-index.js';
 import { redactSecretList, redactSecrets, redactTitleAndObservations } from './paths.js';
+import { NOTE_FILE_PROVENANCE } from './work-topology.js';
 export const MEMORY_ROOT = '/memories';
 const NAMESPACES = ['personal', 'team', 'global'];
 const FILE_SUFFIX = '.md';
@@ -138,6 +139,10 @@ function rewriteObservations(kg, entity, observations) {
             tags: entity.tags,
             namespace: entity.namespace,
             reinforceConfidence: false,
+        });
+        kg.updateEntityMetadata(entity.name, (current) => {
+            const provenance = current.provenance;
+            return provenance?.source === NOTE_FILE_PROVENANCE ? { ...current, provenance: { ...provenance, source: 'local' } } : current;
         });
     }).immediate();
 }

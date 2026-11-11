@@ -65,7 +65,8 @@ export function resolveMcpProject(
       };
     }
     const ids = getProjectIds(directory);
-    fromRoots.set(ids[0], ids);
+    // Two checkouts of one project (one remote) each add their own path's ids, whatever their order.
+    fromRoots.set(ids[0], [...new Set([...(fromRoots.get(ids[0]) ?? []), ...ids])]);
   }
 
   if (launchRoot !== undefined) {

@@ -30890,6 +30890,10 @@ var SHARED_EXPERIENCE_TYPES = /* @__PURE__ */ new Set([
 var SHARED_EXPERIENCE_TYPE_LIST = [...SHARED_EXPERIENCE_TYPES];
 var SHARED_FEEDBACK_TYPE = "feedback";
 var NOTE_FILE_PROVENANCE = "note-file";
+function isReservedTag(tag) {
+  return tag.trim().toLowerCase().startsWith("source:");
+}
+var NOTE_FILE_MISSING_TAG = "source:note-file:missing";
 var WHY_PREFIX = "Why: ";
 var UNCONFIRMED_DECISION_DAYS = 30;
 function utcEpoch(at) {
@@ -31231,14 +31235,18 @@ function stripControlChars(s) {
 
 // dist/core/project-scope.js
 var noProjectTag = (alias = "e") => `NOT EXISTS (SELECT 1 FROM tags sp WHERE sp.entity_id = ${alias}.id AND sp.tag LIKE 'project:%')`;
-var ownFolderNote = (alias = "e") => `(json_extract(${alias}.metadata, '$.provenance.source') = '${NOTE_FILE_PROVENANCE}' AND json_extract(${alias}.metadata, '$.trust') = 'trusted')`;
+var metadataField = (alias, field) => `json_extract(CASE WHEN json_valid(${alias}.metadata) THEN ${alias}.metadata END, '$.${field}')`;
+var ownFolderNote = (alias = "e") => `(${metadataField(alias, "provenance.source")} = '${NOTE_FILE_PROVENANCE}' AND ${metadataField(alias, "trust")} = 'trusted' AND NOT EXISTS (SELECT 1 FROM tags sm WHERE sm.entity_id = ${alias}.id AND sm.tag = '${NOTE_FILE_MISSING_TAG}'))`;
+var SHARED_NOTE_TYPES = [...PREFERENCE_TYPES, SHARED_FEEDBACK_TYPE];
+var folderNoteMayTravel = (alias = "e") => `(${metadataField(alias, "provenance.source")} IS NOT '${NOTE_FILE_PROVENANCE}' OR (${alias}.type IN (${SHARED_NOTE_TYPES.map((type) => `'${type}'`).join(",")}) AND ${ownFolderNote(alias)}))`;
 function projectScopeFilter(scope, alias = "e") {
   const tags = scope === null ? [] : typeof scope === "string" ? [scope] : scope;
-  const shared = `${alias}.type IN (${SHARED_EXPERIENCE_TYPE_LIST.map(() => "?").join(",")}) OR (${alias}.type = ? AND ${ownFolderNote(alias)})`;
-  const own2 = tags.length === 0 ? "" : `EXISTS (SELECT 1 FROM tags st WHERE st.entity_id = ${alias}.id AND st.tag IN (${tags.map(() => "?").join(",")})) OR `;
+  const marks = (list) => list.map(() => "?").join(",");
+  const shared = `(${alias}.type IN (${marks(SHARED_EXPERIENCE_TYPE_LIST)}) AND (${alias}.metadata IS NULL OR json_valid(${alias}.metadata)) AND ${metadataField(alias, "trust")} IS NOT 'untrusted' AND ${metadataField(alias, "provenance.source")} IS NOT '${NOTE_FILE_PROVENANCE}') OR (${alias}.type IN (${marks(SHARED_NOTE_TYPES)}) AND ${ownFolderNote(alias)})`;
+  const own2 = tags.length === 0 ? "" : `EXISTS (SELECT 1 FROM tags st WHERE st.entity_id = ${alias}.id AND st.tag IN (${marks(tags)})) OR `;
   return {
     sql: `AND (${own2}${noProjectTag(alias)} OR ${alias}.namespace = 'global' OR ${shared})`,
-    params: [...tags, ...SHARED_EXPERIENCE_TYPE_LIST, SHARED_FEEDBACK_TYPE]
+    params: [...tags, ...SHARED_EXPERIENCE_TYPE_LIST, ...SHARED_NOTE_TYPES]
   };
 }
 
@@ -31289,34 +31297,21 @@ function normalizeAgentRouterSocketPath(socketPath) {
   return socketPath === path.join(dataDir, LEGACY_AGENT_ROUTER_SOCKET_FILENAME) ? getAgentRouterSocketPath() : socketPath;
 }
 function getProjectName(cwdInput) {
-  const cwd = cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd();
-  const cached2 = projectNameCache.get(cwd);
-  if (cached2 !== void 0)
-    return cached2;
-  const resolved = resolveProjectIdentity(cwd);
-  projectNameCache.set(cwd, resolved);
-  return resolved;
+  return getProjectIds(cwdInput)[0];
 }
-var projectNameCache = /* @__PURE__ */ new Map();
-function resolveProjectIdentity(cwd) {
-  const remote = remoteProjectIdentity(cwd);
-  if (remote)
-    return remote;
-  const real = projectRealPath(cwd);
-  return projectIdentity(path.basename(real), real);
-}
-var locatorIdentity = (locator) => projectIdentity(path.posix.basename(locator).replace(/\.git$/i, ""), locator);
-function remoteProjectIdentity(cwd) {
+var projectIdsCache = /* @__PURE__ */ new Map();
+function resolveProjectIds(cwd) {
   const remote = tryGit(cwd, ["config", "--get", "remote.origin.url"]);
   const locator = remote ? canonicalRemoteLocator(remote) : null;
-  return locator ? locatorIdentity(locator) : null;
+  const real = projectRealPath(cwd);
+  const legacy = `${path.basename(real)}-${createHash("sha256").update(real).digest("hex").slice(0, 8)}`;
+  const pathIds = [projectIdentity(path.basename(real), real), legacy];
+  const remoteIds = remote && locator ? [locatorIdentity(locator), ...remoteLocatorAliases(remote).map(locatorIdentity)] : [];
+  return [.../* @__PURE__ */ new Set([...remoteIds, ...pathIds])];
 }
-function remoteAliasIdentities(cwd) {
-  const remote = tryGit(cwd, ["config", "--get", "remote.origin.url"]);
-  return remote ? remoteLocatorAliases(remote).map(locatorIdentity) : [];
-}
+var locatorIdentity = (locator) => projectIdentity(path.posix.basename(locator).replace(/\.git$/i, ""), locator);
 function projectRealPath(cwd) {
-  const root = tryGit(cwd, ["rev-parse", "--show-toplevel"]);
+  const root = gitRepoRoot(cwd);
   const commonDir = root ? tryGit(cwd, ["rev-parse", "--git-common-dir"]) : null;
   const absoluteCommonDir = commonDir ? path.resolve(cwd, commonDir) : null;
   const localPath = absoluteCommonDir && path.basename(absoluteCommonDir) === ".git" ? path.dirname(absoluteCommonDir) : root ?? cwd;
@@ -31328,16 +31323,12 @@ function projectRealPath(cwd) {
 }
 function getProjectIds(cwdInput) {
   const cwd = cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd();
-  const real = projectRealPath(cwd);
-  const label = path.basename(real).normalize("NFC").slice(0, PROJECT_LABEL_MAX_LENGTH) || "project";
-  const ids = [
-    getProjectName(cwd),
-    remoteProjectIdentity(cwd),
-    ...remoteAliasIdentities(cwd),
-    projectIdentity(path.basename(real), real),
-    `${label}-${createHash("sha256").update(real).digest("hex").slice(0, 8)}`
-  ];
-  return [...new Set(ids.filter((id) => id !== null))];
+  const cached2 = projectIdsCache.get(cwd);
+  if (cached2 !== void 0)
+    return cached2;
+  const resolved = resolveProjectIds(cwd);
+  projectIdsCache.set(cwd, resolved);
+  return resolved;
 }
 var PROJECT_HASH_HEX_LENGTH = 32;
 var PROJECT_ID_MAX_LENGTH = 200;
@@ -31360,6 +31351,13 @@ function tryGit(cwd, args) {
     return null;
   }
 }
+function gitRepoRoot(cwdInput) {
+  const cwd = cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd();
+  if (!repoRootCache.has(cwd))
+    repoRootCache.set(cwd, tryGit(cwd, ["rev-parse", "--show-toplevel"]));
+  return repoRootCache.get(cwd) ?? null;
+}
+var repoRootCache = /* @__PURE__ */ new Map();
 function parseRemote(remote) {
   const value = remote.trim();
   if (!value)
@@ -31428,11 +31426,12 @@ function remoteLocatorAliases(remote) {
     return [];
   const bare = parts.path.replace(/\.git$/i, "");
   const out = /* @__PURE__ */ new Set();
-  for (const suffix of ["", ".git"]) {
+  for (const suffix of /\.git$/i.test(bare) ? [".git"] : ["", ".git"]) {
     out.add(`https://${parts.host}/${bare}${suffix}`);
     for (const transport of ["ssh-relative", "ssh-absolute"])
       out.add(`${transport}://git@${parts.host}/${bare}${suffix}`);
   }
+  out.add(literalLocator(parts));
   out.delete(canonicalRemoteLocator(remote) ?? "");
   return [...out];
 }
@@ -32423,7 +32422,7 @@ var KnowledgeGraph = class {
     const findFtsRows = (ftsQuery) => {
       const queryParams = [ftsQuery, ...scopeParams, exactQuery, exactQuery, limit];
       return this.db.prepare(`SELECT e.id FROM entities_fts f
-           JOIN entities e ON e.id = f.rowid
+           CROSS JOIN entities e ON e.id = f.rowid
            WHERE entities_fts MATCH ?
              ${tagFilter}
              ${statusFilter}
@@ -35918,6 +35917,14 @@ function readState(name) {
   }
   return { state: parseTaskState(parsed), corrupted: false };
 }
+function readProjectState(project, ids) {
+  const exists = getDatabase().prepare("SELECT 1 FROM entities WHERE name = ? AND status = 'active'");
+  for (const id of /* @__PURE__ */ new Set([project, ...ids ?? (project === getProjectName() ? getProjectIds() : [])])) {
+    if (exists.get(taskStateName(id)))
+      return readState(taskStateName(id));
+  }
+  return { state: {}, corrupted: false };
+}
 var TaskStateUnreadableError = class extends Error {
   project;
   constructor(project) {
@@ -35926,9 +35933,9 @@ var TaskStateUnreadableError = class extends Error {
     this.name = "TaskStateUnreadableError";
   }
 };
-function getTaskState(project) {
+function getTaskState(project, ids) {
   const resolved = project ?? getProjectName();
-  const { state, corrupted } = readState(taskStateName(resolved));
+  const { state, corrupted } = readProjectState(resolved, ids);
   if (corrupted)
     throw new TaskStateUnreadableError(resolved);
   return { project: resolved, state: redactedState(state) };
@@ -35950,7 +35957,7 @@ function setTaskState(input2) {
   const patch = { ...input2.patch, ...Object.fromEntries(textFields.map(([field], i) => [field, texts[i]])) };
   const db2 = getDatabase();
   const write = db2.transaction(() => {
-    const { state: previous, corrupted } = readState(name);
+    const { state: previous, corrupted } = readProjectState(project, input2.ids);
     const { state, changed, observations } = mergeTaskState(previous, patch, (/* @__PURE__ */ new Date()).toISOString());
     if (changed.length === 0) {
       if (corrupted)
@@ -35983,7 +35990,7 @@ function setTaskState(input2) {
     if (!/readonly database|SQLITE_READONLY/i.test(message))
       throw error62;
     return db2.transaction(() => {
-      const { state: previous, corrupted } = readState(name);
+      const { state: previous, corrupted } = readProjectState(project, input2.ids);
       const { state, changed } = mergeTaskState(previous, patch, (/* @__PURE__ */ new Date()).toISOString());
       if (changed.length !== 0)
         throw error62;
@@ -36411,12 +36418,11 @@ function selectBriefingPools(db2, projectName2, options) {
   const projectTags = ids.map((id) => `project:${id}`);
   const tagMarks = projectTags.map(() => "?").join(",");
   const columns = candidateColumns(cols);
-  const handoffRead = guarded("handoff", void 0, () => db2.prepare(`SELECT e.id, e.name, e.metadata, o.content AS text, o.created_at AS observedAt
+  const handoffs = guarded("handoff", [], () => db2.prepare(`SELECT e.id, e.name, e.metadata, o.content AS text, o.created_at AS observedAt
      FROM entities e JOIN observations o ON o.entity_id = e.id
      WHERE e.name IN (${ids.map(() => "?").join(",")}) AND e.type = ?${active(cols)}
-     ORDER BY o.id DESC
-     LIMIT 1`).get(...ids.map(sessionHandoffName), SESSION_HANDOFF_TYPE), options.onError);
-  const handoffTrusted = !!handoffRead && trustedForAutoContext(handoffRead.metadata);
+     ORDER BY o.id DESC`).all(...ids.map(sessionHandoffName), SESSION_HANDOFF_TYPE), options.onError);
+  const handoff2 = handoffs.find((row) => trustedForAutoContext(row.metadata));
   const projectRows = db2.prepare(`SELECT DISTINCT ${columns}
      FROM entities e JOIN tags t ON t.entity_id = e.id
      WHERE t.tag IN (${tagMarks})${active(cols)} AND e.type <> ?${nonGlobal(cols)}
@@ -36438,7 +36444,7 @@ function selectBriefingPools(db2, projectName2, options) {
      WHERE ${NO_PROJECT_TAG} AND e.type <> ?${active(cols)}${nonGlobal(cols)}
      ORDER BY e.id DESC
      LIMIT ?`).all(SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP), NO_PROJECT_LIMIT);
-  const shared = guarded("lessons", [], () => db2.prepare(`SELECT DISTINCT ${columns}, ${RECENCY_SQL} AS recency,
+  const shared = guarded("shared", [], () => db2.prepare(`SELECT DISTINCT ${columns}, ${RECENCY_SQL} AS recency,
        (SELECT substr(pt.tag, ${"project:".length + 1}) FROM tags pt
          WHERE pt.entity_id = e.id AND pt.tag LIKE 'project:%' AND pt.tag NOT IN (${tagMarks})
          ORDER BY pt.tag LIMIT 1) AS source_project
@@ -36456,11 +36462,12 @@ function selectBriefingPools(db2, projectName2, options) {
        LIMIT ?`).all(TOPOLOGY_CANDIDATE_CAP), GLOBAL_TOPOLOGY_LIMIT) : [];
   const recent = options.foreign ? selectPool(db2.prepare(`SELECT ${columns} FROM entities e
        WHERE NOT ${NO_PROJECT_TAG} AND e.type <> ?${active(cols)}${nonGlobal(cols)}
+         AND (EXISTS (SELECT 1 FROM tags rt WHERE rt.entity_id = e.id AND rt.tag IN (${tagMarks})) OR ${folderNoteMayTravel("e")})
        ORDER BY e.id DESC
-       LIMIT ?`).all(SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP), RECENT_LIMIT) : [];
+       LIMIT ?`).all(SESSION_HANDOFF_TYPE, ...projectTags, TOPOLOGY_CANDIDATE_CAP), RECENT_LIMIT) : [];
   return {
-    handoff: handoffTrusted ? handoffRead : void 0,
-    handoffHidden: handoffRead && !handoffTrusted ? "untrusted" : void 0,
+    handoff: handoff2,
+    handoffHidden: handoffs.length > 0 && handoff2 === void 0 ? "untrusted" : void 0,
     lessonCount: lessonRows.length,
     lessons: lessonRows.slice(0, LESSON_LIMIT),
     project,
@@ -36656,7 +36663,7 @@ function assembleBriefing(project, recipient, projectIds) {
   const repoLines = project === void 0 || project === getProjectName() ? repoStateLines(readRepoState()) : [];
   let taskLines;
   try {
-    taskLines = boundTaskStateLines(briefingTaskStateLines(getTaskState(projectName2).state, projectName2, /* @__PURE__ */ new Date(), {
+    taskLines = boundTaskStateLines(briefingTaskStateLines(getTaskState(projectName2, ids).state, projectName2, /* @__PURE__ */ new Date(), {
       includeFresh: policy.taskState
     }));
   } catch (err) {
@@ -37642,6 +37649,7 @@ var workPackageIdentity = {
   ref: external_exports.discriminatedUnion("kind", [digestWorkPackageRef, transcriptWorkPackageRef])
 };
 var WORK_PACKAGE_RESULT_MAX_BYTES = 16 * 1024;
+var RESERVED_TAG_REASON = "tags that start with `source:` are reserved for MeMesh, which uses them to record where it got a memory (a note file, its own capture). Choose another prefix, for example `origin:`.";
 var WorkPackageSchema = external_exports.discriminatedUnion("action", [
   external_exports.object({ action: external_exports.literal("prepare"), project: workPackageText, kind: external_exports.enum(["digest", "transcript"]) }).strict(),
   external_exports.object({
@@ -37651,7 +37659,7 @@ var WorkPackageSchema = external_exports.discriminatedUnion("action", [
       name: workPackageText,
       type: external_exports.enum(["digest", "decision", "lesson_learned", "fact"]),
       observations: external_exports.array(observationField).min(1).max(100),
-      tags: external_exports.array(workPackageText.refine((tag) => !tag.startsWith("project:"), "project tags are server-owned")).min(1).max(50)
+      tags: external_exports.array(workPackageText.refine((tag) => !tag.startsWith("project:"), "project tags are server-owned").refine((tag) => !isReservedTag(tag), RESERVED_TAG_REASON)).min(1).max(50)
     }).strict().refine((result) => Buffer.byteLength(JSON.stringify(result), "utf8") <= WORK_PACKAGE_RESULT_MAX_BYTES, "output_too_large")
   }).strict().refine((input2) => input2.ref.kind === "digest" === (input2.result.type === "digest"), "result type must match work kind"),
   external_exports.object({
@@ -37672,11 +37680,10 @@ var rememberShape = {
   relations: external_exports.array(external_exports.object({ to: external_exports.string().min(1).max(255), type: external_exports.string().min(1).max(100) }).strict()).max(50).optional(),
   namespace: external_exports.enum(NAMESPACES).optional()
 };
-var RESERVED_TAG_PREFIX = "source:";
 function refineRemember(data, ctx) {
   for (const [index, tag] of (data.tags ?? []).entries()) {
-    if (tag.trim().toLowerCase().startsWith(RESERVED_TAG_PREFIX)) {
-      ctx.addIssue({ code: "custom", path: ["tags", index], message: `the tag ${JSON.stringify(tag)} is not allowed: tags that start with \`source:\` are reserved for MeMesh, which uses them to record where it got a memory (a note file, its own capture). Choose another prefix, for example \`origin:\`.` });
+    if (isReservedTag(tag)) {
+      ctx.addIssue({ code: "custom", path: ["tags", index], message: `the tag ${JSON.stringify(tag)} is not allowed: ${RESERVED_TAG_REASON}` });
       continue;
     }
     if (!tag.startsWith("project:"))
@@ -39208,6 +39215,10 @@ function projectFor(explicit, context, action) {
     return { project: binding.project };
   return { result: fail(`${binding.error}: ${binding.reason} ${action}`) };
 }
+function boundIdsFor(project, context) {
+  const binding = context.projectBinding;
+  return binding && "project" in binding && binding.project === project ? binding.ids : void 0;
+}
 var PROJECT_ACTION = `Pass project ("<id>", or a "project:<id>" tag), or project: false for a memory that belongs to no project (a preference, a general lesson), or bind the session: ${BIND_WORKSPACE}`;
 function writeProject(arg, tags, context) {
   if (arg === false)
@@ -39333,7 +39344,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "recall",
-    description: "Search stored knowledge with full-text search, or retrieve exact memory IDs. Use ids (1\u201320 positive integers) without query, tag or cross_project. ID results report found, archived, unavailable or omitted; only found memories include content and a mem-fetched reference. Retry omitted results individually; an item still omitted on its own cannot fit the response limit. Selectors: `project` (that project, memories with no project, global ones, and the decisions, lessons and preferences of any project; false = the same without a project of its own), `tag` (exactly that tag) or `cross_project` (every project; a `tag` given with it is ignored). `project` cannot be combined with `tag` or `cross_project`. With none, it uses the project this session is bound to (MEMESH_PROJECT_ROOT, or the client\u2019s workspace root) the same way, or the same without a project of its own when nothing is bound; the detail of another project (commits, session summaries, handoffs, notes) is never included; a launch or workspace root that is set but cannot be resolved is refused with the reason; the response says what it searched (`scope`) and each result carries its `projects` ([] for none). A result carries `archived_relations_omitted` when it leaves out relations to archived memories (a `supersedes` link is always shown); add `include_archived` to see them. Call with no query to list recent memories. One- and two-term queries use OR matching; queries with three or more terms try strict all-term matching first and fall back to OR only when strict matching has no hits, with results ranked by relevance. Results are capped for size: each entity's observations+tags at 8 KB, the whole response at 32 KB; a capped entity carries `truncated` with the full shown/total counts, and the response carries `truncated`/`entities_omitted` when anything was cut. `file:*` tags are never included \u2014 they exist for pre-edit lookups, not for reading.",
+    description: "Search stored knowledge with full-text search, or retrieve exact memory IDs. Use ids (1\u201320 positive integers) without query, tag or cross_project. ID results report found, archived, unavailable or omitted; only found memories include content and a mem-fetched reference. Retry omitted results individually; an item still omitted on its own cannot fit the response limit. Selectors: `project` (that project, memories with no project, global ones, and the decisions, lessons and preferences of any project, untrusted ones excepted; false = the same without a project of its own), `tag` (exactly that tag) or `cross_project` (every project; a `tag` given with it is ignored). `project` cannot be combined with `tag` or `cross_project`. With none, it uses the project this session is bound to (MEMESH_PROJECT_ROOT, or the client\u2019s workspace root) the same way, or the same without a project of its own when nothing is bound; the detail of another project (commits, session summaries, handoffs, notes) is never included; a launch or workspace root that is set but cannot be resolved is refused with the reason; the response says what it searched (`scope`) and each result carries its `projects` ([] for none). A result carries `archived_relations_omitted` when it leaves out relations to archived memories (a `supersedes` link is kept, its archived far end too, when that end is in the scope searched); add `include_archived` to see them. Call with no query to list recent memories. One- and two-term queries use OR matching; queries with three or more terms try strict all-term matching first and fall back to OR only when strict matching has no hits, with results ranked by relevance. Results are capped for size: each entity's observations+tags at 8 KB, the whole response at 32 KB; a capped entity carries `truncated` with the full shown/total counts, and the response carries `truncated`/`entities_omitted` when anything was cut. `file:*` tags are never included \u2014 they exist for pre-edit lookups, not for reading.",
     inputSchema: {
       type: "object",
       properties: {
@@ -39773,10 +39784,9 @@ ${paragraph.text}`)
       }
       let boundProject;
       let boundIds = [];
-      const bound = requestContext.projectBinding;
       if (projectArg !== void 0) {
         boundProject = projectArg === false ? null : projectArg;
-        boundIds = boundProject === null ? [] : bound && "project" in bound && bound.project === boundProject ? bound.ids ?? [boundProject] : [boundProject];
+        boundIds = boundProject === null ? [] : boundIdsFor(boundProject, requestContext) ?? [boundProject];
       } else {
         const binding = requestContext.projectBinding ?? UNBOUND;
         if ("error" in binding && !binding.unbound) {
@@ -39835,9 +39845,10 @@ ${paragraph.text}`)
       if ("result" in bound)
         return bound.result;
       const { project } = bound;
+      const ids = boundIdsFor(project, requestContext);
       if (Object.keys(patch).length === 0)
-        return ok(getTaskState(project));
-      return ok(setTaskState({ project, patch, sourceHost }));
+        return ok(getTaskState(project, ids));
+      return ok(setTaskState({ project, ids, patch, sourceHost }));
     }
     if (name === "briefing") {
       const r = parseOrFail(BriefingSchema, args);
@@ -39846,9 +39857,7 @@ ${paragraph.text}`)
       const bound = projectFor(r.data.project, requestContext, "Pass project explicitly.");
       if ("result" in bound)
         return bound.result;
-      const binding = requestContext.projectBinding;
-      const ids = binding && "project" in binding && binding.project === bound.project ? binding.ids : void 0;
-      return ok(assembleBriefing(bound.project, r.data.recipient, ids));
+      return ok(assembleBriefing(bound.project, r.data.recipient, boundIdsFor(bound.project, requestContext)));
     }
     if (name === "user_patterns") {
       const r = parseOrFail(UserPatternsSchema, args);
@@ -39975,7 +39984,7 @@ function resolveMcpProject(launchRoot, rootUris) {
       };
     }
     const ids = getProjectIds(directory);
-    fromRoots.set(ids[0], ids);
+    fromRoots.set(ids[0], [.../* @__PURE__ */ new Set([...fromRoots.get(ids[0]) ?? [], ...ids])]);
   }
   if (launchRoot !== void 0) {
     const directory = path10.isAbsolute(launchRoot) ? existingDirectory(launchRoot) : null;

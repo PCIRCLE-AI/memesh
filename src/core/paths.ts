@@ -119,19 +119,14 @@ export function normalizeAgentRouterSocketPath(socketPath: string): string {
  * also fall through, matching the most permissive caller's behaviour.
  */
 export function getProjectName(cwdInput?: string | null): string {
-  const cwd = cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd();
-  const cached = projectNameCache.get(cwd);
-  if (cached !== undefined) return cached;
-  const resolved = resolveProjectIdentity(cwd);
-  projectNameCache.set(cwd, resolved);
-  return resolved;
+  return getProjectIds(cwdInput)[0];
 }
 
-// Resolved names are stable for the life of a process (a cwd's git identity
-// doesn't change mid-run), and getProjectName runs on hot paths — every hook
-// invocation, every core operation. Cache so the git subprocess runs at most
-// once per distinct cwd.
-const projectNameCache = new Map<string, string>();
+// Resolved ids are stable for the life of a process (a cwd's git identity
+// doesn't change mid-run), and they are read on hot paths — every hook
+// invocation, every core operation, every MCP tool call. Cache so the git
+// subprocesses run at most once per distinct cwd.
+const projectIdsCache = new Map<string, string[]>();
 
 /**
  * Layered project identity, most-canonical first. Every result is a bounded
@@ -160,32 +155,29 @@ const projectNameCache = new Map<string, string>();
  *
  * git failures at every layer fall through silently to the next — a missing
  * git binary, a non-repo cwd, or a deleted directory must never break capture.
+ *
+ * The ids a read also matches come after the first (`getProjectIds`).
  */
-function resolveProjectIdentity(cwd: string): string {
-  const remote = remoteProjectIdentity(cwd);
-  if (remote) return remote;
+function resolveProjectIds(cwd: string): string[] {
+  const remote = tryGit(cwd, ['config', '--get', 'remote.origin.url']);
+  const locator = remote ? canonicalRemoteLocator(remote) : null;
   const real = projectRealPath(cwd);
-  return projectIdentity(path.basename(real), real);
+  // The earlier non-git form (v4.5.1–v4.8.x): the name as it is on disk, not normalized
+  // or shortened, and the first 8 hex characters of the same hash.
+  const legacy = `${path.basename(real)}-${createHash('sha256').update(real).digest('hex').slice(0, 8)}`;
+  const pathIds = [projectIdentity(path.basename(real), real), legacy];
+  // A checkout with a remote also reads its path's ids: what it stored before the remote
+  // was added stays readable with nothing to do. Accepted cost: a path later reused by
+  // another repository reads what the earlier one left under it.
+  const remoteIds = remote && locator ? [locatorIdentity(locator), ...remoteLocatorAliases(remote).map(locatorIdentity)] : [];
+  return [...new Set([...remoteIds, ...pathIds])];
 }
 
 const locatorIdentity = (locator: string) => projectIdentity(path.posix.basename(locator).replace(/\.git$/i, ''), locator);
 
-/** The id of the checkout's remote, or null when it has none an id can be built from. */
-function remoteProjectIdentity(cwd: string): string | null {
-  const remote = tryGit(cwd, ['config', '--get', 'remote.origin.url']);
-  const locator = remote ? canonicalRemoteLocator(remote) : null;
-  return locator ? locatorIdentity(locator) : null;
-}
-
-/** The ids earlier versions (and other spellings of the same remote) filed this checkout's memories under. */
-function remoteAliasIdentities(cwd: string): string[] {
-  const remote = tryGit(cwd, ['config', '--get', 'remote.origin.url']);
-  return remote ? remoteLocatorAliases(remote).map(locatorIdentity) : [];
-}
-
 /** The real path the checkout's path id is built from. */
 function projectRealPath(cwd: string): string {
-  const root = tryGit(cwd, ['rev-parse', '--show-toplevel']);
+  const root = gitRepoRoot(cwd);
   // A linked worktree has its own top-level path but shares the primary
   // repository's common `.git` directory. Use that directory's parent when
   // available so no-remote worktrees do not split into separate projects.
@@ -205,26 +197,20 @@ function projectRealPath(cwd: string): string {
 
 /**
  * Every project id a memory of this checkout may have been written under, the
- * one a write uses now first. A checkout is written under its remote's id once
- * it has a remote and under its path's id before, so one repository's memories
- * can sit under both; the path id also had an earlier form (the label and the
- * first 8 hex characters of the same hash), and the remote's id had earlier
- * spellings (`remoteLocatorAliases`). Each id is derived exactly from this
- * checkout, never matched by name, so another repository with the same name has
- * none of them. Reads use all of these; a write uses only `getProjectName`.
+ * one a write uses now first: with a remote, the remote's id and its earlier
+ * spellings (`remoteLocatorAliases`); then, always, the path's id and its
+ * earlier short form (what the checkout stored before it had a remote).
+ * Each id is derived exactly from this checkout, never matched by name, so
+ * another repository with the same name has none of them. Reads use all of
+ * these; a write uses only the first (`getProjectName`).
  */
 export function getProjectIds(cwdInput?: string | null): string[] {
   const cwd = cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd();
-  const real = projectRealPath(cwd);
-  const label = path.basename(real).normalize('NFC').slice(0, PROJECT_LABEL_MAX_LENGTH) || 'project';
-  const ids = [
-    getProjectName(cwd),
-    remoteProjectIdentity(cwd),
-    ...remoteAliasIdentities(cwd),
-    projectIdentity(path.basename(real), real),
-    `${label}-${createHash('sha256').update(real).digest('hex').slice(0, 8)}`,
-  ];
-  return [...new Set(ids.filter((id): id is string => id !== null))];
+  const cached = projectIdsCache.get(cwd);
+  if (cached !== undefined) return cached;
+  const resolved = resolveProjectIds(cwd);
+  projectIdsCache.set(cwd, resolved);
+  return resolved;
 }
 
 const PROJECT_HASH_HEX_LENGTH = 32;
@@ -265,8 +251,11 @@ function tryGit(cwd: string, args: string[]): string | null {
  */
 export function gitRepoRoot(cwdInput?: string | null): string | null {
   const cwd = cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd();
-  return tryGit(cwd, ['rev-parse', '--show-toplevel']);
+  // Cached like the ids: the pre-edit hook asks for the root, then for the ids of the same directory.
+  if (!repoRootCache.has(cwd)) repoRootCache.set(cwd, tryGit(cwd, ['rev-parse', '--show-toplevel']));
+  return repoRootCache.get(cwd) ?? null;
 }
+const repoRootCache = new Map<string, string | null>();
 
 interface RemoteParts {
   /** `https`, `http`, another URL scheme, or `ssh-relative` / `ssh-absolute`. */
@@ -379,17 +368,21 @@ export function remoteLocatorAliases(remote: string): string[] {
   if (!parts || !onHostingService(parts) || parts.host === 'github.com') return [];
   const bare = parts.path.replace(/\.git$/i, '');
   const out = new Set<string>();
-  for (const suffix of ['', '.git']) {
+  // `repo.git.git` with no suffix is `repo.git`: the spelling of the repository `repo`, not this one.
+  for (const suffix of /\.git$/i.test(bare) ? ['.git'] : ['', '.git']) {
     out.add(`https://${parts.host}/${bare}${suffix}`);
     for (const transport of ['ssh-relative', 'ssh-absolute']) out.add(`${transport}://git@${parts.host}/${bare}${suffix}`);
   }
+  // Earlier versions kept this host's address exactly as spelled: a `.GIT` in another case too.
+  out.add(literalLocator(parts));
   out.delete(canonicalRemoteLocator(remote) ?? '');
   return [...out];
 }
 
 /** Test seam: clear the per-cwd resolution cache between cases. */
 export function _clearProjectNameCache(): void {
-  projectNameCache.clear();
+  projectIdsCache.clear();
+  repoRootCache.clear();
 }
 
 /**

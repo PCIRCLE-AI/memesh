@@ -1153,8 +1153,11 @@ export class KnowledgeGraph {
       const queryParams = [ftsQuery, ...scopeParams, exactQuery, exactQuery, limit];
       return this.db
         .prepare(
+          // CROSS JOIN keeps the index first: joined the other way SQLite runs the
+          // match once per active memory (75 s for one recall on 100,000 that all
+          // match; tests/core/fts-query-plan.test.ts).
           `SELECT e.id FROM entities_fts f
-           JOIN entities e ON e.id = f.rowid
+           CROSS JOIN entities e ON e.id = f.rowid
            WHERE entities_fts MATCH ?
              ${tagFilter}
              ${statusFilter}

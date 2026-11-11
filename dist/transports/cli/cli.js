@@ -4382,6 +4382,9 @@ var init_entity_write = __esm({
 function canonicalEntityType(type) {
   return LESSON_TYPES.has(type) ? "lesson_learned" : type;
 }
+function isReservedTag(tag) {
+  return tag.trim().toLowerCase().startsWith("source:");
+}
 function utcEpoch(at) {
   if (!at)
     return NaN;
@@ -4683,7 +4686,7 @@ function jsonStringLiteral(value) {
 function stripControlChars(s) {
   return s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]+/g, " ");
 }
-var MEMORY_DATA_NOTICE, LESSON_TYPES, LESSON_TYPE_LIST, WORK_LAYER_TYPES, DECISION_TYPES, PREFERENCE_TYPES, SHARED_EXPERIENCE_TYPES, SHARED_EXPERIENCE_TYPE_LIST, SHARED_FEEDBACK_TYPE, NOTE_FILE_PROVENANCE, WHY_PREFIX, UNCONFIRMED_DECISION_DAYS, DECISION_LAYER_TYPES, EVIDENCE_LAYER_TYPES, TITLE_FLOOR_CHARS, REASON_SEPARATOR, MAX_PER_SECTION, DEFAULT_TOPOLOGY_BUDGET, GLOBAL_TOPOLOGY_LIMIT, SHARED_TOPOLOGY_LIMIT, SHARED_TOPOLOGY_BUDGET, GLOBAL_TOPOLOGY_BUDGET, TOPOLOGY_CANDIDATE_CAP, SNIPPET_FETCH_CHARS, STATE_MAX_CHARS, TASK_STATE_DISPLAY_MAX_CHARS, TASK_STATE_LINE_MAX_CHARS, PROJECT_ID_HASH_SUFFIX;
+var MEMORY_DATA_NOTICE, LESSON_TYPES, LESSON_TYPE_LIST, WORK_LAYER_TYPES, DECISION_TYPES, PREFERENCE_TYPES, SHARED_EXPERIENCE_TYPES, SHARED_EXPERIENCE_TYPE_LIST, SHARED_FEEDBACK_TYPE, NOTE_FILE_PROVENANCE, NOTE_FILE_MISSING_TAG, WHY_PREFIX, UNCONFIRMED_DECISION_DAYS, DECISION_LAYER_TYPES, EVIDENCE_LAYER_TYPES, TITLE_FLOOR_CHARS, REASON_SEPARATOR, MAX_PER_SECTION, DEFAULT_TOPOLOGY_BUDGET, GLOBAL_TOPOLOGY_LIMIT, SHARED_TOPOLOGY_LIMIT, SHARED_TOPOLOGY_BUDGET, GLOBAL_TOPOLOGY_BUDGET, TOPOLOGY_CANDIDATE_CAP, SNIPPET_FETCH_CHARS, STATE_MAX_CHARS, TASK_STATE_DISPLAY_MAX_CHARS, TASK_STATE_LINE_MAX_CHARS, PROJECT_ID_HASH_SUFFIX;
 var init_work_topology = __esm({
   "dist/core/work-topology.js"() {
     "use strict";
@@ -4711,6 +4714,7 @@ var init_work_topology = __esm({
     SHARED_EXPERIENCE_TYPE_LIST = [...SHARED_EXPERIENCE_TYPES];
     SHARED_FEEDBACK_TYPE = "feedback";
     NOTE_FILE_PROVENANCE = "note-file";
+    NOTE_FILE_MISSING_TAG = "source:note-file:missing";
     WHY_PREFIX = "Why: ";
     UNCONFIRMED_DECISION_DAYS = 30;
     DECISION_LAYER_TYPES = [...WORK_LAYER_TYPES].filter((type) => !LESSON_TYPES.has(type) && type !== "task-state");
@@ -4754,20 +4758,24 @@ var init_work_topology = __esm({
 // dist/core/project-scope.js
 function projectScopeFilter(scope, alias = "e") {
   const tags = scope === null ? [] : typeof scope === "string" ? [scope] : scope;
-  const shared = `${alias}.type IN (${SHARED_EXPERIENCE_TYPE_LIST.map(() => "?").join(",")}) OR (${alias}.type = ? AND ${ownFolderNote(alias)})`;
-  const own2 = tags.length === 0 ? "" : `EXISTS (SELECT 1 FROM tags st WHERE st.entity_id = ${alias}.id AND st.tag IN (${tags.map(() => "?").join(",")})) OR `;
+  const marks = (list) => list.map(() => "?").join(",");
+  const shared = `(${alias}.type IN (${marks(SHARED_EXPERIENCE_TYPE_LIST)}) AND (${alias}.metadata IS NULL OR json_valid(${alias}.metadata)) AND ${metadataField(alias, "trust")} IS NOT 'untrusted' AND ${metadataField(alias, "provenance.source")} IS NOT '${NOTE_FILE_PROVENANCE}') OR (${alias}.type IN (${marks(SHARED_NOTE_TYPES)}) AND ${ownFolderNote(alias)})`;
+  const own2 = tags.length === 0 ? "" : `EXISTS (SELECT 1 FROM tags st WHERE st.entity_id = ${alias}.id AND st.tag IN (${marks(tags)})) OR `;
   return {
     sql: `AND (${own2}${noProjectTag(alias)} OR ${alias}.namespace = 'global' OR ${shared})`,
-    params: [...tags, ...SHARED_EXPERIENCE_TYPE_LIST, SHARED_FEEDBACK_TYPE]
+    params: [...tags, ...SHARED_EXPERIENCE_TYPE_LIST, ...SHARED_NOTE_TYPES]
   };
 }
-var noProjectTag, ownFolderNote;
+var noProjectTag, metadataField, ownFolderNote, SHARED_NOTE_TYPES, folderNoteMayTravel;
 var init_project_scope = __esm({
   "dist/core/project-scope.js"() {
     "use strict";
     init_work_topology();
     noProjectTag = (alias = "e") => `NOT EXISTS (SELECT 1 FROM tags sp WHERE sp.entity_id = ${alias}.id AND sp.tag LIKE 'project:%')`;
-    ownFolderNote = (alias = "e") => `(json_extract(${alias}.metadata, '$.provenance.source') = '${NOTE_FILE_PROVENANCE}' AND json_extract(${alias}.metadata, '$.trust') = 'trusted')`;
+    metadataField = (alias, field) => `json_extract(CASE WHEN json_valid(${alias}.metadata) THEN ${alias}.metadata END, '$.${field}')`;
+    ownFolderNote = (alias = "e") => `(${metadataField(alias, "provenance.source")} = '${NOTE_FILE_PROVENANCE}' AND ${metadataField(alias, "trust")} = 'trusted' AND NOT EXISTS (SELECT 1 FROM tags sm WHERE sm.entity_id = ${alias}.id AND sm.tag = '${NOTE_FILE_MISSING_TAG}'))`;
+    SHARED_NOTE_TYPES = [...PREFERENCE_TYPES, SHARED_FEEDBACK_TYPE];
+    folderNoteMayTravel = (alias = "e") => `(${metadataField(alias, "provenance.source")} IS NOT '${NOTE_FILE_PROVENANCE}' OR (${alias}.type IN (${SHARED_NOTE_TYPES.map((type) => `'${type}'`).join(",")}) AND ${ownFolderNote(alias)}))`;
   }
 });
 
@@ -4843,32 +4851,19 @@ function getAgentRouterSocketPath() {
   return path.join(getMemeshDirFromDbPath(), AGENT_ROUTER_SOCKET_FILENAME);
 }
 function getProjectName(cwdInput) {
-  const cwd = cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd();
-  const cached2 = projectNameCache.get(cwd);
-  if (cached2 !== void 0)
-    return cached2;
-  const resolved = resolveProjectIdentity(cwd);
-  projectNameCache.set(cwd, resolved);
-  return resolved;
+  return getProjectIds(cwdInput)[0];
 }
-function resolveProjectIdentity(cwd) {
-  const remote = remoteProjectIdentity(cwd);
-  if (remote)
-    return remote;
-  const real = projectRealPath(cwd);
-  return projectIdentity(path.basename(real), real);
-}
-function remoteProjectIdentity(cwd) {
+function resolveProjectIds(cwd) {
   const remote = tryGit(cwd, ["config", "--get", "remote.origin.url"]);
   const locator = remote ? canonicalRemoteLocator(remote) : null;
-  return locator ? locatorIdentity(locator) : null;
-}
-function remoteAliasIdentities(cwd) {
-  const remote = tryGit(cwd, ["config", "--get", "remote.origin.url"]);
-  return remote ? remoteLocatorAliases(remote).map(locatorIdentity) : [];
+  const real = projectRealPath(cwd);
+  const legacy = `${path.basename(real)}-${createHash("sha256").update(real).digest("hex").slice(0, 8)}`;
+  const pathIds = [projectIdentity(path.basename(real), real), legacy];
+  const remoteIds = remote && locator ? [locatorIdentity(locator), ...remoteLocatorAliases(remote).map(locatorIdentity)] : [];
+  return [.../* @__PURE__ */ new Set([...remoteIds, ...pathIds])];
 }
 function projectRealPath(cwd) {
-  const root = tryGit(cwd, ["rev-parse", "--show-toplevel"]);
+  const root = gitRepoRoot(cwd);
   const commonDir = root ? tryGit(cwd, ["rev-parse", "--git-common-dir"]) : null;
   const absoluteCommonDir = commonDir ? path.resolve(cwd, commonDir) : null;
   const localPath = absoluteCommonDir && path.basename(absoluteCommonDir) === ".git" ? path.dirname(absoluteCommonDir) : root ?? cwd;
@@ -4880,16 +4875,12 @@ function projectRealPath(cwd) {
 }
 function getProjectIds(cwdInput) {
   const cwd = cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd();
-  const real = projectRealPath(cwd);
-  const label = path.basename(real).normalize("NFC").slice(0, PROJECT_LABEL_MAX_LENGTH) || "project";
-  const ids = [
-    getProjectName(cwd),
-    remoteProjectIdentity(cwd),
-    ...remoteAliasIdentities(cwd),
-    projectIdentity(path.basename(real), real),
-    `${label}-${createHash("sha256").update(real).digest("hex").slice(0, 8)}`
-  ];
-  return [...new Set(ids.filter((id) => id !== null))];
+  const cached2 = projectIdsCache.get(cwd);
+  if (cached2 !== void 0)
+    return cached2;
+  const resolved = resolveProjectIds(cwd);
+  projectIdsCache.set(cwd, resolved);
+  return resolved;
 }
 function projectIdentity(label, locator) {
   const readable = label.normalize("NFC").slice(0, PROJECT_LABEL_MAX_LENGTH) || "project";
@@ -4908,6 +4899,12 @@ function tryGit(cwd, args) {
   } catch {
     return null;
   }
+}
+function gitRepoRoot(cwdInput) {
+  const cwd = cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd();
+  if (!repoRootCache.has(cwd))
+    repoRootCache.set(cwd, tryGit(cwd, ["rev-parse", "--show-toplevel"]));
+  return repoRootCache.get(cwd) ?? null;
 }
 function parseRemote(remote) {
   const value = remote.trim();
@@ -4975,11 +4972,12 @@ function remoteLocatorAliases(remote) {
     return [];
   const bare = parts.path.replace(/\.git$/i, "");
   const out = /* @__PURE__ */ new Set();
-  for (const suffix of ["", ".git"]) {
+  for (const suffix of /\.git$/i.test(bare) ? [".git"] : ["", ".git"]) {
     out.add(`https://${parts.host}/${bare}${suffix}`);
     for (const transport of ["ssh-relative", "ssh-absolute"])
       out.add(`${transport}://git@${parts.host}/${bare}${suffix}`);
   }
+  out.add(literalLocator(parts));
   out.delete(canonicalRemoteLocator(remote) ?? "");
   return [...out];
 }
@@ -5284,8 +5282,8 @@ function redactUserPaths(text) {
   const flags = process.platform === "linux" ? "g" : "gi";
   let out = text;
   for (const root of [...roots].sort((a, b) => b.length - a.length)) {
-    const escaped = root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const body = escaped.replace(/\\\\|\//g, "[\\\\/]{1,2}");
+    const escaped2 = root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const body = escaped2.replace(/\\\\|\//g, "[\\\\/]{1,2}");
     out = out.replace(new RegExp(`(?<![\\w~](?:[\\\\/]{1,2})?)${body}(?=[\\\\/]|$)`, flags), "~");
   }
   return out;
@@ -5399,16 +5397,17 @@ function clearPartsOfKey(metadata) {
   const clear = (text) => holdsPartOfKeyDecoded(text) ? REDACTED : text;
   return mapJson({ ...metadata, ...entries }, clear, clear);
 }
-var AGENT_ROUTER_SOCKET_FILENAME, projectNameCache, locatorIdentity, PROJECT_HASH_HEX_LENGTH, PROJECT_ID_MAX_LENGTH, PROJECT_LABEL_MAX_LENGTH, isSsh, HOSTING_SERVICES, SK_KEY, NAMED_VALUE, JWT_TOKEN, SENDGRID_KEY, SECRET_PATTERN_SOURCES, SECRET_PATTERNS, SEGMENTED, JWT_PATTERN, TOKEN_CHAR, GLUED, PRIVATE_KEY_MARKER, PRIVATE_KEY_END, ANY_PRIVATE_KEY_MARKER, REDACTED, nativeJson, looksLikeJson, JSON_ESCAPE, ESCAPED_CHAR, keepNumberSpelling;
+var AGENT_ROUTER_SOCKET_FILENAME, projectIdsCache, locatorIdentity, PROJECT_HASH_HEX_LENGTH, PROJECT_ID_MAX_LENGTH, PROJECT_LABEL_MAX_LENGTH, repoRootCache, isSsh, HOSTING_SERVICES, SK_KEY, NAMED_VALUE, JWT_TOKEN, SENDGRID_KEY, SECRET_PATTERN_SOURCES, SECRET_PATTERNS, SEGMENTED, JWT_PATTERN, TOKEN_CHAR, GLUED, PRIVATE_KEY_MARKER, PRIVATE_KEY_END, ANY_PRIVATE_KEY_MARKER, REDACTED, nativeJson, looksLikeJson, JSON_ESCAPE, ESCAPED_CHAR, keepNumberSpelling;
 var init_paths = __esm({
   "dist/core/paths.js"() {
     "use strict";
     AGENT_ROUTER_SOCKET_FILENAME = "agent-router-v2.sock";
-    projectNameCache = /* @__PURE__ */ new Map();
+    projectIdsCache = /* @__PURE__ */ new Map();
     locatorIdentity = (locator) => projectIdentity(path.posix.basename(locator).replace(/\.git$/i, ""), locator);
     PROJECT_HASH_HEX_LENGTH = 32;
     PROJECT_ID_MAX_LENGTH = 200;
     PROJECT_LABEL_MAX_LENGTH = PROJECT_ID_MAX_LENGTH - PROJECT_HASH_HEX_LENGTH - 1;
+    repoRootCache = /* @__PURE__ */ new Map();
     isSsh = (transport) => transport === "ssh-relative" || transport === "ssh-absolute";
     HOSTING_SERVICES = /* @__PURE__ */ new Set(["github.com", "gitlab.com", "bitbucket.org"]);
     SK_KEY = 'sk[-_][^\\s"\\\\]{4,}[A-Za-z0-9]';
@@ -6059,7 +6058,7 @@ var init_knowledge_graph = __esm({
         const findFtsRows = (ftsQuery) => {
           const queryParams = [ftsQuery, ...scopeParams, exactQuery, exactQuery, limit];
           return this.db.prepare(`SELECT e.id FROM entities_fts f
-           JOIN entities e ON e.id = f.rowid
+           CROSS JOIN entities e ON e.id = f.rowid
            WHERE entities_fts MATCH ?
              ${tagFilter}
              ${statusFilter}
@@ -31230,8 +31229,8 @@ var init_agent_messaging = __esm({
 // dist/transports/schemas.js
 function refineRemember(data, ctx) {
   for (const [index, tag] of (data.tags ?? []).entries()) {
-    if (tag.trim().toLowerCase().startsWith(RESERVED_TAG_PREFIX)) {
-      ctx.addIssue({ code: "custom", path: ["tags", index], message: `the tag ${JSON.stringify(tag)} is not allowed: tags that start with \`source:\` are reserved for MeMesh, which uses them to record where it got a memory (a note file, its own capture). Choose another prefix, for example \`origin:\`.` });
+    if (isReservedTag(tag)) {
+      ctx.addIssue({ code: "custom", path: ["tags", index], message: `the tag ${JSON.stringify(tag)} is not allowed: ${RESERVED_TAG_REASON}` });
       continue;
     }
     if (!tag.startsWith("project:"))
@@ -31267,12 +31266,13 @@ function refineRemember(data, ctx) {
     ctx.addIssue({ code: "custom", path: ["note"], message: `note yields ${derived2.observations.length} observations; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory` });
   }
 }
-var projectRules, projectName, sanitizeName, nameField, titleField, observationField, workPackageText, digestWorkPackageRef, transcriptWorkPackageRef, workPackageIdentity, WORK_PACKAGE_RESULT_MAX_BYTES, WorkPackageSchema, rememberShape, RESERVED_TAG_PREFIX, RememberSchema, mcpProjectField, McpRememberSchema, NativeMemoryEditorSchema, NativeMemoryEditFieldsSchema, PaneMemoryEditorSchema, recallShape, recallSelector, RecallSchema, McpRecallSchema, ForgetSchema, ExportSchema, ExportResultSchema, ImportSchema, nonBlankBounded, agentScopeId, learnShape, LearnSchema, McpLearnSchema, HttpLearnSchema, TaskStateSchema, BriefingSchema, WhySchema, UserPatternsSchema, ImprovementSchema, messageProject, messageRecipient, messageSender, messageId, messageCursor, messageIdempotencyKey, messageReceiptBase, MessageSchema;
+var projectRules, projectName, sanitizeName, nameField, titleField, observationField, workPackageText, digestWorkPackageRef, transcriptWorkPackageRef, workPackageIdentity, WORK_PACKAGE_RESULT_MAX_BYTES, RESERVED_TAG_REASON, WorkPackageSchema, rememberShape, RememberSchema, mcpProjectField, McpRememberSchema, NativeMemoryEditorSchema, NativeMemoryEditFieldsSchema, PaneMemoryEditorSchema, recallShape, recallSelector, RecallSchema, McpRecallSchema, ForgetSchema, ExportSchema, ExportResultSchema, ImportSchema, nonBlankBounded, agentScopeId, learnShape, LearnSchema, McpLearnSchema, HttpLearnSchema, TaskStateSchema, BriefingSchema, WhySchema, UserPatternsSchema, ImprovementSchema, messageProject, messageRecipient, messageSender, messageId, messageCursor, messageIdempotencyKey, messageReceiptBase, MessageSchema;
 var init_schemas3 = __esm({
   "dist/transports/schemas.js"() {
     "use strict";
     init_zod();
     init_types();
+    init_work_topology();
     init_title();
     init_note_derive();
     init_agent_messaging();
@@ -31309,6 +31309,7 @@ var init_schemas3 = __esm({
       ref: external_exports.discriminatedUnion("kind", [digestWorkPackageRef, transcriptWorkPackageRef])
     };
     WORK_PACKAGE_RESULT_MAX_BYTES = 16 * 1024;
+    RESERVED_TAG_REASON = "tags that start with `source:` are reserved for MeMesh, which uses them to record where it got a memory (a note file, its own capture). Choose another prefix, for example `origin:`.";
     WorkPackageSchema = external_exports.discriminatedUnion("action", [
       external_exports.object({ action: external_exports.literal("prepare"), project: workPackageText, kind: external_exports.enum(["digest", "transcript"]) }).strict(),
       external_exports.object({
@@ -31318,7 +31319,7 @@ var init_schemas3 = __esm({
           name: workPackageText,
           type: external_exports.enum(["digest", "decision", "lesson_learned", "fact"]),
           observations: external_exports.array(observationField).min(1).max(100),
-          tags: external_exports.array(workPackageText.refine((tag) => !tag.startsWith("project:"), "project tags are server-owned")).min(1).max(50)
+          tags: external_exports.array(workPackageText.refine((tag) => !tag.startsWith("project:"), "project tags are server-owned").refine((tag) => !isReservedTag(tag), RESERVED_TAG_REASON)).min(1).max(50)
         }).strict().refine((result) => Buffer.byteLength(JSON.stringify(result), "utf8") <= WORK_PACKAGE_RESULT_MAX_BYTES, "output_too_large")
       }).strict().refine((input2) => input2.ref.kind === "digest" === (input2.result.type === "digest"), "result type must match work kind"),
       external_exports.object({
@@ -31339,7 +31340,6 @@ var init_schemas3 = __esm({
       relations: external_exports.array(external_exports.object({ to: external_exports.string().min(1).max(255), type: external_exports.string().min(1).max(100) }).strict()).max(50).optional(),
       namespace: external_exports.enum(NAMESPACES).optional()
     };
-    RESERVED_TAG_PREFIX = "source:";
     RememberSchema = external_exports.object(rememberShape).strict().superRefine(refineRemember);
     mcpProjectField = external_exports.union([projectName, external_exports.literal(false)]).optional();
     McpRememberSchema = external_exports.object({ ...rememberShape, project: mcpProjectField }).strict().superRefine(refineRemember);
@@ -31886,9 +31886,17 @@ function readState(name) {
   }
   return { state: parseTaskState(parsed), corrupted: false };
 }
-function getTaskState(project) {
+function readProjectState(project, ids) {
+  const exists = getDatabase().prepare("SELECT 1 FROM entities WHERE name = ? AND status = 'active'");
+  for (const id of /* @__PURE__ */ new Set([project, ...ids ?? (project === getProjectName() ? getProjectIds() : [])])) {
+    if (exists.get(taskStateName(id)))
+      return readState(taskStateName(id));
+  }
+  return { state: {}, corrupted: false };
+}
+function getTaskState(project, ids) {
   const resolved = project ?? getProjectName();
-  const { state, corrupted } = readState(taskStateName(resolved));
+  const { state, corrupted } = readProjectState(resolved, ids);
   if (corrupted)
     throw new TaskStateUnreadableError(resolved);
   return { project: resolved, state: redactedState(state) };
@@ -31910,7 +31918,7 @@ function setTaskState(input2) {
   const patch = { ...input2.patch, ...Object.fromEntries(textFields.map(([field], i) => [field, texts[i]])) };
   const db2 = getDatabase();
   const write = db2.transaction(() => {
-    const { state: previous, corrupted } = readState(name);
+    const { state: previous, corrupted } = readProjectState(project, input2.ids);
     const { state, changed, observations } = mergeTaskState(previous, patch, (/* @__PURE__ */ new Date()).toISOString());
     if (changed.length === 0) {
       if (corrupted)
@@ -31943,7 +31951,7 @@ function setTaskState(input2) {
     if (!/readonly database|SQLITE_READONLY/i.test(message))
       throw error62;
     return db2.transaction(() => {
-      const { state: previous, corrupted } = readState(name);
+      const { state: previous, corrupted } = readProjectState(project, input2.ids);
       const { state, changed } = mergeTaskState(previous, patch, (/* @__PURE__ */ new Date()).toISOString());
       if (changed.length !== 0)
         throw error62;
@@ -32211,12 +32219,11 @@ function selectBriefingPools(db2, projectName2, options) {
   const projectTags = ids.map((id) => `project:${id}`);
   const tagMarks = projectTags.map(() => "?").join(",");
   const columns = candidateColumns(cols);
-  const handoffRead = guarded("handoff", void 0, () => db2.prepare(`SELECT e.id, e.name, e.metadata, o.content AS text, o.created_at AS observedAt
+  const handoffs = guarded("handoff", [], () => db2.prepare(`SELECT e.id, e.name, e.metadata, o.content AS text, o.created_at AS observedAt
      FROM entities e JOIN observations o ON o.entity_id = e.id
      WHERE e.name IN (${ids.map(() => "?").join(",")}) AND e.type = ?${active(cols)}
-     ORDER BY o.id DESC
-     LIMIT 1`).get(...ids.map(sessionHandoffName), SESSION_HANDOFF_TYPE), options.onError);
-  const handoffTrusted = !!handoffRead && trustedForAutoContext(handoffRead.metadata);
+     ORDER BY o.id DESC`).all(...ids.map(sessionHandoffName), SESSION_HANDOFF_TYPE), options.onError);
+  const handoff2 = handoffs.find((row) => trustedForAutoContext(row.metadata));
   const projectRows = db2.prepare(`SELECT DISTINCT ${columns}
      FROM entities e JOIN tags t ON t.entity_id = e.id
      WHERE t.tag IN (${tagMarks})${active(cols)} AND e.type <> ?${nonGlobal(cols)}
@@ -32238,7 +32245,7 @@ function selectBriefingPools(db2, projectName2, options) {
      WHERE ${NO_PROJECT_TAG} AND e.type <> ?${active(cols)}${nonGlobal(cols)}
      ORDER BY e.id DESC
      LIMIT ?`).all(SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP), NO_PROJECT_LIMIT);
-  const shared = guarded("lessons", [], () => db2.prepare(`SELECT DISTINCT ${columns}, ${RECENCY_SQL} AS recency,
+  const shared = guarded("shared", [], () => db2.prepare(`SELECT DISTINCT ${columns}, ${RECENCY_SQL} AS recency,
        (SELECT substr(pt.tag, ${"project:".length + 1}) FROM tags pt
          WHERE pt.entity_id = e.id AND pt.tag LIKE 'project:%' AND pt.tag NOT IN (${tagMarks})
          ORDER BY pt.tag LIMIT 1) AS source_project
@@ -32256,11 +32263,12 @@ function selectBriefingPools(db2, projectName2, options) {
        LIMIT ?`).all(TOPOLOGY_CANDIDATE_CAP), GLOBAL_TOPOLOGY_LIMIT) : [];
   const recent = options.foreign ? selectPool(db2.prepare(`SELECT ${columns} FROM entities e
        WHERE NOT ${NO_PROJECT_TAG} AND e.type <> ?${active(cols)}${nonGlobal(cols)}
+         AND (EXISTS (SELECT 1 FROM tags rt WHERE rt.entity_id = e.id AND rt.tag IN (${tagMarks})) OR ${folderNoteMayTravel("e")})
        ORDER BY e.id DESC
-       LIMIT ?`).all(SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP), RECENT_LIMIT) : [];
+       LIMIT ?`).all(SESSION_HANDOFF_TYPE, ...projectTags, TOPOLOGY_CANDIDATE_CAP), RECENT_LIMIT) : [];
   return {
-    handoff: handoffTrusted ? handoffRead : void 0,
-    handoffHidden: handoffRead && !handoffTrusted ? "untrusted" : void 0,
+    handoff: handoff2,
+    handoffHidden: handoffs.length > 0 && handoff2 === void 0 ? "untrusted" : void 0,
     lessonCount: lessonRows.length,
     lessons: lessonRows.slice(0, LESSON_LIMIT),
     project,
@@ -32518,7 +32526,7 @@ function assembleBriefing(project, recipient, projectIds) {
   const repoLines = project === void 0 || project === getProjectName() ? repoStateLines(readRepoState()) : [];
   let taskLines;
   try {
-    taskLines = boundTaskStateLines(briefingTaskStateLines(getTaskState(projectName2).state, projectName2, /* @__PURE__ */ new Date(), {
+    taskLines = boundTaskStateLines(briefingTaskStateLines(getTaskState(projectName2, ids).state, projectName2, /* @__PURE__ */ new Date(), {
       includeFresh: policy.taskState
     }));
   } catch (err) {
@@ -62201,6 +62209,7 @@ var init_capture_liveness = __esm({
       noSessionOrTranscript: "neither session_id nor transcript_path in the payload",
       emptyStdin: "empty stdin",
       cwdAbsent: "cwd absent in payload \u2014 cannot resolve project",
+      memoryDirOtherProject: "the memory folder belongs to the project the session started in, not the one of its cwd",
       projectLineNoCwd: "no usable session cwd \u2014 the project line was not shown",
       notAgenticLoop: "not an agentic loop",
       transcriptPathAbsent: "transcript_path absent",
@@ -62878,7 +62887,7 @@ function archivedHandoffName(file2) {
 function archivedHandoffCheck(title, runs, name) {
   const summary = `handoff-capture: ${runs} runs, 0 writes \u2014 the session handoff was archived with \`forget\`, so it is not updated any more.`;
   if (name) {
-    return createCheck("capture-liveness", title, "warn", summary, `To turn it back on, run \`memesh remember --no-project --name ${name} --type session-handoff --obs restart\`; the next Stop replaces it.`, { code: "capture-liveness.handoff-archived", params: { runs, name } });
+    return createCheck("capture-liveness", title, "warn", summary, `To turn it back on, run \`memesh remember --name ${name} --type session-handoff --obs restart --tags project:${name.slice("session-handoff:".length)}\`; the next Stop replaces it.`, { code: "capture-liveness.handoff-archived", params: { runs, name } });
   }
   return createCheck("capture-liveness", title, "warn", summary, "To turn it back on, find its exact name with `memesh recall session-handoff --include-archived`, then remember anything under that name with type session-handoff; the next Stop replaces it.", { code: "capture-liveness.handoff-archived-unnamed", params: { runs } });
 }
@@ -64509,7 +64518,7 @@ function applyProductImprovementProposal(db2, row, kg) {
       "State: accepted for product work; implementation and outcome are not verified."
     ];
     const tags = [
-      ...payload.tags.filter((tag) => !tag.startsWith("project:") && !tag.startsWith("status:")),
+      ...payload.tags.filter((tag) => !tag.startsWith("project:") && !tag.startsWith("status:") && !isReservedTag(tag)),
       "project:" + row.project,
       "status:accepted-for-product",
       "implementation:unverified",
@@ -64590,7 +64599,7 @@ function applyTranscriptProposal(db2, row, kg) {
   } catch {
   }
   const tags = [
-    ...digest.tags.filter((tag) => !tag.startsWith("project:")),
+    ...digest.tags.filter((tag) => !tag.startsWith("project:") && !isReservedTag(tag)),
     `project:${row.project}`
   ];
   const entityName = collisionSafeName(db2, digest.name, "transcript", row.id);
@@ -64643,7 +64652,7 @@ function applyProposal(db2, proposalId2, kg) {
   const sourceIds = JSON.parse(row.source_ids);
   const isPattern = digest.type === "pattern_emergent";
   const tags = [
-    ...digest.tags.filter((tag) => !tag.startsWith("project:")),
+    ...digest.tags.filter((tag) => !tag.startsWith("project:") && !isReservedTag(tag)),
     `project:${row.project}`
   ];
   let ownedSourceIds = sourceIds;
@@ -64964,6 +64973,7 @@ var init_dreamer = __esm({
     init_transcript_extractor();
     init_guards();
     init_entity_index();
+    init_work_topology();
     init_product_improvements();
     COMPACT_MIN_CLUSTER_SIZE = 5;
     COMPACT_MAX_CLUSTER_SIZE = 100;
@@ -67079,10 +67089,12 @@ function copyDatabaseBefore(db2, prefix) {
     return { kind: "failed", reason: "the database has no file path, so no copy can be made" };
   const directory = path9.join(path9.dirname(location), "backups");
   const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-  const finalPath = path9.join(directory, `${prefix}-${stamp}.db`);
-  const partialPath = path9.join(directory, `.partial-${prefix}-${process.pid}-${randomUUID3().slice(0, 8)}.db`);
+  const unique = randomUUID3().slice(0, 8);
+  const finalPath = path9.join(directory, `${prefix}-${stamp}-${unique}.db`);
+  const partialPath = path9.join(directory, `.partial-${prefix}-${process.pid}-${unique}.db`);
   try {
     fs11.mkdirSync(directory, { recursive: true, mode: 448 });
+    removeInterruptedCopies(directory, prefix);
     const expected = db2.prepare("SELECT COUNT(*) AS n FROM entities").get().n;
     db2.prepare("VACUUM INTO ?").run(partialPath);
     fs11.chmodSync(partialPath, 384);
@@ -67098,27 +67110,43 @@ function copyDatabaseBefore(db2, prefix) {
     fs11.renameSync(partialPath, finalPath);
   } catch (error62) {
     try {
-      fs11.rmSync(partialPath, { force: true });
+      for (const name of [partialPath, `${partialPath}-journal`])
+        fs11.rmSync(name, { force: true });
     } catch {
     }
     return { kind: "failed", reason: `the copy to ${directory} failed (${error62 instanceof Error ? error62.message : String(error62)})` };
   }
   try {
-    const mine = fs11.readdirSync(directory).filter((name) => name.startsWith(`${prefix}-`) && name.endsWith(".db")).sort();
-    for (const name of mine.slice(0, Math.max(0, mine.length - DB_COPIES_KEPT))) {
+    const mine = fs11.readdirSync(directory).filter((name) => copyName(prefix).test(name)).sort();
+    for (const name of mine.slice(0, Math.max(0, mine.length - DB_COPIES_KEPT)))
       fs11.rmSync(path9.join(directory, name), { force: true });
-      fs11.rmSync(path9.join(directory, `${name}.json`), { force: true });
-    }
   } catch {
   }
   return { kind: "ready", path: finalPath };
+}
+var escaped = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+var copyName = (prefix) => new RegExp(`^${escaped(prefix)}-\\d{4}-\\d{2}-\\d{2}T[\\d-]+Z(?:-[0-9a-f]{8})?\\.db$`);
+function removeInterruptedCopies(directory, prefix) {
+  const partial2 = new RegExp(`^\\.partial-${escaped(prefix)}-(\\d+)-[0-9a-f]{8}\\.db(?:-journal)?$`);
+  for (const name of fs11.readdirSync(directory)) {
+    const pid = Number(partial2.exec(name)?.[1]);
+    if (pid && !processRuns(pid))
+      fs11.rmSync(path9.join(directory, name), { force: true });
+  }
+}
+function processRuns(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error62) {
+    return error62.code === "EPERM";
+  }
 }
 
 // dist/core/note-ingest.js
 init_note_derive();
 init_title();
 var NOTE_FILE_TAG = "source:note-file";
-var NOTE_FILE_MISSING_TAG = "source:note-file:missing";
 var NOTE_FILE_MAX_BYTES = 256 * 1024;
 var NOTE_DIR_MAX_FILES = 500;
 var SKIPPED_DIRS = /* @__PURE__ */ new Set([".git", "node_modules"]);
@@ -67235,6 +67263,7 @@ function ingestNoteDirectory(opts) {
   const db2 = getDatabase();
   const trustFor2 = (type, observations) => opts.trusted && !(type !== void 0 && DECISION_TYPES.has(type) && !observations.some((o) => o.startsWith(WHY_PREFIX))) ? "trusted" : "untrusted";
   const existingStmt = db2.prepare(`SELECT e.id, e.metadata, e.status, e.type,
+            json_extract(CASE WHEN json_valid(e.metadata) THEN e.metadata END, '$.trust') AS trust,
             EXISTS(SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?) AS is_note,
             EXISTS(SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?) AS is_missing
        FROM entities e WHERE e.name = ?`);
@@ -67497,7 +67526,7 @@ function ingestNoteDirectory(opts) {
       observations: owner.observations,
       ...existing ? { project } : { tags: [NOTE_FILE_TAG, ...opts.project ? [`project:${opts.project}`] : []] },
       replace: true,
-      trustOverride: trustFor2(owner.type, owner.observations),
+      trustOverride: existing && existing.trust !== "trusted" ? "untrusted" : trustFor2(owner.type, owner.observations),
       reinforceConfidence: false,
       provenanceOverride: {
         source: "note-file",
@@ -67557,17 +67586,33 @@ function ingestNoteDirectory(opts) {
 }
 function liftFolderTrust(db2, dirId, result) {
   const decisionTypes = [...DECISION_TYPES];
+  const liftedKey = `note_trust_lifted:${dirId}`;
+  const meta3 = "CASE WHEN json_valid(e.metadata) THEN e.metadata END";
   const rows = db2.prepare(`SELECT e.id, e.name FROM entities e
-      WHERE json_extract(e.metadata, '$.provenance.source') = ?
-        AND json_extract(e.metadata, '$.provenance.note_dir_id') = ?
-        AND json_extract(e.metadata, '$.trust') = 'untrusted'
-        AND e.type NOT IN (${decisionTypes.map(() => "?").join(",")})
-      ORDER BY e.id`).all(NOTE_FILE_PROVENANCE, dirId, ...decisionTypes);
+      WHERE json_extract(${meta3}, '$.provenance.source') = ?
+        AND json_extract(${meta3}, '$.provenance.note_dir_id') = ?
+        AND json_extract(${meta3}, '$.trust') = 'untrusted'
+        AND NOT EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?)
+        AND (e.type NOT IN (${decisionTypes.map(() => "?").join(",")})
+             OR EXISTS (SELECT 1 FROM observations o WHERE o.entity_id = e.id AND substr(o.content, 1, ?) = ?))
+        AND e.id NOT IN (SELECT value FROM json_each((SELECT value FROM memesh_metadata WHERE key = ? AND json_valid(value))))
+      ORDER BY e.id`).all(NOTE_FILE_PROVENANCE, dirId, NOTE_FILE_MISSING_TAG, ...decisionTypes, WHY_PREFIX.length, WHY_PREFIX, liftedKey);
   if (rows.length === 0)
     return;
+  const failed = (why) => `${rows.length} note(s) of this folder should become trusted, but ${why}; none of them was made trusted`;
+  const prior = db2.prepare("SELECT value FROM memesh_metadata WHERE key = ?").get(liftedKey)?.value;
+  const setLifted = db2.prepare("INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)");
+  const unsetLifted = () => prior === void 0 ? db2.prepare("DELETE FROM memesh_metadata WHERE key = ?").run(liftedKey) : setLifted.run(liftedKey, prior);
+  let priorIds = [];
+  try {
+    priorIds = JSON.parse(prior ?? "[]");
+  } catch {
+  }
+  setLifted.run(liftedKey, JSON.stringify([...Array.isArray(priorIds) ? priorIds : [], ...rows.map((r) => r.id)]));
   const copy = copyDatabaseBefore(db2, "knowledge-graph-before-note-trust");
   if (copy.kind === "failed") {
-    result.retrustFailed = `${rows.length} note(s) of this folder should become trusted, but ${copy.reason}; nothing was changed`;
+    unsetLifted();
+    result.retrustFailed = failed(copy.reason);
     return;
   }
   try {
@@ -67578,10 +67623,11 @@ function liftFolderTrust(db2, dirId, result) {
       ids: rows.map((r) => r.id),
       names: rows.map((r) => r.name),
       backup: copy.path,
-      undo: `Restore the database from the backup file, or set metadata.trust back to 'untrusted' on the ids listed here: UPDATE entities SET metadata = json_set(metadata, '$.trust', 'untrusted') WHERE id IN (<ids>);`
+      undo: `Restore the database from the backup file, or set metadata.trust back to 'untrusted' on the ids listed here (either way they stay untrusted: a memory is made trusted this way only once): UPDATE entities SET metadata = json_set(metadata, '$.trust', 'untrusted') WHERE id IN (<ids>);`
     }, null, 2), { mode: 384 });
   } catch (error62) {
-    result.retrustFailed = `${rows.length} note(s) of this folder should become trusted, but the record of the change could not be written (${error62 instanceof Error ? error62.message : String(error62)}); nothing was changed`;
+    unsetLifted();
+    result.retrustFailed = failed(`the record of the change could not be written (${error62 instanceof Error ? error62.message : String(error62)})`);
     return;
   }
   const lift = db2.prepare("UPDATE entities SET metadata = json_set(metadata, '$.trust', 'trusted') WHERE id = ?");
@@ -68420,6 +68466,7 @@ program2.command("remember").argument("[text]", "Quick-capture text \u2014 title
       process.exit(1);
     }
   }
+  const tagsNameProject = opts.tags?.some((tag) => tag.startsWith("project:") && tag.slice("project:".length).trim() !== "");
   await withDatabase(async () => {
     let result;
     try {
@@ -68428,7 +68475,7 @@ program2.command("remember").argument("[text]", "Quick-capture text \u2014 title
         type: opts.type,
         tags: opts.tags,
         ...opts.tags?.some((tag) => tag.startsWith("project:")) ? { currentProject: getProjectName() } : {},
-        ...opts.project === false ? { project: null } : opts.tags?.some((tag) => tag.startsWith("project:") && tag.slice("project:".length).trim() !== "") ? {} : { project: getProjectName() },
+        ...opts.project === false ? { project: null } : tagsNameProject ? {} : { project: getProjectName() },
         namespace: opts.namespace,
         relations: relations.length > 0 ? relations : void 0,
         why: opts.why,
@@ -68436,7 +68483,9 @@ program2.command("remember").argument("[text]", "Quick-capture text \u2014 title
         ...note2 !== void 0 ? { note: note2 } : { title: opts.title, observations: opts.obs, replace: opts.replace === true ? true : void 0 }
       });
     } catch (err) {
-      console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      const message = err instanceof Error ? err.message : String(err);
+      const hint = opts.project !== false && !tagsNameProject && message.includes("it has no project tag") ? " To add to that memory, run the same command with --no-project." : "";
+      console.error(`Error: ${message}${hint}`);
       process.exit(1);
     }
     if (opts.json) {

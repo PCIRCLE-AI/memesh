@@ -18,7 +18,6 @@ import {
   ensurePrivateDir,
   getDbPath,
   getMemeshDirFromDbPath,
-  getProjectName,
   gitRepoRoot,
   HOOK_BUSY_TIMEOUT_MS,
   isTrustedForAutoContext,
@@ -168,25 +167,16 @@ function recallFile(data) {
     // cwd's project" OR — out of scope for #358 and its own source of
     // cross-project noise.
     //
-    // Measured with a PATH-shim `git` wrapper against three fixtures (#358
-    // round 7), current code vs. HEAD (no per-file project scoping) run
-    // against the same three fixtures the same way:
-    //   - repo with a remote: 2 now (gitRepoRoot's `rev-parse
-    //     --show-toplevel`, then getProjectName's own `config --get
-    //     remote.origin.url`, which finds the remote and stops) vs. 1 at
-    //     HEAD (`getProjectName(cwd)` alone, the remote check only).
-    //   - non-repo fallback: 3 now (gitRepoRoot's call finds no repo, so
-    //     getProjectName runs again on cwd instead: `config --get
-    //     remote.origin.url` then `rev-parse --show-toplevel`, both empty)
-    //     vs. 2 at HEAD (the same two, minus gitRepoRoot's own call).
-    //   - repo with no remote: 4 now (the with-remote two, plus
-    //     getProjectName's own fallback `rev-parse --show-toplevel` and
-    //     `rev-parse --git-common-dir` once the remote check is empty) vs.
-    //     3 at HEAD (the same three, minus gitRepoRoot's own call).
-    // Adds exactly one git process per unthrottled edit in every case. Each
-    // is capped at 2 s (`tryGit`), so where git itself stalls the hook's
-    // 5-second timeout is reached one call sooner than before (#366). The
-    // throttled path (every repeat edit of the same file) pays for none of it.
+    // Measured with a PATH-shim `git` wrapper, one unthrottled edit: 3 git
+    // processes for a repo with a remote, a repo without one and a plain
+    // directory alike — gitRepoRoot's `rev-parse --show-toplevel` (cached, so
+    // getProjectIds reuses it), `config --get remote.origin.url`, and
+    // `rev-parse --git-common-dir` (or, outside a repository, the cwd's own
+    // root check). getProjectIds derives every id (remote, its earlier
+    // spellings, the path's two forms) from these, once per directory. Each is
+    // capped at 2 s (`tryGit`), so with git stalling 1 s a call the hook takes
+    // about 3 s of its 5-second timeout (#366). The throttled path (every
+    // repeat edit of the same file) pays for none of it.
     // Guards are global by design: a mistake recorded in one project is
     // usually a mistake everywhere (the pipe-eats-exit-code shape), and the
     // warning names its
@@ -208,14 +198,14 @@ function recallFile(data) {
         // its project. A symlinked directory can make the git-plumbing
         // identity resolution key off the symlink's own path instead of the
         // real repository; feeding it an already-resolved directory
-        // sidesteps that without touching `resolveProjectIdentity` itself.
+        // sidesteps that without touching `resolveProjectIds` itself.
         const { dir: fileDir, tail: missingTail } = realpathNearestExisting(absoluteFileDir);
         // One call serves both project scoping and the path-suffix check
         // below.
         const repoRoot = gitRepoRoot(fileDir);
         const identityDir = repoRoot ? fileDir : data.cwd;
-        projectName = getProjectName(identityDir);
         projectIds = getProjectIds(identityDir);
+        projectName = projectIds[0];
 
         // `fileDir` is only the nearest ancestor that EXISTS — right for
         // project identity, wrong as the file's own directory. A `Write`
@@ -245,8 +235,8 @@ function recallFile(data) {
         }
         editedPath = { relPath, absPath, absPathAsGiven };
       } catch {
-        projectName = getProjectName(data.cwd);
         projectIds = getProjectIds(data.cwd);
+        projectName = projectIds[0];
       }
     }
 
@@ -437,10 +427,14 @@ function recallFile(data) {
               // can reject any of these, and a tight LIMIT applied BEFORE
               // confirmation can starve it — 9 candidates that all fail
               // confirmation hid a 10th, genuinely-matching row entirely.
+              //
+              // The index first (CROSS JOIN): joined the other way SQLite runs
+              // the match once per active memory, past the 5-second timeout on
+              // a large graph (tests/core/fts-query-plan.test.ts).
               ftsResults = matchExpr === null ? [] : db.prepare(`
                 SELECT DISTINCT e.id, e.name, e.type, e.metadata
-                FROM entities e
-                JOIN entities_fts fts ON fts.rowid = e.id
+                FROM entities_fts fts
+                CROSS JOIN entities e ON fts.rowid = e.id
                 JOIN tags t ON t.entity_id = e.id
                 WHERE entities_fts MATCH ?
                   AND t.tag IN (${projectTagMarks})

@@ -1307,9 +1307,9 @@ process.stdin.on('end', async () => {
         // Legacy read-only schemas predate status; keep those readable.
         const taskStatusFilter = db.prepare('PRAGMA table_info(entities)').all().some(column => column.name === 'status')
           ? "AND status = 'active'" : '';
-        const taskRow = db
-          .prepare(`SELECT metadata FROM entities WHERE name = ? ${taskStatusFilter}`)
-          .get(taskStateName(projectName));
+        // The first of the checkout's ids that has a record (the current one first), as task_state reads it.
+        const taskRowStmt = db.prepare(`SELECT metadata FROM entities WHERE name = ? ${taskStatusFilter}`);
+        const taskRow = projectIds.map((id) => taskRowStmt.get(taskStateName(id))).find(Boolean);
         // Who this session is comes from `MEMESH_RECIPIENT` (`recipient`,
         // resolved above). Without it there is no exact recipient and the
         // shared leaf returns no lines, so a session never sees a message

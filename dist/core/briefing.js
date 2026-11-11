@@ -39,7 +39,7 @@ export function assembleBriefing(project, recipient, projectIds) {
         : [];
     let taskLines;
     try {
-        taskLines = boundTaskStateLines(briefingTaskStateLines(getTaskState(projectName).state, projectName, new Date(), {
+        taskLines = boundTaskStateLines(briefingTaskStateLines(getTaskState(projectName, ids).state, projectName, new Date(), {
             includeFresh: policy.taskState,
         }));
     }

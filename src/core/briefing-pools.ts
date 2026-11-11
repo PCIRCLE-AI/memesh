@@ -19,7 +19,7 @@ import type { MemeshDatabase } from '../storage/sqlite.js';
 import { redactMemoryText, redactShownTogether } from './paths.js';
 import { rankEntities } from './scoring.js';
 import { SESSION_HANDOFF_TYPE, sessionHandoffName } from './session-handoff.js';
-import { ownFolderNote } from './project-scope.js';
+import { folderNoteMayTravel, ownFolderNote } from './project-scope.js';
 import { INDEX_CANDIDATE_CAP, INDEX_EXCLUDED_TYPES, INDEX_SNIPPET_FETCH_CHARS, type IndexCandidate } from './briefing-index.js';
 import {
   DECISION_LAYER_TYPES,
@@ -203,10 +203,10 @@ export interface PoolOptions {
   foreign: boolean;
   /** A failed handoff, decision or lesson read becomes an empty part and is
    *  reported here; without it the read throws. */
-  onError?: (label: 'handoff' | 'decisions' | 'lessons', err: unknown) => void;
+  onError?: (label: 'handoff' | 'decisions' | 'lessons' | 'shared', err: unknown) => void;
 }
 
-function guarded<T>(label: 'handoff' | 'decisions' | 'lessons', fallback: T, read: () => T, onError: PoolOptions['onError']): T {
+function guarded<T>(label: 'handoff' | 'decisions' | 'lessons' | 'shared', fallback: T, read: () => T, onError: PoolOptions['onError']): T {
   if (!onError) return read();
   try { return read(); } catch (err) { onError(label, err); return fallback; }
 }
@@ -219,17 +219,16 @@ export function selectBriefingPools(db: MemeshDatabase, projectName: string, opt
   const tagMarks = projectTags.map(() => '?').join(',');
   const columns = candidateColumns(cols);
 
-  // The newest handoff under any id of this project: a handoff is one memory per
+  // The newest trusted handoff under any id of this project: a handoff is one memory per
   // project id, replaced at every Stop, so the one under an earlier id is read until
-  // the next Stop writes the current one.
-  const handoffRead = guarded('handoff', undefined as HandoffRow | undefined, () => db.prepare(
+  // the next Stop writes the current one. An untrusted one (an import) never hides it.
+  const handoffs = guarded('handoff', [] as HandoffRow[], () => db.prepare(
     `SELECT e.id, e.name, e.metadata, o.content AS text, o.created_at AS observedAt
      FROM entities e JOIN observations o ON o.entity_id = e.id
      WHERE e.name IN (${ids.map(() => '?').join(',')}) AND e.type = ?${active(cols)}
-     ORDER BY o.id DESC
-     LIMIT 1`,
-  ).get(...ids.map(sessionHandoffName), SESSION_HANDOFF_TYPE) as HandoffRow | undefined, options.onError);
-  const handoffTrusted = !!handoffRead && trustedForAutoContext(handoffRead.metadata);
+     ORDER BY o.id DESC`,
+  ).all(...ids.map(sessionHandoffName), SESSION_HANDOFF_TYPE) as unknown as HandoffRow[], options.onError);
+  const handoff = handoffs.find((row) => trustedForAutoContext(row.metadata));
 
   const projectRows = db.prepare(
     `SELECT DISTINCT ${columns}
@@ -275,16 +274,16 @@ export function selectBriefingPools(db: MemeshDatabase, projectName: string, opt
   // user's own memory folder, that belong to ANOTHER project, in a
   // section of their own after everything of this project's (the assembler fills it last),
   // each labelled with where it came from, newest first by its latest valid activity.
-  // Only what carries the user's own words, and only what the note ingester can vouch for:
-  // `provenance.source` and `trust` are set by it alone, where a type or a tag can be written
-  // by any agent. Another project's decisions, lessons and agent-written preferences were written
+  // Only notes of a memory folder (what the user and the agent wrote there), and only what the
+  // note ingester can vouch for: `provenance.source` and `trust` are set by it alone, where a
+  // type or a tag can be written by any agent; a note whose file is gone is left out. Another project's decisions, lessons and agent-written preferences were written
   // by an agent or a hook, and putting those in front of every other project unasked would let
   // one project's captured text steer another (a preference that applies everywhere is stored
   // with no project, which has its own pool above). Measured on a real graph, the
   // newest lessons and decisions of other projects were about another product's internals,
   // and an access count put a project's bulk records first. Decisions and lessons of every
   // project stay one `recall` away.
-  const shared = guarded('lessons', [] as PoolRow[], () => (db.prepare(
+  const shared = guarded('shared', [] as PoolRow[], () => (db.prepare(
     `SELECT DISTINCT ${columns}, ${RECENCY_SQL} AS recency,
        (SELECT substr(pt.tag, ${'project:'.length + 1}) FROM tags pt
          WHERE pt.entity_id = e.id AND pt.tag LIKE 'project:%' AND pt.tag NOT IN (${tagMarks})
@@ -313,18 +312,20 @@ export function selectBriefingPools(db: MemeshDatabase, projectName: string, opt
 
   // Newest activity across ALL projects; anything only here is from another
   // project. Rows with no project are the pool above, not "another project".
+  // Another project's memory-folder notes come only as preferences and feedback.
   const recent = options.foreign
     ? selectPool(db.prepare(
       `SELECT ${columns} FROM entities e
        WHERE NOT ${NO_PROJECT_TAG} AND e.type <> ?${active(cols)}${nonGlobal(cols)}
+         AND (EXISTS (SELECT 1 FROM tags rt WHERE rt.entity_id = e.id AND rt.tag IN (${tagMarks})) OR ${folderNoteMayTravel('e')})
        ORDER BY e.id DESC
        LIMIT ?`,
-    ).all(SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[], RECENT_LIMIT)
+    ).all(SESSION_HANDOFF_TYPE, ...projectTags, TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[], RECENT_LIMIT)
     : [];
 
   return {
-    handoff: handoffTrusted ? handoffRead : undefined,
-    handoffHidden: handoffRead && !handoffTrusted ? 'untrusted' : undefined,
+    handoff,
+    handoffHidden: handoffs.length > 0 && handoff === undefined ? 'untrusted' : undefined,
     lessonCount: lessonRows.length,
     lessons: lessonRows.slice(0, LESSON_LIMIT),
     project,

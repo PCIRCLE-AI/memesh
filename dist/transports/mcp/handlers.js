@@ -27,6 +27,10 @@ function projectFor(explicit, context, action) {
         return { project: binding.project };
     return { result: fail(`${binding.error}: ${binding.reason} ${action}`) };
 }
+function boundIdsFor(project, context) {
+    const binding = context.projectBinding;
+    return binding && 'project' in binding && binding.project === project ? binding.ids : undefined;
+}
 const PROJECT_ACTION = `Pass project ("<id>", or a "project:<id>" tag), or project: false for a memory that belongs to no project (a preference, a general lesson), or bind the session: ${BIND_WORKSPACE}`;
 function writeProject(arg, tags, context) {
     if (arg === false)
@@ -160,7 +164,7 @@ export const TOOL_DEFINITIONS = [
     },
     {
         name: 'recall',
-        description: 'Search stored knowledge with full-text search, or retrieve exact memory IDs. Use ids (1–20 positive integers) without query, tag or cross_project. ID results report found, archived, unavailable or omitted; only found memories include content and a mem-fetched reference. Retry omitted results individually; an item still omitted on its own cannot fit the response limit. Selectors: `project` (that project, memories with no project, global ones, and the decisions, lessons and preferences of any project; false = the same without a project of its own), `tag` (exactly that tag) or `cross_project` (every project; a `tag` given with it is ignored). `project` cannot be combined with `tag` or `cross_project`. With none, it uses the project this session is bound to (MEMESH_PROJECT_ROOT, or the client’s workspace root) the same way, or the same without a project of its own when nothing is bound; the detail of another project (commits, session summaries, handoffs, notes) is never included; a launch or workspace root that is set but cannot be resolved is refused with the reason; the response says what it searched (`scope`) and each result carries its `projects` ([] for none). A result carries `archived_relations_omitted` when it leaves out relations to archived memories (a `supersedes` link is always shown); add `include_archived` to see them. Call with no query to list recent memories. One- and two-term queries use OR matching; queries with three or more terms try strict all-term matching first and fall back to OR only when strict matching has no hits, with results ranked by relevance. Results are capped for size: each entity\'s observations+tags at 8 KB, the whole response at 32 KB; a capped entity carries `truncated` with the full shown/total counts, and the response carries `truncated`/`entities_omitted` when anything was cut. `file:*` tags are never included — they exist for pre-edit lookups, not for reading.',
+        description: 'Search stored knowledge with full-text search, or retrieve exact memory IDs. Use ids (1–20 positive integers) without query, tag or cross_project. ID results report found, archived, unavailable or omitted; only found memories include content and a mem-fetched reference. Retry omitted results individually; an item still omitted on its own cannot fit the response limit. Selectors: `project` (that project, memories with no project, global ones, and the decisions, lessons and preferences of any project, untrusted ones excepted; false = the same without a project of its own), `tag` (exactly that tag) or `cross_project` (every project; a `tag` given with it is ignored). `project` cannot be combined with `tag` or `cross_project`. With none, it uses the project this session is bound to (MEMESH_PROJECT_ROOT, or the client’s workspace root) the same way, or the same without a project of its own when nothing is bound; the detail of another project (commits, session summaries, handoffs, notes) is never included; a launch or workspace root that is set but cannot be resolved is refused with the reason; the response says what it searched (`scope`) and each result carries its `projects` ([] for none). A result carries `archived_relations_omitted` when it leaves out relations to archived memories (a `supersedes` link is kept, its archived far end too, when that end is in the scope searched); add `include_archived` to see them. Call with no query to list recent memories. One- and two-term queries use OR matching; queries with three or more terms try strict all-term matching first and fall back to OR only when strict matching has no hits, with results ranked by relevance. Results are capped for size: each entity\'s observations+tags at 8 KB, the whole response at 32 KB; a capped entity carries `truncated` with the full shown/total counts, and the response carries `truncated`/`entities_omitted` when anything was cut. `file:*` tags are never included — they exist for pre-edit lookups, not for reading.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -603,10 +607,9 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
             }
             let boundProject;
             let boundIds = [];
-            const bound = requestContext.projectBinding;
             if (projectArg !== undefined) {
                 boundProject = projectArg === false ? null : projectArg;
-                boundIds = boundProject === null ? [] : bound && 'project' in bound && bound.project === boundProject ? bound.ids ?? [boundProject] : [boundProject];
+                boundIds = boundProject === null ? [] : boundIdsFor(boundProject, requestContext) ?? [boundProject];
             }
             else {
                 const binding = requestContext.projectBinding ?? UNBOUND;
@@ -670,9 +673,10 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
             if ('result' in bound)
                 return bound.result;
             const { project } = bound;
+            const ids = boundIdsFor(project, requestContext);
             if (Object.keys(patch).length === 0)
-                return ok(getTaskState(project));
-            return ok(setTaskState({ project, patch, sourceHost }));
+                return ok(getTaskState(project, ids));
+            return ok(setTaskState({ project, ids, patch, sourceHost }));
         }
         if (name === 'briefing') {
             const r = parseOrFail(BriefingSchema, args);
@@ -681,9 +685,7 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
             const bound = projectFor(r.data.project, requestContext, 'Pass project explicitly.');
             if ('result' in bound)
                 return bound.result;
-            const binding = requestContext.projectBinding;
-            const ids = binding && 'project' in binding && binding.project === bound.project ? binding.ids : undefined;
-            return ok(assembleBriefing(bound.project, r.data.recipient, ids));
+            return ok(assembleBriefing(bound.project, r.data.recipient, boundIdsFor(bound.project, requestContext)));
         }
         if (name === 'user_patterns') {
             const r = parseOrFail(UserPatternsSchema, args);
