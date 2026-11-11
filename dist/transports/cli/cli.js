@@ -68487,7 +68487,7 @@ function newestBackup(dir) {
     return void 0;
   }
   for (const name of names) {
-    if (!name.endsWith(".db"))
+    if (!name.endsWith(".db") || !MEMORY_BACKUP_PREFIXES.some((prefix) => name.startsWith(prefix)))
       continue;
     const file2 = path33.join(dir, name);
     try {
@@ -68603,11 +68603,13 @@ function databaseOpenFailureReport(err, databasePath) {
 ${diagnosisLine}Fix: ${fix}
 `;
 }
+var MEMORY_BACKUP_PREFIXES;
 var init_database_diagnosis = __esm({
   "dist/core/database-diagnosis.js"() {
     "use strict";
     init_sqlite();
     init_file_mode();
+    MEMORY_BACKUP_PREFIXES = ["pre-update-", "before-compression-marker-", "kg-before-", "knowledge-graph-before-note-trust-"];
   }
 });
 

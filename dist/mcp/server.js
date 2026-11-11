@@ -36490,6 +36490,7 @@ import path8 from "path";
 function isDamagedDatabaseError(message) {
   return /malformed|SQLITE_CORRUPT|not a database|SQLITE_NOTADB/i.test(message);
 }
+var MEMORY_BACKUP_PREFIXES = ["pre-update-", "before-compression-marker-", "kg-before-", "knowledge-graph-before-note-trust-"];
 function newestBackup(dir) {
   let newest;
   let names;
@@ -36499,7 +36500,7 @@ function newestBackup(dir) {
     return void 0;
   }
   for (const name of names) {
-    if (!name.endsWith(".db"))
+    if (!name.endsWith(".db") || !MEMORY_BACKUP_PREFIXES.some((prefix) => name.startsWith(prefix)))
       continue;
     const file2 = path8.join(dir, name);
     try {

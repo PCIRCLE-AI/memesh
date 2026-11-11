@@ -148,6 +148,45 @@ describe('the repair advice, as text', () => {
     fs.mkdirSync(path.join(backups, 'folder.db'));
     expect(damagedDatabaseFix(handle.dbPath)).not.toMatch(/backup instead/);
   });
+
+  describe('which files in backups/ count as a backup of the memory database', () => {
+    const backupsDir = () => {
+      const dir = path.join(path.dirname(handle.dbPath), 'backups');
+      fs.mkdirSync(dir, { recursive: true });
+      return dir;
+    };
+    const put = (name: string, mtimeSeconds: number) => {
+      const file = path.join(backupsDir(), name);
+      fs.writeFileSync(file, 'a file with some bytes in it');
+      fs.utimesSync(file, mtimeSeconds, mtimeSeconds);
+      return file;
+    };
+
+    it('never offers the expired-message archive as a backup to restore', () => {
+      put('agent-messages-expired.db', 2_000_000);
+      put('agent-messages-expired-other.db', 2_000_100);
+      expect(damagedDatabaseSteps(handle.dbPath).restore).toBeUndefined();
+      expect(damagedDatabaseFix(handle.dbPath)).not.toMatch(/backup instead/);
+      expect(damagedDatabaseFix(handle.dbPath)).not.toContain('agent-messages-expired');
+    });
+
+    it('picks the real backup even when the expired-message archive is newer', () => {
+      const real = put('pre-update-4.12.0-2026-11-12T00-00-00-000Z.db', 1_000_000);
+      put('agent-messages-expired.db', 2_000_000);
+      expect(damagedDatabaseSteps(handle.dbPath).restore).toContain(real);
+      expect(damagedDatabaseFix(handle.dbPath)).not.toContain('agent-messages-expired');
+    });
+
+    it.each([
+      'pre-update-4.12.0-2026-11-12T00-00-00-000Z.db',
+      'before-compression-marker-2026-11-12T00-00-00-000Z.db',
+      'kg-before-rename-project-2026-11-12T00-00-00-000Z.db',
+      'knowledge-graph-before-note-trust-2026-11-12T00-00-00-000Z-0123abcd.db',
+    ])('a file named like the ones the product writes (%s) is a backup', (name) => {
+      const file = put(name, 1_000_000);
+      expect(damagedDatabaseSteps(handle.dbPath).restore).toContain(file);
+    });
+  });
 });
 
 // The printed repair, run as printed: each step goes through `sh -c` exactly as
@@ -269,7 +308,7 @@ describe.skipIf(!canRunSteps)('the repair advice, run as printed', () => {
     getDatabase().exec('PRAGMA wal_checkpoint(TRUNCATE)');
     const backups = path.join(path.dirname(handle.dbPath), 'backups');
     fs.mkdirSync(backups, { recursive: true });
-    getDatabase().prepare('VACUUM INTO ?').run(path.join(backups, 'before-x.db'));
+    getDatabase().prepare('VACUUM INTO ?').run(path.join(backups, 'kg-before-restore-test-2026-11-12T00-00-00-000Z.db'));
     fs.writeFileSync(path.join(backups, 'before-y.db.tmp'), 'half a backup');
     // A real journal of the old file, left behind: replayed onto the restored
     // copy it would write the old file's pages into it.
@@ -281,7 +320,7 @@ describe.skipIf(!canRunSteps)('the repair advice, run as printed', () => {
     fs.copyFileSync(staleJournal, `${handle.dbPath}-wal`);
     fs.rmSync(`${handle.dbPath}-shm`, { force: true });
     const fix = damagedDatabaseFix(handle.dbPath);
-    expect(fix).toContain(path.join(backups, 'before-x.db'));
+    expect(fix).toContain(path.join(backups, 'kg-before-restore-test-2026-11-12T00-00-00-000Z.db'));
     expect(fix).not.toContain('.restore');
     repair(handle.dbPath, fix, ['copy', 'restore']);
     expect(quickCheck(handle.dbPath)).toBe('ok');

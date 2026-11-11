@@ -5,6 +5,7 @@ import { databaseFiles, runOrSay, shellQuote } from './file-mode.js';
 export function isDamagedDatabaseError(message) {
     return /malformed|SQLITE_CORRUPT|not a database|SQLITE_NOTADB/i.test(message);
 }
+const MEMORY_BACKUP_PREFIXES = ['pre-update-', 'before-compression-marker-', 'kg-before-', 'knowledge-graph-before-note-trust-'];
 function newestBackup(dir) {
     let newest;
     let names;
@@ -15,7 +16,7 @@ function newestBackup(dir) {
         return undefined;
     }
     for (const name of names) {
-        if (!name.endsWith('.db'))
+        if (!name.endsWith('.db') || !MEMORY_BACKUP_PREFIXES.some((prefix) => name.startsWith(prefix)))
             continue;
         const file = path.join(dir, name);
         try {

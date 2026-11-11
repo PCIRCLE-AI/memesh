@@ -8,7 +8,18 @@ export function isDamagedDatabaseError(message: string): boolean {
   return /malformed|SQLITE_CORRUPT|not a database|SQLITE_NOTADB/i.test(message);
 }
 
-/** The newest complete `.db` copy in `dir` (a `.tmp` is a backup still being written), or undefined. */
+/**
+ * The file names the product gives a backup of the MEMORY database, one prefix per
+ * writer: `pre-update-` (auto-update.ts `backupDatabase`), `before-compression-marker-`
+ * (lifecycle.ts), `kg-before-` (cli.ts `backUpDatabase`) and
+ * `knowledge-graph-before-note-trust-` (note-ingest.ts, through db-copy.ts). The same
+ * folder also holds the expired-message archive (`agent-messages-expired*.db`, written by
+ * agent-message-expiry.ts) and Hermes provider backups: restoring the archive over the
+ * database would replace every memory with expired messages, so only these names count.
+ */
+const MEMORY_BACKUP_PREFIXES = ['pre-update-', 'before-compression-marker-', 'kg-before-', 'knowledge-graph-before-note-trust-'];
+
+/** The newest complete memory-database backup in `dir` (a `.tmp` is a backup still being written), or undefined. */
 function newestBackup(dir: string): string | undefined {
   let newest: { file: string; mtime: number } | undefined;
   let names: string[];
@@ -18,7 +29,7 @@ function newestBackup(dir: string): string | undefined {
     return undefined;
   }
   for (const name of names) {
-    if (!name.endsWith('.db')) continue;
+    if (!name.endsWith('.db') || !MEMORY_BACKUP_PREFIXES.some((prefix) => name.startsWith(prefix))) continue;
     const file = path.join(dir, name);
     try {
       const stat = fs.statSync(file);
