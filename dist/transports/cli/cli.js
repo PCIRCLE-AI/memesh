@@ -37998,8 +37998,8 @@ var init_capture_liveness = __esm({
       nothingToRecall: "no guard matched and nothing to recall for this file",
       recallThrottled: "no guard matched and recall for this file is throttled: this session already looked at it",
       candidateWindowTruncated: "more candidates may exist than the search window examined",
-      noPromptIntent: "the prompt carried no remember intent and no update decision",
-      promptTooLarge: "the prompt is too large to scan for a remember intent",
+      noMessageWaiting: "no message was waiting for this session",
+      promptTooLarge: "the prompt is larger than the hook accepts",
       promptEmpty: "the prompt held no text",
       promptRecallOff: "prompt recall is turned off (promptRecall is false)",
       promptPrivateSession: "private_session: the agent marked this session private, so no memory was searched or shown",
@@ -38112,12 +38112,13 @@ function citationRuleState(scope, home, cwd, fsImpl = fs21) {
     return { path: filePath, state: "foreign-file" };
   return { path: filePath, state: existing.text === CITATION_RULE_BODY ? "current" : "stale" };
 }
-var CITATION_RULE_MARKER, CITATION_RULE_FILENAME, CITATION_RULE_BODY;
+var CITATION_RULE_MARKER, CITATION_RULE_FILENAME, DEFAULT_SAVE_INSTRUCTION, CITATION_RULE_BODY;
 var init_citation_rule = __esm({
   "dist/core/citation-rule.js"() {
     "use strict";
     CITATION_RULE_MARKER = "<!-- managed-by: memesh -->";
     CITATION_RULE_FILENAME = "memesh-citations.md";
+    DEFAULT_SAVE_INSTRUCTION = "Saving is on by default: store the decisions, preferences, lessons and facts that come up in the work with the memesh `remember` tool, without waiting to be asked; give a decision its reason as `why`. The only exception is the user explicitly asking you not to save, in which case do not store that content.";
     CITATION_RULE_BODY = `${CITATION_RULE_MARKER}
 # MeMesh memory citations
 
@@ -38131,6 +38132,10 @@ re-ask \u2014 cite it inline once as \`[mem:42]\`, in the sentence it affected.
 Do not cite a memory you only read past, and never invent an id. An uncited
 memory is recorded as unused: that is how MeMesh learns which memories are
 worth the tokens they cost you.
+
+# MeMesh saving
+
+${DEFAULT_SAVE_INSTRUCTION}
 `;
   }
 });
@@ -41757,7 +41762,7 @@ function exportOpenAITools() {
       type: "function",
       function: {
         name: "memesh_remember",
-        description: 'Store knowledge as an entity with observations, tags, and relations. Pass only `note` to derive title, observations and name. An omitted namespace keeps an existing memory in its current namespace; "supersedes" archives its target and "contradicts" marks a conflict. Record standalone outcomes and reasons with relevant filenames and numbers; skip repeated confirmations; never store secrets, passwords, or personal data.',
+        description: 'Store knowledge as an entity with observations, tags, and relations. Saving is on by default: store decisions, preferences, lessons and context without waiting to be asked; the only exception is the user explicitly asking not to save, in which case do not store that content. Pass only `note` to derive title, observations and name. An omitted namespace keeps an existing memory in its current namespace; "supersedes" archives its target and "contradicts" marks a conflict. Record standalone outcomes and reasons with relevant filenames and numbers; skip repeated confirmations; never store secrets or passwords.',
         parameters: {
           type: "object",
           properties: {
@@ -41871,7 +41876,7 @@ function exportOpenAITools() {
       type: "function",
       function: {
         name: "memesh_learn",
-        description: "Record a structured lesson from a mistake or discovery. Use it when something went wrong and the cause and fix are known; for a choice between options, use remember with type decision. Record standalone outcomes and reasons with relevant filenames and numbers; skip repeated confirmations; never store secrets, passwords, or personal data.",
+        description: "Record a structured lesson from a mistake or discovery. Use it when something went wrong and the cause and fix are known; for a choice between options, use remember with type decision. Record standalone outcomes and reasons with relevant filenames and numbers; skip repeated confirmations; never store secrets or passwords.",
         parameters: {
           type: "object",
           properties: {
@@ -42012,7 +42017,7 @@ function exportOpenAITools() {
       type: "function",
       function: {
         name: "memesh_private_session",
-        description: "Call this when the user asks not to remember or save this session or conversation, in any words or language. It changes no state: the call itself is the signal (even if its result is an error), and automatic saving stops for the rest of this session. What was saved earlier stays; memesh_forget removes it. After calling it, write nothing to memory: no `remember` or `learn`, and no writes to the host's own memory files, unless the user later asks you to store something explicitly. A request not to save one thing (a password, one detail) means simply not saving that thing; do not call this tool for it, and do not call it just because the user mentions or discusses this feature.",
+        description: 'Call this when the user explicitly asks not to remember or save this session or conversation, in any words or language (for example "don\'t keep any of this", "off the record", \u300C\u9019\u6BB5\u4E0D\u8981\u8A18\u300D; these illustrate, they are not a list to match). A remark whose meaning is not clearly that is not a request: keep saving as usual. It changes no state: the call itself is the signal (even if its result is an error), and automatic saving stops for the rest of this session. What was saved earlier stays; memesh_forget removes it. After calling it, write nothing to memory: no `remember` or `learn`, and no writes to the host\'s own memory files, unless the user later asks you to store something explicitly. A request not to save one thing (a password, one detail) means simply not saving that thing; do not call this tool for it, and do not call it just because the user mentions or discusses this feature.',
         parameters: { type: "object", properties: {}, additionalProperties: false }
       }
     }
@@ -70904,7 +70909,7 @@ var init_retired_routes = __esm({
     "use strict";
     RETIRED_ROUTES = {
       "/v1/consolidate": "POST /v1/consolidate is retired. It rewrote memories with an LLM summary and deleted the originals, with no review step. Use the MCP work_package tool to stage an agent result, then review and accept or reject the proposal.",
-      "/v1/verify": "POST /v1/verify is retired along with the agentic-orchestration experiment. It recorded a verification report for background-agent work; the protocol it served was removed without ever leaving opt-in. Run your own verification (typecheck/tests/lint) and store conclusions with POST /v1/remember if you want them remembered."
+      "/v1/verify": "POST /v1/verify is retired along with the agentic-orchestration experiment. It recorded a verification report for background-agent work; the protocol it served was removed without ever leaving opt-in. Run your own verification (typecheck/tests/lint) and store conclusions with POST /v1/remember."
     };
   }
 });

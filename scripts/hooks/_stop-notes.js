@@ -662,7 +662,7 @@ export function pruneSessionState(dir, now, onFault) {
 
 export function buildNudge(moves) {
   const kinds = [...new Set(moves)].join(', ');
-  return `MeMesh: this session made ${moves.length} decision-shaped move(s) (${kinds}) and stored no memory — \`remember\` what should outlive it.`;
+  return `MeMesh: this session made ${moves.length} decision-shaped move(s) (${kinds}) and stored no memory — \`remember\` them.`;
 }
 
 /**

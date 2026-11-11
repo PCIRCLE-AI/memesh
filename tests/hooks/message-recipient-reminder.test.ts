@@ -6,7 +6,7 @@ import os from 'os';
 import path from 'path';
 import { openDatabase, closeDatabase, getDatabase } from '../../src/db.js';
 import { executeAgentMessageAction } from '../../src/transports/agent-messaging.js';
-import { buildHint } from '../../scripts/hooks/user-prompt-intent.js';
+import { SAVE_WORDED_PROMPTS } from '../helpers/save-worded-prompts.js';
 import { getProjectName } from '../../src/core/paths.js';
 import { resolveMessageRecipient } from '../../scripts/hooks/_shared.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
@@ -226,15 +226,16 @@ describe('Feature: a session that declares MEMESH_RECIPIENT is told when a messa
     expect(payload.hookSpecificOutput?.additionalContext).toContain('MEMESH_RECIPIENT ignored');
   });
 
-  it('still reminds when autoCapture is off, and does not send the remember hint then', async () => {
+  // Whether to save is the model's call: the reminder is the same whatever the prompt says, and autoCapture does not gate it.
+  it('sends only the message reminder, whatever the prompt says about saving, with autoCapture on or off', async () => {
     await send('claude-implementer');
-    fs.writeFileSync(path.join(home, '.memesh', 'config.json'), JSON.stringify({ autoCapture: false }));
-
-    const result = prompt({ MEMESH_RECIPIENT: 'claude-implementer' }, 'remember this preference');
-
-    const text = context(result.stdout);
-    expect(text).toContain('1 message waiting for "claude-implementer"');
-    expect(text).not.toContain(buildHint());
+    const env = { MEMESH_RECIPIENT: 'claude-implementer' };
+    const expected = context(prompt(env).stdout);
+    expect(expected).toContain('1 message waiting for "claude-implementer"');
+    for (const autoCapture of [true, false]) {
+      fs.writeFileSync(path.join(home, '.memesh', 'config.json'), JSON.stringify({ autoCapture }));
+      for (const text of SAVE_WORDED_PROMPTS) expect(context(prompt(env, text).stdout), text).toBe(expected);
+    }
   });
 
   it('says so on stderr and in the ledger when the inbox cannot be read, and still lets the prompt and the session start through', async () => {

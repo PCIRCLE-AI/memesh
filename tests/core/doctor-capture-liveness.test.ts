@@ -371,7 +371,7 @@ describe('doctor: capture-liveness', () => {
     memeshDirWith([
       ...skips('guard-check', 20, 'no active guard matched this command'),
       ...skips('post-commit', 20, SKIP_REASONS.notGitCommit),
-      ...skips('user-prompt-intent', 20, 'the prompt carried no remember intent and no update decision'),
+      ...skips('user-prompt-intent', 20, 'no message was waiting for this session'),
       ...skips('session-summary', 19, SKIP_REASONS.alreadyCaptured),
       { hook: 'session-summary', at: '2026-09-09T01:00:00.000Z', host: 'claude-code', outcome: 'wrote', entity: 'session-s1-summary' },
     ]);

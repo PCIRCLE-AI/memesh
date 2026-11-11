@@ -276,23 +276,6 @@ else ok(`registry and API_REFERENCE.md agree on ${toolsInCode} MCP tools`);
     if (wrong.length) fail(`API_REFERENCE health weights drifted for: ${wrong.join(', ')} (code says ${factorWeights.join('/')})`);
     else ok(`API_REFERENCE health-factor weights match analytics.ts (${factorWeights.join('/')})`);
   }
-
-  // (f) The intent hook's language count. The language markers are the
-  // "// <Language>:" group comments inside INTENT_PATTERNS — the only
-  // per-language anchor in the file. A pattern added without its language
-  // comment would not be counted; that limitation is accepted and visible.
-  const intent = read('scripts/hooks/user-prompt-intent.js');
-  const block = intent.slice(intent.indexOf('INTENT_PATTERNS'), intent.indexOf('];'));
-  const langs = new Set([...block.matchAll(/^\s*\/\/ ([A-Z][A-Za-z ]+?):/gm)].map(m => m[1]));
-  if (langs.size === 0) {
-    fail('intent-language extraction found zero language groups — pattern rot');
-  } else {
-    const bad = [];
-    if (!read('README.md').includes(`(${langs.size} languages)`)) bad.push('README.md');
-    if (!read('docs/ARCHITECTURE.md').includes(`(${langs.size} languages:`)) bad.push('docs/ARCHITECTURE.md');
-    if (bad.length) fail(`intent-hook language count drifted (code has ${langs.size} groups): ${bad.join(', ')}`);
-    else ok(`intent-hook language count (${langs.size}) matches README and ARCHITECTURE`);
-  }
 }
 
 // --- 4. Current public contracts that previously passed while false ---------

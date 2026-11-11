@@ -323,8 +323,8 @@ export const FAIL_ELIGIBLE_HOOKS = ['session-summary'] as const;
  * turns are classified as not-triggered before they can count). It does NOT
  * hold for guard-check and post-commit's PreToolUse/PostToolUse siblings,
  * which fire on every Bash call and skip almost every one of them BY DESIGN,
- * or for user-prompt-intent, which fires on every prompt and writes only
- * when a prompt carries a remember intent. Counting those made a default
+ * or for user-prompt-intent, which fires on every prompt and only reminds
+ * when a message is waiting. Counting those made a default
  * install PASS_WITH_CONCERNS with a daily banner about a hook doing exactly
  * its job.
  */
@@ -481,8 +481,8 @@ export const SKIP_REASONS = {
    * says the honest, narrower thing: the search was cut off, not exhausted.
    */
   candidateWindowTruncated: 'more candidates may exist than the search window examined',
-  noPromptIntent: 'the prompt carried no remember intent and no update decision',
-  promptTooLarge: 'the prompt is too large to scan for a remember intent',
+  noMessageWaiting: 'no message was waiting for this session',
+  promptTooLarge: 'the prompt is larger than the hook accepts',
   // prompt-recall
   promptEmpty: 'the prompt held no text',
   promptRecallOff: 'prompt recall is turned off (promptRecall is false)',

@@ -1692,7 +1692,7 @@ agentCmd
 // --- briefing ---
 // The shell-reachable half of A1c. Claude Code gets this block pushed by the
 // session-start hook; an MCP client gets it from the `briefing` tool; and an
-// agent that has only a shell — the OpenClaw/Hermes integration pattern —
+// agent that has only a shell — the Hermes integration pattern —
 // gets it here. Same assembly, same fence, one owner (core/briefing.ts).
 program
   .command('briefing')

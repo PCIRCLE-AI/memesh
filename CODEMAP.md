@@ -114,7 +114,7 @@ docs/                # ARCHITECTURE.md, api/API_REFERENCE.md
 | `pre-compact.js` | PreCompact | end-of-context save |
 | `post-commit.js` | PostToolUse Bash | git commit tracking |
 | `decision-nudge.js` | PostToolUse ExitPlanMode/AskUserQuestion | remind Claude to `remember` a decision just made, once per tool per session |
-| `user-prompt-intent.js` | UserPromptSubmit | detect "remember" intent |
+| `user-prompt-intent.js` | UserPromptSubmit | waiting-message reminder, private marker renewal |
 | `prompt-recall.js` | UserPromptSubmit | inject up to two strongly matching stored memories (title and `[mem:id]`) beside the prompt, out-of-date ones dropped |
 
 `scripts/hooks/_shared.js`, `_claude-channel.js`, `_clear-alias.js`, `_codex-rollout.js`, `_stop-notes.js`, `_stop-handoff.js`,

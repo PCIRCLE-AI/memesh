@@ -351,12 +351,12 @@ describe('hook outcome records', () => {
     expect(rows[0].reason).toBe('no file_path in the tool input');
   });
 
-  it('user-prompt-intent records a SKIPPED for a prompt with no intent', () => {
+  it('user-prompt-intent records a SKIPPED when no message is waiting', () => {
     runHook('user-prompt-intent', { prompt: 'hello there' });
     const rows = records('user-prompt-intent');
     expect(rows.length).toBe(1);
     expect(rows[0].outcome).toBe('skipped');
-    expect(rows[0].reason).toBe('the prompt carried no remember intent and no update decision');
+    expect(rows[0].reason).toBe('no message was waiting for this session');
   });
 
   it('decision-nudge records a NOTIFIED naming the nudged tool', () => {

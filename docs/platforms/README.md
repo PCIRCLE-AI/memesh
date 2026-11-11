@@ -30,7 +30,6 @@ the [bearer-token requirements](../api/API_REFERENCE.md#http-rest-api).
   setups, not native local access from the hosted chat page.
 - [Hermes Agent](hermes-agent.md): optional native MemoryProvider integration;
   its recorded live test used MeMesh 4.5.1. Verify current host compatibility.
-- [OpenClaw](openclaw.md): source-only integration, not published or live-tested.
 - [DeepSeek worker](deepseek-worker.md): optional delegated worker, not a MeMesh host.
 
 The standalone Web Dashboard was removed in 4.11.0. Claude Code and Claude

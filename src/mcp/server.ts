@@ -19,6 +19,7 @@ import { startClaudeInboxPresence } from '../host-runtime/claude-inbox.js';
 import type { RouterHostConnection } from '../host-runtime/router-client.js';
 import { accountMemeshDir, dispatchAutoUpdate, logAutoUpdateLine, registerLiveHost } from '../core/auto-update.js';
 import { findPackageRoot } from '../core/package-root.js';
+import { DEFAULT_SAVE_INSTRUCTION } from '../core/citation-rule.js';
 import { getDbPath, getMemeshDirFromDbPath } from '../core/paths.js';
 
 // This file sits at the same depth (2 levels below the package root) both as
@@ -37,7 +38,7 @@ configureVersionSource(packageVersion, packageJsonPath);
 
 const server = new Server(
   { name: 'memesh', version: packageVersion },
-  { capabilities: { tools: {} } }
+  { capabilities: { tools: {} }, instructions: DEFAULT_SAVE_INSTRUCTION }
 );
 
 let presence: RouterHostConnection | undefined;

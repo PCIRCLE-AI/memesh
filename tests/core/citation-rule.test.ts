@@ -30,6 +30,7 @@ import {
   CITATION_RULE_BODY,
   CITATION_RULE_FILENAME,
   CITATION_RULE_MARKER,
+  DEFAULT_SAVE_INSTRUCTION,
   citationRulePath,
   citationRuleState,
   removeCitationRule,
@@ -48,6 +49,16 @@ afterEach(() => {
   for (const dir of [home, project]) {
     fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
+});
+
+describe('the saving contract in the rule file', () => {
+  it('the rule file tells the model that saving is the default, with the same sentence the MCP server sends', () => {
+    expect(CITATION_RULE_BODY).toContain(DEFAULT_SAVE_INSTRUCTION);
+  });
+  it('it carries no condition on what is worth saving', () => {
+    expect(CITATION_RULE_BODY).not.toMatch(/\b(important|durable|significant|later session|would need)\b/i);
+    expect(CITATION_RULE_BODY).not.toMatch(/worth (saving|keeping|storing|remembering)/i);
+  });
 });
 
 describe('where the rule is written', () => {
@@ -181,8 +192,9 @@ describe('the contract text', () => {
   it('stays short enough to be worth loading every session', () => {
     // It replaces a one-line injected instruction, and unlike that line it is
     // loaded as an instruction on every session. Budget it deliberately
-    // rather than letting it grow: ~150 tokens is the ceiling this trade
-    // was made at.
-    expect(CITATION_RULE_BODY.length).toBeLessThan(900);
+    // rather than letting it grow: ~150 tokens was the ceiling for the
+    // citation part; the saving section (one sentence, the same one the MCP
+    // server sends) raises the whole file to ~300.
+    expect(CITATION_RULE_BODY.length).toBeLessThan(1300);
   });
 });

@@ -64,7 +64,7 @@ Yêu cầu trợ lý bằng ngôn ngữ tự nhiên:
 >
 > Lưu tiến độ hiện tại để phiên tiếp theo có thể tiếp tục.
 
-Hãy nói "đừng nhớ cuộc trò chuyện này" và trợ lý sẽ ngừng tự động lưu trong phần còn lại của phiên, bằng bất kỳ ngôn ngữ nào (chỉ nhắc đến tính năng này, hoặc chỉ yêu cầu không lưu một chi tiết, thì không tính): tóm tắt phiên, bàn giao, ghi chú trước khi nén, ghi chú được nhập, lời nhắc và bước kế hoạch Codex chia sẻ đều không được lưu từ phiên đó, còn ký ức đã lưu trước đó, bản ghi commit và tệp phiên của bạn vẫn giữ nguyên. Các tệp ghi chú mà phiên đã viết hoặc nhắc đến bị giữ ngoài bộ nhớ theo nội dung, dù sau đó bị sao chép hay đổi tên đi đâu; một phiên không kiểm tra được thì không lưu gì cho đến khi kiểm tra được; `memesh doctor` cho biết cái gì bị giữ và vì sao. Khi Hermes không cho biết vì sao phiên thay đổi và phiên vừa rời là riêng tư, phiên mới không lưu gì và một lỗi ghi rõ lý do, trước và sau khi khởi động lại đều như nhau, nhưng bản thân nó không bị đánh dấu riêng tư. Dấu đánh dấu một khi đã ghi thì không bao giờ bị xóa. Quy tắc đầy đủ và các giới hạn đã biết nằm trong [tài liệu API](docs/api/API_REFERENCE.md#private_session).
+MeMesh mặc định sẽ ghi nhớ. Khi bạn nói không muốn lưu một nội dung nào đó, trợ lý sẽ không tự lưu phần đó, nhưng bản bàn giao và ghi chép hoạt động được tự động lưu khi cuộc trò chuyện kết thúc vẫn được lưu như bình thường. Hãy nói "đừng nhớ cuộc trò chuyện này" và trợ lý sẽ ngừng tự động lưu trong phần còn lại của phiên, bằng bất kỳ ngôn ngữ nào (chỉ nhắc đến tính năng này, hoặc chỉ yêu cầu không lưu một chi tiết, thì không tính): tóm tắt phiên, bàn giao, ghi chú trước khi nén, ghi chú được nhập, lời nhắc và bước kế hoạch Codex chia sẻ đều không được lưu từ phiên đó, còn ký ức đã lưu trước đó, bản ghi commit và tệp phiên của bạn vẫn giữ nguyên. Các tệp ghi chú mà phiên đã viết hoặc nhắc đến bị giữ ngoài bộ nhớ theo nội dung, dù sau đó bị sao chép hay đổi tên đi đâu; một phiên không kiểm tra được thì không lưu gì cho đến khi kiểm tra được; `memesh doctor` cho biết cái gì bị giữ và vì sao. Khi Hermes không cho biết vì sao phiên thay đổi và phiên vừa rời là riêng tư, phiên mới không lưu gì và một lỗi ghi rõ lý do, trước và sau khi khởi động lại đều như nhau, nhưng bản thân nó không bị đánh dấu riêng tư. Dấu đánh dấu một khi đã ghi thì không bao giờ bị xóa. Quy tắc đầy đủ và các giới hạn đã biết nằm trong [tài liệu API](docs/api/API_REFERENCE.md#private_session).
 
 Plugin Claude Code cung cấp tính năng ghi nhận và nhắc nhở tự động. Plugin Codex có thể đưa ngữ cảnh vào đầu phiên khi được phép chạy các hook; những hành vi ghi nhận khác tùy thuộc công cụ. Bạn cũng có thể yêu cầu trợ lý lưu hoặc tìm bộ nhớ trực tiếp.
 
@@ -83,7 +83,7 @@ Từ MeMesh 4.11.0, Claude Code có thêm `/memesh-memories` để xem và sửa
 
 | Công cụ | Chức năng |
 |---------|-----------|
-| `remember` | Lưu bộ nhớ; quyết định cần có lý do. |
+| `remember` | Lưu bộ nhớ (mặc định luôn lưu, không cần yêu cầu); quyết định cần có lý do. |
 | `recall` | Tìm thông tin đã lưu bằng từ khóa hoặc ID. |
 | `forget` | Đưa bộ nhớ vào trạng thái lưu trữ hoặc xóa một ghi nhận trong đó. |
 | `learn` | Lưu sai sót, nguyên nhân và cách tránh lặp lại. |
@@ -104,7 +104,7 @@ Từ MeMesh 4.11.0, Claude Code có thêm `/memesh-memories` để xem và sửa
 
 ---
 
-Plugin Claude Code có **13 hook**; plugin Codex có thêm 2 hook dành riêng cho Codex. Tính năng nhắc khi người dùng muốn ghi nhớ điều gì đó hỗ trợ 5 ngôn ngữ. Bạn có thể sửa bộ nhớ qua MeMesh Mod trên Claude Code/Claude Desktop Code và trong MCP/biểu mẫu tích hợp sẵn trên Codex. Không có Web Dashboard độc lập.
+Plugin Claude Code có **13 hook**; plugin Codex có thêm 2 hook dành riêng cho Codex. MeMesh không quét từ khóa trong tin nhắn của bạn; trợ lý tự quyết định dựa trên lời bạn nói. Bạn có thể sửa bộ nhớ qua MeMesh Mod trên Claude Code/Claude Desktop Code và trong MCP/biểu mẫu tích hợp sẵn trên Codex. Không có Web Dashboard độc lập.
 
 **Xếp hạng theo điểm** — mức liên quan (30%) + độ mới (25%) + tần suất (18%) + độ tin cậy (17%) + tác động của việc truy xuất (10%). Xem [kiến trúc](docs/ARCHITECTURE.md).
 

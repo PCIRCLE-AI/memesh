@@ -144,16 +144,16 @@ hosts should share memories. Not installed yet? Follow
 | `user_patterns` | Analyze work schedule, focus areas, and commit workflow from memory |
 | `improvement` | Propose an evidence-linked product improvement or read its status; only a human may accept/reject it |
 | `message` | Discover live agents, then exchange exact-recipient untrusted messages: durable JSON payload max 64 KiB; complete native envelope max 16 KiB with distinct `native_message_too_large` and `recipient_unavailable` errors; delivery reads/acceptance never imply ACK or disposition; a message is kept one day, then deleted |
-| `private_session` | When the user asks not to remember or save this session (any words, any language): call it first, then write nothing to memory. Automatic saving stops for the session (commit records and the list of edited file paths are still saved); earlier memories stay until `forget` |
+| `private_session` | When the user explicitly asks not to remember or save this session (any words, any language): call it first, then write nothing to memory. Automatic saving stops for the session (commit records and the list of edited file paths are still saved); earlier memories stay until `forget` |
 
-When the user asks you not to remember or save this session or conversation, call `private_session` first, then write nothing to memory: no `remember` or `learn`, and no writes to the host's own memory files. If the user later asks you to store something explicitly, that is allowed. A request not to save one thing (a password, one detail) just means not saving that thing; do not call the tool for it.
+Saving is on by default: store decisions, preferences, lessons and context without being asked. The only exception is an explicit request from the user not to save; then do not store that content.
 
 ## Memory hygiene
 
 - **Record the outcome and reason, not the process.** Good: `cache.ts: limit 20 avoids oversized responses.` Bad: `cache.ts: ran 3 review rounds.`
 - **Do not write again when a review or retry only confirms the same fact.** Good: keep the existing `cache.ts: limit 20` memory after a second review. Bad: create `cache-review-2` for that unchanged fact.
 - **Make each observation independently readable**, naming relevant files and numbers. Good: `src/cache.ts: limit 20 keeps each response under 32 KB.` Bad: `That limit is 20 there.`
-- **Exclude secrets, passwords and personal data.** Good: `src/config.ts: the API token comes from an environment variable.` Bad: `config.ts: password <password> and person <personal-data>.`
+- **Exclude secrets and passwords.** Good: `src/config.ts: the API token comes from an environment variable.` Bad: `config.ts: password <password>.`
 - **The cheapest write is `remember({ note: "…" })`.** First line → title,
   each following paragraph → one observation, name derived from the text
   (the same text twice is one memory). Optional `type` (default `note`),
@@ -261,8 +261,8 @@ Under Claude Code with the MeMesh plugin, hooks capture automatically:
   the session capture and the note-directory ingestion are writes, so both
   stop when auto-capture is off (`memesh config set autoCapture false`, or
   `MEMESH_AUTO_CAPTURE=false`); the reminder line still runs either way.
-- **PreCompact** saves important knowledge before history is compressed.
-- **UserPromptSubmit** detects "remember this" intent in the prompt.
+- **PreCompact** saves knowledge before history is compressed.
+- **UserPromptSubmit** tells you about messages waiting for this session; it does not read your words for a request to save.
 - **PreToolUse (Bash)** fires accepted lesson-guards: a fenced warning
   citing the source lesson (`[mem:id]`) when a command matches a mistake
   the graph has recorded. Heed it, and cite the lesson if it changes what
@@ -272,7 +272,7 @@ So under Claude Code: skip step 1 of the loop (the topology is already
 injected), and do not `remember` commits or session summaries by hand. A
 decision made via `ExitPlanMode`/`AskUserQuestion` gets a reminder, not a
 write — act on it with a real `remember` call. Manual calls are still how
-decisions, their rationale, lessons worth keeping, and user-stated task state
+decisions, preferences, their rationale, lessons, and user-stated task state
 actually get stored.
 
 On a host with no hooks (Gemini CLI, Cursor, an MCP-only setup, …) the loop is
@@ -286,7 +286,7 @@ same memory block, so do not call `briefing`
 again at session start unless that block is missing. On macOS or Linux, an
 eligible ordinary Codex CLI startup or resume also registers that exact
 active thread for native delivery. Do not assume the capture hooks run
-there: record decisions, lessons and task state yourself as usual. Do not
+there: record decisions, preferences, lessons and task state yourself as usual. Do not
 assume Codex Desktop or an unattached task registered; confirm the exact live
 session with `message discover`.
 `memesh doctor` reports installation and local integration health, but it does

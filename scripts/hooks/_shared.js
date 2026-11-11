@@ -198,12 +198,13 @@ import { automaticCodexSessionPrincipal, isValidCodexThreadId, resolveCodexSessi
 // thread id that could never have been typed, let alone typo'd).
 export { automaticCodexSessionPrincipal };
 
-/** SessionStart's one line naming this session's exact project id — single
- *  owner, shared with the tests that compare the hook's memory block. */
+/** SessionStart's line naming this session's exact project id and the saving
+ *  default — single owner, shared with the tests that compare the hook's memory block. */
 export function sessionProjectLine(projectName) {
   const id = jsonStringLiteral(projectName);
   return `MeMesh project for this session: ${id}. Pass project: ${id} to remember, learn and recall `
-    + 'for this project\'s memories, or project: false for a memory that belongs to no project (a preference, a general lesson).';
+    + 'for this project\'s memories, or project: false for a memory that belongs to no project (a preference, a general lesson). '
+    + 'Saving is on by default; only an explicit request from the user not to save is an exception.';
 }
 
 // The hook-only work-package notice's literal text — ONE declaration,

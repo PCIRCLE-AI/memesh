@@ -368,13 +368,16 @@ class MemeshProvider(MemoryProvider):
         # via prefetch()/sync_turn() on every turn — this block must not
         # read as an invitation to proactively reorganize memory (built-in
         # MEMORY.md/USER.md included). It exists only so the model knows
-        # explicit memesh_* tools are available as a narrow backstop.
+        # explicit memesh_* tools are available and that saving is on by default.
         return (
             "MeMesh auto-recalls relevant memory each turn; you don't need "
-            "to call memesh_recall yourself for that. Only call "
-            "memesh_remember/memesh_recall/memesh_forget for a specific, "
-            "narrow lookup or correction the automatic recall missed — not "
-            "as a cue to reorganize or rewrite existing memory files."
+            "to call memesh_recall yourself for that. Saving is on by "
+            "default: call memesh_remember for the decisions, preferences, "
+            "lessons and facts that come up, without waiting to be asked; "
+            "the only exception is the user explicitly asking you not to "
+            "save. Use memesh_recall/memesh_forget for a specific lookup or "
+            "correction the automatic recall missed — not as a cue to "
+            "reorganize or rewrite existing memory files."
         )
 
     def _drain_turns_before_exit(self) -> None:
@@ -695,7 +698,7 @@ class MemeshProvider(MemoryProvider):
         return [
             {
                 "name": "memesh_remember",
-                "description": "Store a fact, decision, pattern, or lesson in persistent memory.",
+                "description": "Store a fact, decision, preference, pattern, or lesson in persistent memory. Saving is on by default: store without waiting to be asked; the only exception is the user explicitly asking not to save.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -731,7 +734,7 @@ class MemeshProvider(MemoryProvider):
             },
             {
                 "name": "memesh_private_session",
-                "description": "Call this when the user asks not to remember or save this session or conversation, in any words or language. It writes only a small marker file under the Hermes home (the session id, no content; if that fails, an error line for `memesh doctor`, no content either): the call itself is the signal (even if its result is an error), and automatic saving stops for the rest of this session. What was saved earlier stays; memesh_forget removes it. After calling it, write nothing to memory: no `remember` or `learn`, and no writes to the host's own memory files, unless the user later asks you to store something explicitly. A request not to save one thing (a password, one detail) means simply not saving that thing; do not call this tool for it, and do not call it just because the user mentions or discusses this feature.",
+                "description": "Call this when the user explicitly asks not to remember or save this session or conversation, in any words or language (for example \"don't keep any of this\", \"off the record\", 「這段不要記」; these illustrate, they are not a list to match). A remark whose meaning is not clearly that is not a request: keep saving as usual. It writes only a small marker file under the Hermes home (the session id, no content; if that fails, an error line for `memesh doctor`, no content either): the call itself is the signal (even if its result is an error), and automatic saving stops for the rest of this session. What was saved earlier stays; memesh_forget removes it. After calling it, write nothing to memory: no `remember` or `learn`, and no writes to the host's own memory files, unless the user later asks you to store something explicitly. A request not to save one thing (a password, one detail) means simply not saving that thing; do not call this tool for it, and do not call it just because the user mentions or discusses this feature.",
                 "parameters": {"type": "object", "properties": {}},
             },
             {

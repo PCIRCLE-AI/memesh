@@ -147,7 +147,7 @@ describe('the project line', () => {
         const id = mirrorProjectName(dir);
         const out = runHook({ cwd: dir });
         const first = out.context.split('\n')[0];
-        const m = first.match(new RegExp(`^MeMesh project for this session: (${LITERAL})\\. Pass project: (${LITERAL}) to remember, learn and recall for this project's memories, or project: false for a memory that belongs to no project \\(a preference, a general lesson\\)\\.$`));
+        const m = first.match(new RegExp(`^MeMesh project for this session: (${LITERAL})\\. Pass project: (${LITERAL}) to remember, learn and recall for this project's memories, or project: false for a memory that belongs to no project \\(a preference, a general lesson\\)\\. Saving is on by default; only an explicit request from the user not to save is an exception\\.$`));
         expect(m, first).not.toBeNull();
         expect(JSON.parse(m![1])).toBe(id);
         expect(JSON.parse(m![2])).toBe(id);

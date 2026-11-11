@@ -96,8 +96,8 @@ export declare const SKIP_REASONS: {
     readonly nothingToRecall: "no guard matched and nothing to recall for this file";
     readonly recallThrottled: "no guard matched and recall for this file is throttled: this session already looked at it";
     readonly candidateWindowTruncated: "more candidates may exist than the search window examined";
-    readonly noPromptIntent: "the prompt carried no remember intent and no update decision";
-    readonly promptTooLarge: "the prompt is too large to scan for a remember intent";
+    readonly noMessageWaiting: "no message was waiting for this session";
+    readonly promptTooLarge: "the prompt is larger than the hook accepts";
     readonly promptEmpty: "the prompt held no text";
     readonly promptRecallOff: "prompt recall is turned off (promptRecall is false)";
     readonly promptPrivateSession: "private_session: the agent marked this session private, so no memory was searched or shown";

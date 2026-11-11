@@ -25,6 +25,8 @@ import {
   HOOK_SPECIFIC_OUTPUT_EVENTS,
 } from '../helpers/hook-output-contract.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
+import { openDatabase, closeDatabase, getDatabase } from '../../src/db.js';
+import { executeAgentMessageAction } from '../../src/transports/agent-messaging.js';
 
 const require = createRequire(import.meta.url);
 const { getProjectName } = require('../../scripts/hooks/_shared.js');
@@ -194,7 +196,7 @@ const HOOK_CASES: HookCase[] = [
       session_id: 'contract-7',
       cwd: '/tmp/contract-project',
       hook_event_name: 'UserPromptSubmit',
-      prompt: 'remember that we use PKCE for OAuth',
+      prompt: 'hello there',
     },
   },
   {
@@ -204,7 +206,7 @@ const HOOK_CASES: HookCase[] = [
       session_id: 'contract-7b',
       cwd: '/tmp/contract-project',
       hook_event_name: 'UserPromptSubmit',
-      prompt: 'remember that we use PKCE for OAuth',
+      prompt: 'hello there',
     },
   },
   {
@@ -382,6 +384,35 @@ describe('Feature: Claude Code hook-output contract', () => {
       expect(hso.hookEventName).toBe(hookCase.boundEvent);
     });
   }
+
+  it('Scenario: user-prompt-intent.js emits a contract-valid payload when a message is really waiting', async () => {
+    // The loop above gives this hook an empty inbox, so it prints nothing and the format check is vacuous.
+    // The one path where it prints JSON is a waiting message for the declared recipient.
+    const cwd = testDir;
+    const home = path.join(testDir, 'home');
+    fs.mkdirSync(path.join(home, '.memesh'), { recursive: true });
+    openDatabase(dbPath);
+    try {
+      await executeAgentMessageAction(getDatabase(), {
+        action: 'send', project: getProjectName(cwd), sender: 'contract-sender', recipient: 'contract-recipient',
+        idempotency_key: 'contract-waiting-1', payload: { text: 'please look' }, content_type: 'application/json',
+      }, { transport: 'mcp', sourceHost: 'test-host' });
+    } finally {
+      closeDatabase();
+    }
+    const result = spawnSync('node', [path.resolve('scripts/hooks/user-prompt-intent.js')], {
+      input: JSON.stringify({ session_id: 'contract-waiting', cwd, hook_event_name: 'UserPromptSubmit', prompt: 'hello there' }),
+      env: { ...process.env, HOME: home, MEMESH_DB_PATH: dbPath, MEMESH_DIR: testDir, MEMESH_AUTO_UPDATE: '0', MEMESH_RECIPIENT: 'contract-recipient' },
+      encoding: 'utf8',
+      timeout: 30000,
+    });
+    expect(result.status, `exited ${result.status}\n${result.stderr}`).toBe(0);
+    expect(result.stdout, 'no output: the waiting message was not reported, so the format was not checked').not.toBe('');
+    expectValidHookOutput(result.stdout, 'user-prompt-intent.js stdout (message waiting)');
+    const hso = validateHookOutput(result.stdout).parsed?.hookSpecificOutput as { hookEventName?: string; additionalContext?: string };
+    expect(hso.hookEventName).toBe('UserPromptSubmit');
+    expect(hso.additionalContext).toContain('message waiting for "contract-recipient"');
+  });
 
   it('Scenario: private-session-mark.js and session-end-notes.js print nothing, exit 0 and leave a marker and a hold when the session has a real notes folder', () => {
     // The cases in the loop above carry no transcript, so they stop at "no notes folder": the path that

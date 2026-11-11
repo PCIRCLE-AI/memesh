@@ -28,7 +28,7 @@ export function exportOpenAITools(): object[] {
       type: 'function',
       function: {
         name: 'memesh_remember',
-        description: 'Store knowledge as an entity with observations, tags, and relations. Pass only `note` to derive title, observations and name. An omitted namespace keeps an existing memory in its current namespace; "supersedes" archives its target and "contradicts" marks a conflict. Record standalone outcomes and reasons with relevant filenames and numbers; skip repeated confirmations; never store secrets, passwords, or personal data.',
+        description: 'Store knowledge as an entity with observations, tags, and relations. Saving is on by default: store decisions, preferences, lessons and context without waiting to be asked; the only exception is the user explicitly asking not to save, in which case do not store that content. Pass only `note` to derive title, observations and name. An omitted namespace keeps an existing memory in its current namespace; "supersedes" archives its target and "contradicts" marks a conflict. Record standalone outcomes and reasons with relevant filenames and numbers; skip repeated confirmations; never store secrets or passwords.',
         parameters: {
           type: 'object',
           properties: {
@@ -153,7 +153,7 @@ export function exportOpenAITools(): object[] {
       type: 'function',
       function: {
         name: 'memesh_learn',
-        description: 'Record a structured lesson from a mistake or discovery. Use it when something went wrong and the cause and fix are known; for a choice between options, use remember with type decision. Record standalone outcomes and reasons with relevant filenames and numbers; skip repeated confirmations; never store secrets, passwords, or personal data.',
+        description: 'Record a structured lesson from a mistake or discovery. Use it when something went wrong and the cause and fix are known; for a choice between options, use remember with type decision. Record standalone outcomes and reasons with relevant filenames and numbers; skip repeated confirmations; never store secrets or passwords.',
         parameters: {
           type: 'object',
           properties: {
@@ -298,7 +298,7 @@ export function exportOpenAITools(): object[] {
       type: 'function',
       function: {
         name: 'memesh_private_session',
-        description: 'Call this when the user asks not to remember or save this session or conversation, in any words or language. It changes no state: the call itself is the signal (even if its result is an error), and automatic saving stops for the rest of this session. What was saved earlier stays; memesh_forget removes it. After calling it, write nothing to memory: no `remember` or `learn`, and no writes to the host\'s own memory files, unless the user later asks you to store something explicitly. A request not to save one thing (a password, one detail) means simply not saving that thing; do not call this tool for it, and do not call it just because the user mentions or discusses this feature.',
+        description: 'Call this when the user explicitly asks not to remember or save this session or conversation, in any words or language (for example "don\'t keep any of this", "off the record", 「這段不要記」; these illustrate, they are not a list to match). A remark whose meaning is not clearly that is not a request: keep saving as usual. It changes no state: the call itself is the signal (even if its result is an error), and automatic saving stops for the rest of this session. What was saved earlier stays; memesh_forget removes it. After calling it, write nothing to memory: no `remember` or `learn`, and no writes to the host\'s own memory files, unless the user later asks you to store something explicitly. A request not to save one thing (a password, one detail) means simply not saving that thing; do not call this tool for it, and do not call it just because the user mentions or discusses this feature.',
         parameters: { type: 'object', properties: {}, additionalProperties: false },
       },
     },

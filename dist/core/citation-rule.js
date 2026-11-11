@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 export const CITATION_RULE_MARKER = '<!-- managed-by: memesh -->';
 export const CITATION_RULE_FILENAME = 'memesh-citations.md';
+export const DEFAULT_SAVE_INSTRUCTION = 'Saving is on by default: store the decisions, preferences, lessons and facts that come up in the work with the memesh `remember` tool, without waiting to be asked; give a decision its reason as `why`. The only exception is the user explicitly asking you not to save, in which case do not store that content.';
 export const CITATION_RULE_BODY = `${CITATION_RULE_MARKER}
 # MeMesh memory citations
 
@@ -15,6 +16,10 @@ re-ask — cite it inline once as \`[mem:42]\`, in the sentence it affected.
 Do not cite a memory you only read past, and never invent an id. An uncited
 memory is recorded as unused: that is how MeMesh learns which memories are
 worth the tokens they cost you.
+
+# MeMesh saving
+
+${DEFAULT_SAVE_INSTRUCTION}
 `;
 export function citationRuleDir(scope, home, cwd) {
     if (scope === 'project')

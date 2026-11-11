@@ -286,7 +286,7 @@ export function selectBriefingPools(db: MemeshDatabase, projectName: string, opt
   // rows that never had a tag): not this project's, not global, but meant for
   // whoever works next — the same active/trust/ranking rules, a small window,
   // at every level. Global rows keep their own pool below. A row scoped to one
-  // host or agent (Hermes, OpenClaw) is that host's, not the person's, and
+  // host or agent (Hermes) is that host's, not the person's, and
   // does not ride into every project's session.
   const noProject = selectPool(db.prepare(
     `SELECT ${columns} FROM entities e

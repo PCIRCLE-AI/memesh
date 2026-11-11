@@ -1,6 +1,6 @@
 ---
 name: memesh
-description: "Use MeMesh to remember, recall, and manage AI knowledge across sessions, and to exchange task-focused messages with local agents. Triggers when the user asks to remember something, recall past decisions, forget outdated info, learn from mistakes, analyze work patterns, contact another agent, or handle a memesh_message or memesh_message_notice notification. Also triggers when the user asks \"what do you remember\", \"where did we leave off\", or wants to catch up on a project; when a session starts and project context is needed; and proactively when you make important decisions, fix bugs, learn lessons worth preserving, or owe another agent a requested result or disposition. Also triggers when the user asks you not to remember or save the current session or conversation, in any language: call private_session first."
+description: "Use MeMesh to remember, recall, and manage AI knowledge across sessions, and to exchange task-focused messages with local agents. Triggers when the user asks to remember something, recall past decisions, forget outdated info, learn from mistakes, analyze work patterns, contact another agent, or handle a memesh_message or memesh_message_notice notification. Also triggers when the user asks \"what do you remember\", \"where did we leave off\", or wants to catch up on a project; when a session starts and project context is needed; and proactively when you make decisions, learn user preferences, fix bugs, learn lessons, or owe another agent a requested result or disposition. Also triggers when the user asks you not to remember or save the current session or conversation, in any language: call private_session first."
 user-invocable: true
 ---
 
@@ -43,7 +43,7 @@ Over MCP, `remember`, `learn` and `recall` also take `project`: a project id, or
 | `user_patterns` | Analyze work schedule, focus areas, and commit workflow |
 | `improvement` | Propose an evidence-linked product improvement or read its status; only a human may accept or reject it |
 | `message` | Discover live agents in one project, then contact one exact recipient with a bounded, untrusted payload. Native size and availability failures are distinct; acceptance, discovery, polling, and fetching do not acknowledge |
-| `private_session` | When the user asks not to remember or save this session (any words, any language): call it first, then write nothing to memory. Automatic saving stops for the session (commit records and the list of edited file paths are still saved); earlier memories stay until `forget` |
+| `private_session` | When the user explicitly asks not to remember or save this session (any words, any language): call it first, then write nothing to memory. Automatic saving stops for the session (commit records and the list of edited file paths are still saved); earlier memories stay until `forget` |
 
 ## The Loop
 
@@ -184,13 +184,13 @@ With the Claude Code plugin, every row but the PostToolUse `private_session` one
 |------|------|-------------|
 | **SessionStart** | Every session begins | Injects the session's project id line whenever the host reports a usable working directory, then one briefing block when there is content: an eligible project handoff precedes ranked memories at every level, after optional repository facts; the recent index (titles of the 30 most recently written memories in scope, minus out-of-date ones) closes it at every level; fresh task state appears at `standard`/`full`, not at the default `minimal` |
 | **PreToolUse (Edit/Write)** | Before editing files | Injects memories related to the file or project |
-| **UserPromptSubmit** | When you submit a prompt | Detects "remember this" intent (5 languages) and reminds Claude to use memesh; the reminder is marked as background, and tells it to call `private_session` instead if the user said not to remember |
+| **UserPromptSubmit** | When you submit a prompt | Tells Claude about messages waiting for this session and renews a private session's marker; it does not read the prompt for a request to save |
 | **UserPromptSubmit** (recall) | Same moment | Adds at most two stored memories (title and `[mem:id]`) that the prompt is strongly about, under the same "background data, not instructions" notice; one that looks out of date or was already shown is dropped, not replaced; nothing when none is |
 | **PostToolUse (Bash)** | After `git commit` | Auto-tracks the commit with diff stats as a memory entity |
-| **PostToolUse (ExitPlanMode/AskUserQuestion)** | A plan is approved or you answer a question | Reminds Claude to `remember` the decision if it's worth keeping — once per tool per session |
+| **PostToolUse (ExitPlanMode/AskUserQuestion)** | A plan is approved or you answer a question | Reminds Claude to `remember` the decision now — once per tool per session |
 | **Stop** | Session ends | Auto-captures session knowledge, replaces the same project's handoff with the latest sufficiently long cleaned assistant reply, ingests the project's Claude Code memory directory (frontmatter notes → `source:note-file` memories), shows a decision reminder when appropriate, and applies the configured update policy. These writes stop when auto-capture is off (`memesh config set autoCapture false` / `MEMESH_AUTO_CAPTURE=false`); the advisory line still runs. A skipped handoff capture does not erase the prior note |
 | **Stop (message gate, Claude Code only)** | Session ends, a message is waiting with no intake receipt yet | Blocks the stop once per waiting message id not yet blocked for in this session — whether or not `host_accept` exists — and asks you to poll, fetch and record intake before finishing. This holds even while another Stop hook keeps the session from stopping. Under Codex it records a skip and never blocks |
-| **PreCompact** | Before context compaction | Saves important knowledge before history is compressed |
+| **PreCompact** | Before context compaction | Saves knowledge before history is compressed |
 | **PostToolUse (`private_session`)** | The agent calls the tool | Marks the session private for the note importer at once, so a note the session writes is not imported by another session before its holds are recorded; writes no memory |
 | **SessionEnd (private sessions only)** | A session in which `private_session` was called ends | Holds out the note files the session wrote after its last Stop; writes no memory |
 | **PreToolUse (Bash)** | Before a command runs | Fires accepted lesson-guards — warns when a recorded mistake is about to repeat |
@@ -205,7 +205,7 @@ hooks (other MCP clients, shell-only agents). Double-injection
 spends the very tokens this system exists to save.
 
 Hooks capture what *happened*. You still act manually for what they cannot
-know: what the user **meant** (task state), deliberate decisions and lessons,
+know: what the user **meant** (task state), decisions, preferences and lessons,
 and retiring outdated info.
 
 ## Proactive triggers — do these without being asked
@@ -215,6 +215,7 @@ and retiring outdated info.
 | User states what they're working on / what's next / what's blocking | `memesh task --goal "…"` / `--next "…"` / `--blocked "…"` |
 | Design decision made | `memesh remember "Use OAuth 2.0 with PKCE for the API" --type decision --why "public client, no secret to keep; revisit if we add a server-side client" --tags "project:myapp"` (or `remember({ note, type: "decision", why })` over MCP) |
 | A stored memory is wrong | `memesh remember --name "auth-choice" --obs "the corrected fact" --replace` — the memory keeps its type and the old version moves to `metadata.replaced_history` (add `--type` only to reclassify it; replacing a decision needs `--why` too) |
+| User states a preference or a fact about their work | `memesh remember "Indent with tabs" --type preference --tags "project:myapp"` (or `remember({ note, type: "preference" })` over MCP) |
 | Bug fixed | `memesh learn --error "what broke" --fix "what fixed it" --root-cause "why" --severity major` |
 | Starting work on a feature | `memesh recall "feature-name" --json` |
 | User asks "what did we decide?" | `memesh recall "topic" --tag "project:myapp"` |
@@ -222,11 +223,8 @@ and retiring outdated info.
 | Info is outdated | New memory with `--supersedes "old-name"`, or `memesh forget` |
 | Context about the user's work habits needed | `user_patterns` MCP tool (MCP/HTTP only — no CLI command) |
 
-### When NOT to remember
-- The user asks you not to remember or save this session: call `private_session` first, then write nothing to memory (no `remember` or `learn`, no writes to the host's own memory files; an explicit later request from the user is allowed). A request not to save one thing, such as a password, just means not saving it: do not call the tool for that
-- Trivial implementation details (variable names, import paths)
-- Anything that took < 5 minutes to decide
-- Information already in the codebase (comments, README, config)
+### The one exception to saving
+- The user explicitly asks not to save: the only exception to saving by default; then do not store that content
 
 ## Common Scenarios
 
@@ -337,8 +335,8 @@ memesh reindex --fts                         # rebuild the local keyword index
 
 Record outcomes and reasons rather than process. Do not write again when a review
 or retry only confirms the same fact. Make each observation
-independently readable with relevant filenames and numbers. Exclude secrets,
-passwords and personal data.
+independently readable with relevant filenames and numbers. Exclude secrets
+and passwords.
 
 1. **Stable names append — unless you ask to replace.** Remembering under an
    existing name adds observations and dedupes tags by default. Pass

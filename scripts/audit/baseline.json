@@ -451,10 +451,6 @@
       "reason": "Two pins read text on purpose: the session-start notice sentence (the hook cannot be driven to print it without a published newer version, and the failure is a promise the updater does not keep) and the release workflow step (a workflow cannot be run here). The server, serve and CLI cases in the same file run the built programs and read what they write.",
       "triaged": "2026-11-08"
     },
-    "C7 README.md:110": {
-      "classification": "gated",
-      "reason": "Existing check-doc-claims.mjs derives the intent-language count from INTENT_PATTERNS; UI retirement removes the same-line tabs/languages phrase, not the intent hook or its source-backed check. [re-keyed 2026-11-11 100\u2192105 (restore/trust counters and the README command-line notes were added above the unchanged statement); re-keyed 2026-11-11 105\u2192110 (first-run and update notes were added above the unchanged statement)]"
-    },
     "C5 src/core/recall-agent-view.ts:165": {
       "class": "SAFE-OPTIONAL-OBJECT",
       "reason": "entity.tags is typed string[] (non-optional) on every Entity recallWithConflicts() returns; the ?? [] is defensive against a malformed/legacy row, matching operations.ts's existing provenance-object defaults, not a fallback that turns a real absence into a false success.",

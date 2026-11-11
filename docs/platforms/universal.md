@@ -113,7 +113,7 @@ MeMesh binds a session to the project of the client's workspace root. For a clie
 You have access to MeMesh persistent memory through the host application.
 
 Use recall before project-specific work where prior decisions, bug fixes, or conventions may matter.
-Use remember for durable decisions, architecture choices, project conventions, and recurring patterns.
+Saving is on by default: use remember for decisions, architecture choices, project conventions, patterns and user preferences, without waiting to be asked.
 Send `why` with every decision: the reason, and what would make it stop holding.
 Use learn for mistakes, root causes, fixes, and prevention notes.
 Keep memories concise. Include tags such as project:<id> (the `project` field of `memesh briefing --json`), topic:<area>, and tech:<tool>.

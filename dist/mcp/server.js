@@ -42931,7 +42931,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "remember",
-    description: 'Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions (with `why`), patterns, lessons learned, and important context. An omitted namespace keeps an existing memory in its current namespace; a "supersedes" relation archives its target, while "contradicts" marks a conflict. Quickest form: pass only `note` (free text) and the server derives title, observations and name; the response echoes what it derived. To correct a memory, call again with its `name`, `replace: true` and the `observations` it should now hold (a replace without `observations` or `note` is refused, so re-send the ones to keep along with the fix) \u2014 the memory keeps the `type` it has unless you pass a different one \u2014 and the old content moves to metadata.replaced_history instead of staying next to the fix. Record standalone outcomes and reasons with relevant filenames and numbers; skip repeated confirmations; never store secrets, passwords, or personal data.',
+    description: 'Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions (with `why`), preferences, patterns, lessons learned, and project context. Saving is on by default: store them without waiting to be asked; the only exception is the user explicitly asking not to save, in which case do not store that content. An omitted namespace keeps an existing memory in its current namespace; a "supersedes" relation archives its target, while "contradicts" marks a conflict. Quickest form: pass only `note` (free text) and the server derives title, observations and name; the response echoes what it derived. To correct a memory, call again with its `name`, `replace: true` and the `observations` it should now hold (a replace without `observations` or `note` is refused, so re-send the ones to keep along with the fix) \u2014 the memory keeps the `type` it has unless you pass a different one \u2014 and the old content moves to metadata.replaced_history instead of staying next to the fix. Record standalone outcomes and reasons with relevant filenames and numbers; skip repeated confirmations; never store secrets or passwords.',
     inputSchema: {
       type: "object",
       properties: {
@@ -43113,7 +43113,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "learn",
-    description: "Record a structured lesson from a mistake or discovery. Creates a lesson_learned entity with error, root cause, fix, and prevention. Use it when something went wrong and the cause and fix are known; for a choice between options, use `remember` with type decision. The lesson belongs to `project`, or to the project this session is bound to (MEMESH_PROJECT_ROOT, or the client\u2019s workspace root); pass project false for a general lesson that belongs to no project. With no project and no binding the call is refused with workspace_unavailable. The project's lessons are shown at the start of later sessions. Record standalone outcomes and reasons with relevant filenames and numbers; skip repeated confirmations; never store secrets, passwords, or personal data.",
+    description: "Record a structured lesson from a mistake or discovery. Creates a lesson_learned entity with error, root cause, fix, and prevention. Use it when something went wrong and the cause and fix are known; for a choice between options, use `remember` with type decision. The lesson belongs to `project`, or to the project this session is bound to (MEMESH_PROJECT_ROOT, or the client\u2019s workspace root); pass project false for a general lesson that belongs to no project. With no project and no binding the call is refused with workspace_unavailable. The project's lessons are shown at the start of later sessions. Record standalone outcomes and reasons with relevant filenames and numbers; skip repeated confirmations; never store secrets or passwords.",
     inputSchema: {
       type: "object",
       properties: {
@@ -43277,7 +43277,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "private_session",
-    description: "Call this when the user asks not to remember or save this session or conversation, in any words or language. It changes no state: the call itself is the signal (even if its result is an error), and automatic saving stops for the rest of this session. What was saved earlier stays; `forget` removes it. After calling it, write nothing to memory: no `remember` or `learn`, and no writes to the host's own memory files, unless the user later asks you to store something explicitly. A request not to save one thing (a password, one detail) means simply not saving that thing; do not call this tool for it, and do not call it just because the user mentions or discusses this feature.",
+    description: 'Call this when the user explicitly asks not to remember or save this session or conversation, in any words or language (for example "don\'t keep any of this", "off the record", \u300C\u9019\u6BB5\u4E0D\u8981\u8A18\u300D; these illustrate, they are not a list to match). A remark whose meaning is not clearly that is not a request: keep saving as usual. It changes no state: the call itself is the signal (even if its result is an error), and automatic saving stops for the rest of this session. What was saved earlier stays; `forget` removes it. After calling it, write nothing to memory: no `remember` or `learn`, and no writes to the host\'s own memory files, unless the user later asks you to store something explicitly. A request not to save one thing (a password, one detail) means simply not saving that thing; do not call this tool for it, and do not call it just because the user mentions or discusses this feature.',
     inputSchema: {
       type: "object",
       properties: {},
@@ -44985,11 +44985,33 @@ async function startClaudeInboxPresence(rootUris) {
   });
 }
 
+// dist/core/citation-rule.js
+var CITATION_RULE_MARKER = "<!-- managed-by: memesh -->";
+var DEFAULT_SAVE_INSTRUCTION = "Saving is on by default: store the decisions, preferences, lessons and facts that come up in the work with the memesh `remember` tool, without waiting to be asked; give a decision its reason as `why`. The only exception is the user explicitly asking you not to save, in which case do not store that content.";
+var CITATION_RULE_BODY = `${CITATION_RULE_MARKER}
+# MeMesh memory citations
+
+MeMesh injects relevant memories at session start and before file edits. Every
+injected line ends with a handle: \`[mem:42]\`.
+
+When an injected memory genuinely informs your work \u2014 you used the fact, the
+lesson changed what you did, the decision answered a question you were about to
+re-ask \u2014 cite it inline once as \`[mem:42]\`, in the sentence it affected.
+
+Do not cite a memory you only read past, and never invent an id. An uncited
+memory is recorded as unused: that is how MeMesh learns which memories are
+worth the tokens they cost you.
+
+# MeMesh saving
+
+${DEFAULT_SAVE_INSTRUCTION}
+`;
+
 // dist/mcp/server.js
 var packageJsonPath2 = path25.resolve(path25.dirname(fileURLToPath7(import.meta.url)), "../../package.json");
 var packageVersion2 = JSON.parse(fs28.readFileSync(packageJsonPath2, "utf8")).version ?? "0.0.0";
 configureVersionSource(packageVersion2, packageJsonPath2);
-var server = new Server({ name: "memesh", version: packageVersion2 }, { capabilities: { tools: {} } });
+var server = new Server({ name: "memesh", version: packageVersion2 }, { capabilities: { tools: {} }, instructions: DEFAULT_SAVE_INSTRUCTION });
 var presence;
 var closing = false;
 server.oninitialized = () => {

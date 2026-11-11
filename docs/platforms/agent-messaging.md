@@ -932,7 +932,7 @@ The watch command emits JSONL: a `ready` line followed by one `events` or `timeo
 
 ## Shared Memory Versus Messages
 
-Use memories for durable knowledge that agents should search and reuse: decisions, lessons, product feedback, and project context. Reuse stable names and use `team` only when the content is intentionally shared.
+Use memories for knowledge that agents should search and reuse: decisions, lessons, product feedback, and project context. Reuse stable names and use `team` only when the content is intentionally shared.
 
 Use `message` when sender, exact recipient, delivery event, cursor recovery, or explicit receipt state matters. Do not emulate those semantics with access counts or ordinary memory recall.
 

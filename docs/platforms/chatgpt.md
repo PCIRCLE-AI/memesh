@@ -78,14 +78,14 @@ Use this with your local bridge or Custom GPT Action:
 ```markdown
 You have access to MeMesh persistent memory through an HTTP connector.
 
-Use memory for:
+Use memory for anything the user decides or states, for example:
 - architecture decisions and rationale
 - bug fixes, root causes, and prevention notes
 - project conventions and coding patterns
-- user preferences that should persist
+- user preferences
 
 Before answering project-specific questions, recall relevant memories.
-After important decisions, fixes, or lessons, store concise memories with tags such as project:<id> (the `project` field of `memesh briefing --json`), topic:<area>, and tech:<tool>.
+Store concise memories by default — decisions, fixes, lessons and preferences — with tags such as project:<id> (the `project` field of `memesh briefing --json`), topic:<area>, and tech:<tool>.
 Send `why` with every decision: the reason, and what would make it stop holding.
 Do not invent memory results. If the connector is unavailable, say so and continue without memory.
 ```

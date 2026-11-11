@@ -374,9 +374,10 @@ describe.skipIf(skipReason !== null)('Hermes MemeshProvider against a real memes
     return JSON.parse(r.stdout) as T[];
   }
 
-  it('is available once memesh is on PATH, and the system prompt block is unchanged', () => {
+  it('is available once memesh is on PATH, and the system prompt block tells the model to save by default', () => {
     expect(result.available).toBe(true);
     expect(result.system_prompt_block).toContain('MeMesh auto-recalls relevant memory each turn');
+    expect(result.system_prompt_block).toContain('Saving is on by default');
   });
 
   it('explicit tools round-trip the HTTP envelope (remember, recall, forget)', () => {

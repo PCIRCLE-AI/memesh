@@ -140,9 +140,9 @@ describe.each([false, true])('Feature: hooks on a Node below the floor (database
     expect(r.stderr).toContain(SENTENCE);
   });
 
-  it('user-prompt-intent does not send the agent to the remember tool, and records why', () => {
+  it('user-prompt-intent stays silent and records why', () => {
     const home = freshHome(`ui-${withDb}`, withDb);
-    const r = runHook('user-prompt-intent.js', { ...common, hook_event_name: 'UserPromptSubmit', cwd: home, prompt: 'remember this: we always use pnpm' }, home);
+    const r = runHook('user-prompt-intent.js', { ...common, hook_event_name: 'UserPromptSubmit', cwd: home, prompt: 'hello there' }, home);
     expectNodeTooOld(r, 'user-prompt-intent');
     expect(r.stdout).toBe('');
   });
