@@ -206,6 +206,51 @@ describe('the note files a session names', () => {
     } finally { fs.chmodSync(sub, 0o644); }
   });
 
+  describe('several projects under one root (S3 review 3b, G07)', () => {
+    let projects: string;
+    let a: string;
+    let b: string;
+    beforeEach(() => {
+      projects = path.join(root, 'Home', '.claude', 'projects');
+      a = path.join(projects, '-work-a', 'memory');
+      b = path.join(projects, '-work-b', 'memory');
+      for (const dir of [a, b]) fs.mkdirSync(dir, { recursive: true });
+    });
+    const scan = (rows: object[]) => {
+      fs.writeFileSync(transcript, jsonl(rows));
+      return written(transcript, [a, b], { ownDir: a, deadlineAt: Date.now() + 60_000 });
+    };
+
+    it('H: a tar or rsync into the projects root itself reaches every folder (G07 #1)', () => {
+      fs.writeFileSync(path.join(b, 'x.md'), 'body');
+      expect([...scan([use('Bash', { command: `tar -xf /tmp/n.tar -C ${projects}/` })]).reached]).toContain(b);
+      expect([...scan([use('Bash', { command: 'rsync -a /tmp/n/ ~/.claude/projects/' })]).reached]).toContain(b);
+    });
+
+    it('H: a quoted item of a brace list is read (G07 #3)', () => {
+      fs.writeFileSync(path.join(a, 'secret.md'), 'body');
+      for (const command of [`cp s ${a}/{"secret","draft"}.md`, `cp s ${a}/{sec"ret",b}.md`, `cp s ${a}/{secret,other}".md"`, `cp s ${a}/{secret,other}\\.md`]) {
+        expect(scan([use('Bash', { command })]).byDir.get(a), command).toEqual([path.join(a, 'secret.md')]);
+      }
+    });
+
+    it('H: naming its own MEMORY.md does not reach every other project that has one (G07 #2)', () => {
+      for (const dir of [a, b]) fs.writeFileSync(path.join(dir, 'MEMORY.md'), 'index');
+      fs.writeFileSync(transcript, jsonl([use('Edit', { file_path: path.join(a, 'MEMORY.md') })]));
+      expect([...written(transcript, [a, b], { deadlineAt: Date.now() + 60_000 }).reached]).toEqual([a]);
+    });
+
+    it('H: a huge brace list or a huge string stops at the deadline, never runs past it (G07 #4)', () => {
+      fs.writeFileSync(path.join(a, `${'n'.repeat(200)}.md`), 'body'); // a long note name: each brace item is read with that much around it
+      const unit = `${'q'.repeat(250)}{${','.repeat(4000)}}${'q'.repeat(250)} memory `;
+      fs.writeFileSync(transcript, jsonl([use('Bash', { command: unit.repeat(Math.ceil(60e6 / unit.length)) })]));
+      const started = Date.now();
+      const r = written(transcript, [a, b], { ownDir: a, deadlineAt: Date.now() + 1500 });
+      expect(r.complete).toBe(false);
+      expect(Date.now() - started, 'stopped near the deadline').toBeLessThan(3000);
+    }, 60_000);
+  });
+
   it('costs about the same with ten notes as with three thousand (the work does not grow with lines times notes)', () => {
     const filler = JSON.stringify(use('Bash', { command: `cat docs/a.md docs/b.md docs/c.md ${'x'.repeat(300)}` }));
     fs.writeFileSync(transcript, `${Array.from({ length: 40000 }, () => filler).join('\n')}\n`);

@@ -56,8 +56,12 @@ _DRAIN_TIMEOUT_SECS = 5.0
 # Hermes ends the session and starts a new provider instance with the same
 # session id at every /compress, /resume, /branch and /new, so neither a flag in
 # memory nor the message history (a compression drops the old messages) is
-# enough. The marker file holds only the session id, never any content.
+# enough. The marker file holds only the session id, never any content, and is
+# never removed: once written, that session id stays private.
 _MARKER_DIRNAME = "memesh-private-sessions"
+# Beside it, for the same reason, the sessions each session was branched or compressed from (ids only, as JSON
+# {parent: true when the switch gave no reason}), so a new instance inherits privacy exactly as this one would.
+_PARENTS_DIRNAME = "memesh-session-parents"
 _MARKER_WRITE_FAILED = "the private-session marker could not be written"
 _MARKER_READ_FAILED = "the private-session marker could not be read"
 _MARKER_NO_HOME = "the private-session marker could not be kept or read: Hermes gave no home folder"
@@ -66,21 +70,36 @@ _MARKER_NO_SESSION_ID = "the host gave no session id, so whether the session is 
 # Skip reasons (the same sentences as SKIP_REASONS in src/core/capture-liveness.ts).
 _SKIP_PRIVATE = "private_session"
 _SKIP_NOT_PRIVATE = "not a private session"
-# A marker no capture has touched for this long is removed (at most _MARKER_PRUNE_MAX per instance).
-_MARKER_KEEP_SECS = 30 * 24 * 60 * 60
-_MARKER_PRUNE_MAX = 50
 
 
-def _marker_path(hermes_home: str, session_id: str) -> str:
+def _marker_path(hermes_home: str, session_id: str, dirname: str = _MARKER_DIRNAME) -> str:
     safe = session_id if re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9_.-]{0,127}", session_id or "") else hashlib.sha256(
         (session_id or "").encode("utf-8")
     ).hexdigest()
-    return os.path.join(hermes_home, _MARKER_DIRNAME, safe)
+    return os.path.join(hermes_home, dirname, safe)
 
 
-def _record_marker_error(reason: str) -> None:
-    """One error line for `memesh doctor` (it reads this file), best effort and never raising."""
-    _record_outcome("error", reason)
+def _write_private_file(path: str, data: bytes) -> None:
+    """Create or replace a 0600 file in a 0700 folder, whole or not at all (a temporary file renamed over it), and
+    never over a symlink. Raises on failure."""
+    folder = os.path.dirname(path)
+    os.makedirs(folder, mode=0o700, exist_ok=True)
+    if os.path.islink(path):
+        raise OSError(f"{path} is a symbolic link")
+    tmp = os.path.join(folder, f".{os.path.basename(path)}.{uuid.uuid4().hex}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        try:
+            os.write(fd, data)
+        finally:
+            os.close(fd)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _outcomes_dir() -> str:
@@ -207,38 +226,28 @@ class MemeshProvider(MemoryProvider):
         # _MARKER_DIRNAME). The message history the host passes to sync_turn and
         # to `hermes capture-session` is read for the call too.
         self._private_sessions: set = set()
-        # A session branched or compressed from another one is private when that one is (decided again each time).
-        self._parents: Dict[str, List[str]] = {}
-        # (session, state, reason) already recorded as checked by this instance, so a healthy session records once.
+        # The parents this instance recorded at a switch ({parent: no reason given}), kept here too in case the
+        # file under _PARENTS_DIRNAME could not be written.
+        self._parents: Dict[str, Dict[str, bool]] = {}
+        # Sessions already recorded as checked and not private by this instance, so a healthy session records once.
         self._recorded_checks: set = set()
-        # Sessions this instance cannot decide for the rest of its life (a switch with no reason from a private
-        # session): nothing is saved from them and each capture records why. Never written to disk, so a new
-        # instance decides them again from their own marker and history.
-        self._unchecked_sessions: Dict[str, str] = {}
-        self._prune_markers()
 
     def _mark_private(self, session_id: str) -> bool:
         """Mark a session private here and on disk. Returns False when the marker file could not be written."""
         self._private_sessions.add(session_id)
         if not self._hermes_home:
             logger.warning("MeMesh private-session marker not written: no Hermes home was given")
-            _record_marker_error(_MARKER_NO_HOME)
+            _record_outcome("error", _MARKER_NO_HOME)
             return False
-        path = _marker_path(self._hermes_home, session_id)
         try:
-            os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
-            try:
-                os.write(fd, session_id.encode("utf-8"))
-            finally:
-                os.close(fd)
+            _write_private_file(_marker_path(self._hermes_home, session_id), session_id.encode("utf-8"))
             return True
         except Exception as exc:  # noqa: BLE001
             logger.warning("MeMesh private-session marker could not be written: %s", exc)
-            _record_marker_error(_MARKER_WRITE_FAILED)
+            _record_outcome("error", _MARKER_WRITE_FAILED)
             return False
 
-    def _privacy(self, session_id: str, messages: Optional[List[Dict[str, Any]]] = None, _depth: int = 0) -> tuple:
+    def _privacy(self, session_id: str, messages: Optional[List[Dict[str, Any]]] = None, _walk: bool = True) -> tuple:
         """Is this session private? ("yes" | "no" | "unchecked", reason).
 
         The same decision as decidePrivacy in src/core/private-session.ts, for
@@ -255,8 +264,6 @@ class MemeshProvider(MemoryProvider):
             if session_id:
                 self._mark_private(session_id)
             return ("yes", None)
-        if session_id and session_id in self._unchecked_sessions:
-            return ("unchecked", self._unchecked_sessions[session_id])
         if not session_id:
             return ("unchecked", _MARKER_NO_SESSION_ID)
         if not self._hermes_home:
@@ -265,25 +272,81 @@ class MemeshProvider(MemoryProvider):
         try:
             os.lstat(path)
         except FileNotFoundError:
-            for parent in self._parents.get(session_id, []):
-                if _depth >= 5:
-                    return ("unchecked", _MARKER_READ_FAILED)
-                state, reason = self._privacy(parent, None, _depth + 1)
+            return self._inherited_privacy(session_id) if _walk else ("no", None)
+        except OSError as exc:
+            logger.warning("MeMesh private-session marker could not be read, so nothing is saved this time: %s", exc)
+            return ("unchecked", _MARKER_READ_FAILED)
+        self._private_sessions.add(session_id)
+        return ("yes", None)
+
+    def _parents_of(self, session_id: str) -> tuple:
+        """({parent: no reason given}, None) from this instance and the file on disk, or ({}, reason) when unreadable."""
+        parents: Dict[str, bool] = {}
+        try:
+            if not self._hermes_home:
+                raise FileNotFoundError  # no home: only this instance's own record (a capture reports the missing home)
+            fd = os.open(_marker_path(self._hermes_home, session_id, _PARENTS_DIRNAME), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                data = json.loads(os.read(fd, 1 << 20).decode("utf-8"))
+            finally:
+                os.close(fd)
+            if not isinstance(data, dict):
+                raise ValueError("not a JSON object")
+            parents = {str(p): bool(guess) for p, guess in data.items()}
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError) as exc:
+            logger.warning("MeMesh session parents could not be read, so nothing is saved this time: %s", exc)
+            return ({}, _MARKER_READ_FAILED)
+        for parent, guess in self._parents.get(session_id, {}).items():
+            parents[parent] = parents.get(parent, True) and guess
+        return (parents, None)
+
+    def _add_parents(self, session_id: str, parents: List[str], guess: bool) -> None:
+        """Record at a switch where the new session came from, here and on disk (a reasoned switch wins over a guess)."""
+        known, unreadable = self._parents_of(session_id)
+        for parent in parents:
+            if parent != session_id:
+                known[parent] = known.get(parent, True) and guess
+        self._parents[session_id] = known
+        if not self._hermes_home:
+            return  # every capture of it already stops and records the missing home
+        try:
+            if unreadable:
+                raise OSError(unreadable)  # writing now would drop what the file already holds
+            _write_private_file(_marker_path(self._hermes_home, session_id, _PARENTS_DIRNAME), json.dumps(known).encode("utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("MeMesh session parents could not be written: %s", exc)
+            _record_outcome("error", _MARKER_WRITE_FAILED)
+
+    def _inherited_privacy(self, session_id: str) -> tuple:
+        """A session with no marker of its own is private when a session it was branched or compressed from is.
+
+        Looked up at every capture, in this instance or a new one: a parent's marker that could not be read at the
+        switch may be read now. A parent reached through a switch that gave no reason makes the session
+        "unchecked", never private for good. Each session is looked at once, so a cycle ends the walk.
+        """
+        seen = {session_id}
+        pending = [(session_id, False)]
+        while pending:
+            current, guessed = pending.pop(0)
+            parents, unreadable = self._parents_of(current)
+            if unreadable:
+                return ("unchecked", unreadable)
+            for parent, guess in parents.items():
+                if parent in seen:
+                    continue
+                seen.add(parent)
+                state, reason = self._privacy(parent, _walk=False)
+                if state == "yes" and (guessed or guess):
+                    return ("unchecked", _MARKER_NO_REASON)
                 if state == "yes":
                     self._mark_private(session_id)
                     return ("yes", None)
                 if state == "unchecked":
                     return (state, reason)
-            return ("no", None)
-        except OSError as exc:
-            logger.warning("MeMesh private-session marker could not be read, so nothing is saved this time: %s", exc)
-            return ("unchecked", _MARKER_READ_FAILED)
-        self._private_sessions.add(session_id)
-        try:
-            os.utime(path)  # in use: kept by _prune_markers
-        except OSError:
-            pass
-        return ("yes", None)
+                pending.append((parent, guessed or guess))
+        return ("no", None)
 
     def _private_exit(self, session_id: str, messages: Optional[List[Dict[str, Any]]] = None) -> bool:
         """Decide, record, and say whether this capture must not run. Every exit leaves an outcome."""
@@ -295,38 +358,10 @@ class MemeshProvider(MemoryProvider):
             _record_outcome("error", reason)
             return True
         # A checked, ordinary session is recorded once per instance: it is what clears an old error in doctor.
-        key = (session_id, state)
-        if key not in self._recorded_checks:
-            self._recorded_checks.add(key)
+        if session_id not in self._recorded_checks:
+            self._recorded_checks.add(session_id)
             _record_outcome("skipped", _SKIP_NOT_PRIVATE)
         return False
-
-    def _prune_markers(self) -> None:
-        """Removes markers no capture has touched for _MARKER_KEEP_SECS, at most _MARKER_PRUNE_MAX."""
-        if not self._hermes_home:
-            return
-        folder = os.path.join(self._hermes_home, _MARKER_DIRNAME)
-        try:
-            names = os.listdir(folder)
-        except FileNotFoundError:
-            return
-        except OSError as exc:
-            logger.warning("MeMesh private-session markers could not be listed: %s", exc)
-            _record_marker_error(_MARKER_READ_FAILED)
-            return
-        removed = 0
-        now = time.time()
-        for name in names:
-            if removed >= _MARKER_PRUNE_MAX:
-                break
-            path = os.path.join(folder, name)
-            try:
-                st = os.lstat(path)
-                if now - st.st_mtime > _MARKER_KEEP_SECS:
-                    os.unlink(path)
-                    removed += 1
-            except OSError:
-                continue
 
     def system_prompt_block(self) -> str:
         # Deliberately minimal. Recall/storage already happen automatically
@@ -495,10 +530,8 @@ class MemeshProvider(MemoryProvider):
             # that saw it still alive and strand that turn.
             sid, user_text, assistant_text = self._turn_queue.get()
             try:
-                state, reason = self._privacy(sid)
-                if state != "no":
-                    # A marker written while the turn waited: decided again, and the exit recorded.
-                    _record_outcome("skipped", _SKIP_PRIVATE) if state == "yes" else _record_outcome("error", reason)
+                # A marker written while the turn waited: decided again, and the exit recorded.
+                if self._private_exit(sid):
                     logger.info("MeMesh turn capture skipped: private session, or one that cannot be checked")
                     continue
                 self._run_capture(
@@ -561,6 +594,9 @@ class MemeshProvider(MemoryProvider):
         if not isinstance(result, dict):
             logger.warning("MeMesh capture output is not a JSON object: %s", proc.stdout[:200])
             return None
+        if isinstance(result.get("error"), str):
+            # memesh could not check the session against its own private-sessions folder, so it saved nothing.
+            _record_outcome("error", result["error"])
         if result.get("toolResultsNonJson"):
             logger.info(
                 "MeMesh capture: %s tool result(s) were not JSON, so errors in them were not counted",
@@ -597,8 +633,11 @@ class MemeshProvider(MemoryProvider):
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
         self._capture_session(messages)
-        if self._privacy(self._session_id)[0] != "no":  # no record: the capture above recorded this run
+        state = self._privacy(self._session_id)[0]  # no record: the capture above recorded this run
+        if state == "yes":
             return "This session is private: MeMesh saves nothing from it."
+        if state == "unchecked":
+            return "MeMesh cannot tell whether this session is private, so it saves nothing from it for now."
         return (
             "What this session did so far (files edited, errors fixed) is "
             "recorded in MeMesh — recall via memesh_recall if needed later — "
@@ -629,21 +668,18 @@ class MemeshProvider(MemoryProvider):
         # nothing. A /resume opens an OLD session that has nothing to do with
         # the one just left: it is private only if it was marked itself (or its
         # own history holds the call, which sync_turn and capture-session read).
-        # A host that sends no reason (an older Hermes) cannot be told apart from a resume: see below.
+        # A host that sends no reason (an older Hermes) cannot be told apart from a resume: the parents are recorded
+        # as a guess, so while one of them is private the new session saves nothing and every capture records why,
+        # in this instance and after a restart alike, but it is never given a private marker of its own.
         reason = kwargs.get("reason")
         parents = [p for p in (parent_session_id, self._session_id) if p]
-        if not reset and reason is not None and reason != "resume" and parents:
-            self._parents[new_session_id] = parents
-        if not reset and reason != "resume" and any(self._privacy(p)[0] == "yes" for p in parents):
-            if reason is None:
-                # Without a reason a resume of an unrelated old session cannot be told from a branch. For the rest
-                # of this instance the new session saves nothing and every capture records why; no marker is
-                # written, so a new instance decides it again from its own marker and history, and an old session
-                # is never made private for good on a guess.
-                self._unchecked_sessions[new_session_id] = _MARKER_NO_REASON
-                _record_marker_error(_MARKER_NO_REASON)
-            else:
-                self._mark_private(new_session_id)
+        if not reset and reason != "resume" and parents:
+            self._add_parents(new_session_id, parents, guess=reason is None)
+            if any(self._privacy(p)[0] == "yes" for p in parents):
+                if reason is None:
+                    _record_outcome("error", _MARKER_NO_REASON)
+                else:
+                    self._mark_private(new_session_id)
         self._session_id = new_session_id
         # A new session's exit gets its own drain budget.
         self._drain_deadline = None
@@ -695,7 +731,7 @@ class MemeshProvider(MemoryProvider):
             },
             {
                 "name": "memesh_private_session",
-                "description": "Call this when the user asks not to remember or save this session or conversation, in any words or language. It writes only a small marker file under the Hermes home (the session id, no content): the call itself is the signal (even if its result is an error), and automatic saving stops for the rest of this session. What was saved earlier stays; memesh_forget removes it. After calling it, write nothing to memory: no `remember` or `learn`, and no writes to the host's own memory files, unless the user later asks you to store something explicitly. A request not to save one thing (a password, one detail) means simply not saving that thing; do not call this tool for it, and do not call it just because the user mentions or discusses this feature.",
+                "description": "Call this when the user asks not to remember or save this session or conversation, in any words or language. It writes only a small marker file under the Hermes home (the session id, no content; if that fails, an error line for `memesh doctor`, no content either): the call itself is the signal (even if its result is an error), and automatic saving stops for the rest of this session. What was saved earlier stays; memesh_forget removes it. After calling it, write nothing to memory: no `remember` or `learn`, and no writes to the host's own memory files, unless the user later asks you to store something explicitly. A request not to save one thing (a password, one detail) means simply not saving that thing; do not call this tool for it, and do not call it just because the user mentions or discusses this feature.",
                 "parameters": {"type": "object", "properties": {}},
             },
             {

@@ -44,14 +44,13 @@ export declare const NOTE_MARKER_UNWRITABLE = "MEMESH_NOTE_MARKER_UNWRITABLE";
 export declare const NOTE_HOLDS_UNREADABLE = "MEMESH_NOTE_HOLDS_UNREADABLE";
 export declare const NOTE_HOLDS_DIR_UNREADABLE = "MEMESH_NOTE_HOLDS_DIR_UNREADABLE";
 export declare const NOTE_HOLDS_UNWRITABLE = "MEMESH_NOTE_HOLDS_UNWRITABLE";
+export declare const NOTE_FOLDER_UNREADABLE = "MEMESH_NOTE_FOLDER_UNREADABLE";
 export { PRIVATE_STATE_BUSY };
 export declare const NOTE_PRIVATE_HOLD_REASON = "held out by a private session \u2014 not imported";
 export declare const NOTE_UNCHECKED_HOLD_REASON = "held while a session could not be checked \u2014 not imported yet";
+export declare function realPathOrExpected(dir: string): string;
 export declare const projectsRootOf: (memoryDir: string) => string;
-export declare function projectMemoryFolders(projectsRoot: string): {
-    folders: string[];
-    complete: boolean;
-};
+export declare function projectMemoryFolders(projectsRoot: string): string[];
 export declare function markPrivateSession(opts: {
     sessionId: string;
     dirs?: readonly string[];
@@ -64,9 +63,9 @@ export declare function markPrivateSession(opts: {
 }): number;
 export declare function renewPrivateSession(sessionId: string, now?: number, deadlineAt?: number): boolean;
 export declare function endPrivateSession(sessionId: string, now?: number, deadlineAt?: number): void;
-export declare function prunePrivateMarkers(now?: number, max?: number, deadlineAt?: number): number;
+export declare function removeStalePrivateStateTemps(now?: number): void;
 export declare function holdOutNoteFiles(opts: {
-    dir: string;
+    dir?: string;
     sessionId: string;
     paths: readonly string[];
     sinceMs?: number;
@@ -99,15 +98,22 @@ export interface PrivateHoldSummary {
         since: number;
         notes: number;
         transcript?: string;
+        waitSince?: number;
+        lastHeard: number;
     }>;
     waitingOnUnreadable: Array<{
         file: string;
         notes: number;
         since: number;
     }>;
+    heldInPlaceOfUnreadable: Array<{
+        file: string;
+        notes: number;
+    }>;
     damaged: Array<{
         folder: 'holds' | 'markers';
         file: string;
+        cause: 'permission' | 'damaged';
     }>;
     unreadableFolders: Array<'holds' | 'markers'>;
 }

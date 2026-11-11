@@ -22,15 +22,18 @@ export type PrivacyState = {
 } | Unchecked;
 export declare function isPrivateToolName(name: string): boolean;
 export declare function sessionFileName(sessionId: string): string;
+export declare const privateCheckCacheDir: (memeshDir: string) => string;
 export declare function privateMarkerPath(memeshDir: string, sessionId: string): string;
 export declare function chatCallsPrivateTool(messages: unknown): boolean;
 export declare function forEachTranscriptLine(filePath: string, deadlineAt: number, onLine: (line: Buffer) => void): {
     timedOut: boolean;
     longLines: number;
 };
+export declare function writeFileAtomic(file: string, data: string): void;
+export declare function removeStaleTemps(dir: string, now?: number): number;
 export declare function prunePrivateCheckCache(cacheDir: string, now?: number): number;
-export declare function sessionTranscriptFiles(transcriptPath: string): string[];
-export declare function sessionLastWriteMs(transcriptPath: string): number | undefined;
+export declare function sessionTranscriptFiles(transcriptPath: string, deadlineAt?: number): string[];
+export declare function sessionLastWriteMs(transcriptPath: string, deadlineAt?: number): number | undefined;
 export declare function findCodexRollout(codexHome: string, id: string, deadlineAt?: number): {
     file: string;
     zst: boolean;

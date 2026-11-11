@@ -1211,7 +1211,7 @@ var require_command = __commonJS({
   "node_modules/commander/lib/command.js"(exports) {
     var EventEmitter = __require("node:events").EventEmitter;
     var childProcess = __require("node:child_process");
-    var path25 = __require("node:path");
+    var path24 = __require("node:path");
     var fs27 = __require("node:fs");
     var process2 = __require("node:process");
     var { Argument: Argument2, humanReadableArgName } = require_argument();
@@ -2224,9 +2224,9 @@ Expecting one of '${allowedValues.join("', '")}'`);
         let launchWithNode = false;
         const sourceExt = [".js", ".ts", ".tsx", ".mjs", ".cjs"];
         function findFile(baseDir, baseName) {
-          const localBin = path25.resolve(baseDir, baseName);
+          const localBin = path24.resolve(baseDir, baseName);
           if (fs27.existsSync(localBin)) return localBin;
-          if (sourceExt.includes(path25.extname(baseName))) return void 0;
+          if (sourceExt.includes(path24.extname(baseName))) return void 0;
           const foundExt = sourceExt.find(
             (ext) => fs27.existsSync(`${localBin}${ext}`)
           );
@@ -2244,17 +2244,17 @@ Expecting one of '${allowedValues.join("', '")}'`);
           } catch {
             resolvedScriptPath = this._scriptPath;
           }
-          executableDir = path25.resolve(
-            path25.dirname(resolvedScriptPath),
+          executableDir = path24.resolve(
+            path24.dirname(resolvedScriptPath),
             executableDir
           );
         }
         if (executableDir) {
           let localFile = findFile(executableDir, executableFile);
           if (!localFile && !subcommand._executableFile && this._scriptPath) {
-            const legacyName = path25.basename(
+            const legacyName = path24.basename(
               this._scriptPath,
-              path25.extname(this._scriptPath)
+              path24.extname(this._scriptPath)
             );
             if (legacyName !== this._name) {
               localFile = findFile(
@@ -2265,7 +2265,7 @@ Expecting one of '${allowedValues.join("', '")}'`);
           }
           executableFile = localFile || executableFile;
         }
-        launchWithNode = sourceExt.includes(path25.extname(executableFile));
+        launchWithNode = sourceExt.includes(path24.extname(executableFile));
         let proc;
         if (process2.platform !== "win32") {
           if (launchWithNode) {
@@ -3180,7 +3180,7 @@ Expecting one of '${allowedValues.join("', '")}'`);
        * @return {Command}
        */
       nameFromFilename(filename) {
-        this._name = path25.basename(filename, path25.extname(filename));
+        this._name = path24.basename(filename, path24.extname(filename));
         return this;
       }
       /**
@@ -3194,9 +3194,9 @@ Expecting one of '${allowedValues.join("', '")}'`);
        * @param {string} [path]
        * @return {(string|null|Command)}
        */
-      executableDir(path26) {
-        if (path26 === void 0) return this._executableDir;
-        this._executableDir = path26;
+      executableDir(path25) {
+        if (path25 === void 0) return this._executableDir;
+        this._executableDir = path25;
         return this;
       }
       /**
@@ -3502,8 +3502,8 @@ var init_sqlite = __esm({
     BUSY_TIMEOUT_MS = 3e4;
     MemeshDatabase = class extends DatabaseSync {
       #depth = 0;
-      constructor(path25, options = {}) {
-        super(path25, options);
+      constructor(path24, options = {}) {
+        super(path24, options);
         this.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
       }
       pragma(statement) {
@@ -5351,6 +5351,9 @@ var init_paths = __esm({
 });
 
 // dist/core/host-transcript.js
+function isCodexRollout(transcriptPath) {
+  return typeof transcriptPath === "string" && /(?:^|[\\/])rollout-[^\\/]*\.jsonl(?:\.zst)?$/.test(transcriptPath);
+}
 var init_host_transcript = __esm({
   "dist/core/host-transcript.js"() {
     "use strict";
@@ -6399,8 +6402,8 @@ function basename(p) {
   const parts = p.split(/[\\/]/);
   return parts[parts.length - 1] ?? "";
 }
-function isScratchPath(path25) {
-  return SCRATCH_PREFIXES.some((prefix) => path25.startsWith(prefix));
+function isScratchPath(path24) {
+  return SCRATCH_PREFIXES.some((prefix) => path24.startsWith(prefix));
 }
 function bashEditedPaths(cmd) {
   if (typeof cmd !== "string")
@@ -9617,10 +9620,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path25) {
-  if (!path25)
+function getElementAtPath(obj, path24) {
+  if (!path24)
     return obj;
-  return path25.reduce((acc, key) => acc?.[key], obj);
+  return path24.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -9879,11 +9882,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path25, issues) {
+function prefixIssues(path24, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path25);
+    iss.path.unshift(path24);
     return iss;
   });
 }
@@ -10416,16 +10419,16 @@ function flattenError(error62, mapper = (issue2) => issue2.message) {
 }
 function formatError(error62, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error63, path25 = []) => {
+  const processError = (error63, path24 = []) => {
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path25, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path24, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path25, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path24, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path25, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path24, ...issue2.path]);
       } else {
-        const fullpath = [...path25, ...issue2.path];
+        const fullpath = [...path24, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -10464,17 +10467,17 @@ function formatError(error62, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error62, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error63, path25 = []) => {
+  const processError = (error63, path24 = []) => {
     var _a3;
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path25, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path24, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path25, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path24, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path25, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path24, ...issue2.path]);
       } else {
-        const fullpath = [...path25, ...issue2.path];
+        const fullpath = [...path24, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -10513,8 +10516,8 @@ function treeifyError(error62, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path25 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path25) {
+  const path24 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path24) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -28546,13 +28549,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path25 = ref.slice(1).split("/").filter(Boolean);
-  if (path25.length === 0) {
+  const path24 = ref.slice(1).split("/").filter(Boolean);
+  if (path24.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path25[0] === defsKey) {
-    const key = path25[1] === void 0 ? void 0 : decodeJSONPointerSegment(path25[1]);
+  if (path24[0] === defsKey) {
+    const key = path24[1] === void 0 ? void 0 : decodeJSONPointerSegment(path24[1]);
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -31617,40 +31620,44 @@ function scanZst(filePath, deadlineAt) {
   }
   return scanBytes(bytes, deadlineAt);
 }
+function writeFileAtomic(file2, data) {
+  fs11.mkdirSync(path9.dirname(file2), { recursive: true, mode: 448 });
+  const temp = `${file2}.${process.pid}.tmp`;
+  fs11.writeFileSync(temp, data, { mode: 384 });
+  fs11.renameSync(temp, file2);
+}
 function fileVerdict(file2, stat, zst, cacheDir, deadlineAt) {
   const key = `${file2}\0${stat.size}\0${stat.mtimeMs}\0${stat.ctimeMs}\0${stat.ino}`;
-  const hit = remembered.get(key);
-  if (hit)
-    return hit;
+  const hit = remembered.get(file2);
+  if (hit?.key === key)
+    return hit.verdict;
   const cacheFile = cacheDir === void 0 ? void 0 : path9.join(cacheDir, `${crypto.createHash("sha256").update(file2).digest("hex").slice(0, 40)}.json`);
   if (cacheFile !== void 0) {
     try {
       const saved = record2(JSON.parse(fs11.readFileSync(cacheFile, "utf8")));
       if (saved?.key === key && typeof saved.found === "boolean" && typeof saved.headerBroken === "boolean" && Array.isArray(saved.forks) && saved.forks.every((f) => typeof f === "string")) {
         const verdict2 = { found: saved.found, forks: saved.forks, headerBroken: saved.headerBroken };
-        remembered.set(key, verdict2);
+        remembered.set(file2, { key, verdict: verdict2 });
         return verdict2;
       }
     } catch {
     }
   }
   const verdict = zst ? scanZst(file2, deadlineAt) : scanPlain(file2, deadlineAt);
-  remembered.set(key, verdict);
+  remembered.set(file2, { key, verdict });
   if (cacheFile !== void 0) {
     try {
-      fs11.mkdirSync(cacheDir, { recursive: true, mode: 448 });
-      const temp = `${cacheFile}.${process.pid}.tmp`;
-      fs11.writeFileSync(temp, JSON.stringify({ key, ...verdict }), { mode: 384 });
-      fs11.renameSync(temp, cacheFile);
+      writeFileAtomic(cacheFile, JSON.stringify({ key, ...verdict }));
     } catch {
     }
   }
   return verdict;
 }
-function sessionTranscriptFiles(transcriptPath) {
+function sessionTranscriptFiles(transcriptPath, deadlineAt = Number.POSITIVE_INFINITY) {
   const files = [transcriptPath];
-  let entriesSeen = 0;
   const walk = (dir, depth) => {
+    if (Date.now() > deadlineAt)
+      throw new CheckFailure("timeout", "the check ran out of time listing the subagents folder");
     let entries;
     try {
       entries = fs11.readdirSync(dir, { withFileTypes: true });
@@ -31660,11 +31667,7 @@ function sessionTranscriptFiles(transcriptPath) {
       throw new CheckFailure("unreadable", `the subagents folder cannot be read (${errCode(err)})`);
     }
     for (const entry of entries) {
-      if (++entriesSeen > SUBAGENT_MAX_ENTRIES)
-        throw new CheckFailure("too_large", "the subagents folder holds more than can be checked");
       const child = path9.join(dir, entry.name);
-      if (entry.isSymbolicLink())
-        continue;
       if (entry.isDirectory()) {
         if (depth >= SUBAGENT_MAX_DEPTH)
           throw new CheckFailure("too_large", "the subagents folder is nested deeper than can be checked");
@@ -31678,10 +31681,10 @@ function sessionTranscriptFiles(transcriptPath) {
   walk(`${transcriptPath.replace(/\.jsonl$/, "")}/subagents`, 0);
   return files;
 }
-function sessionLastWriteMs(transcriptPath) {
+function sessionLastWriteMs(transcriptPath, deadlineAt = Number.POSITIVE_INFINITY) {
   let files;
   try {
-    files = sessionTranscriptFiles(transcriptPath);
+    files = sessionTranscriptFiles(transcriptPath, deadlineAt);
   } catch {
     return void 0;
   }
@@ -31783,9 +31786,24 @@ function decidePrivacy(input2) {
     }
   }
   const transcriptPath = input2.transcriptPath;
-  if (typeof transcriptPath !== "string" || transcriptPath === "")
-    return settled();
   const snapshot = input2.snapshot === void 0 ? void 0 : asBuffer(input2.snapshot);
+  if (typeof transcriptPath !== "string" || transcriptPath === "") {
+    if (snapshot === void 0)
+      return settled();
+    let alone;
+    try {
+      alone = scanBytes(snapshot, input2.deadlineAt);
+    } catch (err) {
+      noteFailure(err, "unreadable");
+    }
+    if (alone?.found)
+      return { state: "yes", evidence: "transcript" };
+    if (alone?.headerBroken)
+      note2("header_unreadable", "the first line of the rollout is damaged, so whether it is a fork cannot be told");
+    else if (alone && alone.forks.length > 0)
+      note2("parent_not_found", "the parent rollout of this forked thread cannot be looked for without the transcript's path");
+    return settled();
+  }
   const stats = [];
   if (snapshot === void 0) {
     let mainStat;
@@ -31805,7 +31823,7 @@ function decidePrivacy(input2) {
   }
   let files;
   try {
-    files = sessionTranscriptFiles(transcriptPath);
+    files = sessionTranscriptFiles(transcriptPath, input2.deadlineAt);
   } catch (err) {
     noteFailure(err, "unreadable");
     files = [transcriptPath];
@@ -31819,11 +31837,6 @@ function decidePrivacy(input2) {
   }
   const total = stats.reduce((sum, s) => sum + s.stat.size, snapshot?.length ?? 0);
   if (total > PRIVATE_CHECK_MAX_BYTES) {
-    for (const { file: file2, stat } of stats) {
-      const key = `${file2}\0${stat.size}\0${stat.mtimeMs}\0${stat.ctimeMs}\0${stat.ino}`;
-      if (remembered.get(key)?.found)
-        return { state: "yes", evidence: file2 === transcriptPath ? "transcript" : "subagent" };
-    }
     note2("too_large", "the session's transcripts are too large to check");
     return settled();
   }
@@ -31912,7 +31925,7 @@ function decidePrivacy(input2) {
   }
   return settled();
 }
-var PRIVATE_SESSION_TOOL, PRIVATE_WINDOW_MS, PARENT_NOT_FOUND_PERSISTENT_MS, PRIVATE_CHECK_MAX_BYTES, CHUNK_BYTES, MAX_CALL_LINE_BYTES, HEADER_MAX_BYTES, NEEDLE, CALL_RECORD_TYPES, MAX_FORK_DEPTH, MAX_PARENTS, PARENT_MAX_BYTES, PARENT_ZST_MAX_BYTES, PARENT_ZST_MAX_OUTPUT, ZST_MIN_TIME_MS, SUBAGENT_MAX_DEPTH, SUBAGENT_MAX_ENTRIES, UNCHECKED_KIND, unchecked, CheckFailure, errCode, MCP_TOOL_NAME, Scan, asBuffer, remembered;
+var PRIVATE_SESSION_TOOL, PRIVATE_WINDOW_MS, PARENT_NOT_FOUND_PERSISTENT_MS, PRIVATE_CHECK_MAX_BYTES, CHUNK_BYTES, MAX_CALL_LINE_BYTES, HEADER_MAX_BYTES, NEEDLE, CALL_RECORD_TYPES, MAX_FORK_DEPTH, MAX_PARENTS, PARENT_MAX_BYTES, PARENT_ZST_MAX_BYTES, PARENT_ZST_MAX_OUTPUT, ZST_MIN_TIME_MS, SUBAGENT_MAX_DEPTH, UNCHECKED_KIND, unchecked, CheckFailure, errCode, MCP_TOOL_NAME, privateCheckCacheDir, Scan, asBuffer, remembered;
 var init_private_session = __esm({
   "dist/core/private-session.js"() {
     "use strict";
@@ -31932,7 +31945,6 @@ var init_private_session = __esm({
     PARENT_ZST_MAX_OUTPUT = 512 * 1024 * 1024;
     ZST_MIN_TIME_MS = 1e3;
     SUBAGENT_MAX_DEPTH = 3;
-    SUBAGENT_MAX_ENTRIES = 1e3;
     UNCHECKED_KIND = Object.freeze({
       marker_unreadable: "transient",
       unreadable: "transient",
@@ -31956,6 +31968,7 @@ var init_private_session = __esm({
     };
     errCode = (err) => err?.code ?? "error";
     MCP_TOOL_NAME = new RegExp(`^mcp__.+__${PRIVATE_SESSION_TOOL}$`);
+    privateCheckCacheDir = (memeshDir3) => path9.join(memeshDir3, "private-check-cache");
     Scan = class {
       deadlineAt;
       found = false;
@@ -32032,27 +32045,27 @@ import crypto2 from "node:crypto";
 function sleepMs(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
-function holderIsGone(lock, now) {
+function deadLock(lock, now) {
   let st;
   try {
     st = fs12.statSync(lock);
   } catch {
-    return false;
+    return void 0;
   }
   if (now - st.mtimeMs > STALE_MS)
-    return true;
+    return st;
   try {
     const holder = JSON.parse(fs12.readFileSync(lock, "utf8"));
     if (holder.host !== os2.hostname() || typeof holder.pid !== "number")
-      return false;
+      return void 0;
     try {
       process.kill(holder.pid, 0);
-      return false;
+      return void 0;
     } catch (err) {
-      return err.code === "ESRCH";
+      return err.code === "ESRCH" ? st : void 0;
     }
   } catch {
-    return false;
+    return void 0;
   }
 }
 function withPrivateStateLock(memeshDir3, deadlineAt, fn) {
@@ -32067,22 +32080,35 @@ function withPrivateStateLock(memeshDir3, deadlineAt, fn) {
         throw err;
     }
     if (fd !== void 0) {
+      const token = crypto2.randomBytes(8).toString("hex");
       try {
-        fs12.writeSync(fd, JSON.stringify({ pid: process.pid, host: os2.hostname(), at: Date.now() }));
+        fs12.writeSync(fd, JSON.stringify({ pid: process.pid, host: os2.hostname(), at: Date.now(), token }));
       } finally {
         fs12.closeSync(fd);
       }
       try {
         return fn();
       } finally {
-        fs12.rmSync(lock, { force: true });
+        try {
+          if (JSON.parse(fs12.readFileSync(lock, "utf8")).token === token)
+            fs12.rmSync(lock, { force: true });
+        } catch {
+        }
       }
     }
     const now = Date.now();
-    if (holderIsGone(lock, now)) {
+    const dead = deadLock(lock, now);
+    if (dead) {
       const aside = `${lock}.stale-${process.pid}-${crypto2.randomBytes(4).toString("hex")}`;
       try {
         fs12.renameSync(lock, aside);
+        const moved = fs12.statSync(aside);
+        if (moved.ino !== dead.ino || moved.mtimeMs !== dead.mtimeMs || moved.size !== dead.size) {
+          try {
+            fs12.linkSync(aside, lock);
+          } catch {
+          }
+        }
         fs12.rmSync(aside, { force: true });
       } catch {
       }
@@ -32196,31 +32222,32 @@ function projectMemoryFolders(projectsRoot) {
   let entries;
   try {
     entries = fs13.readdirSync(projectsRoot, { withFileTypes: true });
-  } catch {
-    return { folders: [], complete: false };
+  } catch (err) {
+    if (notThere(err))
+      return [];
+    throw folderUnreadable(err);
   }
   const folders = [];
-  let complete = true;
   for (const entry of entries) {
     if (!entry.isDirectory())
       continue;
-    if (folders.length >= MAX_PROJECT_FOLDERS) {
-      complete = false;
-      break;
-    }
     const dir = path11.join(projectsRoot, entry.name, "memory");
+    let st;
     try {
-      const st = fs13.lstatSync(dir);
-      if (st.isDirectory() && !st.isSymbolicLink())
-        folders.push(fs13.realpathSync(dir));
-    } catch {
+      st = fs13.lstatSync(dir);
+    } catch (err) {
+      if (notThere(err))
+        continue;
+      throw folderUnreadable(err);
     }
+    if (st.isDirectory())
+      folders.push(fs13.realpathSync(dir));
   }
-  return { folders, complete };
+  return folders;
 }
 function parseMarker(text) {
   const m = JSON.parse(text);
-  if (!m || typeof m !== "object" || Array.isArray(m) || typeof m.session !== "string" || !isNum(m.startedAt) || !isNum(m.updatedAt) || !isNum(m.holdsAt) || typeof m.projectsRoot !== "string" || !Array.isArray(m.dirs) || !m.dirs.every((d) => typeof d === "string") || m.transcript !== void 0 && typeof m.transcript !== "string" || m.endedAt !== void 0 && !isNum(m.endedAt) || m.finalizedAt !== void 0 && !isNum(m.finalizedAt)) {
+  if (!m || typeof m !== "object" || Array.isArray(m) || typeof m.session !== "string" || !isTime(m.startedAt) || !isTime(m.updatedAt) || !isTime(m.holdsAt) || typeof m.projectsRoot !== "string" || !Array.isArray(m.dirs) || !m.dirs.every((d) => typeof d === "string") || m.transcript !== void 0 && typeof m.transcript !== "string" || m.endedAt !== void 0 && !isTime(m.endedAt) || m.finalizedAt !== void 0 && !isTime(m.finalizedAt)) {
     throw new Error("not a marker");
   }
   return m;
@@ -32242,30 +32269,24 @@ function readMarker(file2) {
 }
 function writeMarker(file2, marker) {
   try {
-    fs13.mkdirSync(markersDir(), { recursive: true, mode: 448 });
-    const temp = `${file2}.${process.pid}.tmp`;
-    fs13.writeFileSync(temp, JSON.stringify({ v: 2, ...marker }), { mode: 384 });
-    fs13.renameSync(temp, file2);
+    writeFileAtomic(file2, JSON.stringify({ v: 2, ...marker }));
   } catch (err) {
     throw fail(NOTE_MARKER_UNWRITABLE, `${MARKERS_DIR}/${path11.basename(file2)} could not be written (${codeOf(err)})`);
   }
 }
+function parseUnreadable(value) {
+  const [since, ino, size, mtime] = value.split(":").map(Number);
+  return isTime(since) && [ino, size, mtime].every((n) => Number.isFinite(n)) ? { since, ino, size, mtime } : void 0;
+}
 function parseHoldFile(text) {
   const p = JSON.parse(text);
-  if (!p || typeof p !== "object" || Array.isArray(p) || !isDirHolds(p.firm) || typeof p.session !== "string" || !isNum(p.rev) || p.transcript !== void 0 && typeof p.transcript !== "string")
+  if (!isRecord(p) || p.v !== HOLDS_VERSION || !isDirHolds(p.firm) || typeof p.session !== "string" || !Number.isInteger(p.rev) || p.transcript !== void 0 && typeof p.transcript !== "string")
     throw new Error("not a hold record");
   const t = p.tentative;
-  if (t === void 0)
-    return { rev: p.rev, session: p.session, ...p.transcript === void 0 ? {} : { transcript: p.transcript }, firm: p.firm };
-  if (!t || typeof t !== "object" || typeof t.reason !== "string" || !isNum(t.since) || !isNum(t.updatedAt) || !isNum(t.holdsAt) || typeof t.projectsRoot !== "string" || !isDirHolds(t.dirs) || t.endedAt !== void 0 && !isNum(t.endedAt))
+  if (t !== void 0 && (!isRecord(t) || typeof t.reason !== "string" || !isTime(t.since) || !isTime(t.updatedAt) || !isTime(t.holdsAt) || typeof t.projectsRoot !== "string" || !isDirHolds(t.dirs) || t.endedAt !== void 0 && !isTime(t.endedAt)))
     throw new Error("not a hold record");
-  return {
-    rev: p.rev,
-    session: p.session,
-    ...p.transcript === void 0 ? {} : { transcript: p.transcript },
-    firm: p.firm,
-    tentative: { reason: t.reason, since: t.since, updatedAt: t.updatedAt, holdsAt: t.holdsAt, projectsRoot: t.projectsRoot, dirs: t.dirs, ...t.endedAt === void 0 ? {} : { endedAt: t.endedAt } }
-  };
+  const { v: _v, ...rec } = p;
+  return rec;
 }
 function readHoldFile(file2) {
   let text;
@@ -32288,10 +32309,7 @@ function writeHoldFile(file2, rec) {
       fs13.rmSync(file2, { force: true });
       return;
     }
-    fs13.mkdirSync(holdsDir(), { recursive: true, mode: 448 });
-    const temp = `${file2}.${process.pid}.tmp`;
-    fs13.writeFileSync(temp, JSON.stringify({ v: 2, ...rec, rev: rec.rev + 1 }), { mode: 384 });
-    fs13.renameSync(temp, file2);
+    writeFileAtomic(file2, JSON.stringify({ v: HOLDS_VERSION, ...rec, rev: rec.rev + 1 }));
   } catch (err) {
     throw fail(NOTE_HOLDS_UNWRITABLE, `${HOLDS_DIR}/${path11.basename(file2)} could not be written (${codeOf(err)}); nothing was released`);
   }
@@ -32302,8 +32320,10 @@ function hashNotes(realDir, candidates, now) {
     let st;
     try {
       st = fs13.lstatSync(real);
-    } catch {
-      continue;
+    } catch (err) {
+      if (notThere(err))
+        continue;
+      throw folderUnreadable(err);
     }
     if (!st.isFile() || !real.toLowerCase().endsWith(".md") || !real.startsWith(realDir + path11.sep))
       continue;
@@ -32311,9 +32331,10 @@ function hashNotes(realDir, candidates, now) {
       continue;
     const rel = relPath(realDir, real);
     try {
-      forDir[rel] = sha256(fs13.readFileSync(real));
+      forDir[sha256(fs13.readFileSync(real))] = rel;
     } catch {
-      forDir[rel] = `?${now}`;
+      const [key, value] = unreadableEntry(rel, st, now);
+      forDir[key] = value;
     }
   }
   return forDir;
@@ -32322,33 +32343,43 @@ function notesTouchedBetween(realDir, sinceMs, untilMs = Number.POSITIVE_INFINIT
   let files;
   try {
     files = discover(realDir).files;
-  } catch {
-    return [];
+  } catch (err) {
+    if (notThere(err))
+      return [];
+    throw folderUnreadable(err);
   }
   return files.filter((abs) => {
+    let st;
     try {
-      const t = touchedAt(fs13.lstatSync(abs));
-      return t >= sinceMs && t <= untilMs;
-    } catch {
-      return false;
+      st = fs13.lstatSync(abs);
+    } catch (err) {
+      if (notThere(err))
+        return false;
+      throw folderUnreadable(err);
     }
+    return touchedAt(st) >= sinceMs && writtenAt(st) <= untilMs;
   });
 }
 function holdOutNoteFiles(opts) {
   const now = opts.now ?? Date.now();
-  const realDir = fs13.realpathSync(opts.dir);
-  const dirId = dirIdOf(realDir);
-  const candidates = /* @__PURE__ */ new Set();
-  for (const candidate of opts.paths) {
-    try {
-      candidates.add(fs13.realpathSync(candidate));
-    } catch {
+  const realDir = opts.dir === void 0 ? void 0 : fs13.realpathSync(opts.dir);
+  const forDir = {};
+  if (realDir !== void 0) {
+    const candidates = /* @__PURE__ */ new Set();
+    for (const candidate of opts.paths) {
+      try {
+        candidates.add(fs13.realpathSync(candidate));
+      } catch (err) {
+        if (!notThere(err))
+          throw folderUnreadable(err);
+      }
     }
+    if (opts.sinceMs !== void 0)
+      for (const abs of notesTouchedBetween(realDir, opts.sinceMs, opts.untilMs))
+        candidates.add(abs);
+    Object.assign(forDir, hashNotes(realDir, candidates, now));
   }
-  if (opts.sinceMs !== void 0)
-    for (const abs of notesTouchedBetween(realDir, opts.sinceMs, opts.untilMs))
-      candidates.add(abs);
-  const forDir = hashNotes(realDir, candidates, now);
+  const held = realDir === void 0 ? {} : { [dirIdOf(realDir)]: forDir };
   updateHold(holdFile(opts.sessionId), opts.deadlineAt, (found) => {
     const rec = found ?? { rev: 0, session: opts.sessionId, firm: {} };
     if (opts.transcript !== void 0)
@@ -32356,17 +32387,17 @@ function holdOutNoteFiles(opts) {
     if (opts.tentative) {
       const prior = rec.tentative;
       const dirs = prior?.dirs ?? {};
-      mergeDirHolds(dirs, { [dirId]: forDir });
+      mergeDirHolds(dirs, held);
       rec.tentative = {
         reason: opts.tentative.reason,
         since: prior?.since ?? now,
         updatedAt: now,
         holdsAt: opts.tentative.holdsAt ?? prior?.holdsAt ?? now,
-        projectsRoot: opts.tentative.projectsRoot ?? prior?.projectsRoot ?? projectsRootOf(realDir),
+        projectsRoot: opts.tentative.projectsRoot ?? prior?.projectsRoot ?? (realDir === void 0 ? "" : projectsRootOf(realDir)),
         dirs
       };
     } else {
-      mergeDirHolds(rec.firm, { [dirId]: forDir });
+      mergeDirHolds(rec.firm, held);
     }
     return rec;
   });
@@ -32436,32 +32467,63 @@ function readAllMarkers() {
   }
   return out;
 }
-function lastActivity(updatedAt, transcript) {
+function lastActivity(updatedAt, transcript, deadlineAt) {
   if (typeof transcript !== "string" || transcript === "")
     return updatedAt;
-  const written = sessionLastWriteMs(transcript);
+  const written = sessionLastWriteMs(transcript, deadlineAt);
   return written === void 0 ? void 0 : Math.max(updatedAt, written);
 }
-function finalizeIdleMarker(entry, now, deadlineAt) {
-  const { marker } = entry;
-  if (now - marker.updatedAt <= PRIVATE_WINDOW_MS)
-    return "live";
-  const last = lastActivity(marker.updatedAt, marker.transcript);
-  if (last === void 0 || now - last <= PRIVATE_WINDOW_MS)
-    return "live";
-  const reached = new Set(marker.dirs);
-  const all = marker.projectsRoot ? projectMemoryFolders(marker.projectsRoot).folders : [];
-  for (const dir of /* @__PURE__ */ new Set([...reached, ...all])) {
-    if (!fs13.existsSync(dir))
-      continue;
-    holdOutNoteFiles({ dir, sessionId: marker.session, paths: [], sinceMs: reached.has(dir) ? marker.startedAt : marker.holdsAt, untilMs: last, deadlineAt, now });
+function holdIdleSession(s) {
+  const reached = new Set(s.reached);
+  for (const dir of /* @__PURE__ */ new Set([...reached, ...s.roots.filter(Boolean).flatMap(projectMemoryFolders)])) {
+    try {
+      fs13.lstatSync(dir);
+    } catch (err) {
+      if (notThere(err))
+        continue;
+      throw folderUnreadable(err);
+    }
+    holdOutNoteFiles({
+      dir,
+      sessionId: s.sessionId,
+      paths: [],
+      sinceMs: Math.max(reached.has(dir) ? s.startedAt : s.holdsAt, s.floor ?? 0),
+      untilMs: s.last,
+      ...s.tentative === void 0 ? {} : { tentative: { reason: s.tentative } },
+      deadlineAt: s.deadlineAt,
+      now: s.now
+    });
   }
-  withPrivateStateLock(getMemeshDirFromDbPath(), deadlineAt, () => {
-    const again = readMarker(entry.file);
-    if (again && again.finalizedAt === void 0 && again.updatedAt === marker.updatedAt)
-      writeMarker(entry.file, { ...again, finalizedAt: now });
+}
+function privateSessionWait(entry, root, now, deadlineAt) {
+  const { marker } = entry;
+  const live = marker.finalizedAt ?? marker.holdsAt;
+  if (marker.finalizedAt === void 0 && !isIdle(now, marker.updatedAt))
+    return live;
+  const last = lastActivity(marker.updatedAt, marker.transcript, deadlineAt);
+  if (marker.finalizedAt !== void 0 && last !== void 0 && last <= marker.finalizedAt)
+    return void 0;
+  if (last === void 0 || !isIdle(now, marker.updatedAt, last))
+    return live;
+  holdIdleSession({
+    sessionId: marker.session,
+    roots: [marker.projectsRoot, ...isCodexRollout(marker.transcript) ? [root] : []],
+    reached: marker.dirs,
+    startedAt: marker.startedAt,
+    holdsAt: marker.holdsAt,
+    last,
+    floor: marker.finalizedAt,
+    now,
+    deadlineAt
   });
-  return "finalized";
+  const finalized = withPrivateStateLock(getMemeshDirFromDbPath(), deadlineAt, () => {
+    const again = readMarker(entry.file);
+    if (!again || again.endedAt !== void 0 || again.updatedAt !== marker.updatedAt || again.finalizedAt !== marker.finalizedAt)
+      return false;
+    writeMarker(entry.file, { ...again, finalizedAt: last });
+    return true;
+  });
+  return finalized ? void 0 : live;
 }
 function readPrivateState(realDir, now, deadlineAt, memeshDir3) {
   const dirId = dirIdOf(realDir);
@@ -32470,80 +32532,100 @@ function readPrivateState(realDir, now, deadlineAt, memeshDir3) {
   const wait = (since) => {
     out.waitSince = out.waitSince === void 0 ? since : Math.min(out.waitSince, since);
   };
+  const ofThisRoot = (projectsRoot, transcript) => projectsRoot === root || isCodexRollout(transcript);
   for (const entry of readAllMarkers()) {
     const { marker } = entry;
-    if (marker.endedAt !== void 0 || marker.finalizedAt !== void 0)
+    if (marker.endedAt !== void 0 || !marker.dirs.includes(realDir) && !ofThisRoot(marker.projectsRoot, marker.transcript))
       continue;
-    const mine = marker.dirs.includes(realDir) || marker.projectsRoot === root;
-    if (!mine)
-      continue;
-    if (finalizeIdleMarker(entry, now, deadlineAt) === "finalized")
-      continue;
-    wait(marker.holdsAt);
+    const since = privateSessionWait(entry, root, now, deadlineAt);
+    if (since !== void 0)
+      wait(since);
   }
   let redecided = 0;
   for (const { name, rec } of readAllHolds()) {
     let current = rec;
+    const reread = () => {
+      current = readHoldFile(path11.join(holdsDir(), name)) ?? { ...current, firm: {}, tentative: void 0 };
+    };
     const t = current.tentative;
-    if (t && (t.dirs[dirId] !== void 0 || t.endedAt === void 0 && t.projectsRoot === root)) {
+    if (t && (t.dirs[dirId] !== void 0 || t.endedAt === void 0 && ofThisRoot(t.projectsRoot, current.transcript))) {
       const decidable = current.transcript !== void 0 || t.reason === "marker_unreadable";
       if (!decidable) {
       } else if (redecided < REDECIDE_PER_RUN && Date.now() < deadlineAt) {
         redecided++;
-        const state = decidePrivacy({ sessionId: current.session, transcriptPath: current.transcript, memeshDir: memeshDir3, deadlineAt, cacheDir: path11.join(memeshDir3, "private-check-cache") });
-        if (state.state !== "unchecked" && settleTentativeHolds(current.session, state.state, { expectRev: current.rev, deadlineAt })) {
-          current = readHoldFile(path11.join(holdsDir(), name)) ?? { ...current, firm: {}, tentative: void 0 };
-        }
+        const state = decidePrivacy({ sessionId: current.session, transcriptPath: current.transcript, memeshDir: memeshDir3, deadlineAt, cacheDir: privateCheckCacheDir(memeshDir3) });
+        if (state.state !== "unchecked" && settleTentativeHolds(current.session, state.state, { expectRev: current.rev, deadlineAt }))
+          reread();
       } else {
         out.redecideLeft++;
       }
     }
     const t2 = current.tentative;
-    if (t2 && t2.endedAt === void 0 && t2.projectsRoot === root) {
-      const last = lastActivity(t2.updatedAt, current.transcript);
-      if (last !== void 0 && now - t2.updatedAt > PRIVATE_WINDOW_MS && now - last > PRIVATE_WINDOW_MS) {
-        holdOutNoteFiles({ dir: realDir, sessionId: current.session, paths: [], sinceMs: t2.holdsAt, untilMs: last, tentative: { reason: t2.reason }, deadlineAt, now });
+    if (t2 && t2.endedAt === void 0 && ofThisRoot(t2.projectsRoot, current.transcript)) {
+      const last = isIdle(now, t2.updatedAt) ? lastActivity(t2.updatedAt, current.transcript, deadlineAt) : void 0;
+      if (last !== void 0 && isIdle(now, last)) {
+        holdIdleSession({ sessionId: current.session, roots: [root], reached: [], startedAt: t2.holdsAt, holdsAt: t2.holdsAt, last, tentative: t2.reason, now, deadlineAt });
         endTentativeWait(current.session, now, deadlineAt);
-        current = readHoldFile(path11.join(holdsDir(), name)) ?? current;
+        reread();
       } else {
         wait(t2.holdsAt);
       }
     }
     for (const [kind, dirs] of [["firm", current.firm], ["tentative", current.tentative?.dirs ?? {}]]) {
-      for (const [rel, hash2] of Object.entries(dirs[dirId] ?? {})) {
-        if (!isUnreadableMark(hash2)) {
-          (kind === "firm" ? out.firm : out.tentative).add(hash2);
-          continue;
+      const into = kind === "firm" ? out.firm : out.tentative;
+      for (const [id, entries] of Object.entries(dirs)) {
+        for (const [key, value] of Object.entries(entries)) {
+          if (!isUnreadableKey(key)) {
+            into.add(key);
+            continue;
+          }
+          if (id !== dirId)
+            continue;
+          const mark = parseUnreadable(value);
+          const resolved = resolveUnreadable(realDir, key.slice(1), mark, now);
+          if (resolved === void 0) {
+            wait(mark.since);
+            continue;
+          }
+          updateHold(path11.join(holdsDir(), name), deadlineAt, (again) => {
+            const holds = kind === "firm" ? again?.firm : again?.tentative?.dirs;
+            if (!holds || holds[dirId]?.[key] !== value)
+              return void 0;
+            delete holds[dirId][key];
+            mergeDirHolds(holds, { [dirId]: resolved });
+            return again;
+          });
+          for (const h of Object.keys(resolved))
+            into.add(h);
         }
-        const since = unreadableSince(hash2);
-        let resolved;
-        try {
-          resolved = { [rel]: sha256(fs13.readFileSync(path11.join(realDir, rel))) };
-        } catch (err) {
-          if (codeOf(err) === "ENOENT")
-            resolved = hashNotes(realDir, notesTouchedBetween(realDir, since), now);
-        }
-        if (resolved === void 0 || Object.values(resolved).some(isUnreadableMark)) {
-          wait(since);
-          continue;
-        }
-        updateHold(path11.join(holdsDir(), name), deadlineAt, (again) => {
-          const target = kind === "firm" ? again?.firm : again?.tentative?.dirs;
-          if (!again || target?.[dirId]?.[rel] !== hash2)
-            return void 0;
-          delete target[dirId][rel];
-          target[dirId] = { ...target[dirId], ...resolved };
-          return again;
-        });
-        for (const h of Object.values(resolved))
-          (kind === "firm" ? out.firm : out.tentative).add(h);
       }
     }
   }
   return out;
 }
+function resolveUnreadable(realDir, rel, mark, now) {
+  const file2 = path11.join(realDir, rel);
+  let st;
+  try {
+    st = fs13.lstatSync(file2);
+  } catch (err) {
+    if (!notThere(err))
+      return void 0;
+  }
+  if (st && st.ino === mark.ino && st.size === mark.size && st.mtimeMs === mark.mtime) {
+    try {
+      return { [sha256(fs13.readFileSync(file2))]: rel };
+    } catch {
+      return void 0;
+    }
+  }
+  const instead = hashNotes(realDir, notesTouchedBetween(realDir, mark.since), now);
+  if (Object.keys(instead).some(isUnreadableKey))
+    return void 0;
+  return Object.fromEntries(Object.entries(instead).map(([hash2, p]) => [hash2, `!${p}`]));
+}
 function summarizeNoteHolds(now = Date.now()) {
-  const out = { sessions: 0, notes: 0, holdsFolder: holdsDir(), markersFolder: markersDir(), unsettled: [], waitingOnUnreadable: [], damaged: [], unreadableFolders: [] };
+  const out = { sessions: 0, notes: 0, holdsFolder: holdsDir(), markersFolder: markersDir(), unsettled: [], waitingOnUnreadable: [], heldInPlaceOfUnreadable: [], damaged: [], unreadableFolders: [] };
   const list = (dir, folder) => {
     try {
       return fs13.readdirSync(dir).filter((n) => n.endsWith(".json"));
@@ -32557,8 +32639,8 @@ function summarizeNoteHolds(now = Date.now()) {
     let rec;
     try {
       rec = readHoldFile(path11.join(holdsDir(), name));
-    } catch {
-      out.damaged.push({ folder: "holds", file: shownName(name) });
+    } catch (err) {
+      out.damaged.push({ folder: "holds", file: shownName(name), cause: err.cause });
       continue;
     }
     if (!rec)
@@ -32566,30 +32648,36 @@ function summarizeNoteHolds(now = Date.now()) {
     out.sessions++;
     const firm = holdCount(rec.firm);
     out.notes += firm;
-    const unread = [...Object.values(rec.firm), ...Object.values(rec.tentative?.dirs ?? {})].flatMap((files) => Object.values(files)).filter(isUnreadableMark);
+    const entries = [...Object.values(rec.firm), ...Object.values(rec.tentative?.dirs ?? {})].flatMap((files) => Object.entries(files));
+    const unread = entries.filter(([key]) => isUnreadableKey(key)).map(([, value]) => parseUnreadable(value).since);
     if (unread.length > 0)
-      out.waitingOnUnreadable.push({ file: shownName(name), notes: unread.length, since: Math.min(...unread.map(unreadableSince)) });
+      out.waitingOnUnreadable.push({ file: shownName(name), notes: unread.length, since: Math.min(...unread) });
+    const instead = entries.filter(([key, value]) => !isUnreadableKey(key) && value.startsWith("!")).length;
+    if (instead > 0)
+      out.heldInPlaceOfUnreadable.push({ file: shownName(name), notes: instead });
     if (rec.tentative) {
       const n = holdCount(rec.tentative.dirs);
       out.notes += n;
       const reason = Object.prototype.hasOwnProperty.call(UNCHECKED_REASON_TEXT, rec.tentative.reason) ? rec.tentative.reason : "unrecognised";
       out.unsettled.push({
-        session: shownName(name),
+        session: shownName(name).replace(/\.json$/, ""),
         file: shownName(name),
         reason,
         reasonText: UNCHECKED_REASON_TEXT[reason] ?? "an unrecognised reason",
         kind: reason === "unrecognised" ? "persistent" : uncheckedKind(reason, rec.tentative.since, now),
         since: rec.tentative.since,
         notes: n,
-        ...rec.transcript === void 0 ? {} : { transcript: rec.transcript }
+        ...rec.transcript === void 0 ? {} : { transcript: rec.transcript },
+        ...rec.tentative.endedAt === void 0 ? { waitSince: rec.tentative.holdsAt } : {},
+        lastHeard: rec.tentative.updatedAt
       });
     }
   }
   for (const name of list(markersDir(), "markers")) {
     try {
       readMarker(path11.join(markersDir(), name));
-    } catch {
-      out.damaged.push({ folder: "markers", file: shownName(name) });
+    } catch (err) {
+      out.damaged.push({ folder: "markers", file: shownName(name), cause: err.cause });
     }
   }
   return out;
@@ -32600,7 +32688,7 @@ function ingestNoteDirectory(opts) {
   const realDir = fs13.realpathSync(opts.dir);
   if (!fs13.statSync(realDir).isDirectory())
     throw new Error(`not a directory: ${opts.dir}`);
-  const dirId = createHash7("sha256").update(realDir).digest("hex").slice(0, 16);
+  const dirId = dirIdOf(realDir);
   const { files, symlinks } = discover(realDir);
   const presentRels = new Set(files.map((abs) => relPath(realDir, abs)));
   const result = {
@@ -32620,7 +32708,7 @@ function ingestNoteDirectory(opts) {
     more: 0
   };
   const now = opts.now ?? Date.now();
-  const privacy = readPrivateState(realDir, now, opts.deadlineAt ?? Date.now() + DEFAULT_LOCK_WAIT_MS, getMemeshDirFromDbPath());
+  const privacy = readPrivateState(realDir, now, lockDeadline(opts.deadlineAt), getMemeshDirFromDbPath());
   const privateSince = privacy.waitSince;
   result.redecideLeft = privacy.redecideLeft;
   const db2 = getDatabase();
@@ -32722,7 +32810,7 @@ function ingestNoteDirectory(opts) {
     try {
       stat = fs13.lstatSync(abs);
     } catch (err) {
-      skip(`unreadable: ${err.code ?? "error"}`);
+      skip(`unreadable: ${codeOf(err)}`);
       declaredNameAt.set(rel, "");
       continue;
     }
@@ -32769,14 +32857,15 @@ function ingestNoteDirectory(opts) {
       }
       raw = fs13.readFileSync(real);
     } catch (err) {
-      unreachableSkip(`unreadable: ${err.code ?? "error"}`);
+      unreachableSkip(`unreadable: ${codeOf(err)}`);
       continue;
     }
     const contentHash = sha256(raw);
-    if (heldAs(contentHash)) {
+    const heldKind = heldAs(contentHash);
+    if (heldKind) {
       read--;
       countHeld(rel, contentHash);
-      nextSkips[rel] = { mtime: stat.mtimeMs, size: stat.size, reason: heldAs(contentHash) === "private" ? NOTE_PRIVATE_HOLD_REASON : NOTE_UNCHECKED_HOLD_REASON, held: contentHash };
+      nextSkips[rel] = { mtime: stat.mtimeMs, size: stat.size, reason: heldKind === "private" ? NOTE_PRIVATE_HOLD_REASON : NOTE_UNCHECKED_HOLD_REASON, held: contentHash };
       continue;
     }
     const parsed = parseFrontmatter(raw.toString("utf8"));
@@ -32811,7 +32900,7 @@ function ingestNoteDirectory(opts) {
       name,
       stat,
       unchanged: false,
-      contentHash: createHash7("sha256").update(raw).digest("hex"),
+      contentHash,
       type,
       title: truncateTitle(cleanDescription || observations[0]),
       observations
@@ -32990,7 +33079,7 @@ function summarizeNoteIngest(r) {
     parts.push(`${r.more} more not processed (per-run cap)`);
   return parts.join(", ");
 }
-var NOTE_FILE_TAG, NOTE_FILE_MISSING_TAG, NOTE_FILE_MAX_BYTES, NOTE_DIR_MAX_FILES, SKIPPED_DIRS, relPath, MARKERS_DIR, HOLDS_DIR, markersDir, holdsDir, sha256, dirIdOf, codeOf, DEFAULT_LOCK_WAIT_MS, MARKER_KEEP_MS, REDECIDE_PER_RUN, MAX_PROJECT_FOLDERS, NOTE_MARKERS_UNREADABLE, NOTE_MARKERS_DIR_UNREADABLE, NOTE_MARKER_UNWRITABLE, NOTE_HOLDS_UNREADABLE, NOTE_HOLDS_DIR_UNREADABLE, NOTE_HOLDS_UNWRITABLE, fail, NOTE_PRIVATE_HOLD_REASON, NOTE_UNCHECKED_HOLD_REASON, projectsRootOf, touchedAt, isNum, markerUnreadable, lockDeadline, isUnreadableMark, unreadableSince, isDirHolds, holdsUnreadable, holdFile, holdCount, mergeDirHolds, UNCHECKED_REASON_TEXT, SAFE_FILE_NAME, shownName;
+var NOTE_FILE_TAG, NOTE_FILE_MISSING_TAG, NOTE_FILE_MAX_BYTES, NOTE_DIR_MAX_FILES, SKIPPED_DIRS, relPath, MARKERS_DIR, HOLDS_DIR, markersDir, holdsDir, sha256, dirIdOf, codeOf, DEFAULT_LOCK_WAIT_MS, REDECIDE_PER_RUN, NOTE_MARKERS_UNREADABLE, NOTE_MARKERS_DIR_UNREADABLE, NOTE_MARKER_UNWRITABLE, NOTE_HOLDS_UNREADABLE, NOTE_HOLDS_DIR_UNREADABLE, NOTE_HOLDS_UNWRITABLE, NOTE_FOLDER_UNREADABLE, fail, folderUnreadable, notThere, NOTE_PRIVATE_HOLD_REASON, NOTE_UNCHECKED_HOLD_REASON, projectsRootOf, touchedAt, writtenAt, isTime, causeOf, markerUnreadable, lockDeadline, HOLDS_VERSION, HASH_KEY, isUnreadableKey, unreadableEntry, isRecord, isDirHolds, holdsUnreadable, holdFile, holdCount, mergeDirHolds, isIdle, UNCHECKED_REASON_TEXT, SAFE_FILE_NAME, shownName;
 var init_note_ingest = __esm({
   "dist/core/note-ingest.js"() {
     "use strict";
@@ -33001,6 +33090,7 @@ var init_note_ingest = __esm({
     init_title();
     init_private_session();
     init_private_state_lock();
+    init_host_transcript();
     NOTE_FILE_TAG = "source:note-file";
     NOTE_FILE_MISSING_TAG = "source:note-file:missing";
     NOTE_FILE_MAX_BYTES = 256 * 1024;
@@ -33015,40 +33105,40 @@ var init_note_ingest = __esm({
     dirIdOf = (realDir) => sha256(realDir).slice(0, 16);
     codeOf = (err) => err?.code ?? "error";
     DEFAULT_LOCK_WAIT_MS = 5e3;
-    MARKER_KEEP_MS = 30 * 24 * 60 * 60 * 1e3;
     REDECIDE_PER_RUN = 10;
-    MAX_PROJECT_FOLDERS = 200;
     NOTE_MARKERS_UNREADABLE = "MEMESH_NOTE_MARKERS_UNREADABLE";
     NOTE_MARKERS_DIR_UNREADABLE = "MEMESH_NOTE_MARKERS_DIR_UNREADABLE";
     NOTE_MARKER_UNWRITABLE = "MEMESH_NOTE_MARKER_UNWRITABLE";
     NOTE_HOLDS_UNREADABLE = "MEMESH_NOTE_HOLDS_UNREADABLE";
     NOTE_HOLDS_DIR_UNREADABLE = "MEMESH_NOTE_HOLDS_DIR_UNREADABLE";
     NOTE_HOLDS_UNWRITABLE = "MEMESH_NOTE_HOLDS_UNWRITABLE";
+    NOTE_FOLDER_UNREADABLE = "MEMESH_NOTE_FOLDER_UNREADABLE";
     fail = (code, message) => Object.assign(new Error(message), { code });
+    folderUnreadable = (err) => fail(NOTE_FOLDER_UNREADABLE, `a notes folder cannot be read (${codeOf(err)}); nothing is released until it can be`);
+    notThere = (err) => codeOf(err) === "ENOENT" || codeOf(err) === "ENOTDIR";
     NOTE_PRIVATE_HOLD_REASON = "held out by a private session \u2014 not imported";
     NOTE_UNCHECKED_HOLD_REASON = "held while a session could not be checked \u2014 not imported yet";
     projectsRootOf = (memoryDir) => path11.dirname(path11.dirname(memoryDir));
     touchedAt = (st) => Math.max(st.mtimeMs, st.ctimeMs);
-    isNum = (v) => typeof v === "number" && Number.isFinite(v);
-    markerUnreadable = (name, err) => fail(NOTE_MARKERS_UNREADABLE, `${MARKERS_DIR}/${name} cannot be read (${err.message}); notes are not imported until it is rebuilt by its session or, for a session that has ended, deleted`);
+    writtenAt = (st) => Math.min(st.birthtimeMs || st.mtimeMs, st.mtimeMs);
+    isTime = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 864e13;
+    causeOf = (err) => ["EACCES", "EPERM"].includes(codeOf(err)) ? "permission" : "damaged";
+    markerUnreadable = (name, err) => Object.assign(fail(NOTE_MARKERS_UNREADABLE, `${MARKERS_DIR}/${name} cannot be read (${err.message}); notes are not imported until its session writes it again`), { cause: causeOf(err) });
     lockDeadline = (deadlineAt) => deadlineAt ?? Date.now() + DEFAULT_LOCK_WAIT_MS;
-    isUnreadableMark = (hash2) => hash2.startsWith("?");
-    unreadableSince = (hash2) => {
-      const n = Number(hash2.slice(1));
-      return Number.isFinite(n) ? n : 0;
-    };
-    isDirHolds = (value) => {
-      if (!value || typeof value !== "object" || Array.isArray(value))
-        return false;
-      return Object.values(value).every((files) => !!files && typeof files === "object" && !Array.isArray(files) && Object.values(files).every((hash2) => typeof hash2 === "string"));
-    };
-    holdsUnreadable = (what, err) => fail(NOTE_HOLDS_UNREADABLE, `${HOLDS_DIR}${what} cannot be read (${err.message}); notes are not imported until it is repaired; deleting it releases the notes it holds`);
+    HOLDS_VERSION = 3;
+    HASH_KEY = /^[0-9a-f]{64}$/;
+    isUnreadableKey = (key) => key.startsWith("?");
+    unreadableEntry = (rel, st, now) => [`?${rel}`, `${now}:${st.ino}:${st.size}:${st.mtimeMs}`];
+    isRecord = (value) => !!value && typeof value === "object" && !Array.isArray(value);
+    isDirHolds = (value) => isRecord(value) && Object.values(value).every((files) => isRecord(files) && Object.entries(files).every(([key, v]) => typeof v === "string" && (HASH_KEY.test(key) || isUnreadableKey(key) && parseUnreadable(v) !== void 0)));
+    holdsUnreadable = (what, err) => Object.assign(fail(NOTE_HOLDS_UNREADABLE, `${HOLDS_DIR}${what} cannot be read (${err.message}); notes are not imported until it can be read`), { cause: causeOf(err) });
     holdFile = (sessionId) => path11.join(holdsDir(), sessionFileName(sessionId));
     holdCount = (dirs) => Object.values(dirs).reduce((sum, files) => sum + Object.keys(files).length, 0);
     mergeDirHolds = (into, from) => {
       for (const [dirId, files] of Object.entries(from))
-        into[dirId] = { ...into[dirId] ?? {}, ...files };
+        into[dirId] = { ...files, ...into[dirId] ?? {} };
     };
+    isIdle = (now, ...times) => times.every((t) => now - t > PRIVATE_WINDOW_MS);
     UNCHECKED_REASON_TEXT = Object.freeze({
       marker_unreadable: "the session's private-session marker could not be read",
       unreadable: "the session's transcript or a subagent transcript could not be read",
@@ -33275,13 +33365,13 @@ function daysInMonth(year, month) {
 function isRealInstant(groups) {
   const year = Number(groups.year);
   const month = Number(groups.month);
-  const day = Number(groups.day);
+  const day2 = Number(groups.day);
   const hour = Number(groups.hour);
   const minute = Number(groups.minute);
   const second = groups.second === void 0 ? 0 : Number(groups.second);
   if (month < 1 || month > 12)
     return false;
-  if (day < 1 || day > daysInMonth(year, month))
+  if (day2 < 1 || day2 > daysInMonth(year, month))
     return false;
   if (hour > 23)
     return false;
@@ -34346,17 +34436,18 @@ var init_capture_liveness = __esm({
       privateCheckUnreadable: "the private-session check could not read the transcript, so the session is treated as private",
       privateCheckMarkerUnreadable: "the private-sessions folder beside the database cannot be read, so every session is treated as private and nothing is saved until it can be",
       privateCheckParentUnavailable: "the session's fork parent or a subagent transcript could not be found, read or checked, or a rollout header is damaged, so the session is treated as private",
-      notesHeldByTime: "the transcripts could not be read for note names (too large, too slow or unreadable), so every note changed in the last six hours is held out",
+      notesHeldByTime: "the transcripts could not be read for note names (too large, too slow or unreadable), so every note changed since the session began (at least the last six hours) is held in every notes folder",
       privateCheckTooLarge: "the transcript is too large to check for a private-session call, so the session is treated as private",
       privateCheckTimeout: "the private-session check ran out of time, so nothing is saved this time and the next run checks again",
       privateCheckNoSessionId: "the host gave no session id, so whether the session is private cannot be told and nothing is saved",
       notesHeldPrivate: "note files written in a private session, or in one that could not be checked, are held out; nothing else needed storing",
-      noteHoldsUnreadable: "a private-session hold record cannot be read, so notes are not imported until it is repaired: it is in the note-ingest-holds folder beside the database (deleting it releases the notes it holds)",
+      noteHoldsUnreadable: "a private-session hold record cannot be read, so notes are not imported until it can be: it is in the note-ingest-holds folder beside the database, and memesh doctor names it",
       noteMarkersUnreadable: "a private-session marker cannot be read, so notes are not imported until its session rebuilds it: memesh doctor names the file in the private-sessions folder beside the database",
       noteMarkersDirUnreadable: "the private-sessions folder beside the database cannot be read, so notes are not imported until it can be",
       noteMarkerUnwritable: "a private-session marker could not be written, so notes stay held; check the disk and the private-sessions folder's permissions",
       noteHoldsDirUnreadable: "the note-ingest-holds folder beside the database cannot be read, so notes are not imported until it can be",
       noteHoldsUnwritable: "a private-session hold record could not be written, so notes stay held; check the disk and the note-ingest-holds folder's permissions",
+      noteFolderUnreadable: "a notes folder or the projects folder holding them cannot be read, so what a private session wrote there cannot be held; nothing was released",
       privateStateBusy: "the private-session records were locked by another process, so nothing was released this time and the next run tries again",
       privateMarkerRebuilt: "this session's private-session marker could not be read and was written again from the start of the session",
       notPrivateSessionTool: "not a call of the private_session tool",
@@ -34458,6 +34549,7 @@ var init_capture_liveness = __esm({
       SKIP_REASONS.noteHoldsUnwritable,
       SKIP_REASONS.privateStateBusy,
       SKIP_REASONS.privateMarkerRebuilt,
+      SKIP_REASONS.noteFolderUnreadable,
       "the host closed stdout before the nudge could be written",
       "the database stayed locked past the hook busy timeout",
       "stdout: host closed the pipe before the block reason was delivered"
@@ -35508,7 +35600,7 @@ function assertSecureLocalHostRuntimeSupported() {
 }
 function readHostConfigFile(configuredPath) {
   const value = JSON.parse(readOwnerPrivateFile(configuredPath, "host config", HOST_CONFIG_MAX_BYTES));
-  if (!isRecord(value))
+  if (!isRecord2(value))
     throw new Error("The host config must contain one JSON object.");
   return value;
 }
@@ -35568,7 +35660,7 @@ function assertOwnerPrivate(stat, label) {
     throw new Error(`The ${label} must be owned by the current user.`);
   }
 }
-function isRecord(value) {
+function isRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 var MAX_ROUTER_TOKEN_FILE_BYTES, SECURE_LOCAL_HOST_RUNTIME_UNSUPPORTED;
@@ -51490,11 +51582,11 @@ var require_mime_types = __commonJS({
       }
       return exts[0];
     }
-    function lookup(path25) {
-      if (!path25 || typeof path25 !== "string") {
+    function lookup(path24) {
+      if (!path24 || typeof path24 !== "string") {
         return false;
       }
-      var extension2 = extname("x." + path25).toLowerCase().slice(1);
+      var extension2 = extname("x." + path24).toLowerCase().slice(1);
       if (!extension2) {
         return false;
       }
@@ -55167,13 +55259,13 @@ var require_view = __commonJS({
   "node_modules/express/lib/view.js"(exports, module) {
     "use strict";
     var debug = require_src()("express:view");
-    var path25 = __require("node:path");
+    var path24 = __require("node:path");
     var fs27 = __require("node:fs");
-    var dirname = path25.dirname;
-    var basename2 = path25.basename;
-    var extname = path25.extname;
-    var join = path25.join;
-    var resolve2 = path25.resolve;
+    var dirname = path24.dirname;
+    var basename2 = path24.basename;
+    var extname = path24.extname;
+    var join = path24.join;
+    var resolve2 = path24.resolve;
     module.exports = View;
     function View(name, options) {
       var opts = options || {};
@@ -55202,17 +55294,17 @@ var require_view = __commonJS({
       this.path = this.lookup(fileName);
     }
     View.prototype.lookup = function lookup(name) {
-      var path26;
+      var path25;
       var roots = [].concat(this.root);
       debug('lookup "%s"', name);
-      for (var i = 0; i < roots.length && !path26; i++) {
+      for (var i = 0; i < roots.length && !path25; i++) {
         var root = roots[i];
         var loc = resolve2(root, name);
         var dir = dirname(loc);
         var file2 = basename2(loc);
-        path26 = this.resolve(dir, file2);
+        path25 = this.resolve(dir, file2);
       }
-      return path26;
+      return path25;
     };
     View.prototype.render = function render(options, callback) {
       var sync = true;
@@ -55234,21 +55326,21 @@ var require_view = __commonJS({
     };
     View.prototype.resolve = function resolve3(dir, file2) {
       var ext = this.ext;
-      var path26 = join(dir, file2);
-      var stat = tryStat(path26);
+      var path25 = join(dir, file2);
+      var stat = tryStat(path25);
       if (stat && stat.isFile()) {
-        return path26;
+        return path25;
       }
-      path26 = join(dir, basename2(file2, ext), "index" + ext);
-      stat = tryStat(path26);
+      path25 = join(dir, basename2(file2, ext), "index" + ext);
+      stat = tryStat(path25);
       if (stat && stat.isFile()) {
-        return path26;
+        return path25;
       }
     };
-    function tryStat(path26) {
-      debug('stat "%s"', path26);
+    function tryStat(path25) {
+      debug('stat "%s"', path25);
       try {
-        return fs27.statSync(path26);
+        return fs27.statSync(path25);
       } catch (e) {
         return void 0;
       }
@@ -56488,15 +56580,15 @@ var require_dist3 = __commonJS({
       let index = 0;
       function consumeUntil(end) {
         const output2 = [];
-        let path25 = "";
+        let path24 = "";
         function writePath() {
-          if (!path25)
+          if (!path24)
             return;
           output2.push({
             type: "text",
-            value: encodePath(path25)
+            value: encodePath(path24)
           });
-          path25 = "";
+          path24 = "";
         }
         while (index < chars.length) {
           const value = chars[index++];
@@ -56508,7 +56600,7 @@ var require_dist3 = __commonJS({
             if (index === chars.length) {
               throw new PathError(`Unexpected end after \\ at index ${index}`, str);
             }
-            path25 += chars[index++];
+            path24 += chars[index++];
             continue;
           }
           if (value === ":" || value === "*") {
@@ -56552,7 +56644,7 @@ var require_dist3 = __commonJS({
           if (value === "}" || value === "(" || value === ")" || value === "[" || value === "]" || value === "+" || value === "?" || value === "!") {
             throw new PathError(`Unexpected ${value} at index ${index - 1}`, str);
           }
-          path25 += value;
+          path24 += value;
         }
         if (end) {
           throw new PathError(`Unexpected end at index ${index}, expected ${end}`, str);
@@ -56562,17 +56654,17 @@ var require_dist3 = __commonJS({
       }
       return new TokenData(consumeUntil(""), str);
     }
-    function compile2(path25, options = {}) {
+    function compile2(path24, options = {}) {
       const { encode: encode3 = encodeURIComponent, delimiter = DEFAULT_DELIMITER } = options;
-      const data = typeof path25 === "object" ? path25 : parse3(path25, options);
+      const data = typeof path24 === "object" ? path24 : parse3(path24, options);
       const fn = tokensToFunction(data.tokens, delimiter, encode3);
-      return function path26(params = {}) {
+      return function path25(params = {}) {
         const missing = [];
-        const path27 = fn(params, missing);
+        const path26 = fn(params, missing);
         if (missing.length) {
           throw new TypeError(`Missing parameters: ${missing.join(", ")}`);
         }
-        return path27;
+        return path26;
       };
     }
     function tokensToFunction(tokens, delimiter, encode3) {
@@ -56634,9 +56726,9 @@ var require_dist3 = __commonJS({
         return encodeValue(value);
       };
     }
-    function match(path25, options = {}) {
+    function match(path24, options = {}) {
       const { decode: decode3 = decodeURIComponent, delimiter = DEFAULT_DELIMITER } = options;
-      const { regexp, keys } = pathToRegexp(path25, options);
+      const { regexp, keys } = pathToRegexp(path24, options);
       const decoders = keys.map((key) => {
         if (decode3 === false)
           return NOOP_VALUE;
@@ -56648,7 +56740,7 @@ var require_dist3 = __commonJS({
         const m = regexp.exec(input2);
         if (!m)
           return false;
-        const path26 = m[0];
+        const path25 = m[0];
         const params = /* @__PURE__ */ Object.create(null);
         for (let i = 1; i < m.length; i++) {
           if (m[i] === void 0)
@@ -56657,21 +56749,21 @@ var require_dist3 = __commonJS({
           const decoder = decoders[i - 1];
           params[key.name] = decoder(m[i]);
         }
-        return { path: path26, params };
+        return { path: path25, params };
       };
     }
-    function pathToRegexp(path25, options = {}) {
+    function pathToRegexp(path24, options = {}) {
       const { delimiter = DEFAULT_DELIMITER, end = true, sensitive = false, trailing = true } = options;
       const keys = [];
       let source = "";
       let combinations = 0;
-      function process2(path26) {
-        if (Array.isArray(path26)) {
-          for (const p of path26)
+      function process2(path25) {
+        if (Array.isArray(path25)) {
+          for (const p of path25)
             process2(p);
           return;
         }
-        const data = typeof path26 === "object" ? path26 : parse3(path26, options);
+        const data = typeof path25 === "object" ? path25 : parse3(path25, options);
         flatten(data.tokens, 0, [], (tokens) => {
           if (combinations >= 256) {
             throw new PathError("Too many path combinations", data.originalPath);
@@ -56682,7 +56774,7 @@ var require_dist3 = __commonJS({
           combinations++;
         });
       }
-      process2(path25);
+      process2(path24);
       let pattern = `^(?:${source})`;
       if (trailing)
         pattern += "(?:" + escape2(delimiter) + "$)?";
@@ -56822,18 +56914,18 @@ var require_layer = __commonJS({
     var TRAILING_SLASH_REGEXP = /\/+$/;
     var MATCHING_GROUP_REGEXP = /\((?:\?<(.*?)>)?(?!\?)/g;
     module.exports = Layer;
-    function Layer(path25, options, fn) {
+    function Layer(path24, options, fn) {
       if (!(this instanceof Layer)) {
-        return new Layer(path25, options, fn);
+        return new Layer(path24, options, fn);
       }
-      debug("new %o", path25);
+      debug("new %o", path24);
       const opts = options || {};
       this.handle = fn;
       this.keys = [];
       this.name = fn.name || "<anonymous>";
       this.params = void 0;
       this.path = void 0;
-      this.slash = path25 === "/" && opts.end === false;
+      this.slash = path24 === "/" && opts.end === false;
       function matcher(_path) {
         if (_path instanceof RegExp) {
           const keys = [];
@@ -56872,7 +56964,7 @@ var require_layer = __commonJS({
           decode: decodeParam
         });
       }
-      this.matchers = Array.isArray(path25) ? path25.map(matcher) : [matcher(path25)];
+      this.matchers = Array.isArray(path24) ? path24.map(matcher) : [matcher(path24)];
     }
     Layer.prototype.handleError = function handleError(error62, req, res, next) {
       const fn = this.handle;
@@ -56912,9 +57004,9 @@ var require_layer = __commonJS({
         next(err);
       }
     };
-    Layer.prototype.match = function match(path25) {
+    Layer.prototype.match = function match(path24) {
       let match2;
-      if (path25 != null) {
+      if (path24 != null) {
         if (this.slash) {
           this.params = {};
           this.path = "";
@@ -56922,7 +57014,7 @@ var require_layer = __commonJS({
         }
         let i = 0;
         while (!match2 && i < this.matchers.length) {
-          match2 = this.matchers[i](path25);
+          match2 = this.matchers[i](path24);
           i++;
         }
       }
@@ -56950,13 +57042,13 @@ var require_layer = __commonJS({
         throw err;
       }
     }
-    function loosen(path25) {
-      if (path25 instanceof RegExp || path25 === "/") {
-        return path25;
+    function loosen(path24) {
+      if (path24 instanceof RegExp || path24 === "/") {
+        return path24;
       }
-      return Array.isArray(path25) ? path25.map(function(p) {
+      return Array.isArray(path24) ? path24.map(function(p) {
         return loosen(p);
-      }) : String(path25).replace(TRAILING_SLASH_REGEXP, "");
+      }) : String(path24).replace(TRAILING_SLASH_REGEXP, "");
     }
   }
 });
@@ -56972,9 +57064,9 @@ var require_route = __commonJS({
     var flatten = Array.prototype.flat;
     var methods = METHODS.map((method) => method.toLowerCase());
     module.exports = Route;
-    function Route(path25) {
-      debug("new %o", path25);
-      this.path = path25;
+    function Route(path24) {
+      debug("new %o", path24);
+      this.path = path24;
       this.stack = [];
       this.methods = /* @__PURE__ */ Object.create(null);
     }
@@ -57182,8 +57274,8 @@ var require_router = __commonJS({
         if (++sync > 100) {
           return setImmediate(next, err);
         }
-        const path25 = getPathname(req);
-        if (path25 == null) {
+        const path24 = getPathname(req);
+        if (path24 == null) {
           return done(layerError);
         }
         let layer;
@@ -57191,7 +57283,7 @@ var require_router = __commonJS({
         let route;
         while (match !== true && idx < stack.length) {
           layer = stack[idx++];
-          match = matchLayer(layer, path25);
+          match = matchLayer(layer, path24);
           route = layer.route;
           if (typeof match !== "boolean") {
             layerError = layerError || match;
@@ -57229,18 +57321,18 @@ var require_router = __commonJS({
           } else if (route) {
             layer.handleRequest(req, res, next);
           } else {
-            trimPrefix(layer, layerError, layerPath, path25);
+            trimPrefix(layer, layerError, layerPath, path24);
           }
           sync = 0;
         });
       }
-      function trimPrefix(layer, layerError, layerPath, path25) {
+      function trimPrefix(layer, layerError, layerPath, path24) {
         if (layerPath.length !== 0) {
-          if (layerPath !== path25.substring(0, layerPath.length)) {
+          if (layerPath !== path24.substring(0, layerPath.length)) {
             next(layerError);
             return;
           }
-          const c = path25[layerPath.length];
+          const c = path24[layerPath.length];
           if (c && c !== "/") {
             next(layerError);
             return;
@@ -57264,7 +57356,7 @@ var require_router = __commonJS({
     };
     Router.prototype.use = function use(handler) {
       let offset = 0;
-      let path25 = "/";
+      let path24 = "/";
       if (typeof handler !== "function") {
         let arg = handler;
         while (Array.isArray(arg) && arg.length !== 0) {
@@ -57272,7 +57364,7 @@ var require_router = __commonJS({
         }
         if (typeof arg !== "function") {
           offset = 1;
-          path25 = handler;
+          path24 = handler;
         }
       }
       const callbacks = flatten.call(slice.call(arguments, offset), Infinity);
@@ -57284,8 +57376,8 @@ var require_router = __commonJS({
         if (typeof fn !== "function") {
           throw new TypeError("argument handler must be a function");
         }
-        debug("use %o %s", path25, fn.name || "<anonymous>");
-        const layer = new Layer(path25, {
+        debug("use %o %s", path24, fn.name || "<anonymous>");
+        const layer = new Layer(path24, {
           sensitive: this.caseSensitive,
           strict: false,
           end: false
@@ -57295,9 +57387,9 @@ var require_router = __commonJS({
       }
       return this;
     };
-    Router.prototype.route = function route(path25) {
-      const route2 = new Route(path25);
-      const layer = new Layer(path25, {
+    Router.prototype.route = function route(path24) {
+      const route2 = new Route(path24);
+      const layer = new Layer(path24, {
         sensitive: this.caseSensitive,
         strict: this.strict,
         end: true
@@ -57310,8 +57402,8 @@ var require_router = __commonJS({
       return route2;
     };
     methods.concat("all").forEach(function(method) {
-      Router.prototype[method] = function(path25) {
-        const route = this.route(path25);
+      Router.prototype[method] = function(path24) {
+        const route = this.route(path24);
         route[method].apply(route, slice.call(arguments, 1));
         return this;
       };
@@ -57340,9 +57432,9 @@ var require_router = __commonJS({
       const fqdnIndex = url2.substring(0, pathLength).indexOf("://");
       return fqdnIndex !== -1 ? url2.substring(0, url2.indexOf("/", 3 + fqdnIndex)) : void 0;
     }
-    function matchLayer(layer, path25) {
+    function matchLayer(layer, path24) {
       try {
-        return layer.match(path25);
+        return layer.match(path24);
       } catch (err) {
         return err;
       }
@@ -57570,7 +57662,7 @@ var require_application = __commonJS({
     };
     app2.use = function use(fn) {
       var offset = 0;
-      var path25 = "/";
+      var path24 = "/";
       if (typeof fn !== "function") {
         var arg = fn;
         while (Array.isArray(arg) && arg.length !== 0) {
@@ -57578,7 +57670,7 @@ var require_application = __commonJS({
         }
         if (typeof arg !== "function") {
           offset = 1;
-          path25 = fn;
+          path24 = fn;
         }
       }
       var fns = flatten.call(slice.call(arguments, offset), Infinity);
@@ -57588,12 +57680,12 @@ var require_application = __commonJS({
       var router = this.router;
       fns.forEach(function(fn2) {
         if (!fn2 || !fn2.handle || !fn2.set) {
-          return router.use(path25, fn2);
+          return router.use(path24, fn2);
         }
-        debug(".use app under %s", path25);
-        fn2.mountpath = path25;
+        debug(".use app under %s", path24);
+        fn2.mountpath = path24;
         fn2.parent = this;
-        router.use(path25, function mounted_app(req, res, next) {
+        router.use(path24, function mounted_app(req, res, next) {
           var orig = req.app;
           fn2.handle(req, res, function(err) {
             Object.setPrototypeOf(req, orig.request);
@@ -57605,8 +57697,8 @@ var require_application = __commonJS({
       }, this);
       return this;
     };
-    app2.route = function route(path25) {
-      return this.router.route(path25);
+    app2.route = function route(path24) {
+      return this.router.route(path24);
     };
     app2.engine = function engine(ext, fn) {
       if (typeof fn !== "function") {
@@ -57649,7 +57741,7 @@ var require_application = __commonJS({
       }
       return this;
     };
-    app2.path = function path25() {
+    app2.path = function path24() {
       return this.parent ? this.parent.path() + this.mountpath : "";
     };
     app2.enabled = function enabled(setting) {
@@ -57665,17 +57757,17 @@ var require_application = __commonJS({
       return this.set(setting, false);
     };
     methods.forEach(function(method) {
-      app2[method] = function(path25) {
+      app2[method] = function(path24) {
         if (method === "get" && arguments.length === 1) {
-          return this.set(path25);
+          return this.set(path24);
         }
-        var route = this.route(path25);
+        var route = this.route(path24);
         route[method].apply(route, slice.call(arguments, 1));
         return this;
       };
     });
-    app2.all = function all(path25) {
-      var route = this.route(path25);
+    app2.all = function all(path24) {
+      var route = this.route(path24);
       var args = slice.call(arguments, 1);
       for (var i = 0; i < methods.length; i++) {
         route[methods[i]].apply(route, args);
@@ -58585,7 +58677,7 @@ var require_request = __commonJS({
       var subdomains2 = !isIP2(hostname3) ? hostname3.split(".").reverse() : [hostname3];
       return subdomains2.slice(offset);
     });
-    defineGetter(req, "path", function path25() {
+    defineGetter(req, "path", function path24() {
       return parse3(this).pathname;
     });
     defineGetter(req, "host", function host() {
@@ -58997,27 +59089,27 @@ var require_send = __commonJS({
     var ms = require_ms();
     var onFinished = require_on_finished();
     var parseRange = require_range_parser();
-    var path25 = __require("path");
+    var path24 = __require("path");
     var statuses = require_statuses();
     var Stream = __require("stream");
     var util = __require("util");
-    var extname = path25.extname;
-    var join = path25.join;
-    var normalize = path25.normalize;
-    var resolve2 = path25.resolve;
-    var sep = path25.sep;
+    var extname = path24.extname;
+    var join = path24.join;
+    var normalize = path24.normalize;
+    var resolve2 = path24.resolve;
+    var sep = path24.sep;
     var BYTES_RANGE_REGEXP = /^ *bytes=/;
     var MAX_MAXAGE = 60 * 60 * 24 * 365 * 1e3;
     var UP_PATH_REGEXP = /(?:^|[\\/])\.\.(?:[\\/]|$)/;
     module.exports = send;
-    function send(req, path26, options) {
-      return new SendStream(req, path26, options);
+    function send(req, path25, options) {
+      return new SendStream(req, path25, options);
     }
-    function SendStream(req, path26, options) {
+    function SendStream(req, path25, options) {
       Stream.call(this);
       var opts = options || {};
       this.options = opts;
-      this.path = path26;
+      this.path = path25;
       this.req = req;
       this._acceptRanges = opts.acceptRanges !== void 0 ? Boolean(opts.acceptRanges) : true;
       this._cacheControl = opts.cacheControl !== void 0 ? Boolean(opts.cacheControl) : true;
@@ -59131,10 +59223,10 @@ var require_send = __commonJS({
       var lastModified = this.res.getHeader("Last-Modified");
       return parseHttpDate(lastModified) <= parseHttpDate(ifRange);
     };
-    SendStream.prototype.redirect = function redirect(path26) {
+    SendStream.prototype.redirect = function redirect(path25) {
       var res = this.res;
       if (hasListeners(this, "directory")) {
-        this.emit("directory", res, path26);
+        this.emit("directory", res, path25);
         return;
       }
       if (this.hasTrailingSlash()) {
@@ -59154,38 +59246,38 @@ var require_send = __commonJS({
     SendStream.prototype.pipe = function pipe2(res) {
       var root = this._root;
       this.res = res;
-      var path26 = decode3(this.path);
-      if (path26 === -1) {
+      var path25 = decode3(this.path);
+      if (path25 === -1) {
         this.error(400);
         return res;
       }
-      if (~path26.indexOf("\0")) {
+      if (~path25.indexOf("\0")) {
         this.error(400);
         return res;
       }
       var parts;
       if (root !== null) {
-        if (path26) {
-          path26 = normalize("." + sep + path26);
+        if (path25) {
+          path25 = normalize("." + sep + path25);
         }
-        if (UP_PATH_REGEXP.test(path26)) {
-          debug('malicious path "%s"', path26);
+        if (UP_PATH_REGEXP.test(path25)) {
+          debug('malicious path "%s"', path25);
           this.error(403);
           return res;
         }
-        parts = path26.split(sep);
-        path26 = normalize(join(root, path26));
+        parts = path25.split(sep);
+        path25 = normalize(join(root, path25));
       } else {
-        if (UP_PATH_REGEXP.test(path26)) {
-          debug('malicious path "%s"', path26);
+        if (UP_PATH_REGEXP.test(path25)) {
+          debug('malicious path "%s"', path25);
           this.error(403);
           return res;
         }
-        parts = normalize(path26).split(sep);
-        path26 = resolve2(path26);
+        parts = normalize(path25).split(sep);
+        path25 = resolve2(path25);
       }
       if (containsDotFile(parts)) {
-        debug('%s dotfile "%s"', this._dotfiles, path26);
+        debug('%s dotfile "%s"', this._dotfiles, path25);
         switch (this._dotfiles) {
           case "allow":
             break;
@@ -59199,13 +59291,13 @@ var require_send = __commonJS({
         }
       }
       if (this._index.length && this.hasTrailingSlash()) {
-        this.sendIndex(path26);
+        this.sendIndex(path25);
         return res;
       }
-      this.sendFile(path26);
+      this.sendFile(path25);
       return res;
     };
-    SendStream.prototype.send = function send2(path26, stat) {
+    SendStream.prototype.send = function send2(path25, stat) {
       var len = stat.size;
       var options = this.options;
       var opts = {};
@@ -59217,9 +59309,9 @@ var require_send = __commonJS({
         this.headersAlreadySent();
         return;
       }
-      debug('pipe "%s"', path26);
-      this.setHeader(path26, stat);
-      this.type(path26);
+      debug('pipe "%s"', path25);
+      this.setHeader(path25, stat);
+      this.type(path25);
       if (this.isConditionalGET()) {
         if (this.isPreconditionFailure()) {
           this.error(412);
@@ -59268,28 +59360,28 @@ var require_send = __commonJS({
         res.end();
         return;
       }
-      this.stream(path26, opts);
+      this.stream(path25, opts);
     };
-    SendStream.prototype.sendFile = function sendFile(path26) {
+    SendStream.prototype.sendFile = function sendFile(path25) {
       var i = 0;
       var self = this;
-      debug('stat "%s"', path26);
-      fs27.stat(path26, function onstat(err, stat) {
-        var pathEndsWithSep = path26[path26.length - 1] === sep;
-        if (err && err.code === "ENOENT" && !extname(path26) && !pathEndsWithSep) {
+      debug('stat "%s"', path25);
+      fs27.stat(path25, function onstat(err, stat) {
+        var pathEndsWithSep = path25[path25.length - 1] === sep;
+        if (err && err.code === "ENOENT" && !extname(path25) && !pathEndsWithSep) {
           return next(err);
         }
         if (err) return self.onStatError(err);
-        if (stat.isDirectory()) return self.redirect(path26);
+        if (stat.isDirectory()) return self.redirect(path25);
         if (pathEndsWithSep) return self.error(404);
-        self.emit("file", path26, stat);
-        self.send(path26, stat);
+        self.emit("file", path25, stat);
+        self.send(path25, stat);
       });
       function next(err) {
         if (self._extensions.length <= i) {
           return err ? self.onStatError(err) : self.error(404);
         }
-        var p = path26 + "." + self._extensions[i++];
+        var p = path25 + "." + self._extensions[i++];
         debug('stat "%s"', p);
         fs27.stat(p, function(err2, stat) {
           if (err2) return next(err2);
@@ -59299,7 +59391,7 @@ var require_send = __commonJS({
         });
       }
     };
-    SendStream.prototype.sendIndex = function sendIndex(path26) {
+    SendStream.prototype.sendIndex = function sendIndex(path25) {
       var i = -1;
       var self = this;
       function next(err) {
@@ -59307,7 +59399,7 @@ var require_send = __commonJS({
           if (err) return self.onStatError(err);
           return self.error(404);
         }
-        var p = join(path26, self._index[i]);
+        var p = join(path25, self._index[i]);
         debug('stat "%s"', p);
         fs27.stat(p, function(err2, stat) {
           if (err2) return next(err2);
@@ -59318,10 +59410,10 @@ var require_send = __commonJS({
       }
       next();
     };
-    SendStream.prototype.stream = function stream(path26, options) {
+    SendStream.prototype.stream = function stream(path25, options) {
       var self = this;
       var res = this.res;
-      var stream2 = fs27.createReadStream(path26, options);
+      var stream2 = fs27.createReadStream(path25, options);
       this.emit("stream", stream2);
       stream2.pipe(res);
       function cleanup() {
@@ -59336,17 +59428,17 @@ var require_send = __commonJS({
         self.emit("end");
       });
     };
-    SendStream.prototype.type = function type(path26) {
+    SendStream.prototype.type = function type(path25) {
       var res = this.res;
       if (res.getHeader("Content-Type")) return;
-      var ext = extname(path26);
+      var ext = extname(path25);
       var type2 = mime.contentType(ext) || "application/octet-stream";
       debug("content-type %s", type2);
       res.setHeader("Content-Type", type2);
     };
-    SendStream.prototype.setHeader = function setHeader(path26, stat) {
+    SendStream.prototype.setHeader = function setHeader(path25, stat) {
       var res = this.res;
-      this.emit("headers", res, path26, stat);
+      this.emit("headers", res, path25, stat);
       if (this._acceptRanges && !res.getHeader("Accept-Ranges")) {
         debug("accept ranges");
         res.setHeader("Accept-Ranges", "bytes");
@@ -59404,9 +59496,9 @@ var require_send = __commonJS({
       }
       return err instanceof Error ? createError(status, err, { expose: false }) : createError(status, err);
     }
-    function decode3(path26) {
+    function decode3(path25) {
       try {
-        return decodeURIComponent(path26);
+        return decodeURIComponent(path25);
       } catch (err) {
         return -1;
       }
@@ -59550,7 +59642,7 @@ var require_response = __commonJS({
     var http = __require("node:http");
     var onFinished = require_on_finished();
     var mime = require_mime_types();
-    var path25 = __require("node:path");
+    var path24 = __require("node:path");
     var pathIsAbsolute = __require("node:path").isAbsolute;
     var statuses = require_statuses();
     var sign = require_cookie_signature().sign;
@@ -59559,8 +59651,8 @@ var require_response = __commonJS({
     var setCharset = require_utils3().setCharset;
     var cookie = require_cookie();
     var send = require_send();
-    var extname = path25.extname;
-    var resolve2 = path25.resolve;
+    var extname = path24.extname;
+    var resolve2 = path24.resolve;
     var vary = require_vary();
     var { Buffer: Buffer3 } = __require("node:buffer");
     var res = Object.create(http.ServerResponse.prototype);
@@ -59706,26 +59798,26 @@ var require_response = __commonJS({
       this.type("txt");
       return this.send(body);
     };
-    res.sendFile = function sendFile(path26, options, callback) {
+    res.sendFile = function sendFile(path25, options, callback) {
       var done = callback;
       var req = this.req;
       var res2 = this;
       var next = req.next;
       var opts = options || {};
-      if (!path26) {
+      if (!path25) {
         throw new TypeError("path argument is required to res.sendFile");
       }
-      if (typeof path26 !== "string") {
+      if (typeof path25 !== "string") {
         throw new TypeError("path must be a string to res.sendFile");
       }
       if (typeof options === "function") {
         done = options;
         opts = {};
       }
-      if (!opts.root && !pathIsAbsolute(path26)) {
+      if (!opts.root && !pathIsAbsolute(path25)) {
         throw new TypeError("path must be absolute or specify root to res.sendFile");
       }
-      var pathname = encodeURI(path26);
+      var pathname = encodeURI(path25);
       opts.etag = this.app.enabled("etag");
       var file2 = send(req, pathname, opts);
       sendfile(res2, file2, opts, function(err) {
@@ -59736,7 +59828,7 @@ var require_response = __commonJS({
         }
       });
     };
-    res.download = function download(path26, filename, options, callback) {
+    res.download = function download(path25, filename, options, callback) {
       var done = callback;
       var name = filename;
       var opts = options || null;
@@ -59753,7 +59845,7 @@ var require_response = __commonJS({
         opts = filename;
       }
       var headers = {
-        "Content-Disposition": contentDisposition(name || path26)
+        "Content-Disposition": contentDisposition(name || path25)
       };
       if (opts && opts.headers) {
         var keys = Object.keys(opts.headers);
@@ -59766,7 +59858,7 @@ var require_response = __commonJS({
       }
       opts = Object.create(opts);
       opts.headers = headers;
-      var fullPath = !opts.root ? resolve2(path26) : path26;
+      var fullPath = !opts.root ? resolve2(path25) : path25;
       return this.sendFile(fullPath, opts, done);
     };
     res.contentType = res.type = function contentType(type) {
@@ -60049,11 +60141,11 @@ var require_serve_static = __commonJS({
         }
         var forwardError = !fallthrough;
         var originalUrl = parseUrl.original(req);
-        var path25 = parseUrl(req).pathname;
-        if (path25 === "/" && originalUrl.pathname.substr(-1) !== "/") {
-          path25 = "";
+        var path24 = parseUrl(req).pathname;
+        if (path24 === "/" && originalUrl.pathname.substr(-1) !== "/") {
+          path24 = "";
         }
-        var stream = send(req, path25, opts);
+        var stream = send(req, path24, opts);
         stream.on("directory", onDirectory);
         if (setHeaders) {
           stream.on("headers", setHeaders);
@@ -64008,28 +64100,42 @@ function knownTranscriptPath(file2) {
   }
   return void 0;
 }
+function hermesMarkerFix(reason) {
+  const clears = "This row clears once five later Hermes sessions have each been checked without an error (each session records one check per provider instance).";
+  if (reason?.includes("did not say why"))
+    return "Hermes switched sessions without saying why (an older Hermes), away from a private session, so the new session saves nothing, now and after restarts. If that session is not a branch of the private one (for example an old session you resumed), delete the file named after its session id in the memesh-session-parents folder of the Hermes home (a sha256 of the id when the id is not a plain token); its next capture then saves as usual. Updating Hermes to a version that passes the switch reason avoids this.";
+  if (reason?.includes("no session id"))
+    return `The Hermes host passed no session id, so whether the session is private cannot be told and nothing is saved. Use a Hermes version that passes the session id to its memory provider. ${clears}`;
+  return `Hermes could not keep or read its private-session marker. Check that the memesh-private-sessions folder in the Hermes home is a folder you can read and write, and that Hermes was started with a home folder. ${clears}`;
+}
 function inspectPrivateNoteHolds(now = Date.now()) {
   const summary = summarizeNoteHolds(now);
-  if (summary.unsettled.length === 0 && summary.damaged.length === 0 && summary.waitingOnUnreadable.length === 0 && summary.unreadableFolders.length === 0)
+  if (summary.unsettled.length === 0 && summary.damaged.length === 0 && summary.waitingOnUnreadable.length === 0 && summary.heldInPlaceOfUnreadable.length === 0 && summary.unreadableFolders.length === 0)
     return null;
   const lines = [];
   const fixes = [];
   for (const f of summary.unreadableFolders) {
     lines.push(`the ${f === "holds" ? "note-ingest-holds" : "private-sessions"} folder cannot be read, so no note is imported and what it holds cannot be listed`);
-    fixes.push(`Make ${f === "holds" ? summary.holdsFolder : summary.markersFolder} a folder you can read and write again; do not delete it, it holds the private-session records.`);
+    fixes.push(`Make ${f === "holds" ? summary.holdsFolder : summary.markersFolder} a folder you can read and write again (\`chmod u+rwx\`); do not delete it, it holds the private-session records.`);
   }
   for (const d of summary.damaged) {
-    if (d.folder === "holds") {
-      lines.push(`the hold record ${d.file} cannot be read, so no note is imported`);
-      fixes.push(`${d.file} in ${summary.holdsFolder} cannot be repaired by hand. Deleting it is the last step and releases the notes it holds: they then import as ordinary notes, so if that session was private its content is stored.`);
+    const where = d.folder === "holds" ? summary.holdsFolder : summary.markersFolder;
+    lines.push(`the ${d.folder === "holds" ? "hold record" : "private-session marker"} ${d.file} cannot be read${d.cause === "permission" ? " (its permissions, or its folder's, do not let memesh read it)" : " (its content is damaged)"}, so no note is imported`);
+    if (d.cause === "permission") {
+      fixes.push(`Make ${d.file} and ${where} readable by you again (\`chmod u+rw\` on the file, \`chmod u+rwx\` on the folder).`);
+    } else if (d.folder === "markers") {
+      fixes.push(`Resume the session ${d.file.replace(/\.json$/, "")} (the file name is its id) and let it run one turn: its Stop writes the marker again and imports go on. Do not delete ${d.file}: it is the record that the session asked not to be remembered, and deleting it lets that session's notes be imported.`);
     } else {
-      lines.push(`the private-session marker ${d.file} cannot be read, so no note is imported`);
-      fixes.push(`The session ${d.file} belongs to rebuilds it at its next hook. Only if that session has ended, delete ${d.file} in ${summary.markersFolder}: the notes that session wrote are then imported.`);
+      fixes.push(`${d.file} in ${where} cannot be repaired by hand, and which notes it held cannot be told. To go on: move every note you know is private out of the notes folders, then delete ${d.file}; the notes left import as ordinary notes.`);
     }
   }
   for (const w of summary.waitingOnUnreadable) {
-    lines.push(`${w.notes} note(s) held by ${w.file} could not be read, so the folder they are in waits on every note changed since ${new Date(w.since).toISOString().slice(0, 10)}`);
+    lines.push(`${w.notes} note(s) held by ${w.file} could not be read, so the folder they are in waits on every note changed since ${day(w.since)}`);
     fixes.push("Make the notes folder and its files readable by you again; the wait ends at the next import that can read them.");
+  }
+  for (const h of summary.heldInPlaceOfUnreadable) {
+    lines.push(`${h.notes} note(s) are held by ${h.file} for good because a held note that could not be read was removed or changed before it could be read: every note changed in its folder since then was held in its place`);
+    fixes.push(`Those notes are held because one of them may be the private note under another name. Editing a note you know is not private lets it in.`);
   }
   const deadline = Date.now() + DOCTOR_PRIVACY_TOTAL_MS;
   const memesh = getMemeshDirFromDbPath();
@@ -64040,20 +64146,22 @@ function inspectPrivateNoteHolds(now = Date.now()) {
     if (u.transcript !== void 0 && transcript === void 0) {
       now2 = "the record names a transcript outside the known folders, so it is not read";
     } else if (Date.now() < deadline) {
-      const state = decidePrivacy({ sessionId: u.session.replace(/\.json$/, ""), transcriptPath: transcript, memeshDir: memesh, deadlineAt: Math.min(deadline, Date.now() + DOCTOR_PRIVACY_CHECK_MS), cacheDir: path19.join(memesh, "private-check-cache") });
+      const state = decidePrivacy({ sessionId: u.session, transcriptPath: transcript, memeshDir: memesh, deadlineAt: Math.min(deadline, Date.now() + DOCTOR_PRIVACY_CHECK_MS), cacheDir: privateCheckCacheDir(memesh) });
       settled = state.state !== "unchecked";
-      now2 = state.state === "no" ? "it can be checked now and is not private: the next import releases them" : state.state === "yes" ? "it is private: the next import holds them for good" : "it still cannot be checked";
+      now2 = state.state === "no" ? "it can be checked now and is not private: the next import releases its notes" : state.state === "yes" ? "it is private: the next import holds its notes for good" : "it still cannot be checked";
     }
-    lines.push(`${u.notes} note(s) of ${u.file} are held because the session could not be checked (${u.reasonText}; held since ${new Date(u.since).toISOString().slice(0, 10)})${now2 ? `; ${now2}` : ""}`);
+    const waits = u.waitSince === void 0 ? "" : `; while it runs, notes changed in its projects folder since ${hourOf(u.waitSince)} wait for it, until it can be checked or, at the earliest, ${hourOf(u.lastHeard + PRIVATE_WINDOW_MS)} (six hours after it was last heard from, later if its transcripts are written meanwhile)`;
+    lines.push(`the session ${u.session} could not be checked (${u.reasonText}; since ${day(u.since)}) and holds ${u.notes} note(s)${waits}${now2 ? `; ${now2}` : ""}`);
     if (settled) {
     } else if (u.kind === "persistent") {
-      fixes.push(`This reason does not pass on its own. To release the notes anyway, delete ${u.file} in ${summary.holdsFolder}: they then import as ordinary notes, so if the session was private its content is stored.`);
+      fixes.push(`This reason does not pass on its own. If you know the session ${u.session} did not ask to be private, delete ${u.file} in ${summary.holdsFolder}: its notes import as ordinary notes and the wait ends. If it may have, leave the file: its notes stay out, and the wait ends six hours after the session was last heard from.`);
     } else {
-      fixes.push("This reason can pass on its own: the session is checked again at every import and its notes are let through once it can be checked and is not private.");
+      fixes.push("This reason can pass on its own: the session is checked again at every import, and its notes are let through once it can be checked and is not private.");
     }
   }
   const notes = summary.unsettled.reduce((n, u) => n + u.notes, 0);
-  return createCheck("private-note-holds", "Notes kept out of memory", "warn", `${lines.join("; ")}.`, [...new Set(fixes)].join(" "), { params: { sessions: summary.unsettled.length, notes } });
+  const waiting = summary.unsettled.filter((u) => u.waitSince !== void 0).length;
+  return createCheck("private-note-holds", "Notes kept out of memory", "warn", `${lines.join("; ")}.`, [...new Set(fixes)].join(" "), { params: { sessions: summary.unsettled.length, notes, waiting } });
 }
 function createCheck(id, label, status, summary, fix, i18n, fixId) {
   return { id, label, status, summary, fix, code: i18n?.code, params: i18n?.params, fixId };
@@ -64604,10 +64712,10 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
   }
   if (verdict.erroringHook) {
     const h = verdict.erroringHook;
-    const day = h.lastErrorAt !== null && /^\d{4}-\d{2}-\d{2}/.test(h.lastErrorAt) ? ` on ${h.lastErrorAt.slice(0, 10)}` : "";
+    const day2 = h.lastErrorAt !== null && /^\d{4}-\d{2}-\d{2}/.test(h.lastErrorAt) ? ` on ${h.lastErrorAt.slice(0, 10)}` : "";
     const newest = Math.min(RECENT_ERROR_RUNS, h.triggeredRuns);
     return {
-      check: createCheck("capture-liveness", TITLE, "warn", `${h.hook}: ${h.recentErrors} of its ${newest} most recent runs ended in an error (${h.errors} in its recorded window); the latest was '${h.lastErrorReason}'${day}.`, h.hook === "hermes-private-session" ? HERMES_MARKER_FIX : PRIVATE_STATE_ERROR_FIXES[h.lastErrorReason ?? ""] ?? "The reason says what failed; `memesh doctor --json` has the per-hook figures. This row clears once the hook's most recent runs (those its trigger applied to) end without an error. If it keeps failing, run `memesh install-hooks` and restart your agent.", { params: { hook: h.hook } }),
+      check: createCheck("capture-liveness", TITLE, "warn", `${h.hook}: ${h.recentErrors} of its ${newest} most recent runs ended in an error (${h.errors} in its recorded window); the latest was '${h.lastErrorReason}'${day2}.`, h.hook === "hermes-private-session" ? hermesMarkerFix(h.lastErrorReason) : PRIVATE_STATE_ERROR_FIXES[h.lastErrorReason ?? ""] ?? "The reason says what failed; `memesh doctor --json` has the per-hook figures. This row clears once the hook's most recent runs (those its trigger applied to) end without an error. If it keeps failing, run `memesh install-hooks` and restart your agent.", { params: { hook: h.hook } }),
       report
     };
   }
@@ -65428,7 +65536,7 @@ function formatDoctorReport(result, packageVersion2) {
   }
   return lines;
 }
-var EXPECTED_HOOK_TYPES, AGENT_MESSAGE_STORAGE_QUOTA_ENV2, LOCALE_README_FILES, LOCALE_H2_TOLERANCE, HERMES_MARKER_FIX, PRIVATE_FOLDER_FIX, PRIVATE_STATE_ERROR_FIXES, DOCTOR_PRIVACY_CHECK_MS, DOCTOR_PRIVACY_TOTAL_MS, MCP_PLACEHOLDER, SAFE_HANDOFF_NAME;
+var EXPECTED_HOOK_TYPES, AGENT_MESSAGE_STORAGE_QUOTA_ENV2, LOCALE_README_FILES, LOCALE_H2_TOLERANCE, CLEARS, PRIVATE_STATE_ERROR_FIXES, DOCTOR_PRIVACY_CHECK_MS, DOCTOR_PRIVACY_TOTAL_MS, day, hourOf, MCP_PLACEHOLDER, SAFE_HANDOFF_NAME;
 var init_doctor = __esm({
   "dist/core/doctor.js"() {
     "use strict";
@@ -65463,14 +65571,28 @@ var init_doctor = __esm({
       "README.zh-TW.md"
     ];
     LOCALE_H2_TOLERANCE = 1;
-    HERMES_MARKER_FIX = "Hermes could not keep or read its private-session marker. Check that the memesh-private-sessions folder in the Hermes home is a folder you can read and write, and that Hermes was started with a home folder. This row clears once five later Hermes captures have checked the marker without an error.";
-    PRIVATE_FOLDER_FIX = "The private-sessions folder beside the database cannot be read, so every session is treated as private and nothing is saved. Make it a folder you can read and write again (for example `chmod u+rwx` on it); do not delete it: it is the record of the sessions that asked not to be remembered. This row clears once the hook's most recent runs end without an error.";
+    CLEARS = "This row clears once the hook's most recent runs end without an error.";
     PRIVATE_STATE_ERROR_FIXES = Object.freeze({
-      [SKIP_REASONS.privateCheckMarkerUnreadable]: PRIVATE_FOLDER_FIX,
-      [SKIP_REASONS.noteMarkersDirUnreadable]: PRIVATE_FOLDER_FIX
+      [SKIP_REASONS.privateCheckMarkerUnreadable]: `The private-sessions folder beside the database cannot be read, so whether a session is private cannot be told and nothing is saved. Make it a folder you can read and write again (\`chmod u+rwx\` on it; if a file is in its place, move that file away); do not delete the folder: it is the record of the sessions that asked not to be remembered. ${CLEARS}`,
+      [SKIP_REASONS.noteMarkersDirUnreadable]: `The private-sessions folder beside the database cannot be listed, so no note file is imported (sessions themselves are still checked). Make it a folder you can read and write again (\`chmod u+rwx\` on it; if a file is in its place, move that file away); do not delete the folder: it is the record of the sessions that asked not to be remembered. ${CLEARS}`,
+      [SKIP_REASONS.noteMarkersUnreadable]: `A private-session marker cannot be read, so no note file is imported. The "Notes kept out of memory" row names it and says what to do; do not delete it: deleting it lets that session's notes be imported. ${CLEARS}`,
+      [SKIP_REASONS.noteHoldsDirUnreadable]: `The note-ingest-holds folder beside the database cannot be listed, so no note file is imported. Make it a folder you can read and write again (\`chmod u+rwx\` on it); do not delete it: it holds the private sessions' notes out of memory. ${CLEARS}`,
+      [SKIP_REASONS.noteHoldsUnreadable]: `A hold record cannot be read, so no note file is imported. The "Notes kept out of memory" row names it and says what to do. ${CLEARS}`,
+      [SKIP_REASONS.noteMarkerUnwritable]: `A private-session marker could not be written: check that the disk has room and that the private-sessions folder beside the database is yours to write. Every note stays held meanwhile. ${CLEARS}`,
+      [SKIP_REASONS.noteHoldsUnwritable]: `A hold record could not be written: check that the disk has room and that the note-ingest-holds folder beside the database is yours to write. Every note stays held meanwhile. ${CLEARS}`,
+      [SKIP_REASONS.noteFolderUnreadable]: `A notes folder, a folder inside one, or the projects folder that holds them cannot be listed, so what a private session wrote there cannot be held and no note is released. Make those folders readable by you again (\`chmod u+rx\`). ${CLEARS}`,
+      [SKIP_REASONS.privateStateBusy]: `Another memesh process held the private-session records' lock past this run's time; it passes on its own. If it keeps happening, private-state.lock beside the database names the process holding it. ${CLEARS}`,
+      [SKIP_REASONS.privateMarkerRebuilt]: `This session's own private-session marker could not be read and was written again: the session stays private and nothing is needed. If it keeps happening, check the disk. ${CLEARS}`,
+      [SKIP_REASONS.privateCheckUnreadable]: `A transcript of the session could not be read, so nothing of that session is saved until it can be. Make the session's transcript files readable by you again; it passes on its own after that. ${CLEARS}`,
+      [SKIP_REASONS.privateCheckTooLarge]: `The session's transcripts are too large to check, so nothing of that session is saved, now or later. Nothing else is affected: start a new session to have its work saved. ${CLEARS}`,
+      [SKIP_REASONS.privateCheckTimeout]: `The check ran out of the hook's time (a busy disk or a large transcript); it passes on its own at a later run. ${CLEARS}`,
+      [SKIP_REASONS.privateCheckParentUnavailable]: `A Codex thread's fork parent or a subagent transcript could not be found, read or checked, or a rollout's first line is damaged, so nothing of that session is saved until it can be. A missing parent rollout that comes back (or a readable file) lets it pass on its own. ${CLEARS}`,
+      [SKIP_REASONS.privateCheckNoSessionId]: `The host gave no session id, so whether the session is private cannot be told and nothing is saved. ${CLEARS}`
     });
     DOCTOR_PRIVACY_CHECK_MS = 2e3;
     DOCTOR_PRIVACY_TOTAL_MS = 1e4;
+    day = (ms) => new Date(ms).toISOString().slice(0, 10);
+    hourOf = (ms) => new Date(ms).toISOString().slice(0, 16).replace("T", " ");
     MCP_PLACEHOLDER = "${CLAUDE_PLUGIN_ROOT}";
     SAFE_HANDOFF_NAME = /^session-handoff:[A-Za-z0-9._-]+~[0-9a-f]{32}$/;
   }
@@ -65821,7 +65943,6 @@ __export(dreamer_exports, {
   rejectProposal: () => rejectProposal
 });
 import { createHash as createHash15 } from "node:crypto";
-import path21 from "node:path";
 function collisionSafeName(db2, proposed, kind, proposalId2) {
   const taken = db2.prepare("SELECT 1 FROM entities WHERE name = ?").get(proposed) !== void 0;
   return taken ? `${proposed} (${kind} #${proposalId2})` : proposed;
@@ -66009,7 +66130,7 @@ function executeWorkPackage(db2, input2, context = {}) {
           sessionId: session.sessionId,
           memeshDir: memeshDir3,
           deadlineAt: Date.now() + DREAMER_PRIVACY_CHECK_MS,
-          cacheDir: path21.join(memeshDir3, "private-check-cache")
+          cacheDir: privateCheckCacheDir(memeshDir3)
         });
         if (privacy.state === "yes") {
           skip("private_session");
@@ -66655,7 +66776,7 @@ __export(server_exports, {
 });
 import { randomBytes as randomBytes5, timingSafeEqual } from "crypto";
 import fs24 from "fs";
-import path22 from "path";
+import path21 from "path";
 import { fileURLToPath as fileURLToPath2 } from "url";
 function isLoopbackRequest(req) {
   const ip = req.ip ?? "";
@@ -66670,7 +66791,7 @@ function loadOrCreateRemoteToken() {
     return { token: Buffer.from(fromEnv, "utf8"), freshlyCreated: false };
   }
   const dir = memeshDir2();
-  const tokenPath = path22.join(dir, "remote-token");
+  const tokenPath = path21.join(dir, "remote-token");
   fs24.mkdirSync(dir, { recursive: true });
   removeGroupAndOtherAccess(dir);
   const generated = randomBytes5(32).toString("hex");
@@ -66892,7 +67013,7 @@ function startServer(host = HOST, port = PORT, opts) {
     remoteToken = token;
     if (freshlyCreated) {
       const dir = memeshDir2();
-      const tokenPath = path22.join(dir, "remote-token");
+      const tokenPath = path21.join(dir, "remote-token");
       process.stderr.write(`
 MeMesh HTTP: bearer token generated for remote access.
   Token file: ${tokenPath} (mode 600)
@@ -66902,7 +67023,7 @@ MeMesh HTTP: bearer token generated for remote access.
 
 `);
     } else {
-      process.stderr.write(`MeMesh HTTP: remote bind requires Authorization: Bearer <token>. Token loaded from ${process.env.MEMESH_REMOTE_TOKEN ? "MEMESH_REMOTE_TOKEN" : path22.join(memeshDir2(), "remote-token")}.
+      process.stderr.write(`MeMesh HTTP: remote bind requires Authorization: Bearer <token>. Token loaded from ${process.env.MEMESH_REMOTE_TOKEN ? "MEMESH_REMOTE_TOKEN" : path21.join(memeshDir2(), "remote-token")}.
 `);
     }
   }
@@ -66993,8 +67114,8 @@ var init_server = __esm({
     init_file_mode();
     init_database_diagnosis();
     init_retired_routes();
-    packageJsonPath = path22.resolve(path22.dirname(fileURLToPath2(import.meta.url)), "../../../package.json");
-    packageRoot = path22.dirname(packageJsonPath);
+    packageJsonPath = path21.resolve(path21.dirname(fileURLToPath2(import.meta.url)), "../../../package.json");
+    packageRoot = path21.dirname(packageJsonPath);
     packageVersion = JSON.parse(fs24.readFileSync(packageJsonPath, "utf8")).version ?? "0.0.0";
     app = (0, import_express.default)();
     apiLimiter = rate_limit_default({
@@ -68068,7 +68189,7 @@ __export(project_tags_exports, {
 });
 import fs25 from "node:fs";
 import os4 from "node:os";
-import path23 from "node:path";
+import path22 from "node:path";
 import { pathToFileURL } from "node:url";
 function listProjectTags(db2) {
   const conn = db2 ?? getDatabase();
@@ -68209,9 +68330,9 @@ function destinationHolds(conn, table, rid, to) {
   return false;
 }
 function previewOnCopy(source, from, to) {
-  const dir = fs25.mkdtempSync(path23.join(os4.tmpdir(), "memesh-rename-preview-"));
+  const dir = fs25.mkdtempSync(path22.join(os4.tmpdir(), "memesh-rename-preview-"));
   try {
-    const file2 = path23.join(dir, "copy.db");
+    const file2 = path22.join(dir, "copy.db");
     try {
       source.prepare("VACUUM INTO ?").run(file2);
     } catch (err) {
@@ -68293,7 +68414,7 @@ init_config();
 init_session_limit();
 import { createHash as createHash16 } from "crypto";
 import fs26 from "fs";
-import path24 from "path";
+import path23 from "path";
 import { fileURLToPath as fileURLToPath3 } from "url";
 
 // dist/core/update-entrypoint.js
@@ -68889,10 +69010,16 @@ function buildSessionInsights(activity, ctx) {
   }
   return out;
 }
+function chatPrivacySkip(sessionId, messages) {
+  const privacy = decidePrivacy({ sessionId, messages, memeshDir: getMemeshDirFromDbPath(), deadlineAt: Date.now() + 1e3 });
+  if (privacy.state === "no")
+    return null;
+  return privacy.state === "yes" ? { reason: SKIP_REASONS.privateSession } : { reason: SKIP_REASONS.privateSessionUnchecked, error: SKIP_REASONS.privateCheckMarkerUnreadable };
+}
 function captureChatSession(input2) {
-  if (decidePrivacy({ messages: input2.messages, memeshDir: getMemeshDirFromDbPath(), deadlineAt: Date.now() + 1e3 }).state === "yes") {
-    return { outcome: "skipped", reason: SKIP_REASONS.privateSession, written: [], toolCallCount: 0, filesEdited: 0, errorsEncountered: 0, unrecognizedTools: [], toolResultsNonJson: 0 };
-  }
+  const skip = chatPrivacySkip(input2.sessionId, input2.messages);
+  if (skip)
+    return { outcome: "skipped", ...skip, written: [], toolCallCount: 0, filesEdited: 0, errorsEncountered: 0, unrecognizedTools: [], toolResultsNonJson: 0 };
   const activity = activityFromChatMessages(input2.messages);
   const counts = {
     toolCallCount: activity.toolCallCount,
@@ -68983,6 +69110,9 @@ function classifyTurn(_userText, assistantText) {
 }
 var TURN_TEXT_CAP = 2e3;
 function captureChatTurn(input2) {
+  const skip = chatPrivacySkip(input2.sessionId);
+  if (skip)
+    return { outcome: "skipped", ...skip };
   const signal = classifyTurn(input2.userText, input2.assistantText);
   if (!signal)
     return { outcome: "skipped", reason: "no decision- or lesson-shaped move in this turn" };
@@ -69394,12 +69524,12 @@ function isPromptAbort(err) {
 }
 function isOnPath(tool) {
   const exts = process.platform === "win32" ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean) : [""];
-  for (const dir of (process.env.PATH ?? "").split(path24.delimiter)) {
+  for (const dir of (process.env.PATH ?? "").split(path23.delimiter)) {
     if (!dir)
       continue;
     for (const ext of exts) {
       try {
-        fs26.accessSync(path24.join(dir, tool + ext), fs26.constants.X_OK);
+        fs26.accessSync(path23.join(dir, tool + ext), fs26.constants.X_OK);
         return true;
       } catch {
       }
@@ -69426,8 +69556,8 @@ function wireUserHooks() {
   const r = installHooks({ pluginRoot: packageRoot2, pluginVersion: pkg.version, scope: "user" });
   return `hooks: added ${r.added}, skipped ${r.skipped} already-installed${r.backupPath ? ` (backup: ${r.backupPath})` : ""}`;
 }
-var packageJsonPath2 = path24.resolve(path24.dirname(fileURLToPath3(import.meta.url)), "../../../package.json");
-var packageRoot2 = path24.dirname(packageJsonPath2);
+var packageJsonPath2 = path23.resolve(path23.dirname(fileURLToPath3(import.meta.url)), "../../../package.json");
+var packageRoot2 = path23.dirname(packageJsonPath2);
 var pkg = JSON.parse(fs26.readFileSync(packageJsonPath2, "utf8"));
 var RECALL_OMITTED_HINT = "omitted to keep the response under size \u2014 narrow the query, or use memesh export for the full text";
 var RECALL_SCAN_NOTE = "The search index is out of date; these results come from a scan of the stored text.";
@@ -69724,7 +69854,7 @@ program2.command("export").description("Export memories as JSON. Defaults to std
     });
     const json2 = JSON.stringify(result, null, 2);
     if (opts.out) {
-      const outDir = path24.dirname(path24.resolve(opts.out));
+      const outDir = path23.dirname(path23.resolve(opts.out));
       if (!fs26.existsSync(outDir)) {
         console.error(`Error: cannot write ${opts.out} \u2014 the directory ${outDir} does not exist.`);
         console.error(`       Create it first (mkdir -p ${shellQuote(outDir)}), or drop -o to write to stdout.`);
@@ -70159,16 +70289,16 @@ agentCmd.command("setup").description("Write this host's local config (a stable 
   if (opts.model !== void 0) {
     process.stderr.write("--model is ignored: no host tells MeMesh which model a session runs, so discovery shows none.\n");
   }
-  const messageDir = path24.dirname(getDbPath());
-  const hostsDir = path24.join(messageDir, "hosts");
+  const messageDir = path23.dirname(getDbPath());
+  const hostsDir = path23.join(messageDir, "hosts");
   fs26.mkdirSync(hostsDir, { recursive: true, mode: 448 });
   const hostsStat = fs26.lstatSync(hostsDir);
   if (!hostsStat.isDirectory() || hostsStat.isSymbolicLink() || (hostsStat.mode & 63) !== 0) {
     throw new Error("The managed host config directory must be a real owner-private directory.");
   }
   const filename = host === "gemini" ? "gemini-acp.json" : `${host}.json`;
-  const configPath = path24.join(hostsDir, filename);
-  const routerTokenFile = path24.join(messageDir, "agent-router.token");
+  const configPath = path23.join(hostsDir, filename);
+  const routerTokenFile = path23.join(messageDir, "agent-router.token");
   ensureRouterTokenFile(routerTokenFile);
   const common = {
     router_socket: getAgentRouterSocketPath(),
@@ -70180,14 +70310,14 @@ agentCmd.command("setup").description("Write this host's local config (a stable 
   let sessionWorkspace;
   if (host === "codex-session") {
     try {
-      sessionWorkspace = fs26.realpathSync(path24.resolve(opts.workspace));
+      sessionWorkspace = fs26.realpathSync(path23.resolve(opts.workspace));
     } catch (error62) {
       if (error62 instanceof Error)
         error62.message = `--workspace: ${error62.message}`;
       throw error62;
     }
   }
-  const config2 = host === "codex-session" ? { ...common, workspace: sessionWorkspace } : host === "codex" ? { ...common, control_socket: path24.join(hostsDir, "codex-app-server.sock"), workspace: path24.resolve(opts.workspace) } : host === "claude" ? { ...common, server_name: "memesh-channel" } : { ...common, workspace: path24.resolve(opts.workspace), command: "gemini", args: [] };
+  const config2 = host === "codex-session" ? { ...common, workspace: sessionWorkspace } : host === "codex" ? { ...common, control_socket: path23.join(hostsDir, "codex-app-server.sock"), workspace: path23.resolve(opts.workspace) } : host === "claude" ? { ...common, server_name: "memesh-channel" } : { ...common, workspace: path23.resolve(opts.workspace), command: "gemini", args: [] };
   createHostConfigAtomically(host, configPath, config2);
   const launchCommand = host === "codex-session" ? null : host === "codex" ? `memesh-host-codex --config ${shellQuote(configPath)}` : host === "claude" ? "claude --dangerously-load-development-channels server:memesh-channel" : `memesh-host-acp --config ${shellQuote(configPath)}`;
   const registrationCommand = host === "claude" ? `claude mcp add --transport stdio --scope user memesh-channel -- memesh-host-claude --config ${shellQuote(configPath)}` : null;
@@ -70639,22 +70769,22 @@ program2.command("update").description("Update MeMesh to latest version (npm glo
 function resolveUpgradePluginScript(packageRootPath, pluginCacheRoot, pluginRegistryPath) {
   const roots = versionedPluginCacheRoots(pluginCacheRoot);
   const newestRoot = roots[roots.length - 1];
-  const bundled = path24.join(packageRootPath, "scripts", "upgrade-plugin.sh");
+  const bundled = path23.join(packageRootPath, "scripts", "upgrade-plugin.sh");
   const hasRepairTarget = Boolean(newestRoot || pluginRegistryPath && fs26.existsSync(pluginRegistryPath));
   if (fs26.existsSync(bundled) && hasRepairTarget) {
-    return { script: bundled, newest: newestRoot ? path24.basename(newestRoot) : null };
+    return { script: bundled, newest: newestRoot ? path23.basename(newestRoot) : null };
   }
   if (!newestRoot)
     return null;
-  const newest = path24.basename(newestRoot);
-  const script = path24.join(newestRoot, "scripts", "upgrade-plugin.sh");
+  const newest = path23.basename(newestRoot);
+  const script = path23.join(newestRoot, "scripts", "upgrade-plugin.sh");
   return { script, newest };
 }
 program2.command("upgrade-plugin").description("Upgrade the Claude Code plugin install (finds and runs its bundled upgrade script)").action(async () => {
   const { spawnSync } = await import("child_process");
   const configRoot = pluginHostConfigRoot("claude-code");
-  const cacheRoot = path24.join(configRoot, "plugins", "cache", "pcircle-memesh", "memesh");
-  const registryPath = path24.join(configRoot, "plugins", "installed_plugins.json");
+  const cacheRoot = path23.join(configRoot, "plugins", "cache", "pcircle-memesh", "memesh");
+  const registryPath = path23.join(configRoot, "plugins", "installed_plugins.json");
   const resolved = resolveUpgradePluginScript(packageRoot2, cacheRoot, registryPath);
   if (!resolved) {
     console.error(`No Claude Code plugin install found (looked in ${cacheRoot}).`);
@@ -70696,9 +70826,9 @@ program2.command("upgrade-plugin").description("Upgrade the Claude Code plugin i
 var kgCmd = program2.command("kg").description("Knowledge graph maintenance");
 function backUpDatabase(label) {
   const dbPath = getDbPath();
-  const backupDir = path24.join(path24.dirname(dbPath), "backups");
+  const backupDir = path23.join(path23.dirname(dbPath), "backups");
   const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-  const backupPath = path24.join(backupDir, `kg-before-${label}-${stamp}.db`);
+  const backupPath = path23.join(backupDir, `kg-before-${label}-${stamp}.db`);
   fs26.mkdirSync(backupDir, { recursive: true, mode: 448 });
   getDatabase().prepare("VACUUM INTO ?").run(backupPath);
   return { dbPath, backupPath };

@@ -102,6 +102,47 @@ describe('R-B: only the main transcript\'s own absence means no', () => {
     try { expect(ps.sessionLastWriteMs(main), 'files that cannot be listed: no last write, so the caller treats the session as live').toBeUndefined(); } finally { fs.chmodSync(subs, 0o755); }
   });
 
+  it('I: a session that ran more than 334 subagents (three files each, as Claude Code writes them) is still decided (G05 F1)', () => {
+    const main = file('many.jsonl', [QUIET]);
+    const subs = path.join(root, 'many', 'subagents');
+    fs.mkdirSync(path.join(subs, 'workflows', 'wf_1'), { recursive: true });
+    for (let i = 0; i < 400; i++) {
+      for (const ext of ['.jsonl', '.meta.json', '.prefix.json']) fs.writeFileSync(path.join(subs, `agent-${i}${ext}`), ext === '.jsonl' ? jsonl([QUIET]) : '{}');
+    }
+    fs.writeFileSync(path.join(subs, 'workflows', 'wf_1', 'agent-w.jsonl'), jsonl([QUIET]));
+    expect(decide(main)).toEqual({ state: 'no' });
+    expect(ps.sessionLastWriteMs(main, Date.now() + 60_000)).toBeGreaterThan(0);
+    fs.writeFileSync(path.join(subs, 'agent-399.jsonl'), jsonl([CALL]));
+    expect(decide(main)).toMatchObject({ state: 'yes', evidence: 'subagent' });
+  });
+
+  it('O: bytes given with no transcript path are judged, not answered "no" unread (G04 F4)', () => {
+    expect(decidePrivacy({ snapshot: Buffer.from(jsonl([QUIET, CALL])), memeshDir, deadlineAt: Date.now() + 60_000 })).toMatchObject({ state: 'yes' });
+    expect(decidePrivacy({ transcriptPath: '', snapshot: Buffer.from(jsonl([QUIET])), memeshDir, deadlineAt: Date.now() + 60_000 })).toEqual({ state: 'no' });
+  });
+
+  it('I: listing the subagents past the deadline is a timeout, which passes on its own, never too_large', () => {
+    const main = file('late.jsonl', [QUIET]);
+    fs.mkdirSync(path.join(root, 'late', 'subagents'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'late', 'subagents', 'agent-1.jsonl'), jsonl([QUIET]));
+    expect(decide(main, { deadlineAt: Date.now() - 1 })).toMatchObject({ state: 'unchecked', reason: 'timeout', kind: 'transient' });
+    expect(ps.sessionLastWriteMs(main, Date.now() - 1), 'no answer in time: the caller treats the session as live').toBeUndefined();
+  });
+
+  it('I: the verdicts remembered on disk answer in a fresh process, forks included, without opening either file (G16 #3)', async () => {
+    const cacheDir = path.join(root, 'cache');
+    rollout(P1, [meta(P1), CALL]);
+    const child = rollout(C, [meta(C, { forked_from_id: P1 }), QUIET]);
+    expect(decide(child, { cacheDir }).state).toBe('yes');
+    vi.resetModules();
+    const fresh = await import('../../src/core/private-session.js');
+    const opened: string[] = [];
+    const realOpen = fs.openSync;
+    const spy = vi.spyOn(fs, 'openSync').mockImplementation(((p: fs.PathLike, ...rest: unknown[]) => { opened.push(String(p)); return (realOpen as (...a: unknown[]) => number)(p, ...rest); }) as typeof fs.openSync);
+    try { expect(fresh.decidePrivacy({ transcriptPath: child, memeshDir, deadlineAt: Date.now() + 60_000, cacheDir }).state).toBe('yes'); } finally { spy.mockRestore(); }
+    expect(opened).toEqual([]);
+  });
+
   it('sessionTranscriptFiles keeps its three defences: no symlinks, subfolders searched, .jsonl only; and too deep is too_large (Q6_10 F5)', () => {
     const main = file('s.jsonl', [QUIET]);
     const subs = path.join(root, 's', 'subagents');
@@ -181,6 +222,7 @@ describe('the case table both deciders run (TS here, Python in hermes-provider-c
   });
   it.each(cases.filter((c) => !c.hermesOnly && c.kind !== 'record-dir').map((c) => [c.name, c] as const))('%s', (_name, c) => {
     if (c.marker === 'file') { fs.mkdirSync(path.join(memeshDir, 'private-sessions'), { recursive: true }); fs.writeFileSync(path.join(memeshDir, 'private-sessions', sessionFileName(c.sessionId)), c.sessionId); }
+    const ageDays = (c as { markerAgeDays?: number }).markerAgeDays; if (ageDays) { const t = Date.now() / 1000 - ageDays * 86400; fs.utimesSync(path.join(memeshDir, 'private-sessions', sessionFileName(c.sessionId)), t, t); }
     if (c.marker === 'folder-is-file') { fs.mkdirSync(memeshDir, { recursive: true }); fs.writeFileSync(path.join(memeshDir, 'private-sessions'), 'x'); }
     const state = decide(undefined, { sessionId: c.sessionId, ...(c.messages === undefined ? {} : { messages: c.messages }) });
     expect(state.state).toBe(c.expect);

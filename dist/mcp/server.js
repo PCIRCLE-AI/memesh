@@ -3229,8 +3229,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path17) {
-      let input2 = path17;
+    function removeDotSegments(path16) {
+      let input2 = path16;
       const output2 = [];
       let nextSlash = -1;
       let len = 0;
@@ -3482,8 +3482,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path17, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path17 && path17 !== "/" ? path17 : void 0;
+        const [path16, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path16 && path16 !== "/" ? path16 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -6917,7 +6917,7 @@ var require_dist = __commonJS({
 
 // dist/mcp/server.js
 import fs20 from "fs";
-import path16 from "path";
+import path15 from "path";
 
 // node_modules/zod/v4/core/index.js
 var core_exports2 = {};
@@ -7473,10 +7473,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path17) {
-  if (!path17)
+function getElementAtPath(obj, path16) {
+  if (!path16)
     return obj;
-  return path17.reduce((acc, key) => acc?.[key], obj);
+  return path16.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -7816,11 +7816,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path17, issues) {
+function prefixIssues(path16, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path17);
+    iss.path.unshift(path16);
     return iss;
   });
 }
@@ -8282,16 +8282,16 @@ function flattenError(error62, mapper = (issue2) => issue2.message) {
 }
 function formatError(error62, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error63, path17 = []) => {
+  const processError = (error63, path16 = []) => {
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path17, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path16, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path17, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path16, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path17, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path16, ...issue2.path]);
       } else {
-        const fullpath = [...path17, ...issue2.path];
+        const fullpath = [...path16, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -8330,17 +8330,17 @@ function formatError(error62, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error62, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error63, path17 = []) => {
+  const processError = (error63, path16 = []) => {
     var _a3;
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path17, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path16, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path17, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path16, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path17, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path16, ...issue2.path]);
       } else {
-        const fullpath = [...path17, ...issue2.path];
+        const fullpath = [...path16, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -8379,8 +8379,8 @@ function treeifyError(error62, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path17 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path17) {
+  const path16 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path16) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -25999,13 +25999,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path17 = ref.slice(1).split("/").filter(Boolean);
-  if (path17.length === 0) {
+  const path16 = ref.slice(1).split("/").filter(Boolean);
+  if (path16.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path17[0] === defsKey) {
-    const key = path17[1] === void 0 ? void 0 : decodeJSONPointerSegment(path17[1]);
+  if (path16[0] === defsKey) {
+    const key = path16[1] === void 0 ? void 0 : decodeJSONPointerSegment(path16[1]);
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -30022,8 +30022,8 @@ var { DatabaseSync } = loadNodeSqlite();
 var BUSY_TIMEOUT_MS = 3e4;
 var MemeshDatabase = class extends DatabaseSync {
   #depth = 0;
-  constructor(path17, options = {}) {
-    super(path17, options);
+  constructor(path16, options = {}) {
+    super(path16, options);
     this.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
   }
   pragma(statement) {
@@ -32748,8 +32748,8 @@ function isPathShapedFileName(name) {
   return true;
 }
 var SCRATCH_PREFIXES = ["/dev/", "/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/"];
-function isScratchPath(path17) {
-  return SCRATCH_PREFIXES.some((prefix) => path17.startsWith(prefix));
+function isScratchPath(path16) {
+  return SCRATCH_PREFIXES.some((prefix) => path16.startsWith(prefix));
 }
 function bashEditedPaths(cmd) {
   if (typeof cmd !== "string")
@@ -34615,7 +34615,6 @@ async function editMemoryInteractively(name, project, sourceHost, ask, expectedR
 
 // dist/core/dreamer.js
 import { createHash as createHash8 } from "node:crypto";
-import path5 from "node:path";
 
 // dist/core/private-session.js
 import crypto from "node:crypto";
@@ -34638,7 +34637,6 @@ var PARENT_ZST_MAX_BYTES = 128 * 1024 * 1024;
 var PARENT_ZST_MAX_OUTPUT = 512 * 1024 * 1024;
 var ZST_MIN_TIME_MS = 1e3;
 var SUBAGENT_MAX_DEPTH = 3;
-var SUBAGENT_MAX_ENTRIES = 1e3;
 var UNCHECKED_KIND = Object.freeze({
   marker_unreadable: "transient",
   unreadable: "transient",
@@ -34668,6 +34666,7 @@ function isPrivateToolName(name) {
 function sessionFileName(sessionId) {
   return `${/^[A-Za-z0-9_-]{1,128}$/.test(sessionId) ? sessionId : crypto.createHash("sha256").update(sessionId).digest("hex").slice(0, 32)}.json`;
 }
+var privateCheckCacheDir = (memeshDir2) => path3.join(memeshDir2, "private-check-cache");
 function privateMarkerPath(memeshDir2, sessionId) {
   return path3.join(memeshDir2, "private-sessions", sessionFileName(sessionId));
 }
@@ -34881,41 +34880,45 @@ function scanZst(filePath, deadlineAt) {
   }
   return scanBytes(bytes, deadlineAt);
 }
+function writeFileAtomic(file2, data) {
+  fs4.mkdirSync(path3.dirname(file2), { recursive: true, mode: 448 });
+  const temp = `${file2}.${process.pid}.tmp`;
+  fs4.writeFileSync(temp, data, { mode: 384 });
+  fs4.renameSync(temp, file2);
+}
 var remembered = /* @__PURE__ */ new Map();
 function fileVerdict(file2, stat, zst, cacheDir, deadlineAt) {
   const key = `${file2}\0${stat.size}\0${stat.mtimeMs}\0${stat.ctimeMs}\0${stat.ino}`;
-  const hit = remembered.get(key);
-  if (hit)
-    return hit;
+  const hit = remembered.get(file2);
+  if (hit?.key === key)
+    return hit.verdict;
   const cacheFile = cacheDir === void 0 ? void 0 : path3.join(cacheDir, `${crypto.createHash("sha256").update(file2).digest("hex").slice(0, 40)}.json`);
   if (cacheFile !== void 0) {
     try {
       const saved = record2(JSON.parse(fs4.readFileSync(cacheFile, "utf8")));
       if (saved?.key === key && typeof saved.found === "boolean" && typeof saved.headerBroken === "boolean" && Array.isArray(saved.forks) && saved.forks.every((f) => typeof f === "string")) {
         const verdict2 = { found: saved.found, forks: saved.forks, headerBroken: saved.headerBroken };
-        remembered.set(key, verdict2);
+        remembered.set(file2, { key, verdict: verdict2 });
         return verdict2;
       }
     } catch {
     }
   }
   const verdict = zst ? scanZst(file2, deadlineAt) : scanPlain(file2, deadlineAt);
-  remembered.set(key, verdict);
+  remembered.set(file2, { key, verdict });
   if (cacheFile !== void 0) {
     try {
-      fs4.mkdirSync(cacheDir, { recursive: true, mode: 448 });
-      const temp = `${cacheFile}.${process.pid}.tmp`;
-      fs4.writeFileSync(temp, JSON.stringify({ key, ...verdict }), { mode: 384 });
-      fs4.renameSync(temp, cacheFile);
+      writeFileAtomic(cacheFile, JSON.stringify({ key, ...verdict }));
     } catch {
     }
   }
   return verdict;
 }
-function sessionTranscriptFiles(transcriptPath) {
+function sessionTranscriptFiles(transcriptPath, deadlineAt = Number.POSITIVE_INFINITY) {
   const files = [transcriptPath];
-  let entriesSeen = 0;
   const walk = (dir, depth) => {
+    if (Date.now() > deadlineAt)
+      throw new CheckFailure("timeout", "the check ran out of time listing the subagents folder");
     let entries;
     try {
       entries = fs4.readdirSync(dir, { withFileTypes: true });
@@ -34925,11 +34928,7 @@ function sessionTranscriptFiles(transcriptPath) {
       throw new CheckFailure("unreadable", `the subagents folder cannot be read (${errCode(err)})`);
     }
     for (const entry of entries) {
-      if (++entriesSeen > SUBAGENT_MAX_ENTRIES)
-        throw new CheckFailure("too_large", "the subagents folder holds more than can be checked");
       const child = path3.join(dir, entry.name);
-      if (entry.isSymbolicLink())
-        continue;
       if (entry.isDirectory()) {
         if (depth >= SUBAGENT_MAX_DEPTH)
           throw new CheckFailure("too_large", "the subagents folder is nested deeper than can be checked");
@@ -35030,9 +35029,24 @@ function decidePrivacy(input2) {
     }
   }
   const transcriptPath = input2.transcriptPath;
-  if (typeof transcriptPath !== "string" || transcriptPath === "")
-    return settled();
   const snapshot = input2.snapshot === void 0 ? void 0 : asBuffer(input2.snapshot);
+  if (typeof transcriptPath !== "string" || transcriptPath === "") {
+    if (snapshot === void 0)
+      return settled();
+    let alone;
+    try {
+      alone = scanBytes(snapshot, input2.deadlineAt);
+    } catch (err) {
+      noteFailure(err, "unreadable");
+    }
+    if (alone?.found)
+      return { state: "yes", evidence: "transcript" };
+    if (alone?.headerBroken)
+      note2("header_unreadable", "the first line of the rollout is damaged, so whether it is a fork cannot be told");
+    else if (alone && alone.forks.length > 0)
+      note2("parent_not_found", "the parent rollout of this forked thread cannot be looked for without the transcript's path");
+    return settled();
+  }
   const stats = [];
   if (snapshot === void 0) {
     let mainStat;
@@ -35052,7 +35066,7 @@ function decidePrivacy(input2) {
   }
   let files;
   try {
-    files = sessionTranscriptFiles(transcriptPath);
+    files = sessionTranscriptFiles(transcriptPath, input2.deadlineAt);
   } catch (err) {
     noteFailure(err, "unreadable");
     files = [transcriptPath];
@@ -35066,11 +35080,6 @@ function decidePrivacy(input2) {
   }
   const total = stats.reduce((sum, s) => sum + s.stat.size, snapshot?.length ?? 0);
   if (total > PRIVATE_CHECK_MAX_BYTES) {
-    for (const { file: file2, stat } of stats) {
-      const key = `${file2}\0${stat.size}\0${stat.mtimeMs}\0${stat.ctimeMs}\0${stat.ino}`;
-      if (remembered.get(key)?.found)
-        return { state: "yes", evidence: file2 === transcriptPath ? "transcript" : "subagent" };
-    }
     note2("too_large", "the session's transcripts are too large to check");
     return settled();
   }
@@ -35811,7 +35820,7 @@ function executeWorkPackage(db2, input2, context = {}) {
           sessionId: session.sessionId,
           memeshDir: memeshDir2,
           deadlineAt: Date.now() + DREAMER_PRIVACY_CHECK_MS,
-          cacheDir: path5.join(memeshDir2, "private-check-cache")
+          cacheDir: privateCheckCacheDir(memeshDir2)
         });
         if (privacy.state === "yes") {
           skip("private_session");
@@ -36004,12 +36013,12 @@ function computePatterns(db2, categories) {
 
 // dist/core/config.js
 import fs6 from "fs";
-import path6 from "path";
+import path5 from "path";
 function configDir() {
   return memeshDir();
 }
 function configFilePath() {
-  return path6.join(configDir(), "config.json");
+  return path5.join(configDir(), "config.json");
 }
 var lastConfigReadWarning = null;
 function warnUnreadable(p, detail) {
@@ -36067,7 +36076,7 @@ function readConfig() {
 // dist/core/repo-state.js
 import { execFileSync as execFileSync2 } from "child_process";
 import fs7 from "fs";
-import path7 from "path";
+import path6 from "path";
 var GIT_TIMEOUT_MS = 5e3;
 function tryGit2(cwd, args) {
   try {
@@ -36082,7 +36091,7 @@ function tryGit2(cwd, args) {
 }
 function declaredVersionOf(repoRoot) {
   try {
-    const raw = fs7.readFileSync(path7.join(repoRoot, "package.json"), "utf8");
+    const raw = fs7.readFileSync(path6.join(repoRoot, "package.json"), "utf8");
     const version2 = JSON.parse(raw).version;
     return typeof version2 === "string" && version2.length > 0 ? version2 : null;
   } catch {
@@ -38364,7 +38373,7 @@ var MessageSchema = external_exports.discriminatedUnion("action", [
 import { randomUUID as randomUUID3 } from "node:crypto";
 import fs9 from "node:fs";
 import net from "node:net";
-import path8 from "node:path";
+import path7 from "node:path";
 
 // dist/core/semver.js
 var SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
@@ -38597,7 +38606,7 @@ function isNewerVersion(candidate, current) {
   return a !== null && b !== null && compareSemVerPrecedence(a, b) > 0;
 }
 function validateSocketPath(socketPath) {
-  if (typeof socketPath !== "string" || !path8.isAbsolute(socketPath) || Buffer.byteLength(socketPath) > AGENT_ROUTER_SOCKET_PATH_MAX_BYTES) {
+  if (typeof socketPath !== "string" || !path7.isAbsolute(socketPath) || Buffer.byteLength(socketPath) > AGENT_ROUTER_SOCKET_PATH_MAX_BYTES) {
     throw new AgentRouterProtocolError("invalid_socket_path", `Router socket path must be absolute and at most ${AGENT_ROUTER_SOCKET_PATH_MAX_BYTES} bytes.`);
   }
   return socketPath;
@@ -39102,13 +39111,13 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
 
 // dist/core/update-entrypoint.js
 import fs12 from "fs";
-import path11 from "path";
+import path10 from "path";
 import { spawn } from "child_process";
 import { fileURLToPath } from "url";
 
 // dist/core/version-check.js
 import fs10 from "fs";
-import path9 from "path";
+import path8 from "path";
 var STALE_AFTER_MS = 24 * 60 * 60 * 1e3;
 function isUpdateAvailable(currentVersion, latestVersion) {
   if (latestVersion === null)
@@ -39125,7 +39134,7 @@ function getUpdateCheckPath(updateCheckPath, currentVersion) {
   if (process.env.MEMESH_UPDATE_CHECK_PATH)
     return process.env.MEMESH_UPDATE_CHECK_PATH;
   const versionTag = currentVersion && /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : "unknown";
-  return path9.join(memeshDir(), `update-check.${versionTag}.json`);
+  return path8.join(memeshDir(), `update-check.${versionTag}.json`);
 }
 function parseIsoDate(value) {
   if (!value)
@@ -39217,7 +39226,7 @@ function getLastUpdateCheck(currentVersion, options = {}) {
 
 // dist/core/update-notice.js
 import fs11 from "fs";
-import path10 from "path";
+import path9 from "path";
 var UP_TO_DATE_REFRESH_MS = 60 * 60 * 1e3;
 var UPGRADE_AVAILABLE_REFRESH_MS = 12 * 60 * 60 * 1e3;
 var ANSWER_VALID_MS = 24 * 60 * 60 * 1e3;
@@ -39273,7 +39282,7 @@ function readJson(file2) {
   }
 }
 function readSnooze(dir) {
-  const raw = readJson(path10.join(dir, SNOOZE_FILE));
+  const raw = readJson(path9.join(dir, SNOOZE_FILE));
   if (!raw)
     return null;
   const { target, level, since } = raw;
@@ -39291,7 +39300,7 @@ function snoozeExpiresAt(state) {
   return since + duration3;
 }
 function readJustUpgradedMarker(dir) {
-  const raw = readJson(path10.join(dir, JUST_UPGRADED_FILE));
+  const raw = readJson(path9.join(dir, JUST_UPGRADED_FILE));
   if (!raw)
     return null;
   const { from, to, at } = raw;
@@ -39301,12 +39310,12 @@ function readJustUpgradedMarker(dir) {
 }
 function clearJustUpgradedMarker(dir) {
   try {
-    fs11.unlinkSync(path10.join(dir, JUST_UPGRADED_FILE));
+    fs11.unlinkSync(path9.join(dir, JUST_UPGRADED_FILE));
   } catch {
   }
 }
 function claimJustUpgradedMarker(dir) {
-  const file2 = path10.join(dir, JUST_UPGRADED_FILE);
+  const file2 = path9.join(dir, JUST_UPGRADED_FILE);
   const taken = `${file2}.claimed-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
   try {
     fs11.renameSync(file2, taken);
@@ -39411,7 +39420,7 @@ function formatUpdateNoticeLine(notice) {
   }
 }
 function recentHookNoticeExists(dir, currentVersion, latestVersion, now = /* @__PURE__ */ new Date()) {
-  const claims = path11.join(dir, "update-prompt-claims");
+  const claims = path10.join(dir, "update-prompt-claims");
   let names;
   try {
     names = fs12.readdirSync(claims);
@@ -39421,7 +39430,7 @@ function recentHookNoticeExists(dir, currentVersion, latestVersion, now = /* @__
   for (const name of names) {
     if (!name.endsWith(".json"))
       continue;
-    const file2 = path11.join(claims, name);
+    const file2 = path10.join(claims, name);
     let fd = null;
     try {
       fd = fs12.openSync(file2, "r");
@@ -39444,7 +39453,7 @@ function recentHookNoticeExists(dir, currentVersion, latestVersion, now = /* @__
 }
 function updateCheckEnabledIn(dir) {
   try {
-    const raw = JSON.parse(fs12.readFileSync(path11.join(dir, "config.json"), "utf8"));
+    const raw = JSON.parse(fs12.readFileSync(path10.join(dir, "config.json"), "utf8"));
     return raw.updateCheck !== false;
   } catch {
     return true;
@@ -39452,7 +39461,7 @@ function updateCheckEnabledIn(dir) {
 }
 function cliThrottled(dir, currentVersion, now) {
   const tag = /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : "unknown";
-  const marker = path11.join(dir, `last-cli-update-notice.${tag}.lock`);
+  const marker = path10.join(dir, `last-cli-update-notice.${tag}.lock`);
   let fd = null;
   try {
     try {
@@ -39508,12 +39517,12 @@ function spawnCacheRefresh(dir, currentVersion, now) {
   };
   try {
     const modulePath = fileURLToPath(import.meta.url);
-    const bundledCli = path11.basename(modulePath) === "cli.js" && path11.basename(path11.dirname(modulePath)) === "cli" && path11.basename(path11.dirname(path11.dirname(modulePath))) === "transports";
+    const bundledCli = path10.basename(modulePath) === "cli.js" && path10.basename(path10.dirname(modulePath)) === "cli" && path10.basename(path10.dirname(path10.dirname(modulePath))) === "transports";
     const helperUrl = new URL(bundledCli ? "../../core/version-check.js" : "../core/version-check.js", import.meta.url);
     if (!fs12.existsSync(fileURLToPath(helperUrl)))
       return false;
     const tag = /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : "unknown";
-    marker = path11.join(dir, `last-fresh-refresh.${tag}.lock`);
+    marker = path10.join(dir, `last-fresh-refresh.${tag}.lock`);
     try {
       if (now.getTime() - fs12.statSync(marker).mtimeMs < FRESH_CHECK_THROTTLE_MS)
         return false;
@@ -39594,7 +39603,7 @@ function updateNoticeForEntryPoint(input2) {
     const dir = input2.dir ?? memeshDir();
     const updateCheckEnabled = input2.updateCheckEnabled ?? updateCheckEnabledIn(dir);
     const tag = /^[0-9A-Za-z.+-]+$/.test(input2.currentVersion) ? input2.currentVersion : "unknown";
-    const cache = getLastUpdateCheck(input2.currentVersion, { now, updateCheckPath: path11.join(dir, `update-check.${tag}.json`) });
+    const cache = getLastUpdateCheck(input2.currentVersion, { now, updateCheckPath: path10.join(dir, `update-check.${tag}.json`) });
     if (updateCheckEnabled && shouldRefreshUpdateCache(input2.currentVersion, cache, now)) {
       (input2.refresh ?? spawnCacheRefresh)(dir, input2.currentVersion, now);
     }
@@ -40035,8 +40044,8 @@ function fail(message) {
   return { content: [{ type: "text", text: message }], isError: true };
 }
 function formatIssue(issue2) {
-  const path17 = issue2.path.join(".");
-  return path17 ? `${path17}: ${issue2.message}` : issue2.message;
+  const path16 = issue2.path.join(".");
+  return path16 ? `${path16}: ${issue2.message}` : issue2.message;
 }
 function stripNullProps(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value))
@@ -40373,7 +40382,7 @@ ${paragraph.text}`)
 
 // dist/transports/mcp/project-context.js
 import fs14 from "node:fs";
-import path12 from "node:path";
+import path11 from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 function existingDirectory(candidate) {
   try {
@@ -40412,7 +40421,7 @@ function resolveMcpProject(launchRoot, rootUris) {
     fromRoots.add(getProjectName(directory));
   }
   if (launchRoot !== void 0) {
-    const directory = path12.isAbsolute(launchRoot) ? existingDirectory(launchRoot) : null;
+    const directory = path11.isAbsolute(launchRoot) ? existingDirectory(launchRoot) : null;
     if (!directory) {
       return {
         error: "workspace_unavailable",
@@ -40444,7 +40453,7 @@ function resolveMcpProject(launchRoot, rootUris) {
 }
 
 // dist/host-runtime/claude-inbox.js
-import path15 from "node:path";
+import path14 from "node:path";
 import { spawn as spawn3 } from "node:child_process";
 import { fileURLToPath as fileURLToPath5 } from "node:url";
 import fs19 from "node:fs";
@@ -41078,12 +41087,12 @@ function isRecord(value) {
 
 // dist/core/session-activity.js
 import fs18 from "node:fs";
-import path14 from "node:path";
+import path13 from "node:path";
 import { execFileSync as execFileSync3 } from "node:child_process";
 
 // dist/host-runtime/claude-transcript.js
 import fs17 from "node:fs";
-import path13 from "node:path";
+import path12 from "node:path";
 var MAX_BYTES = 1024 * 1024;
 var ClaudeTranscriptReader = class {
   projectsDir;
@@ -41109,7 +41118,7 @@ var ClaudeTranscriptReader = class {
       for (const entry of fs17.readdirSync(this.projectsDir, { withFileTypes: true })) {
         if (!entry.isDirectory() || this.projectSlug !== void 0 && entry.name !== this.projectSlug)
           continue;
-        const candidate = path13.join(this.projectsDir, entry.name, `${session}.jsonl`);
+        const candidate = path12.join(this.projectsDir, entry.name, `${session}.jsonl`);
         try {
           if (fs17.lstatSync(candidate).isFile())
             return candidate;
@@ -41126,7 +41135,7 @@ var ClaudeTranscriptReader = class {
       return void 0;
     let fd;
     try {
-      if (!fs17.lstatSync(path13.dirname(file2)).isDirectory())
+      if (!fs17.lstatSync(path12.dirname(file2)).isDirectory())
         return void 0;
       fd = fs17.openSync(file2, fs17.constants.O_RDONLY | (fs17.constants.O_NOFOLLOW ?? 0) | (fs17.constants.O_NONBLOCK ?? 0));
       const stat = fs17.fstatSync(fd);
@@ -41148,7 +41157,7 @@ var ClaudeTranscriptReader = class {
       return void 0;
     let fd;
     try {
-      if (!fs17.lstatSync(path13.dirname(mark.file)).isDirectory())
+      if (!fs17.lstatSync(path12.dirname(mark.file)).isDirectory())
         return void 0;
       fd = fs17.openSync(mark.file, fs17.constants.O_RDONLY | (fs17.constants.O_NOFOLLOW ?? 0) | (fs17.constants.O_NONBLOCK ?? 0));
       const stat = fs17.fstatSync(fd);
@@ -41196,7 +41205,7 @@ var ClaudeTranscriptReader = class {
       return void 0;
     let fd;
     try {
-      if (!fs17.lstatSync(path13.dirname(this.file)).isDirectory())
+      if (!fs17.lstatSync(path12.dirname(this.file)).isDirectory())
         return void 0;
       fd = fs17.openSync(this.file, fs17.constants.O_RDONLY | (fs17.constants.O_NOFOLLOW ?? 0) | (fs17.constants.O_NONBLOCK ?? 0));
       const stat = fs17.fstatSync(fd);
@@ -41328,7 +41337,7 @@ function formatSessionActivity(fields) {
 function repoLabel(workspace) {
   try {
     const value = execFileSync3("git", ["rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD"], { cwd: workspace, encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim().split("\n");
-    return value.length === 2 && value[0] && value[1] ? `${path14.basename(value[0])}@${value[1]}` : void 0;
+    return value.length === 2 && value[0] && value[1] ? `${path13.basename(value[0])}@${value[1]}` : void 0;
   } catch {
     return void 0;
   }
@@ -41350,7 +41359,7 @@ function privateSessionCheck(locate, sessionId) {
       transcriptPath,
       memeshDir: memeshDir2,
       deadlineAt: Date.now() + ACTIVITY_CHECK_MS,
-      cacheDir: path14.join(memeshDir2, "private-check-cache")
+      cacheDir: privateCheckCacheDir(memeshDir2)
     }) : { state: "unchecked", reason: "unreadable", kind: "transient", detail: "the folder that holds the session's rollout cannot be read" };
     if (state.state === "unchecked" && !warned2) {
       warned2 = true;
@@ -41363,7 +41372,7 @@ function privateSessionCheck(locate, sessionId) {
     return state.state !== "no";
   };
 }
-function createClaudeActivity(pid, workspace, claudeDir = process.env.CLAUDE_CONFIG_DIR || path14.join(homeDir(), ".claude")) {
+function createClaudeActivity(pid, workspace, claudeDir = process.env.CLAUDE_CONFIG_DIR || path13.join(homeDir(), ".claude")) {
   let slug;
   let reader;
   let privateSession;
@@ -41371,7 +41380,7 @@ function createClaudeActivity(pid, workspace, claudeDir = process.env.CLAUDE_CON
   return () => {
     let registry2;
     try {
-      const value = JSON.parse(readTail(path14.join(claudeDir, "sessions", `${pid}.json`), 18) ?? "");
+      const value = JSON.parse(readTail(path13.join(claudeDir, "sessions", `${pid}.json`), 18) ?? "");
       if (value && typeof value === "object" && !Array.isArray(value))
         registry2 = value;
     } catch {
@@ -41391,7 +41400,7 @@ function createClaudeActivity(pid, workspace, claudeDir = process.env.CLAUDE_CON
       const currentSlug = projectTranscriptSlug(registry2.cwd);
       if (currentSlug !== slug) {
         slug = currentSlug;
-        reader = new ClaudeTranscriptReader(path14.join(claudeDir, "projects"), slug);
+        reader = new ClaudeTranscriptReader(path13.join(claudeDir, "projects"), slug);
       }
     }
     const sessionId = typeof registry2?.sessionId === "string" ? registry2.sessionId : void 0;
@@ -41415,8 +41424,8 @@ function messageNotice(envelope, deliveryId) {
 
 // dist/host-runtime/claude-inbox.js
 function readRegistrySession(workspace) {
-  const root = process.env.CLAUDE_CONFIG_DIR || path15.join(homeDir(), ".claude");
-  const file2 = path15.join(root, "sessions", `${process.ppid}.json`);
+  const root = process.env.CLAUDE_CONFIG_DIR || path14.join(homeDir(), ".claude");
+  const file2 = path14.join(root, "sessions", `${process.ppid}.json`);
   let fd;
   try {
     fd = fs19.openSync(file2, fs19.constants.O_RDONLY | (fs19.constants.O_NOFOLLOW ?? 0) | (fs19.constants.O_NONBLOCK ?? 0));
@@ -41545,7 +41554,7 @@ async function startClaudeInboxPresence(rootUris) {
     return void 0;
   const dataDir = getMemeshDirFromDbPath();
   requirePrivateWritableDirectory(dataDir, "the local router keeps its lifecycle state there");
-  const token = ensureRouterTokenFile(path15.join(dataDir, "agent-router.token"));
+  const token = ensureRouterTokenFile(path14.join(dataDir, "agent-router.token"));
   let workspace = process.env.MEMESH_PROJECT_ROOT ?? process.env.CLAUDE_PROJECT_DIR;
   if (!workspace && rootUris?.length === 1) {
     try {
@@ -41566,7 +41575,7 @@ async function startClaudeInboxPresence(rootUris) {
     deliver: createClaudeInboxDeliver({
       socketPath: process.env.CLAUDE_CODE_MESSAGING_TOKEN ? process.env.CLAUDE_CODE_MESSAGING_SOCKET : void 0,
       sessionId: session,
-      reader: () => new ClaudeTranscriptReader(path15.join(process.env.CLAUDE_CONFIG_DIR || path15.join(homeDir(), ".claude"), "projects"), projectTranscriptSlug(workspace ? readRegistrySession(workspace)?.cwd ?? workspace : "")),
+      reader: () => new ClaudeTranscriptReader(path14.join(process.env.CLAUDE_CONFIG_DIR || path14.join(homeDir(), ".claude"), "projects"), projectTranscriptSlug(workspace ? readRegistrySession(workspace)?.cwd ?? workspace : "")),
       currentSession: () => workspace ? readRegistrySession(workspace)?.sessionId : void 0
     }),
     resilience: {
@@ -41587,7 +41596,7 @@ async function startClaudeInboxPresence(rootUris) {
 }
 
 // dist/mcp/server.js
-var packageJsonPath2 = path16.resolve(path16.dirname(fileURLToPath6(import.meta.url)), "../../package.json");
+var packageJsonPath2 = path15.resolve(path15.dirname(fileURLToPath6(import.meta.url)), "../../package.json");
 var packageVersion2 = JSON.parse(fs20.readFileSync(packageJsonPath2, "utf8")).version ?? "0.0.0";
 configureVersionSource(packageVersion2, packageJsonPath2);
 var server = new Server({ name: "memesh", version: packageVersion2 }, { capabilities: { tools: {} } });

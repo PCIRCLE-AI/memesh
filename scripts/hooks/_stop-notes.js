@@ -36,9 +36,9 @@ import {
 import { createHash } from 'crypto';
 import { homeDir } from './_generated/core-paths.js';
 import { notePathsWrittenInTranscript } from './_session-written-notes.js';
-import { PRIVATE_WINDOW_MS, prunePrivateCheckCache } from './_generated/private-session.js';
-import { isCodexToolRequest } from './_generated/host-transcript.js';
-import { basename, dirname, join } from 'path';
+import { PRIVATE_WINDOW_MS, privateCheckCacheDir, prunePrivateCheckCache } from './_generated/private-session.js';
+import { isCodexRollout, isCodexToolRequest } from './_generated/host-transcript.js';
+import { dirname, join } from 'path';
 import {
   ensurePrivateDir,
   getMemeshDirFromDbPath,
@@ -130,8 +130,14 @@ export function claudeMemoryDirExpected(transcriptPath) {
   return join(dirname(transcriptPath), 'memory');
 }
 
-/** A Codex rollout (`rollout-<time>-<thread>.jsonl`, plain or archived): Codex keeps no notes folder of its own. */
-export const isCodexRollout = (transcriptPath) => typeof transcriptPath === 'string' && /^rollout-.*\.jsonl(?:\.zst)?$/.test(basename(transcriptPath));
+/** The real path of a folder, or undefined when it is not there; throws when it cannot be looked at. */
+function realPathIfThere(dir) {
+  try { return realpathSync(dir); } catch (err) {
+    if (err?.code === 'ENOENT') return undefined;
+    throw err;
+  }
+}
+
 
 /** Claude Code's projects folder (`<config dir>/projects`): where a session of another host can still write notes. */
 export function claudeProjectsRoot(env = process.env) {
@@ -203,6 +209,7 @@ export const noteErrorReason = (err) => {
     case 'MEMESH_NOTE_MARKERS_DIR_UNREADABLE': return SKIP_REASONS.noteMarkersDirUnreadable;
     case 'MEMESH_NOTE_MARKER_UNWRITABLE': return SKIP_REASONS.noteMarkerUnwritable;
     case 'MEMESH_PRIVATE_STATE_BUSY': return SKIP_REASONS.privateStateBusy;
+    case 'MEMESH_NOTE_FOLDER_UNREADABLE': return SKIP_REASONS.noteFolderUnreadable;
     default: return hookErrorReason(err);
   }
 };
@@ -229,8 +236,9 @@ export async function holdOutNotes({ memoryDir, transcriptPath, sessionId, metaU
   const isPrivate = state === 'yes';
   // A Codex session has no notes folder of its own, but it can write into Claude Code's: those are the folders to protect.
   const codex = !memoryDir && isCodexRollout(transcriptPath);
-  const ownExists = !!memoryDir && existsSync(memoryDir);
-  const root = codex ? claudeProjectsRoot(env) : memoryDir ? ni.projectsRootOf(ownExists ? realpathSync(memoryDir) : memoryDir) : undefined;
+  // Real paths, as the importer compares them; the session's own folder may not exist yet.
+  const ownReal = memoryDir ? realPathIfThere(memoryDir) : undefined;
+  const root = codex ? claudeProjectsRoot(env) : memoryDir ? ni.projectsRootOf(ni.realPathOrExpected(memoryDir)) : undefined;
   let startedAt = now;
   if (isPrivate) {
     // The marker comes first: if this hook is killed while it reads a large transcript, other sessions already wait.
@@ -246,31 +254,28 @@ export async function holdOutNotes({ memoryDir, transcriptPath, sessionId, metaU
   }
   // No notes folder to protect and no other host's (no transcript path): for a private session the call itself is recorded above.
   if (root === undefined) return 0;
-  const listed = ni.projectMemoryFolders(root);
-  const ownReal = ownExists ? realpathSync(memoryDir) : undefined;
-  const folders = [...new Set([...(ownReal ? [ownReal] : []), ...listed.folders])];
-  if (folders.length === 0) return 0;
+  const folders = [...new Set([...(ownReal ? [ownReal] : []), ...ni.projectMemoryFolders(root)])];
   const scanStartedAt = Date.now();
-  const scan = notePathsWrittenInTranscript(transcriptPath, folders, { ownDir: ownReal, deadlineAt });
-  const complete = scan.complete && listed.complete;
+  const scan = folders.length === 0 ? { byDir: new Map(), reached: new Set(), complete: true } : notePathsWrittenInTranscript(transcriptPath, folders, { ownDir: ownReal, deadlineAt });
+  const complete = scan.complete;
   if (!complete) recordHookOutcome(env, { hook: 'note-ingest', outcome: 'notified', reason: SKIP_REASONS.notesHeldByTime, payload });
   // Reached folders (and every folder, when the read was not complete) hold what changed while the session may have written there.
   const windowStart = isPrivate ? (complete ? startedAt : Math.min(startedAt, now - PRIVATE_WINDOW_MS)) : now - PRIVATE_WINDOW_MS;
   let held = 0;
+  let recorded = false;
   for (const dir of folders) {
     const reached = !complete || scan.reached.has(dir);
     const paths = scan.byDir.get(dir) ?? [];
     if (!reached && paths.length === 0) continue;
+    recorded = true;
     held += ni.holdOutNoteFiles({
       dir, sessionId: id, paths, transcript: transcriptPath, deadlineAt,
       ...(reached ? { sinceMs: windowStart } : {}),
       ...(isPrivate ? {} : { tentative: { reason: uncheckedReason ?? 'unreadable', projectsRoot: root, holdsAt: complete ? scanStartedAt : undefined } }),
     });
   }
-  if (!isPrivate && ownReal === undefined && held === 0) {
-    // Nothing to hold yet, but other imports must still wait while this session cannot be checked.
-    ni.holdOutNoteFiles({ dir: listed.folders[0] ?? folders[0], sessionId: id, paths: [], transcript: transcriptPath, deadlineAt, tentative: { reason: uncheckedReason ?? 'unreadable', projectsRoot: root } });
-  }
+  // Nothing to hold yet (no notes folder at all, or none reached), but other imports must still wait while this session cannot be checked.
+  if (!isPrivate && !recorded) ni.holdOutNoteFiles({ sessionId: id, paths: [], transcript: transcriptPath, deadlineAt, tentative: { reason: uncheckedReason ?? 'unreadable', projectsRoot: root } });
   if (isPrivate) {
     ni.markPrivateSession({ sessionId: id, dirs: [...scan.reached], transcript: transcriptPath, deadlineAt, ...(complete ? { holdsAt: scanStartedAt } : {}) });
   }
@@ -297,12 +302,13 @@ export async function renewPrivateNoteMarker({ sessionId, metaUrl, deadlineAt, e
 }
 
 /** The private session has ended and its holds are recorded: other imports stop waiting for it (the marker stays as the record of the call). */
-export async function endPrivateNoteMarker({ sessionId, metaUrl, state = 'yes' }) {
+export async function endPrivateNoteMarker({ sessionId, metaUrl, state = 'yes', deadlineAt }) {
+  if (!Number.isFinite(deadlineAt)) throw new Error('endPrivateNoteMarker needs the hook\'s deadline');
   const ni = await loadNoteIngest(metaUrl);
   if (!ni) return;
   const id = typeof sessionId === 'string' && sessionId !== '' ? sessionId : 'unknown';
-  if (state === 'yes') ni.endPrivateSession(id);
-  else ni.endTentativeWait(id);
+  if (state === 'yes') ni.endPrivateSession(id, Date.now(), deadlineAt);
+  else ni.endTentativeWait(id, Date.now(), deadlineAt);
 }
 
 /** The session was decided `no` by its own hook: what was held only while it could not be checked is let through. Returns whether anything changed. */
@@ -668,12 +674,11 @@ export async function runStopNotes(payload, { captureEnabled, project, metaUrl, 
   } catch (err) {
     memoryDirError = err;
   }
-  // Ended sessions' markers whose transcripts are gone are removed (bounded), in every Stop of every host, and so are
-  // the private-check cache entries of files that are gone.
-  prunePrivateCheckCache(join(getMemeshDirFromDbPath(), 'private-check-cache'));
+  // Every Stop of every host removes the private-check cache entries of files that are gone, and the temporary files a
+  // writer that died left beside the markers and holds. A marker is never removed: it is the record of the call.
+  prunePrivateCheckCache(privateCheckCacheDir(getMemeshDirFromDbPath()));
   try {
-    const ni = await loadNoteIngest(metaUrl);
-    ni?.prunePrivateMarkers(Date.now(), 50, deadlineAt);
+    (await loadNoteIngest(metaUrl))?.removeStalePrivateStateTemps();
   } catch (err) {
     try { process.stderr.write(`[memesh note-ingest] ${err?.message || err}\n`); } catch { /* stderr gone */ }
     recordHookOutcome(env, { hook: 'note-ingest', outcome: 'error', reason: noteErrorReason(err), payload });
@@ -683,7 +688,6 @@ export async function runStopNotes(payload, { captureEnabled, project, metaUrl, 
   // it is decided again), and the nudge, which would ask the agent to remember
   // something, stays silent.
   if (privacy.state !== 'no') {
-    const unchecked = privacy.state === 'unchecked';
     let holdFailed = false;
     try {
       if (memoryDirError) throw memoryDirError;
@@ -694,7 +698,7 @@ export async function runStopNotes(payload, { captureEnabled, project, metaUrl, 
       recordHookOutcome(env, {
         hook: 'note-ingest',
         outcome: 'skipped',
-        reason: held === null ? SKIP_REASONS.noteIngesterNotBuilt : (unchecked ? SKIP_REASONS.privateSessionUnchecked : SKIP_REASONS.privateSession),
+        reason: held === null ? SKIP_REASONS.noteIngesterNotBuilt : privacy.skipReason,
         ...(held ? { count: held } : {}),
         payload,
       });
@@ -703,7 +707,7 @@ export async function runStopNotes(payload, { captureEnabled, project, metaUrl, 
       try { process.stderr.write(`[memesh note-ingest] ${err?.message || err}\n`); } catch { /* stderr gone */ }
       recordHookOutcome(env, { hook: 'note-ingest', outcome: 'error', reason: noteErrorReason(err), payload });
     }
-    recordHookOutcome(env, { hook: 'remember-nudge', outcome: 'skipped', reason: unchecked ? SKIP_REASONS.privateSessionUnchecked : SKIP_REASONS.privateSession, payload });
+    recordHookOutcome(env, { hook: 'remember-nudge', outcome: 'skipped', reason: privacy.skipReason, payload });
     return { message: null, settle: () => {}, holdFailed };
   }
   // Decided `no` by its own hook: what was held while it could not be checked is let through, and imported below.

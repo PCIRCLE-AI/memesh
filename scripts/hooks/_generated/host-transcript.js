@@ -9,6 +9,9 @@
 function record(value) {
     return value !== null && typeof value === 'object' && !Array.isArray(value) ? value : null;
 }
+export function isCodexRollout(transcriptPath) {
+    return typeof transcriptPath === 'string' && /(?:^|[\\/])rollout-[^\\/]*\.jsonl(?:\.zst)?$/.test(transcriptPath);
+}
 export function isCodexToolRequest(entry) {
     const row = record(entry);
     const payload = record(row?.payload);

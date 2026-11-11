@@ -81,4 +81,56 @@ describe('memesh hermes capture-session: a conversation in which the agent calle
     const quoted = run(['hermes', 'capture-session', '--session', 'hs3'], JSON.stringify({ messages: [...work, { role: 'user', content: 'what does memesh_private_session do?' }, { role: 'assistant', content: 'It is a tool named memesh_private_session.' }] }));
     expect(JSON.parse(quoted.stdout)).toMatchObject({ outcome: 'wrote' });
   });
+
+  it('stores nothing when the session has a private-session marker, even with no call in the message list', () => {
+    // The marker decidePrivacy reads: <memesh dir>/private-sessions/<id>.json (not the Hermes plugin's own folder).
+    fs.mkdirSync(path.join(home, '.memesh', 'private-sessions'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.memesh', 'private-sessions', 'hs5.json'), '{}');
+    const r = run(['hermes', 'capture-session', '--session', 'hs5'], JSON.stringify({ messages: work }));
+    expect(r.code, r.stderr).toBe(0);
+    expect(JSON.parse(r.stdout)).toMatchObject({ outcome: 'skipped', reason: 'private_session', written: [] });
+  });
+
+  it('stores nothing, and names the error, when the private-sessions folder cannot be looked in (unchecked fails closed)', () => {
+    fs.mkdirSync(path.join(home, '.memesh'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.memesh', 'private-sessions'), 'not a folder');
+    const r = run(['hermes', 'capture-session', '--session', 'hs6'], JSON.stringify({ messages: work }));
+    expect(r.code, r.stderr).toBe(0);
+    expect(JSON.parse(r.stdout)).toMatchObject({
+      outcome: 'skipped',
+      reason: 'the session could not be checked for a private-session call, so nothing is saved',
+      error: 'the private-sessions folder beside the database cannot be read, so every session is treated as private and nothing is saved until it can be',
+      written: [],
+    });
+  });
+});
+
+describe('memesh hermes capture-turn: the same privacy check as capture-session', () => {
+  const decision = JSON.stringify({ user: 'which db?', assistant: 'We decided to use SQLite because it is local.' });
+
+  it('stores a decision turn of an ordinary session (the control)', () => {
+    const r = run(['hermes', 'capture-turn', '--session', 'ht1'], decision);
+    expect(r.code, r.stderr).toBe(0);
+    expect(JSON.parse(r.stdout)).toMatchObject({ outcome: 'wrote' });
+  });
+
+  it('stores nothing when the session has a private-session marker', () => {
+    fs.mkdirSync(path.join(home, '.memesh', 'private-sessions'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.memesh', 'private-sessions', 'ht2.json'), '{}');
+    const r = run(['hermes', 'capture-turn', '--session', 'ht2'], decision);
+    expect(r.code, r.stderr).toBe(0);
+    expect(JSON.parse(r.stdout)).toEqual({ outcome: 'skipped', reason: 'private_session' });
+  });
+
+  it('stores nothing, and names the error, when the private-sessions folder cannot be looked in', () => {
+    fs.mkdirSync(path.join(home, '.memesh'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.memesh', 'private-sessions'), 'not a folder');
+    const r = run(['hermes', 'capture-turn', '--session', 'ht3'], decision);
+    expect(r.code, r.stderr).toBe(0);
+    expect(JSON.parse(r.stdout)).toEqual({
+      outcome: 'skipped',
+      reason: 'the session could not be checked for a private-session call, so nothing is saved',
+      error: 'the private-sessions folder beside the database cannot be read, so every session is treated as private and nothing is saved until it can be',
+    });
+  });
 });

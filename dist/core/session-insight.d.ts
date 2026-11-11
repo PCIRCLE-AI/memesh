@@ -26,6 +26,7 @@ export declare function buildSessionInsights(activity: SessionActivity, ctx: Ins
 export interface ChatSessionCaptureResult {
     outcome: 'wrote' | 'skipped';
     reason?: string;
+    error?: string;
     written: string[];
     toolCallCount: number;
     filesEdited: number;
@@ -33,6 +34,10 @@ export interface ChatSessionCaptureResult {
     unrecognizedTools: string[];
     toolResultsNonJson: number;
 }
+export declare function chatPrivacySkip(sessionId: string, messages?: unknown): {
+    reason: string;
+    error?: string;
+} | null;
 export declare function captureChatSession(input: {
     sessionId: string;
     messages: unknown;

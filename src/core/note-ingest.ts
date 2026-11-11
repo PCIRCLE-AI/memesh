@@ -40,8 +40,9 @@ import { getMemeshDirFromDbPath } from './paths.js';
 import { remember } from './operations.js';
 import { sanitizeNoteText, splitObservations, NOTE_DEFAULT_TYPE, NOTE_MAX_OBSERVATIONS } from './note-derive.js';
 import { truncateTitle } from './title.js';
-import { decidePrivacy, PRIVATE_WINDOW_MS, sessionFileName, sessionLastWriteMs, uncheckedKind, type UncheckedReason } from './private-session.js';
+import { decidePrivacy, privateCheckCacheDir, PRIVATE_WINDOW_MS, removeStaleTemps, sessionFileName, sessionLastWriteMs, uncheckedKind, writeFileAtomic, type UncheckedReason } from './private-session.js';
 import { PRIVATE_STATE_BUSY, withPrivateStateLock } from './private-state-lock.js';
+import { isCodexRollout } from './host-transcript.js';
 
 export const NOTE_FILE_TAG = 'source:note-file';
 export const NOTE_FILE_MISSING_TAG = 'source:note-file:missing';
@@ -259,14 +260,10 @@ const dirIdOf = (realDir: string): string => sha256(realDir).slice(0, 16);
 const codeOf = (err: unknown): string => (err as NodeJS.ErrnoException)?.code ?? 'error';
 /** How long a lock may be waited for when the caller gives no deadline (the CLI, tests). */
 const DEFAULT_LOCK_WAIT_MS = 5_000;
-/** A marker of an ended session whose transcript cannot be told apart from gone is kept this long. */
-const MARKER_KEEP_MS = 30 * 24 * 60 * 60 * 1000;
 /** Tentative sessions judged again per import, at most. */
 const REDECIDE_PER_RUN = 10;
-/** Project folders looked at under one projects root, at most. */
-const MAX_PROJECT_FOLDERS = 200;
 
-/** A private-session marker cannot be read or is not one: notes are not imported until it is rebuilt or, for a session that has ended, deleted. */
+/** A private-session marker cannot be read or is not one: notes are not imported until its session writes it again. */
 export const NOTE_MARKERS_UNREADABLE = 'MEMESH_NOTE_MARKERS_UNREADABLE';
 /** The private-sessions folder cannot be listed: notes are not imported until it can be. */
 export const NOTE_MARKERS_DIR_UNREADABLE = 'MEMESH_NOTE_MARKERS_DIR_UNREADABLE';
@@ -278,9 +275,15 @@ export const NOTE_HOLDS_UNREADABLE = 'MEMESH_NOTE_HOLDS_UNREADABLE';
 export const NOTE_HOLDS_DIR_UNREADABLE = 'MEMESH_NOTE_HOLDS_DIR_UNREADABLE';
 /** A hold record could not be written. */
 export const NOTE_HOLDS_UNWRITABLE = 'MEMESH_NOTE_HOLDS_UNWRITABLE';
+/** A notes folder (a folder inside one, or the projects root) cannot be listed: what a private session wrote there cannot be held, so nothing is released. */
+export const NOTE_FOLDER_UNREADABLE = 'MEMESH_NOTE_FOLDER_UNREADABLE';
 export { PRIVATE_STATE_BUSY };
 
 const fail = (code: string, message: string): Error => Object.assign(new Error(message), { code });
+const folderUnreadable = (err: unknown): Error =>
+  fail(NOTE_FOLDER_UNREADABLE, `a notes folder cannot be read (${codeOf(err)}); nothing is released until it can be`);
+/** ENOENT (and ENOTDIR) is "not there"; anything else is a folder that cannot be read. */
+const notThere = (err: unknown): boolean => codeOf(err) === 'ENOENT' || codeOf(err) === 'ENOTDIR';
 
 /** The reason shown for a note held out because its session was private. */
 export const NOTE_PRIVATE_HOLD_REASON = 'held out by a private session — not imported';
@@ -288,7 +291,7 @@ export const NOTE_PRIVATE_HOLD_REASON = 'held out by a private session — not i
 export const NOTE_UNCHECKED_HOLD_REASON = 'held while a session could not be checked — not imported yet';
 
 /** A real path for a folder that may not exist yet (Claude Code makes `memory/` when it writes its first note). */
-function realPathOrExpected(dir: string): string {
+export function realPathOrExpected(dir: string): string {
   try {
     return fs.realpathSync(dir);
   } catch (err) {
@@ -302,52 +305,63 @@ export const projectsRootOf = (memoryDir: string): string => path.dirname(path.d
 
 /**
  * Every Claude Code notes folder under a projects root, as real paths: what a
- * private session can reach besides its own. Folders that cannot be told are
- * skipped; at most `MAX_PROJECT_FOLDERS` (`complete` is false past that).
+ * private session can reach besides its own. All of them: a root or a folder
+ * that cannot be listed throws `NOTE_FOLDER_UNREADABLE` (it is never taken for
+ * one with no notes).
  */
-export function projectMemoryFolders(projectsRoot: string): { folders: string[]; complete: boolean } {
+export function projectMemoryFolders(projectsRoot: string): string[] {
   let entries: fs.Dirent[];
-  try { entries = fs.readdirSync(projectsRoot, { withFileTypes: true }); } catch { return { folders: [], complete: false }; }
+  try { entries = fs.readdirSync(projectsRoot, { withFileTypes: true }); } catch (err) {
+    if (notThere(err)) return [];
+    throw folderUnreadable(err);
+  }
   const folders: string[] = [];
-  let complete = true;
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
-    if (folders.length >= MAX_PROJECT_FOLDERS) { complete = false; break; }
     const dir = path.join(projectsRoot, entry.name, 'memory');
-    try {
-      const st = fs.lstatSync(dir);
-      if (st.isDirectory() && !st.isSymbolicLink()) folders.push(fs.realpathSync(dir));
-    } catch { /* no notes folder in this project */ }
+    let st: fs.Stats;
+    try { st = fs.lstatSync(dir); } catch (err) {
+      if (notThere(err)) continue; // no notes folder in this project
+      throw folderUnreadable(err);
+    }
+    if (st.isDirectory()) folders.push(fs.realpathSync(dir));
   }
-  return { folders, complete };
+  return folders;
 }
 
 /** The newest of a file's two times: a `mv` or `cp -p` keeps the old modification time but not the change time. */
 const touchedAt = (st: fs.Stats): number => Math.max(st.mtimeMs, st.ctimeMs);
+/** The earliest a file's content can have been written: a later rename or `chmod` moves neither its birth nor its modification time. */
+const writtenAt = (st: fs.Stats): number => Math.min(st.birthtimeMs || st.mtimeMs, st.mtimeMs);
 
 // --- markers ----------------------------------------------------------------
 
 interface Marker {
   session: string; dirs: string[]; projectsRoot: string; transcript?: string;
+  /** `finalizedAt`: the last activity an idle session's notes were held up to. */
   startedAt: number; updatedAt: number; holdsAt: number; endedAt?: number; finalizedAt?: number;
 }
 
-const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+/** A time memesh wrote: a number a `Date` can show (doctor prints them). */
+const isTime = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 8.64e15;
 
 function parseMarker(text: string): Marker {
   const m = JSON.parse(text) as Record<string, unknown>;
-  if (!m || typeof m !== 'object' || Array.isArray(m) || typeof m.session !== 'string' || !isNum(m.startedAt) || !isNum(m.updatedAt)
-    || !isNum(m.holdsAt) || typeof m.projectsRoot !== 'string' || !Array.isArray(m.dirs) || !m.dirs.every((d) => typeof d === 'string')
+  if (!m || typeof m !== 'object' || Array.isArray(m) || typeof m.session !== 'string' || !isTime(m.startedAt) || !isTime(m.updatedAt)
+    || !isTime(m.holdsAt) || typeof m.projectsRoot !== 'string' || !Array.isArray(m.dirs) || !m.dirs.every((d) => typeof d === 'string')
     || (m.transcript !== undefined && typeof m.transcript !== 'string')
-    || (m.endedAt !== undefined && !isNum(m.endedAt)) || (m.finalizedAt !== undefined && !isNum(m.finalizedAt))) {
+    || (m.endedAt !== undefined && !isTime(m.endedAt)) || (m.finalizedAt !== undefined && !isTime(m.finalizedAt))) {
     throw new Error('not a marker');
   }
   return m as unknown as Marker;
 }
 
 const markerFile = (sessionId: string): string => path.join(markersDir(), sessionFileName(sessionId));
-const markerUnreadable = (name: string, err: unknown): Error =>
-  fail(NOTE_MARKERS_UNREADABLE, `${MARKERS_DIR}/${name} cannot be read (${(err as Error).message}); notes are not imported until it is rebuilt by its session or, for a session that has ended, deleted`);
+/** Whether a record could not be read for its permissions (fixable by `chmod`) or is damaged. */
+const causeOf = (err: unknown): 'permission' | 'damaged' => (['EACCES', 'EPERM'].includes(codeOf(err)) ? 'permission' : 'damaged');
+const markerUnreadable = (name: string, err: unknown): Error => Object.assign(
+  fail(NOTE_MARKERS_UNREADABLE, `${MARKERS_DIR}/${name} cannot be read (${(err as Error).message}); notes are not imported until its session writes it again`),
+  { cause: causeOf(err) });
 
 /** The marker of a session, undefined when it has none; throws `NOTE_MARKERS_UNREADABLE` when it is there but cannot be read. */
 function readMarker(file: string): Marker | undefined {
@@ -360,12 +374,7 @@ function readMarker(file: string): Marker | undefined {
 }
 
 function writeMarker(file: string, marker: Marker): void {
-  try {
-    fs.mkdirSync(markersDir(), { recursive: true, mode: 0o700 });
-    const temp = `${file}.${process.pid}.tmp`;
-    fs.writeFileSync(temp, JSON.stringify({ v: 2, ...marker }), { mode: 0o600 });
-    fs.renameSync(temp, file);
-  } catch (err) {
+  try { writeFileAtomic(file, JSON.stringify({ v: 2, ...marker })); } catch (err) {
     throw fail(NOTE_MARKER_UNWRITABLE, `${MARKERS_DIR}/${path.basename(file)} could not be written (${codeOf(err)})`);
   }
 }
@@ -374,14 +383,15 @@ const lockDeadline = (deadlineAt?: number): number => deadlineAt ?? Date.now() +
 
 /**
  * The agent called `private_session` (the PostToolUse hook), or a later hook of
- * the session found it private: written at once and kept while the session
- * runs, so no other session's import takes a note this one has just written.
- * It holds the session id, the notes folders the session reached (real paths,
- * or the path the session's own folder will have), the projects root those
- * folders sit in, the transcript path and times; no conversation text.
- * `startedAt` stays the first time; `updatedAt` moves on every call;
- * `holdsAt`, when given, is the moment the session's holds were last recorded
- * from a complete read of its transcripts. Returns `startedAt`.
+ * the session found it private: written at once and kept for good, so no other
+ * session's import takes a note this one has just written, and the session is
+ * private whenever it comes back. It holds the session id, the notes folders
+ * the session reached (real paths, or the path the session's own folder will
+ * have), the projects root those folders sit in, the transcript path and
+ * times; no conversation text. `startedAt` stays the first time; `updatedAt`
+ * moves on every call; `holdsAt`, when given, is the moment the session's holds
+ * were last recorded from a complete read of its transcripts. Returns
+ * `startedAt`.
  *
  * Only for a real call: a session that could not be checked never gets one.
  * A marker of this session that cannot be read throws `NOTE_MARKERS_UNREADABLE`
@@ -435,59 +445,28 @@ function updateMarker(sessionId: string, deadlineAt: number | undefined, change:
 
 /**
  * The session has ended and its holds are recorded: other imports stop waiting
- * for it. The marker stays, as the record that the call was made (a later
- * reader of the transcript asks it first), until `prunePrivateMarkers` finds
- * its transcript gone.
+ * for it. The marker stays, for good, as the record that the call was made (a
+ * later reader of the session asks it first).
  */
 export function endPrivateSession(sessionId: string, now = Date.now(), deadlineAt?: number): void {
   updateMarker(sessionId, deadlineAt, (marker) => ({ ...marker, endedAt: now }));
 }
 
-/** Removes the markers of ended sessions whose transcript is gone (or unknown and a month old), at most `max` per run, and the temporary files a crashed writer left in either folder. Returns how many markers. */
-export function prunePrivateMarkers(now = Date.now(), max = 50, deadlineAt?: number): number {
-  let names: string[];
-  try { names = fs.readdirSync(markersDir()); } catch (err) {
-    if (codeOf(err) === 'ENOENT') return 0;
-    throw fail(NOTE_MARKERS_DIR_UNREADABLE, `${MARKERS_DIR} cannot be read (${codeOf(err)})`);
-  }
-  let removed = 0;
-  for (const name of names.filter((n) => n.endsWith('.json'))) {
-    if (removed >= max) break;
-    const file = path.join(markersDir(), name);
-    let marker: Marker | undefined;
-    try { marker = readMarker(file); } catch { continue; } // a damaged marker is the importer's error to report
-    if (!marker || (marker.endedAt === undefined && marker.finalizedAt === undefined)) continue;
-    let gone: boolean;
-    if (typeof marker.transcript === 'string' && marker.transcript !== '') {
-      try { fs.statSync(marker.transcript); gone = false; } catch (err) { gone = codeOf(err) === 'ENOENT'; }
-    } else {
-      gone = now - marker.updatedAt > MARKER_KEEP_MS;
-    }
-    if (!gone) continue;
-    withPrivateStateLock(getMemeshDirFromDbPath(), lockDeadline(deadlineAt), () => {
-      const again = readMarker(file);
-      if (again && (again.endedAt !== undefined || again.finalizedAt !== undefined)) fs.rmSync(file, { force: true });
-    });
-    removed++;
-  }
-  removeStaleTemps(markersDir(), names, now);
-  try { removeStaleTemps(holdsDir(), fs.readdirSync(holdsDir()), now); } catch { /* no holds folder: nothing left behind */ }
-  return removed;
-}
-
-/** A temporary file a writer left behind when it died between writing and renaming (older than a minute: no live writer holds one that long). */
-function removeStaleTemps(dir: string, names: readonly string[], now: number): void {
-  for (const name of names.filter((n) => n.endsWith('.tmp'))) {
-    try { const p = path.join(dir, name); if (now - fs.statSync(p).mtimeMs > 60_000) fs.rmSync(p, { force: true }); } catch { /* gone */ }
-  }
+/** Removes the temporary files a writer that died left in the markers and holds folders. Markers themselves are never removed. */
+export function removeStalePrivateStateTemps(now = Date.now()): void {
+  removeStaleTemps(markersDir(), now);
+  removeStaleTemps(holdsDir(), now);
 }
 
 // --- holds ------------------------------------------------------------------
 
 /**
- * dirId → relative path → content hash, or `?<ms>` for a note that could not be
- * read when it was held (and the time it was held). A held note is identified
- * by its content: the path is only where a `?` waits to be read.
+ * dirId → entries. A held note is identified by its CONTENT: the key is the
+ * sha256 of its bytes and the value the path it had (`!<path>` when it is held
+ * in place of a note that could not be read and then went missing or changed).
+ * A note that could not be read is the key `?<path>`, its value
+ * `<held at>:<inode>:<size>:<mtime>`: its folder waits until that very file can
+ * be read.
  */
 type DirHolds = Record<string, Record<string, string>>;
 
@@ -498,31 +477,36 @@ interface TentativeHold {
 
 interface HoldFile { rev: number; session: string; transcript?: string; firm: DirHolds; tentative?: TentativeHold }
 
-const isUnreadableMark = (hash: string): boolean => hash.startsWith('?');
-const unreadableSince = (hash: string): number => { const n = Number(hash.slice(1)); return Number.isFinite(n) ? n : 0; };
+/** The format of a hold record (3: keyed by content). A record of another format is damaged, never read as holding nothing. */
+const HOLDS_VERSION = 3;
+const HASH_KEY = /^[0-9a-f]{64}$/;
+const isUnreadableKey = (key: string): boolean => key.startsWith('?');
+interface UnreadableMark { since: number; ino: number; size: number; mtime: number }
+function parseUnreadable(value: string): UnreadableMark | undefined {
+  const [since, ino, size, mtime] = value.split(':').map(Number);
+  return isTime(since) && [ino, size, mtime].every((n) => Number.isFinite(n)) ? { since, ino, size, mtime } : undefined;
+}
+/** `?<path>` for a note that cannot be read, as it is now. */
+const unreadableEntry = (rel: string, st: fs.Stats, now: number): [string, string] => [`?${rel}`, `${now}:${st.ino}:${st.size}:${st.mtimeMs}`];
 
-const isDirHolds = (value: unknown): value is DirHolds => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  return Object.values(value as object).every((files) => !!files && typeof files === 'object' && !Array.isArray(files)
-    && Object.values(files as object).every((hash) => typeof hash === 'string'));
-};
+const isRecord = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
+const isDirHolds = (value: unknown): value is DirHolds => isRecord(value) && Object.values(value).every((files) => isRecord(files)
+  && Object.entries(files).every(([key, v]) => typeof v === 'string' && (HASH_KEY.test(key) || (isUnreadableKey(key) && parseUnreadable(v) !== undefined))));
 
 function parseHoldFile(text: string): HoldFile {
-  const p = JSON.parse(text) as Record<string, unknown>;
-  if (!p || typeof p !== 'object' || Array.isArray(p) || !isDirHolds(p.firm) || typeof p.session !== 'string' || !isNum(p.rev)
+  const p = JSON.parse(text) as unknown;
+  if (!isRecord(p) || p.v !== HOLDS_VERSION || !isDirHolds(p.firm) || typeof p.session !== 'string' || !Number.isInteger(p.rev)
     || (p.transcript !== undefined && typeof p.transcript !== 'string')) throw new Error('not a hold record');
-  const t = p.tentative as Record<string, unknown> | undefined;
-  if (t === undefined) return { rev: p.rev, session: p.session, ...(p.transcript === undefined ? {} : { transcript: p.transcript as string }), firm: p.firm };
-  if (!t || typeof t !== 'object' || typeof t.reason !== 'string' || !isNum(t.since) || !isNum(t.updatedAt) || !isNum(t.holdsAt)
-    || typeof t.projectsRoot !== 'string' || !isDirHolds(t.dirs) || (t.endedAt !== undefined && !isNum(t.endedAt))) throw new Error('not a hold record');
-  return {
-    rev: p.rev, session: p.session, ...(p.transcript === undefined ? {} : { transcript: p.transcript as string }), firm: p.firm,
-    tentative: { reason: t.reason, since: t.since, updatedAt: t.updatedAt, holdsAt: t.holdsAt, projectsRoot: t.projectsRoot, dirs: t.dirs, ...(t.endedAt === undefined ? {} : { endedAt: t.endedAt as number }) },
-  };
+  const t = p.tentative;
+  if (t !== undefined && (!isRecord(t) || typeof t.reason !== 'string' || !isTime(t.since) || !isTime(t.updatedAt) || !isTime(t.holdsAt)
+    || typeof t.projectsRoot !== 'string' || !isDirHolds(t.dirs) || (t.endedAt !== undefined && !isTime(t.endedAt)))) throw new Error('not a hold record');
+  const { v: _v, ...rec } = p;
+  return rec as unknown as HoldFile;
 }
 
-const holdsUnreadable = (what: string, err: unknown): Error =>
-  fail(NOTE_HOLDS_UNREADABLE, `${HOLDS_DIR}${what} cannot be read (${(err as Error).message}); notes are not imported until it is repaired; deleting it releases the notes it holds`);
+const holdsUnreadable = (what: string, err: unknown): Error => Object.assign(
+  fail(NOTE_HOLDS_UNREADABLE, `${HOLDS_DIR}${what} cannot be read (${(err as Error).message}); notes are not imported until it can be read`),
+  { cause: causeOf(err) });
 
 const holdFile = (sessionId: string): string => path.join(holdsDir(), sessionFileName(sessionId));
 
@@ -541,85 +525,106 @@ const holdCount = (dirs: DirHolds): number => Object.values(dirs).reduce((sum, f
 function writeHoldFile(file: string, rec: HoldFile): void {
   try {
     if (holdCount(rec.firm) === 0 && rec.tentative === undefined) { fs.rmSync(file, { force: true }); return; }
-    fs.mkdirSync(holdsDir(), { recursive: true, mode: 0o700 });
-    const temp = `${file}.${process.pid}.tmp`;
-    fs.writeFileSync(temp, JSON.stringify({ v: 2, ...rec, rev: rec.rev + 1 }), { mode: 0o600 });
-    fs.renameSync(temp, file);
+    writeFileAtomic(file, JSON.stringify({ v: HOLDS_VERSION, ...rec, rev: rec.rev + 1 }));
   } catch (err) {
     throw fail(NOTE_HOLDS_UNWRITABLE, `${HOLDS_DIR}/${path.basename(file)} could not be written (${codeOf(err)}); nothing was released`);
   }
 }
 
+/** Adds `from` to `into`; an entry already there stays (content held earlier is never dropped, an unreadable note keeps its first time). */
 const mergeDirHolds = (into: DirHolds, from: DirHolds): void => {
-  for (const [dirId, files] of Object.entries(from)) into[dirId] = { ...(into[dirId] ?? {}), ...files };
+  for (const [dirId, files] of Object.entries(from)) into[dirId] = { ...files, ...(into[dirId] ?? {}) };
 };
 
-/** The hash of every candidate note, read before the lock is taken: `?<now>` for one that cannot be read. */
+/** The entries of every candidate note, read before the lock is taken: by content, or `?<path>` for one that cannot be read. */
 function hashNotes(realDir: string, candidates: Iterable<string>, now: number): Record<string, string> {
   const forDir: Record<string, string> = {};
   for (const real of candidates) {
     let st: fs.Stats;
-    try { st = fs.lstatSync(real); } catch { continue; }
+    try { st = fs.lstatSync(real); } catch (err) {
+      if (notThere(err)) continue;
+      throw folderUnreadable(err);
+    }
     if (!st.isFile() || !real.toLowerCase().endsWith('.md') || !real.startsWith(realDir + path.sep)) continue;
     // A note over the size limit is refused by the importer anyway: there is nothing to hold, and it is not read.
     if (st.size > NOTE_FILE_MAX_BYTES) continue;
     const rel = relPath(realDir, real);
-    try { forDir[rel] = sha256(fs.readFileSync(real)); } catch { forDir[rel] = `?${now}`; }
+    try { forDir[sha256(fs.readFileSync(real))] = rel; } catch {
+      const [key, value] = unreadableEntry(rel, st, now);
+      forDir[key] = value;
+    }
   }
   return forDir;
 }
 
-/** The notes of a folder changed in `[sinceMs, untilMs]` (both optional ends). */
+/** The notes of a folder changed (modified or moved in) since `sinceMs` and written no later than `untilMs`; throws on a folder that cannot be listed. */
 function notesTouchedBetween(realDir: string, sinceMs: number, untilMs = Number.POSITIVE_INFINITY): string[] {
   let files: string[];
-  try { files = discover(realDir).files; } catch { return []; }
-  return files.filter((abs) => { try { const t = touchedAt(fs.lstatSync(abs)); return t >= sinceMs && t <= untilMs; } catch { return false; } });
+  try { files = discover(realDir).files; } catch (err) {
+    if (notThere(err)) return [];
+    throw folderUnreadable(err);
+  }
+  return files.filter((abs) => {
+    let st: fs.Stats;
+    try { st = fs.lstatSync(abs); } catch (err) {
+      if (notThere(err)) return false;
+      throw folderUnreadable(err);
+    }
+    return touchedAt(st) >= sinceMs && writtenAt(st) <= untilMs;
+  });
 }
 
 /**
  * A private session imports no note. The note files it wrote or named, in this
  * folder, are recorded by CONTENT HASH in a small file of its own beside the
- * database: no later import reads that content, whatever path it has, so a
- * `touch`, a rename, a `mv` or a copy does not release it. Content that is
- * different (rewritten later) imports as usual; an already imported note with
- * the same content is unaffected.
+ * database: no later import of any folder reads that content, whatever path it
+ * has, so a `touch`, a rename, a `mv` or a copy does not release it. Content
+ * that is different (rewritten later) imports as usual; an already imported
+ * note with the same content is unaffected.
  *
  * `paths` are files its tool calls name. `sinceMs` adds every note in the
- * folder changed (modified or moved in) since then, up to `untilMs` when given.
+ * folder changed since then, written no later than `untilMs` when given.
  * A note that cannot be read is recorded as unreadable, with the time: the
  * folder then waits on everything changed since, until that note can be read
  * (see `readPrivateState`). With `tentative`, the holds are the provisional
- * kind kept while the session cannot be checked. Throws when the record is
- * damaged (it is never overwritten), cannot be written, or the lock cannot be
- * had in time; the caller reports it. Returns how many notes are held.
+ * kind kept while the session cannot be checked; without `dir`, only that
+ * record (the wait) is written. Throws when a folder cannot be listed, when
+ * the record is damaged (it is never overwritten), cannot be written, or the
+ * lock cannot be had in time; the caller reports it. Returns how many notes
+ * are held.
  */
 export function holdOutNoteFiles(opts: {
-  dir: string; sessionId: string; paths: readonly string[]; sinceMs?: number; untilMs?: number; transcript?: string;
+  dir?: string; sessionId: string; paths: readonly string[]; sinceMs?: number; untilMs?: number; transcript?: string;
   tentative?: { reason: string; projectsRoot?: string; holdsAt?: number }; now?: number; deadlineAt?: number;
 }): number {
   const now = opts.now ?? Date.now();
-  const realDir = fs.realpathSync(opts.dir);
-  const dirId = dirIdOf(realDir);
-  const candidates = new Set<string>();
-  for (const candidate of opts.paths) {
-    try { candidates.add(fs.realpathSync(candidate)); } catch { /* a path that no longer exists holds nothing */ }
+  const realDir = opts.dir === undefined ? undefined : fs.realpathSync(opts.dir);
+  const forDir: Record<string, string> = {};
+  if (realDir !== undefined) {
+    const candidates = new Set<string>();
+    for (const candidate of opts.paths) {
+      try { candidates.add(fs.realpathSync(candidate)); } catch (err) {
+        if (!notThere(err)) throw folderUnreadable(err); // a path that no longer exists holds nothing
+      }
+    }
+    if (opts.sinceMs !== undefined) for (const abs of notesTouchedBetween(realDir, opts.sinceMs, opts.untilMs)) candidates.add(abs);
+    Object.assign(forDir, hashNotes(realDir, candidates, now));
   }
-  if (opts.sinceMs !== undefined) for (const abs of notesTouchedBetween(realDir, opts.sinceMs, opts.untilMs)) candidates.add(abs);
-  const forDir = hashNotes(realDir, candidates, now);
+  const held: DirHolds = realDir === undefined ? {} : { [dirIdOf(realDir)]: forDir };
   updateHold(holdFile(opts.sessionId), opts.deadlineAt, (found) => {
     const rec: HoldFile = found ?? { rev: 0, session: opts.sessionId, firm: {} };
     if (opts.transcript !== undefined) rec.transcript = opts.transcript;
     if (opts.tentative) {
       const prior = rec.tentative;
       const dirs = prior?.dirs ?? {};
-      mergeDirHolds(dirs, { [dirId]: forDir });
+      mergeDirHolds(dirs, held);
       rec.tentative = {
         reason: opts.tentative.reason, since: prior?.since ?? now, updatedAt: now,
         holdsAt: opts.tentative.holdsAt ?? prior?.holdsAt ?? now,
-        projectsRoot: opts.tentative.projectsRoot ?? prior?.projectsRoot ?? projectsRootOf(realDir), dirs,
+        projectsRoot: opts.tentative.projectsRoot ?? prior?.projectsRoot ?? (realDir === undefined ? '' : projectsRootOf(realDir)), dirs,
       };
     } else {
-      mergeDirHolds(rec.firm, { [dirId]: forDir });
+      mergeDirHolds(rec.firm, held);
     }
     return rec;
   });
@@ -693,39 +698,72 @@ function readAllMarkers(): Array<{ file: string; marker: Marker }> {
   return out;
 }
 
-/** The session's last write: its marker's last sign of life or its transcripts', whichever is later; undefined when its files cannot be listed. */
-function lastActivity(updatedAt: number, transcript: string | undefined): number | undefined {
+/** The session's last write: its marker's last sign of life or its transcripts', whichever is later; undefined when its files cannot be listed in time. */
+function lastActivity(updatedAt: number, transcript: string | undefined, deadlineAt: number): number | undefined {
   if (typeof transcript !== 'string' || transcript === '') return updatedAt;
-  const written = sessionLastWriteMs(transcript);
+  const written = sessionLastWriteMs(transcript, deadlineAt);
   return written === undefined ? undefined : Math.max(updatedAt, written);
 }
 
+/** Every one of `times` is more than `PRIVATE_WINDOW_MS` before `now`. */
+const isIdle = (now: number, ...times: number[]): boolean => times.every((t) => now - t > PRIVATE_WINDOW_MS);
+
 /**
- * A private session not heard from for `PRIVATE_WINDOW_MS`, whose transcripts
- * have also not been written for that long, is gone (killed, or idle for a
- * night) without having recorded its last holds. What it may have written is
- * held by content, once, up to its LAST ACTIVITY, not up to now: in every
- * folder it reached, the notes changed while it ran; in every other folder of
- * its projects root, the notes changed after its last recorded holds. Holds
- * first, then the marker says so. A session whose files cannot be listed is
- * treated as live (it keeps the wait).
+ * A session gone idle (killed, or quiet for a night) without having recorded
+ * its last holds: what it may have written is held by content, once, up to its
+ * LAST ACTIVITY, not up to now, in every notes folder of its projects roots
+ * and every folder it reached: since its start in the folders it reached,
+ * since its last recorded holds in the others, and never before `floor` (what
+ * an earlier finalize already held up to). One rule for a private session and
+ * for one that could not be checked (`tentative`), whichever folder is
+ * imported first.
  */
-function finalizeIdleMarker(entry: { file: string; marker: Marker }, now: number, deadlineAt: number): 'live' | 'finalized' {
-  const { marker } = entry;
-  if (now - marker.updatedAt <= PRIVATE_WINDOW_MS) return 'live';
-  const last = lastActivity(marker.updatedAt, marker.transcript);
-  if (last === undefined || now - last <= PRIVATE_WINDOW_MS) return 'live';
-  const reached = new Set(marker.dirs);
-  const all = marker.projectsRoot ? projectMemoryFolders(marker.projectsRoot).folders : [];
-  for (const dir of new Set([...reached, ...all])) {
-    if (!fs.existsSync(dir)) continue;
-    holdOutNoteFiles({ dir, sessionId: marker.session, paths: [], sinceMs: reached.has(dir) ? marker.startedAt : marker.holdsAt, untilMs: last, deadlineAt, now });
+function holdIdleSession(s: {
+  sessionId: string; roots: readonly string[]; reached: readonly string[]; startedAt: number; holdsAt: number; last: number;
+  floor?: number; tentative?: string; now: number; deadlineAt: number;
+}): void {
+  const reached = new Set(s.reached);
+  for (const dir of new Set([...reached, ...s.roots.filter(Boolean).flatMap(projectMemoryFolders)])) {
+    try { fs.lstatSync(dir); } catch (err) {
+      if (notThere(err)) continue; // a folder the session would have had, never made
+      throw folderUnreadable(err);
+    }
+    holdOutNoteFiles({
+      dir, sessionId: s.sessionId, paths: [], sinceMs: Math.max(reached.has(dir) ? s.startedAt : s.holdsAt, s.floor ?? 0), untilMs: s.last,
+      ...(s.tentative === undefined ? {} : { tentative: { reason: s.tentative } }), deadlineAt: s.deadlineAt, now: s.now,
+    });
   }
-  withPrivateStateLock(getMemeshDirFromDbPath(), deadlineAt, () => {
-    const again = readMarker(entry.file);
-    if (again && again.finalizedAt === undefined && again.updatedAt === marker.updatedAt) writeMarker(entry.file, { ...again, finalizedAt: now });
+}
+
+/**
+ * Whether a private session's marker makes this import wait, and from when.
+ * A session not heard from for `PRIVATE_WINDOW_MS`, whose transcripts have also
+ * not been written for that long, is idle: its notes are held
+ * (`holdIdleSession`), then its marker records the activity they were held up
+ * to (`finalizedAt`), and it imposes no wait. A finalized session whose
+ * transcripts are written after that is live again, prompt or not. A session
+ * whose files cannot be listed is treated as live. Returns the wait's start,
+ * or undefined for none.
+ */
+function privateSessionWait(entry: { file: string; marker: Marker }, root: string, now: number, deadlineAt: number): number | undefined {
+  const { marker } = entry;
+  const live = marker.finalizedAt ?? marker.holdsAt;
+  if (marker.finalizedAt === undefined && !isIdle(now, marker.updatedAt)) return live;
+  const last = lastActivity(marker.updatedAt, marker.transcript, deadlineAt);
+  if (marker.finalizedAt !== undefined && last !== undefined && last <= marker.finalizedAt) return undefined; // idle, and held already
+  if (last === undefined || !isIdle(now, marker.updatedAt, last)) return live;
+  holdIdleSession({
+    sessionId: marker.session, roots: [marker.projectsRoot, ...(isCodexRollout(marker.transcript) ? [root] : [])], reached: marker.dirs, startedAt: marker.startedAt, holdsAt: marker.holdsAt,
+    last, floor: marker.finalizedAt, now, deadlineAt,
   });
-  return 'finalized';
+  const finalized = withPrivateStateLock(getMemeshDirFromDbPath(), deadlineAt, () => {
+    const again = readMarker(entry.file);
+    // Renewed, re-marked or ended meanwhile: that writer knew more, and this import waits.
+    if (!again || again.endedAt !== undefined || again.updatedAt !== marker.updatedAt || again.finalizedAt !== marker.finalizedAt) return false;
+    writeMarker(entry.file, { ...again, finalizedAt: last });
+    return true;
+  });
+  return finalized ? undefined : live;
 }
 
 /** What the importer of one folder must respect this run. */
@@ -742,10 +780,11 @@ interface FolderPrivacy {
  * Everything private that bears on importing `realDir`, in the order that
  * keeps it safe: markers first (a writer records holds before it ends or
  * finalizes a marker, so a wait seen here covers what is not yet held), then
- * the holds. Sessions held only tentatively for this folder are decided again
+ * the holds of every session in every folder (content is held wherever it
+ * turns up). Sessions held only tentatively for this folder are decided again
  * (`decidePrivacy`, within the deadline, at most `REDECIDE_PER_RUN`), and a
- * held note that could not be read is read again; the changes are applied
- * under the lock.
+ * held note of this folder that could not be read is read again; the changes
+ * are applied under the lock.
  */
 function readPrivateState(realDir: string, now: number, deadlineAt: number, memeshDir: string): FolderPrivacy {
   const dirId = dirIdOf(realDir);
@@ -753,71 +792,86 @@ function readPrivateState(realDir: string, now: number, deadlineAt: number, meme
   const out: FolderPrivacy = { firm: new Set(), tentative: new Set(), redecideLeft: 0 };
   const wait = (since: number): void => { out.waitSince = out.waitSince === undefined ? since : Math.min(out.waitSince, since); };
 
+  // A Codex session writes into Claude Code's notes folders, wherever Claude Code keeps them (its own idea of the projects root may differ).
+  const ofThisRoot = (projectsRoot: string, transcript: string | undefined): boolean => projectsRoot === root || isCodexRollout(transcript);
   for (const entry of readAllMarkers()) {
     const { marker } = entry;
-    if (marker.endedAt !== undefined || marker.finalizedAt !== undefined) continue;
-    const mine = marker.dirs.includes(realDir) || marker.projectsRoot === root;
-    if (!mine) continue;
-    if (finalizeIdleMarker(entry, now, deadlineAt) === 'finalized') continue;
-    wait(marker.holdsAt);
+    if (marker.endedAt !== undefined || (!marker.dirs.includes(realDir) && !ofThisRoot(marker.projectsRoot, marker.transcript))) continue;
+    const since = privateSessionWait(entry, root, now, deadlineAt);
+    if (since !== undefined) wait(since);
   }
 
   let redecided = 0;
   for (const { name, rec } of readAllHolds()) {
     let current = rec;
+    const reread = (): void => { current = readHoldFile(path.join(holdsDir(), name)) ?? { ...current, firm: {}, tentative: undefined }; };
     const t = current.tentative;
-    if (t && (t.dirs[dirId] !== undefined || (t.endedAt === undefined && t.projectsRoot === root))) {
+    if (t && (t.dirs[dirId] !== undefined || (t.endedAt === undefined && ofThisRoot(t.projectsRoot, current.transcript)))) {
       // A record that does not say which transcript was not checkable can only be decided on its marker.
       const decidable = current.transcript !== undefined || t.reason === 'marker_unreadable';
       if (!decidable) {
         // kept as it is: nothing can settle it but its own session's next hook
       } else if (redecided < REDECIDE_PER_RUN && Date.now() < deadlineAt) {
         redecided++;
-        const state = decidePrivacy({ sessionId: current.session, transcriptPath: current.transcript, memeshDir, deadlineAt, cacheDir: path.join(memeshDir, 'private-check-cache') });
-        if (state.state !== 'unchecked' && settleTentativeHolds(current.session, state.state, { expectRev: current.rev, deadlineAt })) {
-          current = readHoldFile(path.join(holdsDir(), name)) ?? { ...current, firm: {}, tentative: undefined };
-        }
+        const state = decidePrivacy({ sessionId: current.session, transcriptPath: current.transcript, memeshDir, deadlineAt, cacheDir: privateCheckCacheDir(memeshDir) });
+        if (state.state !== 'unchecked' && settleTentativeHolds(current.session, state.state, { expectRev: current.rev, deadlineAt })) reread();
       } else {
         out.redecideLeft++;
       }
     }
     const t2 = current.tentative;
-    if (t2 && t2.endedAt === undefined && t2.projectsRoot === root) {
-      const last = lastActivity(t2.updatedAt, current.transcript);
-      if (last !== undefined && now - t2.updatedAt > PRIVATE_WINDOW_MS && now - last > PRIVATE_WINDOW_MS) {
-        // Gone without being settled: what it may have written since its last holds is held (provisionally) up to its last activity; the wait ends.
-        holdOutNoteFiles({ dir: realDir, sessionId: current.session, paths: [], sinceMs: t2.holdsAt, untilMs: last, tentative: { reason: t2.reason }, deadlineAt, now });
+    if (t2 && t2.endedAt === undefined && ofThisRoot(t2.projectsRoot, current.transcript)) {
+      const last = isIdle(now, t2.updatedAt) ? lastActivity(t2.updatedAt, current.transcript, deadlineAt) : undefined;
+      if (last !== undefined && isIdle(now, last)) {
+        // Gone without being settled: what it may have written since its last holds is held (provisionally) in every folder; the wait ends.
+        holdIdleSession({ sessionId: current.session, roots: [root], reached: [], startedAt: t2.holdsAt, holdsAt: t2.holdsAt, last, tentative: t2.reason, now, deadlineAt });
         endTentativeWait(current.session, now, deadlineAt);
-        current = readHoldFile(path.join(holdsDir(), name)) ?? current;
+        reread();
       } else {
         wait(t2.holdsAt);
       }
     }
     for (const [kind, dirs] of [['firm', current.firm], ['tentative', current.tentative?.dirs ?? {}]] as const) {
-      for (const [rel, hash] of Object.entries(dirs[dirId] ?? {})) {
-        if (!isUnreadableMark(hash)) { (kind === 'firm' ? out.firm : out.tentative).add(hash); continue; }
-        // A held note that could not be read: read it now. Until it can be, everything changed in the folder since it was held waits
-        // (a rename or a copy changes the change time, so the note cannot slip out under another name).
-        const since = unreadableSince(hash);
-        let resolved: Record<string, string> | undefined;
-        try {
-          resolved = { [rel]: sha256(fs.readFileSync(path.join(realDir, rel))) };
-        } catch (err) {
-          if (codeOf(err) === 'ENOENT') resolved = hashNotes(realDir, notesTouchedBetween(realDir, since), now); // gone: whatever changed since may be it
+      const into = kind === 'firm' ? out.firm : out.tentative;
+      for (const [id, entries] of Object.entries(dirs)) {
+        for (const [key, value] of Object.entries(entries)) {
+          if (!isUnreadableKey(key)) { into.add(key); continue; }
+          if (id !== dirId) continue; // a note that could not be read makes only its own folder wait
+          const mark = parseUnreadable(value) as UnreadableMark; // validated when the record was read
+          const resolved = resolveUnreadable(realDir, key.slice(1), mark, now);
+          if (resolved === undefined) { wait(mark.since); continue; }
+          updateHold(path.join(holdsDir(), name), deadlineAt, (again) => {
+            const holds = kind === 'firm' ? again?.firm : again?.tentative?.dirs;
+            if (!holds || holds[dirId]?.[key] !== value) return undefined;
+            delete holds[dirId][key];
+            mergeDirHolds(holds, { [dirId]: resolved });
+            return again;
+          });
+          for (const h of Object.keys(resolved)) into.add(h);
         }
-        if (resolved === undefined || Object.values(resolved).some(isUnreadableMark)) { wait(since); continue; }
-        updateHold(path.join(holdsDir(), name), deadlineAt, (again) => {
-          const target = kind === 'firm' ? again?.firm : again?.tentative?.dirs;
-          if (!again || target?.[dirId]?.[rel] !== hash) return undefined;
-          delete target[dirId][rel];
-          target[dirId] = { ...target[dirId], ...resolved };
-          return again;
-        });
-        for (const h of Object.values(resolved)) (kind === 'firm' ? out.firm : out.tentative).add(h);
       }
     }
   }
   return out;
+}
+
+/**
+ * A held note that could not be read, read now: its content when the very same
+ * file (inode, size, modification time) can be read; when it is gone or was
+ * changed, every note changed in the folder since it was held (one of them may
+ * be it, under another name), marked `!` so doctor can say so. Undefined while
+ * that cannot be told yet (the folder keeps waiting).
+ */
+function resolveUnreadable(realDir: string, rel: string, mark: UnreadableMark, now: number): Record<string, string> | undefined {
+  const file = path.join(realDir, rel);
+  let st: fs.Stats | undefined;
+  try { st = fs.lstatSync(file); } catch (err) { if (!notThere(err)) return undefined; }
+  if (st && st.ino === mark.ino && st.size === mark.size && st.mtimeMs === mark.mtime) {
+    try { return { [sha256(fs.readFileSync(file))]: rel }; } catch { return undefined; }
+  }
+  const instead = hashNotes(realDir, notesTouchedBetween(realDir, mark.since), now);
+  if (Object.keys(instead).some(isUnreadableKey)) return undefined;
+  return Object.fromEntries(Object.entries(instead).map(([hash, p]) => [hash, `!${p}`]));
 }
 
 /** The reasons an unchecked hold can carry, as doctor may quote them: never the text in the file. */
@@ -841,9 +895,17 @@ const shownName = (name: string): string => (SAFE_FILE_NAME.test(name) ? name : 
 
 export interface PrivateHoldSummary {
   sessions: number; notes: number; holdsFolder: string; markersFolder: string;
-  unsettled: Array<{ session: string; file: string; reason: string; reasonText: string; kind: 'transient' | 'persistent'; since: number; notes: number; transcript?: string }>;
+  /**
+   * Sessions that could not be checked: `session` is the id as the file is named (`(a file name memesh did not write)` otherwise),
+   * `waitSince` set while other imports still wait on notes changed since then, until the session is decided or idle for
+   * `PRIVATE_WINDOW_MS` after `lastHeard` (its transcripts' writes can make that later).
+   */
+  unsettled: Array<{ session: string; file: string; reason: string; reasonText: string; kind: 'transient' | 'persistent'; since: number; notes: number; transcript?: string; waitSince?: number; lastHeard: number }>;
   waitingOnUnreadable: Array<{ file: string; notes: number; since: number }>;
-  damaged: Array<{ folder: 'holds' | 'markers'; file: string }>;
+  /** Notes held in place of a held note that could not be read and was then removed or changed: every note changed in its folder since. */
+  heldInPlaceOfUnreadable: Array<{ file: string; notes: number }>;
+  /** A record that cannot be read: for its permissions, or because its content is not one. */
+  damaged: Array<{ folder: 'holds' | 'markers'; file: string; cause: 'permission' | 'damaged' }>;
   /** A folder that exists and cannot be listed: what it holds cannot be told, and every import stops on it. */
   unreadableFolders: Array<'holds' | 'markers'>;
 }
@@ -856,7 +918,7 @@ export interface PrivateHoldSummary {
  * shape memesh writes; no text is taken from a file.
  */
 export function summarizeNoteHolds(now = Date.now()): PrivateHoldSummary {
-  const out: PrivateHoldSummary = { sessions: 0, notes: 0, holdsFolder: holdsDir(), markersFolder: markersDir(), unsettled: [], waitingOnUnreadable: [], damaged: [], unreadableFolders: [] };
+  const out: PrivateHoldSummary = { sessions: 0, notes: 0, holdsFolder: holdsDir(), markersFolder: markersDir(), unsettled: [], waitingOnUnreadable: [], heldInPlaceOfUnreadable: [], damaged: [], unreadableFolders: [] };
   const list = (dir: string, folder: 'holds' | 'markers'): string[] => {
     try { return fs.readdirSync(dir).filter((n) => n.endsWith('.json')); } catch (err) {
       if (codeOf(err) !== 'ENOENT') out.unreadableFolders.push(folder); // not there is nothing held; anything else is said
@@ -865,26 +927,30 @@ export function summarizeNoteHolds(now = Date.now()): PrivateHoldSummary {
   };
   for (const name of list(holdsDir(), 'holds')) {
     let rec: HoldFile | undefined;
-    try { rec = readHoldFile(path.join(holdsDir(), name)); } catch { out.damaged.push({ folder: 'holds', file: shownName(name) }); continue; }
+    try { rec = readHoldFile(path.join(holdsDir(), name)); } catch (err) { out.damaged.push({ folder: 'holds', file: shownName(name), cause: (err as { cause: 'permission' | 'damaged' }).cause }); continue; }
     if (!rec) continue;
     out.sessions++;
     const firm = holdCount(rec.firm);
     out.notes += firm;
-    const unread = [...Object.values(rec.firm), ...Object.values(rec.tentative?.dirs ?? {})].flatMap((files) => Object.values(files)).filter(isUnreadableMark);
-    if (unread.length > 0) out.waitingOnUnreadable.push({ file: shownName(name), notes: unread.length, since: Math.min(...unread.map(unreadableSince)) });
+    const entries = [...Object.values(rec.firm), ...Object.values(rec.tentative?.dirs ?? {})].flatMap((files) => Object.entries(files));
+    const unread = entries.filter(([key]) => isUnreadableKey(key)).map(([, value]) => (parseUnreadable(value) as UnreadableMark).since);
+    if (unread.length > 0) out.waitingOnUnreadable.push({ file: shownName(name), notes: unread.length, since: Math.min(...unread) });
+    const instead = entries.filter(([key, value]) => !isUnreadableKey(key) && value.startsWith('!')).length;
+    if (instead > 0) out.heldInPlaceOfUnreadable.push({ file: shownName(name), notes: instead });
     if (rec.tentative) {
       const n = holdCount(rec.tentative.dirs);
       out.notes += n;
       const reason = Object.prototype.hasOwnProperty.call(UNCHECKED_REASON_TEXT, rec.tentative.reason) ? rec.tentative.reason : 'unrecognised';
       out.unsettled.push({
-        session: shownName(name), file: shownName(name), reason, reasonText: UNCHECKED_REASON_TEXT[reason] ?? 'an unrecognised reason',
+        session: shownName(name).replace(/\.json$/, ''), file: shownName(name), reason, reasonText: UNCHECKED_REASON_TEXT[reason] ?? 'an unrecognised reason',
         kind: reason === 'unrecognised' ? 'persistent' : uncheckedKind(reason as UncheckedReason, rec.tentative.since, now),
         since: rec.tentative.since, notes: n, ...(rec.transcript === undefined ? {} : { transcript: rec.transcript }),
+        ...(rec.tentative.endedAt === undefined ? { waitSince: rec.tentative.holdsAt } : {}), lastHeard: rec.tentative.updatedAt,
       });
     }
   }
   for (const name of list(markersDir(), 'markers')) {
-    try { readMarker(path.join(markersDir(), name)); } catch { out.damaged.push({ folder: 'markers', file: shownName(name) }); }
+    try { readMarker(path.join(markersDir(), name)); } catch (err) { out.damaged.push({ folder: 'markers', file: shownName(name), cause: (err as { cause: 'permission' | 'damaged' }).cause }); }
   }
   return out;
 }
@@ -912,7 +978,7 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
   const maxBytes = opts.maxBytes ?? NOTE_FILE_MAX_BYTES;
   const realDir = fs.realpathSync(opts.dir);
   if (!fs.statSync(realDir).isDirectory()) throw new Error(`not a directory: ${opts.dir}`);
-  const dirId = createHash('sha256').update(realDir).digest('hex').slice(0, 16);
+  const dirId = dirIdOf(realDir);
 
   const { files, symlinks } = discover(realDir);
   const presentRels = new Set(files.map((abs) => relPath(realDir, abs)));
@@ -935,7 +1001,7 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
 
   // First: a session that has gone idle has its notes held now, so the holds read next include them.
   const now = opts.now ?? Date.now();
-  const privacy = readPrivateState(realDir, now, opts.deadlineAt ?? Date.now() + DEFAULT_LOCK_WAIT_MS, getMemeshDirFromDbPath());
+  const privacy = readPrivateState(realDir, now, lockDeadline(opts.deadlineAt), getMemeshDirFromDbPath());
   const privateSince = privacy.waitSince;
   result.redecideLeft = privacy.redecideLeft;
 
@@ -1095,7 +1161,7 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
       // The file was listed by the directory walk and is gone or unreachable
       // now. It declares no name, which is what the missing sweep needs to
       // know: a memory recording this path no longer has it.
-      skip(`unreadable: ${(err as NodeJS.ErrnoException).code ?? 'error'}`);
+      skip(`unreadable: ${codeOf(err)}`);
       declaredNameAt.set(rel, '');
       continue;
     }
@@ -1145,7 +1211,7 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
       if (!real.startsWith(realDir + path.sep)) { unreachableSkip('resolves outside the directory'); continue; }
       raw = fs.readFileSync(real);
     } catch (err) {
-      unreachableSkip(`unreadable: ${(err as NodeJS.ErrnoException).code ?? 'error'}`);
+      unreachableSkip(`unreadable: ${codeOf(err)}`);
       continue;
     }
 
@@ -1157,10 +1223,11 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     // notes cannot keep an ordinary note out (they are not read again until they
     // change or are released).
     const contentHash = sha256(raw);
-    if (heldAs(contentHash)) {
+    const heldKind = heldAs(contentHash);
+    if (heldKind) {
       read--;
       countHeld(rel, contentHash);
-      nextSkips[rel] = { mtime: stat.mtimeMs, size: stat.size, reason: heldAs(contentHash) === 'private' ? NOTE_PRIVATE_HOLD_REASON : NOTE_UNCHECKED_HOLD_REASON, held: contentHash };
+      nextSkips[rel] = { mtime: stat.mtimeMs, size: stat.size, reason: heldKind === 'private' ? NOTE_PRIVATE_HOLD_REASON : NOTE_UNCHECKED_HOLD_REASON, held: contentHash };
       continue;
     }
 
@@ -1197,7 +1264,7 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
       name,
       stat,
       unchanged: false,
-      contentHash: createHash('sha256').update(raw).digest('hex'),
+      contentHash,
       type,
       title: truncateTitle(cleanDescription || observations[0]),
       observations,

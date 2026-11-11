@@ -414,7 +414,7 @@ process.stdin.on('end', async () => {
     // Keep the agent's last message as the project's handoff. Ahead of the
     // early exits below on purpose: a short or read-only turn is still a place
     // the work stopped, and this records its own outcome under `handoff-capture`.
-    runStopHandoff(inputData, { captureEnabled, privateSession, privateUnchecked: privateState === 'unchecked', project: stopProject });
+    runStopHandoff(inputData, { captureEnabled, privacySkip: privacy.skipReason, project: stopProject });
 
     if (!captureEnabled) {
       record('skipped', SKIP_REASONS.autoCaptureOff);

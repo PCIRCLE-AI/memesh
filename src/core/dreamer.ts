@@ -3,11 +3,10 @@
 import type { MemeshDatabase } from '../storage/sqlite.js';
 
 import { createHash } from 'node:crypto';
-import path from 'node:path';
 
 import { getMemeshDirFromDbPath, getProjectName, holdsSecret, redactSecretList, redactSecrets } from './paths.js';
 
-import { decidePrivacy } from './private-session.js';
+import { decidePrivacy, privateCheckCacheDir } from './private-session.js';
 import { readTranscriptSnapshot, scanTranscripts, transcriptMatchesProject } from './transcript-source.js';
 
 import { parseVisibleConversation } from './transcript-extractor.js';
@@ -307,7 +306,7 @@ export function executeWorkPackage(
         const memeshDir = getMemeshDirFromDbPath();
         const privacy = decidePrivacy({
           transcriptPath: session.path, snapshot: snapshot.bytes, sessionId: session.sessionId, memeshDir,
-          deadlineAt: Date.now() + DREAMER_PRIVACY_CHECK_MS, cacheDir: path.join(memeshDir, 'private-check-cache'),
+          deadlineAt: Date.now() + DREAMER_PRIVACY_CHECK_MS, cacheDir: privateCheckCacheDir(memeshDir),
         });
         if (privacy.state === 'yes') { skip('private_session'); continue; }
         if (privacy.state === 'unchecked') { skip('private_unchecked'); continue; }

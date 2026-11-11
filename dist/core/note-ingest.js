@@ -6,8 +6,9 @@ import { getMemeshDirFromDbPath } from './paths.js';
 import { remember } from './operations.js';
 import { sanitizeNoteText, splitObservations, NOTE_DEFAULT_TYPE, NOTE_MAX_OBSERVATIONS } from './note-derive.js';
 import { truncateTitle } from './title.js';
-import { decidePrivacy, PRIVATE_WINDOW_MS, sessionFileName, sessionLastWriteMs, uncheckedKind } from './private-session.js';
+import { decidePrivacy, privateCheckCacheDir, PRIVATE_WINDOW_MS, removeStaleTemps, sessionFileName, sessionLastWriteMs, uncheckedKind, writeFileAtomic } from './private-session.js';
 import { PRIVATE_STATE_BUSY, withPrivateStateLock } from './private-state-lock.js';
+import { isCodexRollout } from './host-transcript.js';
 export const NOTE_FILE_TAG = 'source:note-file';
 export const NOTE_FILE_MISSING_TAG = 'source:note-file:missing';
 export const NOTE_FILE_MAX_BYTES = 256 * 1024;
@@ -109,20 +110,21 @@ const sha256 = (data) => createHash('sha256').update(data).digest('hex');
 const dirIdOf = (realDir) => sha256(realDir).slice(0, 16);
 const codeOf = (err) => err?.code ?? 'error';
 const DEFAULT_LOCK_WAIT_MS = 5_000;
-const MARKER_KEEP_MS = 30 * 24 * 60 * 60 * 1000;
 const REDECIDE_PER_RUN = 10;
-const MAX_PROJECT_FOLDERS = 200;
 export const NOTE_MARKERS_UNREADABLE = 'MEMESH_NOTE_MARKERS_UNREADABLE';
 export const NOTE_MARKERS_DIR_UNREADABLE = 'MEMESH_NOTE_MARKERS_DIR_UNREADABLE';
 export const NOTE_MARKER_UNWRITABLE = 'MEMESH_NOTE_MARKER_UNWRITABLE';
 export const NOTE_HOLDS_UNREADABLE = 'MEMESH_NOTE_HOLDS_UNREADABLE';
 export const NOTE_HOLDS_DIR_UNREADABLE = 'MEMESH_NOTE_HOLDS_DIR_UNREADABLE';
 export const NOTE_HOLDS_UNWRITABLE = 'MEMESH_NOTE_HOLDS_UNWRITABLE';
+export const NOTE_FOLDER_UNREADABLE = 'MEMESH_NOTE_FOLDER_UNREADABLE';
 export { PRIVATE_STATE_BUSY };
 const fail = (code, message) => Object.assign(new Error(message), { code });
+const folderUnreadable = (err) => fail(NOTE_FOLDER_UNREADABLE, `a notes folder cannot be read (${codeOf(err)}); nothing is released until it can be`);
+const notThere = (err) => codeOf(err) === 'ENOENT' || codeOf(err) === 'ENOTDIR';
 export const NOTE_PRIVATE_HOLD_REASON = 'held out by a private session — not imported';
 export const NOTE_UNCHECKED_HOLD_REASON = 'held while a session could not be checked — not imported yet';
-function realPathOrExpected(dir) {
+export function realPathOrExpected(dir) {
     try {
         return fs.realpathSync(dir);
     }
@@ -138,42 +140,46 @@ export function projectMemoryFolders(projectsRoot) {
     try {
         entries = fs.readdirSync(projectsRoot, { withFileTypes: true });
     }
-    catch {
-        return { folders: [], complete: false };
+    catch (err) {
+        if (notThere(err))
+            return [];
+        throw folderUnreadable(err);
     }
     const folders = [];
-    let complete = true;
     for (const entry of entries) {
         if (!entry.isDirectory())
             continue;
-        if (folders.length >= MAX_PROJECT_FOLDERS) {
-            complete = false;
-            break;
-        }
         const dir = path.join(projectsRoot, entry.name, 'memory');
+        let st;
         try {
-            const st = fs.lstatSync(dir);
-            if (st.isDirectory() && !st.isSymbolicLink())
-                folders.push(fs.realpathSync(dir));
+            st = fs.lstatSync(dir);
         }
-        catch { }
+        catch (err) {
+            if (notThere(err))
+                continue;
+            throw folderUnreadable(err);
+        }
+        if (st.isDirectory())
+            folders.push(fs.realpathSync(dir));
     }
-    return { folders, complete };
+    return folders;
 }
 const touchedAt = (st) => Math.max(st.mtimeMs, st.ctimeMs);
-const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
+const writtenAt = (st) => Math.min(st.birthtimeMs || st.mtimeMs, st.mtimeMs);
+const isTime = (v) => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 8.64e15;
 function parseMarker(text) {
     const m = JSON.parse(text);
-    if (!m || typeof m !== 'object' || Array.isArray(m) || typeof m.session !== 'string' || !isNum(m.startedAt) || !isNum(m.updatedAt)
-        || !isNum(m.holdsAt) || typeof m.projectsRoot !== 'string' || !Array.isArray(m.dirs) || !m.dirs.every((d) => typeof d === 'string')
+    if (!m || typeof m !== 'object' || Array.isArray(m) || typeof m.session !== 'string' || !isTime(m.startedAt) || !isTime(m.updatedAt)
+        || !isTime(m.holdsAt) || typeof m.projectsRoot !== 'string' || !Array.isArray(m.dirs) || !m.dirs.every((d) => typeof d === 'string')
         || (m.transcript !== undefined && typeof m.transcript !== 'string')
-        || (m.endedAt !== undefined && !isNum(m.endedAt)) || (m.finalizedAt !== undefined && !isNum(m.finalizedAt))) {
+        || (m.endedAt !== undefined && !isTime(m.endedAt)) || (m.finalizedAt !== undefined && !isTime(m.finalizedAt))) {
         throw new Error('not a marker');
     }
     return m;
 }
 const markerFile = (sessionId) => path.join(markersDir(), sessionFileName(sessionId));
-const markerUnreadable = (name, err) => fail(NOTE_MARKERS_UNREADABLE, `${MARKERS_DIR}/${name} cannot be read (${err.message}); notes are not imported until it is rebuilt by its session or, for a session that has ended, deleted`);
+const causeOf = (err) => (['EACCES', 'EPERM'].includes(codeOf(err)) ? 'permission' : 'damaged');
+const markerUnreadable = (name, err) => Object.assign(fail(NOTE_MARKERS_UNREADABLE, `${MARKERS_DIR}/${name} cannot be read (${err.message}); notes are not imported until its session writes it again`), { cause: causeOf(err) });
 function readMarker(file) {
     let text;
     try {
@@ -193,10 +199,7 @@ function readMarker(file) {
 }
 function writeMarker(file, marker) {
     try {
-        fs.mkdirSync(markersDir(), { recursive: true, mode: 0o700 });
-        const temp = `${file}.${process.pid}.tmp`;
-        fs.writeFileSync(temp, JSON.stringify({ v: 2, ...marker }), { mode: 0o600 });
-        fs.renameSync(temp, file);
+        writeFileAtomic(file, JSON.stringify({ v: 2, ...marker }));
     }
     catch (err) {
         throw fail(NOTE_MARKER_UNWRITABLE, `${MARKERS_DIR}/${path.basename(file)} could not be written (${codeOf(err)})`);
@@ -249,94 +252,34 @@ function updateMarker(sessionId, deadlineAt, change) {
 export function endPrivateSession(sessionId, now = Date.now(), deadlineAt) {
     updateMarker(sessionId, deadlineAt, (marker) => ({ ...marker, endedAt: now }));
 }
-export function prunePrivateMarkers(now = Date.now(), max = 50, deadlineAt) {
-    let names;
-    try {
-        names = fs.readdirSync(markersDir());
-    }
-    catch (err) {
-        if (codeOf(err) === 'ENOENT')
-            return 0;
-        throw fail(NOTE_MARKERS_DIR_UNREADABLE, `${MARKERS_DIR} cannot be read (${codeOf(err)})`);
-    }
-    let removed = 0;
-    for (const name of names.filter((n) => n.endsWith('.json'))) {
-        if (removed >= max)
-            break;
-        const file = path.join(markersDir(), name);
-        let marker;
-        try {
-            marker = readMarker(file);
-        }
-        catch {
-            continue;
-        }
-        if (!marker || (marker.endedAt === undefined && marker.finalizedAt === undefined))
-            continue;
-        let gone;
-        if (typeof marker.transcript === 'string' && marker.transcript !== '') {
-            try {
-                fs.statSync(marker.transcript);
-                gone = false;
-            }
-            catch (err) {
-                gone = codeOf(err) === 'ENOENT';
-            }
-        }
-        else {
-            gone = now - marker.updatedAt > MARKER_KEEP_MS;
-        }
-        if (!gone)
-            continue;
-        withPrivateStateLock(getMemeshDirFromDbPath(), lockDeadline(deadlineAt), () => {
-            const again = readMarker(file);
-            if (again && (again.endedAt !== undefined || again.finalizedAt !== undefined))
-                fs.rmSync(file, { force: true });
-        });
-        removed++;
-    }
-    removeStaleTemps(markersDir(), names, now);
-    try {
-        removeStaleTemps(holdsDir(), fs.readdirSync(holdsDir()), now);
-    }
-    catch { }
-    return removed;
+export function removeStalePrivateStateTemps(now = Date.now()) {
+    removeStaleTemps(markersDir(), now);
+    removeStaleTemps(holdsDir(), now);
 }
-function removeStaleTemps(dir, names, now) {
-    for (const name of names.filter((n) => n.endsWith('.tmp'))) {
-        try {
-            const p = path.join(dir, name);
-            if (now - fs.statSync(p).mtimeMs > 60_000)
-                fs.rmSync(p, { force: true });
-        }
-        catch { }
-    }
+const HOLDS_VERSION = 3;
+const HASH_KEY = /^[0-9a-f]{64}$/;
+const isUnreadableKey = (key) => key.startsWith('?');
+function parseUnreadable(value) {
+    const [since, ino, size, mtime] = value.split(':').map(Number);
+    return isTime(since) && [ino, size, mtime].every((n) => Number.isFinite(n)) ? { since, ino, size, mtime } : undefined;
 }
-const isUnreadableMark = (hash) => hash.startsWith('?');
-const unreadableSince = (hash) => { const n = Number(hash.slice(1)); return Number.isFinite(n) ? n : 0; };
-const isDirHolds = (value) => {
-    if (!value || typeof value !== 'object' || Array.isArray(value))
-        return false;
-    return Object.values(value).every((files) => !!files && typeof files === 'object' && !Array.isArray(files)
-        && Object.values(files).every((hash) => typeof hash === 'string'));
-};
+const unreadableEntry = (rel, st, now) => [`?${rel}`, `${now}:${st.ino}:${st.size}:${st.mtimeMs}`];
+const isRecord = (value) => !!value && typeof value === 'object' && !Array.isArray(value);
+const isDirHolds = (value) => isRecord(value) && Object.values(value).every((files) => isRecord(files)
+    && Object.entries(files).every(([key, v]) => typeof v === 'string' && (HASH_KEY.test(key) || (isUnreadableKey(key) && parseUnreadable(v) !== undefined))));
 function parseHoldFile(text) {
     const p = JSON.parse(text);
-    if (!p || typeof p !== 'object' || Array.isArray(p) || !isDirHolds(p.firm) || typeof p.session !== 'string' || !isNum(p.rev)
+    if (!isRecord(p) || p.v !== HOLDS_VERSION || !isDirHolds(p.firm) || typeof p.session !== 'string' || !Number.isInteger(p.rev)
         || (p.transcript !== undefined && typeof p.transcript !== 'string'))
         throw new Error('not a hold record');
     const t = p.tentative;
-    if (t === undefined)
-        return { rev: p.rev, session: p.session, ...(p.transcript === undefined ? {} : { transcript: p.transcript }), firm: p.firm };
-    if (!t || typeof t !== 'object' || typeof t.reason !== 'string' || !isNum(t.since) || !isNum(t.updatedAt) || !isNum(t.holdsAt)
-        || typeof t.projectsRoot !== 'string' || !isDirHolds(t.dirs) || (t.endedAt !== undefined && !isNum(t.endedAt)))
+    if (t !== undefined && (!isRecord(t) || typeof t.reason !== 'string' || !isTime(t.since) || !isTime(t.updatedAt) || !isTime(t.holdsAt)
+        || typeof t.projectsRoot !== 'string' || !isDirHolds(t.dirs) || (t.endedAt !== undefined && !isTime(t.endedAt))))
         throw new Error('not a hold record');
-    return {
-        rev: p.rev, session: p.session, ...(p.transcript === undefined ? {} : { transcript: p.transcript }), firm: p.firm,
-        tentative: { reason: t.reason, since: t.since, updatedAt: t.updatedAt, holdsAt: t.holdsAt, projectsRoot: t.projectsRoot, dirs: t.dirs, ...(t.endedAt === undefined ? {} : { endedAt: t.endedAt }) },
-    };
+    const { v: _v, ...rec } = p;
+    return rec;
 }
-const holdsUnreadable = (what, err) => fail(NOTE_HOLDS_UNREADABLE, `${HOLDS_DIR}${what} cannot be read (${err.message}); notes are not imported until it is repaired; deleting it releases the notes it holds`);
+const holdsUnreadable = (what, err) => Object.assign(fail(NOTE_HOLDS_UNREADABLE, `${HOLDS_DIR}${what} cannot be read (${err.message}); notes are not imported until it can be read`), { cause: causeOf(err) });
 const holdFile = (sessionId) => path.join(holdsDir(), sessionFileName(sessionId));
 function readHoldFile(file) {
     let text;
@@ -362,10 +305,7 @@ function writeHoldFile(file, rec) {
             fs.rmSync(file, { force: true });
             return;
         }
-        fs.mkdirSync(holdsDir(), { recursive: true, mode: 0o700 });
-        const temp = `${file}.${process.pid}.tmp`;
-        fs.writeFileSync(temp, JSON.stringify({ v: 2, ...rec, rev: rec.rev + 1 }), { mode: 0o600 });
-        fs.renameSync(temp, file);
+        writeFileAtomic(file, JSON.stringify({ v: HOLDS_VERSION, ...rec, rev: rec.rev + 1 }));
     }
     catch (err) {
         throw fail(NOTE_HOLDS_UNWRITABLE, `${HOLDS_DIR}/${path.basename(file)} could not be written (${codeOf(err)}); nothing was released`);
@@ -373,7 +313,7 @@ function writeHoldFile(file, rec) {
 }
 const mergeDirHolds = (into, from) => {
     for (const [dirId, files] of Object.entries(from))
-        into[dirId] = { ...(into[dirId] ?? {}), ...files };
+        into[dirId] = { ...files, ...(into[dirId] ?? {}) };
 };
 function hashNotes(realDir, candidates, now) {
     const forDir = {};
@@ -382,8 +322,10 @@ function hashNotes(realDir, candidates, now) {
         try {
             st = fs.lstatSync(real);
         }
-        catch {
-            continue;
+        catch (err) {
+            if (notThere(err))
+                continue;
+            throw folderUnreadable(err);
         }
         if (!st.isFile() || !real.toLowerCase().endsWith('.md') || !real.startsWith(realDir + path.sep))
             continue;
@@ -391,10 +333,11 @@ function hashNotes(realDir, candidates, now) {
             continue;
         const rel = relPath(realDir, real);
         try {
-            forDir[rel] = sha256(fs.readFileSync(real));
+            forDir[sha256(fs.readFileSync(real))] = rel;
         }
         catch {
-            forDir[rel] = `?${now}`;
+            const [key, value] = unreadableEntry(rel, st, now);
+            forDir[key] = value;
         }
     }
     return forDir;
@@ -404,32 +347,45 @@ function notesTouchedBetween(realDir, sinceMs, untilMs = Number.POSITIVE_INFINIT
     try {
         files = discover(realDir).files;
     }
-    catch {
-        return [];
+    catch (err) {
+        if (notThere(err))
+            return [];
+        throw folderUnreadable(err);
     }
-    return files.filter((abs) => { try {
-        const t = touchedAt(fs.lstatSync(abs));
-        return t >= sinceMs && t <= untilMs;
-    }
-    catch {
-        return false;
-    } });
+    return files.filter((abs) => {
+        let st;
+        try {
+            st = fs.lstatSync(abs);
+        }
+        catch (err) {
+            if (notThere(err))
+                return false;
+            throw folderUnreadable(err);
+        }
+        return touchedAt(st) >= sinceMs && writtenAt(st) <= untilMs;
+    });
 }
 export function holdOutNoteFiles(opts) {
     const now = opts.now ?? Date.now();
-    const realDir = fs.realpathSync(opts.dir);
-    const dirId = dirIdOf(realDir);
-    const candidates = new Set();
-    for (const candidate of opts.paths) {
-        try {
-            candidates.add(fs.realpathSync(candidate));
+    const realDir = opts.dir === undefined ? undefined : fs.realpathSync(opts.dir);
+    const forDir = {};
+    if (realDir !== undefined) {
+        const candidates = new Set();
+        for (const candidate of opts.paths) {
+            try {
+                candidates.add(fs.realpathSync(candidate));
+            }
+            catch (err) {
+                if (!notThere(err))
+                    throw folderUnreadable(err);
+            }
         }
-        catch { }
+        if (opts.sinceMs !== undefined)
+            for (const abs of notesTouchedBetween(realDir, opts.sinceMs, opts.untilMs))
+                candidates.add(abs);
+        Object.assign(forDir, hashNotes(realDir, candidates, now));
     }
-    if (opts.sinceMs !== undefined)
-        for (const abs of notesTouchedBetween(realDir, opts.sinceMs, opts.untilMs))
-            candidates.add(abs);
-    const forDir = hashNotes(realDir, candidates, now);
+    const held = realDir === undefined ? {} : { [dirIdOf(realDir)]: forDir };
     updateHold(holdFile(opts.sessionId), opts.deadlineAt, (found) => {
         const rec = found ?? { rev: 0, session: opts.sessionId, firm: {} };
         if (opts.transcript !== undefined)
@@ -437,15 +393,15 @@ export function holdOutNoteFiles(opts) {
         if (opts.tentative) {
             const prior = rec.tentative;
             const dirs = prior?.dirs ?? {};
-            mergeDirHolds(dirs, { [dirId]: forDir });
+            mergeDirHolds(dirs, held);
             rec.tentative = {
                 reason: opts.tentative.reason, since: prior?.since ?? now, updatedAt: now,
                 holdsAt: opts.tentative.holdsAt ?? prior?.holdsAt ?? now,
-                projectsRoot: opts.tentative.projectsRoot ?? prior?.projectsRoot ?? projectsRootOf(realDir), dirs,
+                projectsRoot: opts.tentative.projectsRoot ?? prior?.projectsRoot ?? (realDir === undefined ? '' : projectsRootOf(realDir)), dirs,
             };
         }
         else {
-            mergeDirHolds(rec.firm, { [dirId]: forDir });
+            mergeDirHolds(rec.firm, held);
         }
         return rec;
     });
@@ -517,113 +473,152 @@ function readAllMarkers() {
     }
     return out;
 }
-function lastActivity(updatedAt, transcript) {
+function lastActivity(updatedAt, transcript, deadlineAt) {
     if (typeof transcript !== 'string' || transcript === '')
         return updatedAt;
-    const written = sessionLastWriteMs(transcript);
+    const written = sessionLastWriteMs(transcript, deadlineAt);
     return written === undefined ? undefined : Math.max(updatedAt, written);
 }
-function finalizeIdleMarker(entry, now, deadlineAt) {
-    const { marker } = entry;
-    if (now - marker.updatedAt <= PRIVATE_WINDOW_MS)
-        return 'live';
-    const last = lastActivity(marker.updatedAt, marker.transcript);
-    if (last === undefined || now - last <= PRIVATE_WINDOW_MS)
-        return 'live';
-    const reached = new Set(marker.dirs);
-    const all = marker.projectsRoot ? projectMemoryFolders(marker.projectsRoot).folders : [];
-    for (const dir of new Set([...reached, ...all])) {
-        if (!fs.existsSync(dir))
-            continue;
-        holdOutNoteFiles({ dir, sessionId: marker.session, paths: [], sinceMs: reached.has(dir) ? marker.startedAt : marker.holdsAt, untilMs: last, deadlineAt, now });
+const isIdle = (now, ...times) => times.every((t) => now - t > PRIVATE_WINDOW_MS);
+function holdIdleSession(s) {
+    const reached = new Set(s.reached);
+    for (const dir of new Set([...reached, ...s.roots.filter(Boolean).flatMap(projectMemoryFolders)])) {
+        try {
+            fs.lstatSync(dir);
+        }
+        catch (err) {
+            if (notThere(err))
+                continue;
+            throw folderUnreadable(err);
+        }
+        holdOutNoteFiles({
+            dir, sessionId: s.sessionId, paths: [], sinceMs: Math.max(reached.has(dir) ? s.startedAt : s.holdsAt, s.floor ?? 0), untilMs: s.last,
+            ...(s.tentative === undefined ? {} : { tentative: { reason: s.tentative } }), deadlineAt: s.deadlineAt, now: s.now,
+        });
     }
-    withPrivateStateLock(getMemeshDirFromDbPath(), deadlineAt, () => {
-        const again = readMarker(entry.file);
-        if (again && again.finalizedAt === undefined && again.updatedAt === marker.updatedAt)
-            writeMarker(entry.file, { ...again, finalizedAt: now });
+}
+function privateSessionWait(entry, root, now, deadlineAt) {
+    const { marker } = entry;
+    const live = marker.finalizedAt ?? marker.holdsAt;
+    if (marker.finalizedAt === undefined && !isIdle(now, marker.updatedAt))
+        return live;
+    const last = lastActivity(marker.updatedAt, marker.transcript, deadlineAt);
+    if (marker.finalizedAt !== undefined && last !== undefined && last <= marker.finalizedAt)
+        return undefined;
+    if (last === undefined || !isIdle(now, marker.updatedAt, last))
+        return live;
+    holdIdleSession({
+        sessionId: marker.session, roots: [marker.projectsRoot, ...(isCodexRollout(marker.transcript) ? [root] : [])], reached: marker.dirs, startedAt: marker.startedAt, holdsAt: marker.holdsAt,
+        last, floor: marker.finalizedAt, now, deadlineAt,
     });
-    return 'finalized';
+    const finalized = withPrivateStateLock(getMemeshDirFromDbPath(), deadlineAt, () => {
+        const again = readMarker(entry.file);
+        if (!again || again.endedAt !== undefined || again.updatedAt !== marker.updatedAt || again.finalizedAt !== marker.finalizedAt)
+            return false;
+        writeMarker(entry.file, { ...again, finalizedAt: last });
+        return true;
+    });
+    return finalized ? undefined : live;
 }
 function readPrivateState(realDir, now, deadlineAt, memeshDir) {
     const dirId = dirIdOf(realDir);
     const root = projectsRootOf(realDir);
     const out = { firm: new Set(), tentative: new Set(), redecideLeft: 0 };
     const wait = (since) => { out.waitSince = out.waitSince === undefined ? since : Math.min(out.waitSince, since); };
+    const ofThisRoot = (projectsRoot, transcript) => projectsRoot === root || isCodexRollout(transcript);
     for (const entry of readAllMarkers()) {
         const { marker } = entry;
-        if (marker.endedAt !== undefined || marker.finalizedAt !== undefined)
+        if (marker.endedAt !== undefined || (!marker.dirs.includes(realDir) && !ofThisRoot(marker.projectsRoot, marker.transcript)))
             continue;
-        const mine = marker.dirs.includes(realDir) || marker.projectsRoot === root;
-        if (!mine)
-            continue;
-        if (finalizeIdleMarker(entry, now, deadlineAt) === 'finalized')
-            continue;
-        wait(marker.holdsAt);
+        const since = privateSessionWait(entry, root, now, deadlineAt);
+        if (since !== undefined)
+            wait(since);
     }
     let redecided = 0;
     for (const { name, rec } of readAllHolds()) {
         let current = rec;
+        const reread = () => { current = readHoldFile(path.join(holdsDir(), name)) ?? { ...current, firm: {}, tentative: undefined }; };
         const t = current.tentative;
-        if (t && (t.dirs[dirId] !== undefined || (t.endedAt === undefined && t.projectsRoot === root))) {
+        if (t && (t.dirs[dirId] !== undefined || (t.endedAt === undefined && ofThisRoot(t.projectsRoot, current.transcript)))) {
             const decidable = current.transcript !== undefined || t.reason === 'marker_unreadable';
             if (!decidable) {
             }
             else if (redecided < REDECIDE_PER_RUN && Date.now() < deadlineAt) {
                 redecided++;
-                const state = decidePrivacy({ sessionId: current.session, transcriptPath: current.transcript, memeshDir, deadlineAt, cacheDir: path.join(memeshDir, 'private-check-cache') });
-                if (state.state !== 'unchecked' && settleTentativeHolds(current.session, state.state, { expectRev: current.rev, deadlineAt })) {
-                    current = readHoldFile(path.join(holdsDir(), name)) ?? { ...current, firm: {}, tentative: undefined };
-                }
+                const state = decidePrivacy({ sessionId: current.session, transcriptPath: current.transcript, memeshDir, deadlineAt, cacheDir: privateCheckCacheDir(memeshDir) });
+                if (state.state !== 'unchecked' && settleTentativeHolds(current.session, state.state, { expectRev: current.rev, deadlineAt }))
+                    reread();
             }
             else {
                 out.redecideLeft++;
             }
         }
         const t2 = current.tentative;
-        if (t2 && t2.endedAt === undefined && t2.projectsRoot === root) {
-            const last = lastActivity(t2.updatedAt, current.transcript);
-            if (last !== undefined && now - t2.updatedAt > PRIVATE_WINDOW_MS && now - last > PRIVATE_WINDOW_MS) {
-                holdOutNoteFiles({ dir: realDir, sessionId: current.session, paths: [], sinceMs: t2.holdsAt, untilMs: last, tentative: { reason: t2.reason }, deadlineAt, now });
+        if (t2 && t2.endedAt === undefined && ofThisRoot(t2.projectsRoot, current.transcript)) {
+            const last = isIdle(now, t2.updatedAt) ? lastActivity(t2.updatedAt, current.transcript, deadlineAt) : undefined;
+            if (last !== undefined && isIdle(now, last)) {
+                holdIdleSession({ sessionId: current.session, roots: [root], reached: [], startedAt: t2.holdsAt, holdsAt: t2.holdsAt, last, tentative: t2.reason, now, deadlineAt });
                 endTentativeWait(current.session, now, deadlineAt);
-                current = readHoldFile(path.join(holdsDir(), name)) ?? current;
+                reread();
             }
             else {
                 wait(t2.holdsAt);
             }
         }
         for (const [kind, dirs] of [['firm', current.firm], ['tentative', current.tentative?.dirs ?? {}]]) {
-            for (const [rel, hash] of Object.entries(dirs[dirId] ?? {})) {
-                if (!isUnreadableMark(hash)) {
-                    (kind === 'firm' ? out.firm : out.tentative).add(hash);
-                    continue;
+            const into = kind === 'firm' ? out.firm : out.tentative;
+            for (const [id, entries] of Object.entries(dirs)) {
+                for (const [key, value] of Object.entries(entries)) {
+                    if (!isUnreadableKey(key)) {
+                        into.add(key);
+                        continue;
+                    }
+                    if (id !== dirId)
+                        continue;
+                    const mark = parseUnreadable(value);
+                    const resolved = resolveUnreadable(realDir, key.slice(1), mark, now);
+                    if (resolved === undefined) {
+                        wait(mark.since);
+                        continue;
+                    }
+                    updateHold(path.join(holdsDir(), name), deadlineAt, (again) => {
+                        const holds = kind === 'firm' ? again?.firm : again?.tentative?.dirs;
+                        if (!holds || holds[dirId]?.[key] !== value)
+                            return undefined;
+                        delete holds[dirId][key];
+                        mergeDirHolds(holds, { [dirId]: resolved });
+                        return again;
+                    });
+                    for (const h of Object.keys(resolved))
+                        into.add(h);
                 }
-                const since = unreadableSince(hash);
-                let resolved;
-                try {
-                    resolved = { [rel]: sha256(fs.readFileSync(path.join(realDir, rel))) };
-                }
-                catch (err) {
-                    if (codeOf(err) === 'ENOENT')
-                        resolved = hashNotes(realDir, notesTouchedBetween(realDir, since), now);
-                }
-                if (resolved === undefined || Object.values(resolved).some(isUnreadableMark)) {
-                    wait(since);
-                    continue;
-                }
-                updateHold(path.join(holdsDir(), name), deadlineAt, (again) => {
-                    const target = kind === 'firm' ? again?.firm : again?.tentative?.dirs;
-                    if (!again || target?.[dirId]?.[rel] !== hash)
-                        return undefined;
-                    delete target[dirId][rel];
-                    target[dirId] = { ...target[dirId], ...resolved };
-                    return again;
-                });
-                for (const h of Object.values(resolved))
-                    (kind === 'firm' ? out.firm : out.tentative).add(h);
             }
         }
     }
     return out;
+}
+function resolveUnreadable(realDir, rel, mark, now) {
+    const file = path.join(realDir, rel);
+    let st;
+    try {
+        st = fs.lstatSync(file);
+    }
+    catch (err) {
+        if (!notThere(err))
+            return undefined;
+    }
+    if (st && st.ino === mark.ino && st.size === mark.size && st.mtimeMs === mark.mtime) {
+        try {
+            return { [sha256(fs.readFileSync(file))]: rel };
+        }
+        catch {
+            return undefined;
+        }
+    }
+    const instead = hashNotes(realDir, notesTouchedBetween(realDir, mark.since), now);
+    if (Object.keys(instead).some(isUnreadableKey))
+        return undefined;
+    return Object.fromEntries(Object.entries(instead).map(([hash, p]) => [hash, `!${p}`]));
 }
 const UNCHECKED_REASON_TEXT = Object.freeze({
     marker_unreadable: 'the session\'s private-session marker could not be read',
@@ -641,7 +636,7 @@ const UNCHECKED_REASON_TEXT = Object.freeze({
 const SAFE_FILE_NAME = /^[A-Za-z0-9_-]{1,128}\.json$/;
 const shownName = (name) => (SAFE_FILE_NAME.test(name) ? name : '(a file name memesh did not write)');
 export function summarizeNoteHolds(now = Date.now()) {
-    const out = { sessions: 0, notes: 0, holdsFolder: holdsDir(), markersFolder: markersDir(), unsettled: [], waitingOnUnreadable: [], damaged: [], unreadableFolders: [] };
+    const out = { sessions: 0, notes: 0, holdsFolder: holdsDir(), markersFolder: markersDir(), unsettled: [], waitingOnUnreadable: [], heldInPlaceOfUnreadable: [], damaged: [], unreadableFolders: [] };
     const list = (dir, folder) => {
         try {
             return fs.readdirSync(dir).filter((n) => n.endsWith('.json'));
@@ -657,8 +652,8 @@ export function summarizeNoteHolds(now = Date.now()) {
         try {
             rec = readHoldFile(path.join(holdsDir(), name));
         }
-        catch {
-            out.damaged.push({ folder: 'holds', file: shownName(name) });
+        catch (err) {
+            out.damaged.push({ folder: 'holds', file: shownName(name), cause: err.cause });
             continue;
         }
         if (!rec)
@@ -666,17 +661,22 @@ export function summarizeNoteHolds(now = Date.now()) {
         out.sessions++;
         const firm = holdCount(rec.firm);
         out.notes += firm;
-        const unread = [...Object.values(rec.firm), ...Object.values(rec.tentative?.dirs ?? {})].flatMap((files) => Object.values(files)).filter(isUnreadableMark);
+        const entries = [...Object.values(rec.firm), ...Object.values(rec.tentative?.dirs ?? {})].flatMap((files) => Object.entries(files));
+        const unread = entries.filter(([key]) => isUnreadableKey(key)).map(([, value]) => parseUnreadable(value).since);
         if (unread.length > 0)
-            out.waitingOnUnreadable.push({ file: shownName(name), notes: unread.length, since: Math.min(...unread.map(unreadableSince)) });
+            out.waitingOnUnreadable.push({ file: shownName(name), notes: unread.length, since: Math.min(...unread) });
+        const instead = entries.filter(([key, value]) => !isUnreadableKey(key) && value.startsWith('!')).length;
+        if (instead > 0)
+            out.heldInPlaceOfUnreadable.push({ file: shownName(name), notes: instead });
         if (rec.tentative) {
             const n = holdCount(rec.tentative.dirs);
             out.notes += n;
             const reason = Object.prototype.hasOwnProperty.call(UNCHECKED_REASON_TEXT, rec.tentative.reason) ? rec.tentative.reason : 'unrecognised';
             out.unsettled.push({
-                session: shownName(name), file: shownName(name), reason, reasonText: UNCHECKED_REASON_TEXT[reason] ?? 'an unrecognised reason',
+                session: shownName(name).replace(/\.json$/, ''), file: shownName(name), reason, reasonText: UNCHECKED_REASON_TEXT[reason] ?? 'an unrecognised reason',
                 kind: reason === 'unrecognised' ? 'persistent' : uncheckedKind(reason, rec.tentative.since, now),
                 since: rec.tentative.since, notes: n, ...(rec.transcript === undefined ? {} : { transcript: rec.transcript }),
+                ...(rec.tentative.endedAt === undefined ? { waitSince: rec.tentative.holdsAt } : {}), lastHeard: rec.tentative.updatedAt,
             });
         }
     }
@@ -684,8 +684,8 @@ export function summarizeNoteHolds(now = Date.now()) {
         try {
             readMarker(path.join(markersDir(), name));
         }
-        catch {
-            out.damaged.push({ folder: 'markers', file: shownName(name) });
+        catch (err) {
+            out.damaged.push({ folder: 'markers', file: shownName(name), cause: err.cause });
         }
     }
     return out;
@@ -696,7 +696,7 @@ export function ingestNoteDirectory(opts) {
     const realDir = fs.realpathSync(opts.dir);
     if (!fs.statSync(realDir).isDirectory())
         throw new Error(`not a directory: ${opts.dir}`);
-    const dirId = createHash('sha256').update(realDir).digest('hex').slice(0, 16);
+    const dirId = dirIdOf(realDir);
     const { files, symlinks } = discover(realDir);
     const presentRels = new Set(files.map((abs) => relPath(realDir, abs)));
     const result = {
@@ -716,7 +716,7 @@ export function ingestNoteDirectory(opts) {
         more: 0,
     };
     const now = opts.now ?? Date.now();
-    const privacy = readPrivateState(realDir, now, opts.deadlineAt ?? Date.now() + DEFAULT_LOCK_WAIT_MS, getMemeshDirFromDbPath());
+    const privacy = readPrivateState(realDir, now, lockDeadline(opts.deadlineAt), getMemeshDirFromDbPath());
     const privateSince = privacy.waitSince;
     result.redecideLeft = privacy.redecideLeft;
     const db = getDatabase();
@@ -823,7 +823,7 @@ export function ingestNoteDirectory(opts) {
             stat = fs.lstatSync(abs);
         }
         catch (err) {
-            skip(`unreadable: ${err.code ?? 'error'}`);
+            skip(`unreadable: ${codeOf(err)}`);
             declaredNameAt.set(rel, '');
             continue;
         }
@@ -872,14 +872,15 @@ export function ingestNoteDirectory(opts) {
             raw = fs.readFileSync(real);
         }
         catch (err) {
-            unreachableSkip(`unreadable: ${err.code ?? 'error'}`);
+            unreachableSkip(`unreadable: ${codeOf(err)}`);
             continue;
         }
         const contentHash = sha256(raw);
-        if (heldAs(contentHash)) {
+        const heldKind = heldAs(contentHash);
+        if (heldKind) {
             read--;
             countHeld(rel, contentHash);
-            nextSkips[rel] = { mtime: stat.mtimeMs, size: stat.size, reason: heldAs(contentHash) === 'private' ? NOTE_PRIVATE_HOLD_REASON : NOTE_UNCHECKED_HOLD_REASON, held: contentHash };
+            nextSkips[rel] = { mtime: stat.mtimeMs, size: stat.size, reason: heldKind === 'private' ? NOTE_PRIVATE_HOLD_REASON : NOTE_UNCHECKED_HOLD_REASON, held: contentHash };
             continue;
         }
         const parsed = parseFrontmatter(raw.toString('utf8'));
@@ -914,7 +915,7 @@ export function ingestNoteDirectory(opts) {
             name,
             stat,
             unchanged: false,
-            contentHash: createHash('sha256').update(raw).digest('hex'),
+            contentHash,
             type,
             title: truncateTitle(cleanDescription || observations[0]),
             observations,

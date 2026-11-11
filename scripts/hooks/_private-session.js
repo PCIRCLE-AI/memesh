@@ -18,9 +18,8 @@
  * check that failed. A file that vanishes WHILE the check reads it is not this
  * case: it is `unchecked`.
  */
-import { join } from 'path';
 import { getMemeshDirFromDbPath, recordHookOutcome, SKIP_REASONS } from './_shared.js';
-import { decidePrivacy } from './_generated/private-session.js';
+import { decidePrivacy, privateCheckCacheDir } from './_generated/private-session.js';
 import { deadlineFor } from './_hook-budgets.js';
 
 /** The fixed sentence an `unchecked` reason is recorded with (doctor quotes only fixed sentences). */
@@ -38,8 +37,9 @@ function uncheckedReasonSentence(reason) {
 
 /**
  * The answer for this payload, decided by `budgetMs` (counted from the start of
- * this process): `{ state, evidence?, reason?, sentence?, deadlineAt }`. For
- * `unchecked` the `error` outcome is already recorded under `hook`.
+ * this process): `{ state, evidence?, reason?, sentence?, skipReason?, deadlineAt }`.
+ * `skipReason` is the reason a hook that writes nothing records for it (none
+ * for `no`). For `unchecked` the `error` outcome is already recorded under `hook`.
  */
 export function privacyForHook(payload, hook, { budgetMs, env = process.env }) {
   const memeshDir = getMemeshDirFromDbPath();
@@ -49,11 +49,12 @@ export function privacyForHook(payload, hook, { budgetMs, env = process.env }) {
     sessionId: payload?.session_id,
     memeshDir,
     deadlineAt,
-    cacheDir: join(memeshDir, 'private-check-cache'),
+    cacheDir: privateCheckCacheDir(memeshDir),
   });
-  if (check.state !== 'unchecked') return { ...check, deadlineAt };
+  if (check.state === 'no') return { ...check, deadlineAt };
+  if (check.state === 'yes') return { ...check, skipReason: SKIP_REASONS.privateSession, deadlineAt };
   const sentence = uncheckedReasonSentence(check.reason);
   try { process.stderr.write(`[memesh ${hook}] cannot tell whether this session is private (it is decided again at the next run); nothing saved (${check.reason}): ${check.detail}\n`); } catch { /* stderr gone */ }
   recordHookOutcome(env, { hook, outcome: 'error', reason: sentence, payload });
-  return { state: 'unchecked', reason: check.reason, kind: check.kind, sentence, deadlineAt };
+  return { state: 'unchecked', reason: check.reason, kind: check.kind, sentence, skipReason: SKIP_REASONS.privateSessionUnchecked, deadlineAt };
 }

@@ -986,7 +986,7 @@ describe('notes a private session named are held out by content', () => {
     expect(ingestNoteDirectory({ dir }).created).toEqual([]);
   });
 
-  it('imports nothing and says what to delete when a record cannot be read', () => {
+  it('imports nothing, and names the record, when a record cannot be read', () => {
     const dir = dirWith({ 'a.md': note('note_a', 'A', 'fact', 'A body.') });
     holdOutNoteFiles({ dir, sessionId: 'sess-a', paths: [] });
     fs.mkdirSync(holdsDir(), { recursive: true }); // a record that holds nothing is not kept, so the folder may not be there
@@ -995,7 +995,8 @@ describe('notes a private session named are held out by content', () => {
     try { ingestNoteDirectory({ dir }); } catch (err) { error = err as Error; }
     expect(error?.code).toBe(NOTE_HOLDS_UNREADABLE);
     expect(error?.message).toContain('sess-a.json');
-    expect(error?.message).toMatch(/not imported until it is repaired/);
+    expect(error?.message).toMatch(/not imported until it can be read/);
+    expect(error?.message, 'never "delete it", which would let a private session\'s notes in (G09 F2)').not.toMatch(/delet/);
     expect(names()).not.toContain('note_a');
     fs.rmSync(path.join(holdsDir(), 'sess-a.json'));
     expect(ingestNoteDirectory({ dir }).created).toEqual(['note_a']);

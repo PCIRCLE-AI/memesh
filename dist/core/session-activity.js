@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { ClaudeTranscriptReader } from '../host-runtime/claude-transcript.js';
 import { projectTranscriptSlug } from './transcript-source.js';
 import { getMemeshDirFromDbPath, homeDir } from './paths.js';
-import { decidePrivacy, findCodexRollout } from './private-session.js';
+import { decidePrivacy, findCodexRollout, privateCheckCacheDir } from './private-session.js';
 const MAX_BYTES = 1024 * 1024;
 function readTail(file, forbiddenModeBits = 0) {
     let fd;
@@ -87,7 +87,7 @@ function privateSessionCheck(locate, sessionId) {
         }
         const state = located ? decidePrivacy({
             sessionId, transcriptPath, memeshDir,
-            deadlineAt: Date.now() + ACTIVITY_CHECK_MS, cacheDir: path.join(memeshDir, 'private-check-cache'),
+            deadlineAt: Date.now() + ACTIVITY_CHECK_MS, cacheDir: privateCheckCacheDir(memeshDir),
         }) : { state: 'unchecked', reason: 'unreadable', kind: 'transient', detail: 'the folder that holds the session\'s rollout cannot be read' };
         if (state.state === 'unchecked' && !warned) {
             warned = true;

@@ -108,7 +108,7 @@ process.stdin.on('end', () => {
     // The agent called private_session: nothing is stored, so nothing is suggested.
     const privacy = privacyForHook(data, 'decision-nudge', { budgetMs: HOOK_BUDGET_MS.postToolUse.decide });
     if (privacy.state !== 'no') {
-      record('skipped', privacy.state === 'yes' ? SKIP_REASONS.privateSession : SKIP_REASONS.privateSessionUnchecked);
+      record('skipped', privacy.skipReason);
       return pass();
     }
 

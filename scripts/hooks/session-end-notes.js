@@ -27,7 +27,7 @@ process.stdin.on('end', async () => {
       });
       // The holds are recorded: other sessions stop waiting (the notes the holds name stay out). If they could
       // not be recorded, the wait stays, and ends only when the session is finalized after six idle hours.
-      if (!result.holdFailed) await endPrivateNoteMarker({ sessionId: payload?.session_id, metaUrl: import.meta.url, state: privacy.state });
+      if (!result.holdFailed) await endPrivateNoteMarker({ sessionId: payload?.session_id, metaUrl: import.meta.url, state: privacy.state, deadlineAt });
     } else {
       // Not private: what was held while it could not be checked is let through.
       await releaseOwnTentativeHolds({ sessionId: payload?.session_id, metaUrl: import.meta.url, deadlineAt });
