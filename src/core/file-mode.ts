@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { pathToFileURL } from 'url';
 
 /**
  * A path as ONE word of a command memesh prints for the owner to paste into a
@@ -74,6 +75,31 @@ export function databaseFiles(dbPath: string): [string, string, string] {
     if (fs.lstatSync(dbPath).isSymbolicLink()) real = fs.realpathSync(dbPath);
   } catch { /* not created yet */ }
   return [real, `${real}-wal`, `${real}-shm`];
+}
+
+/** Does `file` exist and hold at least one byte? */
+export function holdsBytes(file: string): boolean {
+  try { return fs.statSync(file).size > 0; } catch { return false; }
+}
+
+/** Can this process write to `target`? */
+export function isWritable(target: string): boolean {
+  try { fs.accessSync(target, fs.constants.W_OK); return true; } catch { return false; }
+}
+
+/**
+ * Pages waiting in a -wal, or a rollback journal a crash left behind. An
+ * immutable read would skip them and show changes that were never committed
+ * (or miss committed ones), so neither can be skipped.
+ */
+export function hasPagesWaiting(dbPath: string): boolean {
+  const [real, wal] = databaseFiles(dbPath);
+  return holdsBytes(wal) || holdsBytes(`${real}-journal`);
+}
+
+/** The address that opens a database file for reads only: no locks, no sidecars. */
+export function immutableAddress(file: string): string {
+  return `${pathToFileURL(file).href}?immutable=1`;
 }
 
 /**

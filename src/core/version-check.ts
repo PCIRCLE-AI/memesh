@@ -344,7 +344,8 @@ function writeStoredUpdateCheck(
     // fail, clean up the temp file and bail (caller's catch
     // swallows since cache writes are best-effort).
     const tempPath = `${targetPath}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
-    fs.writeFileSync(tempPath, JSON.stringify(stored, null, 2));
+    // Owner-only whatever the caller's umask: rename keeps the temp file's mode.
+    fs.writeFileSync(tempPath, JSON.stringify(stored, null, 2), { mode: 0o600 });
     try {
       fs.renameSync(tempPath, targetPath);
     } catch (renameErr) {

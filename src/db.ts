@@ -4,7 +4,7 @@ import fs from 'fs';
 import { runAutoDecay } from './core/lifecycle.js';
 import { computeSignalScore } from './core/signal-scorer.js';
 import { getDbPath } from './core/paths.js';
-import { belongsToAnotherUser, databaseFiles, guardDatabaseFiles, ownerWriteCommand, removeGroupAndOtherAccess, shellQuote } from './core/file-mode.js';
+import { belongsToAnotherUser, databaseFiles, guardDatabaseFiles, holdsBytes, immutableAddress, isWritable, ownerWriteCommand, removeGroupAndOtherAccess, shellQuote } from './core/file-mode.js';
 import { insertFtsRow, joinIndexedObservations, removeFromFts } from './storage/fts-index.js';
 import { canonicalizeLessonTypes, dedupeObservations, dropArchivedIndexRows, removeJunkFileTags, repairFusedLessonShellHistory, retractZeroEditClaims, splitFusedLessons } from './storage/graph-repairs.js';
 import {
@@ -30,14 +30,27 @@ import type { PragmaColumnRow } from './core/types.js';
 import { truncateTitle, isBoilerplateObservation } from './core/title.js';
 
 let db: MemeshDatabase | null = null;
+/** Set while the database is open read-only because its folder cannot be written; see explainReadOnlyRefusal. */
+let readOnlyFolder: {
+  note: string; reason: string; fix: string;
+  /** The folder that could not be written, and the path the database was opened by. */
+  dir: string; dbPath: string;
+  /** True when the caller asked for a read-only open (a diagnostic): it is never reopened for writing. */
+  requested: boolean;
+} | null = null;
+/** Read-only handles replaced by a read-write one: another operation may still hold them, so they close with the database. */
+const retiredHandles: MemeshDatabase[] = [];
 
 // SCHEMA_SQL / FTS_SQL and the whole migration toolkit live in
 // storage/schema.ts — the single owner both this file and the hooks (via
 // scripts/hooks/_generated/schema.js) execute. The ~300-line hand-mirror
 // this file and _shared.js used to keep "in lockstep" is gone.
 
-
-
+/** What gives a read-only folder its write bit back; a folder of another user's is not this user's to chmod. */
+function folderWriteFix(dir: string): { notYours: boolean; fix: string } {
+  const notYours = belongsToAnotherUser(fs.statSync(dir));
+  return { notYours, fix: notYours ? 'Point MEMESH_DB_PATH at a database you own, in a folder you own.' : `chmod u+w ${shellQuote(dir)}` };
+}
 
 /**
  * `busyTimeoutMs` replaces the default 30 s lock wait, so a hook can give up
@@ -46,13 +59,21 @@ let db: MemeshDatabase | null = null;
  * wait, before any migration runs. It applies only to the call that opens the
  * handle.
  */
-export function openDatabase(dbPath?: string, opts: { busyTimeoutMs?: number } = {}): MemeshDatabase {
+export function openDatabase(dbPath?: string, opts: { busyTimeoutMs?: number; readOnly?: boolean } = {}): MemeshDatabase {
   if (db) return db;
 
   const resolvedPath = dbPath ?? getDbPath();
 
+  // An in-memory database has no folder, no file and no sidecars: none of the permission work below applies
+  // (and `path.dirname(':memory:')` is the working directory, which it must never touch).
+  if (resolvedPath === ':memory:') {
+    db = openInitialisedDatabase(resolvedPath, opts);
+    return db;
+  }
+
   const dir = path.dirname(resolvedPath);
-  fs.mkdirSync(dir, { recursive: true });
+  // A read-only open (a diagnostic) never creates anything, the folder included.
+  if (!opts.readOnly) fs.mkdirSync(dir, { recursive: true });
 
   // Tighten file mode on the folder, the DB and its WAL/SHM sidecars so other
   // local users on a shared system cannot read memory contents. The DB
@@ -79,27 +100,64 @@ export function openDatabase(dbPath?: string, opts: { busyTimeoutMs?: number } =
   guardDatabaseFiles(resolvedPath);
 
   // A read-only folder can still be READ when -wal and -shm are both there
-  // (sqlite.org/wal.html, section 5). Without one, SQLite can only fail, and
-  // says just "unable to open database file"; name the folder and a way out.
-  // The folder is the REAL file's: SQLite keeps -wal/-shm beside it when the
-  // database path is a symlink.
+  // (sqlite.org/wal.html, section 5). Without them a plain open can only fail
+  // ("unable to open database file"). When no -wal holds any pages there is
+  // nothing a reader could miss, so the file is opened for reads only, as
+  // `immutable` (no locks, no sidecars): reading works, and every write is
+  // refused, with the stderr line below saying why and how to undo it. A -wal
+  // that holds pages cannot be skipped, so that case still stops here, naming
+  // the folder and a way out. The folder is the REAL file's: SQLite keeps
+  // -wal/-shm beside it when the database path is a symlink.
   const missing = sidecars.filter((file) => !fs.existsSync(file)).map((file) => file.slice(realPath.length));
-  let folderWritable = true;
-  try { fs.accessSync(realDir, fs.constants.W_OK); } catch { folderWritable = false; }
-  if (missing.length > 0 && !folderWritable && fs.existsSync(realPath)) {
-    // A folder of another user's is not this user's to chmod.
-    const notYours = belongsToAnotherUser(fs.statSync(realDir));
-    const fix = notYours ? 'Point MEMESH_DB_PATH at a database you own, in a folder you own.' : `chmod u+w ${shellQuote(realDir)}`;
+  const folderWritable = isWritable(realDir);
+  if (!folderWritable && !fs.existsSync(realPath) && !opts.readOnly) {
+    // Nothing to read and nowhere to create it: say so, instead of SQLite's bare "unable to open database file".
+    const { notYours, fix } = folderWriteFix(realDir);
     throw Object.assign(
       new Error(
-        `MeMesh: ${realDir} is read-only and ${path.basename(realPath)} has no ${missing.join(' or ')} file there, ` +
-          'so it cannot be opened without writing to the folder. ' +
-          (notYours
-            ? `${realDir} belongs to another user, so you cannot make it writable. ${fix}`
-            : `Copy the database to a writable folder and point MEMESH_DB_PATH at the copy, or make the folder writable: ${fix}`),
+        `MeMesh: ${realDir} is read-only and holds no database yet, so one cannot be created there. ` +
+          (notYours ? `${realDir} belongs to another user, so you cannot make it writable. ${fix}` : `Make the folder writable: ${fix}`),
       ),
       { fix },
     );
+  }
+  if (missing.length > 0 && !folderWritable && fs.existsSync(realPath)) {
+    const wal = `${realPath}-wal`;
+    const journal = `${realPath}-journal`;
+    const walHoldsPages = holdsBytes(wal);
+    // A rollback journal that holds bytes is a transaction a crash left half done: reading the file without rolling
+    // it back would show changes that were never committed, so, like pages waiting in a -wal, it cannot be skipped.
+    const hotJournal = holdsBytes(journal);
+    const { notYours, fix } = folderWriteFix(realDir);
+    if (walHoldsPages || hotJournal) {
+      const why = hotJournal
+        ? `${path.basename(realPath)} has an unfinished transaction (${path.basename(journal)}) that can only be rolled back by writing to the folder`
+        : `${path.basename(realPath)} has no ${missing.join(' or ')} file there, so it cannot be opened without writing to the folder`;
+      throw Object.assign(
+        new Error(
+          `MeMesh: ${realDir} is read-only and ${why}. ` +
+            (notYours
+              ? `${realDir} belongs to another user, so you cannot make it writable. ${fix}`
+              : `Copy the database to a writable folder and point MEMESH_DB_PATH at the copy, or make the folder writable: ${fix}`),
+        ),
+        { fix },
+      );
+    }
+    db = openInitialisedDatabase(resolvedPath, opts, { immutableFile: realPath, readOnly: opts.readOnly });
+    const reason = `${realDir} is read-only, so ${path.basename(realPath)} is open for reads only and writes are refused`;
+    readOnlyFolder = {
+      note: `${reason}. ${notYours ? fix : `To write to it again, run: ${fix}`}`,
+      reason,
+      fix,
+      dir: realDir,
+      dbPath: resolvedPath,
+      requested: opts.readOnly === true,
+    };
+    // A caller that asked for a read-only open knows; a diagnostic reports the state in its own words.
+    if (!opts.readOnly) {
+      try { process.stderr.write(`MeMesh: ${readOnlyFolder.note}\n`); } catch { /* stderr gone */ }
+    }
+    return db;
   }
 
   // The module singleton is published only once initialisation SUCCEEDS.
@@ -119,10 +177,12 @@ export function openDatabase(dbPath?: string, opts: { busyTimeoutMs?: number } =
   // `insertFtsRow`'s current segmentation rules into an index that was never
   // migrated, which is the contentless-FTS delete mismatch the rest of this
   // release exists to eliminate.
-  db = openInitialisedDatabase(resolvedPath, opts);
+  db = openInitialisedDatabase(resolvedPath, opts, { readOnly: opts.readOnly });
   // Opened read-only because the owner took write access away: every later
-  // write will be refused, so say once, here, what gives it back.
-  const writeBack = ownerWriteCommand(resolvedPath);
+  // write will be refused, so say once, here, what gives it back. (Not for a
+  // caller that asked for a read-only open: it knows, and a diagnostic reports
+  // the state in its own words.)
+  const writeBack = opts.readOnly ? undefined : ownerWriteCommand(resolvedPath);
   if (writeBack) {
     try {
       process.stderr.write(
@@ -142,8 +202,19 @@ export function openDatabase(dbPath?: string, opts: { busyTimeoutMs?: number } =
  * a caller opening anything but a file it just created in a private folder
  * must run guardDatabaseFiles (with an owner-only umask) first.
  */
-export function openInitialisedDatabase(resolvedPath: string, opts: { busyTimeoutMs?: number } = {}): MemeshDatabase {
-  const opening = new MemeshDatabase(resolvedPath);
+export function openInitialisedDatabase(
+  resolvedPath: string,
+  opts: { busyTimeoutMs?: number } = {},
+  mode: { immutableFile?: string; readOnly?: boolean } = {},
+): MemeshDatabase {
+  // `immutable=1`, read-only: for a database in a folder that cannot be written, when no -wal holds pages. The
+  // address is the REAL file's (see openDatabase); nothing is ever written through it.
+  const opening = mode.immutableFile
+    ? new MemeshDatabase(immutableAddress(mode.immutableFile), { readOnly: true })
+    : new MemeshDatabase(resolvedPath, mode.readOnly ? { readOnly: true } : undefined);
+  // A caller that only reads (a diagnostic) gets the file as it is: no schema work, no migration, no sweep.
+  // A database behind the current schema is then read as it is, and the caller says so.
+  if (mode.readOnly) return opening;
   try {
     if (opts.busyTimeoutMs !== undefined) {
       opening.pragma(`busy_timeout = ${opts.busyTimeoutMs}`);
@@ -726,15 +797,71 @@ function backfillTitles(db: MemeshDatabase): void {
 }
 
 export function closeDatabase(): void {
+  for (const retired of retiredHandles.splice(0)) {
+    try { retired.close(); } catch { /* already closed */ }
+  }
   if (db) {
     db.close();
     db = null;
+  }
+  readOnlyFolder = null;
+}
+
+/**
+ * Why writes are refused, in the user's terms, when this process opened the database read-only because its folder
+ * cannot be written (see openDatabase). SQLite's own refusal is "attempt to write a readonly database", which names
+ * no folder and no fix; a caller that reports a failed write puts this in its place. Null for any other error, and
+ * whenever the database was not opened that way.
+ */
+export function explainReadOnlyRefusal(err: unknown): string | null {
+  if (readOnlyFolder === null) return null;
+  return /readonly database|SQLITE_READONLY/i.test(err instanceof Error ? err.message : String(err)) ? readOnlyFolder.note : null;
+}
+
+/** What to tell the user about a failed call: the read-only-folder sentence when that is the cause, else the error's own message. */
+export function failureMessage(err: unknown): string {
+  return explainReadOnlyRefusal(err) ?? (err instanceof Error ? err.message : String(err));
+}
+
+/**
+ * Set while the open database was opened read-only because its folder cannot be written: the sentence that says so
+ * (naming the folder) and the command that undoes it. Null otherwise. For a caller that reports state, not a refusal.
+ */
+export function readOnlyFolderState(): { note: string; reason: string; fix: string } | null {
+  return readOnlyFolder;
+}
+
+/**
+ * A process that opened the database read-only because its folder could not be written (a long-running `memesh
+ * serve` or MCP server) must not stay that way after the user fixes the folder: it would keep answering from a file
+ * it treats as unchanging, never see what other processes write, and keep refusing writes the folder now allows.
+ * So the folder is looked at again whenever the database is asked for, and when it can be written, the database is
+ * reopened normally. The old handle is kept until the database is closed: an operation in flight may still use it.
+ * A caller that asked for a read-only open (a diagnostic) is left alone.
+ */
+function reopenIfFolderWritable(): void {
+  const state = readOnlyFolder;
+  if (!state || state.requested || !db) return;
+  if (!isWritable(state.dir)) return;
+  const old = db;
+  db = null;
+  readOnlyFolder = null;
+  try {
+    openDatabase(state.dbPath);
+    retiredHandles.push(old);
+    try { process.stderr.write(`MeMesh: ${state.dir} is writable again, so the database was reopened for reading and writing.\n`); } catch { /* stderr gone */ }
+  } catch (err) {
+    // Could not reopen (a -wal in the way, a lock): keep serving from the read-only handle, and say why.
+    db = old;
+    readOnlyFolder = state;
+    try { process.stderr.write(`MeMesh: ${state.dir} is writable again but the database could not be reopened (${err instanceof Error ? err.message : String(err)}); still read-only.\n`); } catch { /* stderr gone */ }
   }
 }
 
 export function getDatabase(): MemeshDatabase {
   if (!db) throw new Error('Database not opened');
-  return db;
+  if (readOnlyFolder) reopenIfFolderWritable();
+  return db!;
 }
 
 // F16: Used by callers (e.g. doctor) that need to know whether the global

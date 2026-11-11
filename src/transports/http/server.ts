@@ -9,6 +9,7 @@ import {
   openDatabase,
   closeDatabase,
   getDatabase,
+  failureMessage,
 } from '../../db.js';
 import {
   remember,
@@ -653,7 +654,8 @@ function sendError(res: Response, err: unknown, fallbackStatus: number, fallback
   res.status(fallbackStatus).json({
     success: false,
     errorCode: fallbackCode,
-    error: err instanceof Error ? err.message : String(err),
+    // A write refused because the data folder is read-only names the folder and the fix, not SQLite's bare sentence.
+    error: failureMessage(err),
   });
 }
 

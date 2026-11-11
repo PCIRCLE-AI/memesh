@@ -874,7 +874,7 @@ Task-state fields older than 72 hours, missing or unreadable timestamps, and tim
 }
 ```
 
-At `minimal` on a project with nothing to show, the response has `text: ""` and `empty: true`; `index` is still returned as structured data but is not included in `text`. The CLI prints `Nothing to brief at level minimal — no project memories yet.` and exits `0`.
+At `minimal` on a project with nothing to show, the response has `text: ""` and `empty: true`; `index` is still returned as structured data but is not included in `text`. The CLI prints one line, `Nothing to brief at level minimal — no project memories yet. To add the first one to this project, change the quoted text and run: memesh remember --name first-memory --type note --obs "what to remember" --tags project:<id>` (`<id>` is the briefed project's id, filled in), and exits `0`. The command runs as printed and stores the memory in that project; without `--tags project:<id>` a memory belongs to no project and appears in every project's briefing. `memesh briefing` only reads: on a machine with no database yet it answers as it would on an empty one and does not create the database file.
 
 `bytes`/`tokens` above are shown as `"…"` because the `lines` they measure are abbreviated in this example — they are only reproducible for a fully spelled-out set of lines (see the `GET /v1/briefing-index` response below for one).
 
@@ -1128,6 +1128,8 @@ Root-level Zod issues return only the message. Field and unknown-key issues are 
 Start: `memesh serve` (default: `localhost:3737`)
 
 Safety note: non-loopback binds are blocked by default. To expose the HTTP server beyond the local machine, you must pass `memesh serve --host 0.0.0.0 --allow-remote` or set `MEMESH_HTTP_ALLOW_REMOTE=true`.
+
+Read-only data folder: if the folder that holds the database cannot be written (a read-only mount, changed permissions) and the database can be read without writing to the folder (a clean WAL database, or one in rollback mode with no `-journal`), the server still starts, opens the database read-only and serves reads. It says so on stderr, with the `chmod` that undoes it; every write route (`remember`, `forget`, `learn`, `import`, ...) answers with an error that names the folder and that `chmod`, and once the folder is writable again the running server notices, reopens the database and works normally without a restart. If the database cannot be read without writing to the folder (pages waiting in a `-wal` with no `-shm` to read them through, or an unfinished transaction in a `-journal`), the server refuses to start and prints the same `chmod`: reading around them would show changes that were never committed or miss ones that were.
 
 ### Authentication
 
@@ -1907,6 +1909,12 @@ A relation whose target does not exist is reported on stderr and exits `1`:
 the consequence you asked for did not happen, so the command does not claim it
 did. Free-form relation labels are MCP/HTTP only — as a tag with extra steps,
 they have no CLI flag.
+
+### memesh doctor — the database
+
+`memesh doctor` writes no data. It opens the database read-only and never creates it: on a machine where MeMesh has stored nothing yet, the `database` row says "No database yet" (an informational row, not a failure; if the folder that would hold it cannot be written, a warning with the `chmod`) and the checks that read the database (message storage, keyword index, guard activity, memory use rate, hook activity, capture liveness) say they were not checked and why. It runs no schema update or maintenance: a database written by an older version is reported as a warning ("older than this version"; run any memesh command to bring it up to date, then run doctor again; with the `chmod` first when the folder or file is read-only), not migrated. What it does touch is permissions, as every open of the database does: it takes group and other access off the memesh folder and the database files, and reading a database in write-ahead-log mode may leave a `-wal` (empty) and a `-shm` (about 32 KB) beside it. The only thing `memesh doctor --fix` writes to the database is the keyword-index rebuild (`fts-rebuild`), and only when that fix is chosen.
+
+Nor does it create the anonymous install ID (`install.json`): the `install_id` row shows the ID when the file exists, says so when the file exists but cannot be used, and otherwise says there is none yet; `memesh feedback` is what creates it, the first time it builds a report with diagnostics (the default; `--no-diagnostics` leaves it out and creates nothing), and it includes the ID in the report text it prints or opens for you to submit. On a machine nobody has used, `memesh doctor` creates no MeMesh file (npm's own logs, under `~/.npm`, are npm's). The "Installed recently" grace period of the `update-status` row (no update check has completed yet, within 24 hours) is measured from the `created_at` in `install.json` when that file exists, and otherwise from when this version's `package.json` was put on disk. So an automatic update that reinstalls the package starts the 24 hours again. If the age cannot be read (no usable `created_at`, a time in the future, an unreadable file or `package.json`), the row warns as usual.
 
 ### memesh doctor — capture liveness
 

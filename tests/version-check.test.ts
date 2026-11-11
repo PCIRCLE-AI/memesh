@@ -121,6 +121,23 @@ describe('version check', () => {
     fs.rmSync(testDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
+  it.skipIf(process.platform === 'win32').each([['000', 0o000], ['022', 0o022]] as const)('the cache file is owner-only (0600) after the rename, whatever the umask (umask %s)', async (_label, umask) => {
+    const previousUmask = process.umask(umask);
+    try {
+      await checkForUpdate('4.0.2', {
+        execFileImpl: succeedWith('4.0.3'),
+        updateCheckPath,
+        now: new Date('2026-04-24T10:00:00.000Z'),
+      });
+    } finally {
+      process.umask(previousUmask);
+    }
+    expect(fs.existsSync(updateCheckPath), 'no cache was written').toBe(true);
+    expect(fs.readdirSync(testDir).length, 'the scan saw nothing').toBeGreaterThan(0);
+    expect(fs.readdirSync(testDir).filter((n) => n.endsWith('.tmp')), 'a temp file was left behind').toEqual([]);
+    expect(fs.statSync(updateCheckPath).mode & 0o777).toBe(0o600);
+  });
+
   it('writes successful fresh checks to cache', async () => {
     const result = await checkForUpdate('4.0.2', {
       execFileImpl: succeedWith('4.0.3'),

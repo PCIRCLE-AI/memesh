@@ -30,87 +30,49 @@
 import { readFileSync, writeFileSync, mkdirSync, statSync } from 'fs';
 import { createHash } from 'crypto';
 import { join, relative } from 'path';
-import { readdir } from 'fs/promises';
 import { fileURLToPath } from 'url';
+// The scope (which files are covered) is one definition shared with `memesh doctor`, which scans the installed
+// package with it and compares the result with this manifest. tsc has already compiled it when this runs.
+import { manifestScope } from '../dist/core/manifest-scope.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const repoRoot = join(__filename, '..', '..');
 const distDir = join(repoRoot, 'dist');
 const manifestPath = join(distDir, 'skills-manifest.json');
 
-/**
- * Every file under `dir`, recursively.
- *
- * `mustExist` is the difference between "this subdirectory happens to be
- * empty" and "the directory I was told to manifest is not there". The catch
- * used to swallow both: a rename or a bad `files` entry in package.json made
- * `walk('skills')` answer `[]`, the manifest shipped with zero skill entries,
- * and `memesh doctor` then verified what remained and reported "Skills +
- * hooks integrity PASS". This same file already hard-fails for a missing
- * single-file artefact, with a comment saying exactly why; the directories
- * were the half left out.
- */
-async function walk(dir, mustExist = false) {
-  const out = [];
-  let entries;
-  try { entries = await readdir(dir, { withFileTypes: true }); }
-  catch (err) {
-    if (mustExist) {
-      throw new Error(`generate-skills-manifest: cannot read ${dir} — ${err.message}`, { cause: err });
-    }
-    return out;
-  }
-  for (const entry of entries) {
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) out.push(...await walk(full));
-    else if (entry.isFile()) out.push(full);
-  }
-  return out;
-}
-
 function sha256(absolutePath) {
   const buf = readFileSync(absolutePath);
   return createHash('sha256').update(buf).digest('hex');
 }
 
-const targets = [];
-
-// Skills — every file under skills/
-targets.push(...await walk(join(repoRoot, 'skills'), true));
-
-// Hooks — every JavaScript hook runtime, including the detached `.mjs`
-// auto-update runner selected by `_shared.js`.
-targets.push(...(await walk(join(repoRoot, 'scripts', 'hooks'), true)).filter(p => p.endsWith('.js') || p.endsWith('.mjs')));
-
-// Single-file artefacts (declarative wiring read by Claude Code itself).
-//
-// A missing one is a BUILD FAILURE, not something to skip. These files are the
-// files that tell the plugin hosts how to load it; silently omitting one
-// from the manifest means `memesh doctor` verifies what remains, reports
-// "Skills + hooks integrity PASS", and says nothing about the package having
-// shipped without its wiring — absence read as success, which is the defect
-// class this release exists to remove.
-for (const f of [
-  'hooks/hooks.json',
-  'hooks/native-memory.js',
-  '.claude-plugin/mcp.json',
-  '.claude-plugin/plugin.json',
-  '.codex-plugin/mcp.json',
-  '.codex-plugin/plugin.json',
-]) {
-  const full = join(repoRoot, f);
-  try {
-    statSync(full);
-  } catch {
-    process.stderr.write(
-      `[skills-manifest] required file missing: ${f}\n` +
-        `  It is part of the plugin's declarative wiring. Generating a manifest without it\n` +
-        `  would make 'memesh doctor' report integrity PASS for a package that lacks it.\n`
-    );
-    process.exit(1);
-  }
-  targets.push(full);
+// Which files are covered is decided by manifestScope (src/core/manifest-scope.ts). A directory or a wiring
+// file it was told to cover and cannot find is a BUILD FAILURE, not something to skip: omitting it silently
+// means `memesh doctor` verifies what remains, reports "Skills + hooks integrity PASS", and says nothing about
+// the package having shipped without it — absence read as success.
+const scope = manifestScope(repoRoot);
+if (scope.missingRequired.length > 0) {
+  process.stderr.write(
+    `[skills-manifest] required location missing: ${scope.missingRequired.join(', ')}\n` +
+      `  These are part of what the plugin loads or runs. Generating a manifest without them\n` +
+      `  would make 'memesh doctor' report integrity PASS for a package that lacks them.\n`
+  );
+  process.exit(1);
 }
+// A folder that exists and cannot be read, a symbolic link on the way to (or inside) a covered place, a folder
+// named like something `npm pack` leaves out, or an entry that is not a file at all (a named pipe, a socket) is not
+// "nothing there": writing the manifest anyway would leave what is inside (or behind it) unlisted, which `memesh
+// doctor` then reports as tampering on every install, or worse, never.
+if (scope.unreadable.length > 0 || scope.symlinks.length > 0 || scope.strayFolders.length > 0 || scope.special.length > 0) {
+  process.stderr.write(
+    `[skills-manifest] cannot write a complete manifest:\n` +
+      (scope.unreadable.length > 0 ? `  unreadable folder(s): ${scope.unreadable.join(', ')}\n` : '') +
+      (scope.symlinks.length > 0 ? `  symbolic link(s) (npm pack does not ship them; replace with the real file): ${scope.symlinks.join(', ')}\n` : '') +
+      (scope.strayFolders.length > 0 ? `  folder(s) named like something npm pack leaves out (they would not be in a published package): ${scope.strayFolders.join(', ')}\n` : '') +
+      (scope.special.length > 0 ? `  entr(ies) that are not files (a named pipe, a socket, a device): ${scope.special.join(', ')}\n` : '')
+  );
+  process.exit(1);
+}
+const targets = scope.files.map((rel) => join(repoRoot, rel));
 
 const entries = targets
   .map(absolute => ({

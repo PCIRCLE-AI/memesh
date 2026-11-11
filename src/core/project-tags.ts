@@ -9,11 +9,10 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { MemeshDatabase } from '../storage/sqlite.js';
 import { getDatabase, openInitialisedDatabase } from '../db.js';
 import { AGENT_MESSAGE_PROJECT_TABLES } from './agent-scope-id.js';
-import { guardDatabaseFiles } from './file-mode.js';
+import { guardDatabaseFiles, hasPagesWaiting, immutableAddress } from './file-mode.js';
 
 export interface ProjectTagCount {
   project: string;
@@ -314,12 +313,9 @@ export function openReadOnlyForPreview(
   try {
     return open(dbPath);
   } catch (err) {
-    // SQLite keeps the -wal beside the real file, not beside a symlink to it.
-    let realPath = dbPath;
-    try { realPath = fs.realpathSync(dbPath); } catch { /* keep the given path */ }
-    const wal = `${realPath}-wal`;
-    const hasWal = fs.existsSync(wal) && fs.statSync(wal).size > 0;
-    if (hasWal || !/readonly|unable to open/i.test(err instanceof Error ? err.message : String(err))) throw err;
-    return open(`${pathToFileURL(dbPath).href}?immutable=1`);
+    // Pages waiting in a -wal, or a rollback journal a crash left behind, would be skipped by an immutable read:
+    // it would show changes that were never committed. Neither can be skipped, so the original error stands.
+    if (hasPagesWaiting(dbPath) || !/readonly|unable to open/i.test(err instanceof Error ? err.message : String(err))) throw err;
+    return open(immutableAddress(dbPath));
   }
 }

@@ -7,7 +7,7 @@ import { createRequire } from 'module';
 import { execFileSync } from 'child_process';
 import { findRetiredConfigKeys, getConfigPath, readConfig } from './config.js';
 import {
-  openDatabase, closeDatabase, isDatabaseOpen,
+  openDatabase, closeDatabase, isDatabaseOpen, readOnlyFolderState,
 } from '../db.js';
 import { getUpdateCheck } from './version-check.js';
 import { classifyBump } from './updater.js';
@@ -16,14 +16,15 @@ import {
   pluginHostConfigRoot, versionedPluginCacheRoots, PLUGIN_REFRESH_COMMANDS,
   type InstallChannel, type PluginHost,
 } from './install-channel.js';
-import { getInstallRecord } from './install-id.js';
-import { ownerWriteCommand, runOrSay, shellQuote } from './file-mode.js';
+import { readInstallRecordState } from './install-id.js';
+import { isWritable, ownerWriteCommand, runOrSay, shellQuote } from './file-mode.js';
 import { diagnoseDatabaseFailure } from './database-diagnosis.js';
 import { citationRulePath, citationRuleState, type CitationRuleScope } from './citation-rule.js';
 import { getAgentRouterSocketPath, getDbPath, getMemeshDirFromDbPath, homeDir, memeshDir } from './paths.js';
 import { findProjectIdentitySplits, type ProjectIdentitySplit } from './project-identity-split.js';
 import { AGENT_ROUTER_SOCKET_PATH_MAX_BYTES } from './agent-router.js';
 import { detectPluginRuntime, readInstallMarker } from './install-hooks.js';
+import { manifestScope } from './manifest-scope.js';
 import { UNSPACED_SCRIPT_GLOB_RUN3 } from '../storage/fts-index.js';
 import { MemeshDatabase } from '../storage/sqlite.js';
 import { AUTO_CAPTURE_TAG } from './types.js';
@@ -343,6 +344,49 @@ function inspectLocaleReadmeParity(
 
 function resolveDatabasePath(): string {
   return getDbPath();
+}
+
+/**
+ * The database file is not there (yet). A diagnostic must not be the thing that creates it: a user who runs
+ * `memesh doctor` before ever using MeMesh would otherwise get a database, a schema and its migrations as a side
+ * effect of asking whether the install is healthy.
+ */
+export class NoDatabaseYetError extends Error {
+  constructor(readonly databasePath: string) {
+    super(`No database at ${databasePath} yet`);
+    this.name = 'NoDatabaseYetError';
+  }
+}
+
+/**
+ * How doctor opens the database unless a test or caller supplies its own: only a database that already exists, and
+ * read-only. No file is created, no schema is brought up to date, no migration or sweep runs. (The permission
+ * hardening every opener does, taking group/other access off the files, still applies.)
+ */
+function openDatabaseForDoctor(dbPath?: string, opts: { busyTimeoutMs?: number } = {}): MemeshDatabase {
+  const target = dbPath ?? getDbPath();
+  if (!fs.existsSync(target)) throw new NoDatabaseYetError(target);
+  return openDatabase(target, { ...opts, readOnly: true });
+}
+
+/** Read-only, a database whose schema is older than this version cannot be read by every check: it is behind, not broken. */
+function isSchemaBehind(err: unknown): boolean {
+  return /no such (table|column)/i.test(err instanceof Error ? err.message : String(err));
+}
+/**
+ * What to tell the user about a database that is behind this version's layout. Doctor opens it read-only and does not
+ * migrate it; a memesh command does, so the usual advice is to run one. When the folder (or the database file) cannot
+ * be written, that command would fail too, and the advice that works is the one that makes it writable, first.
+ */
+function schemaBehindNote(databasePath: string = getDbPath()): string {
+  const base = 'The database was written by an older version and has not been brought up to date yet. Doctor opens it read-only and does not migrate it';
+  const update = 'run any memesh command (for example `memesh recall x`) to update it, then run doctor again.';
+  const folder = readOnlyFolderState();
+  if (folder) return `${base}, and ${folder.reason}, so a memesh command could not update it either. First ${runOrSay(folder.fix).replace(/^Run: /, 'run: ')}; then ${update}`;
+  let writeBack: string | undefined;
+  try { writeBack = ownerWriteCommand(databasePath); } catch { writeBack = undefined; }
+  if (writeBack) return `${base}, and the database file is read-only, so a memesh command could not update it either. First ${writeBack}; then ${update}`;
+  return `${base}: ${update}`;
 }
 
 /**
@@ -1617,6 +1661,11 @@ function inspectHookActivity(
       'Run `memesh doctor` after ending one work session. If this still says no hook has run, run `memesh install-hooks` and restart your agent.',
       { code: 'hook-activity.never-ran', params: { hours: Math.round(measuringHours) } });
   } catch (err) {
+    if (err instanceof NoDatabaseYetError) {
+      return createInfo('hook-activity', TITLE,
+        'No database yet, so no hook can have captured anything: hook activity is not checked until MeMesh has stored its first memory. Doctor does not create the database.');
+    }
+    if (isSchemaBehind(err)) return createInfo('hook-activity', TITLE, `Not checked: ${schemaBehindNote()}`);
     const detail = err instanceof Error ? err.message : String(err);
     return createCheck('hook-activity', TITLE, 'fail',
       `Could not read hook activity from the database: ${detail}. Capture health is unknown, which is not the same as healthy.`,
@@ -1812,6 +1861,13 @@ function inspectCaptureLiveness(
       ).get(AUTO_CAPTURE_TAG, since) as { c: number } | undefined)?.c ?? 0;
     }
   } catch (err) {
+    if (err instanceof NoDatabaseYetError) {
+      return {
+        check: createInfo('capture-liveness', TITLE,
+          'No database yet, so there is nothing to keep alive: capture liveness is not checked until MeMesh has stored its first memory. Doctor does not create the database.'),
+      };
+    }
+    if (isSchemaBehind(err)) return { check: createInfo('capture-liveness', TITLE, `Not checked: ${schemaBehindNote()}`) };
     // A query failure is not a healthy graph and must not read as one.
     const detail = err instanceof Error ? err.message : String(err);
     return {
@@ -2715,16 +2771,40 @@ function inspectClaudeChannelRegistration(
  * True when the install is younger than the same 24h grace period the
  * hook-wiring check already gives a fresh install (line ~873): "no
  * successful update check yet" is expected for a install a few minutes
- * old and is not evidence of anything. `install.json`'s `created_at` is
- * ISO-8601 (`toISOString()`), NOT the SQLite `YYYY-MM-DD HH:MM:SS` shape
- * `hoursSince` parses — reusing that helper on this value would silently
- * return null (unparseable) and read as "unknown age" on every call.
+ * old and is not evidence of anything.
+ *
+ * How old it is comes from `install.json`'s `created_at` when that file
+ * exists (ISO-8601 from `toISOString()`, NOT the SQLite `YYYY-MM-DD HH:MM:SS`
+ * shape `hoursSince` parses). Doctor never creates that file: a diagnostic must
+ * not be what leaves state behind on a machine nobody has used. When it is not
+ * there, the age is that of the installed package itself: when this version's
+ * `package.json` was put on disk (birth time, falling back to the inode change
+ * time where the filesystem has no birth time). So the basis is "how long ago
+ * was THIS version installed": an automatic update that reinstalls the package
+ * starts the 24 hours again, and for that day the row says "installed recently"
+ * instead of warning that the update status is unknown.
+ *
+ * An age that cannot be read (no such file, permissions, a time in the future)
+ * is "cannot tell", never "recent": the caller then gives the ordinary warning
+ * rather than hiding it.
  */
-function isFreshInstall(): boolean {
+function isFreshInstall(packageRoot: string, statSyncImpl: typeof fs.statSync): boolean {
+  const HOUR_MS = 60 * 60 * 1000;
   try {
-    const createdAt = new Date(getInstallRecord().created_at).getTime();
-    if (!Number.isFinite(createdAt)) return false;
-    return (Date.now() - createdAt) / (60 * 60 * 1000) < 24;
+    const record = readInstallRecordState();
+    if (record.status === 'ok') {
+      // A record with no usable creation time, or one in the future, says nothing about the age: cannot tell.
+      if (record.created_at === null) return false;
+      const ageHours = (Date.now() - new Date(record.created_at).getTime()) / HOUR_MS;
+      return ageHours >= 0 && ageHours < 24;
+    }
+    // A record that is there but unusable is not "no record": its age is unknown, so cannot tell.
+    if (record.status === 'unreadable') return false;
+    const stat = statSyncImpl(path.join(packageRoot, 'package.json'));
+    const installedAt = stat.birthtimeMs > 0 ? stat.birthtimeMs : stat.ctimeMs;
+    if (!Number.isFinite(installedAt) || installedAt <= 0) return false;
+    const ageHours = (Date.now() - installedAt) / HOUR_MS;
+    return ageHours >= 0 && ageHours < 24;
   } catch {
     return false;
   }
@@ -2733,11 +2813,13 @@ function isFreshInstall(): boolean {
 async function inspectUpdateStatus(
   packageVersion: string,
   getUpdateCheckImpl: typeof getUpdateCheck,
-  installSupport?: import('./install-channel.js').InstallChannelSupport,
+  installSupport: import('./install-channel.js').InstallChannelSupport | undefined,
+  packageRoot: string,
+  statSyncImpl: typeof fs.statSync,
 ): Promise<DoctorCheck> {
   const update = await getUpdateCheckImpl(packageVersion, { preferFresh: false });
   if (!update) {
-    if (isFreshInstall()) {
+    if (isFreshInstall(packageRoot, statSyncImpl)) {
       return createCheck(
         'update-status',
         'Update status',
@@ -2817,7 +2899,7 @@ async function inspectUpdateStatus(
   // is the right answer for users who haven't completed a successful
   // check yet (and have no security advisory waiting).
   if (update.freshness === 'unavailable') {
-    if (isFreshInstall() && !update.lastAttemptAt && !update.lastError) {
+    if (isFreshInstall(packageRoot, statSyncImpl) && !update.lastAttemptAt && !update.lastError) {
       return createCheck(
         'update-status',
         'Update status',
@@ -3001,13 +3083,25 @@ function verifySkillsManifest(
   const reinstall = installSupport.guidance;
   const manifestPath = path.join(packageRoot, 'dist', 'skills-manifest.json');
   if (!existsSyncImpl(manifestPath)) {
+    // A source checkout builds on demand and may have no manifest yet. Every other install is a packaged one, and a
+    // packaged install always ships it: its absence means a file was removed, which is exactly what this check is for.
+    if (installSupport.channel === 'source-checkout') {
+      return createCheck(
+        'skills-manifest',
+        'Skills + hooks integrity',
+        'warn',
+        'No skills-manifest.json found. This is normal for source checkouts — packaged installs ship the manifest.',
+        `Run \`npm run build\` to regenerate.`,
+        { code: 'skills-manifest.missing-dev' },
+      );
+    }
     return createCheck(
       'skills-manifest',
       'Skills + hooks integrity',
-      'warn',
-      'No skills-manifest.json found. This is normal for source checkouts — packaged installs ship the manifest.',
-      `Run \`npm run build\` to regenerate, or reinstall: ${reinstall}`,
-      { code: 'skills-manifest.missing-dev' },
+      'fail',
+      'No skills-manifest.json found, and this is not a source checkout: a packaged install always ships it. A file was removed from this install, so the skill and hook files cannot be verified.',
+      `Reinstall the package: ${reinstall} If the problem reproduces on a fresh install, open a security issue at https://github.com/PCIRCLE-AI/memesh/security.`,
+      { code: 'skills-manifest.missing' },
     );
   }
   let manifest: { entries?: Array<{ path: string; sha256: string }> };
@@ -3039,6 +3133,12 @@ function verifySkillsManifest(
   for (const entry of entries) {
     const full = path.join(packageRoot, entry.path);
     if (!existsSyncImpl(full)) { missing.push(entry.path); continue; }
+    // Never read what is not a plain file: a named pipe in a published file's place blocks the read for ever, which
+    // would hang the diagnostic that is meant to catch the swap. It is not what was published, so it is reported.
+    try {
+      const kind = fs.lstatSync(full);
+      if (!kind.isFile() && !kind.isSymbolicLink()) { mismatches.push(`${entry.path} (not a regular file)`); continue; }
+    } catch { /* the read below reports what is wrong */ }
     let actualHash: string;
     try {
       const buf = readFileSyncImpl(full);
@@ -3049,15 +3149,33 @@ function verifySkillsManifest(
     }
     if (actualHash !== entry.sha256) mismatches.push(entry.path);
   }
-  if (missing.length === 0 && mismatches.length === 0) {
+  // The other direction: the manifest lists what it lists, but what must be listed is decided by the code, from
+  // what is on disk. A file in scope that the manifest does not mention (a new SKILL.md, an extra hook, or an entry
+  // taken out of the manifest by whoever changed that file) is exactly what this check exists to catch.
+  const listed = new Set(entries.map((entry) => entry.path));
+  const scope = manifestScope(packageRoot);
+  const unlisted = scope.files.filter((file) => !listed.has(file));
+  // What the scan could not account for: a location the package must have and does not (a whole `skills/`
+  // folder, a wiring file), a symbolic link in a covered place (npm pack ships none), a folder it could not read, a
+  // folder named like what npm pack leaves out, an entry that is not a file.
+  const unaccounted = [
+    ...scope.missingRequired.map((p) => `${p} (required, not found)`),
+    ...scope.symlinks.map((p) => `${p} (symbolic link)`),
+    ...scope.unreadable.map((p) => `${p} (cannot be read)`),
+    ...scope.strayFolders.map((p) => `${p} (a folder npm pack never ships)`),
+    ...scope.special.map((p) => `${p} (not a file)`),
+  ];
+  if (missing.length === 0 && mismatches.length === 0 && unlisted.length === 0 && unaccounted.length === 0) {
     return createCheck(
       'skills-manifest',
       'Skills + hooks integrity',
       'pass',
-      `${entries.length} skill / hook files match the published manifest (SHA-256 verified).`,
+      `${entries.length} skill / hook files match the published manifest (SHA-256 verified); ${scope.files.length} files are in the covered scope on disk, none unlisted.`,
     );
   }
   const detail = [
+    unaccounted.length > 0 ? `${unaccounted.length} not accounted for: ${unaccounted.slice(0, 3).join(', ')}${unaccounted.length > 3 ? ` (+${unaccounted.length - 3} more)` : ''}` : null,
+    unlisted.length > 0 ? `${unlisted.length} not in the manifest: ${unlisted.slice(0, 3).join(', ')}${unlisted.length > 3 ? ` (+${unlisted.length - 3} more)` : ''}` : null,
     missing.length > 0 ? `${missing.length} missing: ${missing.slice(0, 3).join(', ')}${missing.length > 3 ? ` (+${missing.length - 3} more)` : ''}` : null,
     mismatches.length > 0 ? `${mismatches.length} tampered: ${mismatches.slice(0, 3).join(', ')}${mismatches.length > 3 ? ` (+${mismatches.length - 3} more)` : ''}` : null,
   ].filter(Boolean).join('; ');
@@ -3289,7 +3407,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
     httpBaseUrl = 'http://127.0.0.1:3737',
     platform = process.platform,
     envImpl = process.env,
-    openDatabaseImpl = openDatabase,
+    openDatabaseImpl = openDatabaseForDoctor,
     closeDatabaseImpl = closeDatabase,
     isDatabaseOpenImpl = isDatabaseOpen,
     getConfigPathImpl = getConfigPath,
@@ -3360,8 +3478,18 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
     // #520: a database the owner made read-only opens for reads, so say it
     // here, in the row a reader looks at, with the command that undoes it.
     const writeBack = ownerWriteCommand(databasePath);
+    // Opened read-only because the FOLDER cannot be written (no -wal holds pages, so the file is readable as it is).
+    const folder = readOnlyFolderState();
     dbChecks.push(
-      writeBack
+      folder
+        ? createCheck(
+          'database',
+          'Database',
+          'warn',
+          `Database at ${databasePath} (${count} entities) is open for reads only: ${folder.reason}.`,
+          runOrSay(folder.fix),
+        )
+        : writeBack
         ? createCheck(
           'database',
           'Database',
@@ -3594,24 +3722,50 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
     }
 
   } catch (err) {
-    // F15: Provide actionable diagnosis for common database failures
-    const { diagnosis, fix } = diagnoseDatabaseFailure(err, databasePath, existsSyncImpl, statSyncImpl);
-
     // Replaces, not appends: whatever was staged before the throw describes a
     // database this function has just concluded it cannot use.
     dbChecks.length = 0;
-    dbChecks.push(
-      createCheck(
-        'database',
-        'Database',
-        'fail',
-        diagnosis,
-        fix,
-        // fix stays untranslated (it is itself diagnosis-specific text);
-        // the dashboard translates the summary frame and shows fix raw.
-        { code: 'database.broken', params: { detail: diagnosis } },
-      ),
-    );
+    if (err instanceof NoDatabaseYetError) {
+      // The ordinary state of an install nobody has used yet. Say so, and say what was not looked at and why. If the
+      // folder that would hold it exists and cannot be written, MeMesh could not create the database there: say that.
+      const folderPath = path.dirname(databasePath);
+      const folderLocked = !isWritable(folderPath) && fs.existsSync(folderPath);
+      const notChecked = 'Not checked until then: message storage, the keyword index, guard activity, memory use rate, hook activity, capture liveness.';
+      dbChecks.push(folderLocked
+        ? createCheck(
+          'database',
+          'Database',
+          'warn',
+          `No database yet at ${databasePath}, and ${folderPath} cannot be written, so MeMesh cannot create one: memories cannot be saved. ${notChecked}`,
+          `chmod u+w ${shellQuote(folderPath)}`,
+          { code: 'database.folder-read-only' },
+        )
+        : createInfo(
+          'database',
+          'Database',
+          `No database yet at ${databasePath}: MeMesh creates it the first time it stores a memory, and doctor never creates it. ${notChecked}`,
+        ));
+    } else if (isSchemaBehind(err)) {
+      dbChecks.push(createCheck('database', 'Database', 'warn',
+        `Database at ${databasePath} opened, but its layout is older than this version, so the checks that need the newer layout were skipped.`,
+        schemaBehindNote(databasePath),
+        { code: 'database.schema-behind' }));
+    } else {
+      // F15: Provide actionable diagnosis for common database failures
+      const { diagnosis, fix } = diagnoseDatabaseFailure(err, databasePath, existsSyncImpl, statSyncImpl);
+      dbChecks.push(
+        createCheck(
+          'database',
+          'Database',
+          'fail',
+          diagnosis,
+          fix,
+          // fix stays untranslated (it is itself diagnosis-specific text);
+          // the dashboard translates the summary frame and shows fix raw.
+          { code: 'database.broken', params: { detail: diagnosis } },
+        ),
+      );
+    }
   } finally {
     checks.push(...dbChecks);
     try {
@@ -3694,25 +3848,32 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   checks.push(await inspectMessageRouterStatus(probeMessageRouterStatus, messageRouterStatusProbeImpl));
   checks.push(inspectInstallJourney(packageVersion));
 
-  checks.push(await inspectUpdateStatus(packageVersion, getUpdateCheckImpl, installSupport));
+  checks.push(await inspectUpdateStatus(packageVersion, getUpdateCheckImpl, installSupport, packageRoot, statSyncImpl));
 
   // Anonymous install ID — surfaced so the user can SEE what's
   // included in feedback issues (transparency). Never sent
   // automatically; only attached to feedback bodies the user
   // explicitly opts into sharing via "Include system info".
   try {
-    const record = getInstallRecord();
+    // Read only: doctor never creates the file. `memesh feedback` is what creates it, the first time it builds a report
+    // with diagnostics.
+    const record = readInstallRecordState();
     // `createInfo`, not `createCheck(..., 'pass', ...)`. This row reports a
     // value and has no branch that could fail, which is the exact case the
-    // `informational` flag was added for — it was rendering as `[PASS]` and
+    // `informational` flag was added for: it was rendering as `[PASS]` and
     // counting toward Overall, padding "N/N PASS" with a row that verified
-    // nothing. The Capabilities row named in that flag's own docstring was
-    // this same defect; this one was left behind when it was fixed.
+    // nothing.
+    const installFile = path.join(memeshDir(), 'install.json');
+    const sharing = 'Never transmitted automatically; `memesh feedback` includes it in the report text it prints or opens for you to submit, unless you pass `--no-diagnostics`.';
     checks.push(
       createInfo(
         'install_id',
         'Install ID',
-        `Anonymous install ID: ${record.install_id} (created ${record.created_at}). Stored locally at ${path.join(memeshDir(), 'install.json')}. Never transmitted automatically; included only in feedback issues you submit with the "Include system info" checkbox on.`,
+        record.status === 'ok'
+          ? `Anonymous install ID: ${record.install_id}${record.created_at ? ` (created ${record.created_at})` : ''}. Stored locally at ${installFile}. ${sharing}`
+          : record.status === 'unreadable'
+            ? `${installFile} exists but cannot be used (${record.reason}). Doctor does not touch it; the next \`memesh feedback\` with diagnostics replaces it with a new ID. ${sharing}`
+            : `No install ID yet: it is created the first time \`memesh feedback\` builds a report with diagnostics (it would be stored locally at ${installFile}). Doctor does not create it. ${sharing}`,
       ),
     );
   } catch {

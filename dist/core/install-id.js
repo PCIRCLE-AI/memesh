@@ -7,22 +7,41 @@ const SCHEMA_VERSION = 1;
 function installFilePath() {
     return path.join(memeshDir(), 'install.json');
 }
-export function getInstallRecord() {
-    const filePath = installFilePath();
+export function readInstallRecordState() {
+    let raw;
     try {
-        if (fs.existsSync(filePath)) {
-            const raw = fs.readFileSync(filePath, 'utf8');
-            const parsed = JSON.parse(raw);
-            if (typeof parsed.install_id === 'string' && parsed.install_id.length > 0) {
-                return {
-                    install_id: parsed.install_id,
-                    created_at: typeof parsed.created_at === 'string' ? parsed.created_at : new Date().toISOString(),
-                    schema_version: SCHEMA_VERSION,
-                };
-            }
-        }
+        raw = fs.readFileSync(installFilePath(), 'utf8');
+    }
+    catch (err) {
+        const code = err?.code;
+        if (code === 'ENOENT' || code === 'ENOTDIR')
+            return { status: 'missing' };
+        return { status: 'unreadable', reason: typeof code === 'string' ? code : 'read error' };
+    }
+    let parsed;
+    try {
+        parsed = JSON.parse(raw);
     }
     catch {
+        return { status: 'unreadable', reason: 'not valid JSON' };
+    }
+    if (!parsed || typeof parsed !== 'object' || typeof parsed.install_id !== 'string' || parsed.install_id.length === 0) {
+        return { status: 'unreadable', reason: 'no install_id in it' };
+    }
+    const createdAt = typeof parsed.created_at === 'string' && Number.isFinite(new Date(parsed.created_at).getTime())
+        ? parsed.created_at
+        : null;
+    return { status: 'ok', install_id: parsed.install_id, created_at: createdAt };
+}
+export function getInstallRecord() {
+    const filePath = installFilePath();
+    const state = readInstallRecordState();
+    if (state.status === 'ok') {
+        return {
+            install_id: state.install_id,
+            created_at: state.created_at ?? new Date().toISOString(),
+            schema_version: SCHEMA_VERSION,
+        };
     }
     const record = {
         install_id: randomUUID(),

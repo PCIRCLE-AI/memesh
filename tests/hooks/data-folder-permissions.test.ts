@@ -12,15 +12,15 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { closeDatabase, openDatabase } from '../../src/db.js';
+import { canDenyReads } from '../helpers/permissions.js';
 
 const require = createRequire(import.meta.url);
 // _shared.js is plain JS with no type declarations.
 const shared = require('../../scripts/hooks/_shared.js');
 
-const posixUser = process.platform !== 'win32' && process.getuid?.() !== 0;
 const mode = (p: string) => fs.statSync(p).mode & 0o777;
 
-describe.skipIf(!posixUser)('#520: hooks and the data folder', () => {
+describe.skipIf(!canDenyReads)('#520: hooks and the data folder', () => {
   let home: string;
   let dataDir: string;
 
@@ -146,7 +146,7 @@ describe.skipIf(!posixUser)('#520: hooks and the data folder', () => {
 // resets an empty sidecar to the database's mode on ANY open — read-only
 // handles too — so every hook entry that opens the database must refuse
 // instead of letting SQLite add the owner-write bit.
-describe.skipIf(!posixUser)('#520 RO3: every hook database open passes the same guard', () => {
+describe.skipIf(!canDenyReads)('#520 RO3: every hook database open passes the same guard', () => {
   let home: string;
   let dataDir: string;
   let dbPath: string;
@@ -293,7 +293,8 @@ describe('#520: src constructs MemeshDatabase only at known, guarded sites', () 
     // project-tags.ts's runs after it in openReadOnlyForPreview; doctor's is an
     // in-memory probe; sqlite.ts's is a comment.
     const known = [
-      "db.ts: const opening = new MemeshDatabase(resolvedPath);",
+      "db.ts: ? new MemeshDatabase(immutableAddress(mode.immutableFile), { readOnly: true })",
+      "db.ts: : new MemeshDatabase(resolvedPath, mode.readOnly ? { readOnly: true } : undefined);",
       "core/doctor.ts: const probe = new MemeshDatabase(':memory:');",
       "network/store.ts: const db = new MemeshDatabase(dbPath);",
       "core/project-tags.ts: openHandle: (target: string) => MemeshDatabase = (target) => new MemeshDatabase(target, { readOnly: true }),",
@@ -313,7 +314,7 @@ describe('#520: hooks construct MemeshDatabase only through openMemeshDb', () =>
     }
     expect(sites.length).toBeGreaterThan(0); // the scan really read the hooks
     expect(sites.filter((s) => !(
-      s.startsWith('_shared.js:') && s.endsWith('return new MemeshDatabase(dbPath, options);')
+      s.startsWith('_shared.js:') && s.endsWith('return new MemeshDatabase(readTarget(dbPath, options), options);')
     ) && !(
       // post-commit's own lock file, never the memesh database.
       s.startsWith('post-commit.js:') && s.includes('.lock.sqlite')

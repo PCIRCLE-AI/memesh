@@ -82,6 +82,10 @@ type MessageRouterStatusProbe = {
     active_registrations?: number;
     detail?: string;
 };
+export declare class NoDatabaseYetError extends Error {
+    readonly databasePath: string;
+    constructor(databasePath: string);
+}
 export declare function inspectPrivateNoteHolds(now?: number): DoctorCheck | null;
 export declare function hoursSince(sqliteTimestamp: string): number | null;
 export declare function satisfiesMinimumNodeRange(version: string, range: string): boolean | null;

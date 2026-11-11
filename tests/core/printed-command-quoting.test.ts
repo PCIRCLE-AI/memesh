@@ -19,8 +19,8 @@ import {
   requirePrivateWritableDirectory,
   shellQuote,
 } from '../../src/core/file-mode.js';
+import { canDenyReads } from '../helpers/permissions.js';
 
-const posixUser = process.platform !== 'win32' && process.getuid?.() !== 0;
 const mode = (p: string) => fs.statSync(p).mode & 0o777;
 
 // Each piece tries a different way out of the quotes; the names create m1, m2, m3.
@@ -34,7 +34,7 @@ function chmodCommands(text: string): string[] {
   return text.match(/chmod [-+a-z]+(?: (?:'[^']*'|\\')+)+/g) ?? [];
 }
 
-describe.skipIf(!posixUser)('printed commands do not run what a file name holds', () => {
+describe.skipIf(!canDenyReads)('printed commands do not run what a file name holds', () => {
   let root: string;
   let home: string; // where the commands run; the markers would appear here
 
@@ -178,11 +178,29 @@ describe.skipIf(!posixUser)('printed commands do not run what a file name holds'
     expect(mode(dir)).toBe(0o700);
   });
 
-  it('openDatabase in a read-only folder: the fix it names makes the folder writable', () => {
+  it('openDatabase in a read-only folder (nothing pending in a -wal): it opens for reads, and the chmod it prints fixes the right folder', () => {
     const { dir, dbPath } = hostileDb();
     openDatabase(dbPath);
     closeDatabase();
     for (const s of ['-wal', '-shm']) fs.rmSync(`${dbPath}${s}`, { force: true });
+    fs.chmodSync(dir, 0o500);
+    const written: string[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => { written.push(String(chunk)); return true; });
+    openDatabase(dbPath);
+    vi.restoreAllMocks();
+    closeDatabase();
+    const commands = chmodCommands(written.join(''));
+    expect(commands).toEqual([`chmod u+w ${shellQuote(dir)}`]);
+    paste(commands[0]);
+    expect(mode(dir)).toBe(0o700);
+  });
+
+  it('openDatabase in a read-only folder with pages waiting in a -wal: it refuses, and the fix it names makes the folder writable', () => {
+    const { dir, dbPath } = hostileDb();
+    openDatabase(dbPath);
+    closeDatabase();
+    fs.rmSync(`${dbPath}-shm`, { force: true });
+    fs.writeFileSync(`${dbPath}-wal`, Buffer.alloc(64, 1), { mode: 0o600 });
     fs.chmodSync(dir, 0o500);
     let error: (Error & { fix?: string }) | undefined;
     try { openDatabase(dbPath); } catch (err) { error = err as Error & { fix?: string }; }

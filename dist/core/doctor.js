@@ -6,18 +6,19 @@ import { createHash } from 'crypto';
 import { createRequire } from 'module';
 import { execFileSync } from 'child_process';
 import { findRetiredConfigKeys, getConfigPath, readConfig } from './config.js';
-import { openDatabase, closeDatabase, isDatabaseOpen, } from '../db.js';
+import { openDatabase, closeDatabase, isDatabaseOpen, readOnlyFolderState, } from '../db.js';
 import { getUpdateCheck } from './version-check.js';
 import { classifyBump } from './updater.js';
 import { getCurrentInstallChannel, getInstallChannelSupport, detectPluginHost, pluginHostConfigRoot, versionedPluginCacheRoots, PLUGIN_REFRESH_COMMANDS, } from './install-channel.js';
-import { getInstallRecord } from './install-id.js';
-import { ownerWriteCommand, runOrSay, shellQuote } from './file-mode.js';
+import { readInstallRecordState } from './install-id.js';
+import { isWritable, ownerWriteCommand, runOrSay, shellQuote } from './file-mode.js';
 import { diagnoseDatabaseFailure } from './database-diagnosis.js';
 import { citationRulePath, citationRuleState } from './citation-rule.js';
 import { getAgentRouterSocketPath, getDbPath, getMemeshDirFromDbPath, homeDir, memeshDir } from './paths.js';
 import { findProjectIdentitySplits } from './project-identity-split.js';
 import { AGENT_ROUTER_SOCKET_PATH_MAX_BYTES } from './agent-router.js';
 import { detectPluginRuntime, readInstallMarker } from './install-hooks.js';
+import { manifestScope } from './manifest-scope.js';
 import { UNSPACED_SCRIPT_GLOB_RUN3 } from '../storage/fts-index.js';
 import { MemeshDatabase } from '../storage/sqlite.js';
 import { AUTO_CAPTURE_TAG } from './types.js';
@@ -92,6 +93,40 @@ function inspectLocaleReadmeParity(packageRoot, existsSyncImpl, readFileSyncImpl
 }
 function resolveDatabasePath() {
     return getDbPath();
+}
+export class NoDatabaseYetError extends Error {
+    databasePath;
+    constructor(databasePath) {
+        super(`No database at ${databasePath} yet`);
+        this.databasePath = databasePath;
+        this.name = 'NoDatabaseYetError';
+    }
+}
+function openDatabaseForDoctor(dbPath, opts = {}) {
+    const target = dbPath ?? getDbPath();
+    if (!fs.existsSync(target))
+        throw new NoDatabaseYetError(target);
+    return openDatabase(target, { ...opts, readOnly: true });
+}
+function isSchemaBehind(err) {
+    return /no such (table|column)/i.test(err instanceof Error ? err.message : String(err));
+}
+function schemaBehindNote(databasePath = getDbPath()) {
+    const base = 'The database was written by an older version and has not been brought up to date yet. Doctor opens it read-only and does not migrate it';
+    const update = 'run any memesh command (for example `memesh recall x`) to update it, then run doctor again.';
+    const folder = readOnlyFolderState();
+    if (folder)
+        return `${base}, and ${folder.reason}, so a memesh command could not update it either. First ${runOrSay(folder.fix).replace(/^Run: /, 'run: ')}; then ${update}`;
+    let writeBack;
+    try {
+        writeBack = ownerWriteCommand(databasePath);
+    }
+    catch {
+        writeBack = undefined;
+    }
+    if (writeBack)
+        return `${base}, and the database file is read-only, so a memesh command could not update it either. First ${writeBack}; then ${update}`;
+    return `${base}: ${update}`;
 }
 function queryFailedFix(err) {
     const fix = err?.fix;
@@ -654,6 +689,11 @@ function inspectHookActivity(openDatabaseImpl, closeDatabaseImpl, existsSyncImpl
             'Hook wiring is in place, so they should be executing and are not — nothing is being remembered.', 'Run `memesh doctor` after ending one work session. If this still says no hook has run, run `memesh install-hooks` and restart your agent.', { code: 'hook-activity.never-ran', params: { hours: Math.round(measuringHours) } });
     }
     catch (err) {
+        if (err instanceof NoDatabaseYetError) {
+            return createInfo('hook-activity', TITLE, 'No database yet, so no hook can have captured anything: hook activity is not checked until MeMesh has stored its first memory. Doctor does not create the database.');
+        }
+        if (isSchemaBehind(err))
+            return createInfo('hook-activity', TITLE, `Not checked: ${schemaBehindNote()}`);
         const detail = err instanceof Error ? err.message : String(err);
         return createCheck('hook-activity', TITLE, 'fail', `Could not read hook activity from the database: ${detail}. Capture health is unknown, which is not the same as healthy.`, queryFailedFix(err), { code: 'hook-activity.query-failed', params: { detail } });
     }
@@ -755,6 +795,13 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
         }
     }
     catch (err) {
+        if (err instanceof NoDatabaseYetError) {
+            return {
+                check: createInfo('capture-liveness', TITLE, 'No database yet, so there is nothing to keep alive: capture liveness is not checked until MeMesh has stored its first memory. Doctor does not create the database.'),
+            };
+        }
+        if (isSchemaBehind(err))
+            return { check: createInfo('capture-liveness', TITLE, `Not checked: ${schemaBehindNote()}`) };
         const detail = err instanceof Error ? err.message : String(err);
         return {
             check: createCheck('capture-liveness', TITLE, 'fail', `Could not read capture liveness from the database: ${detail}. Whether anything is being saved is unknown, which is not the same as healthy.`, queryFailedFix(err), { code: 'capture-liveness.query-failed', params: { detail } }),
@@ -1286,21 +1333,33 @@ function inspectClaudeChannelRegistration(existsSyncImpl, readFileSyncImpl) {
     }
     return createInfo('claude-channel', 'Claude Channel registration', 'The user-scoped memesh-channel registration and owner-private config target are coherent (CONFIGURED). Development-channel admission and agent surfacing are not verified; durable MCP/inbox messaging remains a separate path.');
 }
-function isFreshInstall() {
+function isFreshInstall(packageRoot, statSyncImpl) {
+    const HOUR_MS = 60 * 60 * 1000;
     try {
-        const createdAt = new Date(getInstallRecord().created_at).getTime();
-        if (!Number.isFinite(createdAt))
+        const record = readInstallRecordState();
+        if (record.status === 'ok') {
+            if (record.created_at === null)
+                return false;
+            const ageHours = (Date.now() - new Date(record.created_at).getTime()) / HOUR_MS;
+            return ageHours >= 0 && ageHours < 24;
+        }
+        if (record.status === 'unreadable')
             return false;
-        return (Date.now() - createdAt) / (60 * 60 * 1000) < 24;
+        const stat = statSyncImpl(path.join(packageRoot, 'package.json'));
+        const installedAt = stat.birthtimeMs > 0 ? stat.birthtimeMs : stat.ctimeMs;
+        if (!Number.isFinite(installedAt) || installedAt <= 0)
+            return false;
+        const ageHours = (Date.now() - installedAt) / HOUR_MS;
+        return ageHours >= 0 && ageHours < 24;
     }
     catch {
         return false;
     }
 }
-async function inspectUpdateStatus(packageVersion, getUpdateCheckImpl, installSupport) {
+async function inspectUpdateStatus(packageVersion, getUpdateCheckImpl, installSupport, packageRoot, statSyncImpl) {
     const update = await getUpdateCheckImpl(packageVersion, { preferFresh: false });
     if (!update) {
-        if (isFreshInstall()) {
+        if (isFreshInstall(packageRoot, statSyncImpl)) {
             return createCheck('update-status', 'Update status', 'pass', 'Installed recently — memesh has not had a chance to check for updates yet. This resolves itself on the first successful check.');
         }
         return createCheck('update-status', 'Update status', 'warn', 'memesh has not been able to check for newer versions yet, so it cannot tell you whether an update exists.', 'Run `memesh status` once while connected to the internet — that stores the answer and this notice goes away.', { code: 'update-status.no-cache' });
@@ -1328,7 +1387,7 @@ async function inspectUpdateStatus(packageVersion, getUpdateCheckImpl, installSu
         return createCheck('update-status', 'Update status', 'fail', `Installed version ${packageVersion} is DEPRECATED by maintainers: ${update.deprecationMessage}`, fix, { code: 'update-status.deprecated', params: { version: packageVersion, detail: update.deprecationMessage ?? '' } });
     }
     if (update.freshness === 'unavailable') {
-        if (isFreshInstall() && !update.lastAttemptAt && !update.lastError) {
+        if (isFreshInstall(packageRoot, statSyncImpl) && !update.lastAttemptAt && !update.lastError) {
             return createCheck('update-status', 'Update status', 'pass', 'Installed recently — memesh has not had a chance to check for updates yet. This resolves itself on the first successful check.');
         }
         return createCheck('update-status', 'Update status', 'warn', 'memesh has not been able to check for newer versions yet, so it cannot tell you whether an update exists.', 'Run `memesh status` once while connected to the internet — that stores the answer and this notice goes away.', { code: 'update-status.no-cache' });
@@ -1395,7 +1454,10 @@ function verifySkillsManifest(packageRoot, existsSyncImpl, readFileSyncImpl, ins
     const reinstall = installSupport.guidance;
     const manifestPath = path.join(packageRoot, 'dist', 'skills-manifest.json');
     if (!existsSyncImpl(manifestPath)) {
-        return createCheck('skills-manifest', 'Skills + hooks integrity', 'warn', 'No skills-manifest.json found. This is normal for source checkouts — packaged installs ship the manifest.', `Run \`npm run build\` to regenerate, or reinstall: ${reinstall}`, { code: 'skills-manifest.missing-dev' });
+        if (installSupport.channel === 'source-checkout') {
+            return createCheck('skills-manifest', 'Skills + hooks integrity', 'warn', 'No skills-manifest.json found. This is normal for source checkouts — packaged installs ship the manifest.', `Run \`npm run build\` to regenerate.`, { code: 'skills-manifest.missing-dev' });
+        }
+        return createCheck('skills-manifest', 'Skills + hooks integrity', 'fail', 'No skills-manifest.json found, and this is not a source checkout: a packaged install always ships it. A file was removed from this install, so the skill and hook files cannot be verified.', `Reinstall the package: ${reinstall} If the problem reproduces on a fresh install, open a security issue at https://github.com/PCIRCLE-AI/memesh/security.`, { code: 'skills-manifest.missing' });
     }
     let manifest;
     try {
@@ -1416,6 +1478,14 @@ function verifySkillsManifest(packageRoot, existsSyncImpl, readFileSyncImpl, ins
             missing.push(entry.path);
             continue;
         }
+        try {
+            const kind = fs.lstatSync(full);
+            if (!kind.isFile() && !kind.isSymbolicLink()) {
+                mismatches.push(`${entry.path} (not a regular file)`);
+                continue;
+            }
+        }
+        catch { }
         let actualHash;
         try {
             const buf = readFileSyncImpl(full);
@@ -1428,10 +1498,22 @@ function verifySkillsManifest(packageRoot, existsSyncImpl, readFileSyncImpl, ins
         if (actualHash !== entry.sha256)
             mismatches.push(entry.path);
     }
-    if (missing.length === 0 && mismatches.length === 0) {
-        return createCheck('skills-manifest', 'Skills + hooks integrity', 'pass', `${entries.length} skill / hook files match the published manifest (SHA-256 verified).`);
+    const listed = new Set(entries.map((entry) => entry.path));
+    const scope = manifestScope(packageRoot);
+    const unlisted = scope.files.filter((file) => !listed.has(file));
+    const unaccounted = [
+        ...scope.missingRequired.map((p) => `${p} (required, not found)`),
+        ...scope.symlinks.map((p) => `${p} (symbolic link)`),
+        ...scope.unreadable.map((p) => `${p} (cannot be read)`),
+        ...scope.strayFolders.map((p) => `${p} (a folder npm pack never ships)`),
+        ...scope.special.map((p) => `${p} (not a file)`),
+    ];
+    if (missing.length === 0 && mismatches.length === 0 && unlisted.length === 0 && unaccounted.length === 0) {
+        return createCheck('skills-manifest', 'Skills + hooks integrity', 'pass', `${entries.length} skill / hook files match the published manifest (SHA-256 verified); ${scope.files.length} files are in the covered scope on disk, none unlisted.`);
     }
     const detail = [
+        unaccounted.length > 0 ? `${unaccounted.length} not accounted for: ${unaccounted.slice(0, 3).join(', ')}${unaccounted.length > 3 ? ` (+${unaccounted.length - 3} more)` : ''}` : null,
+        unlisted.length > 0 ? `${unlisted.length} not in the manifest: ${unlisted.slice(0, 3).join(', ')}${unlisted.length > 3 ? ` (+${unlisted.length - 3} more)` : ''}` : null,
         missing.length > 0 ? `${missing.length} missing: ${missing.slice(0, 3).join(', ')}${missing.length > 3 ? ` (+${missing.length - 3} more)` : ''}` : null,
         mismatches.length > 0 ? `${mismatches.length} tampered: ${mismatches.slice(0, 3).join(', ')}${mismatches.length > 3 ? ` (+${mismatches.length - 3} more)` : ''}` : null,
     ].filter(Boolean).join('; ');
@@ -1558,7 +1640,7 @@ function summarizeOverallStatus(checks) {
     return 'PASS';
 }
 export async function runDoctor(options) {
-    const { packageRoot, packageVersion, probeHttp = false, httpBaseUrl = 'http://127.0.0.1:3737', platform = process.platform, envImpl = process.env, openDatabaseImpl = openDatabase, closeDatabaseImpl = closeDatabase, isDatabaseOpenImpl = isDatabaseOpen, getConfigPathImpl = getConfigPath, getUpdateCheckImpl = getUpdateCheck, getCurrentInstallChannelImpl = getCurrentInstallChannel, installedPluginsPathImpl, marketplaceHeadShaImpl = defaultMarketplaceHeadSha, pluginCacheDiscoveryImpl, getInstallChannelSupportImpl = getInstallChannelSupport, existsSyncImpl = fs.existsSync, readFileSyncImpl = fs.readFileSync, statSyncImpl = fs.statSync, fetchImpl = fetch, agentMessageStoragePolicy, nativeBindingProbeImpl, resolveShellMemeshImpl = defaultResolveShellMemesh, probeMessageCapability = process.env.MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY === '1', messageCapabilityProbeImpl = probeInstalledMessageCapability, probeMessageRouterStatus = process.env.MEMESH_DOCTOR_PROBE_MESSAGE_ROUTER === '1', messageRouterStatusProbeImpl = defaultMessageRouterStatusProbe, } = options;
+    const { packageRoot, packageVersion, probeHttp = false, httpBaseUrl = 'http://127.0.0.1:3737', platform = process.platform, envImpl = process.env, openDatabaseImpl = openDatabaseForDoctor, closeDatabaseImpl = closeDatabase, isDatabaseOpenImpl = isDatabaseOpen, getConfigPathImpl = getConfigPath, getUpdateCheckImpl = getUpdateCheck, getCurrentInstallChannelImpl = getCurrentInstallChannel, installedPluginsPathImpl, marketplaceHeadShaImpl = defaultMarketplaceHeadSha, pluginCacheDiscoveryImpl, getInstallChannelSupportImpl = getInstallChannelSupport, existsSyncImpl = fs.existsSync, readFileSyncImpl = fs.readFileSync, statSyncImpl = fs.statSync, fetchImpl = fetch, agentMessageStoragePolicy, nativeBindingProbeImpl, resolveShellMemeshImpl = defaultResolveShellMemesh, probeMessageCapability = process.env.MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY === '1', messageCapabilityProbeImpl = probeInstalledMessageCapability, probeMessageRouterStatus = process.env.MEMESH_DOCTOR_PROBE_MESSAGE_ROUTER === '1', messageRouterStatusProbeImpl = defaultMessageRouterStatusProbe, } = options;
     const wasDbOpenBeforeUs = isDatabaseOpenImpl();
     const safeCloseDatabaseImpl = wasDbOpenBeforeUs
         ? () => undefined
@@ -1575,9 +1657,12 @@ export async function runDoctor(options) {
         const db = openDatabaseImpl(databasePath);
         const count = db.prepare('SELECT COUNT(*) as c FROM entities').get()?.c ?? 0;
         const writeBack = ownerWriteCommand(databasePath);
-        dbChecks.push(writeBack
-            ? createCheck('database', 'Database', 'warn', `Database at ${databasePath} (${count} entities) is read-only: reads work, writes are refused.`, `If it should be writable, ${writeBack}`)
-            : createCheck('database', 'Database', 'pass', `Database opened successfully at ${databasePath} (${count} entities).`));
+        const folder = readOnlyFolderState();
+        dbChecks.push(folder
+            ? createCheck('database', 'Database', 'warn', `Database at ${databasePath} (${count} entities) is open for reads only: ${folder.reason}.`, runOrSay(folder.fix))
+            : writeBack
+                ? createCheck('database', 'Database', 'warn', `Database at ${databasePath} (${count} entities) is read-only: reads work, writes are refused.`, `If it should be writable, ${writeBack}`)
+                : createCheck('database', 'Database', 'pass', `Database opened successfully at ${databasePath} (${count} entities).`));
         const messageStorage = inspectAgentMessageStorage(db, databasePath, configuredAgentMessageStoragePolicy(agentMessageStoragePolicy));
         if (messageStorage)
             dbChecks.push(messageStorage);
@@ -1672,9 +1757,22 @@ export async function runDoctor(options) {
         }
     }
     catch (err) {
-        const { diagnosis, fix } = diagnoseDatabaseFailure(err, databasePath, existsSyncImpl, statSyncImpl);
         dbChecks.length = 0;
-        dbChecks.push(createCheck('database', 'Database', 'fail', diagnosis, fix, { code: 'database.broken', params: { detail: diagnosis } }));
+        if (err instanceof NoDatabaseYetError) {
+            const folderPath = path.dirname(databasePath);
+            const folderLocked = !isWritable(folderPath) && fs.existsSync(folderPath);
+            const notChecked = 'Not checked until then: message storage, the keyword index, guard activity, memory use rate, hook activity, capture liveness.';
+            dbChecks.push(folderLocked
+                ? createCheck('database', 'Database', 'warn', `No database yet at ${databasePath}, and ${folderPath} cannot be written, so MeMesh cannot create one: memories cannot be saved. ${notChecked}`, `chmod u+w ${shellQuote(folderPath)}`, { code: 'database.folder-read-only' })
+                : createInfo('database', 'Database', `No database yet at ${databasePath}: MeMesh creates it the first time it stores a memory, and doctor never creates it. ${notChecked}`));
+        }
+        else if (isSchemaBehind(err)) {
+            dbChecks.push(createCheck('database', 'Database', 'warn', `Database at ${databasePath} opened, but its layout is older than this version, so the checks that need the newer layout were skipped.`, schemaBehindNote(databasePath), { code: 'database.schema-behind' }));
+        }
+        else {
+            const { diagnosis, fix } = diagnoseDatabaseFailure(err, databasePath, existsSyncImpl, statSyncImpl);
+            dbChecks.push(createCheck('database', 'Database', 'fail', diagnosis, fix, { code: 'database.broken', params: { detail: diagnosis } }));
+        }
     }
     finally {
         checks.push(...dbChecks);
@@ -1738,10 +1836,16 @@ export async function runDoctor(options) {
     checks.push(inspectMessageCapability(packageRoot, probeMessageCapability, messageCapabilityProbeImpl));
     checks.push(await inspectMessageRouterStatus(probeMessageRouterStatus, messageRouterStatusProbeImpl));
     checks.push(inspectInstallJourney(packageVersion));
-    checks.push(await inspectUpdateStatus(packageVersion, getUpdateCheckImpl, installSupport));
+    checks.push(await inspectUpdateStatus(packageVersion, getUpdateCheckImpl, installSupport, packageRoot, statSyncImpl));
     try {
-        const record = getInstallRecord();
-        checks.push(createInfo('install_id', 'Install ID', `Anonymous install ID: ${record.install_id} (created ${record.created_at}). Stored locally at ${path.join(memeshDir(), 'install.json')}. Never transmitted automatically; included only in feedback issues you submit with the "Include system info" checkbox on.`));
+        const record = readInstallRecordState();
+        const installFile = path.join(memeshDir(), 'install.json');
+        const sharing = 'Never transmitted automatically; `memesh feedback` includes it in the report text it prints or opens for you to submit, unless you pass `--no-diagnostics`.';
+        checks.push(createInfo('install_id', 'Install ID', record.status === 'ok'
+            ? `Anonymous install ID: ${record.install_id}${record.created_at ? ` (created ${record.created_at})` : ''}. Stored locally at ${installFile}. ${sharing}`
+            : record.status === 'unreadable'
+                ? `${installFile} exists but cannot be used (${record.reason}). Doctor does not touch it; the next \`memesh feedback\` with diagnostics replaces it with a new ID. ${sharing}`
+                : `No install ID yet: it is created the first time \`memesh feedback\` builds a report with diagnostics (it would be stored locally at ${installFile}). Doctor does not create it. ${sharing}`));
     }
     catch {
     }

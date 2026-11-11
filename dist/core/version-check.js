@@ -172,7 +172,7 @@ function writeStoredUpdateCheck(stored, updateCheckPath, currentVersion) {
         const targetPath = getUpdateCheckPath(updateCheckPath, currentVersion);
         fs.mkdirSync(path.dirname(targetPath), { recursive: true });
         const tempPath = `${targetPath}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
-        fs.writeFileSync(tempPath, JSON.stringify(stored, null, 2));
+        fs.writeFileSync(tempPath, JSON.stringify(stored, null, 2), { mode: 0o600 });
         try {
             fs.renameSync(tempPath, targetPath);
         }

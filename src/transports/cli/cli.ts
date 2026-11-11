@@ -6,7 +6,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import {
-  openDatabase, closeDatabase, getDatabase, reindexFts,
+  openDatabase, closeDatabase, getDatabase, reindexFts, explainReadOnlyRefusal, failureMessage,
 } from '../../db.js';
 import type { MemeshDatabase } from '../../storage/sqlite.js';
 import { remember, recallForAgent, forget, exportMemories, importMemories, learn, setPinned } from '../../core/operations.js';
@@ -51,7 +51,7 @@ import {
 import { signExport, verifyExport } from '../../core/export-signature.js';
 import { startRouterIfDown } from '../../host-runtime/router-client.js';
 import { pluginHostConfigRoot, versionedPluginCacheRoots } from '../../core/install-channel.js';
-import { shellQuote } from '../../core/file-mode.js';
+import { belongsToAnotherUser, databaseFiles, isWritable, shellQuote } from '../../core/file-mode.js';
 import { registerNetworkCommand } from '../../network/command.js';
 import { ZodError } from 'zod';
 
@@ -67,7 +67,8 @@ async function withDatabase<T>(fn: () => T | Promise<T>): Promise<T> {
   // and says what to do about it; it was simply the only command that did.
   //
   // Only the OPEN is wrapped. A throw from `fn` is the command's own
-  // business and keeps its own reporting.
+  // business and keeps its own reporting (see `failureMessage` for a write refused
+  // because the folder is read-only).
   try {
     openDatabase();
   } catch (err) {
@@ -84,9 +85,74 @@ async function withDatabase<T>(fn: () => T | Promise<T>): Promise<T> {
   }
 }
 
+/**
+ * The `memesh remember` command that stores a first memory IN `project`.
+ * `--tags project:<id>` is what files a memory under a project; without it
+ * the memory belongs to no project and shows up in every project's briefing.
+ * Literal values, no `<placeholders>`: a shell reads `<name>` as a redirect, so
+ * the line must run as printed.
+ */
+function firstMemoryCommand(project: string): string {
+  const tag = `project:${project}`;
+  const word = /^[\w.~:@%+=,/-]+$/.test(tag) ? tag : shellQuote(tag);
+  return `memesh remember --name first-memory --type note --obs "what to remember" --tags ${word}`;
+}
+
+/**
+ * `withDatabase` for a command that only READS. With no database file yet it
+ * answers from an empty in-memory database, so asking a question does not
+ * create `knowledge-graph.db` and needs no scratch folder to do it. Same
+ * answer as an empty database. It does not leave the memesh folder untouched:
+ * the CLI's update check (the preAction step) still leaves its lock files there
+ * (npm's own logs go under ~/.npm).
+ */
+async function withReadOnlyDatabase<T>(fn: () => T | Promise<T>): Promise<T> {
+  if (fs.existsSync(getDbPath())) return withDatabase(fn);
+  openDatabase(':memory:');
+  try {
+    return await fn();
+  } finally {
+    closeDatabase();
+  }
+}
+
+/**
+ * Every path a memory write would need and cannot have: the folder that holds (or would hold) the database, then the
+ * database file and its -wal/-shm where they exist (a read-only open can itself leave the last two behind, owner-only
+ * and read-only, so they have to be on the list or the fix printed for the others makes things worse). A read-only
+ * briefing still works there, but `memesh remember` would fail, so nothing may tell the user to run it.
+ */
+function unwritableMemoryTargets(dbPath: string): string[] {
+  const found: string[] = [];
+  try {
+    const [real, wal, shm] = databaseFiles(dbPath);
+    let dir = path.dirname(real);
+    while (!fs.existsSync(dir) && path.dirname(dir) !== dir) dir = path.dirname(dir);
+    for (const target of [dir, ...[real, wal, shm].filter((file) => fs.existsSync(file))]) {
+      if (!isWritable(target)) found.push(target);
+    }
+  } catch {
+    // The probe itself failed: say nothing rather than guess.
+  }
+  return found;
+}
+
+/** What the empty briefing says instead of "how to add the first memory" when memories cannot be saved. */
+function cannotSaveMemoriesSentence(targets: string[]): string {
+  const yours: string[] = [];
+  const others: string[] = [];
+  for (const target of targets) {
+    try { (belongsToAnotherUser(fs.statSync(target)) ? others : yours).push(target); } catch { yours.push(target); }
+  }
+  let fix = 'Run `memesh doctor` to see the rest.';
+  if (yours.length > 0) fix += ` To make ${yours.length > 1 ? 'them' : 'it'} writable: chmod u+w ${yours.map(shellQuote).join(' ')}`;
+  if (others.length > 0) fix += ` ${others.join(', ')} ${others.length > 1 ? 'belong' : 'belongs'} to another user, so point MEMESH_DB_PATH at a database in a folder you own.`;
+  return `MeMesh cannot write to ${targets.join(', ')}, so memories cannot be saved. ${fix}`;
+}
+
 /** A refused write is one line (or `{"error"}` with --json) and exit 1, never a stack trace. */
 function printRefusal(err: unknown, json: boolean | undefined): void {
-  const error = err instanceof Error ? err.message : String(err);
+  const error = failureMessage(err);
   if (json) console.log(JSON.stringify({ error }));
   else console.error(`Error: ${error}`);
   process.exitCode = 1;
@@ -532,7 +598,7 @@ program
       } catch (err) {
         // remember() refuses an unusable note (e.g. only control characters)
         // with one sentence; a stack trace would bury it.
-        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        console.error(`Error: ${failureMessage(err)}`);
         process.exit(1);
       }
       if (opts.json) {
@@ -1033,7 +1099,7 @@ program
         // sentence. Uncaught, that sentence arrived on top of a ten-frame Node
         // dump with the absolute install path — the same treatment the JSON
         // and ENOENT cases above already get.
-        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        console.error(`Error: ${failureMessage(err)}`);
         process.exit(1);
       }
       // `imported` alone did not say whether it REPLACED something already
@@ -1291,7 +1357,7 @@ messageCmd
         reply_to: opts.replyTo,
       });
     } catch (error) {
-      console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
+      console.error(`Error: ${failureMessage(error)}`);
       process.exitCode = 1;
     }
   });
@@ -1596,7 +1662,7 @@ program
   .option('--json', 'Output as JSON')
   .action(async (opts) => {
     const projectFlag = requireProjectFlag(opts.project);
-    await withDatabase(() => {
+    await withReadOnlyDatabase(() => {
       if (opts.index) {
         // The same section a `standard`/`full`-level briefing closes with
         // (#323), alone: what is known here, one line each, without the
@@ -1624,7 +1690,10 @@ program
       // of `result.text` (which is `''` here) and exit 0, same as every
       // other branch of this command.
       if (result.empty) {
-        console.log(`Nothing to brief at level ${result.level} — no project memories yet.`);
+        const cannotWrite = unwritableMemoryTargets(getDbPath());
+        console.log(`Nothing to brief at level ${result.level} — no project memories yet. ${cannotWrite.length > 0
+          ? cannotSaveMemoriesSentence(cannotWrite)
+          : `To add the first one to this project, change the quoted text and run: ${firstMemoryCommand(result.project)}`}`);
         return;
       }
       console.log(result.text);
@@ -1633,7 +1702,10 @@ program
         // reachable here (unlike the branch above) — e.g. `standard`/`full`
         // on an empty graph, where the index's own empty-state line keeps
         // `result.empty` false but there is still nothing ranked to hint at.
-        console.log(`\nCapture happens automatically as you work; or set the task state:  memesh task --goal "…"`);
+        const cannotWrite = unwritableMemoryTargets(getDbPath());
+        console.log(cannotWrite.length > 0
+          ? `\n${cannotSaveMemoriesSentence(cannotWrite)}`
+          : `\nCapture happens automatically as you work; or set the task state:  memesh task --goal "…"`);
       }
     });
   });
@@ -2959,8 +3031,11 @@ dreamCmd
       try {
         result = applyProposal(getDatabase(), proposalId(id), kg);
       } catch (err) {
-        console.error(err instanceof Error ? err.message : String(err));
-        console.error('See pending ids with: memesh dream list');
+        // A write refused because the data folder is read-only names the folder and the fix; the "pending ids" hint
+        // belongs to a proposal that is not there, not to a refusal that has nothing to do with the id.
+        const why = explainReadOnlyRefusal(err);
+        console.error(why ?? (err instanceof Error ? err.message : String(err)));
+        if (!why) console.error('See pending ids with: memesh dream list');
         process.exit(1);
       }
       console.log(`Applied proposal #${result.proposalId}`);
@@ -2986,8 +3061,11 @@ dreamCmd
       try {
         rejectProposal(getDatabase(), proposalId(id), opts.reason);
       } catch (err) {
-        console.error(err instanceof Error ? err.message : String(err));
-        console.error('See pending ids with: memesh dream list');
+        // A write refused because the data folder is read-only names the folder and the fix; the "pending ids" hint
+        // belongs to a proposal that is not there, not to a refusal that has nothing to do with the id.
+        const why = explainReadOnlyRefusal(err);
+        console.error(why ?? (err instanceof Error ? err.message : String(err)));
+        if (!why) console.error('See pending ids with: memesh dream list');
         process.exit(1);
       }
       console.log(`Rejected proposal #${id}`);

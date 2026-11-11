@@ -1341,7 +1341,7 @@ describe('assembleBriefing', () => {
     // contract: API_REFERENCE.md's contract is ONE short line, not two, and
     // a `toContain` check would pass even while the CLI printed a SECOND
     // `console.log` line below it.
-    expect(cliTextOut).toBe('Nothing to brief at level minimal — no project memories yet.\n');
+    expect(cliTextOut).toBe(`Nothing to brief at level minimal — no project memories yet. To add the first one to this project, change the quoted text and run: memesh remember --name first-memory --type note --obs "what to remember" --tags project:${project}\n`);
 
     // --- the MCP tool (no separate formatter — confirmed by reading
     // src/transports/mcp/handlers.ts: `ok(assembleBriefing(...))` only) ---
