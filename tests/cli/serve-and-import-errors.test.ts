@@ -147,10 +147,11 @@ describe('serve: a MEMESH_REMOTE_TOKEN that is too short is reported, not obeyed
       env: { ...process.env, HOME: home, USERPROFILE: home, MEMESH_REMOTE_TOKEN: 'short' },
     });
     let stderr = '';
+    let stdout = '';
     child.stderr.on('data', (d) => { stderr += String(d); });
     await new Promise<void>((resolve) => {
       const done = () => resolve();
-      child.stdout.on('data', done);
+      child.stdout.on('data', (d) => { stdout += String(d); done(); });
       setTimeout(done, 6000);
     });
     child.kill('SIGTERM');
@@ -159,6 +160,7 @@ describe('serve: a MEMESH_REMOTE_TOKEN that is too short is reported, not obeyed
     expect(stderr, `stderr was:\n${stderr}`).toMatch(/MEMESH_REMOTE_TOKEN is shorter than 16 characters and was ignored/);
     expect(stderr).toContain(path.join(memeshDir, 'remote-token'));
     expect(stderr).not.toMatch(/Token loaded from MEMESH_REMOTE_TOKEN/);
+    expect(stderr + stdout, 'the token itself must never reach startup output').not.toContain('e'.repeat(64));
   });
 });
 

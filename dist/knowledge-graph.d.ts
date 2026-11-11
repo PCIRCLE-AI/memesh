@@ -5,6 +5,7 @@ export interface SearchResult {
     entities: Entity[];
     fallback: 'index_out_of_date' | null;
 }
+export declare function isMetadataObject(value: unknown): value is Record<string, unknown>;
 export declare class KnowledgeGraph {
     private db;
     constructor(db: MemeshDatabase);

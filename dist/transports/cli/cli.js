@@ -3893,6 +3893,10 @@ function isTransientDbError(err) {
   const msg = err?.message ?? "";
   return /SQLITE_BUSY|SQLITE_LOCKED|SQLITE_PROTOCOL/.test(code) || /database is locked|database table is locked|locking protocol/i.test(msg);
 }
+function migrationRetryPending(db2, key) {
+  const lastAttempt = db2.prepare("SELECT value FROM memesh_metadata WHERE key = ?").get(`${key}_last_attempt`)?.value;
+  return !!lastAttempt && Date.now() - parseInt(lastAttempt, 10) < MIGRATION_RETRY_BACKOFF_MS;
+}
 function runOnceMigration(db2, opts) {
   const { key, version: version2, describe: describe3, migrate } = opts;
   const attemptKey = `${key}_last_attempt`;
@@ -3900,10 +3904,8 @@ function runOnceMigration(db2, opts) {
   const stored = readMarker(key);
   if (stored && parseInt(stored, 10) >= version2)
     return false;
-  const lastAttempt = readMarker(attemptKey);
-  if (lastAttempt && Date.now() - parseInt(lastAttempt, 10) < MIGRATION_RETRY_BACKOFF_MS) {
+  if (migrationRetryPending(db2, key))
     return false;
-  }
   try {
     db2.transaction(() => {
       const current = readMarker(key);
@@ -4444,7 +4446,7 @@ function clip(text, maxChars) {
   const flat2 = text.replace(/\s+/g, " ").trim();
   if (flat2.length <= maxChars)
     return flat2;
-  const cut = sliceWholeChars(flat2, maxChars);
+  const cut = sliceWholeChars(flat2, maxChars - 1);
   const lastSpace = cut.lastIndexOf(" ");
   const base = lastSpace > maxChars * 0.6 ? cut.slice(0, lastSpace) : cut;
   return `${base.trimEnd()}\u2026`;
@@ -4716,6 +4718,75 @@ var init_work_topology = __esm({
     TASK_STATE_DISPLAY_MAX_CHARS = 1200;
     TASK_STATE_LINE_MAX_CHARS = 320;
     PROJECT_ID_HASH_SUFFIX = /~[0-9a-f]{32}$/;
+  }
+});
+
+// dist/core/compression-ledger.js
+function readLedger(db2) {
+  const row = db2.prepare("SELECT value FROM memesh_metadata WHERE key = ?").get(UNMARKED_COMPRESSED_KEY);
+  const empty = { weeks: {}, released: [] };
+  if (!row)
+    return empty;
+  try {
+    const parsed = JSON.parse(row.value);
+    if (!parsed || typeof parsed.weeks !== "object" || parsed.weeks === null || !Array.isArray(parsed.released))
+      return empty;
+    return { weeks: parsed.weeks, released: parsed.released };
+  } catch {
+    return empty;
+  }
+}
+function writeLedger(db2, ledger) {
+  if (Object.keys(ledger.weeks).length === 0) {
+    db2.prepare("DELETE FROM memesh_metadata WHERE key = ?").run(UNMARKED_COMPRESSED_KEY);
+    return;
+  }
+  db2.prepare("INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)").run(UNMARKED_COMPRESSED_KEY, JSON.stringify(ledger));
+}
+function writeUnmarkedCompressedCounts(db2, weeks) {
+  writeLedger(db2, { weeks, released: [] });
+}
+function unmarkedCompressedCommits(db2) {
+  let total = 0;
+  for (const week of Object.values(readLedger(db2).weeks)) {
+    const n = week?.counts?.commit;
+    if (Number.isInteger(n) && n > 0)
+      total += n;
+  }
+  return total;
+}
+function releaseCompressedRecord(db2, entityId) {
+  const row = db2.prepare(`
+    SELECT type, strftime('${COMPRESSION_WEEK_FORMAT}', created_at) AS week,
+      CASE WHEN json_valid(metadata) THEN json_type(metadata, '$.compacted_into') END AS marker
+    FROM entities WHERE id = ?
+  `).get(entityId);
+  if (!row)
+    return;
+  if (row.marker !== null) {
+    db2.prepare("UPDATE entities SET metadata = json_remove(metadata, '$.compacted_into') WHERE id = ? AND json_type(metadata) = 'object'").run(entityId);
+    return;
+  }
+  if (!row.week)
+    return;
+  const ledger = readLedger(db2);
+  const week = ledger.weeks[row.week];
+  const n = week?.counts?.[row.type];
+  if (!week || !Number.isInteger(n) || n <= 0 || ledger.released.includes(entityId))
+    return;
+  const old = db2.prepare("SELECT created_at < datetime(?) AS old FROM entities WHERE id = ?").get(week.before, entityId).old;
+  if (!old)
+    return;
+  week.counts[row.type] = n - 1;
+  ledger.released.push(entityId);
+  writeLedger(db2, ledger);
+}
+var COMPRESSION_WEEK_FORMAT, UNMARKED_COMPRESSED_KEY;
+var init_compression_ledger = __esm({
+  "dist/core/compression-ledger.js"() {
+    "use strict";
+    COMPRESSION_WEEK_FORMAT = "%Y-W%W";
+    UNMARKED_COMPRESSED_KEY = "compression_unmarked_counts";
   }
 });
 
@@ -5495,7 +5566,8 @@ var init_projects = __esm({
 // dist/knowledge-graph.js
 var knowledge_graph_exports = {};
 __export(knowledge_graph_exports, {
-  KnowledgeGraph: () => KnowledgeGraph
+  KnowledgeGraph: () => KnowledgeGraph,
+  isMetadataObject: () => isMetadataObject
 });
 import { createHash as createHash2 } from "node:crypto";
 function redactMetadataForStore(next, stored, sameCall = []) {
@@ -5605,6 +5677,9 @@ function projectScopeFilter(scope) {
     params: [scope]
   };
 }
+function isMetadataObject(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
 var EXACT_MATCH_FIRST, isGuardWithPattern, withoutGuardPattern, MAX_QUERY_TERMS, UBIQUITOUS_TERM_FRACTION, MIN_ROWS_FOR_DF_GUARD, MAX_DF_LOOKUP_TERMS, LATIN_FOLDABLE, SQL_SCAN_FOLD, scanFoldRegistered, NO_PROJECT_TAG, KnowledgeGraph;
 var init_knowledge_graph = __esm({
   "dist/knowledge-graph.js"() {
@@ -5616,6 +5691,7 @@ var init_knowledge_graph = __esm({
     init_schema();
     init_entity_write();
     init_work_topology();
+    init_compression_ledger();
     init_project_attribution();
     init_projects();
     init_paths();
@@ -5700,7 +5776,7 @@ var init_knowledge_graph = __esm({
           if (metaRow?.metadata) {
             try {
               const parsed = JSON.parse(metaRow.metadata);
-              if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+              if (!isMetadataObject(parsed))
                 throw new Error("metadata is not an object");
               metadata = parsed;
             } catch {
@@ -5725,6 +5801,7 @@ var init_knowledge_graph = __esm({
         }
         const wasArchived = !isNewEntity && row.status === "archived";
         if (wasArchived) {
+          releaseCompressedRecord(this.db, entityId);
           this.db.prepare("UPDATE entities SET status = 'active' WHERE name = ?").run(name);
         }
         const prevObs = isNewEntity ? [] : this.db.prepare("SELECT content FROM observations WHERE entity_id = ? ORDER BY id").all(entityId);
@@ -6225,6 +6302,18 @@ function runAutoDecay(db2) {
   db2.prepare("INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES ('last_decay_at', ?)").run((/* @__PURE__ */ new Date()).toISOString());
   return { decayed: Number(result.changes) };
 }
+function markableMetadata(raw) {
+  if (!raw)
+    return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed === null)
+      return {};
+    return isMetadataObject(parsed) ? parsed : void 0;
+  } catch {
+    return void 0;
+  }
+}
 function declaredCompressedCounts(observations) {
   const declared = /* @__PURE__ */ new Map();
   for (const content of observations) {
@@ -6241,21 +6330,48 @@ function markCompressedRows(db2, opts = {}) {
   const types = Array.from(NOISE_TYPES);
   const placeholders = types.map(() => "?").join(",");
   const summaries = db2.prepare("SELECT id, name FROM entities WHERE type = 'weekly-summary' AND name LIKE 'weekly-summary-%'").all();
-  const observationsOf2 = db2.prepare("SELECT content FROM observations WHERE entity_id = ?");
+  const observationsOf2 = db2.prepare("SELECT content, created_at FROM observations WHERE entity_id = ?");
   const candidatesOf = db2.prepare(`
     SELECT id, type, metadata FROM entities
     WHERE status = 'archived' AND type IN (${placeholders})
-      AND strftime('%Y-W%W', created_at) = ?
-      AND (metadata IS NULL OR json_valid(metadata))
-      AND json_type(COALESCE(metadata, '{}'), '$.compacted_into') IS NULL
+      AND strftime('${COMPRESSION_WEEK_FORMAT}', created_at) = ?
+      AND json_type(CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, '$.compacted_into') IS NULL
+  `);
+  const alreadyMarkedBySummary = /* @__PURE__ */ new Map();
+  for (const r of db2.prepare(`
+    SELECT json_extract(CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, '$.compacted_into') AS summary, type, COUNT(*) AS n
+    FROM entities WHERE status = 'archived' AND type IN (${placeholders}) AND summary IS NOT NULL
+    GROUP BY summary, type
+  `).all(...types)) {
+    let byType = alreadyMarkedBySummary.get(r.summary);
+    if (!byType) {
+      byType = /* @__PURE__ */ new Map();
+      alreadyMarkedBySummary.set(r.summary, byType);
+    }
+    byType.set(r.type, r.n);
+  }
+  const cutoffBefore = db2.prepare(`SELECT datetime(?, '-${NOISE_AGE_DAYS} days') AS t`);
+  const rememberedAgain = db2.prepare(`
+    SELECT type, COUNT(*) AS n FROM entities
+    WHERE status = 'active' AND type IN (${placeholders})
+      AND strftime('${COMPRESSION_WEEK_FORMAT}', created_at) = ?
+      AND created_at < datetime(?)
+    GROUP BY type
   `);
   const write = db2.prepare("UPDATE entities SET metadata = ? WHERE id = ?");
+  const countsOf = (rows) => new Map(rows.map((r) => [r.type, r.n]));
   let marked = 0;
   let unresolved = 0;
+  const unmarkedCounts = {};
   for (const summary of summaries) {
     const week = summary.name.slice("weekly-summary-".length);
-    const declared = declaredCompressedCounts(observationsOf2.all(summary.id).map((o) => o.content));
-    const byType = /* @__PURE__ */ new Map();
+    const observations = observationsOf2.all(summary.id);
+    const declared = declaredCompressedCounts(observations.map((o) => o.content));
+    const lastCompression = observations.filter((o) => declaredCompressedCounts([o.content]).size > 0).map((o) => o.created_at).sort().at(-1);
+    const before = lastCompression ? cutoffBefore.get(lastCompression).t : null;
+    const alreadyMarked = alreadyMarkedBySummary.get(summary.id) ?? /* @__PURE__ */ new Map();
+    const remembered = before ? countsOf(rememberedAgain.all(...types, week, before)) : /* @__PURE__ */ new Map();
+    const byType = new Map([...declared.keys()].map((t) => [t, []]));
     for (const row of candidatesOf.all(...types, week)) {
       let group = byType.get(row.type);
       if (!group) {
@@ -6265,43 +6381,77 @@ function markCompressedRows(db2, opts = {}) {
       group.push(row);
     }
     for (const [type, rows] of byType) {
-      if (rows.length !== (declared.get(type) ?? 0)) {
+      const expected = (declared.get(type) ?? 0) - (alreadyMarked.get(type) ?? 0);
+      const active2 = remembered.get(type) ?? 0;
+      const keepCount = (n) => {
+        if (before && n > 0)
+          (unmarkedCounts[week] ??= { before, counts: {} }).counts[type] = n;
+      };
+      if (rows.length + active2 !== expected) {
         unresolved += rows.length;
+        keepCount(expected - active2);
         continue;
       }
-      if (opts.dryRun) {
-        marked += rows.length;
-        continue;
-      }
+      let unmarkable = 0;
       for (const row of rows) {
-        const meta3 = row.metadata ? JSON.parse(row.metadata) : {};
+        const meta3 = markableMetadata(row.metadata);
+        if (!meta3) {
+          unmarkable++;
+          continue;
+        }
+        marked++;
+        if (opts.dryRun)
+          continue;
         meta3.compacted_into = summary.id;
         write.run(JSON.stringify(meta3), row.id);
-        marked++;
       }
+      keepCount(unmarkable);
     }
   }
-  return { marked, unresolved };
+  return { marked, unresolved, unmarkedCounts };
 }
 function acquireBackfillLease(db2) {
-  return db2.transaction(() => {
-    const row = db2.prepare("SELECT value FROM memesh_metadata WHERE key = ?").get(BACKFILL_LEASE_KEY);
-    const expires = row ? Number(row.value.split(":")[1]) : 0;
-    if (row && Number.isFinite(expires) && expires > Date.now())
-      return void 0;
-    const token = `${process.pid}:${Date.now() + BACKFILL_LEASE_MS}`;
-    db2.prepare("INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)").run(BACKFILL_LEASE_KEY, token);
-    return token;
-  }).immediate();
+  const { timeout } = db2.prepare("PRAGMA busy_timeout").get();
+  db2.pragma("busy_timeout = 0");
+  try {
+    return db2.transaction(() => {
+      const row = db2.prepare("SELECT value FROM memesh_metadata WHERE key = ?").get(BACKFILL_LEASE_KEY);
+      const expires = row ? Number(row.value.split(":")[1]) : 0;
+      if (row && Number.isFinite(expires) && expires > Date.now())
+        return void 0;
+      const token = `${process.pid}:${Date.now() + BACKFILL_LEASE_MS}`;
+      db2.prepare("INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)").run(BACKFILL_LEASE_KEY, token);
+      return token;
+    }).immediate();
+  } finally {
+    db2.pragma(`busy_timeout = ${timeout}`);
+  }
 }
 function backfillCompressionMarkers(db2) {
-  if (db2.prepare("SELECT value FROM memesh_metadata WHERE key = ?").get(COMPRESSION_MARKER_KEY))
+  const readKey = (key) => db2.prepare("SELECT value FROM memesh_metadata WHERE key = ?").get(key)?.value;
+  if (readKey(COMPRESSION_MARKER_KEY))
     return;
-  const lease = acquireBackfillLease(db2);
-  if (!lease)
+  if (migrationRetryPending(db2, COMPRESSION_MARKER_KEY)) {
+    process.stderr.write("MeMesh: compressed-record marker backfill is waiting out the 24h retry delay after its last failure; nothing was backed up or changed.\n");
     return;
+  }
+  let lease;
+  try {
+    lease = acquireBackfillLease(db2);
+  } catch (err) {
+    if (!isTransientDbError(err))
+      throw err;
+    process.stderr.write(`MeMesh: compressed-record marker backfill deferred (${err instanceof Error ? err.message : String(err)}). Another process holds the database; it will run on the next start.
+`);
+    return;
+  }
+  if (!lease) {
+    process.stderr.write("MeMesh: compressed-record marker backfill skipped: another process is running it.\n");
+    return;
+  }
   try {
     const plan = markCompressedRows(db2, { dryRun: true });
+    let backupPath;
     if (plan.marked > 0) {
       const file2 = db2.prepare("PRAGMA database_list").all().find((d) => d.name === "main")?.file;
       try {
@@ -6313,10 +6463,11 @@ function backfillCompressionMarkers(db2) {
           if (leftover.startsWith(BACKUP_PREFIX) && leftover.endsWith(".tmp"))
             fs2.rmSync(path2.join(backupDir, leftover), { force: true });
         }
-        const backupPath = path2.join(backupDir, `${BACKUP_PREFIX}${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-")}.db`);
-        const partial2 = `${backupPath}.tmp`;
+        const finalPath = path2.join(backupDir, `${BACKUP_PREFIX}${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-")}.db`);
+        const partial2 = `${finalPath}.tmp`;
         db2.prepare("VACUUM INTO ?").run(partial2);
-        fs2.renameSync(partial2, backupPath);
+        fs2.renameSync(partial2, finalPath);
+        backupPath = finalPath;
         process.stderr.write(`MeMesh: backed up the database to ${backupPath} before marking records that compression archived.
 `);
       } catch (err) {
@@ -6325,27 +6476,36 @@ function backfillCompressionMarkers(db2) {
         return;
       }
     }
-    runOnceMigration(db2, {
+    const done = runOnceMigration(db2, {
       key: COMPRESSION_MARKER_KEY,
       version: 1,
       describe: "compressed-record marker backfill",
       migrate: () => {
-        const { marked, unresolved } = markCompressedRows(db2);
-        process.stderr.write(`MeMesh: marked ${marked} archived record${marked === 1 ? "" : "s"} as archived by compression; ${unresolved} more could not be told apart from forgotten ones and were left unmarked.
+        const { marked, unresolved, unmarkedCounts } = markCompressedRows(db2);
+        writeUnmarkedCompressedCounts(db2, unmarkedCounts);
+        if (marked + unresolved > 0) {
+          process.stderr.write(`MeMesh: marked ${marked} archived record${marked === 1 ? "" : "s"} as archived by compression; ${unresolved} more could not be told apart from forgotten ones and were left unmarked.
 `);
+        }
       }
     });
+    if (!done && backupPath && !readKey(COMPRESSION_MARKER_KEY)) {
+      fs2.rmSync(backupPath, { force: true });
+      process.stderr.write(`MeMesh: removed ${backupPath}: the marking did not happen, so the database is unchanged; the next attempt makes a new copy.
+`);
+    }
   } finally {
     db2.prepare("DELETE FROM memesh_metadata WHERE key = ? AND value = ?").run(BACKFILL_LEASE_KEY, lease);
   }
 }
-var DECAY_INTERVAL_MS, STALE_THRESHOLD_DAYS, DECAY_FACTOR, MIN_CONFIDENCE, NOISE_TYPES, COMPRESS_INTERVAL_MS, COMPRESSION_MARKER_KEY, BACKFILL_LEASE_KEY, BACKFILL_LEASE_MS, BACKUP_PREFIX;
+var DECAY_INTERVAL_MS, STALE_THRESHOLD_DAYS, DECAY_FACTOR, MIN_CONFIDENCE, NOISE_TYPES, COMPRESS_INTERVAL_MS, NOISE_AGE_DAYS, COMPRESSION_MARKER_KEY, BACKFILL_LEASE_KEY, BACKFILL_LEASE_MS, BACKUP_PREFIX;
 var init_lifecycle = __esm({
   "dist/core/lifecycle.js"() {
     "use strict";
     init_knowledge_graph();
     init_entity_index();
     init_schema();
+    init_compression_ledger();
     DECAY_INTERVAL_MS = 24 * 60 * 60 * 1e3;
     STALE_THRESHOLD_DAYS = 30;
     DECAY_FACTOR = 0.9;
@@ -6357,6 +6517,7 @@ var init_lifecycle = __esm({
       "session-summary"
     ]);
     COMPRESS_INTERVAL_MS = 24 * 60 * 60 * 1e3;
+    NOISE_AGE_DAYS = 7;
     COMPRESSION_MARKER_KEY = "compression_marker_backfill";
     BACKFILL_LEASE_KEY = `${COMPRESSION_MARKER_KEY}_lease`;
     BACKFILL_LEASE_MS = 10 * 60 * 1e3;
@@ -34140,7 +34301,7 @@ function exportOpenAITools() {
               description: "Message lifecycle or live-directory action; required fields depend on the selected action."
             },
             project: { type: "string", description: "Local project scope. A stable identifier, never a filesystem path; compared exactly, after Unicode NFC normalisation." },
-            sender: { type: "string", description: "Required for send. Stable local sender identifier; provenance only, trimmed of surrounding whitespace but otherwise stored as given." },
+            sender: { type: "string", description: "Required for send. Stable local sender/agent identifier; provenance only, trimmed of surrounding whitespace but otherwise stored as given." },
             recipient: { type: "string", description: "Required except discover and send with recipient_handle. Stable target identifier, never a filesystem path; compared exactly after Unicode NFC normalisation." },
             recipient_handle: { type: "string", description: "Send only: a discovered project-scoped session handle, mutually exclusive with recipient. Offline registered sessions can also be addressed." },
             target_kind: { type: "string", enum: ["principal", "session"], description: "Recipient identity kind for send and fetch. Defaults to principal; exact-session delivery and fetch require session." },
@@ -61509,2413 +61670,20 @@ var init_analytics = __esm({
   }
 });
 
-// dist/core/patterns.js
-function countedSql(alias) {
-  return `(${alias}.type != 'weekly-summary' AND (${alias}.status = 'active' OR (${alias}.status = 'archived'
-    AND ${alias}.type IN (${COMPRESSED_TYPE_LIST})
-    AND json_type(CASE WHEN json_valid(${alias}.metadata) THEN ${alias}.metadata ELSE '{}' END, '$.compacted_into') = 'integer')))`;
-}
-function computePatterns(db2, categories) {
-  const allCategories = !categories || categories.length === 0;
-  let hourDistribution = [];
-  let dayDistribution = [];
-  if (allCategories || categories.includes("workSchedule")) {
-    hourDistribution = db2.prepare(`
-      SELECT CAST(strftime('%H', created_at, 'localtime') AS INTEGER) as hour, COUNT(*) as count
-      FROM entities e WHERE ${countedSql("e")}
-      GROUP BY hour ORDER BY hour
-    `).all();
-    dayDistribution = db2.prepare(`
-      SELECT CAST(strftime('%w', created_at, 'localtime') AS INTEGER) as dayNum,
-        COUNT(*) as count
-      FROM entities e WHERE ${countedSql("e")} GROUP BY dayNum ORDER BY dayNum
-    `).all();
-  }
-  let focusAreas = [];
-  if (allCategories || categories.includes("focusAreas")) {
-    focusAreas = db2.prepare(`
-      SELECT type, COUNT(*) as count FROM entities
-      WHERE status = 'active' AND type NOT IN (${AUTO_TYPES.map(() => "?").join(",")})
-      GROUP BY type ORDER BY count DESC LIMIT 10
-    `).all(...AUTO_TYPES);
-  }
-  let commitsPerSession = 0;
-  let totalSessions = 0;
-  let totalCommits = 0;
-  if (allCategories || categories.includes("workflow")) {
-    totalCommits = db2.prepare(`SELECT COUNT(*) as c FROM entities e WHERE e.type = 'commit' AND ${countedSql("e")}`).get().c;
-    const sessionTypes = SESSION_TYPES.map(() => "?").join(",");
-    totalSessions = db2.prepare(`
-      SELECT
-        (SELECT COUNT(DISTINCT t.tag) FROM tags t JOIN entities e ON e.id = t.entity_id
-          WHERE ${countedSql("e")} AND e.type IN (${sessionTypes}) AND t.tag LIKE 'session:%')
-        +
-        (SELECT COUNT(*) FROM entities e
-          WHERE ${countedSql("e")} AND e.type IN (${sessionTypes})
-            AND NOT EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag LIKE 'session:%'))
-        AS c
-    `).get(...SESSION_TYPES, ...SESSION_TYPES).c;
-    commitsPerSession = totalSessions > 0 ? Math.round(totalCommits / totalSessions * 10) / 10 : 0;
-  }
-  let strengths = [];
-  if (allCategories || categories.includes("strengths")) {
-    strengths = db2.prepare(`
-      SELECT type, ROUND(AVG(confidence), 2) as avgConfidence, COUNT(*) as count
-      FROM entities WHERE status = 'active' AND type NOT IN (${AUTO_TYPES.map(() => "?").join(",")})
-      GROUP BY type HAVING count >= 2
-      ORDER BY avgConfidence DESC LIMIT 5
-    `).all(...AUTO_TYPES);
-  }
-  let learningAreas = [];
-  if (allCategories || categories.includes("learningAreas")) {
-    learningAreas = db2.prepare(`
-      SELECT t.tag, COUNT(*) as count FROM tags t
-      JOIN entities e ON t.entity_id = e.id
-      WHERE e.type IN (${LEARNING_TYPES.map(() => "?").join(",")})
-        AND e.status = 'active'
-        ${SYSTEM_TAG_PREFIXES.map(() => "AND t.tag NOT LIKE ?").join("\n        ")}
-        AND t.tag NOT IN (${SYSTEM_TAG_LITERALS.map(() => "?").join(",")})
-      GROUP BY t.tag ORDER BY count DESC LIMIT 10
-    `).all(...LEARNING_TYPES, ...SYSTEM_TAG_PREFIXES.map((p) => `${p}%`), ...SYSTEM_TAG_LITERALS);
-  }
-  return {
-    workSchedule: { hourDistribution, dayDistribution },
-    focusAreas,
-    workflow: { commitsPerSession, totalSessions, totalCommits },
-    strengths,
-    learningAreas
-  };
-}
-var AUTO_TYPES, SESSION_TYPES, COMPRESSED_TYPE_LIST, SYSTEM_TAG_PREFIXES, SYSTEM_TAG_LITERALS, LEARNING_TYPES;
-var init_patterns = __esm({
-  "dist/core/patterns.js"() {
-    "use strict";
-    init_analytics();
-    init_lifecycle();
-    AUTO_TYPES = [...NOISE_TYPES2, "workflow_checkpoint"];
-    SESSION_TYPES = ["session_keypoint", "session-insight"];
-    COMPRESSED_TYPE_LIST = [...NOISE_TYPES].map((t) => `'${t.replace(/'/g, "''")}'`).join(",");
-    SYSTEM_TAG_PREFIXES = ["date:", "session:", "project:", "source:", "severity:", "error-pattern:"];
-    SYSTEM_TAG_LITERALS = [
-      "auto",
-      "auto-captured",
-      "auto-tracked",
-      "auto_saved",
-      "session_end",
-      "session-summary",
-      "session-insight",
-      "session_keypoint",
-      "workflow_checkpoint",
-      "scope:project"
-    ];
-    LEARNING_TYPES = ["lesson_learned", "mistake", "bug_fix", "lesson"];
-  }
-});
-
-// dist/core/stats.js
-function computeStats(db2) {
-  const entities = db2.prepare("SELECT COUNT(*) as c FROM entities").get();
-  const observations = db2.prepare("SELECT COUNT(*) as c FROM observations").get();
-  const relations = db2.prepare("SELECT COUNT(*) as c FROM relations").get();
-  const tags = db2.prepare("SELECT COUNT(DISTINCT tag) as c FROM tags").get();
-  const typeDistribution = db2.prepare("SELECT type, COUNT(*) as count FROM entities GROUP BY type ORDER BY count DESC LIMIT 50").all();
-  const tagDistribution = db2.prepare("SELECT tag, COUNT(*) as count FROM tags GROUP BY tag ORDER BY count DESC LIMIT 30").all();
-  const statusDistribution = db2.prepare("SELECT status, COUNT(*) as count FROM entities GROUP BY status").all();
-  return {
-    totalEntities: entities.c,
-    totalObservations: observations.c,
-    totalRelations: relations.c,
-    totalTags: tags.c,
-    typeDistribution,
-    tagDistribution,
-    statusDistribution
-  };
-}
-var init_stats = __esm({
-  "dist/core/stats.js"() {
-    "use strict";
-  }
-});
-
-// dist/core/database-diagnosis.js
-import fs19 from "fs";
-import path16 from "path";
-function damagedDatabaseFix(databasePath, existsSyncImpl = fs19.existsSync) {
-  const db2 = shellQuote(databasePath);
-  const damaged = shellQuote(`${databasePath}.damaged`);
-  const recovered = shellQuote(`${databasePath}.recovered.db`);
-  const backups = path16.join(path16.dirname(databasePath), "backups");
-  const restore = existsSyncImpl(backups) ? ` To go back to a backup instead, restore the newest copy in ${shellQuote(backups)}: sqlite3 ${db2} ".restore '<backup>'" (this overwrites the file, which is why the copy comes first).` : "";
-  return `Stop every memesh process, then copy the damaged file so nothing is lost: cp ${db2} ${damaged}.${restore} To salvage what is readable: sqlite3 ${damaged} .recover | sqlite3 ${recovered}, check the result, then move it to ${db2}.`;
-}
-function diagnoseDatabaseFailure(err, databasePath, existsSyncImpl = fs19.existsSync, statSyncImpl = fs19.statSync) {
-  const message = err instanceof Error ? err.message : "unknown database error";
-  let diagnosis;
-  let fix;
-  const ownFix = err?.fix;
-  if (typeof ownFix === "string") {
-    diagnosis = message;
-    fix = runOrSay(ownFix);
-  } else if (/database is locked|SQLITE_BUSY/i.test(message)) {
-    diagnosis = `Another process has the database locked: ${message}`;
-    fix = "Wait for the other memesh process to finish, or stop it, then retry";
-  } else if (existsSyncImpl(databasePath)) {
-    try {
-      const stat = statSyncImpl(databasePath);
-      const canRead = !!(stat.mode & 256);
-      const canWrite = !!(stat.mode & 128);
-      if (!canRead || !canWrite) {
-        diagnosis = `Database file exists but has insufficient permissions (${(stat.mode & 511).toString(8)})`;
-        const files = databaseFiles(databasePath).filter((file2) => existsSyncImpl(file2));
-        fix = `If this is your live database (not a read-only copy), restore your own access: chmod u+rw ${files.map(shellQuote).join(" ")}`;
-      } else if (stat.size === 0) {
-        diagnosis = "Database file is empty (0 bytes) \u2014 likely corrupted";
-        fix = `Delete it; the next memesh command creates a fresh database: rm ${shellQuote(databasePath)} && memesh recall`;
-      } else if (/malformed|SQLITE_CORRUPT|not a database|SQLITE_NOTADB/i.test(message)) {
-        diagnosis = `Database file exists (${stat.size} bytes) but cannot be opened: ${message}`;
-        fix = damagedDatabaseFix(databasePath, existsSyncImpl);
-      } else {
-        diagnosis = `Database file exists (${stat.size} bytes) but cannot be opened: ${message}`;
-        fix = `Backup and reset: mv ${shellQuote(databasePath)} ${shellQuote(`${databasePath}.backup`)} && memesh recall`;
-      }
-    } catch {
-      diagnosis = `Database file exists at ${databasePath} but stat() failed: ${message}`;
-      fix = `Check file system integrity and permissions`;
-    }
-  } else {
-    const dir = path16.dirname(databasePath);
-    if (!existsSyncImpl(dir)) {
-      diagnosis = `Database directory does not exist: ${dir}`;
-      fix = `Create the folder; the next memesh command creates a fresh database: mkdir -p ${shellQuote(dir)} && memesh recall`;
-    } else {
-      try {
-        const dirStat = statSyncImpl(dir);
-        const canWrite = !!(dirStat.mode & 128);
-        if ((dirStat.mode & fs19.constants.S_IFMT) === fs19.constants.S_IFREG) {
-          diagnosis = `${dir} is a file, not a folder, so no database can be created inside it`;
-          fix = "Point MEMESH_DB_PATH at a path inside a folder";
-        } else if (!(dirStat.mode & 64)) {
-          diagnosis = `Cannot reach the database \u2014 the directory has no search (x) permission: ${dir}`;
-          fix = `Fix directory permissions: chmod u+wx ${shellQuote(dir)}`;
-        } else if (!canWrite) {
-          diagnosis = `Cannot create database \u2014 directory is not writable: ${dir}`;
-          fix = `Fix directory permissions: chmod u+w ${shellQuote(dir)}`;
-        } else {
-          diagnosis = `Database file missing at ${databasePath}, but directory exists and is writable`;
-          fix = `Run any memesh command (e.g., memesh recall) to create a fresh database`;
-        }
-      } catch {
-        diagnosis = `Database directory exists but cannot be accessed: ${dir}`;
-        fix = `Check directory permissions and ownership`;
-      }
-    }
-  }
-  return { diagnosis, fix };
-}
-var init_database_diagnosis = __esm({
-  "dist/core/database-diagnosis.js"() {
-    "use strict";
-    init_file_mode();
-  }
-});
-
-// dist/transports/http/retired-routes.js
-var RETIRED_ROUTES;
-var init_retired_routes = __esm({
-  "dist/transports/http/retired-routes.js"() {
-    "use strict";
-    RETIRED_ROUTES = {
-      "/v1/consolidate": "POST /v1/consolidate is retired. It rewrote memories with an LLM summary and deleted the originals, with no review step. Use the MCP work_package tool to stage an agent result, then review and accept or reject the proposal.",
-      "/v1/verify": "POST /v1/verify is retired along with the agentic-orchestration experiment. It recorded a verification report for background-agent work; the protocol it served was removed without ever leaving opt-in. Run your own verification (typecheck/tests/lint) and store conclusions with POST /v1/remember if you want them remembered."
-    };
-  }
-});
-
-// dist/core/updater.js
-var updater_exports = {};
-__export(updater_exports, {
-  classifyBump: () => classifyBump,
-  decideAutoUpdate: () => decideAutoUpdate,
-  getInstalledGlobalVersion: () => getInstalledGlobalVersion,
-  parseAutoUpdatePolicy: () => parseAutoUpdatePolicy,
-  runGlobalUpdate: () => runGlobalUpdate
-});
-import { execFileSync as execFileSync6 } from "child_process";
-function parseAutoUpdatePolicy(value) {
-  if (typeof value !== "string")
-    return null;
-  const lowered = value.toLowerCase();
-  return VALID_AUTO_UPDATE_POLICIES.has(lowered) ? lowered : null;
-}
-function parseSemver(version2) {
-  const m = /^(\d+)\.(\d+)\.(\d+)(?:[-+].+)?$/.exec(version2.trim());
-  if (!m)
-    return null;
-  return {
-    major: Number(m[1]),
-    minor: Number(m[2]),
-    patch: Number(m[3])
-  };
-}
-function classifyBump(from, to) {
-  const a = parseSemver(from);
-  const b = parseSemver(to);
-  if (!a || !b)
-    return null;
-  if (b.major > a.major)
-    return "major";
-  if (b.major < a.major)
-    return null;
-  if (b.minor > a.minor)
-    return "minor";
-  if (b.minor < a.minor)
-    return null;
-  if (b.patch > a.patch)
-    return "patch";
-  return null;
-}
-function decideAutoUpdate(input2) {
-  const { currentVersion, latestVersion, policy, currentVersionDeprecated } = input2;
-  if (!latestVersion) {
-    return { shouldUpdate: false, bump: null, reason: "no latest version available", deprecationOverride: false };
-  }
-  const bump = classifyBump(currentVersion, latestVersion);
-  if (!bump) {
-    return { shouldUpdate: false, bump: null, reason: "already at or above latest", deprecationOverride: false };
-  }
-  const policyAllows = POLICY_RANK[policy] >= BUMP_RANK[bump];
-  if (policyAllows) {
-    return {
-      shouldUpdate: true,
-      bump,
-      reason: `policy '${policy}' permits ${bump} bump`,
-      deprecationOverride: false
-    };
-  }
-  if (currentVersionDeprecated && bump === "patch" && policy !== "off") {
-    return {
-      shouldUpdate: true,
-      bump,
-      reason: `installed ${currentVersion} is deprecated; security override forces patch upgrade despite policy '${policy}'`,
-      deprecationOverride: true
-    };
-  }
-  return {
-    shouldUpdate: false,
-    bump,
-    reason: `policy '${policy}' does not permit ${bump} bump`,
-    deprecationOverride: false
-  };
-}
-function parseInstalledGlobalVersion(raw) {
-  const parsed = JSON.parse(raw);
-  return parsed.dependencies?.["@pcircle/memesh"]?.version ?? null;
-}
-function getInstalledGlobalVersion(options = {}) {
-  const { execFileSyncImpl = execFileSync6, readbackTimeoutMs = DEFAULT_READBACK_TIMEOUT_MS } = options;
-  try {
-    const raw = execFileSyncImpl("npm", ["ls", "-g", "@pcircle/memesh", "--json", "--depth=0"], { encoding: "utf8", timeout: readbackTimeoutMs });
-    return parseInstalledGlobalVersion(raw);
-  } catch {
-    return null;
-  }
-}
-function runGlobalUpdate(latestVersion, options = {}) {
-  const { execFileSyncImpl = execFileSync6, installTimeoutMs = DEFAULT_INSTALL_TIMEOUT_MS, readbackTimeoutMs = DEFAULT_READBACK_TIMEOUT_MS } = options;
-  if (!EXACT_VERSION_RE.test(latestVersion)) {
-    throw new Error(`refusing non-exact npm version target: ${latestVersion}`);
-  }
-  execFileSyncImpl("npm", ["install", "-g", `@pcircle/memesh@${latestVersion}`], { stdio: "inherit", timeout: installTimeoutMs });
-  const installedVersion = getInstalledGlobalVersion({ execFileSyncImpl, readbackTimeoutMs });
-  if (installedVersion !== latestVersion) {
-    if (installedVersion) {
-      throw new Error(`expected ${latestVersion}, but npm reports ${installedVersion} is installed`);
-    }
-    throw new Error("npm did not report a global @pcircle/memesh installation after update");
-  }
-  return { installedVersion };
-}
-var DEFAULT_INSTALL_TIMEOUT_MS, DEFAULT_READBACK_TIMEOUT_MS, EXACT_VERSION_RE, VALID_AUTO_UPDATE_POLICIES, POLICY_RANK, BUMP_RANK;
-var init_updater = __esm({
-  "dist/core/updater.js"() {
-    "use strict";
-    DEFAULT_INSTALL_TIMEOUT_MS = 8 * 60 * 1e3;
-    DEFAULT_READBACK_TIMEOUT_MS = 30 * 1e3;
-    EXACT_VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
-    VALID_AUTO_UPDATE_POLICIES = /* @__PURE__ */ new Set([
-      "off",
-      "patch",
-      "minor",
-      "major"
-    ]);
-    POLICY_RANK = {
-      off: 0,
-      patch: 1,
-      minor: 2,
-      major: 3
-    };
-    BUMP_RANK = {
-      patch: 1,
-      minor: 2,
-      major: 3
-    };
-  }
-});
-
-// dist/core/install-id.js
-var install_id_exports = {};
-__export(install_id_exports, {
-  getInstallId: () => getInstallId,
-  getInstallRecord: () => getInstallRecord
-});
-import fs20 from "fs";
-import path17 from "path";
-import { randomUUID as randomUUID5 } from "crypto";
-function installFilePath() {
-  return path17.join(memeshDir(), "install.json");
-}
-function getInstallRecord() {
-  const filePath = installFilePath();
-  try {
-    if (fs20.existsSync(filePath)) {
-      const raw = fs20.readFileSync(filePath, "utf8");
-      const parsed = JSON.parse(raw);
-      if (typeof parsed.install_id === "string" && parsed.install_id.length > 0) {
-        return {
-          install_id: parsed.install_id,
-          created_at: typeof parsed.created_at === "string" ? parsed.created_at : (/* @__PURE__ */ new Date()).toISOString(),
-          schema_version: SCHEMA_VERSION
-        };
-      }
-    }
-  } catch {
-  }
-  const record2 = {
-    install_id: randomUUID5(),
-    created_at: (/* @__PURE__ */ new Date()).toISOString(),
-    schema_version: SCHEMA_VERSION
-  };
-  try {
-    fs20.mkdirSync(path17.dirname(filePath), { recursive: true });
-    removeGroupAndOtherAccess(path17.dirname(filePath));
-    fs20.writeFileSync(filePath, JSON.stringify(record2, null, 2), { encoding: "utf8", mode: 384 });
-    removeGroupAndOtherAccess(filePath);
-  } catch {
-  }
-  return record2;
-}
-function getInstallId() {
-  return getInstallRecord().install_id;
-}
-var SCHEMA_VERSION;
-var init_install_id = __esm({
-  "dist/core/install-id.js"() {
-    "use strict";
-    init_paths();
-    init_file_mode();
-    SCHEMA_VERSION = 1;
-  }
-});
-
-// dist/core/project-identity-split.js
-function findProjectIdentitySplits(db2) {
-  const rows = db2.prepare(`SELECT t.tag AS tag,
-            SUM(CASE WHEN e.status = 'active' AND NOT EXISTS (
-                  SELECT 1 FROM tags own
-                   WHERE own.entity_id = e.id
-                     AND substr(own.tag, 1, length(t.tag) + 1) = t.tag || '~'
-                ) THEN 1 ELSE 0 END) AS active
-       FROM tags t JOIN entities e ON e.id = t.entity_id
-      WHERE t.tag LIKE 'project:%'
-      GROUP BY t.tag`).all();
-  const projects = rows.map((row) => ({ project: row.tag.slice("project:".length), active: Number(row.active) }));
-  const idsByLabel = /* @__PURE__ */ new Map();
-  for (const { project } of projects) {
-    const label = projectLabel(project);
-    if (label === project)
-      continue;
-    const ids = idsByLabel.get(label);
-    if (ids)
-      ids.push(project);
-    else
-      idsByLabel.set(label, [project]);
-  }
-  const splits = [];
-  for (const { project, active: active2 } of projects) {
-    const ids = idsByLabel.get(project);
-    if (ids === void 0 || active2 === 0 || projectLabel(project) !== project)
-      continue;
-    splits.push({ plain: project, ids: [...ids].sort(), activeMemories: active2 });
-  }
-  return splits.sort((a, b) => b.activeMemories - a.activeMemories || a.plain.localeCompare(b.plain));
-}
-var init_project_identity_split = __esm({
-  "dist/core/project-identity-split.js"() {
-    "use strict";
-    init_work_topology();
-  }
-});
-
-// dist/core/capture-flag.js
-function autoCaptureDecision(envVal, configAutoCapture) {
-  if (envVal === "false")
-    return { enabled: false, offSource: "env" };
-  if (envVal === "true")
-    return { enabled: true, offSource: null };
-  if (configAutoCapture === false)
-    return { enabled: false, offSource: "config" };
-  return { enabled: true, offSource: null };
-}
-var init_capture_flag = __esm({
-  "dist/core/capture-flag.js"() {
-    "use strict";
-  }
-});
-
-// dist/core/capture-liveness.js
-function windowKeep(entries, maxTriggered, maxNotTriggered) {
-  const keep = new Array(entries.length).fill(false);
-  const seen = /* @__PURE__ */ new Map();
-  for (let i = entries.length - 1; i >= 0; i--) {
-    const { hook, triggered } = entries[i];
-    const counts = seen.get(hook) ?? { t: 0, n: 0 };
-    seen.set(hook, counts);
-    if (triggered) {
-      if (++counts.t <= maxTriggered)
-        keep[i] = true;
-    } else if (++counts.n <= maxNotTriggered) {
-      keep[i] = true;
-    }
-  }
-  return keep;
-}
-function isTriggeredRecord(record2) {
-  if (record2.outcome !== "skipped" || record2.reason === void 0)
-    return true;
-  return !(NOT_TRIGGERED_SKIP_REASONS[record2.hook] ?? []).includes(record2.reason);
-}
-function readHookOutcomeLines(raw) {
-  const entries = [];
-  for (const line of raw.split("\n")) {
-    const record2 = parseHookOutcomeLine(line);
-    if (record2)
-      entries.push({ hook: record2.hook, triggered: isTriggeredRecord(record2), record: record2, line });
-  }
-  return entries;
-}
-function renderableSkipReason(reason) {
-  if (reason === void 0)
-    return "unspecified";
-  return KNOWN_SKIP_REASONS.has(reason) ? reason : UNRECOGNISED_REASON;
-}
-function parseHookOutcomes(raw, limit = HOOK_OUTCOMES_PER_HOOK) {
-  if (!raw)
-    return { hooks: {} };
-  const entries = readHookOutcomeLines(raw);
-  const keep = windowKeep(entries, limit, HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK);
-  const hooks = {};
-  entries.forEach(({ hook, record: record2 }, i) => {
-    if (!keep[i])
-      return;
-    (hooks[hook] ?? (hooks[hook] = [])).push(record2);
-  });
-  return { hooks };
-}
-function parseHookOutcomeLine(line) {
-  const trimmed = line.trim();
-  if (!trimmed)
-    return null;
-  let parsed;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
-    return null;
-  }
-  if (!parsed || typeof parsed !== "object")
-    return null;
-  const rec = parsed;
-  if (typeof rec.hook !== "string" || !CAPTURE_HOOKS.includes(rec.hook))
-    return null;
-  if (typeof rec.at !== "string")
-    return null;
-  if (rec.outcome !== "wrote" && rec.outcome !== "skipped" && rec.outcome !== "notified" && rec.outcome !== "error")
-    return null;
-  const record2 = {
-    hook: rec.hook,
-    at: rec.at,
-    host: rec.host === "claude-code" || rec.host === "codex" ? rec.host : "unknown",
-    outcome: rec.outcome
-  };
-  const reason = typeof rec.reason === "string" ? sanitizeRecordText(rec.reason) : "";
-  if (reason)
-    record2.reason = reason;
-  if (typeof rec.run === "string" && /^[0-9a-f]{8,64}$/.test(rec.run))
-    record2.run = rec.run;
-  const entity = typeof rec.entity === "string" ? sanitizeRecordText(rec.entity) : "";
-  if (entity)
-    record2.entity = entity;
-  return record2;
-}
-function sanitizeRecordText(text) {
-  return text.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ").replace(/\s+/g, " ").trim().slice(0, RECORD_TEXT_MAX);
-}
-function summarizeHookOutcomes(file2) {
-  const order = [...CAPTURE_HOOKS];
-  const names = Object.keys(file2.hooks).sort((a, b) => {
-    const ai = order.indexOf(a);
-    const bi = order.indexOf(b);
-    if (ai !== bi)
-      return (ai === -1 ? order.length : ai) - (bi === -1 ? order.length : bi);
-    return a.localeCompare(b);
-  });
-  return names.map((hook) => summarizeOne(hook, file2.hooks[hook] ?? []));
-}
-function renderableErrorReason(reason) {
-  if (typeof reason !== "string")
-    return "an unlabelled error";
-  if (FIXED_ERROR_REASONS.has(reason))
-    return reason;
-  if (/^(?:[a-z][a-z -]{0,30}: )?uncaught [A-Za-z][\w-]{0,39}$/.test(reason))
-    return reason;
-  const step = /^([a-z][a-z-]{0,30}): /.exec(reason);
-  return step ? `${step[1]}: \u2026` : "an unlabelled error";
-}
-function summarizeOne(hook, records) {
-  let writes = 0;
-  let skips = 0;
-  let errors = 0;
-  let lastRunAt = null;
-  let firstTriggeredAt = null;
-  let lastWriteAt = null;
-  let lastEntity = null;
-  let notifies = 0;
-  let lastNotifiedAt = null;
-  let lastSkipReason = null;
-  let lastErrorAt = null;
-  let lastErrorReason = null;
-  const skipCounts = /* @__PURE__ */ new Map();
-  const hosts = /* @__PURE__ */ new Set();
-  for (const r of records) {
-    hosts.add(r.host);
-    if (lastRunAt === null || r.at >= lastRunAt)
-      lastRunAt = r.at;
-    const triggered = isTriggeredRecord(r);
-    if (triggered) {
-      if (firstTriggeredAt === null || r.at < firstTriggeredAt)
-        firstTriggeredAt = r.at;
-    }
-    if (r.outcome === "wrote") {
-      writes++;
-      if (lastWriteAt === null || r.at >= lastWriteAt) {
-        lastWriteAt = r.at;
-        lastEntity = r.entity ?? null;
-      }
-    } else if (r.outcome === "notified") {
-      notifies++;
-      if (lastNotifiedAt === null || r.at >= lastNotifiedAt)
-        lastNotifiedAt = r.at;
-    } else if (r.outcome === "skipped") {
-      skips++;
-      lastSkipReason = r.reason === void 0 ? null : renderableSkipReason(r.reason);
-      if (triggered) {
-        const key = renderableSkipReason(r.reason);
-        skipCounts.set(key, (skipCounts.get(key) ?? 0) + 1);
-      }
-    } else {
-      errors++;
-      if (lastErrorAt === null || r.at >= lastErrorAt) {
-        lastErrorAt = r.at;
-        lastErrorReason = renderableErrorReason(r.reason);
-      }
-    }
-  }
-  let dominantSkipReason = null;
-  let dominantSkipCount = 0;
-  for (const [reason, count] of skipCounts) {
-    if (count > dominantSkipCount) {
-      dominantSkipCount = count;
-      dominantSkipReason = reason;
-    }
-  }
-  const runKey = (r, i) => r.run ?? `#${i}`;
-  const runs = new Set(records.map(runKey)).size;
-  const triggeredRuns = new Set(records.map((r, i) => isTriggeredRecord(r) ? runKey(r, i) : null).filter((k) => k !== null)).size;
-  const triggeredByRun = /* @__PURE__ */ new Map();
-  records.forEach((r, i) => {
-    if (!isTriggeredRecord(r))
-      return;
-    const key = runKey(r, i);
-    const run = triggeredByRun.get(key) ?? { at: r.at, error: false };
-    if (r.at > run.at)
-      run.at = r.at;
-    if (r.outcome === "error")
-      run.error = true;
-    triggeredByRun.set(key, run);
-  });
-  const recentErrors = [...triggeredByRun.values()].sort((a, b) => a.at < b.at ? 1 : a.at > b.at ? -1 : 0).slice(0, RECENT_ERROR_RUNS).filter((run) => run.error).length;
-  return {
-    hook,
-    runs,
-    triggeredRuns,
-    writes,
-    skips,
-    errors,
-    lastRunAt,
-    firstTriggeredAt,
-    lastWriteAt,
-    lastEntity,
-    notifies,
-    lastNotifiedAt,
-    lastSkipReason,
-    dominantSkipReason,
-    dominantSkipCount,
-    lastErrorAt,
-    lastErrorReason,
-    recentErrors,
-    hosts: [...hosts].sort(),
-    silent: SILENT_ELIGIBLE_HOOKS.includes(hook) && triggeredRuns >= SILENT_HOOK_MIN_RUNS && writes === 0
-  };
-}
-function summarizeTypeTrends(rows) {
-  return rows.map((r) => ({ ...r, stopped: r.prev7 > 0 && r.last7 === 0 })).sort((a, b) => a.type.localeCompare(b.type));
-}
-function captureLivenessVerdict(input2) {
-  const withRecords = new Set(input2.hooks.filter((h) => h.runs > 0).map((h) => h.hook));
-  const graceOver = input2.measuringHours !== null && input2.measuringHours !== void 0 && input2.measuringHours > NEVER_RAN_GRACE_HOURS;
-  const deadHooks = graceOver ? (input2.neverRanHooks ?? []).filter((h) => FAIL_ELIGIBLE_HOOKS.includes(h) && !withRecords.has(h)).sort() : [];
-  const silent = input2.hooks.filter((h) => h.silent).sort((a, b) => b.triggeredRuns - a.triggeredRuns);
-  const stoppedTypes = input2.types.filter((t) => t.stopped);
-  const erroring = input2.hooks.filter((h) => h.recentErrors > 0).sort((a, b) => b.recentErrors - a.recentErrors || b.errors - a.errors);
-  let status = "PASS";
-  if (deadHooks.length > 0)
-    status = "FAIL";
-  else if (silent.length > 0 || stoppedTypes.length > 0 || erroring.length > 0)
-    status = "PASS_WITH_CONCERNS";
-  return { status, silentHook: silent[0] ?? null, erroringHook: erroring[0] ?? null, stoppedTypes, deadHooks };
-}
-var HOOK_OUTCOMES_FILENAME, HOOK_OUTCOMES_PER_HOOK, HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK, HOOK_OUTCOMES_ROTATE_BYTES, SILENT_HOOK_MIN_RUNS, CAPTURE_HOOKS, FAIL_ELIGIBLE_HOOKS, SILENT_ELIGIBLE_HOOKS, SKIP_REASONS, KNOWN_SKIP_REASONS, UNRECOGNISED_REASON, NOT_TRIGGERED_SKIP_REASONS, NEVER_RAN_GRACE_HOURS, RECORD_TEXT_MAX, FIXED_ERROR_REASONS, RECENT_ERROR_RUNS;
-var init_capture_liveness = __esm({
-  "dist/core/capture-liveness.js"() {
-    "use strict";
-    HOOK_OUTCOMES_FILENAME = "hook-outcomes.jsonl";
-    HOOK_OUTCOMES_PER_HOOK = 20;
-    HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK = 5;
-    HOOK_OUTCOMES_ROTATE_BYTES = 64 * 1024;
-    SILENT_HOOK_MIN_RUNS = 5;
-    CAPTURE_HOOKS = [
-      "post-commit",
-      "session-summary",
-      "pre-compact",
-      "pre-edit-recall",
-      "user-prompt-intent",
-      "decision-nudge",
-      "guard-check",
-      "session-start",
-      "note-ingest",
-      "remember-nudge",
-      "handoff-capture",
-      "stop-message-gate"
-    ];
-    FAIL_ELIGIBLE_HOOKS = ["session-summary"];
-    SILENT_ELIGIBLE_HOOKS = ["post-commit", "session-summary", "pre-compact", "handoff-capture"];
-    SKIP_REASONS = {
-      notBash: "not a Bash tool call",
-      notGitCommit: "not a git commit command",
-      commitLineMissing: "a git commit ran but printed no commit line",
-      commitHeadBaseline: "recorded the repository HEAD baseline; no history was backfilled",
-      commitHeadUnchanged: "a commit-like command completed but repository HEAD did not change",
-      commitHeadUnresolvable: "a commit-like command ran but repository HEAD could not be resolved",
-      alreadyCaptured: "this session was already captured",
-      payloadTooLarge: "payload exceeded the stdin byte cap",
-      toolNameAbsent: "tool_name absent in payload",
-      notDecisionTool: "not a decision-shaped tool call",
-      noSessionId: "no usable session_id in the payload",
-      noRecallSessionRecord: "no usable injection record for this session \u2014 recall use was not counted",
-      noEligibleRecallRows: "no timestamped assistant or tool rows since injection \u2014 recall use was not counted",
-      alreadyNudged: "already nudged for this tool in this session",
-      noBashCommand: "no Bash command in the payload",
-      noDatabaseForGuards: "no database yet \u2014 nothing to guard against",
-      noGuardMatched: "no active guard matched this command",
-      autoCaptureOff: "auto-capture is turned off",
-      commitCwdAbsent: "data.cwd absent \u2014 cannot resolve project or repo",
-      hashNotACommit: "the hash is not a commit in this repository",
-      noSessionOrTranscript: "neither session_id nor transcript_path in the payload",
-      emptyStdin: "empty stdin",
-      cwdAbsent: "cwd absent in payload \u2014 cannot resolve project",
-      projectLineNoCwd: "no usable session cwd \u2014 the project line was not shown",
-      notAgenticLoop: "not an agentic loop",
-      transcriptPathAbsent: "transcript_path absent",
-      transcriptGone: "the transcript file named by the payload is gone",
-      tooLittleActivity: "too little activity in the session to be worth saving",
-      noRuleMatched: "no rule matched (no edited file and fewer than 20 tool calls)",
-      allMatchedEntitiesArchived: "every rule that matched targeted an entity the user forget-archived",
-      captureTargetArchived: "capture target is archived",
-      toolInputAbsent: "tool_input absent in payload",
-      noFilePath: "no file_path in the tool input",
-      noDatabaseForRecall: "no database yet \u2014 nothing to recall",
-      nothingToRecall: "no guard matched and nothing to recall for this file",
-      recallThrottled: "no guard matched and recall for this file is throttled: this session already looked at it",
-      candidateWindowTruncated: "more candidates may exist than the search window examined",
-      noPromptIntent: "the prompt carried no remember intent and no update decision",
-      noMemoryDir: "no Claude Code memory directory for this project",
-      noNoteChanged: "no note file changed since the last ingestion",
-      noteIngesterNotBuilt: "the note ingester is not built (dist/core/note-ingest.js is missing)",
-      noteNothingNew: "note files were read and nothing new needed storing",
-      noteFilesRefused: "note files were refused and nothing was stored",
-      noTranscript: "no transcript to read",
-      trivialTurn: "trivial turn \u2014 too few tool calls since the last Stop",
-      noDecisionMove: "no decision-shaped move since the last Stop",
-      memoryWritten: "a memory was written since the last Stop",
-      noteFileChanged: "a note file changed since the last Stop",
-      noAssistantText: "the Stop payload and the transcript held no assistant message",
-      handoffTooShort: "the last assistant message was too short to be a handoff \u2014 the previous one is kept",
-      handoffArchived: "the handoff memory was archived by forget \u2014 left alone",
-      notClaudeCodeHost: "this Stop is not running under Claude Code",
-      noRecipientForGate: "no recipient could be resolved for this session",
-      noDatabaseForMessageGate: "no database yet \u2014 nothing to check for waiting messages",
-      nothingWaitingForGate: "no messages are waiting for the resolved recipient",
-      alreadyBlockedForGate: "every waiting message id was already blocked for in this session",
-      sessionLauncherNotFound: "session_launcher_not_found: no claude process found above this hook (no ps, or not under Claude Code)",
-      sessionLauncherSubagent: "session_launcher_subagent: a subagent SessionStart does not change its session mapping",
-      sessionLauncherNoDatabase: "session_launcher_no_database: no database file yet \u2014 this session is not recorded for its claude process",
-      clearAliasNoPrevious: "clear_alias_no_previous: no earlier session recorded for this claude process",
-      clearAliasPidReused: "clear_alias_pid_reused: the recorded process had the same pid but a different start time",
-      clearAliasAlreadyLinked: "clear_alias_already_linked: one of these session ids is already aliased",
-      clearAliasNoTable: "clear_alias_no_table: the database has no alias tables yet (not migrated)",
-      clearAliasInvalidInput: "clear_alias_invalid_input: no usable session_id in the SessionStart payload"
-    };
-    KNOWN_SKIP_REASONS = new Set(Object.values(SKIP_REASONS));
-    UNRECOGNISED_REASON = "unrecognised reason";
-    NOT_TRIGGERED_SKIP_REASONS = {
-      "post-commit": [SKIP_REASONS.notBash, SKIP_REASONS.notGitCommit],
-      "session-summary": [SKIP_REASONS.alreadyCaptured, SKIP_REASONS.noSessionId, SKIP_REASONS.noRecallSessionRecord, SKIP_REASONS.noEligibleRecallRows],
-      "session-start": [SKIP_REASONS.noSessionId],
-      "note-ingest": [SKIP_REASONS.noNoteChanged],
-      "remember-nudge": [SKIP_REASONS.trivialTurn, SKIP_REASONS.noDecisionMove],
-      "handoff-capture": [SKIP_REASONS.handoffTooShort, SKIP_REASONS.autoCaptureOff]
-    };
-    NEVER_RAN_GRACE_HOURS = 72;
-    RECORD_TEXT_MAX = 200;
-    FIXED_ERROR_REASONS = /* @__PURE__ */ new Set([
-      "malformed stdin JSON",
-      "captureEntity did not land the write",
-      "the transcript could not be read",
-      "the host closed stdout before the nudge could be written",
-      "the database stayed locked past the hook busy timeout",
-      "stdout: host closed the pipe before the block reason was delivered"
-    ]);
-    RECENT_ERROR_RUNS = 5;
-  }
-});
-
-// dist/core/guards.js
-function validateGuardSpec(spec) {
-  const errors = [];
-  const s = spec;
-  if (!s || typeof s !== "object")
-    return ["guard spec is not an object"];
-  if (typeof s.tool !== "string" || !GUARD_TOOLS.has(s.tool)) {
-    errors.push(`tool must be one of ${[...GUARD_TOOLS].join("/")}`);
-  }
-  if (typeof s.pattern !== "string" || s.pattern.length < PATTERN_MIN || s.pattern.length > PATTERN_MAX) {
-    errors.push(`pattern must be a string of ${PATTERN_MIN}\u2013${PATTERN_MAX} chars`);
-    return errors;
-  }
-  let re;
-  try {
-    re = new RegExp(s.pattern, "i");
-  } catch (err) {
-    return [...errors, `pattern does not compile: ${err instanceof Error ? err.message : String(err)}`];
-  }
-  if (re.test(""))
-    errors.push("pattern matches the empty string \u2014 it would fire on everything");
-  for (const probe of GUARD_BENIGN_PROBES) {
-    if (re.test(probe))
-      errors.push(`pattern matches the benign input "${probe}" \u2014 too broad to be a guard`);
-  }
-  if (typeof s.message !== "string" || s.message.trim().length === 0 || s.message.length > MESSAGE_MAX) {
-    errors.push(`message must be a non-empty string of at most ${MESSAGE_MAX} chars`);
-  }
-  const matches = Array.isArray(s.should_match) ? s.should_match.filter((x) => typeof x === "string") : [];
-  const nonMatches = Array.isArray(s.should_not_match) ? s.should_not_match.filter((x) => typeof x === "string") : [];
-  if (matches.length < 2) {
-    errors.push("should_match needs at least 2 example inputs");
-  }
-  if (nonMatches.length < 2) {
-    errors.push("should_not_match needs at least 2 example inputs");
-  }
-  for (const ex of matches) {
-    if (!re.test(ex))
-      errors.push(`should_match example does not match: "${ex.slice(0, 80)}"`);
-  }
-  for (const ex of nonMatches) {
-    if (re.test(ex))
-      errors.push(`should_not_match example matches: "${ex.slice(0, 80)}"`);
-  }
-  return errors;
-}
-function guardFromMetadata(lessonId, metadata) {
-  if (!metadata)
-    return null;
-  try {
-    const meta3 = JSON.parse(metadata);
-    const g = meta3?.guard;
-    if (!g || g.enabled !== true)
-      return null;
-    if (typeof g.tool !== "string" || typeof g.pattern !== "string" || typeof g.message !== "string")
-      return null;
-    return {
-      lessonId,
-      tool: g.tool,
-      pattern: g.pattern,
-      message: g.message,
-      action: typeof g.action === "string" ? g.action : "warn"
-    };
-  } catch {
-    return null;
-  }
-}
-var GUARD_TOOLS, GUARD_BENIGN_PROBES, PATTERN_MIN, PATTERN_MAX, MESSAGE_MAX;
-var init_guards = __esm({
-  "dist/core/guards.js"() {
-    "use strict";
-    GUARD_TOOLS = /* @__PURE__ */ new Set(["Bash", "Edit", "Write"]);
-    GUARD_BENIGN_PROBES = [
-      "ls",
-      "git status",
-      "git diff",
-      "npm test",
-      "echo ok",
-      "cd ..",
-      "src/index.ts"
-    ];
-    PATTERN_MIN = 6;
-    PATTERN_MAX = 200;
-    MESSAGE_MAX = 280;
-  }
-});
-
-// dist/core/doctor.js
-var doctor_exports = {};
-__export(doctor_exports, {
-  formatDoctorReport: () => formatDoctorReport,
-  hasBuiltInSqlite: () => hasBuiltInSqlite,
-  hoursSince: () => hoursSince,
-  inspectNodeRuntime: () => inspectNodeRuntime,
-  runDoctor: () => runDoctor,
-  satisfiesMinimumNodeRange: () => satisfiesMinimumNodeRange
-});
-import fs21 from "fs";
-import os2 from "os";
-import path18 from "path";
-import net2 from "node:net";
-import { createHash as createHash12 } from "crypto";
-import { createRequire as createRequire2 } from "module";
-import { execFileSync as execFileSync7 } from "child_process";
-function countH2Headings(content) {
-  let n = 0;
-  let inFence = false;
-  for (const line of content.split("\n")) {
-    const trimmed = line.trimStart();
-    if (trimmed.startsWith("```") || trimmed.startsWith("~~~")) {
-      inFence = !inFence;
-      continue;
-    }
-    if (inFence)
-      continue;
-    if (line.startsWith("## "))
-      n++;
-  }
-  return n;
-}
-function inspectLocaleReadmeParity(packageRoot3, existsSyncImpl, readFileSyncImpl) {
-  const englishPath = path18.join(packageRoot3, "README.md");
-  if (!existsSyncImpl(englishPath)) {
-    return createCheck("readme_locale_parity", "README locale parity", "pass", "README.md not present in this install; locale-parity check skipped.");
-  }
-  let englishCount;
-  try {
-    englishCount = countH2Headings(readFileSyncImpl(englishPath, "utf8"));
-  } catch (err) {
-    return createCheck("readme_locale_parity", "README locale parity", "warn", `Could not read README.md: ${err instanceof Error ? err.message : String(err)}`, void 0, { code: "readme-parity.unreadable", params: { detail: err instanceof Error ? err.message : String(err) } });
-  }
-  const present = LOCALE_README_FILES.filter((filename) => existsSyncImpl(path18.join(packageRoot3, filename)));
-  if (present.length === 0) {
-    return createCheck("readme_locale_parity", "README locale parity", "pass", "No locale README in this install; locale-parity check skipped.");
-  }
-  const drift = [];
-  for (const filename of present) {
-    try {
-      const count = countH2Headings(readFileSyncImpl(path18.join(packageRoot3, filename), "utf8"));
-      if (Math.abs(count - englishCount) > LOCALE_H2_TOLERANCE) {
-        drift.push({ name: filename, count });
-      }
-    } catch {
-      drift.push({ name: filename, count: -1 });
-    }
-  }
-  if (drift.length === 0) {
-    return createCheck("readme_locale_parity", "README locale parity", "pass", `${present.join(", ")} match the English H2 count (${englishCount}).`);
-  }
-  const driftDetail = drift.map((d) => `${d.name}=${d.count === -1 ? "unreadable" : d.count}`).join(", ");
-  const detail = `H2 count drift (English=${englishCount}): ${driftDetail}`;
-  return createCheck("readme_locale_parity", "README locale parity", "warn", detail, `Re-sync the listed READMEs against README.md so section structure matches (\xB1${LOCALE_H2_TOLERANCE} H2 tolerated to absorb translation collapse).`, { code: "readme-parity.drift", params: { detail, tolerance: LOCALE_H2_TOLERANCE } });
-}
-function resolveDatabasePath() {
-  return getDbPath();
-}
-function queryFailedFix(err) {
-  const fix = err?.fix;
-  if (typeof fix === "string") {
-    return `MeMesh did not open the database because of its permissions; the Database row above explains why. ${runOrSay(fix)}`;
-  }
-  const detail = err instanceof Error ? err.message : String(err);
-  if (/readonly database|SQLITE_READONLY/i.test(detail)) {
-    return "The database is read-only; the Database row above shows the command that makes it writable again.";
-  }
-  if (/database is locked|SQLITE_BUSY/i.test(detail)) {
-    return "Another process has the database locked; wait for it to finish, or stop it, then retry.";
-  }
-  return "The error is quoted above. Check that ~/.memesh is readable and that the disk is not full.";
-}
-function quickIntegrityVerdict(db2) {
-  try {
-    const row = db2.prepare("PRAGMA quick_check(1)").get();
-    if (typeof row?.quick_check !== "string")
-      return "quick_check returned no verdict";
-    return row.quick_check.replace(/\s+/g, " ").slice(0, 200);
-  } catch (err) {
-    return (err instanceof Error ? err.message : "quick_check raised an error").replace(/\s+/g, " ").slice(0, 200);
-  }
-}
-function createCheck(id, label, status, summary, fix, i18n, fixId) {
-  return { id, label, status, summary, fix, code: i18n?.code, params: i18n?.params, fixId };
-}
-function createInfo(id, label, summary, fix) {
-  return { id, label, status: "pass", summary, fix, informational: true };
-}
-function inspectAgentMessageStorage(db2, databasePath, policy) {
-  try {
-    const present = db2.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'agent_messages'").get();
-    if (!present?.present)
-      return void 0;
-    const cutoff = policy?.retention_cutoff ?? /* @__PURE__ */ new Date(0);
-    const report = getAgentMessageStorageReport(db2, { cutoff, databasePath });
-    const quota = policy?.storage_quota_bytes;
-    const invalidQuota = quota !== void 0 && (!Number.isSafeInteger(quota) || quota < 0);
-    const quotaText = quota === void 0 ? "quota not configured" : !invalidQuota ? `quota ${formatStorageBytes(quota)} (${formatStorageBytes(report.payload_bytes)} logical payload used)` : "configured quota is invalid";
-    const retentionText = policy?.retention_cutoff === void 0 ? "retention policy not configured; terminal-prunable payload was not evaluated" : `retention cutoff ${String(policy.retention_cutoff)}; ${report.terminal_prunable_message_count} terminal message(s) (${formatStorageBytes(report.terminal_prunable_payload_bytes)}) are prunable by that owner policy`;
-    const walText = report.wal_file_bytes === null ? "WAL size unavailable" : `WAL ${formatStorageBytes(report.wal_file_bytes)}`;
-    const databaseText = report.database_file_bytes === null ? "database file size unavailable" : `database file ${formatStorageBytes(report.database_file_bytes)}`;
-    const summary = `${report.message_count} message(s), ${formatStorageBytes(report.payload_bytes)} logical payload (${report.protected_unresolved_message_count} unresolved/protected); ${formatStorageBytes(report.reusable_freelist_bytes)} SQLite freelist reusable; ${databaseText}; ${walText}; ${quotaText}; ${retentionText}. Doctor only read this state: it did not prune payloads, checkpoint WAL, or run VACUUM.`;
-    if (invalidQuota) {
-      return createCheck("agent_message_storage", "Agent message storage", "warn", `${summary} Send enforcement rejects this quota configuration; use a canonical non-negative safe decimal integer.`, `Set ${AGENT_MESSAGE_STORAGE_QUOTA_ENV2} to 0 or a positive decimal integer within the safe integer range, then re-run memesh doctor.`);
-    }
-    return createInfo("agent_message_storage", "Agent message storage", summary);
-  } catch {
-    return void 0;
-  }
-}
-function noDaemonReason(detailJson) {
-  try {
-    return JSON.parse(detailJson)?.detail?.reason === "no_daemon";
-  } catch {
-    return false;
-  }
-}
-function inspectCodexQueueDaemon(db2) {
-  try {
-    const present = db2.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'agent_message_receipts'").get();
-    if (!present?.present)
-      return void 0;
-    const rows = db2.prepare(`
-      SELECT project, recipient, detail_json, created_at FROM agent_message_receipts
-      WHERE receipt_kind = 'host_activation'
-        AND actor = 'memesh-router'
-        AND idempotency_key LIKE 'codex-queue-release-%'
-        AND created_at > datetime('now', '-7 days')
-      ORDER BY created_at DESC, rowid DESC
-    `).all();
-    if (rows.length === 0) {
-      return createInfo("codex-queue-daemon", "Codex stuck-message release", "No Codex host_activation receipts in the last 7 days. The Codex stuck-message release has not run recently, so its app-server-daemon dependency has not been exercised either way.");
-    }
-    const latestPerThread = /* @__PURE__ */ new Map();
-    for (const row of rows) {
-      const key = `${row.project}\0${row.recipient}`;
-      if (!latestPerThread.has(key))
-        latestPerThread.set(key, row);
-    }
-    const stuck = [...latestPerThread.values()].filter((row) => noDaemonReason(row.detail_json));
-    if (stuck.length === 0) {
-      return createInfo("codex-queue-daemon", "Codex stuck-message release", `${latestPerThread.size} Codex thread(s) ran the stuck-message release in the last 7 days; the latest run in each found the app-server daemon. Nothing is waiting on it.`);
-    }
-    const named = stuck.map((row) => `${row.recipient} in ${row.project} (${sqliteUtcToIso(row.created_at)})`).join(", ");
-    return createCheck("codex-queue-daemon", "Codex stuck-message release", "warn", `${stuck.length} Codex thread(s) last ran the stuck-message release without the app-server daemon: ${named}. A MeMesh message queued there after an interrupted turn stays in that thread's queue until you send the thread a prompt.`, "Send a prompt in each thread named above to drain its queue. To restore the automatic release, run Codex with its app-server daemon (avoid `--no-daemon`).");
-  } catch (err) {
-    return createCheck("codex-queue-daemon", "Codex stuck-message release", "warn", `Could not read the Codex host_activation receipts: ${err instanceof Error ? err.message : String(err)}`, "Run `memesh doctor` again; if this persists, check the database rows above for the underlying error.");
-  }
-}
-function inspectProjectIdentitySplit(db2) {
-  let splits;
-  try {
-    splits = findProjectIdentitySplits(db2);
-  } catch (err) {
-    return createCheck("project-identity-split", "Project tags", "warn", `The project tag check could not run (${err instanceof Error ? err.message : String(err)}), so a project split is not ruled out.`, "Run `memesh kg rename-project` to list every project tag.");
-  }
-  if (splits.length === 0)
-    return void 0;
-  const total = splits.reduce((sum, split) => sum + split.activeMemories, 0);
-  return createCheck("project-identity-split", "Project tags", "warn", `${total} active ${total === 1 ? "memory" : "memories"} in ${splits.length} ${splits.length === 1 ? "project is" : "projects are"} filed under a plain project name (project:<name>) that the project's sessions never read; they use the full id (project:<name>~<hash>).`, "Run `memesh kg rename-project` to list every project tag with its count. For a plain name listed next to an id of the same name, kg rename-project --from <name> --to <id> previews moving its memories to that id, and the same command with --apply moves them (it backs the database up first). A shared name does not prove one project: if a different repository used that name, leave it.");
-}
-function inspectCodexSessionSetup(codexPluginCacheDetected, existsSyncImpl) {
-  if (!codexPluginCacheDetected)
-    return null;
-  const configPath = path18.join(getMemeshDirFromDbPath(), "hosts", "codex-session.json");
-  if (existsSyncImpl(configPath)) {
-    return createInfo("codex-session-setup", "Codex ordinary-session notifications", "A Codex identity override file is present and will be validated at SessionStart. A valid override applies only in its configured workspace; other Codex plugin sessions use automatic thread-scoped identities. A cached plugin copy does not prove a live registration; use `memesh message discover --project <project>` to read current presence.");
-  }
-  return createInfo("codex-session-setup", "Codex ordinary-session notifications", "No explicit identity override is configured. When the Codex plugin is enabled, each startup or resumed thread registers automatically under a thread-scoped identity. A cached plugin copy does not prove a live registration; use `memesh message discover --project <project>` to read current presence.");
-}
-function configuredAgentMessageStoragePolicy(explicit) {
-  if (explicit !== void 0)
-    return explicit;
-  const quotaRaw = process.env[AGENT_MESSAGE_STORAGE_QUOTA_ENV2];
-  if (quotaRaw === void 0 || quotaRaw === "")
-    return void 0;
-  if (!/^(0|[1-9][0-9]*)$/.test(quotaRaw)) {
-    return { storage_quota_bytes: Number.NaN };
-  }
-  const parsed = Number(quotaRaw);
-  return { storage_quota_bytes: Number.isSafeInteger(parsed) ? parsed : Number.NaN };
-}
-function formatStorageBytes(value) {
-  if (!Number.isFinite(value) || value < 0)
-    return "unknown size";
-  if (value < 1024)
-    return `${value} B`;
-  if (value < 1024 * 1024)
-    return `${(value / 1024).toFixed(1)} KiB`;
-  return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
-}
-function parseJsonFile(filePath, readFileSyncImpl) {
-  try {
-    const raw = readFileSyncImpl(filePath, "utf8");
-    const value = JSON.parse(raw);
-    if (!value || typeof value !== "object") {
-      return { ok: false, error: "JSON root must be an object." };
-    }
-    return { ok: true, value };
-  } catch (err) {
-    return {
-      ok: false,
-      error: err instanceof Error ? err.message : "unknown parse error"
-    };
-  }
-}
-function inspectConfigFile(existsSyncImpl, readFileSyncImpl, getConfigPathImpl) {
-  const configPath = getConfigPathImpl();
-  if (!existsSyncImpl(configPath)) {
-    return createCheck("config", "Config", "pass", `No config file yet (${configPath}); default settings are in effect.`, "Optional: run memesh config list to inspect settings.");
-  }
-  try {
-    const raw = readFileSyncImpl(configPath, "utf8");
-    const parsed = JSON.parse(raw);
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return createCheck("config", "Config", "fail", `${configPath} parsed but is not a JSON object \u2014 every setting is being ignored.`, `Fix or remove ${configPath}, then re-run memesh doctor.`, { code: "config-parse.not-object", params: { path: configPath } });
-    }
-    const retiredKeys = findRetiredConfigKeys(parsed);
-    if (retiredKeys.length > 0) {
-      const keys = retiredKeys.join(", ");
-      return createCheck("config", "Config", "warn", `${configPath} is valid JSON but still contains ${retiredKeys.length} retired top-level setting(s) (${keys}). This version ignores them, but legacy provider credentials or settings may remain on disk.`, `Review ${configPath} locally and remove only those retired top-level keys. Do not paste the file into an issue because it may contain credentials. Then run memesh doctor again.`, {
-        code: "config-parse.retired-settings",
-        params: { path: configPath, count: retiredKeys.length, keys }
-      }, "config-retired-settings");
-    }
-    return createCheck("config", "Config", "pass", `${configPath} is valid JSON and its settings are in effect.`);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return createCheck("config", "Config", "fail", `${configPath} could not be read or parsed (${msg}). Its settings are being ignored right now.`, `Fix the JSON or remove the file to fall back to defaults: mv ${shellQuote(configPath)} ${shellQuote(`${configPath}.bak`)}`, { code: "config-parse.unreadable", params: { path: configPath, detail: msg } });
-  }
-}
-function declaredMcpManifest(packageRoot3, readFileSyncImpl) {
-  const parsed = parseJsonFile(path18.join(packageRoot3, ".claude-plugin", "plugin.json"), readFileSyncImpl);
-  if (!parsed.ok)
-    return null;
-  const declared = parsed.value.mcpServers;
-  if (typeof declared !== "string" || !declared.startsWith("./"))
-    return null;
-  return declared.slice(2);
-}
-function inspectMcpConfig(packageRoot3, installChannel, existsSyncImpl, readFileSyncImpl, env) {
-  const relativeManifest = declaredMcpManifest(packageRoot3, readFileSyncImpl);
-  if (relativeManifest === null) {
-    return createCheck("mcp-config", "MCP config", "fail", ".claude-plugin/plugin.json declares no `mcpServers` path, so Claude Code has no MeMesh MCP server to start.", "Reinstall MeMesh so the plugin manifest and the MCP manifest it names are both restored.", { code: "mcp-config.missing" });
-  }
-  const label = relativeManifest;
-  const mcpPath = path18.join(packageRoot3, relativeManifest);
-  if (!existsSyncImpl(mcpPath)) {
-    return createCheck("mcp-config", "MCP config", "fail", `${label} is missing.`, "Reinstall MeMesh so the plugin manifest and the MCP manifest it names are both restored.", { code: "mcp-config.missing" });
-  }
-  const parsed = parseJsonFile(mcpPath, readFileSyncImpl);
-  if (!parsed.ok) {
-    return createCheck("mcp-config", "MCP config", "fail", `${label} is not valid JSON.`, `Fix ${mcpPath} so Claude Code can read the MCP server definition.`, { code: "mcp-config.invalid-json", params: { path: mcpPath } });
-  }
-  const server = parsed.value.mcpServers?.memesh;
-  if (!server || typeof server.command !== "string") {
-    return createCheck("mcp-config", "MCP config", "fail", `${label} does not define a usable \`memesh\` MCP server entry.`, `Reinstall MeMesh or restore the \`mcpServers.memesh\` entry in \`${label}\`.`, { code: "mcp-config.no-entry" });
-  }
-  const args = Array.isArray(server.args) ? server.args : [];
-  const entry = typeof args[0] === "string" ? args[0] : null;
-  if (entry) {
-    const pluginRoot = installChannel === "plugin-marketplace" ? packageRoot3 : env.CLAUDE_PLUGIN_ROOT || null;
-    if (entry.includes(MCP_PLACEHOLDER) && pluginRoot === null) {
-      return createCheck("mcp-config", "MCP config", "warn", `${label} starts \`${entry}\`. NOT VERIFIED: \`${MCP_PLACEHOLDER}\` is substituted by the Claude Code plugin runtime, and this is a ${installChannel} install with CLAUDE_PLUGIN_ROOT unset \u2014 so the file it names was not checked.`, `Verify it the way the plugin runtime would: CLAUDE_PLUGIN_ROOT=${shellQuote(packageRoot3)} memesh doctor`, { code: "mcp-config.placeholder-unresolved", params: { entry, channel: installChannel } });
-    }
-    const resolved = pluginRoot === null ? path18.resolve(packageRoot3, entry) : path18.resolve(entry.replaceAll(MCP_PLACEHOLDER, pluginRoot));
-    if (!existsSyncImpl(resolved)) {
-      return createCheck("mcp-config", "MCP config", "fail", `${label} starts \`${entry}\`, and that file is not in this install \u2014 so every memesh MCP tool fails to start.`, `Reinstall MeMesh; if you edited \`${label}\` by hand, point it back at \`${MCP_PLACEHOLDER}/dist/mcp/server.js\`.`, { code: "mcp-config.entry-missing", params: { entry, resolved } });
-    }
-  }
-  return createCheck("mcp-config", "MCP config", "pass", `${label} is present, defines the memesh MCP server, and the script it starts exists.`);
-}
-function extractHookScriptPaths(hooksConfig, packageRoot3) {
-  const hooks = hooksConfig.hooks;
-  if (!hooks)
-    return [];
-  const scripts = /* @__PURE__ */ new Set();
-  for (const entries of Object.values(hooks)) {
-    if (!Array.isArray(entries))
-      continue;
-    for (const entry of entries) {
-      if (!Array.isArray(entry.hooks))
-        continue;
-      for (const hook of entry.hooks) {
-        if (typeof hook.command !== "string")
-          continue;
-        const command = hook.command.replace("${CLAUDE_PLUGIN_ROOT}/", "");
-        scripts.add(path18.join(packageRoot3, command));
-      }
-    }
-  }
-  return Array.from(scripts).sort();
-}
-function inspectHooksConfig(packageRoot3, platform, existsSyncImpl, readFileSyncImpl, statSyncImpl) {
-  const hooksPath = path18.join(packageRoot3, "hooks", "hooks.json");
-  if (!existsSyncImpl(hooksPath)) {
-    return [
-      createCheck("hooks-config", "Hooks config", "fail", "hooks/hooks.json is missing.", "Restore `hooks/hooks.json` from the package or reinstall MeMesh.", { code: "hooks-config.missing" })
-    ];
-  }
-  const parsed = parseJsonFile(hooksPath, readFileSyncImpl);
-  if (!parsed.ok) {
-    return [
-      createCheck("hooks-config", "Hooks config", "fail", "hooks/hooks.json is not valid JSON.", `Fix ${hooksPath} so Claude Code can load the hook definitions.`, { code: "hooks-config.invalid-json", params: { path: hooksPath } })
-    ];
-  }
-  const parsedHooks = parsed.value.hooks;
-  const hookTypes = parsedHooks && typeof parsedHooks === "object" && !Array.isArray(parsedHooks) ? Object.keys(parsedHooks) : [];
-  const missingTypes = EXPECTED_HOOK_TYPES.filter((type) => !hookTypes.includes(type));
-  const configCheck = missingTypes.length > 0 ? createCheck("hooks-config", "Hooks config", "fail", `hooks/hooks.json is missing expected hook types: ${missingTypes.join(", ")}.`, "Restore the shipped hook configuration or reinstall MeMesh.", { code: "hooks-config.missing-types", params: { types: missingTypes.join(", ") } }) : createCheck("hooks-config", "Hooks config", "pass", `hooks/hooks.json is present with ${hookTypes.length} hook types configured.`);
-  const scriptPaths = extractHookScriptPaths(parsed.value, packageRoot3);
-  if (scriptPaths.length === 0) {
-    return [
-      configCheck,
-      createCheck("hook-scripts", "Hook scripts", "fail", "hooks/hooks.json parsed, but yields zero hook script commands \u2014 hooks can never fire.", "Restore the shipped hook configuration or reinstall MeMesh.", { code: "hook-scripts.none" })
-    ];
-  }
-  const missingScripts = scriptPaths.filter((scriptPath) => !existsSyncImpl(scriptPath));
-  if (missingScripts.length > 0) {
-    return [
-      configCheck,
-      createCheck("hook-scripts", "Hook scripts", "fail", `Missing hook scripts: ${missingScripts.map((entry) => path18.relative(packageRoot3, entry)).join(", ")}.`, "Restore the missing files from the package or reinstall MeMesh.", { code: "hook-scripts.missing", params: { files: missingScripts.map((entry) => path18.relative(packageRoot3, entry)).join(", ") } })
-    ];
-  }
-  if (platform !== "win32") {
-    const nonExecutable = scriptPaths.filter((scriptPath) => {
-      const mode = statSyncImpl(scriptPath).mode;
-      return (mode & 73) === 0;
-    });
-    if (nonExecutable.length > 0) {
-      return [
-        configCheck,
-        createCheck("hook-scripts", "Hook scripts", "fail", `Hook scripts are not executable: ${nonExecutable.map((entry) => path18.relative(packageRoot3, entry)).join(", ")}.`, "Run `npm run build` from the repo checkout or `chmod +x scripts/hooks/*.js` for a local repair.", { code: "hook-scripts.not-executable", params: { files: nonExecutable.map((entry) => path18.relative(packageRoot3, entry)).join(", ") } })
-      ];
-    }
-  }
-  return [
-    configCheck,
-    createCheck("hook-scripts", "Hook scripts", "pass", `All ${scriptPaths.length} hook scripts are present${platform === "win32" ? "" : " and executable"}.`)
-  ];
-}
-function inspectHookWiring(existsSyncImpl, readFileSyncImpl, memeshDir3, installChannel, installedPluginsPath, pluginHost) {
-  const markerPath = path18.join(memeshDir3, "install-hooks.json");
-  if (!existsSyncImpl(markerPath)) {
-    if (installChannel === "plugin-marketplace") {
-      const runtime = pluginHost === "codex" ? "Codex CLI" : "Claude Code";
-      return createCheck("hook-wiring", "Hooks wired into Claude Code", "pass", `Wired via the ${runtime} plugin runtime (this is a plugin-marketplace install). The install-hooks marker is not used on this install path.`);
-    }
-    if (detectPluginRuntime(installedPluginsPath)) {
-      return createCheck("hook-wiring", "Hooks wired into Claude Code", "pass", "Wired via the Claude Code plugin runtime (found in installed_plugins.json). This copy is not the one doing the capturing \u2014 the plugin manages the hooks.");
-    }
-    return createCheck("hook-wiring", "Hooks wired into Claude Code", "warn", "memesh is not connected to Claude Code yet, so nothing gets remembered automatically from your sessions.", "Run `memesh install-hooks` once to connect it, then `memesh doctor` to confirm.", { code: "hook-wiring.no-marker" }, "install-hooks");
-  }
-  const parsed = parseJsonFile(markerPath, readFileSyncImpl);
-  if (!parsed.ok) {
-    return createCheck("hook-wiring", "Hooks wired into Claude Code", "warn", `install-hooks marker at ${markerPath} is unreadable.`, "Re-run `memesh install-hooks` to refresh the marker.", { code: "hook-wiring.marker-unreadable", params: { path: markerPath } });
-  }
-  const marker = parsed.value;
-  if (typeof marker.settings_path !== "string") {
-    return createCheck("hook-wiring", "Hooks wired into Claude Code", "warn", "install-hooks marker is malformed (missing settings_path).", "Re-run `memesh install-hooks`.", { code: "hook-wiring.marker-malformed" });
-  }
-  if (!existsSyncImpl(marker.settings_path)) {
-    return createCheck("hook-wiring", "Hooks wired into Claude Code", "fail", `Marker recorded settings at ${marker.settings_path} but the file no longer exists. Hooks are not wired.`, "Re-run `memesh install-hooks`.", { code: "hook-wiring.settings-missing", params: { path: String(marker.settings_path) } });
-  }
-  const settingsParsed = parseJsonFile(marker.settings_path, readFileSyncImpl);
-  if (!settingsParsed.ok) {
-    return createCheck("hook-wiring", "Hooks wired into Claude Code", "fail", `${marker.settings_path} is no longer valid JSON, so nothing can read your hook wiring \u2014 including memesh.`, `Repair the JSON, or move the file aside (\`mv ${shellQuote(String(marker.settings_path))} ${shellQuote(`${marker.settings_path}.broken`)}\`) \u2014 memesh keeps timestamped \`.bak-pre-memesh-*\` copies next to it. Then run \`memesh install-hooks\`.`, { code: "hook-wiring.settings-invalid", params: { path: String(marker.settings_path) } });
-  }
-  const CAPTURE_EVENTS = /* @__PURE__ */ new Set(["Stop", "PostToolUse", "PreCompact"]);
-  const hooks = settingsParsed.value.hooks;
-  let hasMemeshHook = false;
-  let hasCaptureHook = false;
-  let missingScript = null;
-  if (hooks && typeof hooks === "object") {
-    for (const [event, entries] of Object.entries(hooks)) {
-      if (!Array.isArray(entries))
-        continue;
-      for (const entry of entries) {
-        const cmds = entry.hooks;
-        if (!Array.isArray(cmds))
-          continue;
-        for (const c of cmds) {
-          const cmd = c;
-          if (cmd._memesh !== true)
-            continue;
-          hasMemeshHook = true;
-          if (CAPTURE_EVENTS.has(event))
-            hasCaptureHook = true;
-          if (missingScript === null && typeof cmd.command === "string" && path18.isAbsolute(cmd.command) && !existsSyncImpl(cmd.command)) {
-            missingScript = cmd.command;
-          }
-        }
-      }
-    }
-  }
-  if (missingScript !== null) {
-    return createCheck("hook-wiring", "Hooks wired into Claude Code", "fail", `A wired memesh hook points at ${missingScript}, which no longer exists \u2014 the agent invokes a missing file on every matching event. This is usually residue from an upgrade that retired the hook.`, "Run `memesh install-hooks` to re-wire (it now removes retired entries), then restart your agent.", { code: "hook-wiring.script-missing", params: { path: missingScript } });
-  }
-  if (!hasMemeshHook) {
-    return createCheck("hook-wiring", "Hooks wired into Claude Code", "fail", `Marker recorded a memesh install at ${marker.settings_path}, but no _memesh:true hook entries are present anymore. Settings drifted (manual edit?) or memesh was uninstalled out-of-band.`, "Re-run `memesh install-hooks` to re-wire.", { code: "hook-wiring.entries-removed", params: { path: String(marker.settings_path) } });
-  }
-  if (typeof marker.plugin_root === "string" && !existsSyncImpl(marker.plugin_root)) {
-    return createCheck("hook-wiring", "Hooks wired into Claude Code", "fail", `Hook commands point at ${marker.plugin_root}, which no longer exists (likely after an npm-global path change).`, "Re-run `memesh install-hooks` to refresh paths.", { code: "hook-wiring.root-moved", params: { path: String(marker.plugin_root) } });
-  }
-  return createCheck("hook-wiring", "Hooks wired into Claude Code", "pass", `Wired in ${marker.settings_path} (scope: ${marker.scope ?? "user"}, version: ${marker.version ?? "unknown"}).`, void 0, { params: { captureWired: hasCaptureHook ? 1 : 0 } });
-}
-function inspectHookActivity(openDatabaseImpl, closeDatabaseImpl, existsSyncImpl = fs21.existsSync, statSyncImpl = fs21.statSync, wiringPresent = true) {
-  const TITLE = "Hook activity";
-  const captureOff = autoCaptureOffSource();
-  if (captureOff === "config") {
-    return createCheck("hook-activity", TITLE, "pass", "Automatic capture is turned off (config autoCapture: false) \u2014 deliberately, so hook silence is expected. Re-enable it to resume capturing sessions.", void 0, { code: "hook-activity.disabled" });
-  }
-  if (captureOff === "env") {
-    return createCheck("hook-activity", TITLE, "pass", "Automatic capture is turned off by MEMESH_AUTO_CAPTURE=false in this shell's environment. Doctor can only see its own environment \u2014 if your agent runs without this variable, capture there is unaffected.", void 0, { code: "hook-activity.disabled-env" });
-  }
-  let db2 = null;
-  try {
-    db2 = openDatabaseImpl();
-    const hookRunsTablePresent = !!db2.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'hook_runs'").get();
-    const rows = hookRunsTablePresent ? db2.prepare(`SELECT hook, last_run_at FROM hook_runs`).all() : [];
-    const captured = db2.prepare(`SELECT COUNT(DISTINCT e.id) as c FROM entities e
-       JOIN tags t ON t.entity_id = e.id
-       WHERE t.tag = ?
-         AND e.created_at > datetime('now', '-24 hours')`).get(AUTO_CAPTURE_TAG)?.c ?? 0;
-    const since = db2.prepare("SELECT value FROM memesh_metadata WHERE key = 'hook_runs_since'").get()?.value;
-    const measuringHours = since !== void 0 ? hoursSince(since) : null;
-    const SKEW_TOLERANCE_H = 5 / 60;
-    const KNOWN_HOOKS = /* @__PURE__ */ new Set(["session-summary", "post-commit", "pre-compact"]);
-    const ages = /* @__PURE__ */ new Map();
-    for (const r of rows) {
-      if (!KNOWN_HOOKS.has(r.hook))
-        continue;
-      const age = hoursSince(r.last_run_at);
-      ages.set(r.hook, age !== null && age >= -SKEW_TOLERANCE_H ? Math.max(age, 0) : null);
-    }
-    if (ages.size > 0) {
-      const capturedTail = captured > 0 ? `${captured} memor${captured === 1 ? "y" : "ies"} captured in the last 24h.` : "Nothing was worth saving in that time, which is normal \u2014 the loop still ran.";
-      const staleUnknown = (hook) => createCheck("hook-activity", TITLE, "fail", `The ${hook} hook's last-run timestamp cannot be read (corrupt, or stamped by a machine with a wrong clock). Capture health is unknown, which is not the same as healthy.`, "End one work session, then re-run `memesh doctor` \u2014 a fresh run overwrites the bad timestamp.", { code: "hook-activity.stale-unknown", params: { hook } });
-      const stale = (hook, age, status) => createCheck("hook-activity", TITLE, status, `The ${hook} hook last ran ${formatHoursAgo(Math.ceil(age))}. If you have worked since then, capture has stopped and nothing from those sessions was saved.`, "Restart your agent, then end one session and re-run `memesh doctor`. If it does not recover, run `memesh install-hooks`.", { code: "hook-activity.stale", params: { hook, hours: Math.ceil(age) } });
-      const ssAge = ages.has("session-summary") ? ages.get("session-summary") : void 0;
-      if (ssAge === null)
-        return staleUnknown("session-summary");
-      if (ssAge !== void 0) {
-        if (ssAge <= 24) {
-          return createCheck("hook-activity", TITLE, "pass", `The session-summary hook last ran ${formatHoursAgo(ssAge)} \u2014 auto-capture is alive. ${capturedTail}`);
-        }
-        if (ssAge <= 72)
-          return stale("session-summary", ssAge, "warn");
-        const ccWrites = db2.prepare(`SELECT COUNT(*) as c FROM entities
-           WHERE created_at > datetime('now', '-72 hours')
-             AND json_valid(metadata)
-             AND json_extract(metadata, '$.provenance.source_host') = 'claude-code'`).get()?.c ?? 0;
-        if (ccWrites > 0)
-          return stale("session-summary", ssAge, "fail");
-        return createCheck("hook-activity", TITLE, "warn", `The session-summary hook last ran ${formatHoursAgo(Math.ceil(ssAge))}, and no Claude Code writes landed in the last 3 days either. If this machine has moved to another agent (Codex / Gemini), this is expected; if you still use Claude Code here, capture has stopped.`, "If you still use Claude Code on this machine: restart it, end one session, and re-run `memesh doctor`. If it does not recover, run `memesh install-hooks`.", { code: "hook-activity.stale-unconfirmed", params: { hook: "session-summary", hours: Math.ceil(ssAge) } });
-      }
-      const known = [...ages.entries()].filter((e) => e[1] !== null);
-      if (known.length === 0) {
-        const [hook] = [...ages.keys()].sort();
-        return staleUnknown(hook);
-      }
-      const [freshestHook, freshestAge] = known.sort((a, b) => a[1] - b[1])[0];
-      if (freshestAge <= 24) {
-        if (measuringHours !== null && measuringHours > 72) {
-          return createCheck("hook-activity", TITLE, "warn", `The ${freshestHook} hook is stamping (last ran ${formatHoursAgo(freshestAge)}), but the session-summary hook has never run once in the ${Math.round(measuringHours)} hours since tracking began \u2014 session capture may be broken while commit capture hides it.`, "End one work session and re-run `memesh doctor`. If session-summary still has not run, run `memesh install-hooks` and restart your agent.", { code: "hook-activity.stop-silent", params: { hook: freshestHook, hours: Math.round(measuringHours) } });
-        }
-        return createCheck("hook-activity", TITLE, "pass", `The ${freshestHook} hook last ran ${formatHoursAgo(freshestAge)} \u2014 auto-capture is alive. (session-summary has not stamped yet \u2014 expected until a session with real work ends.) ${capturedTail}`);
-      }
-      return stale(freshestHook, freshestAge, "warn");
-    }
-    if (since !== void 0 && (measuringHours === null || measuringHours < 0)) {
-      return createCheck("hook-activity", TITLE, "pass", "The hook-run tracking marker is unreadable \u2014 it will be re-stamped automatically the next time the database is opened for writing (any session, commit, or memesh command does it). Tracking restarts then.");
-    }
-    if (measuringHours === null || measuringHours < 24) {
-      return createCheck("hook-activity", TITLE, "pass", "Hook-run tracking has only just started on this database \u2014 the first work session will fill it in.");
-    }
-    const markerPath = path18.join(memeshDir(), "install-hooks.json");
-    if (existsSyncImpl(markerPath)) {
-      try {
-        if (Date.now() - statSyncImpl(markerPath).mtimeMs < 24 * 60 * 60 * 1e3) {
-          return createCheck("hook-activity", TITLE, "pass", "Hooks were wired in the last day and no session has ended yet \u2014 normal for a fresh install.");
-        }
-      } catch {
-      }
-    }
-    const legacyCaptured = db2.prepare(`SELECT COUNT(DISTINCT e.id) as c FROM entities e
-       JOIN tags t ON t.entity_id = e.id
-       WHERE t.tag = ?
-         AND e.created_at > ?`).get(AUTO_CAPTURE_TAG, since)?.c ?? 0;
-    if (legacyCaptured > 0) {
-      return createCheck("hook-activity", TITLE, "warn", `No hook has stamped the heartbeat, but ${legacyCaptured} auto-capture memor${legacyCaptured === 1 ? "y" : "ies"} landed since tracking began \u2014 hooks from a version before heartbeat tracking are probably still running.`, "Update the memesh hooks to the current version (plugin installs: `/plugin update memesh`; npm installs: `memesh install-hooks`), then restart your agent.", { code: "hook-activity.never-ran-legacy", params: { captured: legacyCaptured } });
-    }
-    if (!wiringPresent) {
-      return createCheck("hook-activity", TITLE, "warn", "No capture hook has ever run \u2014 and no capture hook (Stop / PostToolUse / PreCompact) is confirmed wired on this machine, so there is nothing to run.", "If you want automatic capture, run `memesh install-hooks`. If this install is MCP-only (Codex / Gemini), this is expected and safe to ignore.", { code: "hook-activity.not-wired" });
-    }
-    return createCheck("hook-activity", TITLE, "fail", `No capture hook has run since tracking began ${formatHoursAgo(measuringHours)}. Hook wiring is in place, so they should be executing and are not \u2014 nothing is being remembered.`, "Run `memesh doctor` after ending one work session. If this still says no hook has run, run `memesh install-hooks` and restart your agent.", { code: "hook-activity.never-ran", params: { hours: Math.round(measuringHours) } });
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    return createCheck("hook-activity", TITLE, "fail", `Could not read hook activity from the database: ${detail}. Capture health is unknown, which is not the same as healthy.`, queryFailedFix(err), { code: "hook-activity.query-failed", params: { detail } });
-  } finally {
-    try {
-      if (db2)
-        closeDatabaseImpl();
-    } catch {
-    }
-  }
-}
-function archivedHandoffName(file2) {
-  if (!Object.hasOwn(file2.hooks, "handoff-capture"))
-    return null;
-  const names = /* @__PURE__ */ new Set();
-  for (const r of file2.hooks["handoff-capture"]) {
-    if (r.outcome === "skipped" && r.reason === SKIP_REASONS.handoffArchived && typeof r.entity === "string")
-      names.add(r.entity);
-  }
-  if (names.size !== 1)
-    return null;
-  const [name] = names;
-  return SAFE_HANDOFF_NAME.test(name) ? name : null;
-}
-function archivedHandoffCheck(title, runs, name) {
-  const summary = `handoff-capture: ${runs} runs, 0 writes \u2014 the session handoff was archived with \`forget\`, so it is not updated any more.`;
-  if (name) {
-    return createCheck("capture-liveness", title, "warn", summary, `To turn it back on, run \`memesh remember --name ${name} --type session-handoff --obs restart\`; the next Stop replaces it.`, { code: "capture-liveness.handoff-archived", params: { runs, name } });
-  }
-  return createCheck("capture-liveness", title, "warn", summary, "To turn it back on, find its exact name with `memesh recall session-handoff --include-archived`, then remember anything under that name with type session-handoff; the next Stop replaces it.", { code: "capture-liveness.handoff-archived-unnamed", params: { runs } });
-}
-function withRecordedHosts(result) {
-  if (!result.report)
-    return result;
-  const hostsSeen = [...new Set(result.report.hooks.flatMap((h) => h.hosts))].sort();
-  if (hostsSeen.length === 0)
-    return result;
-  return { ...result, check: { ...result.check, summary: `${result.check.summary} Hosts recorded: ${hostsSeen.join(", ")}.` } };
-}
-function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyncImpl = fs21.readFileSync, memeshDirImpl = getMemeshDirFromDbPath, captureWired = true) {
-  const TITLE = "Capture liveness";
-  if (autoCaptureOffSource() !== null) {
-    return {
-      check: createCheck("capture-liveness", TITLE, "pass", "Automatic capture is turned off, so there is nothing to keep alive. Re-enable it to resume capturing.")
-    };
-  }
-  let raw;
-  try {
-    raw = readFileSyncImpl(path18.join(memeshDirImpl(), HOOK_OUTCOMES_FILENAME), "utf8");
-  } catch {
-    raw = null;
-  }
-  const outcomeFile = parseHookOutcomes(raw);
-  const hooks = summarizeHookOutcomes(outcomeFile);
-  let db2 = null;
-  let types;
-  let neverRan;
-  let measuringHours;
-  let legacyCaptured = 0;
-  let stampedCount;
-  let newestHeartbeatHours = null;
-  try {
-    db2 = openDatabaseImpl();
-    const rows = db2.prepare(`SELECT e.type AS type,
-              SUM(CASE WHEN e.created_at > datetime('now', '-7 days') THEN 1 ELSE 0 END) AS last7,
-              SUM(CASE WHEN e.created_at <= datetime('now', '-7 days')
-                        AND e.created_at > datetime('now', '-14 days') THEN 1 ELSE 0 END) AS prev7
-         FROM entities e
-         JOIN tags t ON t.entity_id = e.id
-        WHERE t.tag = ?
-          AND e.created_at > datetime('now', '-14 days')
-          AND e.type <> ?
-        GROUP BY e.type`).all(AUTO_CAPTURE_TAG, SESSION_HANDOFF_TYPE);
-    types = summarizeTypeTrends(rows.map((r) => ({
-      type: String(r.type),
-      last7: Number(r.last7) || 0,
-      prev7: Number(r.prev7) || 0
-    })));
-    const tablePresent = !!db2.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'hook_runs'").get();
-    const heartbeats = tablePresent ? db2.prepare("SELECT hook, last_run_at FROM hook_runs").all() : [];
-    const stamped = new Set(heartbeats.map((r) => r.hook));
-    stampedCount = stamped.size;
-    for (const r of heartbeats) {
-      const h = hoursSince(String(r.last_run_at));
-      if (h !== null && (newestHeartbeatHours === null || h < newestHeartbeatHours))
-        newestHeartbeatHours = h;
-    }
-    neverRan = FAIL_ELIGIBLE_HOOKS.filter((h) => !stamped.has(h));
-    const since = db2.prepare("SELECT value FROM memesh_metadata WHERE key = 'hook_runs_since'").get()?.value;
-    measuringHours = since !== void 0 ? hoursSince(since) : null;
-    if (since !== void 0) {
-      legacyCaptured = db2.prepare(`SELECT COUNT(DISTINCT e.id) as c FROM entities e
-         JOIN tags t ON t.entity_id = e.id
-        WHERE t.tag = ? AND e.created_at > ?`).get(AUTO_CAPTURE_TAG, since)?.c ?? 0;
-    }
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    return {
-      check: createCheck("capture-liveness", TITLE, "fail", `Could not read capture liveness from the database: ${detail}. Whether anything is being saved is unknown, which is not the same as healthy.`, queryFailedFix(err), { code: "capture-liveness.query-failed", params: { detail } })
-    };
-  } finally {
-    try {
-      if (db2)
-        closeDatabaseImpl();
-    } catch {
-    }
-  }
-  const verdict = captureLivenessVerdict({ hooks, types, neverRanHooks: neverRan, measuringHours });
-  const report = {
-    status: verdict.status,
-    hooks,
-    types,
-    neverRan: verdict.deadHooks
-  };
-  if (verdict.status === "FAIL") {
-    const hook = verdict.deadHooks[0];
-    if (!captureWired) {
-      return {
-        check: createCheck("capture-liveness", TITLE, "warn", `The ${hook} hook has never run \u2014 but no capture hook (Stop / PostToolUse / PreCompact) is confirmed wired on this machine, so there is nothing that should be running.`, "If you want automatic capture, run `memesh install-hooks`. If this install is MCP-only (Codex / Gemini / Cursor), this is expected and safe to ignore.", { code: "capture-liveness.not-wired", params: { hook } }),
-        report: { ...report, status: "PASS_WITH_CONCERNS" }
-      };
-    }
-    if (legacyCaptured > 0 && hooks.length === 0) {
-      return {
-        check: createCheck("capture-liveness", TITLE, "warn", `The ${hook} hook has left no record and no heartbeat, but ${legacyCaptured} auto-capture memor${legacyCaptured === 1 ? "y" : "ies"} landed since tracking began \u2014 hooks from a version before outcome tracking are probably still running.`, "Update the memesh hooks to the current version (plugin installs: `/plugin update memesh`; npm installs: `memesh install-hooks`), then restart your agent.", { code: "capture-liveness.never-ran-legacy", params: { hook, captured: legacyCaptured } }),
-        report: { ...report, status: "PASS_WITH_CONCERNS" }
-      };
-    }
-    return {
-      check: createCheck("capture-liveness", TITLE, "fail", `The ${hook} hook has left no record and no heartbeat in the ${Math.round(measuringHours ?? 0)} hours since tracking began \u2014 it has never run, so nothing it would capture is being saved.`, "Run `memesh install-hooks` and restart your agent, then end one work session and re-run `memesh doctor`.", { code: "capture-liveness.never-ran", params: { hook, hours: Math.round(measuringHours ?? 0) } }),
-      report
-    };
-  }
-  if (verdict.erroringHook) {
-    const h = verdict.erroringHook;
-    const day = h.lastErrorAt !== null && /^\d{4}-\d{2}-\d{2}/.test(h.lastErrorAt) ? ` on ${h.lastErrorAt.slice(0, 10)}` : "";
-    const newest = Math.min(RECENT_ERROR_RUNS, h.triggeredRuns);
-    return {
-      check: createCheck("capture-liveness", TITLE, "warn", `${h.hook}: ${h.recentErrors} of its ${newest} most recent runs ended in an error (${h.errors} in its recorded window); the latest was '${h.lastErrorReason}'${day}.`, "The reason says what failed; `memesh doctor --json` has the per-hook figures. This row clears once the hook's most recent runs (those its trigger applied to) end without an error. If it keeps failing, run `memesh install-hooks` and restart your agent.", { params: { hook: h.hook } }),
-      report
-    };
-  }
-  if (verdict.silentHook) {
-    const h = verdict.silentHook;
-    const reason = h.dominantSkipReason ?? "no reason recorded";
-    if (h.hook === "handoff-capture" && reason === SKIP_REASONS.handoffArchived) {
-      return { check: archivedHandoffCheck(TITLE, h.triggeredRuns, archivedHandoffName(outcomeFile)), report };
-    }
-    return {
-      check: createCheck("capture-liveness", TITLE, "warn", `${h.hook}: ${h.triggeredRuns} runs, 0 writes \u2014 '${reason}'. The hook is alive and deciding there is nothing to save every single time, which is also what a broken capture path looks like.`, "Run `memesh doctor --json` for the per-hook figures. If the reason does not describe your usage, run `memesh install-hooks` and restart your agent.", { code: "capture-liveness.silent-hook", params: { hook: h.hook, runs: h.triggeredRuns, reason } }),
-      report
-    };
-  }
-  if (hooks.length === 0 && captureWired && stampedCount > 0 && measuringHours !== null && measuringHours > NEVER_RAN_GRACE_HOURS) {
-    const lastHeartbeat = newestHeartbeatHours === null ? null : Math.round(newestHeartbeatHours);
-    return {
-      check: createCheck("capture-liveness", TITLE, "warn", `Hooks have run on this machine (last heartbeat ${lastHeartbeat ?? "?"} hours ago), but not one has left an outcome record. Either the running hooks predate outcome tracking, or they fail as they load and record nothing.`, "Update the memesh hooks (plugin installs: `/plugin update memesh`; npm installs: `memesh install-hooks`), restart your agent, start one session, and re-run `memesh doctor`. If you just updated, start a session first \u2014 the records begin on the next hook run.", { code: "capture-liveness.no-records", params: { hours: lastHeartbeat ?? "?" } }),
-      report: { ...report, status: "PASS_WITH_CONCERNS" }
-    };
-  }
-  if (verdict.stoppedTypes.length > 0) {
-    const t = verdict.stoppedTypes[0];
-    return {
-      check: createCheck("capture-liveness", TITLE, "warn", `Nothing of type '${t.type}' was captured in the last 7 days, against ${t.prev7} in the 7 days before. Something that was being remembered has stopped being remembered.`, "Run `memesh doctor --json` for the per-hook figures, and check whether the way you work changed \u2014 if it did not, run `memesh install-hooks` and restart your agent.", { code: "capture-liveness.type-stopped", params: { type: t.type, prev: t.prev7 } }),
-      report
-    };
-  }
-  const writing = hooks.filter((h) => h.writes > 0);
-  const ranEnough = hooks.filter((h) => h.triggeredRuns >= SILENT_HOOK_MIN_RUNS);
-  let summary;
-  if (writing.length > 0) {
-    summary = `${writing.length} of ${hooks.length} recording hooks did their work in their recorded window (${writing.map((h) => h.hook).join(", ")}).`;
-  } else if (ranEnough.length > 0) {
-    summary = `${ranEnough.map((h) => `${h.hook} (${h.triggeredRuns} runs)`).join(", ")} ran without writing anything. These hooks decide there is nothing to save on most runs by design, so that is not itself a fault \u2014 \`memesh doctor --json\` has the per-hook figures.`;
-  } else if (hooks.length > 0) {
-    summary = `Every recording hook is below the ${SILENT_HOOK_MIN_RUNS}-run threshold where silence would mean anything \u2014 too early to say, which is normal on a fresh install.`;
-  } else {
-    summary = "No hook has recorded an outcome yet \u2014 the records start on the next hook run, which is normal right after an upgrade.";
-  }
-  return {
-    check: createCheck("capture-liveness", TITLE, "pass", summary),
-    report
-  };
-}
-function autoCaptureOffSource() {
-  let configAutoCapture;
-  try {
-    configAutoCapture = readConfig().autoCapture;
-  } catch {
-    configAutoCapture = void 0;
-  }
-  return autoCaptureDecision(process.env.MEMESH_AUTO_CAPTURE, configAutoCapture).offSource;
-}
-function hoursSince(sqliteTimestamp) {
-  const then = parseSqliteUtcMs(sqliteTimestamp);
-  if (then === null)
-    return null;
-  return (Date.now() - then) / (60 * 60 * 1e3);
-}
-function formatHoursAgo(hours) {
-  if (hours === null || !Number.isFinite(hours) || hours < 0)
-    return "at an unknown time";
-  if (hours < 1)
-    return "less than an hour ago";
-  if (hours < 48) {
-    const h = Math.round(hours);
-    return `${h} hour${h === 1 ? "" : "s"} ago`;
-  }
-  const d = Math.round(hours / 24);
-  return `${d} day${d === 1 ? "" : "s"} ago`;
-}
-function defaultResolveShellMemesh() {
-  try {
-    const cmd = process.platform === "win32" ? "where" : "which";
-    const localRequire = createRequire2(import.meta.url);
-    const { execFileSync: execFileSync8 } = localRequire("child_process");
-    const out = execFileSync8(cmd, ["memesh"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-    const first = String(out).split(/\r?\n/).map((s) => s.trim()).find(Boolean);
-    return first || null;
-  } catch {
-    return null;
-  }
-}
-function defaultNativeBindingProbe(_packageRoot) {
-  try {
-    const probe = new MemeshDatabase(":memory:");
-    try {
-      probe.prepare("SELECT 1").get();
-    } finally {
-      probe.close();
-    }
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, message: err instanceof Error ? err.message : String(err) };
-  }
-}
-function satisfiesMinimumNodeRange(version2, range) {
-  const min = /^>=\s*v?(\d+)(?:\.(\d+))?(?:\.(\d+))?\s*$/.exec(range.trim());
-  const running = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version2.trim());
-  if (!min || !running)
-    return null;
-  const wanted = [Number(min[1]), Number(min[2] ?? 0), Number(min[3] ?? 0)];
-  const have = [Number(running[1]), Number(running[2]), Number(running[3])];
-  for (let i = 0; i < 3; i++) {
-    if (have[i] > wanted[i])
-      return true;
-    if (have[i] < wanted[i])
-      return false;
-  }
-  return true;
-}
-function inspectNodeRuntime(packageRoot3, existsSyncImpl, readFileSyncImpl, nodeVersion = process.version, moduleAbi = process.versions.modules, hasNodeSqliteImpl = hasBuiltInSqlite) {
-  const facts = `Node ${nodeVersion} (ABI ${moduleAbi}, ${process.platform}/${process.arch}). Built-in node:sqlite: ${hasNodeSqliteImpl() ? "available" : "not available"}.`;
-  let declared;
-  try {
-    const pkgPath = path18.join(packageRoot3, "package.json");
-    if (existsSyncImpl(pkgPath)) {
-      const parsed = JSON.parse(String(readFileSyncImpl(pkgPath, "utf8")));
-      if (typeof parsed.engines?.node === "string")
-        declared = parsed.engines.node;
-    }
-  } catch {
-  }
-  if (!declared) {
-    return createInfo("node-runtime", "Node runtime", `${facts} Supported range not checked: package.json declared no engines.node.`);
-  }
-  const ok = satisfiesMinimumNodeRange(nodeVersion, declared);
-  if (ok === null) {
-    return createInfo("node-runtime", "Node runtime", `${facts} Supported range not checked: engines.node is "${declared}", which this check does not parse (it understands ">=X.Y.Z" only).`);
-  }
-  if (!ok) {
-    return createCheck("node-runtime", "Node runtime", "fail", `${facts} This package requires Node ${declared}, so this runtime is BELOW the supported floor. Native modules and hooks may fail in ways that look unrelated.`, `Upgrade Node to ${declared.replace(/^>=\s*/, "")} or newer, then run \`memesh doctor\` again.`, { code: "node-runtime.too-old", params: { detail: facts, required: declared.replace(/^>=\s*/, "") } });
-  }
-  return createCheck("node-runtime", "Node runtime", "pass", `${facts} Meets the required range ${declared}.`);
-}
-function hasBuiltInSqlite() {
-  try {
-    createRequire2(import.meta.url).resolve("node:sqlite");
-    return true;
-  } catch {
-    return false;
-  }
-}
-function inspectNativeBinding(packageRoot3, _existsSyncImpl, probeImpl = defaultNativeBindingProbe) {
-  const result = probeImpl(packageRoot3);
-  return result.ok ? createCheck("native-binding", "SQLite", "pass", "node:sqlite opened a database (probe succeeded).") : createCheck("native-binding", "SQLite", "fail", `SQLite could not open a database: ${result.message}`, "Check the Node runtime and reinstall if necessary.", { code: "native-binding.load-failed", params: { detail: result.message, root: packageRoot3 } });
-}
-function readVersionFromInstalledBinary(binaryPath, existsSyncImpl, readFileSyncImpl, realpathSyncImpl = fs21.realpathSync) {
-  let resolved;
-  try {
-    resolved = realpathSyncImpl(binaryPath);
-  } catch {
-    resolved = binaryPath;
-  }
-  let dir = path18.dirname(resolved);
-  for (let depth = 0; depth < 8; depth += 1) {
-    const pkgPath = path18.join(dir, "package.json");
-    if (existsSyncImpl(pkgPath)) {
-      const parsed = parseJsonFile(pkgPath, readFileSyncImpl);
-      if (!parsed.ok)
-        return null;
-      const { name, version: version2 } = parsed.value;
-      return name === "@pcircle/memesh" && typeof version2 === "string" ? version2 : null;
-    }
-    const parent = path18.dirname(dir);
-    if (parent === dir)
-      return null;
-    dir = parent;
-  }
-  return null;
-}
-function inspectShellCli(installChannel, packageRoot3, packageVersion2, resolveShellMemeshImpl, existsSyncImpl, readFileSyncImpl) {
-  const shellPath = resolveShellMemeshImpl();
-  const isSameAsCurrent = shellPath ? path18.resolve(shellPath).startsWith(path18.resolve(packageRoot3)) : false;
-  const hasDistinctShellCli = !!shellPath && !isSameAsCurrent;
-  if (installChannel === "npm-global") {
-    return createCheck("shell-cli", "Shell CLI on PATH", "pass", shellPath ? `\`memesh\` resolves to ${shellPath} (npm-global install \u2014 terminals across the machine pick it up).` : "Running from npm-global install \u2014 shell access available in this terminal.");
-  }
-  if (hasDistinctShellCli) {
-    const shellVersion = readVersionFromInstalledBinary(shellPath, existsSyncImpl, readFileSyncImpl);
-    if (shellVersion) {
-      return {
-        ...createInfo("shell-cli", "Shell CLI on PATH", `Installed versions: this interface ${packageVersion2}; terminal ${shellVersion}.`),
-        code: "shell-cli.versions",
-        params: { current: packageVersion2, terminal: shellVersion, shellPath, packageRoot: packageRoot3 }
-      };
-    }
-    return createCheck("shell-cli", "Shell CLI on PATH", "pass", `\`memesh\` resolves to ${shellPath} (separate from this install at ${packageRoot3}) \u2014 could not read the shell copy's own version to compare.`);
-  }
-  if (installChannel === "plugin-marketplace") {
-    const host = detectPluginHost(packageRoot3) === "codex" ? "Codex CLI" : "Claude Code";
-    return createCheck("shell-cli", "Shell CLI on PATH", "warn", `Plugin is installed but \`memesh\` is not on the shell PATH. Typing \`memesh\` in a regular terminal will report \`command not found\`. ${host} MCP / hooks / \`/memesh\` skill still work \u2014 this only affects standalone shell usage and other MCP clients (Cursor, Cline, etc.).`, "Run `npm install -g @pcircle/memesh` if you want the separate shell CLI. Its database path depends on its environment and configuration.", { code: "shell-cli.not-on-path" });
-  }
-  return createCheck("shell-cli", "Shell CLI on PATH", "pass", shellPath ? `\`memesh\` resolves to ${shellPath}.` : `No shell-PATH \`memesh\` detected. If you want terminal access, run \`npm install -g @pcircle/memesh\` (this install is a ${installChannel}, so the check is informational only).`);
-}
-function defaultMarketplaceHeadSha(host) {
-  if (host === "codex") {
-    const codexHome = pluginHostConfigRoot("codex");
-    return readCodexInstallRevision(path18.join(codexHome, ".tmp", "marketplaces", "pcircle-memesh"), fs21.readFileSync);
-  }
-  const dir = path18.join(pluginHostConfigRoot("claude-code"), "plugins", "marketplaces", "pcircle-memesh");
-  try {
-    const out = execFileSync7("git", ["-C", dir, "rev-parse", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-    return /^[0-9a-f]{40}$/.test(out) ? out : null;
-  } catch {
-    return null;
-  }
-}
-function readCodexInstallRevision(root, readFileSyncImpl) {
-  const parsed = parseJsonFile(path18.join(root, ".codex-marketplace-install.json"), readFileSyncImpl);
-  if (!parsed.ok)
-    return null;
-  const rev = parsed.value.revision;
-  return typeof rev === "string" && /^[0-9a-f]{40}$/.test(rev) ? rev : null;
-}
-function pluginCacheUnverifiable(host, missing) {
-  const hostLabel = host === "codex" ? "Codex" : "Claude Code";
-  const command = PLUGIN_REFRESH_COMMANDS[host];
-  return createCheck("plugin-cache", `Plugin cache source record is current (${hostLabel})`, "warn", `Could not tell whether the plugin cache matches the marketplace: ${missing}. The version alone cannot answer this \u2014 two builds can carry the same version.`, `Run \`${command}\` \u2014 it re-stages the cache from the marketplace and records the commit, after which this check can answer.`, { code: "plugin-cache.unverifiable", params: { host: hostLabel, command } }, "plugin-cache-refresh");
-}
-function readClaudePluginEntries(registryPath, readFileSyncImpl, existsSyncImpl) {
-  if (!existsSyncImpl(registryPath)) {
-    return { exists: false, readable: false, defined: false, malformed: false, entries: [] };
-  }
-  const parsed = parseJsonFile(registryPath, readFileSyncImpl);
-  if (!parsed.ok)
-    return { exists: true, readable: false, defined: false, malformed: false, entries: [] };
-  const raw = parsed.value?.plugins?.["memesh@pcircle-memesh"];
-  const entries = Array.isArray(raw) ? raw.filter((entry) => !!entry && typeof entry === "object") : [];
-  return {
-    exists: true,
-    readable: true,
-    defined: raw !== void 0,
-    malformed: raw !== void 0 && (!Array.isArray(raw) || entries.length !== raw.length),
-    entries
-  };
-}
-function defaultPluginCacheDiscovery(readFileSyncImpl, existsSyncImpl) {
-  const discovered = [];
-  const claudeConfigRoot = pluginHostConfigRoot("claude-code");
-  const claudeRegistry = path18.join(claudeConfigRoot, "plugins", "installed_plugins.json");
-  const claudeCacheRoot = path18.join(claudeConfigRoot, "plugins", "cache", "pcircle-memesh", "memesh");
-  const registry2 = readClaudePluginEntries(claudeRegistry, readFileSyncImpl, existsSyncImpl);
-  const entries = registry2.entries;
-  if (registry2.malformed) {
-    discovered.push({
-      host: "claude-code",
-      packageRoot: claudeCacheRoot,
-      installedPluginsPath: claudeRegistry,
-      unverifiableReason: "installed_plugins.json has a malformed memesh entry"
-    });
-  } else if (entries.length > 0) {
-    const cachesByRoot = /* @__PURE__ */ new Map();
-    for (const entry of entries) {
-      const recordedInstallPath = typeof entry.installPath === "string" && entry.installPath.length > 0 ? entry.installPath : null;
-      const installPath = recordedInstallPath ?? claudeCacheRoot;
-      const cache = {
-        host: "claude-code",
-        packageRoot: installPath,
-        installedPluginsPath: claudeRegistry,
-        ...!recordedInstallPath ? { unverifiableReason: "an installed_plugins.json entry has no usable installPath" } : !existsSyncImpl(installPath) ? { unverifiableReason: `the recorded plugin cache does not exist at ${installPath}` } : {}
-      };
-      const rootKey = path18.resolve(installPath);
-      const existing = cachesByRoot.get(rootKey);
-      if (!existing)
-        cachesByRoot.set(rootKey, cache);
-      else if (!existing.unverifiableReason && cache.unverifiableReason) {
-        existing.unverifiableReason = cache.unverifiableReason;
-      }
-    }
-    discovered.push(...cachesByRoot.values());
-  } else if (registry2.defined) {
-    const cachedRoots = versionedPluginCacheRoots(claudeCacheRoot);
-    if (cachedRoots.length > 0) {
-      discovered.push({
-        host: "claude-code",
-        packageRoot: cachedRoots[cachedRoots.length - 1],
-        installedPluginsPath: claudeRegistry,
-        unverifiableReason: "installed_plugins.json records no active memesh install while a versioned plugin cache still exists"
-      });
-    }
-  } else if (!registry2.readable) {
-    const cachedRoots = versionedPluginCacheRoots(claudeCacheRoot);
-    const cachedRoot = cachedRoots[cachedRoots.length - 1];
-    if (cachedRoot) {
-      discovered.push({
-        host: "claude-code",
-        packageRoot: cachedRoot,
-        installedPluginsPath: claudeRegistry,
-        unverifiableReason: registry2.exists ? "installed_plugins.json could not be read or parsed" : "installed_plugins.json does not exist while a versioned plugin cache still exists"
-      });
-    }
-  }
-  const codexHome = pluginHostConfigRoot("codex");
-  const codexCacheRoot = path18.join(codexHome, "plugins", "cache", "pcircle-memesh", "memesh");
-  const codexRoots = versionedPluginCacheRoots(codexCacheRoot);
-  if (codexRoots.length === 1) {
-    discovered.push({ host: "codex", packageRoot: codexRoots[0] });
-  } else if (codexRoots.length > 1) {
-    discovered.push({
-      host: "codex",
-      packageRoot: codexRoots[codexRoots.length - 1],
-      unverifiableReason: `several versioned Codex plugin cache directories exist under ${codexCacheRoot}`
-    });
-  }
-  return discovered;
-}
-function inspectPluginCacheCurrency(installChannel, pluginHost, packageRoot3, installedPluginsPath, readFileSyncImpl, existsSyncImpl, marketplaceHeadShaImpl) {
-  if (installChannel !== "plugin-marketplace")
-    return null;
-  const host = pluginHost === "codex" ? "codex" : "claude-code";
-  const hostLabel = host === "codex" ? "Codex" : "Claude Code";
-  const command = PLUGIN_REFRESH_COMMANDS[host];
-  let installedSha;
-  let installedMissing;
-  if (host === "codex") {
-    installedSha = readCodexInstallRevision(packageRoot3, readFileSyncImpl);
-    installedMissing = "the plugin cache carries no readable .codex-marketplace-install.json revision";
-  } else {
-    const registryPath = installedPluginsPath ?? path18.join(pluginHostConfigRoot("claude-code"), "plugins", "installed_plugins.json");
-    const registry2 = readClaudePluginEntries(registryPath, readFileSyncImpl, existsSyncImpl);
-    const entries = registry2.entries;
-    const here = path18.resolve(packageRoot3);
-    const matching = entries.filter((e) => typeof e?.installPath === "string" && path18.resolve(e.installPath) === here);
-    const soleEntry = entries.length === 1 ? entries[0] : void 0;
-    const soleEntryHasPath = typeof soleEntry?.installPath === "string" && soleEntry.installPath.length > 0;
-    const entry = matching.length === 1 ? matching[0] : void 0;
-    installedSha = !registry2.malformed && typeof entry?.gitCommitSha === "string" && /^[0-9a-f]{40}$/.test(entry.gitCommitSha) ? entry.gitCommitSha : null;
-    if (!registry2.exists) {
-      installedMissing = `installed_plugins.json does not exist at ${registryPath}`;
-    } else if (!registry2.readable) {
-      installedMissing = "installed_plugins.json could not be read or parsed";
-    } else if (registry2.malformed) {
-      installedMissing = "installed_plugins.json has a malformed memesh entry";
-    } else if (!registry2.defined) {
-      installedMissing = "installed_plugins.json has no memesh@pcircle-memesh entry";
-    } else if (entries.length === 0) {
-      installedMissing = "installed_plugins.json records no active memesh install for this cache";
-    } else if (matching.length > 1) {
-      installedMissing = `installed_plugins.json lists ${matching.length} memesh entries for this install (${packageRoot3})`;
-    } else if (matching.length === 0 && soleEntryHasPath) {
-      installedMissing = `the only memesh entry in installed_plugins.json names another install, not this one (${packageRoot3})`;
-    } else if (matching.length === 0 && soleEntry) {
-      installedMissing = "the only memesh entry in installed_plugins.json has no usable installPath to identify this cache";
-    } else if (entries.length > 1 && matching.length === 0) {
-      installedMissing = `installed_plugins.json lists ${entries.length} memesh entries and none of them is this install (${packageRoot3})`;
-    } else {
-      installedMissing = "installed_plugins.json does not record the commit this plugin was installed from";
-    }
-  }
-  const marketplaceSha = marketplaceHeadShaImpl(host);
-  if (!installedSha || !marketplaceSha) {
-    const missing = !installedSha ? installedMissing : `the ${hostLabel} marketplace snapshot has no readable commit`;
-    return pluginCacheUnverifiable(host, missing);
-  }
-  if (installedSha === marketplaceSha) {
-    return createCheck("plugin-cache", `Plugin cache source record is current (${hostLabel})`, "pass", `The plugin cache records marketplace commit ${marketplaceSha.slice(0, 8)}, which matches the current marketplace snapshot.`);
-  }
-  return createCheck("plugin-cache", `Plugin cache source record is current (${hostLabel})`, "warn", `The plugin cache records commit ${installedSha.slice(0, 8)}, but the marketplace has moved to ${marketplaceSha.slice(0, 8)} under the same version \u2014 ${hostLabel} does not normally refresh a cache whose version did not change, so refresh the cache before relying on the newer marketplace code.`, `Run \`${command}\` to refresh the cache in place, then restart ${hostLabel}.`, { code: "plugin-cache.stale", params: { installed: installedSha.slice(0, 8), marketplace: marketplaceSha.slice(0, 8), host: hostLabel, command } }, "plugin-cache-refresh");
-}
-function isClaudeChannelCommand(command) {
-  if (command === "memesh-host-claude")
-    return true;
-  if (typeof command !== "string" || !path18.isAbsolute(command) || path18.basename(command) !== "memesh-host-claude") {
-    return false;
-  }
-  try {
-    const target = fs21.realpathSync(command);
-    const stat = fs21.statSync(target);
-    if (!stat.isFile())
-      return false;
-    fs21.accessSync(target, fs21.constants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-function inspectClaudeChannelRegistration(existsSyncImpl, readFileSyncImpl) {
-  const configPath = path18.join(homeDir(), ".claude.json");
-  let parsed = null;
-  if (existsSyncImpl(configPath)) {
-    try {
-      const value = JSON.parse(readFileSyncImpl(configPath, "utf8"));
-      if (!value || typeof value !== "object" || Array.isArray(value))
-        throw new Error("not an object");
-      parsed = value;
-    } catch {
-      return createCheck("claude-channel", "Claude Channel registration", "warn", "The canonical Claude user config could not be read as JSON, so the memesh-channel registration is malformed or unverifiable.", "Repair the owner-controlled Claude config with `claude mcp remove memesh-channel` and re-run `memesh agent setup claude` to obtain a fresh registration command.");
-    }
-  }
-  const servers = parsed?.mcpServers;
-  const server = servers && typeof servers === "object" && !Array.isArray(servers) ? servers["memesh-channel"] : void 0;
-  if (server === void 0) {
-    return createCheck("claude-channel", "Claude Channel registration", "warn", "No user-scoped memesh-channel registration was found. Durable MCP/inbox messaging can still work, but live Claude Channel notification is inactive. The upstream research-preview channel remains opt-in.", "If you want the opt-in channel, run `memesh agent setup claude` and then register the printed user-scoped MCP command.", { code: "claude-channel.unregistered" });
-  }
-  const record2 = server && typeof server === "object" && !Array.isArray(server) ? server : null;
-  const command = record2?.command;
-  const rawArgs = record2?.args;
-  const args = Array.isArray(rawArgs) ? rawArgs : null;
-  const configIndex = args?.indexOf("--config") ?? -1;
-  const target = args && configIndex >= 0 && typeof args[configIndex + 1] === "string" ? args[configIndex + 1] : null;
-  let targetConfigValid = false;
-  if (target) {
-    try {
-      const config2 = readHostConfigFile(target);
-      const required2 = ["router_socket", "token_file", "principal_id"];
-      targetConfigValid = config2.server_name === "memesh-channel" && required2.every((key) => {
-        const value = config2[key];
-        return typeof value === "string" && value.length > 0 && Buffer.byteLength(value) <= 4096;
-      });
-    } catch {
-      targetConfigValid = false;
-    }
-  }
-  const commandValid = isClaudeChannelCommand(command);
-  const coherent = commandValid && args !== null && args.length === 2 && configIndex === 0 && target !== null && targetConfigValid;
-  if (!coherent) {
-    const reason = !commandValid || args === null || configIndex !== 0 || target === null ? "the command or --config declaration is malformed" : "the declared owner config target is missing, insecure, malformed, or incomplete";
-    return createCheck("claude-channel", "Claude Channel registration", "warn", `The user-scoped memesh-channel registration is present but ${reason}. Live Claude Channel notification is not established.`, "Remove and re-register the owner-controlled memesh-channel entry with `memesh agent setup claude`; keep its generated config file owner-private.");
-  }
-  return createInfo("claude-channel", "Claude Channel registration", "The user-scoped memesh-channel registration and owner-private config target are coherent (CONFIGURED). Development-channel admission and agent surfacing are not verified; durable MCP/inbox messaging remains a separate path.");
-}
-function isFreshInstall() {
-  try {
-    const createdAt = new Date(getInstallRecord().created_at).getTime();
-    if (!Number.isFinite(createdAt))
-      return false;
-    return (Date.now() - createdAt) / (60 * 60 * 1e3) < 24;
-  } catch {
-    return false;
-  }
-}
-async function inspectUpdateStatus(packageVersion2, getUpdateCheckImpl, installSupport) {
-  const update = await getUpdateCheckImpl(packageVersion2, { preferFresh: false });
-  if (!update) {
-    if (isFreshInstall()) {
-      return createCheck("update-status", "Update status", "pass", "Installed recently \u2014 memesh has not had a chance to check for updates yet. This resolves itself on the first successful check.");
-    }
-    return createCheck("update-status", "Update status", "warn", "memesh has not been able to check for newer versions yet, so it cannot tell you whether an update exists.", "Run `memesh status` once while connected to the internet \u2014 that stores the answer and this notice goes away.", { code: "update-status.no-cache" });
-  }
-  if (update.currentVersionDeprecated && update.deprecationMessage) {
-    const target = update.latestVersion && update.latestVersion !== packageVersion2 ? ` -> ${update.latestVersion}` : "";
-    const hasUpgradeTarget = update.latestVersion && update.latestVersion !== packageVersion2;
-    let fix;
-    if (installSupport?.canSelfUpdate) {
-      fix = hasUpgradeTarget ? `Run \`memesh update\`${target}.` : "Run `memesh update` to refresh the registry lookup and apply any newly-published fix.";
-    } else if (installSupport?.guidance) {
-      fix = installSupport.guidance + (hasUpgradeTarget ? ` Upgrade target: ${update.latestVersion}.` : " Upgrade target uncertain \u2014 re-check `memesh status` while online.");
-    } else {
-      fix = `Upgrade via your install method (see \`memesh status\`).`;
-    }
-    return createCheck("update-status", "Update status", "fail", `Installed version ${packageVersion2} is DEPRECATED by maintainers: ${update.deprecationMessage}`, fix, { code: "update-status.deprecated", params: { version: packageVersion2, detail: update.deprecationMessage ?? "" } });
-  }
-  if (update.freshness === "unavailable") {
-    if (isFreshInstall() && !update.lastAttemptAt && !update.lastError) {
-      return createCheck("update-status", "Update status", "pass", "Installed recently \u2014 memesh has not had a chance to check for updates yet. This resolves itself on the first successful check.");
-    }
-    return createCheck("update-status", "Update status", "warn", "memesh has not been able to check for newer versions yet, so it cannot tell you whether an update exists.", "Run `memesh status` once while connected to the internet \u2014 that stores the answer and this notice goes away.", { code: "update-status.no-cache" });
-  }
-  if (update.checkSucceeded && update.lastError) {
-    const hasUpdate = Boolean(update.updateAvailable && update.latestVersion);
-    const summary = hasUpdate ? `Deprecation status unknown for ${packageVersion2}: ${update.lastError}. Update ${update.latestVersion} is available.` : `Deprecation status unknown for ${packageVersion2}: ${update.lastError}.`;
-    let upgradeHint;
-    if (hasUpdate) {
-      if (installSupport?.canSelfUpdate) {
-        upgradeHint = `, or \`memesh update\` to apply ${update.latestVersion}`;
-      } else if (installSupport?.guidance) {
-        upgradeHint = `. Upgrade target ${update.latestVersion} via your install method: ${installSupport.guidance}`;
-      } else {
-        upgradeHint = `. Upgrade target: ${update.latestVersion}.`;
-      }
-    } else {
-      upgradeHint = "";
-    }
-    const fix = `Run \`memesh status\` while online to retry the deprecation lookup${upgradeHint}.`;
-    return createCheck("update-status", "Update status", "warn", summary, fix, {
-      code: "update-status.deprecation-unknown",
-      params: { version: packageVersion2, detail: update.lastError ?? "" }
-    });
-  }
-  if (update.latestVersion && update.latestVersion !== packageVersion2) {
-    if (classifyBump(packageVersion2, update.latestVersion)) {
-      return createCheck("update-status", "Update status", "warn", `Update available: ${update.latestVersion} (current: ${packageVersion2})`, `Run 'memesh update' to upgrade`, { code: "update-status.update-available", params: { latest: update.latestVersion, current: packageVersion2 } });
-    } else {
-      return createCheck("update-status", "Update status", "pass", `Running pre-release version (${packageVersion2}), npm latest is ${update.latestVersion}`);
-    }
-  }
-  const checkedHoursAgo = update.lastSuccessfulCheckAt === null ? null : (Date.now() - Date.parse(update.lastSuccessfulCheckAt)) / 36e5;
-  const checkedAgo = formatHoursAgo(checkedHoursAgo);
-  return createCheck("update-status", "Update status", update.freshness === "stale" ? "warn" : "pass", update.freshness === "stale" ? `As of the last check (${checkedAgo}), ${packageVersion2} was the latest version \u2014 that check is more than 24h old, so a newer release may exist since. Doctor never makes a live registry call itself.` : `As of the last check (${checkedAgo}), ${packageVersion2} was the latest version.`, update.freshness === "stale" ? "Run `memesh status` while online to refresh cached update metadata." : void 0, update.freshness === "stale" ? { code: "update-status.stale", params: { version: packageVersion2 } } : void 0);
-}
-async function inspectHttpProbe(httpBaseUrl, fetchImpl) {
-  try {
-    const response = await fetchImpl(`${httpBaseUrl.replace(/\/$/, "")}/v1/health`);
-    if (!response.ok) {
-      return createCheck("http-probe", "HTTP probe", "warn", `HTTP server responded with ${response.status} at ${httpBaseUrl}.`, "Run `memesh serve` and check the logs, then retry `memesh doctor --probe-http`.", { code: "http-probe.bad-status", params: { status: response.status, url: httpBaseUrl } });
-    }
-    return createCheck("http-probe", "HTTP probe", "pass", `HTTP server is reachable at ${httpBaseUrl}.`);
-  } catch {
-    return createCheck("http-probe", "HTTP probe", "warn", `No running HTTP server detected at ${httpBaseUrl}.`, "Start the local server with `memesh serve` if you want HTTP API verification.", { code: "http-probe.no-server", params: { url: httpBaseUrl } });
-  }
-}
-function verifySkillsManifest(packageRoot3, existsSyncImpl, readFileSyncImpl, installSupport) {
-  const reinstall = installSupport.guidance;
-  const manifestPath = path18.join(packageRoot3, "dist", "skills-manifest.json");
-  if (!existsSyncImpl(manifestPath)) {
-    return createCheck("skills-manifest", "Skills + hooks integrity", "warn", "No skills-manifest.json found. This is normal for source checkouts \u2014 packaged installs ship the manifest.", `Run \`npm run build\` to regenerate, or reinstall: ${reinstall}`, { code: "skills-manifest.missing-dev" });
-  }
-  let manifest;
-  try {
-    manifest = JSON.parse(readFileSyncImpl(manifestPath, "utf8"));
-  } catch (err) {
-    return createCheck("skills-manifest", "Skills + hooks integrity", "fail", `skills-manifest.json is unreadable (${err instanceof Error ? err.message : "parse error"}).`, `Reinstall the package: ${reinstall} If the problem persists open an issue.`, { code: "skills-manifest.unreadable", params: { detail: err instanceof Error ? err.message : "parse error" } });
-  }
-  const entries = Array.isArray(manifest.entries) ? manifest.entries : [];
-  if (entries.length === 0) {
-    return createCheck("skills-manifest", "Skills + hooks integrity", "fail", "skills-manifest.json contains zero entries.", `Reinstall the package: ${reinstall}`, { code: "skills-manifest.empty" });
-  }
-  const mismatches = [];
-  const missing = [];
-  for (const entry of entries) {
-    const full = path18.join(packageRoot3, entry.path);
-    if (!existsSyncImpl(full)) {
-      missing.push(entry.path);
-      continue;
-    }
-    let actualHash;
-    try {
-      const buf = readFileSyncImpl(full);
-      actualHash = createHash12("sha256").update(buf).digest("hex");
-    } catch (err) {
-      mismatches.push(`${entry.path} (read error: ${err instanceof Error ? err.message : "unknown"})`);
-      continue;
-    }
-    if (actualHash !== entry.sha256)
-      mismatches.push(entry.path);
-  }
-  if (missing.length === 0 && mismatches.length === 0) {
-    return createCheck("skills-manifest", "Skills + hooks integrity", "pass", `${entries.length} skill / hook files match the published manifest (SHA-256 verified).`);
-  }
-  const detail = [
-    missing.length > 0 ? `${missing.length} missing: ${missing.slice(0, 3).join(", ")}${missing.length > 3 ? ` (+${missing.length - 3} more)` : ""}` : null,
-    mismatches.length > 0 ? `${mismatches.length} tampered: ${mismatches.slice(0, 3).join(", ")}${mismatches.length > 3 ? ` (+${mismatches.length - 3} more)` : ""}` : null
-  ].filter(Boolean).join("; ");
-  return createCheck("skills-manifest", "Skills + hooks integrity", "fail", `Manifest verification failed: ${detail}.`, `Reinstall the package: ${reinstall} If the problem reproduces on a fresh install, open a security issue at https://github.com/PCIRCLE-AI/memesh/security.`, { code: "skills-manifest.verify-failed", params: { detail } });
-}
-function probeInstalledMessageCapability(packageRoot3) {
-  const required2 = [
-    "dist/transports/cli/doctor-message-probe.js",
-    "dist/mcp/server.js",
-    "dist/transports/mcp/handlers.js",
-    "dist/host-adapters/codex-app-server.js",
-    "dist/host-adapters/claude-channel.js",
-    "dist/host-adapters/acp-client.js"
-  ];
-  const absent = required2.filter((relative) => !fs21.existsSync(path18.join(packageRoot3, relative)));
-  if (absent.length > 0)
-    return { ok: false, message: `installed runtime is missing ${absent.join(", ")}` };
-  const probeHome = fs21.mkdtempSync(path18.join(os2.tmpdir(), "memesh-doctor-message-"));
-  try {
-    execFileSync7(process.execPath, [path18.join(packageRoot3, "dist/transports/cli/doctor-message-probe.js"), packageRoot3], {
-      cwd: packageRoot3,
-      stdio: "pipe",
-      timeout: 15e3,
-      env: { ...process.env, HOME: probeHome, MEMESH_AUTO_CAPTURE: "false" }
-    });
-    return { ok: true };
-  } catch {
-    return { ok: false, message: "installed MCP or bundled host adapters did not complete the message capability probe" };
-  } finally {
-    fs21.rmSync(probeHome, { recursive: true, force: true });
-  }
-}
-function inspectMessageCapability(packageRoot3, enabled, probe) {
-  if (!enabled) {
-    return createInfo("message-capability", "Message adapter imports", "Not verified (opt-in). Set MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY=1 to start this installed MCP and verify its nine-action message schema plus bundled host-adapter imports. This does not check a live router socket or host registration.");
-  }
-  const result = probe(packageRoot3);
-  if (result.ok)
-    return createCheck("message-capability", "Message adapter imports", "pass", "This installed MCP advertised the nine-action message schema and all bundled host adapters imported successfully. No live router socket, host registration, or host acceptance was verified.");
-  return createCheck("message-capability", "Message adapter imports", "fail", `Installed message capability probe failed: ${result.message}.`, "Reinstall or rebuild this package, then retry with MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY=1.", { code: "message-capability.probe-failed", params: { detail: result.message } });
-}
-async function defaultMessageRouterStatusProbe() {
-  const socketPath = process.env.MEMESH_ROUTER_SOCKET ?? getAgentRouterSocketPath();
-  const socketPathBytes = Buffer.byteLength(socketPath);
-  if (socketPathBytes > AGENT_ROUTER_SOCKET_PATH_MAX_BYTES) {
-    return { socket_path: socketPath, socket: "path-too-long", detail: `${socketPathBytes} bytes` };
-  }
-  let stat;
-  try {
-    stat = fs21.lstatSync(socketPath);
-  } catch (error62) {
-    const detail = error62 instanceof Error ? error62.message : String(error62);
-    return { socket_path: socketPath, socket: "missing", detail };
-  }
-  if (!stat.isSocket() || (stat.mode & 63) !== 0) {
-    return { socket_path: socketPath, socket: "insecure" };
-  }
-  const reachable = await new Promise((resolve2) => {
-    const socket = net2.createConnection({ path: socketPath });
-    const timer = setTimeout(() => {
-      socket.destroy();
-      resolve2(false);
-    }, 1500);
-    timer.unref();
-    socket.once("connect", () => {
-      clearTimeout(timer);
-      socket.destroy();
-      resolve2(true);
-    });
-    socket.once("error", () => {
-      clearTimeout(timer);
-      resolve2(false);
-    });
-  });
-  return { socket_path: socketPath, socket: reachable ? "reachable" : "unreachable" };
-}
-async function inspectMessageRouterStatus(enabled, probe) {
-  if (!enabled) {
-    return createInfo("message-router-status", "Live message router / host registration", "Not verified (opt-in). Set MEMESH_DOCTOR_PROBE_MESSAGE_ROUTER=1 to check only whether the owner-private Local router socket is live. This check never starts a router, registers a host, sends a message, or wakes a stopped session.");
-  }
-  const result = await probe();
-  switch (result.socket) {
-    case "reachable":
-      return createCheck("message-router-status", "Live message router / host registration", "pass", `Owner-private Local router socket is reachable at ${result.socket_path}. This proves only router availability; it does not prove an active host registration, native delivery, host_accept, ACK, or stopped-session wake-up.`);
-    case "missing":
-      return createCheck("message-router-status", "Live message router / host registration", "warn", `No Local router socket exists at ${result.socket_path}. No active host is registered through this router, and MeMesh will not wake a stopped or missing session.`, "Start the owner-configured router with `memesh-router`, then run this opt-in probe again.", { code: "message-router.socket-missing", params: { path: result.socket_path } });
-    case "path-too-long":
-      return createCheck("message-router-status", "Live message router / host registration", "fail", `The router socket path is ${result.detail} \u2014 over the ${AGENT_ROUTER_SOCKET_PATH_MAX_BYTES}-byte limit a Unix domain socket allows, so \`memesh-router\` cannot create it at ${result.socket_path}. Starting the router again fails the same way.`, process.env.MEMESH_ROUTER_SOCKET !== void 0 ? "Set MEMESH_ROUTER_SOCKET to a shorter absolute path in a folder only you can access (owner-private), then start `memesh-router` again. It reaches `memesh-router`, `memesh doctor`, senders and ordinary Claude MCP sessions. Host configs written by `memesh agent setup` (`hosts/codex-session.json` included) keep the default path, and ordinary Codex sessions use the default path, so shorten HOME / MEMESH_DIR instead if they must reach this router." : "Move HOME / MEMESH_DIR somewhere with a shorter path, then start `memesh-router` again. With MEMESH_DB_PATH set, the default socket sits in that database's folder, so move the database; the socket's folder must be owner-private. Setting MEMESH_ROUTER_SOCKET alone is not enough: it does not reach host configs written by `memesh agent setup` (`hosts/codex-session.json` included) or ordinary Codex sessions, which use the default path.", { code: "message-router.socket-path-too-long", params: { path: result.socket_path, bytes: result.detail ?? "unknown" } });
-    case "insecure":
-      return createCheck("message-router-status", "Live message router / host registration", "fail", `Router socket at ${result.socket_path} is not an owner-private Unix socket.`, "Stop the router, remove the unsafe socket, and restart `memesh-router` under the owning user.", { code: "message-router.socket-insecure", params: { path: result.socket_path } });
-    case "unreachable":
-      return createCheck("message-router-status", "Live message router / host registration", "warn", `An owner-private router socket exists at ${result.socket_path}, but it did not accept a local connection. No host registration or native delivery is verified.`, "Check the owner-configured `memesh-router` process, then run this opt-in probe again.", { code: "message-router.socket-unreachable", params: { path: result.socket_path } });
-  }
-}
-function summarizeOverallStatus(checks) {
-  const assertions = checks.filter((check2) => !check2.informational);
-  if (assertions.some((check2) => check2.status === "fail"))
-    return "FAIL";
-  if (assertions.some((check2) => check2.status === "warn"))
-    return "PASS_WITH_CONCERNS";
-  return "PASS";
-}
-async function runDoctor(options) {
-  const { packageRoot: packageRoot3, packageVersion: packageVersion2, probeHttp = false, httpBaseUrl = "http://127.0.0.1:3737", platform = process.platform, envImpl = process.env, openDatabaseImpl = openDatabase, closeDatabaseImpl = closeDatabase, isDatabaseOpenImpl = isDatabaseOpen, getConfigPathImpl = getConfigPath, getUpdateCheckImpl = getUpdateCheck, getCurrentInstallChannelImpl = getCurrentInstallChannel, installedPluginsPathImpl, marketplaceHeadShaImpl = defaultMarketplaceHeadSha, pluginCacheDiscoveryImpl, getInstallChannelSupportImpl = getInstallChannelSupport, existsSyncImpl = fs21.existsSync, readFileSyncImpl = fs21.readFileSync, statSyncImpl = fs21.statSync, fetchImpl = fetch, agentMessageStoragePolicy, nativeBindingProbeImpl, resolveShellMemeshImpl = defaultResolveShellMemesh, probeMessageCapability = process.env.MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY === "1", messageCapabilityProbeImpl = probeInstalledMessageCapability, probeMessageRouterStatus = process.env.MEMESH_DOCTOR_PROBE_MESSAGE_ROUTER === "1", messageRouterStatusProbeImpl = defaultMessageRouterStatusProbe } = options;
-  const wasDbOpenBeforeUs = isDatabaseOpenImpl();
-  const safeCloseDatabaseImpl = wasDbOpenBeforeUs ? () => void 0 : closeDatabaseImpl;
-  const checks = [];
-  const install = getCurrentInstallChannelImpl({ packageRoot: packageRoot3 });
-  const installSupport = getInstallChannelSupportImpl(install, packageRoot3);
-  checks.push(createCheck("install-channel", "Install method", install === "unknown" ? "warn" : "pass", `Install method detected: ${installSupport.label}.`, install === "unknown" ? "If this is a source checkout, run MeMesh from the repo root. If this is a packaged install, reinstall with `npm install -g @pcircle/memesh`." : void 0, install === "unknown" ? { code: "install-channel.unknown" } : void 0));
-  const databasePath = resolveDatabasePath();
-  const dbChecks = [];
-  try {
-    const db2 = openDatabaseImpl(databasePath);
-    const integrity = quickIntegrityVerdict(db2);
-    if (integrity !== "ok") {
-      throw Object.assign(new Error(`Database at ${databasePath} opened, but SQLite's quick integrity check failed: ${integrity}`), {
-        fix: damagedDatabaseFix(databasePath)
-      });
-    }
-    const count = db2.prepare("SELECT COUNT(*) as c FROM entities").get()?.c ?? 0;
-    const writeBack = ownerWriteCommand(databasePath);
-    dbChecks.push(writeBack ? createCheck("database", "Database", "warn", `Database at ${databasePath} (${count} entities) is read-only: reads work, writes are refused.`, `If it should be writable, ${writeBack}`) : createCheck("database", "Database", "pass", `Database opened successfully at ${databasePath} (${count} entities).`));
-    const messageStorage = inspectAgentMessageStorage(db2, databasePath, configuredAgentMessageStoragePolicy(agentMessageStoragePolicy));
-    if (messageStorage)
-      dbChecks.push(messageStorage);
-    const codexQueueDaemon = inspectCodexQueueDaemon(db2);
-    if (codexQueueDaemon)
-      dbChecks.push(codexQueueDaemon);
-    const projectSplit = inspectProjectIdentitySplit(db2);
-    if (projectSplit)
-      dbChecks.push(projectSplit);
-    const hasVocab = db2.prepare(`SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'fts_vocab'`).get();
-    if (hasVocab?.present) {
-      const unsegmented = db2.prepare(`SELECT COUNT(*) AS c FROM fts_vocab
-            WHERE length(term) > 2
-              AND term GLOB ?`).get(UNSPACED_SCRIPT_GLOB_RUN3);
-      if (unsegmented?.c) {
-        dbChecks.push(createCheck("fts_segmentation", "Keyword index segmentation", "warn", `The keyword index holds ${unsegmented.c} unsegmented term(s), so some memories are only findable by their exact full text. This happens when an older build wrote to a database that a newer one had already migrated \u2014 the version marker only moves forward, so the automatic rebuild cannot notice. Re-run doctor after the rebuild: this count should be 0.`, `Run 'memesh reindex --fts' to rebuild the keyword index.`, { code: "fts.unsegmented", params: { count: unsegmented.c } }, "fts-rebuild"));
-      }
-    }
-    try {
-      const guardRows = db2.prepare(`SELECT id, name, metadata FROM entities
-           WHERE status = 'active'
-             AND type IN ('lesson_learned', 'lesson', 'mistake')
-             AND metadata LIKE '%"guard"%'`).all();
-      const fired = guardRows.filter((r) => guardFromMetadata(r.id, r.metadata) !== null).map((r) => {
-        let fires = 0;
-        try {
-          const parsedMeta = JSON.parse(r.metadata);
-          if (typeof parsedMeta.guard?.fires === "number")
-            fires = parsedMeta.guard.fires;
-        } catch {
-        }
-        return { name: r.name, fires };
-      }).sort((a, b) => b.fires - a.fires);
-      if (fired.length > 0) {
-        const everFired = fired.filter((g) => g.fires > 0);
-        const top = everFired.slice(0, 3).map((g) => `${g.name} (${g.fires})`).join(", ");
-        dbChecks.push(createInfo("guard_activity", "Guard activity", `${fired.length} active guard(s); ${everFired.length} have ever fired` + (top ? `. Most: ${top}.` : ". None has matched yet.")));
-      }
-    } catch {
-    }
-    const citationTotalRow = db2.prepare(`SELECT value FROM memesh_metadata WHERE key = 'citation_sessions_total'`).get();
-    const citedRow = db2.prepare(`SELECT value FROM memesh_metadata WHERE key = 'citation_sessions_cited'`).get();
-    const citationTotal = Number.parseInt(String(citationTotalRow?.value ?? ""), 10);
-    if (Number.isInteger(citationTotal) && citationTotal > 0) {
-      const citedKnown = citedRow?.value !== void 0;
-      const cited = Number.parseInt(String(citedRow?.value ?? ""), 10);
-      const rate = citedKnown && Number.isInteger(cited) ? Math.round(cited / citationTotal * 100) : null;
-      const ruleScope = readInstallMarker()?.scope === "project" ? "project" : "user";
-      let rule;
-      try {
-        rule = citationRuleState(ruleScope, homeDir(), process.cwd(), {
-          readFileSync: readFileSyncImpl
-        });
-      } catch {
-        rule = { path: citationRulePath(ruleScope, homeDir(), process.cwd()), state: "unreadable" };
-      }
-      if (rate === null) {
-        dbChecks.push(createInfo("citation_compliance", "Memory use rate", `${citationTotal} session(s) received injected memories; how many cited or retrieved one is not recorded (this database predates the counter that would say). The rate will be measurable from the next session on.`));
-      } else if (rate === 0) {
-        dbChecks.push(createCheck("citation_compliance", "Memory use rate", "warn", `${citationTotal} session(s) received injected memories and NONE cited or retrieved one. Every injection is costing tokens with no evidence any of it was used \u2014 and with no citations or ID retrievals, ranking cannot learn which memories are worth injecting.`, rule.state === "current" ? `The citation contract is installed at ${rule.path}. If this stays at 0% across several more sessions, the injected memories are not earning their tokens \u2014 consider narrowing what is injected.` : `The citation contract is ${rule.state} at ${rule.path}. Run 'memesh install-hooks' (or start a new session) to write it, then re-check after a few sessions.`, { code: "citation.none", params: { total: citationTotal } }));
-      } else {
-        dbChecks.push(createInfo("citation_compliance", "Memory use rate", `${cited} of ${citationTotal} session(s) with injected memories cited or retrieved at least one (${rate}%).`));
-      }
-    }
-  } catch (err) {
-    const { diagnosis, fix } = diagnoseDatabaseFailure(err, databasePath, existsSyncImpl, statSyncImpl);
-    dbChecks.length = 0;
-    dbChecks.push(createCheck("database", "Database", "fail", diagnosis, fix, { code: "database.broken", params: { detail: diagnosis } }));
-  } finally {
-    checks.push(...dbChecks);
-    try {
-      safeCloseDatabaseImpl();
-    } catch {
-    }
-  }
-  checks.push(inspectConfigFile(existsSyncImpl, readFileSyncImpl, getConfigPathImpl));
-  checks.push(inspectMcpConfig(packageRoot3, install, existsSyncImpl, readFileSyncImpl, envImpl));
-  checks.push(...inspectHooksConfig(packageRoot3, platform, existsSyncImpl, readFileSyncImpl, statSyncImpl));
-  const pluginHost = detectPluginHost(packageRoot3);
-  let codexPluginCacheDetected = pluginHost === "codex";
-  let claudePluginCacheDetected = pluginHost === "claude-code";
-  const wiring = inspectHookWiring(existsSyncImpl, readFileSyncImpl, memeshDir(), install, installedPluginsPathImpl, pluginHost);
-  const pluginCache = inspectPluginCacheCurrency(install, pluginHost, packageRoot3, installedPluginsPathImpl, readFileSyncImpl, existsSyncImpl, marketplaceHeadShaImpl);
-  if (pluginCache)
-    checks.push(pluginCache);
-  if (install === "npm-global") {
-    const discoveredCounts = /* @__PURE__ */ new Map();
-    const discoveredPluginCaches = pluginCacheDiscoveryImpl ? pluginCacheDiscoveryImpl() : defaultPluginCacheDiscovery(readFileSyncImpl, existsSyncImpl);
-    for (const discovered of discoveredPluginCaches) {
-      if (discovered.host === "codex")
-        codexPluginCacheDetected = true;
-      if (discovered.host === "claude-code")
-        claudePluginCacheDetected = true;
-      const check2 = discovered.unverifiableReason ? pluginCacheUnverifiable(discovered.host, discovered.unverifiableReason) : inspectPluginCacheCurrency("plugin-marketplace", discovered.host, discovered.packageRoot, discovered.installedPluginsPath, readFileSyncImpl, existsSyncImpl, marketplaceHeadShaImpl);
-      if (check2) {
-        const hostName = discovered.host;
-        const index = (discoveredCounts.get(discovered.host) ?? 0) + 1;
-        discoveredCounts.set(discovered.host, index);
-        checks.push({ ...check2, id: `plugin-cache-${hostName}${index === 1 ? "" : `-${index}`}` });
-      }
-    }
-  }
-  checks.push(wiring);
-  if (claudePluginCacheDetected) {
-    checks.push(inspectClaudeChannelRegistration(existsSyncImpl, readFileSyncImpl));
-  }
-  const codexSessionSetup = inspectCodexSessionSetup(codexPluginCacheDetected, existsSyncImpl);
-  if (codexSessionSetup)
-    checks.push(codexSessionSetup);
-  const captureWired = wiring.status === "pass" && (wiring.params === void 0 || wiring.params.captureWired === 1);
-  checks.push(inspectHookActivity(openDatabaseImpl, safeCloseDatabaseImpl, existsSyncImpl, statSyncImpl, captureWired));
-  const captureLiveness = withRecordedHosts(inspectCaptureLiveness(openDatabaseImpl, safeCloseDatabaseImpl, readFileSyncImpl, getMemeshDirFromDbPath, captureWired));
-  checks.push(captureLiveness.check);
-  const captureReport = captureLiveness.report;
-  checks.push(inspectNodeRuntime(packageRoot3, existsSyncImpl, readFileSyncImpl));
-  checks.push(inspectNativeBinding(packageRoot3, existsSyncImpl, nativeBindingProbeImpl));
-  checks.push(inspectShellCli(install, packageRoot3, packageVersion2, resolveShellMemeshImpl, existsSyncImpl, readFileSyncImpl));
-  checks.push(verifySkillsManifest(packageRoot3, existsSyncImpl, readFileSyncImpl, installSupport));
-  checks.push(inspectMessageCapability(packageRoot3, probeMessageCapability, messageCapabilityProbeImpl));
-  checks.push(await inspectMessageRouterStatus(probeMessageRouterStatus, messageRouterStatusProbeImpl));
-  checks.push(await inspectUpdateStatus(packageVersion2, getUpdateCheckImpl, installSupport));
-  try {
-    const record2 = getInstallRecord();
-    checks.push(createInfo("install_id", "Install ID", `Anonymous install ID: ${record2.install_id} (created ${record2.created_at}). Stored locally at ${path18.join(memeshDir(), "install.json")}. Never transmitted automatically; included only in feedback issues you submit with the "Include system info" checkbox on.`));
-  } catch {
-  }
-  checks.push(inspectLocaleReadmeParity(packageRoot3, existsSyncImpl, readFileSyncImpl));
-  if (probeHttp) {
-    checks.push(await inspectHttpProbe(httpBaseUrl, fetchImpl));
-  }
-  return {
-    status: summarizeOverallStatus(checks),
-    checks,
-    ...captureReport ? { capture: captureReport } : {}
-  };
-}
-function iconForStatus(status) {
-  switch (status) {
-    case "pass":
-      return "PASS";
-    case "warn":
-      return "WARN";
-    default:
-      return "FAIL";
-  }
-}
-function formatDoctorReport(result, packageVersion2) {
-  const lines = [`MeMesh doctor v${packageVersion2}`, `Overall: ${result.status}`];
-  for (const check2 of result.checks) {
-    lines.push("");
-    lines.push(`[${check2.informational ? "INFO" : iconForStatus(check2.status)}] ${check2.label}`);
-    lines.push(`  ${check2.summary}`);
-    if (check2.fix) {
-      lines.push(`  Fix: ${check2.fix}`);
-    }
-  }
-  return lines;
-}
-var EXPECTED_HOOK_TYPES, AGENT_MESSAGE_STORAGE_QUOTA_ENV2, LOCALE_README_FILES, LOCALE_H2_TOLERANCE, MCP_PLACEHOLDER, SAFE_HANDOFF_NAME;
-var init_doctor = __esm({
-  "dist/core/doctor.js"() {
-    "use strict";
-    init_config();
-    init_db();
-    init_version_check();
-    init_updater();
-    init_install_channel();
-    init_install_id();
-    init_file_mode();
-    init_database_diagnosis();
-    init_citation_rule();
-    init_paths();
-    init_project_identity_split();
-    init_agent_router();
-    init_install_hooks();
-    init_fts_index();
-    init_sqlite();
-    init_types();
-    init_session_handoff();
-    init_time_utils();
-    init_capture_flag();
-    init_capture_liveness();
-    init_guards();
-    init_agent_message_storage();
-    init_config2();
-    EXPECTED_HOOK_TYPES = ["PreToolUse", "SessionStart", "PostToolUse", "Stop", "PreCompact"];
-    AGENT_MESSAGE_STORAGE_QUOTA_ENV2 = "MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES";
-    LOCALE_README_FILES = [
-      "README.zh-TW.md"
-    ];
-    LOCALE_H2_TOLERANCE = 1;
-    MCP_PLACEHOLDER = "${CLAUDE_PLUGIN_ROOT}";
-    SAFE_HANDOFF_NAME = /^session-handoff:[A-Za-z0-9._-]+~[0-9a-f]{32}$/;
-  }
-});
-
 // dist/core/transcript-source.js
-import fs22 from "fs";
-import { createHash as createHash13 } from "node:crypto";
-import path19 from "path";
+import fs19 from "fs";
+import { createHash as createHash12 } from "node:crypto";
+import path16 from "path";
 function readTranscriptSnapshot(transcriptPath, expected) {
   return readTranscriptSnapshotWithin(transcriptPath, expected, MAX_TRANSCRIPT_SOURCE_BYTES).snapshot;
 }
 function readTranscriptSnapshotWithin(transcriptPath, expected, aggregateBytesRemaining) {
   let fd;
   try {
-    fd = fs22.openSync(transcriptPath, fs22.constants.O_RDONLY | fs22.constants.O_NOFOLLOW);
-    if (fs22.lstatSync(transcriptPath).isSymbolicLink())
+    fd = fs19.openSync(transcriptPath, fs19.constants.O_RDONLY | fs19.constants.O_NOFOLLOW);
+    if (fs19.lstatSync(transcriptPath).isSymbolicLink())
       return { snapshot: null, aggregateLimitExceeded: false };
-    const before = fs22.fstatSync(fd, { bigint: true });
+    const before = fs19.fstatSync(fd, { bigint: true });
     const sizeBytes = Number(before.size);
     if (!before.isFile() || sizeBytes < 0 || sizeBytes > MAX_TRANSCRIPT_SOURCE_BYTES) {
       return { snapshot: null, aggregateLimitExceeded: false };
@@ -63935,16 +61703,16 @@ function readTranscriptSnapshotWithin(transcriptPath, expected, aggregateBytesRe
     const bytes = Buffer.allocUnsafe(sizeBytes);
     let offset = 0;
     while (offset < bytes.length) {
-      const count = fs22.readSync(fd, bytes, offset, bytes.length - offset, offset);
+      const count = fs19.readSync(fd, bytes, offset, bytes.length - offset, offset);
       if (count === 0)
         return { snapshot: null, aggregateLimitExceeded: false };
       offset += count;
     }
-    const after = fs22.fstatSync(fd, { bigint: true });
+    const after = fs19.fstatSync(fd, { bigint: true });
     if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) {
       return { snapshot: null, aggregateLimitExceeded: false };
     }
-    const contentHash = createHash13("sha256").update(bytes).digest("hex");
+    const contentHash = createHash12("sha256").update(bytes).digest("hex");
     if (expected && contentHash !== expected.contentHash)
       return { snapshot: null, aggregateLimitExceeded: false };
     return { snapshot: { bytes, contentHash, ...identity }, aggregateLimitExceeded: false };
@@ -63953,7 +61721,7 @@ function readTranscriptSnapshotWithin(transcriptPath, expected, aggregateBytesRe
   } finally {
     if (fd !== void 0) {
       try {
-        fs22.closeSync(fd);
+        fs19.closeSync(fd);
       } catch {
       }
     }
@@ -63963,7 +61731,7 @@ function claudeProjectsDir() {
   const override = process.env.CLAUDE_PROJECTS_DIR;
   if (override && override.trim() !== "")
     return override;
-  return path19.join(homeDir(), ".claude", "projects");
+  return path16.join(homeDir(), ".claude", "projects");
 }
 function projectTranscriptSlug(cwd) {
   return cwd.replace(/[^a-zA-Z0-9]/g, "-");
@@ -63992,10 +61760,10 @@ function recordedCwd(text) {
   }
 }
 function sameProjectPath(a, b) {
-  if (path19.normalize(a) === path19.normalize(b))
+  if (path16.normalize(a) === path16.normalize(b))
     return true;
   try {
-    if (fs22.realpathSync(a) === fs22.realpathSync(b))
+    if (fs19.realpathSync(a) === fs19.realpathSync(b))
       return true;
   } catch {
   }
@@ -64010,13 +61778,13 @@ function scanTranscripts(opts) {
   const windowDays = opts.windowDays ?? 3;
   const now = opts.now ?? /* @__PURE__ */ new Date();
   const cutoffMs = now.getTime() - windowDays * 864e5;
-  const dir = path19.join(claudeProjectsDir(), projectTranscriptSlug(cwd));
+  const dir = path16.join(claudeProjectsDir(), projectTranscriptSlug(cwd));
   let names;
   try {
-    const dirStat = fs22.lstatSync(dir);
+    const dirStat = fs19.lstatSync(dir);
     if (dirStat.isSymbolicLink() || !dirStat.isDirectory())
       return [];
-    names = fs22.readdirSync(dir).filter((name) => name.endsWith(".jsonl")).sort();
+    names = fs19.readdirSync(dir).filter((name) => name.endsWith(".jsonl")).sort();
   } catch {
     return [];
   }
@@ -64029,7 +61797,7 @@ function scanTranscripts(opts) {
   for (const name of names) {
     let stat;
     try {
-      stat = fs22.lstatSync(path19.join(dir, name));
+      stat = fs19.lstatSync(path16.join(dir, name));
     } catch {
       opts.onSkip?.("unreadable", 1);
       continue;
@@ -64050,7 +61818,7 @@ function scanTranscripts(opts) {
   const sessions = [];
   let bytesRead = 0;
   for (const name of eligibleNames) {
-    const full = path19.join(dir, name);
+    const full = path16.join(dir, name);
     const read = readTranscriptSnapshotWithin(full, void 0, MAX_TRANSCRIPT_SCAN_BYTES - bytesRead);
     if (read.aggregateLimitExceeded) {
       opts.onSkip?.("scan_too_large", eligibleNames.length);
@@ -64174,8 +61942,95 @@ var init_transcript_extractor = __esm({
   }
 });
 
+// dist/core/guards.js
+function validateGuardSpec(spec) {
+  const errors = [];
+  const s = spec;
+  if (!s || typeof s !== "object")
+    return ["guard spec is not an object"];
+  if (typeof s.tool !== "string" || !GUARD_TOOLS.has(s.tool)) {
+    errors.push(`tool must be one of ${[...GUARD_TOOLS].join("/")}`);
+  }
+  if (typeof s.pattern !== "string" || s.pattern.length < PATTERN_MIN || s.pattern.length > PATTERN_MAX) {
+    errors.push(`pattern must be a string of ${PATTERN_MIN}\u2013${PATTERN_MAX} chars`);
+    return errors;
+  }
+  let re;
+  try {
+    re = new RegExp(s.pattern, "i");
+  } catch (err) {
+    return [...errors, `pattern does not compile: ${err instanceof Error ? err.message : String(err)}`];
+  }
+  if (re.test(""))
+    errors.push("pattern matches the empty string \u2014 it would fire on everything");
+  for (const probe of GUARD_BENIGN_PROBES) {
+    if (re.test(probe))
+      errors.push(`pattern matches the benign input "${probe}" \u2014 too broad to be a guard`);
+  }
+  if (typeof s.message !== "string" || s.message.trim().length === 0 || s.message.length > MESSAGE_MAX) {
+    errors.push(`message must be a non-empty string of at most ${MESSAGE_MAX} chars`);
+  }
+  const matches = Array.isArray(s.should_match) ? s.should_match.filter((x) => typeof x === "string") : [];
+  const nonMatches = Array.isArray(s.should_not_match) ? s.should_not_match.filter((x) => typeof x === "string") : [];
+  if (matches.length < 2) {
+    errors.push("should_match needs at least 2 example inputs");
+  }
+  if (nonMatches.length < 2) {
+    errors.push("should_not_match needs at least 2 example inputs");
+  }
+  for (const ex of matches) {
+    if (!re.test(ex))
+      errors.push(`should_match example does not match: "${ex.slice(0, 80)}"`);
+  }
+  for (const ex of nonMatches) {
+    if (re.test(ex))
+      errors.push(`should_not_match example matches: "${ex.slice(0, 80)}"`);
+  }
+  return errors;
+}
+function guardFromMetadata(lessonId, metadata) {
+  if (!metadata)
+    return null;
+  try {
+    const meta3 = JSON.parse(metadata);
+    const g = meta3?.guard;
+    if (!g || g.enabled !== true)
+      return null;
+    if (typeof g.tool !== "string" || typeof g.pattern !== "string" || typeof g.message !== "string")
+      return null;
+    return {
+      lessonId,
+      tool: g.tool,
+      pattern: g.pattern,
+      message: g.message,
+      action: typeof g.action === "string" ? g.action : "warn"
+    };
+  } catch {
+    return null;
+  }
+}
+var GUARD_TOOLS, GUARD_BENIGN_PROBES, PATTERN_MIN, PATTERN_MAX, MESSAGE_MAX;
+var init_guards = __esm({
+  "dist/core/guards.js"() {
+    "use strict";
+    GUARD_TOOLS = /* @__PURE__ */ new Set(["Bash", "Edit", "Write"]);
+    GUARD_BENIGN_PROBES = [
+      "ls",
+      "git status",
+      "git diff",
+      "npm test",
+      "echo ok",
+      "cd ..",
+      "src/index.ts"
+    ];
+    PATTERN_MIN = 6;
+    PATTERN_MAX = 200;
+    MESSAGE_MAX = 280;
+  }
+});
+
 // dist/core/product-improvements.js
-import { createHash as createHash14 } from "node:crypto";
+import { createHash as createHash13 } from "node:crypto";
 function clean2(label, value, max) {
   const normalized = value.replace(/\s+/g, " ").trim();
   if (!normalized)
@@ -64239,6 +62094,7 @@ var init_product_improvements = __esm({
 // dist/core/dreamer.js
 var dreamer_exports = {};
 __export(dreamer_exports, {
+  COMPACTABLE_TYPES: () => COMPACTABLE_TYPES,
   NothingToClaimError: () => NothingToClaimError,
   applyProposal: () => applyProposal,
   executeWorkPackage: () => executeWorkPackage,
@@ -64246,7 +62102,7 @@ __export(dreamer_exports, {
   listProposals: () => listProposals,
   rejectProposal: () => rejectProposal
 });
-import { createHash as createHash15 } from "node:crypto";
+import { createHash as createHash14 } from "node:crypto";
 function collisionSafeName(db2, proposed, kind, proposalId2) {
   const taken = db2.prepare("SELECT 1 FROM entities WHERE name = ?").get(proposed) !== void 0;
   return taken ? `${proposed} (${kind} #${proposalId2})` : proposed;
@@ -64364,7 +62220,7 @@ function executeWorkPackage(db2, input2, context = {}) {
   const execute = () => {
     const project = input2.action === "prepare" ? input2.project : input2.ref.project;
     const kind = input2.action === "prepare" ? input2.kind : input2.ref.kind;
-    const hash2 = (value) => createHash15("sha256").update(JSON.stringify(value)).digest("hex");
+    const hash2 = (value) => createHash14("sha256").update(JSON.stringify(value)).digest("hex");
     if (input2.action !== "prepare") {
       const submitted = input2.action === "submit" ? input2.result : void 0;
       if (submitted && holdsSecret([submitted.name, ...submitted.observations, ...submitted.tags])) {
@@ -65051,6 +62907,2377 @@ var init_dreamer = __esm({
   }
 });
 
+// dist/core/patterns.js
+function countedSql(alias) {
+  return `(${alias}.type != 'weekly-summary' AND (${alias}.status = 'active' OR (${alias}.status = 'archived'
+    AND ${alias}.type IN (${COMPRESSED_TYPE_LIST})
+    AND json_type(CASE WHEN json_valid(${alias}.metadata) THEN ${alias}.metadata ELSE '{}' END, '$.compacted_into') = 'integer')))`;
+}
+function computePatterns(db2, categories) {
+  const allCategories = !categories || categories.length === 0;
+  let hourDistribution = [];
+  let dayDistribution = [];
+  if (allCategories || categories.includes("workSchedule")) {
+    hourDistribution = db2.prepare(`
+      SELECT CAST(strftime('%H', created_at, 'localtime') AS INTEGER) as hour, COUNT(*) as count
+      FROM entities e WHERE ${countedSql("e")}
+      GROUP BY hour ORDER BY hour
+    `).all();
+    dayDistribution = db2.prepare(`
+      SELECT CAST(strftime('%w', created_at, 'localtime') AS INTEGER) as dayNum,
+        COUNT(*) as count
+      FROM entities e WHERE ${countedSql("e")} GROUP BY dayNum ORDER BY dayNum
+    `).all();
+  }
+  let focusAreas = [];
+  if (allCategories || categories.includes("focusAreas")) {
+    focusAreas = db2.prepare(`
+      SELECT type, COUNT(*) as count FROM entities
+      WHERE status = 'active' AND type NOT IN (${AUTO_TYPES.map(() => "?").join(",")})
+      GROUP BY type ORDER BY count DESC LIMIT 10
+    `).all(...AUTO_TYPES);
+  }
+  let commitsPerSession = 0;
+  let totalSessions = 0;
+  let totalCommits = 0;
+  if (allCategories || categories.includes("workflow")) {
+    totalCommits = db2.prepare(`SELECT COUNT(*) as c FROM entities e WHERE e.type = 'commit' AND ${countedSql("e")}`).get().c + unmarkedCompressedCommits(db2);
+    const sessionTypes = SESSION_TYPES.map(() => "?").join(",");
+    totalSessions = db2.prepare(`
+      SELECT
+        (SELECT COUNT(DISTINCT t.tag) FROM tags t JOIN entities e ON e.id = t.entity_id
+          WHERE ${countedSql("e")} AND e.type IN (${sessionTypes}) AND t.tag LIKE 'session:%')
+        +
+        (SELECT COUNT(*) FROM entities e
+          WHERE ${countedSql("e")} AND e.type IN (${sessionTypes})
+            AND NOT EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag LIKE 'session:%'))
+        AS c
+    `).get(...SESSION_TYPES, ...SESSION_TYPES).c;
+    commitsPerSession = totalSessions > 0 ? Math.round(totalCommits / totalSessions * 10) / 10 : 0;
+  }
+  let strengths = [];
+  if (allCategories || categories.includes("strengths")) {
+    strengths = db2.prepare(`
+      SELECT type, ROUND(AVG(confidence), 2) as avgConfidence, COUNT(*) as count
+      FROM entities WHERE status = 'active' AND type NOT IN (${AUTO_TYPES.map(() => "?").join(",")})
+      GROUP BY type HAVING count >= 2
+      ORDER BY avgConfidence DESC LIMIT 5
+    `).all(...AUTO_TYPES);
+  }
+  let learningAreas = [];
+  if (allCategories || categories.includes("learningAreas")) {
+    learningAreas = db2.prepare(`
+      SELECT t.tag, COUNT(*) as count FROM tags t
+      JOIN entities e ON t.entity_id = e.id
+      WHERE e.type IN (${LEARNING_TYPES.map(() => "?").join(",")})
+        AND e.status = 'active'
+        ${SYSTEM_TAG_PREFIXES.map(() => "AND t.tag NOT LIKE ?").join("\n        ")}
+        AND t.tag NOT IN (${SYSTEM_TAG_LITERALS.map(() => "?").join(",")})
+      GROUP BY t.tag ORDER BY count DESC LIMIT 10
+    `).all(...LEARNING_TYPES, ...SYSTEM_TAG_PREFIXES.map((p) => `${p}%`), ...SYSTEM_TAG_LITERALS);
+  }
+  return {
+    workSchedule: { hourDistribution, dayDistribution },
+    focusAreas,
+    workflow: { commitsPerSession, totalSessions, totalCommits },
+    strengths,
+    learningAreas
+  };
+}
+var AUTO_TYPES, SESSION_TYPES, COMPRESSED_TYPE_LIST, SYSTEM_TAG_PREFIXES, SYSTEM_TAG_LITERALS, LEARNING_TYPES;
+var init_patterns = __esm({
+  "dist/core/patterns.js"() {
+    "use strict";
+    init_analytics();
+    init_lifecycle();
+    init_dreamer();
+    init_compression_ledger();
+    AUTO_TYPES = [...NOISE_TYPES2, "workflow_checkpoint"];
+    SESSION_TYPES = ["session_keypoint", "session-insight"];
+    COMPRESSED_TYPE_LIST = [.../* @__PURE__ */ new Set([...NOISE_TYPES, ...COMPACTABLE_TYPES])].filter((t) => t !== "weekly-summary" && t !== "weekly_summary").map((t) => `'${t.replace(/'/g, "''")}'`).join(",");
+    SYSTEM_TAG_PREFIXES = ["date:", "session:", "project:", "source:", "severity:", "error-pattern:"];
+    SYSTEM_TAG_LITERALS = [
+      "auto",
+      "auto-captured",
+      "auto-tracked",
+      "auto_saved",
+      "session_end",
+      "session-summary",
+      "session-insight",
+      "session_keypoint",
+      "workflow_checkpoint",
+      "scope:project"
+    ];
+    LEARNING_TYPES = ["lesson_learned", "mistake", "bug_fix", "lesson"];
+  }
+});
+
+// dist/core/stats.js
+function computeStats(db2) {
+  const entities = db2.prepare("SELECT COUNT(*) as c FROM entities").get();
+  const observations = db2.prepare("SELECT COUNT(*) as c FROM observations").get();
+  const relations = db2.prepare("SELECT COUNT(*) as c FROM relations").get();
+  const tags = db2.prepare("SELECT COUNT(DISTINCT tag) as c FROM tags").get();
+  const typeDistribution = db2.prepare("SELECT type, COUNT(*) as count FROM entities GROUP BY type ORDER BY count DESC LIMIT 50").all();
+  const tagDistribution = db2.prepare("SELECT tag, COUNT(*) as count FROM tags GROUP BY tag ORDER BY count DESC LIMIT 30").all();
+  const statusDistribution = db2.prepare("SELECT status, COUNT(*) as count FROM entities GROUP BY status").all();
+  return {
+    totalEntities: entities.c,
+    totalObservations: observations.c,
+    totalRelations: relations.c,
+    totalTags: tags.c,
+    typeDistribution,
+    tagDistribution,
+    statusDistribution
+  };
+}
+var init_stats = __esm({
+  "dist/core/stats.js"() {
+    "use strict";
+  }
+});
+
+// dist/core/database-diagnosis.js
+import fs20 from "fs";
+import path17 from "path";
+function isDamagedDatabaseError(message) {
+  return /malformed|SQLITE_CORRUPT|not a database|SQLITE_NOTADB/i.test(message);
+}
+function newestBackup(dir) {
+  let newest;
+  let names;
+  try {
+    names = fs20.readdirSync(dir);
+  } catch {
+    return void 0;
+  }
+  for (const name of names) {
+    if (!name.endsWith(".db"))
+      continue;
+    const file2 = path17.join(dir, name);
+    try {
+      const stat = fs20.statSync(file2);
+      if (stat.isFile() && stat.size > 0 && (!newest || stat.mtimeMs > newest.mtime))
+        newest = { file: file2, mtime: stat.mtimeMs };
+    } catch {
+    }
+  }
+  return newest?.file;
+}
+function damagedDatabaseSteps(databasePath) {
+  const q = shellQuote;
+  const db2 = q(databasePath);
+  const damaged = `${databasePath}.damaged`;
+  const recovered = q(`${databasePath}.recovered.db`);
+  const dropJournal = `rm -f ${q(`${databasePath}-wal`)} ${q(`${databasePath}-shm`)}`;
+  const journalCopies = ["-wal", "-shm"].map((s) => `[ ! -e ${q(databasePath + s)} ] || cp ${q(databasePath + s)} ${q(damaged + s)}`);
+  const backup = newestBackup(path17.join(path17.dirname(databasePath), "backups"));
+  return {
+    copy: [`rm -f ${q(`${damaged}-wal`)} ${q(`${damaged}-shm`)}`, `cp ${db2} ${q(damaged)}`, ...journalCopies].join("; "),
+    ...backup ? { restore: `${dropJournal} && cp ${q(backup)} ${db2}` } : {},
+    salvage: `rm -f ${recovered} && sqlite3 ${q(damaged)} .recover | sqlite3 ${recovered}`,
+    replace: `${dropJournal} && mv ${recovered} ${db2} && memesh reindex --fts`
+  };
+}
+function damagedDatabaseFix(databasePath) {
+  const steps = damagedDatabaseSteps(databasePath);
+  const restore = steps.restore ? ` To go back to the newest backup instead (this overwrites the file, which is why the copy comes first): ${steps.restore}.` : "";
+  return `Stop every memesh process, then copy the damaged file and its journal so nothing is lost: ${steps.copy}.${restore} To salvage what is readable: ${steps.salvage}, check the result, then put it in place and rebuild the keyword index: ${steps.replace}.`;
+}
+function diagnoseDatabaseFailure(err, databasePath, existsSyncImpl = fs20.existsSync, statSyncImpl = fs20.statSync) {
+  const message = err instanceof Error ? err.message : "unknown database error";
+  let diagnosis;
+  let fix;
+  const ownFix = err?.fix;
+  if (/database is locked|SQLITE_BUSY/i.test(message)) {
+    diagnosis = `Another process has the database locked: ${message}`;
+    fix = "Wait for the other memesh process to finish, or stop it, then retry";
+  } else if (typeof ownFix === "string") {
+    diagnosis = message;
+    fix = runOrSay(ownFix);
+  } else if (existsSyncImpl(databasePath)) {
+    try {
+      const stat = statSyncImpl(databasePath);
+      const canRead = !!(stat.mode & 256);
+      const canWrite = !!(stat.mode & 128);
+      if (!canRead || !canWrite) {
+        diagnosis = `Database file exists but has insufficient permissions (${(stat.mode & 511).toString(8)})`;
+        const files = databaseFiles(databasePath).filter((file2) => existsSyncImpl(file2));
+        fix = `If this is your live database (not a read-only copy), restore your own access: chmod u+rw ${files.map(shellQuote).join(" ")}`;
+      } else if (stat.size === 0) {
+        diagnosis = "Database file is empty (0 bytes) \u2014 likely corrupted";
+        fix = `Delete it; the next memesh command creates a fresh database: rm ${shellQuote(databasePath)} && memesh recall`;
+      } else if (isDamagedDatabaseError(message)) {
+        diagnosis = `Database file exists (${stat.size} bytes) but cannot be opened: ${message}`;
+        fix = damagedDatabaseFix(databasePath);
+      } else {
+        diagnosis = `Database file exists (${stat.size} bytes) but cannot be opened: ${message}`;
+        fix = `Backup and reset: mv ${shellQuote(databasePath)} ${shellQuote(`${databasePath}.backup`)} && memesh recall`;
+      }
+    } catch {
+      diagnosis = `Database file exists at ${databasePath} but stat() failed: ${message}`;
+      fix = `Check file system integrity and permissions`;
+    }
+  } else {
+    const dir = path17.dirname(databasePath);
+    if (!existsSyncImpl(dir)) {
+      diagnosis = `Database directory does not exist: ${dir}`;
+      fix = `Create the folder; the next memesh command creates a fresh database: mkdir -p ${shellQuote(dir)} && memesh recall`;
+    } else {
+      try {
+        const dirStat = statSyncImpl(dir);
+        const canWrite = !!(dirStat.mode & 128);
+        if ((dirStat.mode & fs20.constants.S_IFMT) === fs20.constants.S_IFREG) {
+          diagnosis = `${dir} is a file, not a folder, so no database can be created inside it`;
+          fix = "Point MEMESH_DB_PATH at a path inside a folder";
+        } else if (!(dirStat.mode & 64)) {
+          diagnosis = `Cannot reach the database \u2014 the directory has no search (x) permission: ${dir}`;
+          fix = `Fix directory permissions: chmod u+wx ${shellQuote(dir)}`;
+        } else if (!canWrite) {
+          diagnosis = `Cannot create database \u2014 directory is not writable: ${dir}`;
+          fix = `Fix directory permissions: chmod u+w ${shellQuote(dir)}`;
+        } else {
+          diagnosis = `Database file missing at ${databasePath}, but directory exists and is writable`;
+          fix = `Run any memesh command (e.g., memesh recall) to create a fresh database`;
+        }
+      } catch {
+        diagnosis = `Database directory exists but cannot be accessed: ${dir}`;
+        fix = `Check directory permissions and ownership`;
+      }
+    }
+  }
+  return { diagnosis, fix };
+}
+function databaseOpenFailureReport(err, databasePath) {
+  const message = err instanceof Error ? err.message : String(err);
+  const { diagnosis, fix } = diagnoseDatabaseFailure(err, databasePath);
+  const diagnosisLine = diagnosis !== message ? `   Diagnosis: ${diagnosis}
+` : "";
+  return `
+\u274C MeMesh startup failed: database cannot be opened
+
+   Database path: ${databasePath}
+   Error: ${message}
+
+${diagnosisLine}Fix: ${fix}
+`;
+}
+var init_database_diagnosis = __esm({
+  "dist/core/database-diagnosis.js"() {
+    "use strict";
+    init_file_mode();
+  }
+});
+
+// dist/transports/http/retired-routes.js
+var RETIRED_ROUTES;
+var init_retired_routes = __esm({
+  "dist/transports/http/retired-routes.js"() {
+    "use strict";
+    RETIRED_ROUTES = {
+      "/v1/consolidate": "POST /v1/consolidate is retired. It rewrote memories with an LLM summary and deleted the originals, with no review step. Use the MCP work_package tool to stage an agent result, then review and accept or reject the proposal.",
+      "/v1/verify": "POST /v1/verify is retired along with the agentic-orchestration experiment. It recorded a verification report for background-agent work; the protocol it served was removed without ever leaving opt-in. Run your own verification (typecheck/tests/lint) and store conclusions with POST /v1/remember if you want them remembered."
+    };
+  }
+});
+
+// dist/core/updater.js
+var updater_exports = {};
+__export(updater_exports, {
+  classifyBump: () => classifyBump,
+  decideAutoUpdate: () => decideAutoUpdate,
+  getInstalledGlobalVersion: () => getInstalledGlobalVersion,
+  parseAutoUpdatePolicy: () => parseAutoUpdatePolicy,
+  runGlobalUpdate: () => runGlobalUpdate
+});
+import { execFileSync as execFileSync6 } from "child_process";
+function parseAutoUpdatePolicy(value) {
+  if (typeof value !== "string")
+    return null;
+  const lowered = value.toLowerCase();
+  return VALID_AUTO_UPDATE_POLICIES.has(lowered) ? lowered : null;
+}
+function parseSemver(version2) {
+  const m = /^(\d+)\.(\d+)\.(\d+)(?:[-+].+)?$/.exec(version2.trim());
+  if (!m)
+    return null;
+  return {
+    major: Number(m[1]),
+    minor: Number(m[2]),
+    patch: Number(m[3])
+  };
+}
+function classifyBump(from, to) {
+  const a = parseSemver(from);
+  const b = parseSemver(to);
+  if (!a || !b)
+    return null;
+  if (b.major > a.major)
+    return "major";
+  if (b.major < a.major)
+    return null;
+  if (b.minor > a.minor)
+    return "minor";
+  if (b.minor < a.minor)
+    return null;
+  if (b.patch > a.patch)
+    return "patch";
+  return null;
+}
+function decideAutoUpdate(input2) {
+  const { currentVersion, latestVersion, policy, currentVersionDeprecated } = input2;
+  if (!latestVersion) {
+    return { shouldUpdate: false, bump: null, reason: "no latest version available", deprecationOverride: false };
+  }
+  const bump = classifyBump(currentVersion, latestVersion);
+  if (!bump) {
+    return { shouldUpdate: false, bump: null, reason: "already at or above latest", deprecationOverride: false };
+  }
+  const policyAllows = POLICY_RANK[policy] >= BUMP_RANK[bump];
+  if (policyAllows) {
+    return {
+      shouldUpdate: true,
+      bump,
+      reason: `policy '${policy}' permits ${bump} bump`,
+      deprecationOverride: false
+    };
+  }
+  if (currentVersionDeprecated && bump === "patch" && policy !== "off") {
+    return {
+      shouldUpdate: true,
+      bump,
+      reason: `installed ${currentVersion} is deprecated; security override forces patch upgrade despite policy '${policy}'`,
+      deprecationOverride: true
+    };
+  }
+  return {
+    shouldUpdate: false,
+    bump,
+    reason: `policy '${policy}' does not permit ${bump} bump`,
+    deprecationOverride: false
+  };
+}
+function parseInstalledGlobalVersion(raw) {
+  const parsed = JSON.parse(raw);
+  return parsed.dependencies?.["@pcircle/memesh"]?.version ?? null;
+}
+function getInstalledGlobalVersion(options = {}) {
+  const { execFileSyncImpl = execFileSync6, readbackTimeoutMs = DEFAULT_READBACK_TIMEOUT_MS } = options;
+  try {
+    const raw = execFileSyncImpl("npm", ["ls", "-g", "@pcircle/memesh", "--json", "--depth=0"], { encoding: "utf8", timeout: readbackTimeoutMs });
+    return parseInstalledGlobalVersion(raw);
+  } catch {
+    return null;
+  }
+}
+function runGlobalUpdate(latestVersion, options = {}) {
+  const { execFileSyncImpl = execFileSync6, installTimeoutMs = DEFAULT_INSTALL_TIMEOUT_MS, readbackTimeoutMs = DEFAULT_READBACK_TIMEOUT_MS } = options;
+  if (!EXACT_VERSION_RE.test(latestVersion)) {
+    throw new Error(`refusing non-exact npm version target: ${latestVersion}`);
+  }
+  execFileSyncImpl("npm", ["install", "-g", `@pcircle/memesh@${latestVersion}`], { stdio: "inherit", timeout: installTimeoutMs });
+  const installedVersion = getInstalledGlobalVersion({ execFileSyncImpl, readbackTimeoutMs });
+  if (installedVersion !== latestVersion) {
+    if (installedVersion) {
+      throw new Error(`expected ${latestVersion}, but npm reports ${installedVersion} is installed`);
+    }
+    throw new Error("npm did not report a global @pcircle/memesh installation after update");
+  }
+  return { installedVersion };
+}
+var DEFAULT_INSTALL_TIMEOUT_MS, DEFAULT_READBACK_TIMEOUT_MS, EXACT_VERSION_RE, VALID_AUTO_UPDATE_POLICIES, POLICY_RANK, BUMP_RANK;
+var init_updater = __esm({
+  "dist/core/updater.js"() {
+    "use strict";
+    DEFAULT_INSTALL_TIMEOUT_MS = 8 * 60 * 1e3;
+    DEFAULT_READBACK_TIMEOUT_MS = 30 * 1e3;
+    EXACT_VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+    VALID_AUTO_UPDATE_POLICIES = /* @__PURE__ */ new Set([
+      "off",
+      "patch",
+      "minor",
+      "major"
+    ]);
+    POLICY_RANK = {
+      off: 0,
+      patch: 1,
+      minor: 2,
+      major: 3
+    };
+    BUMP_RANK = {
+      patch: 1,
+      minor: 2,
+      major: 3
+    };
+  }
+});
+
+// dist/core/install-id.js
+var install_id_exports = {};
+__export(install_id_exports, {
+  getInstallId: () => getInstallId,
+  getInstallRecord: () => getInstallRecord
+});
+import fs21 from "fs";
+import path18 from "path";
+import { randomUUID as randomUUID5 } from "crypto";
+function installFilePath() {
+  return path18.join(memeshDir(), "install.json");
+}
+function getInstallRecord() {
+  const filePath = installFilePath();
+  try {
+    if (fs21.existsSync(filePath)) {
+      const raw = fs21.readFileSync(filePath, "utf8");
+      const parsed = JSON.parse(raw);
+      if (typeof parsed.install_id === "string" && parsed.install_id.length > 0) {
+        return {
+          install_id: parsed.install_id,
+          created_at: typeof parsed.created_at === "string" ? parsed.created_at : (/* @__PURE__ */ new Date()).toISOString(),
+          schema_version: SCHEMA_VERSION
+        };
+      }
+    }
+  } catch {
+  }
+  const record2 = {
+    install_id: randomUUID5(),
+    created_at: (/* @__PURE__ */ new Date()).toISOString(),
+    schema_version: SCHEMA_VERSION
+  };
+  try {
+    fs21.mkdirSync(path18.dirname(filePath), { recursive: true });
+    removeGroupAndOtherAccess(path18.dirname(filePath));
+    fs21.writeFileSync(filePath, JSON.stringify(record2, null, 2), { encoding: "utf8", mode: 384 });
+    removeGroupAndOtherAccess(filePath);
+  } catch {
+  }
+  return record2;
+}
+function getInstallId() {
+  return getInstallRecord().install_id;
+}
+var SCHEMA_VERSION;
+var init_install_id = __esm({
+  "dist/core/install-id.js"() {
+    "use strict";
+    init_paths();
+    init_file_mode();
+    SCHEMA_VERSION = 1;
+  }
+});
+
+// dist/core/project-identity-split.js
+function findProjectIdentitySplits(db2) {
+  const rows = db2.prepare(`SELECT t.tag AS tag,
+            SUM(CASE WHEN e.status = 'active' AND NOT EXISTS (
+                  SELECT 1 FROM tags own
+                   WHERE own.entity_id = e.id
+                     AND substr(own.tag, 1, length(t.tag) + 1) = t.tag || '~'
+                ) THEN 1 ELSE 0 END) AS active
+       FROM tags t JOIN entities e ON e.id = t.entity_id
+      WHERE t.tag LIKE 'project:%'
+      GROUP BY t.tag`).all();
+  const projects = rows.map((row) => ({ project: row.tag.slice("project:".length), active: Number(row.active) }));
+  const idsByLabel = /* @__PURE__ */ new Map();
+  for (const { project } of projects) {
+    const label = projectLabel(project);
+    if (label === project)
+      continue;
+    const ids = idsByLabel.get(label);
+    if (ids)
+      ids.push(project);
+    else
+      idsByLabel.set(label, [project]);
+  }
+  const splits = [];
+  for (const { project, active: active2 } of projects) {
+    const ids = idsByLabel.get(project);
+    if (ids === void 0 || active2 === 0 || projectLabel(project) !== project)
+      continue;
+    splits.push({ plain: project, ids: [...ids].sort(), activeMemories: active2 });
+  }
+  return splits.sort((a, b) => b.activeMemories - a.activeMemories || a.plain.localeCompare(b.plain));
+}
+var init_project_identity_split = __esm({
+  "dist/core/project-identity-split.js"() {
+    "use strict";
+    init_work_topology();
+  }
+});
+
+// dist/core/capture-flag.js
+function autoCaptureDecision(envVal, configAutoCapture) {
+  if (envVal === "false")
+    return { enabled: false, offSource: "env" };
+  if (envVal === "true")
+    return { enabled: true, offSource: null };
+  if (configAutoCapture === false)
+    return { enabled: false, offSource: "config" };
+  return { enabled: true, offSource: null };
+}
+var init_capture_flag = __esm({
+  "dist/core/capture-flag.js"() {
+    "use strict";
+  }
+});
+
+// dist/core/capture-liveness.js
+function windowKeep(entries, maxTriggered, maxNotTriggered) {
+  const keep = new Array(entries.length).fill(false);
+  const seen = /* @__PURE__ */ new Map();
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const { hook, triggered } = entries[i];
+    const counts = seen.get(hook) ?? { t: 0, n: 0 };
+    seen.set(hook, counts);
+    if (triggered) {
+      if (++counts.t <= maxTriggered)
+        keep[i] = true;
+    } else if (++counts.n <= maxNotTriggered) {
+      keep[i] = true;
+    }
+  }
+  return keep;
+}
+function isTriggeredRecord(record2) {
+  if (record2.outcome !== "skipped" || record2.reason === void 0)
+    return true;
+  return !(NOT_TRIGGERED_SKIP_REASONS[record2.hook] ?? []).includes(record2.reason);
+}
+function readHookOutcomeLines(raw) {
+  const entries = [];
+  for (const line of raw.split("\n")) {
+    const record2 = parseHookOutcomeLine(line);
+    if (record2)
+      entries.push({ hook: record2.hook, triggered: isTriggeredRecord(record2), record: record2, line });
+  }
+  return entries;
+}
+function renderableSkipReason(reason) {
+  if (reason === void 0)
+    return "unspecified";
+  return KNOWN_SKIP_REASONS.has(reason) ? reason : UNRECOGNISED_REASON;
+}
+function parseHookOutcomes(raw, limit = HOOK_OUTCOMES_PER_HOOK) {
+  if (!raw)
+    return { hooks: {} };
+  const entries = readHookOutcomeLines(raw);
+  const keep = windowKeep(entries, limit, HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK);
+  const hooks = {};
+  entries.forEach(({ hook, record: record2 }, i) => {
+    if (!keep[i])
+      return;
+    (hooks[hook] ?? (hooks[hook] = [])).push(record2);
+  });
+  return { hooks };
+}
+function parseHookOutcomeLine(line) {
+  const trimmed = line.trim();
+  if (!trimmed)
+    return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object")
+    return null;
+  const rec = parsed;
+  if (typeof rec.hook !== "string" || !CAPTURE_HOOKS.includes(rec.hook))
+    return null;
+  if (typeof rec.at !== "string")
+    return null;
+  if (rec.outcome !== "wrote" && rec.outcome !== "skipped" && rec.outcome !== "notified" && rec.outcome !== "error")
+    return null;
+  const record2 = {
+    hook: rec.hook,
+    at: rec.at,
+    host: rec.host === "claude-code" || rec.host === "codex" ? rec.host : "unknown",
+    outcome: rec.outcome
+  };
+  const reason = typeof rec.reason === "string" ? sanitizeRecordText(rec.reason) : "";
+  if (reason)
+    record2.reason = reason;
+  if (typeof rec.run === "string" && /^[0-9a-f]{8,64}$/.test(rec.run))
+    record2.run = rec.run;
+  const entity = typeof rec.entity === "string" ? sanitizeRecordText(rec.entity) : "";
+  if (entity)
+    record2.entity = entity;
+  return record2;
+}
+function sanitizeRecordText(text) {
+  return text.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ").replace(/\s+/g, " ").trim().slice(0, RECORD_TEXT_MAX);
+}
+function summarizeHookOutcomes(file2) {
+  const order = [...CAPTURE_HOOKS];
+  const names = Object.keys(file2.hooks).sort((a, b) => {
+    const ai = order.indexOf(a);
+    const bi = order.indexOf(b);
+    if (ai !== bi)
+      return (ai === -1 ? order.length : ai) - (bi === -1 ? order.length : bi);
+    return a.localeCompare(b);
+  });
+  return names.map((hook) => summarizeOne(hook, file2.hooks[hook] ?? []));
+}
+function renderableErrorReason(reason) {
+  if (typeof reason !== "string")
+    return "an unlabelled error";
+  if (FIXED_ERROR_REASONS.has(reason))
+    return reason;
+  if (/^(?:[a-z][a-z -]{0,30}: )?uncaught [A-Za-z][\w-]{0,39}$/.test(reason))
+    return reason;
+  const step = /^([a-z][a-z-]{0,30}): /.exec(reason);
+  return step ? `${step[1]}: \u2026` : "an unlabelled error";
+}
+function summarizeOne(hook, records) {
+  let writes = 0;
+  let skips = 0;
+  let errors = 0;
+  let lastRunAt = null;
+  let firstTriggeredAt = null;
+  let lastWriteAt = null;
+  let lastEntity = null;
+  let notifies = 0;
+  let lastNotifiedAt = null;
+  let lastSkipReason = null;
+  let lastErrorAt = null;
+  let lastErrorReason = null;
+  const skipCounts = /* @__PURE__ */ new Map();
+  const hosts = /* @__PURE__ */ new Set();
+  for (const r of records) {
+    hosts.add(r.host);
+    if (lastRunAt === null || r.at >= lastRunAt)
+      lastRunAt = r.at;
+    const triggered = isTriggeredRecord(r);
+    if (triggered) {
+      if (firstTriggeredAt === null || r.at < firstTriggeredAt)
+        firstTriggeredAt = r.at;
+    }
+    if (r.outcome === "wrote") {
+      writes++;
+      if (lastWriteAt === null || r.at >= lastWriteAt) {
+        lastWriteAt = r.at;
+        lastEntity = r.entity ?? null;
+      }
+    } else if (r.outcome === "notified") {
+      notifies++;
+      if (lastNotifiedAt === null || r.at >= lastNotifiedAt)
+        lastNotifiedAt = r.at;
+    } else if (r.outcome === "skipped") {
+      skips++;
+      lastSkipReason = r.reason === void 0 ? null : renderableSkipReason(r.reason);
+      if (triggered) {
+        const key = renderableSkipReason(r.reason);
+        skipCounts.set(key, (skipCounts.get(key) ?? 0) + 1);
+      }
+    } else {
+      errors++;
+      if (lastErrorAt === null || r.at >= lastErrorAt) {
+        lastErrorAt = r.at;
+        lastErrorReason = renderableErrorReason(r.reason);
+      }
+    }
+  }
+  let dominantSkipReason = null;
+  let dominantSkipCount = 0;
+  for (const [reason, count] of skipCounts) {
+    if (count > dominantSkipCount) {
+      dominantSkipCount = count;
+      dominantSkipReason = reason;
+    }
+  }
+  const runKey = (r, i) => r.run ?? `#${i}`;
+  const runs = new Set(records.map(runKey)).size;
+  const triggeredRuns = new Set(records.map((r, i) => isTriggeredRecord(r) ? runKey(r, i) : null).filter((k) => k !== null)).size;
+  const triggeredByRun = /* @__PURE__ */ new Map();
+  records.forEach((r, i) => {
+    if (!isTriggeredRecord(r))
+      return;
+    const key = runKey(r, i);
+    const run = triggeredByRun.get(key) ?? { at: r.at, error: false };
+    if (r.at > run.at)
+      run.at = r.at;
+    if (r.outcome === "error")
+      run.error = true;
+    triggeredByRun.set(key, run);
+  });
+  const recentErrors = [...triggeredByRun.values()].sort((a, b) => a.at < b.at ? 1 : a.at > b.at ? -1 : 0).slice(0, RECENT_ERROR_RUNS).filter((run) => run.error).length;
+  return {
+    hook,
+    runs,
+    triggeredRuns,
+    writes,
+    skips,
+    errors,
+    lastRunAt,
+    firstTriggeredAt,
+    lastWriteAt,
+    lastEntity,
+    notifies,
+    lastNotifiedAt,
+    lastSkipReason,
+    dominantSkipReason,
+    dominantSkipCount,
+    lastErrorAt,
+    lastErrorReason,
+    recentErrors,
+    hosts: [...hosts].sort(),
+    silent: SILENT_ELIGIBLE_HOOKS.includes(hook) && triggeredRuns >= SILENT_HOOK_MIN_RUNS && writes === 0
+  };
+}
+function summarizeTypeTrends(rows) {
+  return rows.map((r) => ({ ...r, stopped: r.prev7 > 0 && r.last7 === 0 })).sort((a, b) => a.type.localeCompare(b.type));
+}
+function captureLivenessVerdict(input2) {
+  const withRecords = new Set(input2.hooks.filter((h) => h.runs > 0).map((h) => h.hook));
+  const graceOver = input2.measuringHours !== null && input2.measuringHours !== void 0 && input2.measuringHours > NEVER_RAN_GRACE_HOURS;
+  const deadHooks = graceOver ? (input2.neverRanHooks ?? []).filter((h) => FAIL_ELIGIBLE_HOOKS.includes(h) && !withRecords.has(h)).sort() : [];
+  const silent = input2.hooks.filter((h) => h.silent).sort((a, b) => b.triggeredRuns - a.triggeredRuns);
+  const stoppedTypes = input2.types.filter((t) => t.stopped);
+  const erroring = input2.hooks.filter((h) => h.recentErrors > 0).sort((a, b) => b.recentErrors - a.recentErrors || b.errors - a.errors);
+  let status = "PASS";
+  if (deadHooks.length > 0)
+    status = "FAIL";
+  else if (silent.length > 0 || stoppedTypes.length > 0 || erroring.length > 0)
+    status = "PASS_WITH_CONCERNS";
+  return { status, silentHook: silent[0] ?? null, erroringHook: erroring[0] ?? null, stoppedTypes, deadHooks };
+}
+var HOOK_OUTCOMES_FILENAME, HOOK_OUTCOMES_PER_HOOK, HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK, HOOK_OUTCOMES_ROTATE_BYTES, SILENT_HOOK_MIN_RUNS, CAPTURE_HOOKS, FAIL_ELIGIBLE_HOOKS, SILENT_ELIGIBLE_HOOKS, SKIP_REASONS, KNOWN_SKIP_REASONS, UNRECOGNISED_REASON, NOT_TRIGGERED_SKIP_REASONS, NEVER_RAN_GRACE_HOURS, RECORD_TEXT_MAX, FIXED_ERROR_REASONS, RECENT_ERROR_RUNS;
+var init_capture_liveness = __esm({
+  "dist/core/capture-liveness.js"() {
+    "use strict";
+    HOOK_OUTCOMES_FILENAME = "hook-outcomes.jsonl";
+    HOOK_OUTCOMES_PER_HOOK = 20;
+    HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK = 5;
+    HOOK_OUTCOMES_ROTATE_BYTES = 64 * 1024;
+    SILENT_HOOK_MIN_RUNS = 5;
+    CAPTURE_HOOKS = [
+      "post-commit",
+      "session-summary",
+      "pre-compact",
+      "pre-edit-recall",
+      "user-prompt-intent",
+      "decision-nudge",
+      "guard-check",
+      "session-start",
+      "note-ingest",
+      "remember-nudge",
+      "handoff-capture",
+      "stop-message-gate"
+    ];
+    FAIL_ELIGIBLE_HOOKS = ["session-summary"];
+    SILENT_ELIGIBLE_HOOKS = ["post-commit", "session-summary", "pre-compact", "handoff-capture"];
+    SKIP_REASONS = {
+      notBash: "not a Bash tool call",
+      notGitCommit: "not a git commit command",
+      commitLineMissing: "a git commit ran but printed no commit line",
+      commitHeadBaseline: "recorded the repository HEAD baseline; no history was backfilled",
+      commitHeadUnchanged: "a commit-like command completed but repository HEAD did not change",
+      commitHeadUnresolvable: "a commit-like command ran but repository HEAD could not be resolved",
+      alreadyCaptured: "this session was already captured",
+      payloadTooLarge: "payload exceeded the stdin byte cap",
+      toolNameAbsent: "tool_name absent in payload",
+      notDecisionTool: "not a decision-shaped tool call",
+      noSessionId: "no usable session_id in the payload",
+      noRecallSessionRecord: "no usable injection record for this session \u2014 recall use was not counted",
+      noEligibleRecallRows: "no timestamped assistant or tool rows since injection \u2014 recall use was not counted",
+      alreadyNudged: "already nudged for this tool in this session",
+      noBashCommand: "no Bash command in the payload",
+      noDatabaseForGuards: "no database yet \u2014 nothing to guard against",
+      noGuardMatched: "no active guard matched this command",
+      autoCaptureOff: "auto-capture is turned off",
+      commitCwdAbsent: "data.cwd absent \u2014 cannot resolve project or repo",
+      hashNotACommit: "the hash is not a commit in this repository",
+      noSessionOrTranscript: "neither session_id nor transcript_path in the payload",
+      emptyStdin: "empty stdin",
+      cwdAbsent: "cwd absent in payload \u2014 cannot resolve project",
+      projectLineNoCwd: "no usable session cwd \u2014 the project line was not shown",
+      notAgenticLoop: "not an agentic loop",
+      transcriptPathAbsent: "transcript_path absent",
+      transcriptGone: "the transcript file named by the payload is gone",
+      tooLittleActivity: "too little activity in the session to be worth saving",
+      noRuleMatched: "no rule matched (no edited file and fewer than 20 tool calls)",
+      allMatchedEntitiesArchived: "every rule that matched targeted an entity the user forget-archived",
+      captureTargetArchived: "capture target is archived",
+      toolInputAbsent: "tool_input absent in payload",
+      noFilePath: "no file_path in the tool input",
+      noDatabaseForRecall: "no database yet \u2014 nothing to recall",
+      nothingToRecall: "no guard matched and nothing to recall for this file",
+      recallThrottled: "no guard matched and recall for this file is throttled: this session already looked at it",
+      candidateWindowTruncated: "more candidates may exist than the search window examined",
+      noPromptIntent: "the prompt carried no remember intent and no update decision",
+      noMemoryDir: "no Claude Code memory directory for this project",
+      noNoteChanged: "no note file changed since the last ingestion",
+      noteIngesterNotBuilt: "the note ingester is not built (dist/core/note-ingest.js is missing)",
+      noteNothingNew: "note files were read and nothing new needed storing",
+      noteFilesRefused: "note files were refused and nothing was stored",
+      noTranscript: "no transcript to read",
+      trivialTurn: "trivial turn \u2014 too few tool calls since the last Stop",
+      noDecisionMove: "no decision-shaped move since the last Stop",
+      memoryWritten: "a memory was written since the last Stop",
+      noteFileChanged: "a note file changed since the last Stop",
+      noAssistantText: "the Stop payload and the transcript held no assistant message",
+      handoffTooShort: "the last assistant message was too short to be a handoff \u2014 the previous one is kept",
+      handoffArchived: "the handoff memory was archived by forget \u2014 left alone",
+      notClaudeCodeHost: "this Stop is not running under Claude Code",
+      noRecipientForGate: "no recipient could be resolved for this session",
+      noDatabaseForMessageGate: "no database yet \u2014 nothing to check for waiting messages",
+      nothingWaitingForGate: "no messages are waiting for the resolved recipient",
+      alreadyBlockedForGate: "every waiting message id was already blocked for in this session",
+      sessionLauncherNotFound: "session_launcher_not_found: no claude process found above this hook (no ps, or not under Claude Code)",
+      sessionLauncherSubagent: "session_launcher_subagent: a subagent SessionStart does not change its session mapping",
+      sessionLauncherNoDatabase: "session_launcher_no_database: no database file yet \u2014 this session is not recorded for its claude process",
+      clearAliasNoPrevious: "clear_alias_no_previous: no earlier session recorded for this claude process",
+      clearAliasPidReused: "clear_alias_pid_reused: the recorded process had the same pid but a different start time",
+      clearAliasAlreadyLinked: "clear_alias_already_linked: one of these session ids is already aliased",
+      clearAliasNoTable: "clear_alias_no_table: the database has no alias tables yet (not migrated)",
+      clearAliasInvalidInput: "clear_alias_invalid_input: no usable session_id in the SessionStart payload"
+    };
+    KNOWN_SKIP_REASONS = new Set(Object.values(SKIP_REASONS));
+    UNRECOGNISED_REASON = "unrecognised reason";
+    NOT_TRIGGERED_SKIP_REASONS = {
+      "post-commit": [SKIP_REASONS.notBash, SKIP_REASONS.notGitCommit],
+      "session-summary": [SKIP_REASONS.alreadyCaptured, SKIP_REASONS.noSessionId, SKIP_REASONS.noRecallSessionRecord, SKIP_REASONS.noEligibleRecallRows],
+      "session-start": [SKIP_REASONS.noSessionId],
+      "note-ingest": [SKIP_REASONS.noNoteChanged],
+      "remember-nudge": [SKIP_REASONS.trivialTurn, SKIP_REASONS.noDecisionMove],
+      "handoff-capture": [SKIP_REASONS.handoffTooShort, SKIP_REASONS.autoCaptureOff]
+    };
+    NEVER_RAN_GRACE_HOURS = 72;
+    RECORD_TEXT_MAX = 200;
+    FIXED_ERROR_REASONS = /* @__PURE__ */ new Set([
+      "malformed stdin JSON",
+      "captureEntity did not land the write",
+      "the transcript could not be read",
+      "the host closed stdout before the nudge could be written",
+      "the database stayed locked past the hook busy timeout",
+      "stdout: host closed the pipe before the block reason was delivered"
+    ]);
+    RECENT_ERROR_RUNS = 5;
+  }
+});
+
+// dist/core/doctor.js
+var doctor_exports = {};
+__export(doctor_exports, {
+  formatDoctorReport: () => formatDoctorReport,
+  hasBuiltInSqlite: () => hasBuiltInSqlite,
+  hoursSince: () => hoursSince,
+  inspectNodeRuntime: () => inspectNodeRuntime,
+  runDoctor: () => runDoctor,
+  satisfiesMinimumNodeRange: () => satisfiesMinimumNodeRange
+});
+import fs22 from "fs";
+import os2 from "os";
+import path19 from "path";
+import net2 from "node:net";
+import { createHash as createHash15 } from "crypto";
+import { createRequire as createRequire2 } from "module";
+import { execFileSync as execFileSync7 } from "child_process";
+function countH2Headings(content) {
+  let n = 0;
+  let inFence = false;
+  for (const line of content.split("\n")) {
+    const trimmed = line.trimStart();
+    if (trimmed.startsWith("```") || trimmed.startsWith("~~~")) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence)
+      continue;
+    if (line.startsWith("## "))
+      n++;
+  }
+  return n;
+}
+function inspectLocaleReadmeParity(packageRoot3, existsSyncImpl, readFileSyncImpl) {
+  const englishPath = path19.join(packageRoot3, "README.md");
+  if (!existsSyncImpl(englishPath)) {
+    return createCheck("readme_locale_parity", "README locale parity", "pass", "README.md not present in this install; locale-parity check skipped.");
+  }
+  let englishCount;
+  try {
+    englishCount = countH2Headings(readFileSyncImpl(englishPath, "utf8"));
+  } catch (err) {
+    return createCheck("readme_locale_parity", "README locale parity", "warn", `Could not read README.md: ${err instanceof Error ? err.message : String(err)}`, void 0, { code: "readme-parity.unreadable", params: { detail: err instanceof Error ? err.message : String(err) } });
+  }
+  const present = LOCALE_README_FILES.filter((filename) => existsSyncImpl(path19.join(packageRoot3, filename)));
+  if (present.length === 0) {
+    return createCheck("readme_locale_parity", "README locale parity", "pass", "No locale README in this install; locale-parity check skipped.");
+  }
+  const drift = [];
+  for (const filename of present) {
+    try {
+      const count = countH2Headings(readFileSyncImpl(path19.join(packageRoot3, filename), "utf8"));
+      if (Math.abs(count - englishCount) > LOCALE_H2_TOLERANCE) {
+        drift.push({ name: filename, count });
+      }
+    } catch {
+      drift.push({ name: filename, count: -1 });
+    }
+  }
+  if (drift.length === 0) {
+    return createCheck("readme_locale_parity", "README locale parity", "pass", `${present.join(", ")} match the English H2 count (${englishCount}).`);
+  }
+  const driftDetail = drift.map((d) => `${d.name}=${d.count === -1 ? "unreadable" : d.count}`).join(", ");
+  const detail = `H2 count drift (English=${englishCount}): ${driftDetail}`;
+  return createCheck("readme_locale_parity", "README locale parity", "warn", detail, `Re-sync the listed READMEs against README.md so section structure matches (\xB1${LOCALE_H2_TOLERANCE} H2 tolerated to absorb translation collapse).`, { code: "readme-parity.drift", params: { detail, tolerance: LOCALE_H2_TOLERANCE } });
+}
+function resolveDatabasePath() {
+  return getDbPath();
+}
+function queryFailedFix(err) {
+  const fix = err?.fix;
+  if (typeof fix === "string") {
+    return `MeMesh did not open the database because of its permissions; the Database row above explains why. ${runOrSay(fix)}`;
+  }
+  const detail = err instanceof Error ? err.message : String(err);
+  if (/readonly database|SQLITE_READONLY/i.test(detail)) {
+    return "The database is read-only; the Database row above shows the command that makes it writable again.";
+  }
+  if (/database is locked|SQLITE_BUSY/i.test(detail)) {
+    return "Another process has the database locked; wait for it to finish, or stop it, then retry.";
+  }
+  return "The error is quoted above. Check that ~/.memesh is readable and that the disk is not full.";
+}
+function quickIntegrityVerdict(db2) {
+  let row;
+  try {
+    row = db2.prepare("PRAGMA quick_check(1)").get();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (!isDamagedDatabaseError(message))
+      throw err;
+    return message.replace(/\s+/g, " ").slice(0, 200);
+  }
+  if (typeof row?.quick_check !== "string")
+    return "quick_check returned no verdict";
+  return row.quick_check.replace(/\s+/g, " ").slice(0, 200);
+}
+function createCheck(id, label, status, summary, fix, i18n, fixId) {
+  return { id, label, status, summary, fix, code: i18n?.code, params: i18n?.params, fixId };
+}
+function createInfo(id, label, summary, fix) {
+  return { id, label, status: "pass", summary, fix, informational: true };
+}
+function inspectAgentMessageStorage(db2, databasePath, policy) {
+  try {
+    const present = db2.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'agent_messages'").get();
+    if (!present?.present)
+      return void 0;
+    const cutoff = policy?.retention_cutoff ?? /* @__PURE__ */ new Date(0);
+    const report = getAgentMessageStorageReport(db2, { cutoff, databasePath });
+    const quota = policy?.storage_quota_bytes;
+    const invalidQuota = quota !== void 0 && (!Number.isSafeInteger(quota) || quota < 0);
+    const quotaText = quota === void 0 ? "quota not configured" : !invalidQuota ? `quota ${formatStorageBytes(quota)} (${formatStorageBytes(report.payload_bytes)} logical payload used)` : "configured quota is invalid";
+    const retentionText = policy?.retention_cutoff === void 0 ? "retention policy not configured; terminal-prunable payload was not evaluated" : `retention cutoff ${String(policy.retention_cutoff)}; ${report.terminal_prunable_message_count} terminal message(s) (${formatStorageBytes(report.terminal_prunable_payload_bytes)}) are prunable by that owner policy`;
+    const walText = report.wal_file_bytes === null ? "WAL size unavailable" : `WAL ${formatStorageBytes(report.wal_file_bytes)}`;
+    const databaseText = report.database_file_bytes === null ? "database file size unavailable" : `database file ${formatStorageBytes(report.database_file_bytes)}`;
+    const summary = `${report.message_count} message(s), ${formatStorageBytes(report.payload_bytes)} logical payload (${report.protected_unresolved_message_count} unresolved/protected); ${formatStorageBytes(report.reusable_freelist_bytes)} SQLite freelist reusable; ${databaseText}; ${walText}; ${quotaText}; ${retentionText}. Doctor only read this state: it did not prune payloads, checkpoint WAL, or run VACUUM.`;
+    if (invalidQuota) {
+      return createCheck("agent_message_storage", "Agent message storage", "warn", `${summary} Send enforcement rejects this quota configuration; use a canonical non-negative safe decimal integer.`, `Set ${AGENT_MESSAGE_STORAGE_QUOTA_ENV2} to 0 or a positive decimal integer within the safe integer range, then re-run memesh doctor.`);
+    }
+    return createInfo("agent_message_storage", "Agent message storage", summary);
+  } catch {
+    return void 0;
+  }
+}
+function noDaemonReason(detailJson) {
+  try {
+    return JSON.parse(detailJson)?.detail?.reason === "no_daemon";
+  } catch {
+    return false;
+  }
+}
+function inspectCodexQueueDaemon(db2) {
+  try {
+    const present = db2.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'agent_message_receipts'").get();
+    if (!present?.present)
+      return void 0;
+    const rows = db2.prepare(`
+      SELECT project, recipient, detail_json, created_at FROM agent_message_receipts
+      WHERE receipt_kind = 'host_activation'
+        AND actor = 'memesh-router'
+        AND idempotency_key LIKE 'codex-queue-release-%'
+        AND created_at > datetime('now', '-7 days')
+      ORDER BY created_at DESC, rowid DESC
+    `).all();
+    if (rows.length === 0) {
+      return createInfo("codex-queue-daemon", "Codex stuck-message release", "No Codex host_activation receipts in the last 7 days. The Codex stuck-message release has not run recently, so its app-server-daemon dependency has not been exercised either way.");
+    }
+    const latestPerThread = /* @__PURE__ */ new Map();
+    for (const row of rows) {
+      const key = `${row.project}\0${row.recipient}`;
+      if (!latestPerThread.has(key))
+        latestPerThread.set(key, row);
+    }
+    const stuck = [...latestPerThread.values()].filter((row) => noDaemonReason(row.detail_json));
+    if (stuck.length === 0) {
+      return createInfo("codex-queue-daemon", "Codex stuck-message release", `${latestPerThread.size} Codex thread(s) ran the stuck-message release in the last 7 days; the latest run in each found the app-server daemon. Nothing is waiting on it.`);
+    }
+    const named = stuck.map((row) => `${row.recipient} in ${row.project} (${sqliteUtcToIso(row.created_at)})`).join(", ");
+    return createCheck("codex-queue-daemon", "Codex stuck-message release", "warn", `${stuck.length} Codex thread(s) last ran the stuck-message release without the app-server daemon: ${named}. A MeMesh message queued there after an interrupted turn stays in that thread's queue until you send the thread a prompt.`, "Send a prompt in each thread named above to drain its queue. To restore the automatic release, run Codex with its app-server daemon (avoid `--no-daemon`).");
+  } catch (err) {
+    return createCheck("codex-queue-daemon", "Codex stuck-message release", "warn", `Could not read the Codex host_activation receipts: ${err instanceof Error ? err.message : String(err)}`, "Run `memesh doctor` again; if this persists, check the database rows above for the underlying error.");
+  }
+}
+function inspectProjectIdentitySplit(db2) {
+  let splits;
+  try {
+    splits = findProjectIdentitySplits(db2);
+  } catch (err) {
+    return createCheck("project-identity-split", "Project tags", "warn", `The project tag check could not run (${err instanceof Error ? err.message : String(err)}), so a project split is not ruled out.`, "Run `memesh kg rename-project` to list every project tag.");
+  }
+  if (splits.length === 0)
+    return void 0;
+  const total = splits.reduce((sum, split) => sum + split.activeMemories, 0);
+  return createCheck("project-identity-split", "Project tags", "warn", `${total} active ${total === 1 ? "memory" : "memories"} in ${splits.length} ${splits.length === 1 ? "project is" : "projects are"} filed under a plain project name (project:<name>) that the project's sessions never read; they use the full id (project:<name>~<hash>).`, "Run `memesh kg rename-project` to list every project tag with its count. For a plain name listed next to an id of the same name, kg rename-project --from <name> --to <id> previews moving its memories to that id, and the same command with --apply moves them (it backs the database up first). A shared name does not prove one project: if a different repository used that name, leave it.");
+}
+function inspectCodexSessionSetup(codexPluginCacheDetected, existsSyncImpl) {
+  if (!codexPluginCacheDetected)
+    return null;
+  const configPath = path19.join(getMemeshDirFromDbPath(), "hosts", "codex-session.json");
+  if (existsSyncImpl(configPath)) {
+    return createInfo("codex-session-setup", "Codex ordinary-session notifications", "A Codex identity override file is present and will be validated at SessionStart. A valid override applies only in its configured workspace; other Codex plugin sessions use automatic thread-scoped identities. A cached plugin copy does not prove a live registration; use `memesh message discover --project <project>` to read current presence.");
+  }
+  return createInfo("codex-session-setup", "Codex ordinary-session notifications", "No explicit identity override is configured. When the Codex plugin is enabled, each startup or resumed thread registers automatically under a thread-scoped identity. A cached plugin copy does not prove a live registration; use `memesh message discover --project <project>` to read current presence.");
+}
+function configuredAgentMessageStoragePolicy(explicit) {
+  if (explicit !== void 0)
+    return explicit;
+  const quotaRaw = process.env[AGENT_MESSAGE_STORAGE_QUOTA_ENV2];
+  if (quotaRaw === void 0 || quotaRaw === "")
+    return void 0;
+  if (!/^(0|[1-9][0-9]*)$/.test(quotaRaw)) {
+    return { storage_quota_bytes: Number.NaN };
+  }
+  const parsed = Number(quotaRaw);
+  return { storage_quota_bytes: Number.isSafeInteger(parsed) ? parsed : Number.NaN };
+}
+function formatStorageBytes(value) {
+  if (!Number.isFinite(value) || value < 0)
+    return "unknown size";
+  if (value < 1024)
+    return `${value} B`;
+  if (value < 1024 * 1024)
+    return `${(value / 1024).toFixed(1)} KiB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
+}
+function parseJsonFile(filePath, readFileSyncImpl) {
+  try {
+    const raw = readFileSyncImpl(filePath, "utf8");
+    const value = JSON.parse(raw);
+    if (!value || typeof value !== "object") {
+      return { ok: false, error: "JSON root must be an object." };
+    }
+    return { ok: true, value };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : "unknown parse error"
+    };
+  }
+}
+function inspectConfigFile(existsSyncImpl, readFileSyncImpl, getConfigPathImpl) {
+  const configPath = getConfigPathImpl();
+  if (!existsSyncImpl(configPath)) {
+    return createCheck("config", "Config", "pass", `No config file yet (${configPath}); default settings are in effect.`, "Optional: run memesh config list to inspect settings.");
+  }
+  try {
+    const raw = readFileSyncImpl(configPath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return createCheck("config", "Config", "fail", `${configPath} parsed but is not a JSON object \u2014 every setting is being ignored.`, `Fix or remove ${configPath}, then re-run memesh doctor.`, { code: "config-parse.not-object", params: { path: configPath } });
+    }
+    const retiredKeys = findRetiredConfigKeys(parsed);
+    if (retiredKeys.length > 0) {
+      const keys = retiredKeys.join(", ");
+      return createCheck("config", "Config", "warn", `${configPath} is valid JSON but still contains ${retiredKeys.length} retired top-level setting(s) (${keys}). This version ignores them, but legacy provider credentials or settings may remain on disk.`, `Review ${configPath} locally and remove only those retired top-level keys. Do not paste the file into an issue because it may contain credentials. Then run memesh doctor again.`, {
+        code: "config-parse.retired-settings",
+        params: { path: configPath, count: retiredKeys.length, keys }
+      }, "config-retired-settings");
+    }
+    return createCheck("config", "Config", "pass", `${configPath} is valid JSON and its settings are in effect.`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return createCheck("config", "Config", "fail", `${configPath} could not be read or parsed (${msg}). Its settings are being ignored right now.`, `Fix the JSON or remove the file to fall back to defaults: mv ${shellQuote(configPath)} ${shellQuote(`${configPath}.bak`)}`, { code: "config-parse.unreadable", params: { path: configPath, detail: msg } });
+  }
+}
+function declaredMcpManifest(packageRoot3, readFileSyncImpl) {
+  const parsed = parseJsonFile(path19.join(packageRoot3, ".claude-plugin", "plugin.json"), readFileSyncImpl);
+  if (!parsed.ok)
+    return null;
+  const declared = parsed.value.mcpServers;
+  if (typeof declared !== "string" || !declared.startsWith("./"))
+    return null;
+  return declared.slice(2);
+}
+function inspectMcpConfig(packageRoot3, installChannel, existsSyncImpl, readFileSyncImpl, env) {
+  const relativeManifest = declaredMcpManifest(packageRoot3, readFileSyncImpl);
+  if (relativeManifest === null) {
+    return createCheck("mcp-config", "MCP config", "fail", ".claude-plugin/plugin.json declares no `mcpServers` path, so Claude Code has no MeMesh MCP server to start.", "Reinstall MeMesh so the plugin manifest and the MCP manifest it names are both restored.", { code: "mcp-config.missing" });
+  }
+  const label = relativeManifest;
+  const mcpPath = path19.join(packageRoot3, relativeManifest);
+  if (!existsSyncImpl(mcpPath)) {
+    return createCheck("mcp-config", "MCP config", "fail", `${label} is missing.`, "Reinstall MeMesh so the plugin manifest and the MCP manifest it names are both restored.", { code: "mcp-config.missing" });
+  }
+  const parsed = parseJsonFile(mcpPath, readFileSyncImpl);
+  if (!parsed.ok) {
+    return createCheck("mcp-config", "MCP config", "fail", `${label} is not valid JSON.`, `Fix ${mcpPath} so Claude Code can read the MCP server definition.`, { code: "mcp-config.invalid-json", params: { path: mcpPath } });
+  }
+  const server = parsed.value.mcpServers?.memesh;
+  if (!server || typeof server.command !== "string") {
+    return createCheck("mcp-config", "MCP config", "fail", `${label} does not define a usable \`memesh\` MCP server entry.`, `Reinstall MeMesh or restore the \`mcpServers.memesh\` entry in \`${label}\`.`, { code: "mcp-config.no-entry" });
+  }
+  const args = Array.isArray(server.args) ? server.args : [];
+  const entry = typeof args[0] === "string" ? args[0] : null;
+  if (entry) {
+    const pluginRoot = installChannel === "plugin-marketplace" ? packageRoot3 : env.CLAUDE_PLUGIN_ROOT || null;
+    if (entry.includes(MCP_PLACEHOLDER) && pluginRoot === null) {
+      return createCheck("mcp-config", "MCP config", "warn", `${label} starts \`${entry}\`. NOT VERIFIED: \`${MCP_PLACEHOLDER}\` is substituted by the Claude Code plugin runtime, and this is a ${installChannel} install with CLAUDE_PLUGIN_ROOT unset \u2014 so the file it names was not checked.`, `Verify it the way the plugin runtime would: CLAUDE_PLUGIN_ROOT=${shellQuote(packageRoot3)} memesh doctor`, { code: "mcp-config.placeholder-unresolved", params: { entry, channel: installChannel } });
+    }
+    const resolved = pluginRoot === null ? path19.resolve(packageRoot3, entry) : path19.resolve(entry.replaceAll(MCP_PLACEHOLDER, pluginRoot));
+    if (!existsSyncImpl(resolved)) {
+      return createCheck("mcp-config", "MCP config", "fail", `${label} starts \`${entry}\`, and that file is not in this install \u2014 so every memesh MCP tool fails to start.`, `Reinstall MeMesh; if you edited \`${label}\` by hand, point it back at \`${MCP_PLACEHOLDER}/dist/mcp/server.js\`.`, { code: "mcp-config.entry-missing", params: { entry, resolved } });
+    }
+  }
+  return createCheck("mcp-config", "MCP config", "pass", `${label} is present, defines the memesh MCP server, and the script it starts exists.`);
+}
+function extractHookScriptPaths(hooksConfig, packageRoot3) {
+  const hooks = hooksConfig.hooks;
+  if (!hooks)
+    return [];
+  const scripts = /* @__PURE__ */ new Set();
+  for (const entries of Object.values(hooks)) {
+    if (!Array.isArray(entries))
+      continue;
+    for (const entry of entries) {
+      if (!Array.isArray(entry.hooks))
+        continue;
+      for (const hook of entry.hooks) {
+        if (typeof hook.command !== "string")
+          continue;
+        const command = hook.command.replace("${CLAUDE_PLUGIN_ROOT}/", "");
+        scripts.add(path19.join(packageRoot3, command));
+      }
+    }
+  }
+  return Array.from(scripts).sort();
+}
+function inspectHooksConfig(packageRoot3, platform, existsSyncImpl, readFileSyncImpl, statSyncImpl) {
+  const hooksPath = path19.join(packageRoot3, "hooks", "hooks.json");
+  if (!existsSyncImpl(hooksPath)) {
+    return [
+      createCheck("hooks-config", "Hooks config", "fail", "hooks/hooks.json is missing.", "Restore `hooks/hooks.json` from the package or reinstall MeMesh.", { code: "hooks-config.missing" })
+    ];
+  }
+  const parsed = parseJsonFile(hooksPath, readFileSyncImpl);
+  if (!parsed.ok) {
+    return [
+      createCheck("hooks-config", "Hooks config", "fail", "hooks/hooks.json is not valid JSON.", `Fix ${hooksPath} so Claude Code can load the hook definitions.`, { code: "hooks-config.invalid-json", params: { path: hooksPath } })
+    ];
+  }
+  const parsedHooks = parsed.value.hooks;
+  const hookTypes = parsedHooks && typeof parsedHooks === "object" && !Array.isArray(parsedHooks) ? Object.keys(parsedHooks) : [];
+  const missingTypes = EXPECTED_HOOK_TYPES.filter((type) => !hookTypes.includes(type));
+  const configCheck = missingTypes.length > 0 ? createCheck("hooks-config", "Hooks config", "fail", `hooks/hooks.json is missing expected hook types: ${missingTypes.join(", ")}.`, "Restore the shipped hook configuration or reinstall MeMesh.", { code: "hooks-config.missing-types", params: { types: missingTypes.join(", ") } }) : createCheck("hooks-config", "Hooks config", "pass", `hooks/hooks.json is present with ${hookTypes.length} hook types configured.`);
+  const scriptPaths = extractHookScriptPaths(parsed.value, packageRoot3);
+  if (scriptPaths.length === 0) {
+    return [
+      configCheck,
+      createCheck("hook-scripts", "Hook scripts", "fail", "hooks/hooks.json parsed, but yields zero hook script commands \u2014 hooks can never fire.", "Restore the shipped hook configuration or reinstall MeMesh.", { code: "hook-scripts.none" })
+    ];
+  }
+  const missingScripts = scriptPaths.filter((scriptPath) => !existsSyncImpl(scriptPath));
+  if (missingScripts.length > 0) {
+    return [
+      configCheck,
+      createCheck("hook-scripts", "Hook scripts", "fail", `Missing hook scripts: ${missingScripts.map((entry) => path19.relative(packageRoot3, entry)).join(", ")}.`, "Restore the missing files from the package or reinstall MeMesh.", { code: "hook-scripts.missing", params: { files: missingScripts.map((entry) => path19.relative(packageRoot3, entry)).join(", ") } })
+    ];
+  }
+  if (platform !== "win32") {
+    const nonExecutable = scriptPaths.filter((scriptPath) => {
+      const mode = statSyncImpl(scriptPath).mode;
+      return (mode & 73) === 0;
+    });
+    if (nonExecutable.length > 0) {
+      return [
+        configCheck,
+        createCheck("hook-scripts", "Hook scripts", "fail", `Hook scripts are not executable: ${nonExecutable.map((entry) => path19.relative(packageRoot3, entry)).join(", ")}.`, "Run `npm run build` from the repo checkout or `chmod +x scripts/hooks/*.js` for a local repair.", { code: "hook-scripts.not-executable", params: { files: nonExecutable.map((entry) => path19.relative(packageRoot3, entry)).join(", ") } })
+      ];
+    }
+  }
+  return [
+    configCheck,
+    createCheck("hook-scripts", "Hook scripts", "pass", `All ${scriptPaths.length} hook scripts are present${platform === "win32" ? "" : " and executable"}.`)
+  ];
+}
+function inspectHookWiring(existsSyncImpl, readFileSyncImpl, memeshDir3, installChannel, installedPluginsPath, pluginHost) {
+  const markerPath = path19.join(memeshDir3, "install-hooks.json");
+  if (!existsSyncImpl(markerPath)) {
+    if (installChannel === "plugin-marketplace") {
+      const runtime = pluginHost === "codex" ? "Codex CLI" : "Claude Code";
+      return createCheck("hook-wiring", "Hooks wired into Claude Code", "pass", `Wired via the ${runtime} plugin runtime (this is a plugin-marketplace install). The install-hooks marker is not used on this install path.`);
+    }
+    if (detectPluginRuntime(installedPluginsPath)) {
+      return createCheck("hook-wiring", "Hooks wired into Claude Code", "pass", "Wired via the Claude Code plugin runtime (found in installed_plugins.json). This copy is not the one doing the capturing \u2014 the plugin manages the hooks.");
+    }
+    return createCheck("hook-wiring", "Hooks wired into Claude Code", "warn", "memesh is not connected to Claude Code yet, so nothing gets remembered automatically from your sessions.", "Run `memesh install-hooks` once to connect it, then `memesh doctor` to confirm.", { code: "hook-wiring.no-marker" }, "install-hooks");
+  }
+  const parsed = parseJsonFile(markerPath, readFileSyncImpl);
+  if (!parsed.ok) {
+    return createCheck("hook-wiring", "Hooks wired into Claude Code", "warn", `install-hooks marker at ${markerPath} is unreadable.`, "Re-run `memesh install-hooks` to refresh the marker.", { code: "hook-wiring.marker-unreadable", params: { path: markerPath } });
+  }
+  const marker = parsed.value;
+  if (typeof marker.settings_path !== "string") {
+    return createCheck("hook-wiring", "Hooks wired into Claude Code", "warn", "install-hooks marker is malformed (missing settings_path).", "Re-run `memesh install-hooks`.", { code: "hook-wiring.marker-malformed" });
+  }
+  if (!existsSyncImpl(marker.settings_path)) {
+    return createCheck("hook-wiring", "Hooks wired into Claude Code", "fail", `Marker recorded settings at ${marker.settings_path} but the file no longer exists. Hooks are not wired.`, "Re-run `memesh install-hooks`.", { code: "hook-wiring.settings-missing", params: { path: String(marker.settings_path) } });
+  }
+  const settingsParsed = parseJsonFile(marker.settings_path, readFileSyncImpl);
+  if (!settingsParsed.ok) {
+    return createCheck("hook-wiring", "Hooks wired into Claude Code", "fail", `${marker.settings_path} is no longer valid JSON, so nothing can read your hook wiring \u2014 including memesh.`, `Repair the JSON, or move the file aside (\`mv ${shellQuote(String(marker.settings_path))} ${shellQuote(`${marker.settings_path}.broken`)}\`) \u2014 memesh keeps timestamped \`.bak-pre-memesh-*\` copies next to it. Then run \`memesh install-hooks\`.`, { code: "hook-wiring.settings-invalid", params: { path: String(marker.settings_path) } });
+  }
+  const CAPTURE_EVENTS = /* @__PURE__ */ new Set(["Stop", "PostToolUse", "PreCompact"]);
+  const hooks = settingsParsed.value.hooks;
+  let hasMemeshHook = false;
+  let hasCaptureHook = false;
+  let missingScript = null;
+  if (hooks && typeof hooks === "object") {
+    for (const [event, entries] of Object.entries(hooks)) {
+      if (!Array.isArray(entries))
+        continue;
+      for (const entry of entries) {
+        const cmds = entry.hooks;
+        if (!Array.isArray(cmds))
+          continue;
+        for (const c of cmds) {
+          const cmd = c;
+          if (cmd._memesh !== true)
+            continue;
+          hasMemeshHook = true;
+          if (CAPTURE_EVENTS.has(event))
+            hasCaptureHook = true;
+          if (missingScript === null && typeof cmd.command === "string" && path19.isAbsolute(cmd.command) && !existsSyncImpl(cmd.command)) {
+            missingScript = cmd.command;
+          }
+        }
+      }
+    }
+  }
+  if (missingScript !== null) {
+    return createCheck("hook-wiring", "Hooks wired into Claude Code", "fail", `A wired memesh hook points at ${missingScript}, which no longer exists \u2014 the agent invokes a missing file on every matching event. This is usually residue from an upgrade that retired the hook.`, "Run `memesh install-hooks` to re-wire (it now removes retired entries), then restart your agent.", { code: "hook-wiring.script-missing", params: { path: missingScript } });
+  }
+  if (!hasMemeshHook) {
+    return createCheck("hook-wiring", "Hooks wired into Claude Code", "fail", `Marker recorded a memesh install at ${marker.settings_path}, but no _memesh:true hook entries are present anymore. Settings drifted (manual edit?) or memesh was uninstalled out-of-band.`, "Re-run `memesh install-hooks` to re-wire.", { code: "hook-wiring.entries-removed", params: { path: String(marker.settings_path) } });
+  }
+  if (typeof marker.plugin_root === "string" && !existsSyncImpl(marker.plugin_root)) {
+    return createCheck("hook-wiring", "Hooks wired into Claude Code", "fail", `Hook commands point at ${marker.plugin_root}, which no longer exists (likely after an npm-global path change).`, "Re-run `memesh install-hooks` to refresh paths.", { code: "hook-wiring.root-moved", params: { path: String(marker.plugin_root) } });
+  }
+  return createCheck("hook-wiring", "Hooks wired into Claude Code", "pass", `Wired in ${marker.settings_path} (scope: ${marker.scope ?? "user"}, version: ${marker.version ?? "unknown"}).`, void 0, { params: { captureWired: hasCaptureHook ? 1 : 0 } });
+}
+function inspectHookActivity(openDatabaseImpl, closeDatabaseImpl, existsSyncImpl = fs22.existsSync, statSyncImpl = fs22.statSync, wiringPresent = true) {
+  const TITLE = "Hook activity";
+  const captureOff = autoCaptureOffSource();
+  if (captureOff === "config") {
+    return createCheck("hook-activity", TITLE, "pass", "Automatic capture is turned off (config autoCapture: false) \u2014 deliberately, so hook silence is expected. Re-enable it to resume capturing sessions.", void 0, { code: "hook-activity.disabled" });
+  }
+  if (captureOff === "env") {
+    return createCheck("hook-activity", TITLE, "pass", "Automatic capture is turned off by MEMESH_AUTO_CAPTURE=false in this shell's environment. Doctor can only see its own environment \u2014 if your agent runs without this variable, capture there is unaffected.", void 0, { code: "hook-activity.disabled-env" });
+  }
+  let db2 = null;
+  try {
+    db2 = openDatabaseImpl();
+    const hookRunsTablePresent = !!db2.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'hook_runs'").get();
+    const rows = hookRunsTablePresent ? db2.prepare(`SELECT hook, last_run_at FROM hook_runs`).all() : [];
+    const captured = db2.prepare(`SELECT COUNT(DISTINCT e.id) as c FROM entities e
+       JOIN tags t ON t.entity_id = e.id
+       WHERE t.tag = ?
+         AND e.created_at > datetime('now', '-24 hours')`).get(AUTO_CAPTURE_TAG)?.c ?? 0;
+    const since = db2.prepare("SELECT value FROM memesh_metadata WHERE key = 'hook_runs_since'").get()?.value;
+    const measuringHours = since !== void 0 ? hoursSince(since) : null;
+    const SKEW_TOLERANCE_H = 5 / 60;
+    const KNOWN_HOOKS = /* @__PURE__ */ new Set(["session-summary", "post-commit", "pre-compact"]);
+    const ages = /* @__PURE__ */ new Map();
+    for (const r of rows) {
+      if (!KNOWN_HOOKS.has(r.hook))
+        continue;
+      const age = hoursSince(r.last_run_at);
+      ages.set(r.hook, age !== null && age >= -SKEW_TOLERANCE_H ? Math.max(age, 0) : null);
+    }
+    if (ages.size > 0) {
+      const capturedTail = captured > 0 ? `${captured} memor${captured === 1 ? "y" : "ies"} captured in the last 24h.` : "Nothing was worth saving in that time, which is normal \u2014 the loop still ran.";
+      const staleUnknown = (hook) => createCheck("hook-activity", TITLE, "fail", `The ${hook} hook's last-run timestamp cannot be read (corrupt, or stamped by a machine with a wrong clock). Capture health is unknown, which is not the same as healthy.`, "End one work session, then re-run `memesh doctor` \u2014 a fresh run overwrites the bad timestamp.", { code: "hook-activity.stale-unknown", params: { hook } });
+      const stale = (hook, age, status) => createCheck("hook-activity", TITLE, status, `The ${hook} hook last ran ${formatHoursAgo(Math.ceil(age))}. If you have worked since then, capture has stopped and nothing from those sessions was saved.`, "Restart your agent, then end one session and re-run `memesh doctor`. If it does not recover, run `memesh install-hooks`.", { code: "hook-activity.stale", params: { hook, hours: Math.ceil(age) } });
+      const ssAge = ages.has("session-summary") ? ages.get("session-summary") : void 0;
+      if (ssAge === null)
+        return staleUnknown("session-summary");
+      if (ssAge !== void 0) {
+        if (ssAge <= 24) {
+          return createCheck("hook-activity", TITLE, "pass", `The session-summary hook last ran ${formatHoursAgo(ssAge)} \u2014 auto-capture is alive. ${capturedTail}`);
+        }
+        if (ssAge <= 72)
+          return stale("session-summary", ssAge, "warn");
+        const ccWrites = db2.prepare(`SELECT COUNT(*) as c FROM entities
+           WHERE created_at > datetime('now', '-72 hours')
+             AND json_valid(metadata)
+             AND json_extract(metadata, '$.provenance.source_host') = 'claude-code'`).get()?.c ?? 0;
+        if (ccWrites > 0)
+          return stale("session-summary", ssAge, "fail");
+        return createCheck("hook-activity", TITLE, "warn", `The session-summary hook last ran ${formatHoursAgo(Math.ceil(ssAge))}, and no Claude Code writes landed in the last 3 days either. If this machine has moved to another agent (Codex / Gemini), this is expected; if you still use Claude Code here, capture has stopped.`, "If you still use Claude Code on this machine: restart it, end one session, and re-run `memesh doctor`. If it does not recover, run `memesh install-hooks`.", { code: "hook-activity.stale-unconfirmed", params: { hook: "session-summary", hours: Math.ceil(ssAge) } });
+      }
+      const known = [...ages.entries()].filter((e) => e[1] !== null);
+      if (known.length === 0) {
+        const [hook] = [...ages.keys()].sort();
+        return staleUnknown(hook);
+      }
+      const [freshestHook, freshestAge] = known.sort((a, b) => a[1] - b[1])[0];
+      if (freshestAge <= 24) {
+        if (measuringHours !== null && measuringHours > 72) {
+          return createCheck("hook-activity", TITLE, "warn", `The ${freshestHook} hook is stamping (last ran ${formatHoursAgo(freshestAge)}), but the session-summary hook has never run once in the ${Math.round(measuringHours)} hours since tracking began \u2014 session capture may be broken while commit capture hides it.`, "End one work session and re-run `memesh doctor`. If session-summary still has not run, run `memesh install-hooks` and restart your agent.", { code: "hook-activity.stop-silent", params: { hook: freshestHook, hours: Math.round(measuringHours) } });
+        }
+        return createCheck("hook-activity", TITLE, "pass", `The ${freshestHook} hook last ran ${formatHoursAgo(freshestAge)} \u2014 auto-capture is alive. (session-summary has not stamped yet \u2014 expected until a session with real work ends.) ${capturedTail}`);
+      }
+      return stale(freshestHook, freshestAge, "warn");
+    }
+    if (since !== void 0 && (measuringHours === null || measuringHours < 0)) {
+      return createCheck("hook-activity", TITLE, "pass", "The hook-run tracking marker is unreadable \u2014 it will be re-stamped automatically the next time the database is opened for writing (any session, commit, or memesh command does it). Tracking restarts then.");
+    }
+    if (measuringHours === null || measuringHours < 24) {
+      return createCheck("hook-activity", TITLE, "pass", "Hook-run tracking has only just started on this database \u2014 the first work session will fill it in.");
+    }
+    const markerPath = path19.join(memeshDir(), "install-hooks.json");
+    if (existsSyncImpl(markerPath)) {
+      try {
+        if (Date.now() - statSyncImpl(markerPath).mtimeMs < 24 * 60 * 60 * 1e3) {
+          return createCheck("hook-activity", TITLE, "pass", "Hooks were wired in the last day and no session has ended yet \u2014 normal for a fresh install.");
+        }
+      } catch {
+      }
+    }
+    const legacyCaptured = db2.prepare(`SELECT COUNT(DISTINCT e.id) as c FROM entities e
+       JOIN tags t ON t.entity_id = e.id
+       WHERE t.tag = ?
+         AND e.created_at > ?`).get(AUTO_CAPTURE_TAG, since)?.c ?? 0;
+    if (legacyCaptured > 0) {
+      return createCheck("hook-activity", TITLE, "warn", `No hook has stamped the heartbeat, but ${legacyCaptured} auto-capture memor${legacyCaptured === 1 ? "y" : "ies"} landed since tracking began \u2014 hooks from a version before heartbeat tracking are probably still running.`, "Update the memesh hooks to the current version (plugin installs: `/plugin update memesh`; npm installs: `memesh install-hooks`), then restart your agent.", { code: "hook-activity.never-ran-legacy", params: { captured: legacyCaptured } });
+    }
+    if (!wiringPresent) {
+      return createCheck("hook-activity", TITLE, "warn", "No capture hook has ever run \u2014 and no capture hook (Stop / PostToolUse / PreCompact) is confirmed wired on this machine, so there is nothing to run.", "If you want automatic capture, run `memesh install-hooks`. If this install is MCP-only (Codex / Gemini), this is expected and safe to ignore.", { code: "hook-activity.not-wired" });
+    }
+    return createCheck("hook-activity", TITLE, "fail", `No capture hook has run since tracking began ${formatHoursAgo(measuringHours)}. Hook wiring is in place, so they should be executing and are not \u2014 nothing is being remembered.`, "Run `memesh doctor` after ending one work session. If this still says no hook has run, run `memesh install-hooks` and restart your agent.", { code: "hook-activity.never-ran", params: { hours: Math.round(measuringHours) } });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    return createCheck("hook-activity", TITLE, "fail", `Could not read hook activity from the database: ${detail}. Capture health is unknown, which is not the same as healthy.`, queryFailedFix(err), { code: "hook-activity.query-failed", params: { detail } });
+  } finally {
+    try {
+      if (db2)
+        closeDatabaseImpl();
+    } catch {
+    }
+  }
+}
+function archivedHandoffName(file2) {
+  if (!Object.hasOwn(file2.hooks, "handoff-capture"))
+    return null;
+  const names = /* @__PURE__ */ new Set();
+  for (const r of file2.hooks["handoff-capture"]) {
+    if (r.outcome === "skipped" && r.reason === SKIP_REASONS.handoffArchived && typeof r.entity === "string")
+      names.add(r.entity);
+  }
+  if (names.size !== 1)
+    return null;
+  const [name] = names;
+  return SAFE_HANDOFF_NAME.test(name) ? name : null;
+}
+function archivedHandoffCheck(title, runs, name) {
+  const summary = `handoff-capture: ${runs} runs, 0 writes \u2014 the session handoff was archived with \`forget\`, so it is not updated any more.`;
+  if (name) {
+    return createCheck("capture-liveness", title, "warn", summary, `To turn it back on, run \`memesh remember --name ${name} --type session-handoff --obs restart\`; the next Stop replaces it.`, { code: "capture-liveness.handoff-archived", params: { runs, name } });
+  }
+  return createCheck("capture-liveness", title, "warn", summary, "To turn it back on, find its exact name with `memesh recall session-handoff --include-archived`, then remember anything under that name with type session-handoff; the next Stop replaces it.", { code: "capture-liveness.handoff-archived-unnamed", params: { runs } });
+}
+function withRecordedHosts(result) {
+  if (!result.report)
+    return result;
+  const hostsSeen = [...new Set(result.report.hooks.flatMap((h) => h.hosts))].sort();
+  if (hostsSeen.length === 0)
+    return result;
+  return { ...result, check: { ...result.check, summary: `${result.check.summary} Hosts recorded: ${hostsSeen.join(", ")}.` } };
+}
+function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyncImpl = fs22.readFileSync, memeshDirImpl = getMemeshDirFromDbPath, captureWired = true) {
+  const TITLE = "Capture liveness";
+  if (autoCaptureOffSource() !== null) {
+    return {
+      check: createCheck("capture-liveness", TITLE, "pass", "Automatic capture is turned off, so there is nothing to keep alive. Re-enable it to resume capturing.")
+    };
+  }
+  let raw;
+  try {
+    raw = readFileSyncImpl(path19.join(memeshDirImpl(), HOOK_OUTCOMES_FILENAME), "utf8");
+  } catch {
+    raw = null;
+  }
+  const outcomeFile = parseHookOutcomes(raw);
+  const hooks = summarizeHookOutcomes(outcomeFile);
+  let db2 = null;
+  let types;
+  let neverRan;
+  let measuringHours;
+  let legacyCaptured = 0;
+  let stampedCount;
+  let newestHeartbeatHours = null;
+  try {
+    db2 = openDatabaseImpl();
+    const rows = db2.prepare(`SELECT e.type AS type,
+              SUM(CASE WHEN e.created_at > datetime('now', '-7 days') THEN 1 ELSE 0 END) AS last7,
+              SUM(CASE WHEN e.created_at <= datetime('now', '-7 days')
+                        AND e.created_at > datetime('now', '-14 days') THEN 1 ELSE 0 END) AS prev7
+         FROM entities e
+         JOIN tags t ON t.entity_id = e.id
+        WHERE t.tag = ?
+          AND e.created_at > datetime('now', '-14 days')
+          AND e.type <> ?
+        GROUP BY e.type`).all(AUTO_CAPTURE_TAG, SESSION_HANDOFF_TYPE);
+    types = summarizeTypeTrends(rows.map((r) => ({
+      type: String(r.type),
+      last7: Number(r.last7) || 0,
+      prev7: Number(r.prev7) || 0
+    })));
+    const tablePresent = !!db2.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'hook_runs'").get();
+    const heartbeats = tablePresent ? db2.prepare("SELECT hook, last_run_at FROM hook_runs").all() : [];
+    const stamped = new Set(heartbeats.map((r) => r.hook));
+    stampedCount = stamped.size;
+    for (const r of heartbeats) {
+      const h = hoursSince(String(r.last_run_at));
+      if (h !== null && (newestHeartbeatHours === null || h < newestHeartbeatHours))
+        newestHeartbeatHours = h;
+    }
+    neverRan = FAIL_ELIGIBLE_HOOKS.filter((h) => !stamped.has(h));
+    const since = db2.prepare("SELECT value FROM memesh_metadata WHERE key = 'hook_runs_since'").get()?.value;
+    measuringHours = since !== void 0 ? hoursSince(since) : null;
+    if (since !== void 0) {
+      legacyCaptured = db2.prepare(`SELECT COUNT(DISTINCT e.id) as c FROM entities e
+         JOIN tags t ON t.entity_id = e.id
+        WHERE t.tag = ? AND e.created_at > ?`).get(AUTO_CAPTURE_TAG, since)?.c ?? 0;
+    }
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    return {
+      check: createCheck("capture-liveness", TITLE, "fail", `Could not read capture liveness from the database: ${detail}. Whether anything is being saved is unknown, which is not the same as healthy.`, queryFailedFix(err), { code: "capture-liveness.query-failed", params: { detail } })
+    };
+  } finally {
+    try {
+      if (db2)
+        closeDatabaseImpl();
+    } catch {
+    }
+  }
+  const verdict = captureLivenessVerdict({ hooks, types, neverRanHooks: neverRan, measuringHours });
+  const report = {
+    status: verdict.status,
+    hooks,
+    types,
+    neverRan: verdict.deadHooks
+  };
+  if (verdict.status === "FAIL") {
+    const hook = verdict.deadHooks[0];
+    if (!captureWired) {
+      return {
+        check: createCheck("capture-liveness", TITLE, "warn", `The ${hook} hook has never run \u2014 but no capture hook (Stop / PostToolUse / PreCompact) is confirmed wired on this machine, so there is nothing that should be running.`, "If you want automatic capture, run `memesh install-hooks`. If this install is MCP-only (Codex / Gemini / Cursor), this is expected and safe to ignore.", { code: "capture-liveness.not-wired", params: { hook } }),
+        report: { ...report, status: "PASS_WITH_CONCERNS" }
+      };
+    }
+    if (legacyCaptured > 0 && hooks.length === 0) {
+      return {
+        check: createCheck("capture-liveness", TITLE, "warn", `The ${hook} hook has left no record and no heartbeat, but ${legacyCaptured} auto-capture memor${legacyCaptured === 1 ? "y" : "ies"} landed since tracking began \u2014 hooks from a version before outcome tracking are probably still running.`, "Update the memesh hooks to the current version (plugin installs: `/plugin update memesh`; npm installs: `memesh install-hooks`), then restart your agent.", { code: "capture-liveness.never-ran-legacy", params: { hook, captured: legacyCaptured } }),
+        report: { ...report, status: "PASS_WITH_CONCERNS" }
+      };
+    }
+    return {
+      check: createCheck("capture-liveness", TITLE, "fail", `The ${hook} hook has left no record and no heartbeat in the ${Math.round(measuringHours ?? 0)} hours since tracking began \u2014 it has never run, so nothing it would capture is being saved.`, "Run `memesh install-hooks` and restart your agent, then end one work session and re-run `memesh doctor`.", { code: "capture-liveness.never-ran", params: { hook, hours: Math.round(measuringHours ?? 0) } }),
+      report
+    };
+  }
+  if (verdict.erroringHook) {
+    const h = verdict.erroringHook;
+    const day = h.lastErrorAt !== null && /^\d{4}-\d{2}-\d{2}/.test(h.lastErrorAt) ? ` on ${h.lastErrorAt.slice(0, 10)}` : "";
+    const newest = Math.min(RECENT_ERROR_RUNS, h.triggeredRuns);
+    return {
+      check: createCheck("capture-liveness", TITLE, "warn", `${h.hook}: ${h.recentErrors} of its ${newest} most recent runs ended in an error (${h.errors} in its recorded window); the latest was '${h.lastErrorReason}'${day}.`, "The reason says what failed; `memesh doctor --json` has the per-hook figures. This row clears once the hook's most recent runs (those its trigger applied to) end without an error. If it keeps failing, run `memesh install-hooks` and restart your agent.", { params: { hook: h.hook } }),
+      report
+    };
+  }
+  if (verdict.silentHook) {
+    const h = verdict.silentHook;
+    const reason = h.dominantSkipReason ?? "no reason recorded";
+    if (h.hook === "handoff-capture" && reason === SKIP_REASONS.handoffArchived) {
+      return { check: archivedHandoffCheck(TITLE, h.triggeredRuns, archivedHandoffName(outcomeFile)), report };
+    }
+    return {
+      check: createCheck("capture-liveness", TITLE, "warn", `${h.hook}: ${h.triggeredRuns} runs, 0 writes \u2014 '${reason}'. The hook is alive and deciding there is nothing to save every single time, which is also what a broken capture path looks like.`, "Run `memesh doctor --json` for the per-hook figures. If the reason does not describe your usage, run `memesh install-hooks` and restart your agent.", { code: "capture-liveness.silent-hook", params: { hook: h.hook, runs: h.triggeredRuns, reason } }),
+      report
+    };
+  }
+  if (hooks.length === 0 && captureWired && stampedCount > 0 && measuringHours !== null && measuringHours > NEVER_RAN_GRACE_HOURS) {
+    const lastHeartbeat = newestHeartbeatHours === null ? null : Math.round(newestHeartbeatHours);
+    return {
+      check: createCheck("capture-liveness", TITLE, "warn", `Hooks have run on this machine (last heartbeat ${lastHeartbeat ?? "?"} hours ago), but not one has left an outcome record. Either the running hooks predate outcome tracking, or they fail as they load and record nothing.`, "Update the memesh hooks (plugin installs: `/plugin update memesh`; npm installs: `memesh install-hooks`), restart your agent, start one session, and re-run `memesh doctor`. If you just updated, start a session first \u2014 the records begin on the next hook run.", { code: "capture-liveness.no-records", params: { hours: lastHeartbeat ?? "?" } }),
+      report: { ...report, status: "PASS_WITH_CONCERNS" }
+    };
+  }
+  if (verdict.stoppedTypes.length > 0) {
+    const t = verdict.stoppedTypes[0];
+    return {
+      check: createCheck("capture-liveness", TITLE, "warn", `Nothing of type '${t.type}' was captured in the last 7 days, against ${t.prev7} in the 7 days before. Something that was being remembered has stopped being remembered.`, "Run `memesh doctor --json` for the per-hook figures, and check whether the way you work changed \u2014 if it did not, run `memesh install-hooks` and restart your agent.", { code: "capture-liveness.type-stopped", params: { type: t.type, prev: t.prev7 } }),
+      report
+    };
+  }
+  const writing = hooks.filter((h) => h.writes > 0);
+  const ranEnough = hooks.filter((h) => h.triggeredRuns >= SILENT_HOOK_MIN_RUNS);
+  let summary;
+  if (writing.length > 0) {
+    summary = `${writing.length} of ${hooks.length} recording hooks did their work in their recorded window (${writing.map((h) => h.hook).join(", ")}).`;
+  } else if (ranEnough.length > 0) {
+    summary = `${ranEnough.map((h) => `${h.hook} (${h.triggeredRuns} runs)`).join(", ")} ran without writing anything. These hooks decide there is nothing to save on most runs by design, so that is not itself a fault \u2014 \`memesh doctor --json\` has the per-hook figures.`;
+  } else if (hooks.length > 0) {
+    summary = `Every recording hook is below the ${SILENT_HOOK_MIN_RUNS}-run threshold where silence would mean anything \u2014 too early to say, which is normal on a fresh install.`;
+  } else {
+    summary = "No hook has recorded an outcome yet \u2014 the records start on the next hook run, which is normal right after an upgrade.";
+  }
+  return {
+    check: createCheck("capture-liveness", TITLE, "pass", summary),
+    report
+  };
+}
+function autoCaptureOffSource() {
+  let configAutoCapture;
+  try {
+    configAutoCapture = readConfig().autoCapture;
+  } catch {
+    configAutoCapture = void 0;
+  }
+  return autoCaptureDecision(process.env.MEMESH_AUTO_CAPTURE, configAutoCapture).offSource;
+}
+function hoursSince(sqliteTimestamp) {
+  const then = parseSqliteUtcMs(sqliteTimestamp);
+  if (then === null)
+    return null;
+  return (Date.now() - then) / (60 * 60 * 1e3);
+}
+function formatHoursAgo(hours) {
+  if (hours === null || !Number.isFinite(hours) || hours < 0)
+    return "at an unknown time";
+  if (hours < 1)
+    return "less than an hour ago";
+  if (hours < 48) {
+    const h = Math.round(hours);
+    return `${h} hour${h === 1 ? "" : "s"} ago`;
+  }
+  const d = Math.round(hours / 24);
+  return `${d} day${d === 1 ? "" : "s"} ago`;
+}
+function defaultResolveShellMemesh() {
+  try {
+    const cmd = process.platform === "win32" ? "where" : "which";
+    const localRequire = createRequire2(import.meta.url);
+    const { execFileSync: execFileSync8 } = localRequire("child_process");
+    const out = execFileSync8(cmd, ["memesh"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    const first = String(out).split(/\r?\n/).map((s) => s.trim()).find(Boolean);
+    return first || null;
+  } catch {
+    return null;
+  }
+}
+function defaultNativeBindingProbe(_packageRoot) {
+  try {
+    const probe = new MemeshDatabase(":memory:");
+    try {
+      probe.prepare("SELECT 1").get();
+    } finally {
+      probe.close();
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : String(err) };
+  }
+}
+function satisfiesMinimumNodeRange(version2, range) {
+  const min = /^>=\s*v?(\d+)(?:\.(\d+))?(?:\.(\d+))?\s*$/.exec(range.trim());
+  const running = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version2.trim());
+  if (!min || !running)
+    return null;
+  const wanted = [Number(min[1]), Number(min[2] ?? 0), Number(min[3] ?? 0)];
+  const have = [Number(running[1]), Number(running[2]), Number(running[3])];
+  for (let i = 0; i < 3; i++) {
+    if (have[i] > wanted[i])
+      return true;
+    if (have[i] < wanted[i])
+      return false;
+  }
+  return true;
+}
+function inspectNodeRuntime(packageRoot3, existsSyncImpl, readFileSyncImpl, nodeVersion = process.version, moduleAbi = process.versions.modules, hasNodeSqliteImpl = hasBuiltInSqlite) {
+  const facts = `Node ${nodeVersion} (ABI ${moduleAbi}, ${process.platform}/${process.arch}). Built-in node:sqlite: ${hasNodeSqliteImpl() ? "available" : "not available"}.`;
+  let declared;
+  try {
+    const pkgPath = path19.join(packageRoot3, "package.json");
+    if (existsSyncImpl(pkgPath)) {
+      const parsed = JSON.parse(String(readFileSyncImpl(pkgPath, "utf8")));
+      if (typeof parsed.engines?.node === "string")
+        declared = parsed.engines.node;
+    }
+  } catch {
+  }
+  if (!declared) {
+    return createInfo("node-runtime", "Node runtime", `${facts} Supported range not checked: package.json declared no engines.node.`);
+  }
+  const ok = satisfiesMinimumNodeRange(nodeVersion, declared);
+  if (ok === null) {
+    return createInfo("node-runtime", "Node runtime", `${facts} Supported range not checked: engines.node is "${declared}", which this check does not parse (it understands ">=X.Y.Z" only).`);
+  }
+  if (!ok) {
+    return createCheck("node-runtime", "Node runtime", "fail", `${facts} This package requires Node ${declared}, so this runtime is BELOW the supported floor. Native modules and hooks may fail in ways that look unrelated.`, `Upgrade Node to ${declared.replace(/^>=\s*/, "")} or newer, then run \`memesh doctor\` again.`, { code: "node-runtime.too-old", params: { detail: facts, required: declared.replace(/^>=\s*/, "") } });
+  }
+  return createCheck("node-runtime", "Node runtime", "pass", `${facts} Meets the required range ${declared}.`);
+}
+function hasBuiltInSqlite() {
+  try {
+    createRequire2(import.meta.url).resolve("node:sqlite");
+    return true;
+  } catch {
+    return false;
+  }
+}
+function inspectNativeBinding(packageRoot3, _existsSyncImpl, probeImpl = defaultNativeBindingProbe) {
+  const result = probeImpl(packageRoot3);
+  return result.ok ? createCheck("native-binding", "SQLite", "pass", "node:sqlite opened a database (probe succeeded).") : createCheck("native-binding", "SQLite", "fail", `SQLite could not open a database: ${result.message}`, "Check the Node runtime and reinstall if necessary.", { code: "native-binding.load-failed", params: { detail: result.message, root: packageRoot3 } });
+}
+function readVersionFromInstalledBinary(binaryPath, existsSyncImpl, readFileSyncImpl, realpathSyncImpl = fs22.realpathSync) {
+  let resolved;
+  try {
+    resolved = realpathSyncImpl(binaryPath);
+  } catch {
+    resolved = binaryPath;
+  }
+  let dir = path19.dirname(resolved);
+  for (let depth = 0; depth < 8; depth += 1) {
+    const pkgPath = path19.join(dir, "package.json");
+    if (existsSyncImpl(pkgPath)) {
+      const parsed = parseJsonFile(pkgPath, readFileSyncImpl);
+      if (!parsed.ok)
+        return null;
+      const { name, version: version2 } = parsed.value;
+      return name === "@pcircle/memesh" && typeof version2 === "string" ? version2 : null;
+    }
+    const parent = path19.dirname(dir);
+    if (parent === dir)
+      return null;
+    dir = parent;
+  }
+  return null;
+}
+function inspectShellCli(installChannel, packageRoot3, packageVersion2, resolveShellMemeshImpl, existsSyncImpl, readFileSyncImpl) {
+  const shellPath = resolveShellMemeshImpl();
+  const isSameAsCurrent = shellPath ? path19.resolve(shellPath).startsWith(path19.resolve(packageRoot3)) : false;
+  const hasDistinctShellCli = !!shellPath && !isSameAsCurrent;
+  if (installChannel === "npm-global") {
+    return createCheck("shell-cli", "Shell CLI on PATH", "pass", shellPath ? `\`memesh\` resolves to ${shellPath} (npm-global install \u2014 terminals across the machine pick it up).` : "Running from npm-global install \u2014 shell access available in this terminal.");
+  }
+  if (hasDistinctShellCli) {
+    const shellVersion = readVersionFromInstalledBinary(shellPath, existsSyncImpl, readFileSyncImpl);
+    if (shellVersion) {
+      return {
+        ...createInfo("shell-cli", "Shell CLI on PATH", `Installed versions: this interface ${packageVersion2}; terminal ${shellVersion}.`),
+        code: "shell-cli.versions",
+        params: { current: packageVersion2, terminal: shellVersion, shellPath, packageRoot: packageRoot3 }
+      };
+    }
+    return createCheck("shell-cli", "Shell CLI on PATH", "pass", `\`memesh\` resolves to ${shellPath} (separate from this install at ${packageRoot3}) \u2014 could not read the shell copy's own version to compare.`);
+  }
+  if (installChannel === "plugin-marketplace") {
+    const host = detectPluginHost(packageRoot3) === "codex" ? "Codex CLI" : "Claude Code";
+    return createCheck("shell-cli", "Shell CLI on PATH", "warn", `Plugin is installed but \`memesh\` is not on the shell PATH. Typing \`memesh\` in a regular terminal will report \`command not found\`. ${host} MCP / hooks / \`/memesh\` skill still work \u2014 this only affects standalone shell usage and other MCP clients (Cursor, Cline, etc.).`, "Run `npm install -g @pcircle/memesh` if you want the separate shell CLI. Its database path depends on its environment and configuration.", { code: "shell-cli.not-on-path" });
+  }
+  return createCheck("shell-cli", "Shell CLI on PATH", "pass", shellPath ? `\`memesh\` resolves to ${shellPath}.` : `No shell-PATH \`memesh\` detected. If you want terminal access, run \`npm install -g @pcircle/memesh\` (this install is a ${installChannel}, so the check is informational only).`);
+}
+function defaultMarketplaceHeadSha(host) {
+  if (host === "codex") {
+    const codexHome = pluginHostConfigRoot("codex");
+    return readCodexInstallRevision(path19.join(codexHome, ".tmp", "marketplaces", "pcircle-memesh"), fs22.readFileSync);
+  }
+  const dir = path19.join(pluginHostConfigRoot("claude-code"), "plugins", "marketplaces", "pcircle-memesh");
+  try {
+    const out = execFileSync7("git", ["-C", dir, "rev-parse", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return /^[0-9a-f]{40}$/.test(out) ? out : null;
+  } catch {
+    return null;
+  }
+}
+function readCodexInstallRevision(root, readFileSyncImpl) {
+  const parsed = parseJsonFile(path19.join(root, ".codex-marketplace-install.json"), readFileSyncImpl);
+  if (!parsed.ok)
+    return null;
+  const rev = parsed.value.revision;
+  return typeof rev === "string" && /^[0-9a-f]{40}$/.test(rev) ? rev : null;
+}
+function pluginCacheUnverifiable(host, missing) {
+  const hostLabel = host === "codex" ? "Codex" : "Claude Code";
+  const command = PLUGIN_REFRESH_COMMANDS[host];
+  return createCheck("plugin-cache", `Plugin cache source record is current (${hostLabel})`, "warn", `Could not tell whether the plugin cache matches the marketplace: ${missing}. The version alone cannot answer this \u2014 two builds can carry the same version.`, `Run \`${command}\` \u2014 it re-stages the cache from the marketplace and records the commit, after which this check can answer.`, { code: "plugin-cache.unverifiable", params: { host: hostLabel, command } }, "plugin-cache-refresh");
+}
+function readClaudePluginEntries(registryPath, readFileSyncImpl, existsSyncImpl) {
+  if (!existsSyncImpl(registryPath)) {
+    return { exists: false, readable: false, defined: false, malformed: false, entries: [] };
+  }
+  const parsed = parseJsonFile(registryPath, readFileSyncImpl);
+  if (!parsed.ok)
+    return { exists: true, readable: false, defined: false, malformed: false, entries: [] };
+  const raw = parsed.value?.plugins?.["memesh@pcircle-memesh"];
+  const entries = Array.isArray(raw) ? raw.filter((entry) => !!entry && typeof entry === "object") : [];
+  return {
+    exists: true,
+    readable: true,
+    defined: raw !== void 0,
+    malformed: raw !== void 0 && (!Array.isArray(raw) || entries.length !== raw.length),
+    entries
+  };
+}
+function defaultPluginCacheDiscovery(readFileSyncImpl, existsSyncImpl) {
+  const discovered = [];
+  const claudeConfigRoot = pluginHostConfigRoot("claude-code");
+  const claudeRegistry = path19.join(claudeConfigRoot, "plugins", "installed_plugins.json");
+  const claudeCacheRoot = path19.join(claudeConfigRoot, "plugins", "cache", "pcircle-memesh", "memesh");
+  const registry2 = readClaudePluginEntries(claudeRegistry, readFileSyncImpl, existsSyncImpl);
+  const entries = registry2.entries;
+  if (registry2.malformed) {
+    discovered.push({
+      host: "claude-code",
+      packageRoot: claudeCacheRoot,
+      installedPluginsPath: claudeRegistry,
+      unverifiableReason: "installed_plugins.json has a malformed memesh entry"
+    });
+  } else if (entries.length > 0) {
+    const cachesByRoot = /* @__PURE__ */ new Map();
+    for (const entry of entries) {
+      const recordedInstallPath = typeof entry.installPath === "string" && entry.installPath.length > 0 ? entry.installPath : null;
+      const installPath = recordedInstallPath ?? claudeCacheRoot;
+      const cache = {
+        host: "claude-code",
+        packageRoot: installPath,
+        installedPluginsPath: claudeRegistry,
+        ...!recordedInstallPath ? { unverifiableReason: "an installed_plugins.json entry has no usable installPath" } : !existsSyncImpl(installPath) ? { unverifiableReason: `the recorded plugin cache does not exist at ${installPath}` } : {}
+      };
+      const rootKey = path19.resolve(installPath);
+      const existing = cachesByRoot.get(rootKey);
+      if (!existing)
+        cachesByRoot.set(rootKey, cache);
+      else if (!existing.unverifiableReason && cache.unverifiableReason) {
+        existing.unverifiableReason = cache.unverifiableReason;
+      }
+    }
+    discovered.push(...cachesByRoot.values());
+  } else if (registry2.defined) {
+    const cachedRoots = versionedPluginCacheRoots(claudeCacheRoot);
+    if (cachedRoots.length > 0) {
+      discovered.push({
+        host: "claude-code",
+        packageRoot: cachedRoots[cachedRoots.length - 1],
+        installedPluginsPath: claudeRegistry,
+        unverifiableReason: "installed_plugins.json records no active memesh install while a versioned plugin cache still exists"
+      });
+    }
+  } else if (!registry2.readable) {
+    const cachedRoots = versionedPluginCacheRoots(claudeCacheRoot);
+    const cachedRoot = cachedRoots[cachedRoots.length - 1];
+    if (cachedRoot) {
+      discovered.push({
+        host: "claude-code",
+        packageRoot: cachedRoot,
+        installedPluginsPath: claudeRegistry,
+        unverifiableReason: registry2.exists ? "installed_plugins.json could not be read or parsed" : "installed_plugins.json does not exist while a versioned plugin cache still exists"
+      });
+    }
+  }
+  const codexHome = pluginHostConfigRoot("codex");
+  const codexCacheRoot = path19.join(codexHome, "plugins", "cache", "pcircle-memesh", "memesh");
+  const codexRoots = versionedPluginCacheRoots(codexCacheRoot);
+  if (codexRoots.length === 1) {
+    discovered.push({ host: "codex", packageRoot: codexRoots[0] });
+  } else if (codexRoots.length > 1) {
+    discovered.push({
+      host: "codex",
+      packageRoot: codexRoots[codexRoots.length - 1],
+      unverifiableReason: `several versioned Codex plugin cache directories exist under ${codexCacheRoot}`
+    });
+  }
+  return discovered;
+}
+function inspectPluginCacheCurrency(installChannel, pluginHost, packageRoot3, installedPluginsPath, readFileSyncImpl, existsSyncImpl, marketplaceHeadShaImpl) {
+  if (installChannel !== "plugin-marketplace")
+    return null;
+  const host = pluginHost === "codex" ? "codex" : "claude-code";
+  const hostLabel = host === "codex" ? "Codex" : "Claude Code";
+  const command = PLUGIN_REFRESH_COMMANDS[host];
+  let installedSha;
+  let installedMissing;
+  if (host === "codex") {
+    installedSha = readCodexInstallRevision(packageRoot3, readFileSyncImpl);
+    installedMissing = "the plugin cache carries no readable .codex-marketplace-install.json revision";
+  } else {
+    const registryPath = installedPluginsPath ?? path19.join(pluginHostConfigRoot("claude-code"), "plugins", "installed_plugins.json");
+    const registry2 = readClaudePluginEntries(registryPath, readFileSyncImpl, existsSyncImpl);
+    const entries = registry2.entries;
+    const here = path19.resolve(packageRoot3);
+    const matching = entries.filter((e) => typeof e?.installPath === "string" && path19.resolve(e.installPath) === here);
+    const soleEntry = entries.length === 1 ? entries[0] : void 0;
+    const soleEntryHasPath = typeof soleEntry?.installPath === "string" && soleEntry.installPath.length > 0;
+    const entry = matching.length === 1 ? matching[0] : void 0;
+    installedSha = !registry2.malformed && typeof entry?.gitCommitSha === "string" && /^[0-9a-f]{40}$/.test(entry.gitCommitSha) ? entry.gitCommitSha : null;
+    if (!registry2.exists) {
+      installedMissing = `installed_plugins.json does not exist at ${registryPath}`;
+    } else if (!registry2.readable) {
+      installedMissing = "installed_plugins.json could not be read or parsed";
+    } else if (registry2.malformed) {
+      installedMissing = "installed_plugins.json has a malformed memesh entry";
+    } else if (!registry2.defined) {
+      installedMissing = "installed_plugins.json has no memesh@pcircle-memesh entry";
+    } else if (entries.length === 0) {
+      installedMissing = "installed_plugins.json records no active memesh install for this cache";
+    } else if (matching.length > 1) {
+      installedMissing = `installed_plugins.json lists ${matching.length} memesh entries for this install (${packageRoot3})`;
+    } else if (matching.length === 0 && soleEntryHasPath) {
+      installedMissing = `the only memesh entry in installed_plugins.json names another install, not this one (${packageRoot3})`;
+    } else if (matching.length === 0 && soleEntry) {
+      installedMissing = "the only memesh entry in installed_plugins.json has no usable installPath to identify this cache";
+    } else if (entries.length > 1 && matching.length === 0) {
+      installedMissing = `installed_plugins.json lists ${entries.length} memesh entries and none of them is this install (${packageRoot3})`;
+    } else {
+      installedMissing = "installed_plugins.json does not record the commit this plugin was installed from";
+    }
+  }
+  const marketplaceSha = marketplaceHeadShaImpl(host);
+  if (!installedSha || !marketplaceSha) {
+    const missing = !installedSha ? installedMissing : `the ${hostLabel} marketplace snapshot has no readable commit`;
+    return pluginCacheUnverifiable(host, missing);
+  }
+  if (installedSha === marketplaceSha) {
+    return createCheck("plugin-cache", `Plugin cache source record is current (${hostLabel})`, "pass", `The plugin cache records marketplace commit ${marketplaceSha.slice(0, 8)}, which matches the current marketplace snapshot.`);
+  }
+  return createCheck("plugin-cache", `Plugin cache source record is current (${hostLabel})`, "warn", `The plugin cache records commit ${installedSha.slice(0, 8)}, but the marketplace has moved to ${marketplaceSha.slice(0, 8)} under the same version \u2014 ${hostLabel} does not normally refresh a cache whose version did not change, so refresh the cache before relying on the newer marketplace code.`, `Run \`${command}\` to refresh the cache in place, then restart ${hostLabel}.`, { code: "plugin-cache.stale", params: { installed: installedSha.slice(0, 8), marketplace: marketplaceSha.slice(0, 8), host: hostLabel, command } }, "plugin-cache-refresh");
+}
+function isClaudeChannelCommand(command) {
+  if (command === "memesh-host-claude")
+    return true;
+  if (typeof command !== "string" || !path19.isAbsolute(command) || path19.basename(command) !== "memesh-host-claude") {
+    return false;
+  }
+  try {
+    const target = fs22.realpathSync(command);
+    const stat = fs22.statSync(target);
+    if (!stat.isFile())
+      return false;
+    fs22.accessSync(target, fs22.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function inspectClaudeChannelRegistration(existsSyncImpl, readFileSyncImpl) {
+  const configPath = path19.join(homeDir(), ".claude.json");
+  let parsed = null;
+  if (existsSyncImpl(configPath)) {
+    try {
+      const value = JSON.parse(readFileSyncImpl(configPath, "utf8"));
+      if (!value || typeof value !== "object" || Array.isArray(value))
+        throw new Error("not an object");
+      parsed = value;
+    } catch {
+      return createCheck("claude-channel", "Claude Channel registration", "warn", "The canonical Claude user config could not be read as JSON, so the memesh-channel registration is malformed or unverifiable.", "Repair the owner-controlled Claude config with `claude mcp remove memesh-channel` and re-run `memesh agent setup claude` to obtain a fresh registration command.");
+    }
+  }
+  const servers = parsed?.mcpServers;
+  const server = servers && typeof servers === "object" && !Array.isArray(servers) ? servers["memesh-channel"] : void 0;
+  if (server === void 0) {
+    return createCheck("claude-channel", "Claude Channel registration", "warn", "No user-scoped memesh-channel registration was found. Durable MCP/inbox messaging can still work, but live Claude Channel notification is inactive. The upstream research-preview channel remains opt-in.", "If you want the opt-in channel, run `memesh agent setup claude` and then register the printed user-scoped MCP command.", { code: "claude-channel.unregistered" });
+  }
+  const record2 = server && typeof server === "object" && !Array.isArray(server) ? server : null;
+  const command = record2?.command;
+  const rawArgs = record2?.args;
+  const args = Array.isArray(rawArgs) ? rawArgs : null;
+  const configIndex = args?.indexOf("--config") ?? -1;
+  const target = args && configIndex >= 0 && typeof args[configIndex + 1] === "string" ? args[configIndex + 1] : null;
+  let targetConfigValid = false;
+  if (target) {
+    try {
+      const config2 = readHostConfigFile(target);
+      const required2 = ["router_socket", "token_file", "principal_id"];
+      targetConfigValid = config2.server_name === "memesh-channel" && required2.every((key) => {
+        const value = config2[key];
+        return typeof value === "string" && value.length > 0 && Buffer.byteLength(value) <= 4096;
+      });
+    } catch {
+      targetConfigValid = false;
+    }
+  }
+  const commandValid = isClaudeChannelCommand(command);
+  const coherent = commandValid && args !== null && args.length === 2 && configIndex === 0 && target !== null && targetConfigValid;
+  if (!coherent) {
+    const reason = !commandValid || args === null || configIndex !== 0 || target === null ? "the command or --config declaration is malformed" : "the declared owner config target is missing, insecure, malformed, or incomplete";
+    return createCheck("claude-channel", "Claude Channel registration", "warn", `The user-scoped memesh-channel registration is present but ${reason}. Live Claude Channel notification is not established.`, "Remove and re-register the owner-controlled memesh-channel entry with `memesh agent setup claude`; keep its generated config file owner-private.");
+  }
+  return createInfo("claude-channel", "Claude Channel registration", "The user-scoped memesh-channel registration and owner-private config target are coherent (CONFIGURED). Development-channel admission and agent surfacing are not verified; durable MCP/inbox messaging remains a separate path.");
+}
+function isFreshInstall() {
+  try {
+    const createdAt = new Date(getInstallRecord().created_at).getTime();
+    if (!Number.isFinite(createdAt))
+      return false;
+    return (Date.now() - createdAt) / (60 * 60 * 1e3) < 24;
+  } catch {
+    return false;
+  }
+}
+async function inspectUpdateStatus(packageVersion2, getUpdateCheckImpl, installSupport) {
+  const update = await getUpdateCheckImpl(packageVersion2, { preferFresh: false });
+  if (!update) {
+    if (isFreshInstall()) {
+      return createCheck("update-status", "Update status", "pass", "Installed recently \u2014 memesh has not had a chance to check for updates yet. This resolves itself on the first successful check.");
+    }
+    return createCheck("update-status", "Update status", "warn", "memesh has not been able to check for newer versions yet, so it cannot tell you whether an update exists.", "Run `memesh status` once while connected to the internet \u2014 that stores the answer and this notice goes away.", { code: "update-status.no-cache" });
+  }
+  if (update.currentVersionDeprecated && update.deprecationMessage) {
+    const target = update.latestVersion && update.latestVersion !== packageVersion2 ? ` -> ${update.latestVersion}` : "";
+    const hasUpgradeTarget = update.latestVersion && update.latestVersion !== packageVersion2;
+    let fix;
+    if (installSupport?.canSelfUpdate) {
+      fix = hasUpgradeTarget ? `Run \`memesh update\`${target}.` : "Run `memesh update` to refresh the registry lookup and apply any newly-published fix.";
+    } else if (installSupport?.guidance) {
+      fix = installSupport.guidance + (hasUpgradeTarget ? ` Upgrade target: ${update.latestVersion}.` : " Upgrade target uncertain \u2014 re-check `memesh status` while online.");
+    } else {
+      fix = `Upgrade via your install method (see \`memesh status\`).`;
+    }
+    return createCheck("update-status", "Update status", "fail", `Installed version ${packageVersion2} is DEPRECATED by maintainers: ${update.deprecationMessage}`, fix, { code: "update-status.deprecated", params: { version: packageVersion2, detail: update.deprecationMessage ?? "" } });
+  }
+  if (update.freshness === "unavailable") {
+    if (isFreshInstall() && !update.lastAttemptAt && !update.lastError) {
+      return createCheck("update-status", "Update status", "pass", "Installed recently \u2014 memesh has not had a chance to check for updates yet. This resolves itself on the first successful check.");
+    }
+    return createCheck("update-status", "Update status", "warn", "memesh has not been able to check for newer versions yet, so it cannot tell you whether an update exists.", "Run `memesh status` once while connected to the internet \u2014 that stores the answer and this notice goes away.", { code: "update-status.no-cache" });
+  }
+  if (update.checkSucceeded && update.lastError) {
+    const hasUpdate = Boolean(update.updateAvailable && update.latestVersion);
+    const summary = hasUpdate ? `Deprecation status unknown for ${packageVersion2}: ${update.lastError}. Update ${update.latestVersion} is available.` : `Deprecation status unknown for ${packageVersion2}: ${update.lastError}.`;
+    let upgradeHint;
+    if (hasUpdate) {
+      if (installSupport?.canSelfUpdate) {
+        upgradeHint = `, or \`memesh update\` to apply ${update.latestVersion}`;
+      } else if (installSupport?.guidance) {
+        upgradeHint = `. Upgrade target ${update.latestVersion} via your install method: ${installSupport.guidance}`;
+      } else {
+        upgradeHint = `. Upgrade target: ${update.latestVersion}.`;
+      }
+    } else {
+      upgradeHint = "";
+    }
+    const fix = `Run \`memesh status\` while online to retry the deprecation lookup${upgradeHint}.`;
+    return createCheck("update-status", "Update status", "warn", summary, fix, {
+      code: "update-status.deprecation-unknown",
+      params: { version: packageVersion2, detail: update.lastError ?? "" }
+    });
+  }
+  if (update.latestVersion && update.latestVersion !== packageVersion2) {
+    if (classifyBump(packageVersion2, update.latestVersion)) {
+      return createCheck("update-status", "Update status", "warn", `Update available: ${update.latestVersion} (current: ${packageVersion2})`, `Run 'memesh update' to upgrade`, { code: "update-status.update-available", params: { latest: update.latestVersion, current: packageVersion2 } });
+    } else {
+      return createCheck("update-status", "Update status", "pass", `Running pre-release version (${packageVersion2}), npm latest is ${update.latestVersion}`);
+    }
+  }
+  const checkedHoursAgo = update.lastSuccessfulCheckAt === null ? null : (Date.now() - Date.parse(update.lastSuccessfulCheckAt)) / 36e5;
+  const checkedAgo = formatHoursAgo(checkedHoursAgo);
+  return createCheck("update-status", "Update status", update.freshness === "stale" ? "warn" : "pass", update.freshness === "stale" ? `As of the last check (${checkedAgo}), ${packageVersion2} was the latest version \u2014 that check is more than 24h old, so a newer release may exist since. Doctor never makes a live registry call itself.` : `As of the last check (${checkedAgo}), ${packageVersion2} was the latest version.`, update.freshness === "stale" ? "Run `memesh status` while online to refresh cached update metadata." : void 0, update.freshness === "stale" ? { code: "update-status.stale", params: { version: packageVersion2 } } : void 0);
+}
+async function inspectHttpProbe(httpBaseUrl, fetchImpl) {
+  try {
+    const response = await fetchImpl(`${httpBaseUrl.replace(/\/$/, "")}/v1/health`);
+    if (!response.ok) {
+      return createCheck("http-probe", "HTTP probe", "warn", `HTTP server responded with ${response.status} at ${httpBaseUrl}.`, "Run `memesh serve` and check the logs, then retry `memesh doctor --probe-http`.", { code: "http-probe.bad-status", params: { status: response.status, url: httpBaseUrl } });
+    }
+    return createCheck("http-probe", "HTTP probe", "pass", `HTTP server is reachable at ${httpBaseUrl}.`);
+  } catch {
+    return createCheck("http-probe", "HTTP probe", "warn", `No running HTTP server detected at ${httpBaseUrl}.`, "Start the local server with `memesh serve` if you want HTTP API verification.", { code: "http-probe.no-server", params: { url: httpBaseUrl } });
+  }
+}
+function verifySkillsManifest(packageRoot3, existsSyncImpl, readFileSyncImpl, installSupport) {
+  const reinstall = installSupport.guidance;
+  const manifestPath = path19.join(packageRoot3, "dist", "skills-manifest.json");
+  if (!existsSyncImpl(manifestPath)) {
+    return createCheck("skills-manifest", "Skills + hooks integrity", "warn", "No skills-manifest.json found. This is normal for source checkouts \u2014 packaged installs ship the manifest.", `Run \`npm run build\` to regenerate, or reinstall: ${reinstall}`, { code: "skills-manifest.missing-dev" });
+  }
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSyncImpl(manifestPath, "utf8"));
+  } catch (err) {
+    return createCheck("skills-manifest", "Skills + hooks integrity", "fail", `skills-manifest.json is unreadable (${err instanceof Error ? err.message : "parse error"}).`, `Reinstall the package: ${reinstall} If the problem persists open an issue.`, { code: "skills-manifest.unreadable", params: { detail: err instanceof Error ? err.message : "parse error" } });
+  }
+  const entries = Array.isArray(manifest.entries) ? manifest.entries : [];
+  if (entries.length === 0) {
+    return createCheck("skills-manifest", "Skills + hooks integrity", "fail", "skills-manifest.json contains zero entries.", `Reinstall the package: ${reinstall}`, { code: "skills-manifest.empty" });
+  }
+  const mismatches = [];
+  const missing = [];
+  for (const entry of entries) {
+    const full = path19.join(packageRoot3, entry.path);
+    if (!existsSyncImpl(full)) {
+      missing.push(entry.path);
+      continue;
+    }
+    let actualHash;
+    try {
+      const buf = readFileSyncImpl(full);
+      actualHash = createHash15("sha256").update(buf).digest("hex");
+    } catch (err) {
+      mismatches.push(`${entry.path} (read error: ${err instanceof Error ? err.message : "unknown"})`);
+      continue;
+    }
+    if (actualHash !== entry.sha256)
+      mismatches.push(entry.path);
+  }
+  if (missing.length === 0 && mismatches.length === 0) {
+    return createCheck("skills-manifest", "Skills + hooks integrity", "pass", `${entries.length} skill / hook files match the published manifest (SHA-256 verified).`);
+  }
+  const detail = [
+    missing.length > 0 ? `${missing.length} missing: ${missing.slice(0, 3).join(", ")}${missing.length > 3 ? ` (+${missing.length - 3} more)` : ""}` : null,
+    mismatches.length > 0 ? `${mismatches.length} tampered: ${mismatches.slice(0, 3).join(", ")}${mismatches.length > 3 ? ` (+${mismatches.length - 3} more)` : ""}` : null
+  ].filter(Boolean).join("; ");
+  return createCheck("skills-manifest", "Skills + hooks integrity", "fail", `Manifest verification failed: ${detail}.`, `Reinstall the package: ${reinstall} If the problem reproduces on a fresh install, open a security issue at https://github.com/PCIRCLE-AI/memesh/security.`, { code: "skills-manifest.verify-failed", params: { detail } });
+}
+function probeInstalledMessageCapability(packageRoot3) {
+  const required2 = [
+    "dist/transports/cli/doctor-message-probe.js",
+    "dist/mcp/server.js",
+    "dist/transports/mcp/handlers.js",
+    "dist/host-adapters/codex-app-server.js",
+    "dist/host-adapters/claude-channel.js",
+    "dist/host-adapters/acp-client.js"
+  ];
+  const absent = required2.filter((relative) => !fs22.existsSync(path19.join(packageRoot3, relative)));
+  if (absent.length > 0)
+    return { ok: false, message: `installed runtime is missing ${absent.join(", ")}` };
+  const probeHome = fs22.mkdtempSync(path19.join(os2.tmpdir(), "memesh-doctor-message-"));
+  try {
+    execFileSync7(process.execPath, [path19.join(packageRoot3, "dist/transports/cli/doctor-message-probe.js"), packageRoot3], {
+      cwd: packageRoot3,
+      stdio: "pipe",
+      timeout: 15e3,
+      env: { ...process.env, HOME: probeHome, MEMESH_AUTO_CAPTURE: "false" }
+    });
+    return { ok: true };
+  } catch {
+    return { ok: false, message: "installed MCP or bundled host adapters did not complete the message capability probe" };
+  } finally {
+    fs22.rmSync(probeHome, { recursive: true, force: true });
+  }
+}
+function inspectMessageCapability(packageRoot3, enabled, probe) {
+  if (!enabled) {
+    return createInfo("message-capability", "Message adapter imports", "Not verified (opt-in). Set MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY=1 to start this installed MCP and verify its nine-action message schema plus bundled host-adapter imports. This does not check a live router socket or host registration.");
+  }
+  const result = probe(packageRoot3);
+  if (result.ok)
+    return createCheck("message-capability", "Message adapter imports", "pass", "This installed MCP advertised the nine-action message schema and all bundled host adapters imported successfully. No live router socket, host registration, or host acceptance was verified.");
+  return createCheck("message-capability", "Message adapter imports", "fail", `Installed message capability probe failed: ${result.message}.`, "Reinstall or rebuild this package, then retry with MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY=1.", { code: "message-capability.probe-failed", params: { detail: result.message } });
+}
+async function defaultMessageRouterStatusProbe() {
+  const socketPath = process.env.MEMESH_ROUTER_SOCKET ?? getAgentRouterSocketPath();
+  const socketPathBytes = Buffer.byteLength(socketPath);
+  if (socketPathBytes > AGENT_ROUTER_SOCKET_PATH_MAX_BYTES) {
+    return { socket_path: socketPath, socket: "path-too-long", detail: `${socketPathBytes} bytes` };
+  }
+  let stat;
+  try {
+    stat = fs22.lstatSync(socketPath);
+  } catch (error62) {
+    const detail = error62 instanceof Error ? error62.message : String(error62);
+    return { socket_path: socketPath, socket: "missing", detail };
+  }
+  if (!stat.isSocket() || (stat.mode & 63) !== 0) {
+    return { socket_path: socketPath, socket: "insecure" };
+  }
+  const reachable = await new Promise((resolve2) => {
+    const socket = net2.createConnection({ path: socketPath });
+    const timer = setTimeout(() => {
+      socket.destroy();
+      resolve2(false);
+    }, 1500);
+    timer.unref();
+    socket.once("connect", () => {
+      clearTimeout(timer);
+      socket.destroy();
+      resolve2(true);
+    });
+    socket.once("error", () => {
+      clearTimeout(timer);
+      resolve2(false);
+    });
+  });
+  return { socket_path: socketPath, socket: reachable ? "reachable" : "unreachable" };
+}
+async function inspectMessageRouterStatus(enabled, probe) {
+  if (!enabled) {
+    return createInfo("message-router-status", "Live message router / host registration", "Not verified (opt-in). Set MEMESH_DOCTOR_PROBE_MESSAGE_ROUTER=1 to check only whether the owner-private Local router socket is live. This check never starts a router, registers a host, sends a message, or wakes a stopped session.");
+  }
+  const result = await probe();
+  switch (result.socket) {
+    case "reachable":
+      return createCheck("message-router-status", "Live message router / host registration", "pass", `Owner-private Local router socket is reachable at ${result.socket_path}. This proves only router availability; it does not prove an active host registration, native delivery, host_accept, ACK, or stopped-session wake-up.`);
+    case "missing":
+      return createCheck("message-router-status", "Live message router / host registration", "warn", `No Local router socket exists at ${result.socket_path}. No active host is registered through this router, and MeMesh will not wake a stopped or missing session.`, "Start the owner-configured router with `memesh-router`, then run this opt-in probe again.", { code: "message-router.socket-missing", params: { path: result.socket_path } });
+    case "path-too-long":
+      return createCheck("message-router-status", "Live message router / host registration", "fail", `The router socket path is ${result.detail} \u2014 over the ${AGENT_ROUTER_SOCKET_PATH_MAX_BYTES}-byte limit a Unix domain socket allows, so \`memesh-router\` cannot create it at ${result.socket_path}. Starting the router again fails the same way.`, process.env.MEMESH_ROUTER_SOCKET !== void 0 ? "Set MEMESH_ROUTER_SOCKET to a shorter absolute path in a folder only you can access (owner-private), then start `memesh-router` again. It reaches `memesh-router`, `memesh doctor`, senders and ordinary Claude MCP sessions. Host configs written by `memesh agent setup` (`hosts/codex-session.json` included) keep the default path, and ordinary Codex sessions use the default path, so shorten HOME / MEMESH_DIR instead if they must reach this router." : "Move HOME / MEMESH_DIR somewhere with a shorter path, then start `memesh-router` again. With MEMESH_DB_PATH set, the default socket sits in that database's folder, so move the database; the socket's folder must be owner-private. Setting MEMESH_ROUTER_SOCKET alone is not enough: it does not reach host configs written by `memesh agent setup` (`hosts/codex-session.json` included) or ordinary Codex sessions, which use the default path.", { code: "message-router.socket-path-too-long", params: { path: result.socket_path, bytes: result.detail ?? "unknown" } });
+    case "insecure":
+      return createCheck("message-router-status", "Live message router / host registration", "fail", `Router socket at ${result.socket_path} is not an owner-private Unix socket.`, "Stop the router, remove the unsafe socket, and restart `memesh-router` under the owning user.", { code: "message-router.socket-insecure", params: { path: result.socket_path } });
+    case "unreachable":
+      return createCheck("message-router-status", "Live message router / host registration", "warn", `An owner-private router socket exists at ${result.socket_path}, but it did not accept a local connection. No host registration or native delivery is verified.`, "Check the owner-configured `memesh-router` process, then run this opt-in probe again.", { code: "message-router.socket-unreachable", params: { path: result.socket_path } });
+  }
+}
+function summarizeOverallStatus(checks) {
+  const assertions = checks.filter((check2) => !check2.informational);
+  if (assertions.some((check2) => check2.status === "fail"))
+    return "FAIL";
+  if (assertions.some((check2) => check2.status === "warn"))
+    return "PASS_WITH_CONCERNS";
+  return "PASS";
+}
+async function runDoctor(options) {
+  const { packageRoot: packageRoot3, packageVersion: packageVersion2, probeHttp = false, httpBaseUrl = "http://127.0.0.1:3737", platform = process.platform, envImpl = process.env, openDatabaseImpl = openDatabase, closeDatabaseImpl = closeDatabase, isDatabaseOpenImpl = isDatabaseOpen, getConfigPathImpl = getConfigPath, getUpdateCheckImpl = getUpdateCheck, getCurrentInstallChannelImpl = getCurrentInstallChannel, installedPluginsPathImpl, marketplaceHeadShaImpl = defaultMarketplaceHeadSha, pluginCacheDiscoveryImpl, getInstallChannelSupportImpl = getInstallChannelSupport, existsSyncImpl = fs22.existsSync, readFileSyncImpl = fs22.readFileSync, statSyncImpl = fs22.statSync, fetchImpl = fetch, agentMessageStoragePolicy, nativeBindingProbeImpl, resolveShellMemeshImpl = defaultResolveShellMemesh, probeMessageCapability = process.env.MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY === "1", messageCapabilityProbeImpl = probeInstalledMessageCapability, probeMessageRouterStatus = process.env.MEMESH_DOCTOR_PROBE_MESSAGE_ROUTER === "1", messageRouterStatusProbeImpl = defaultMessageRouterStatusProbe } = options;
+  const wasDbOpenBeforeUs = isDatabaseOpenImpl();
+  const safeCloseDatabaseImpl = wasDbOpenBeforeUs ? () => void 0 : closeDatabaseImpl;
+  const checks = [];
+  const install = getCurrentInstallChannelImpl({ packageRoot: packageRoot3 });
+  const installSupport = getInstallChannelSupportImpl(install, packageRoot3);
+  checks.push(createCheck("install-channel", "Install method", install === "unknown" ? "warn" : "pass", `Install method detected: ${installSupport.label}.`, install === "unknown" ? "If this is a source checkout, run MeMesh from the repo root. If this is a packaged install, reinstall with `npm install -g @pcircle/memesh`." : void 0, install === "unknown" ? { code: "install-channel.unknown" } : void 0));
+  const databasePath = resolveDatabasePath();
+  const dbChecks = [];
+  try {
+    const db2 = openDatabaseImpl(databasePath);
+    const integrity = quickIntegrityVerdict(db2);
+    if (integrity !== "ok") {
+      throw Object.assign(new Error(`Database at ${databasePath} opened, but SQLite's quick integrity check failed: ${integrity}`), {
+        fix: damagedDatabaseFix(databasePath)
+      });
+    }
+    try {
+      unreadDeliveryCount(db2, "", "memesh-doctor");
+    } catch (err) {
+      const reason = (err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").slice(0, 200);
+      throw Object.assign(new Error(`Database at ${databasePath} opened, but its message inbox cannot be read: ${reason}`), {
+        fix: "This memesh cannot read the message tables, and briefing says the same. If a newer memesh version also uses this database, update this one to match it; otherwise the tables were changed outside memesh: restore a backup you trust, or report the error quoted above."
+      });
+    }
+    const count = db2.prepare("SELECT COUNT(*) as c FROM entities").get()?.c ?? 0;
+    const writeBack = ownerWriteCommand(databasePath);
+    dbChecks.push(writeBack ? createCheck("database", "Database", "warn", `Database at ${databasePath} (${count} entities) is read-only: reads work, writes are refused.`, `If it should be writable, ${writeBack}`) : createCheck("database", "Database", "pass", `Database opened successfully at ${databasePath} (${count} entities).`));
+    const messageStorage = inspectAgentMessageStorage(db2, databasePath, configuredAgentMessageStoragePolicy(agentMessageStoragePolicy));
+    if (messageStorage)
+      dbChecks.push(messageStorage);
+    const codexQueueDaemon = inspectCodexQueueDaemon(db2);
+    if (codexQueueDaemon)
+      dbChecks.push(codexQueueDaemon);
+    const projectSplit = inspectProjectIdentitySplit(db2);
+    if (projectSplit)
+      dbChecks.push(projectSplit);
+    const hasVocab = db2.prepare(`SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'fts_vocab'`).get();
+    if (hasVocab?.present) {
+      const unsegmented = db2.prepare(`SELECT COUNT(*) AS c FROM fts_vocab
+            WHERE length(term) > 2
+              AND term GLOB ?`).get(UNSPACED_SCRIPT_GLOB_RUN3);
+      if (unsegmented?.c) {
+        dbChecks.push(createCheck("fts_segmentation", "Keyword index segmentation", "warn", `The keyword index holds ${unsegmented.c} unsegmented term(s), so some memories are only findable by their exact full text. This happens when an older build wrote to a database that a newer one had already migrated \u2014 the version marker only moves forward, so the automatic rebuild cannot notice. Re-run doctor after the rebuild: this count should be 0.`, `Run 'memesh reindex --fts' to rebuild the keyword index.`, { code: "fts.unsegmented", params: { count: unsegmented.c } }, "fts-rebuild"));
+      }
+    }
+    try {
+      const guardRows = db2.prepare(`SELECT id, name, metadata FROM entities
+           WHERE status = 'active'
+             AND type IN ('lesson_learned', 'lesson', 'mistake')
+             AND metadata LIKE '%"guard"%'`).all();
+      const fired = guardRows.filter((r) => guardFromMetadata(r.id, r.metadata) !== null).map((r) => {
+        let fires = 0;
+        try {
+          const parsedMeta = JSON.parse(r.metadata);
+          if (typeof parsedMeta.guard?.fires === "number")
+            fires = parsedMeta.guard.fires;
+        } catch {
+        }
+        return { name: r.name, fires };
+      }).sort((a, b) => b.fires - a.fires);
+      if (fired.length > 0) {
+        const everFired = fired.filter((g) => g.fires > 0);
+        const top = everFired.slice(0, 3).map((g) => `${g.name} (${g.fires})`).join(", ");
+        dbChecks.push(createInfo("guard_activity", "Guard activity", `${fired.length} active guard(s); ${everFired.length} have ever fired` + (top ? `. Most: ${top}.` : ". None has matched yet.")));
+      }
+    } catch {
+    }
+    const citationTotalRow = db2.prepare(`SELECT value FROM memesh_metadata WHERE key = 'citation_sessions_total'`).get();
+    const citedRow = db2.prepare(`SELECT value FROM memesh_metadata WHERE key = 'citation_sessions_cited'`).get();
+    const citationTotal = Number.parseInt(String(citationTotalRow?.value ?? ""), 10);
+    if (Number.isInteger(citationTotal) && citationTotal > 0) {
+      const citedKnown = citedRow?.value !== void 0;
+      const cited = Number.parseInt(String(citedRow?.value ?? ""), 10);
+      const rate = citedKnown && Number.isInteger(cited) ? Math.round(cited / citationTotal * 100) : null;
+      const ruleScope = readInstallMarker()?.scope === "project" ? "project" : "user";
+      let rule;
+      try {
+        rule = citationRuleState(ruleScope, homeDir(), process.cwd(), {
+          readFileSync: readFileSyncImpl
+        });
+      } catch {
+        rule = { path: citationRulePath(ruleScope, homeDir(), process.cwd()), state: "unreadable" };
+      }
+      if (rate === null) {
+        dbChecks.push(createInfo("citation_compliance", "Memory use rate", `${citationTotal} session(s) received injected memories; how many cited or retrieved one is not recorded (this database predates the counter that would say). The rate will be measurable from the next session on.`));
+      } else if (rate === 0) {
+        dbChecks.push(createCheck("citation_compliance", "Memory use rate", "warn", `${citationTotal} session(s) received injected memories and NONE cited or retrieved one. Every injection is costing tokens with no evidence any of it was used \u2014 and with no citations or ID retrievals, ranking cannot learn which memories are worth injecting.`, rule.state === "current" ? `The citation contract is installed at ${rule.path}. If this stays at 0% across several more sessions, the injected memories are not earning their tokens \u2014 consider narrowing what is injected.` : `The citation contract is ${rule.state} at ${rule.path}. Run 'memesh install-hooks' (or start a new session) to write it, then re-check after a few sessions.`, { code: "citation.none", params: { total: citationTotal } }));
+      } else {
+        dbChecks.push(createInfo("citation_compliance", "Memory use rate", `${cited} of ${citationTotal} session(s) with injected memories cited or retrieved at least one (${rate}%).`));
+      }
+    }
+  } catch (err) {
+    const { diagnosis, fix } = diagnoseDatabaseFailure(err, databasePath, existsSyncImpl, statSyncImpl);
+    dbChecks.length = 0;
+    dbChecks.push(createCheck("database", "Database", "fail", diagnosis, fix, { code: "database.broken", params: { detail: diagnosis } }));
+  } finally {
+    checks.push(...dbChecks);
+    try {
+      safeCloseDatabaseImpl();
+    } catch {
+    }
+  }
+  checks.push(inspectConfigFile(existsSyncImpl, readFileSyncImpl, getConfigPathImpl));
+  checks.push(inspectMcpConfig(packageRoot3, install, existsSyncImpl, readFileSyncImpl, envImpl));
+  checks.push(...inspectHooksConfig(packageRoot3, platform, existsSyncImpl, readFileSyncImpl, statSyncImpl));
+  const pluginHost = detectPluginHost(packageRoot3);
+  let codexPluginCacheDetected = pluginHost === "codex";
+  let claudePluginCacheDetected = pluginHost === "claude-code";
+  const wiring = inspectHookWiring(existsSyncImpl, readFileSyncImpl, memeshDir(), install, installedPluginsPathImpl, pluginHost);
+  const pluginCache = inspectPluginCacheCurrency(install, pluginHost, packageRoot3, installedPluginsPathImpl, readFileSyncImpl, existsSyncImpl, marketplaceHeadShaImpl);
+  if (pluginCache)
+    checks.push(pluginCache);
+  if (install === "npm-global") {
+    const discoveredCounts = /* @__PURE__ */ new Map();
+    const discoveredPluginCaches = pluginCacheDiscoveryImpl ? pluginCacheDiscoveryImpl() : defaultPluginCacheDiscovery(readFileSyncImpl, existsSyncImpl);
+    for (const discovered of discoveredPluginCaches) {
+      if (discovered.host === "codex")
+        codexPluginCacheDetected = true;
+      if (discovered.host === "claude-code")
+        claudePluginCacheDetected = true;
+      const check2 = discovered.unverifiableReason ? pluginCacheUnverifiable(discovered.host, discovered.unverifiableReason) : inspectPluginCacheCurrency("plugin-marketplace", discovered.host, discovered.packageRoot, discovered.installedPluginsPath, readFileSyncImpl, existsSyncImpl, marketplaceHeadShaImpl);
+      if (check2) {
+        const hostName = discovered.host;
+        const index = (discoveredCounts.get(discovered.host) ?? 0) + 1;
+        discoveredCounts.set(discovered.host, index);
+        checks.push({ ...check2, id: `plugin-cache-${hostName}${index === 1 ? "" : `-${index}`}` });
+      }
+    }
+  }
+  checks.push(wiring);
+  if (claudePluginCacheDetected) {
+    checks.push(inspectClaudeChannelRegistration(existsSyncImpl, readFileSyncImpl));
+  }
+  const codexSessionSetup = inspectCodexSessionSetup(codexPluginCacheDetected, existsSyncImpl);
+  if (codexSessionSetup)
+    checks.push(codexSessionSetup);
+  const captureWired = wiring.status === "pass" && (wiring.params === void 0 || wiring.params.captureWired === 1);
+  checks.push(inspectHookActivity(openDatabaseImpl, safeCloseDatabaseImpl, existsSyncImpl, statSyncImpl, captureWired));
+  const captureLiveness = withRecordedHosts(inspectCaptureLiveness(openDatabaseImpl, safeCloseDatabaseImpl, readFileSyncImpl, getMemeshDirFromDbPath, captureWired));
+  checks.push(captureLiveness.check);
+  const captureReport = captureLiveness.report;
+  checks.push(inspectNodeRuntime(packageRoot3, existsSyncImpl, readFileSyncImpl));
+  checks.push(inspectNativeBinding(packageRoot3, existsSyncImpl, nativeBindingProbeImpl));
+  checks.push(inspectShellCli(install, packageRoot3, packageVersion2, resolveShellMemeshImpl, existsSyncImpl, readFileSyncImpl));
+  checks.push(verifySkillsManifest(packageRoot3, existsSyncImpl, readFileSyncImpl, installSupport));
+  checks.push(inspectMessageCapability(packageRoot3, probeMessageCapability, messageCapabilityProbeImpl));
+  checks.push(await inspectMessageRouterStatus(probeMessageRouterStatus, messageRouterStatusProbeImpl));
+  checks.push(await inspectUpdateStatus(packageVersion2, getUpdateCheckImpl, installSupport));
+  try {
+    const record2 = getInstallRecord();
+    checks.push(createInfo("install_id", "Install ID", `Anonymous install ID: ${record2.install_id} (created ${record2.created_at}). Stored locally at ${path19.join(memeshDir(), "install.json")}. Never transmitted automatically; included only in feedback issues you submit with the "Include system info" checkbox on.`));
+  } catch {
+  }
+  checks.push(inspectLocaleReadmeParity(packageRoot3, existsSyncImpl, readFileSyncImpl));
+  if (probeHttp) {
+    checks.push(await inspectHttpProbe(httpBaseUrl, fetchImpl));
+  }
+  return {
+    status: summarizeOverallStatus(checks),
+    checks,
+    ...captureReport ? { capture: captureReport } : {}
+  };
+}
+function iconForStatus(status) {
+  switch (status) {
+    case "pass":
+      return "PASS";
+    case "warn":
+      return "WARN";
+    default:
+      return "FAIL";
+  }
+}
+function formatDoctorReport(result, packageVersion2) {
+  const lines = [`MeMesh doctor v${packageVersion2}`, `Overall: ${result.status}`];
+  for (const check2 of result.checks) {
+    lines.push("");
+    lines.push(`[${check2.informational ? "INFO" : iconForStatus(check2.status)}] ${check2.label}`);
+    lines.push(`  ${check2.summary}`);
+    if (check2.fix) {
+      lines.push(`  Fix: ${check2.fix}`);
+    }
+  }
+  return lines;
+}
+var EXPECTED_HOOK_TYPES, AGENT_MESSAGE_STORAGE_QUOTA_ENV2, LOCALE_README_FILES, LOCALE_H2_TOLERANCE, MCP_PLACEHOLDER, SAFE_HANDOFF_NAME;
+var init_doctor = __esm({
+  "dist/core/doctor.js"() {
+    "use strict";
+    init_config();
+    init_db();
+    init_version_check();
+    init_updater();
+    init_install_channel();
+    init_install_id();
+    init_file_mode();
+    init_agent_message_inbox();
+    init_database_diagnosis();
+    init_citation_rule();
+    init_paths();
+    init_project_identity_split();
+    init_agent_router();
+    init_install_hooks();
+    init_fts_index();
+    init_sqlite();
+    init_types();
+    init_session_handoff();
+    init_time_utils();
+    init_capture_flag();
+    init_capture_liveness();
+    init_guards();
+    init_agent_message_storage();
+    init_config2();
+    EXPECTED_HOOK_TYPES = ["PreToolUse", "SessionStart", "PostToolUse", "Stop", "PreCompact"];
+    AGENT_MESSAGE_STORAGE_QUOTA_ENV2 = "MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES";
+    LOCALE_README_FILES = [
+      "README.zh-TW.md"
+    ];
+    LOCALE_H2_TOLERANCE = 1;
+    MCP_PLACEHOLDER = "${CLAUDE_PLUGIN_ROOT}";
+    SAFE_HANDOFF_NAME = /^session-handoff:[A-Za-z0-9._-]+~[0-9a-f]{32}$/;
+  }
+});
+
 // dist/transports/http/server.js
 var server_exports = {};
 __export(server_exports, {
@@ -65341,16 +65568,7 @@ function startServer(host = HOST, port = PORT, opts) {
     db2.prepare("SELECT COUNT(*) FROM entities").get();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    const dbPath = getDbPath();
-    console.error("\n\u274C MeMesh startup failed: database cannot be opened\n");
-    console.error(`   Database path: ${dbPath}`);
-    console.error(`   Error: ${message}
-`);
-    const { diagnosis, fix } = diagnoseDatabaseFailure(err, dbPath);
-    if (diagnosis !== message)
-      console.error(`   Diagnosis: ${diagnosis}`);
-    console.error(`Fix: ${fix}
-`);
+    console.error(databaseOpenFailureReport(err, getDbPath()));
     throw new Error(`Database initialization failed: ${message}`, { cause: err });
   }
   const injectedUpdateSeam = Boolean(opts?.updateCheckImpl || opts?.lastUpdateCheckImpl);
@@ -68557,7 +68775,7 @@ ${entities.length} result(s)${truncatedNote}`);
     }
   });
 });
-program2.command("forget").description("Archive an entity or remove an observation (soft-delete, recoverable)").requiredOption("--name <name>", "Entity name").option("--observation <text>", "Remove specific observation only", nonEmpty("--observation")).option("--json", "Output as JSON").option("--confirm", "[deprecated, no-op] forget is a soft archive \u2014 no confirmation needed").action(async (opts) => {
+program2.command("forget").description("Archive an entity (reversible) or permanently remove one observation").requiredOption("--name <name>", "Entity name").option("--observation <text>", "Remove specific observation only", nonEmpty("--observation")).option("--json", "Output as JSON").option("--confirm", "[deprecated, no-op] forget is a soft archive \u2014 no confirmation needed").action(async (opts) => {
   await withDatabase(() => {
     let result;
     try {

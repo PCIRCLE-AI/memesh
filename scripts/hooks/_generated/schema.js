@@ -479,6 +479,10 @@ export function isTransientDbError(err) {
         /database is locked|database table is locked|locking protocol/i.test(msg));
 }
 export const MIGRATION_RETRY_BACKOFF_MS = 24 * 60 * 60 * 1000;
+export function migrationRetryPending(db, key) {
+    const lastAttempt = db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(`${key}_last_attempt`)?.value;
+    return !!lastAttempt && Date.now() - parseInt(lastAttempt, 10) < MIGRATION_RETRY_BACKOFF_MS;
+}
 export function runOnceMigration(db, opts) {
     const { key, version, describe, migrate } = opts;
     const attemptKey = `${key}_last_attempt`;
@@ -486,10 +490,8 @@ export function runOnceMigration(db, opts) {
     const stored = readMarker(key);
     if (stored && parseInt(stored, 10) >= version)
         return false;
-    const lastAttempt = readMarker(attemptKey);
-    if (lastAttempt && Date.now() - parseInt(lastAttempt, 10) < MIGRATION_RETRY_BACKOFF_MS) {
+    if (migrationRetryPending(db, key))
         return false;
-    }
     try {
         db.transaction(() => {
             const current = readMarker(key);

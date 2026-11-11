@@ -247,6 +247,9 @@ describe('Feature: a session that declares MEMESH_RECIPIENT is told when a messa
     expect(promptRun.stdout).toBe('');
     expect(promptRun.stderr).toContain('could not check for waiting messages');
     expect(start.stderr).toContain('could not check for waiting messages');
+    // The model reads the context, not stderr: it must not look like an empty inbox.
+    expect(start.stdout).toContain('MeMesh could not check for messages waiting for \\"claude-implementer\\": \\"no such table: agent_message_receipts\\"');
+    expect(start.stdout).toContain('that is not the same as no messages waiting; run memesh doctor.');
 
     // Without a record of its own, the prompt's `skipped` line reads as "nothing
     // was waiting". The failure is its own `error`, a label and not the message.

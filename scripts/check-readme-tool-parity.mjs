@@ -100,10 +100,15 @@ for (const name of names) {
 
 const architecture = read('docs/ARCHITECTURE.md');
 const overview = architecture.match(/## Overview\n([\s\S]*?)(?=\n## |\n```)/m)?.[1] ?? '';
+// The handler table names every tool too; locking only the Overview let a
+// renamed row there pass unnoticed.
+const handlerTable = architecture.match(/### transports\/mcp\/handlers\.ts -- MCP Tool Handlers\n([\s\S]*?)(?=\n### )/m)?.[1] ?? '';
 if (!overview) errors.push('docs/ARCHITECTURE.md: missing bounded Overview section');
-else checkLockedSurface('docs/ARCHITECTURE.md', overview);
+if (!handlerTable) errors.push('docs/ARCHITECTURE.md: missing bounded MCP Tool Handlers section');
+if (overview && handlerTable) checkLockedSurface('docs/ARCHITECTURE.md', `${overview.trim()}\0${handlerTable.trim()}`);
 for (const name of names) {
   if (!overview.includes(`\`${name}\``)) errors.push(`docs/ARCHITECTURE.md: overview omits MCP tool ${name}`);
+  if (!new RegExp(`^\\| \`${name}\` \\|`, 'm').test(handlerTable)) errors.push(`docs/ARCHITECTURE.md: MCP Tool Handlers table omits ${name}`);
 }
 for (const file of Object.keys(lock.surfaces ?? {})) {
   if (!checkedSurfaces.has(file)) errors.push(`scripts/mcp-doc-contract.json: unrecognized surface ${file}`);

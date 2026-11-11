@@ -217,7 +217,11 @@ describe('computePatterns: numbers that match their names', () => {
     it('still counts a commit forgotten after its week was compressed: compression had already recorded it', () => {
       seedOldCommits();
       compressWeeklyNoise(getDatabase());
+      const row = () => getDatabase().prepare('SELECT status, metadata FROM entities WHERE name = ?').get('old-commit-3');
+      const before = row();
+      // Forgetting a record compression already archived changes nothing on it.
       forget({ name: 'old-commit-3' });
+      expect(row()).toEqual(before);
       expect(computePatterns(getDatabase()).workflow.totalCommits).toBe(25);
       expect(scheduleTotal()).toBe(25);
     });
@@ -263,5 +267,156 @@ describe('computePatterns: numbers that match their names', () => {
       forget({ name: 'd-gone' });
       expect(scheduleTotal()).toBe(1);
     });
+  });
+});
+
+describe('computePatterns: each rule holds on its own', () => {
+  const sum = (xs: Array<{ count: number }>) => xs.reduce((n, x) => n + x.count, 0);
+  const setMeta = (name: string, status: string, meta: string | null) =>
+    getDatabase().prepare('UPDATE entities SET status = ?, metadata = ? WHERE name = ?').run(status, meta, name);
+  it('commitsPerSession is rounded to one decimal', () => {
+    for (const s of ['a', 'b', 'c']) remember({ name: `s-${s}`, type: 'session-insight', observations: ['x'], tags: [`session:${s}`] });
+    for (let i = 0; i < 4; i++) remember({ name: `c-${i}`, type: 'commit', observations: [`fix: ${i}`] });
+    const w = computePatterns(getDatabase(), ['workflow']).workflow;
+    expect(w.totalSessions).toBe(3);
+    expect(w.commitsPerSession).toBe(1.3);
+  });
+
+  it('an archived record of a type compression never touches does not count, even with a marker', () => {
+    remember({ name: 'd-marked', type: 'decision', why: 'a placeholder choice; revisit if the test changes', observations: ['x'] });
+    getDatabase().exec(`UPDATE entities SET status = 'archived', metadata = json_set(COALESCE(metadata, '{}'), '$.compacted_into', 5) WHERE name = 'd-marked'`);
+    expect(sum(computePatterns(getDatabase(), ['workSchedule']).workSchedule.hourDistribution)).toBe(0);
+  });
+
+  it('a compacted_into that is not an integer is not a compaction marker', () => {
+    remember({ name: 'c-str', type: 'commit', observations: ['fix: x'] });
+    getDatabase().exec(`UPDATE entities SET status = 'archived', metadata = '{"compacted_into":"5"}' WHERE name = 'c-str'`);
+    expect(computePatterns(getDatabase(), ['workflow']).workflow.totalCommits).toBe(0);
+  });
+
+  it('an archived commit whose metadata is not JSON does not make patterns throw, and does not count', () => {
+    remember({ name: 'c-bad', type: 'commit', observations: ['fix: x'] });
+    remember({ name: 'c-ok', type: 'commit', observations: ['fix: y'] });
+    getDatabase().exec(`UPDATE entities SET status = 'archived', metadata = 'not json' WHERE name = 'c-bad'`);
+    expect(computePatterns(getDatabase()).workflow.totalCommits).toBe(1);
+  });
+
+  it('workflow_checkpoint is not a focus area or a strength', () => {
+    remember({ name: 'w1', type: 'workflow_checkpoint', observations: ['x'] });
+    remember({ name: 'w2', type: 'workflow_checkpoint', observations: ['x'] });
+    const r = computePatterns(getDatabase());
+    expect(r.focusAreas.map((f) => f.type)).not.toContain('workflow_checkpoint');
+    expect(r.strengths.map((f) => f.type)).not.toContain('workflow_checkpoint');
+  });
+
+  it('focus areas leave out a forgotten memory', () => {
+    remember({ name: 'd1', type: 'decision', why: 'a placeholder choice; revisit if the test changes', observations: ['x'] });
+    remember({ name: 'd2', type: 'decision', why: 'a placeholder choice; revisit if the test changes', observations: ['x'] });
+    forget({ name: 'd2' });
+    expect(computePatterns(getDatabase(), ['focusAreas']).focusAreas).toEqual([{ type: 'decision', count: 1 }]);
+  });
+
+  it('strengths leave out a forgotten memory', () => {
+    remember({ name: 'd1', type: 'decision', why: 'a placeholder choice; revisit if the test changes', observations: ['x'] });
+    remember({ name: 'd2', type: 'decision', why: 'a placeholder choice; revisit if the test changes', observations: ['x'] });
+    forget({ name: 'd2' });
+    expect(computePatterns(getDatabase(), ['strengths']).strengths).toEqual([]);
+  });
+
+  it('a type with a single memory is not a strength', () => {
+    remember({ name: 'k1', type: 'concept', observations: ['x'] });
+    expect(computePatterns(getDatabase(), ['strengths']).strengths).toEqual([]);
+    remember({ name: 'k2', type: 'concept', observations: ['x'] });
+    expect(computePatterns(getDatabase(), ['strengths']).strengths.map((s) => s.type)).toEqual(['concept']);
+  });
+
+  it('each list is cut off at its limit', () => {
+    for (let i = 0; i < 11; i++) {
+      remember({ name: `t${i}-a`, type: `type${i}`, observations: ['x'] });
+      remember({ name: `t${i}-b`, type: `type${i}`, observations: ['x'] });
+      remember({ name: `l${i}`, type: 'lesson_learned', observations: ['Error: x'], tags: [`topic${i}`] });
+    }
+    const r = computePatterns(getDatabase());
+    expect(r.focusAreas.length).toBe(10);
+    expect(r.strengths.length).toBe(5);
+    expect(r.learningAreas.length).toBe(10);
+  });
+
+  it('mistake, bug_fix and lesson records feed the learning areas, other types do not', () => {
+    remember({ name: 'm', type: 'mistake', observations: ['x'], tags: ['from-mistake'] });
+    remember({ name: 'b', type: 'bug_fix', observations: ['x'], tags: ['from-bug-fix'] });
+    remember({ name: 'l', type: 'lesson', observations: ['x'], tags: ['from-lesson'] });
+    remember({ name: 'd', type: 'concept', observations: ['x'], tags: ['from-concept'] });
+    expect(computePatterns(getDatabase(), ['learningAreas']).learningAreas.map((l) => l.tag).sort()).toEqual(['from-bug-fix', 'from-lesson', 'from-mistake']);
+  });
+
+  it('hour and weekday are in local time', () => {
+    const before = process.env.TZ;
+    process.env.TZ = 'Asia/Taipei';
+    try {
+      remember({ name: 'late', type: 'concept', observations: ['x'] });
+      // 23:30 UTC on Sunday 2026-03-01 is 07:30 on Monday 2026-03-02 in Taipei.
+      getDatabase().exec("UPDATE entities SET created_at = '2026-03-01 23:30:00' WHERE name = 'late'");
+      const s = computePatterns(getDatabase(), ['workSchedule']).workSchedule;
+      expect(s.hourDistribution).toEqual([{ hour: 7, count: 1 }]);
+      expect(s.dayDistribution).toEqual([{ dayNum: 1, count: 1 }]);
+    } finally {
+      if (before === undefined) delete process.env.TZ; else process.env.TZ = before;
+    }
+  });
+
+  it('each category is returned when asked for alone, and an empty list means all', () => {
+    remember({ name: 'd1', type: 'decision', why: 'a placeholder choice; revisit if the test changes', observations: ['x'] });
+    remember({ name: 'd2', type: 'decision', why: 'a placeholder choice; revisit if the test changes', observations: ['x'] });
+    expect(computePatterns(getDatabase(), ['focusAreas']).focusAreas.length).toBe(1);
+    expect(computePatterns(getDatabase(), ['strengths']).strengths.length).toBe(1);
+    expect(computePatterns(getDatabase(), ['strengths']).focusAreas).toEqual([]);
+    const all = computePatterns(getDatabase(), []);
+    expect(all.focusAreas.length).toBe(1);
+    expect(all.strengths.length).toBe(1);
+    expect(all.workSchedule.hourDistribution.length).toBeGreaterThan(0);
+  });
+
+  it('every exact system tag is dropped', () => {
+    remember({
+      name: 'l-sys', type: 'lesson_learned', observations: ['Error: x'],
+      tags: ['topic', 'auto', 'auto-tracked', 'session-summary', 'session-insight', 'session_keypoint', 'workflow_checkpoint'],
+    });
+    expect(computePatterns(getDatabase(), ['learningAreas']).learningAreas.map((l) => l.tag)).toEqual(['topic']);
+  });
+
+  it('counts an archived commit only when its marker is an integer, and never throws on metadata it cannot read', () => {
+    for (const n of ['c-bad', 'c-str', 'c-real', 'c-ok']) remember({ name: n, type: 'commit', observations: [`fix: ${n}`] });
+    setMeta('c-bad', 'archived', 'not json');
+    setMeta('c-str', 'archived', '{"compacted_into":"5"}');
+    setMeta('c-real', 'archived', '{"compacted_into":1.5}');
+    setMeta('c-ok', 'archived', '{"compacted_into":7}');
+    const p = computePatterns(getDatabase());
+    expect(p.workflow.totalCommits).toBe(1);
+    expect(sum(p.workSchedule.hourDistribution)).toBe(1);
+  });
+
+  it('counts a workflow checkpoint the dreamer archived, as it counts one still active', () => {
+    remember({ name: 'w1', type: 'workflow_checkpoint', observations: ['x'] });
+    const before = sum(computePatterns(getDatabase(), ['workSchedule']).workSchedule.hourDistribution);
+    setMeta('w1', 'archived', '{"compacted_into":9}');
+    expect(sum(computePatterns(getDatabase(), ['workSchedule']).workSchedule.hourDistribution)).toBe(before);
+  });
+
+  it.each(['commit', 'session_keypoint', 'session-insight', 'session-summary', 'workflow_checkpoint'])(
+    'counts a %s that compression or the dreamer archived, as it counts one still active',
+    (type) => {
+      remember({ name: 'r1', type, observations: ['x'] });
+      const before = sum(computePatterns(getDatabase(), ['workSchedule']).workSchedule.hourDistribution);
+      expect(before).toBe(1);
+      setMeta('r1', 'archived', '{"compacted_into":9}');
+      expect(sum(computePatterns(getDatabase(), ['workSchedule']).workSchedule.hourDistribution)).toBe(before);
+    },
+  );
+
+  it('never counts a weekly summary the dreamer archived', () => {
+    remember({ name: 'ws', type: 'weekly_summary', observations: ['x'] });
+    setMeta('ws', 'archived', '{"compacted_into":9}');
+    expect(sum(computePatterns(getDatabase(), ['workSchedule']).workSchedule.hourDistribution)).toBe(0);
   });
 });

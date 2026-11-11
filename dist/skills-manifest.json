@@ -128,8 +128,8 @@
     },
     {
       "path": "scripts/hooks/_generated/schema.js",
-      "sha256": "b993c195b8917773310f8db3f59ccd9f01aa5cda72e064a350d5f2be7b270760",
-      "bytes": 26359
+      "sha256": "6742de263a40c205734ce40263ebd933b3dc881868d1a62803ed861b91e60d2b",
+      "bytes": 26520
     },
     {
       "path": "scripts/hooks/_generated/scoring.js",
@@ -178,13 +178,13 @@
     },
     {
       "path": "scripts/hooks/_generated/work-topology.js",
-      "sha256": "63086e62cca3e491dc9770565a46c9598d2518c8ef89c80e35226cc07d44e913",
-      "bytes": 13903
+      "sha256": "23447e86522abb4ebfdbae5a4d933865a5369a7f4c8a1c4494aa051fdfeda052",
+      "bytes": 13907
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "a9efd05e201f6224a2496d8e2cd582a11186cca0250c4564ba1290385d28efcc",
-      "bytes": 127314
+      "sha256": "da2ed300cb48b3133fc3b0c1e112a1ec6df9fb1412c583b7d9dc797c27d729e0",
+      "bytes": 127933
     },
     {
       "path": "scripts/hooks/_stop-handoff.js",
@@ -238,8 +238,8 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "d39c7a9f82d54b0f22bc0c9997fc04e945ef073d7a165f5d5b6ee80198b8676b",
-      "bytes": 98712
+      "sha256": "2deb11f36ffba61e474588f7a14620c0a6300bb72a0d96a38cb370e67de43e36",
+      "bytes": 98923
     },
     {
       "path": "scripts/hooks/session-summary.js",
@@ -263,8 +263,8 @@
     },
     {
       "path": "skills/memesh/SKILL.md",
-      "sha256": "08690a5cf340a6a70f0920792bb3e2ca56eb20162f54c8c9117c8e37e11f218e",
-      "bytes": 30225
+      "sha256": "838404d0b4b3b69762e0f068d45b2d800ba869fc7ff28f33dc2246f96f8e0fc9",
+      "bytes": 30358
     }
   ]
 }

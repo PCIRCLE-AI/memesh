@@ -308,7 +308,7 @@ specific keywords rather than a whole sentence. Results are ranked by relevance.
 memesh forget --name "auth-approach" --observation "Use JWT"   # remove one fact only
 memesh forget --name "old-auth-approach"                       # archive the whole entity
 ```
-Both are soft (recoverable) — nothing is permanently removed.
+Archiving the whole entity is reversible (`recall --include-archived` still finds it, and `remember` with the same name makes it active again). Removing one observation deletes that text for good.
 
 ### Memories are getting verbose or stale
 Use the **memesh-review** skill: it prepares bounded `work_package` evidence

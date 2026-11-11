@@ -12,7 +12,8 @@ import { classifyBump } from './updater.js';
 import { getCurrentInstallChannel, getInstallChannelSupport, detectPluginHost, pluginHostConfigRoot, versionedPluginCacheRoots, PLUGIN_REFRESH_COMMANDS, } from './install-channel.js';
 import { getInstallRecord } from './install-id.js';
 import { ownerWriteCommand, runOrSay, shellQuote } from './file-mode.js';
-import { damagedDatabaseFix, diagnoseDatabaseFailure } from './database-diagnosis.js';
+import { unreadDeliveryCount } from './agent-message-inbox.js';
+import { damagedDatabaseFix, diagnoseDatabaseFailure, isDamagedDatabaseError } from './database-diagnosis.js';
 import { citationRulePath, citationRuleState } from './citation-rule.js';
 import { getAgentRouterSocketPath, getDbPath, getMemeshDirFromDbPath, homeDir, memeshDir } from './paths.js';
 import { findProjectIdentitySplits } from './project-identity-split.js';
@@ -105,15 +106,19 @@ function queryFailedFix(err) {
     return 'The error is quoted above. Check that ~/.memesh is readable and that the disk is not full.';
 }
 function quickIntegrityVerdict(db) {
+    let row;
     try {
-        const row = db.prepare('PRAGMA quick_check(1)').get();
-        if (typeof row?.quick_check !== 'string')
-            return 'quick_check returned no verdict';
-        return row.quick_check.replace(/\s+/g, ' ').slice(0, 200);
+        row = db.prepare('PRAGMA quick_check(1)').get();
     }
     catch (err) {
-        return (err instanceof Error ? err.message : 'quick_check raised an error').replace(/\s+/g, ' ').slice(0, 200);
+        const message = err instanceof Error ? err.message : String(err);
+        if (!isDamagedDatabaseError(message))
+            throw err;
+        return message.replace(/\s+/g, ' ').slice(0, 200);
     }
+    if (typeof row?.quick_check !== 'string')
+        return 'quick_check returned no verdict';
+    return row.quick_check.replace(/\s+/g, ' ').slice(0, 200);
 }
 function createCheck(id, label, status, summary, fix, i18n, fixId) {
     return { id, label, status, summary, fix, code: i18n?.code, params: i18n?.params, fixId };
@@ -1477,6 +1482,15 @@ export async function runDoctor(options) {
         if (integrity !== 'ok') {
             throw Object.assign(new Error(`Database at ${databasePath} opened, but SQLite's quick integrity check failed: ${integrity}`), {
                 fix: damagedDatabaseFix(databasePath),
+            });
+        }
+        try {
+            unreadDeliveryCount(db, '', 'memesh-doctor');
+        }
+        catch (err) {
+            const reason = (err instanceof Error ? err.message : String(err)).replace(/\s+/g, ' ').slice(0, 200);
+            throw Object.assign(new Error(`Database at ${databasePath} opened, but its message inbox cannot be read: ${reason}`), {
+                fix: 'This memesh cannot read the message tables, and briefing says the same. If a newer memesh version also uses this database, update this one to match it; otherwise the tables were changed outside memesh: restore a backup you trust, or report the error quoted above.',
             });
         }
         const count = db.prepare('SELECT COUNT(*) as c FROM entities').get()?.c ?? 0;

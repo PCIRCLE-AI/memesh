@@ -10,6 +10,8 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { fileURLToPath } from 'url';
 import { openDatabase, closeDatabase } from '../db.js';
+import { databaseOpenFailureReport } from '../core/database-diagnosis.js';
+import { getDbPath } from '../core/paths.js';
 import { handleTool, TOOL_DEFINITIONS } from './tools.js';
 import { configureVersionSource, normalizeClientHost } from '../transports/mcp/handlers.js';
 import { resolveMcpProject } from '../transports/mcp/project-context.js';
@@ -125,7 +127,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
 
 // Start
 async function main() {
-  openDatabase();
+  try {
+    openDatabase();
+  } catch (err) {
+    // stderr only: stdout is the MCP protocol channel.
+    console.error(databaseOpenFailureReport(err, getDbPath()));
+    throw err;
+  }
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

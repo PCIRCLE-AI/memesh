@@ -5,7 +5,9 @@
 
 import type { MemeshDatabase } from '../storage/sqlite.js';
 import { NOISE_TYPES } from './analytics.js';
-import { NOISE_TYPES as COMPRESSED_TYPES } from './lifecycle.js';
+import { NOISE_TYPES as LIFECYCLE_COMPRESSED_TYPES } from './lifecycle.js';
+import { COMPACTABLE_TYPES as DREAMER_COMPACTED_TYPES } from './dreamer.js';
+import { unmarkedCompressedCommits } from './compression-ledger.js';
 
 // ---------------------------------------------------------------------------
 // Result types
@@ -44,17 +46,22 @@ const SESSION_TYPES = ['session_keypoint', 'session-insight'];
  * archiving also happens without the person asking: lifecycle compression
  * (`compressWeeklyNoise`, run daily) and the dreamer both archive old commits
  * and session records, and both leave `metadata.compacted_into` on each row
- * they archive. `forget` leaves nothing. So an archived record of a compressible
- * type counts exactly when it carries that marker; a record forgotten before
- * its week was compressed was never marked and never counts. The weekly
- * summary itself never counts: its time is the moment of compression. Known
- * limits: rows compressed before the marker existed were marked once, by
- * `backfillCompressionMarkers`, only where a weekly summary's own counts prove
- * it, and the rest stay uncounted; a record forgotten after its week was
- * compressed keeps its marker and still counts, since compression had already
- * recorded it.
+ * they archive; the types either may archive are read from each one's own set.
+ * `forget` leaves nothing, and remembering an archived record again removes
+ * the marker. So an archived record of those types counts exactly when it
+ * carries that marker; a record forgotten before its week was compressed was
+ * never marked and never counts. Weekly summaries never count: their time is
+ * the moment of compression. Known limits: rows compressed before the marker
+ * existed were marked once, by `backfillCompressionMarkers`, where a weekly
+ * summary's counts account for every archived row of that week and type; for
+ * a week it could not mark, the commits its summary declared still count in
+ * `totalCommits` (`unmarkedCompressedCommits`) but not in hours, days or
+ * sessions, and in data an older version wrote, a record compressed, remembered
+ * again and then forgotten looks compressed and still counts.
  */
-const COMPRESSED_TYPE_LIST = [...COMPRESSED_TYPES].map((t) => `'${t.replace(/'/g, "''")}'`).join(',');
+const COMPRESSED_TYPE_LIST = [...new Set([...LIFECYCLE_COMPRESSED_TYPES, ...DREAMER_COMPACTED_TYPES])]
+  .filter((t) => t !== 'weekly-summary' && t !== 'weekly_summary')
+  .map((t) => `'${t.replace(/'/g, "''")}'`).join(',');
 function countedSql(alias: string): string {
   return `(${alias}.type != 'weekly-summary' AND (${alias}.status = 'active' OR (${alias}.status = 'archived'
     AND ${alias}.type IN (${COMPRESSED_TYPE_LIST})
@@ -115,7 +122,7 @@ export function computePatterns(db: MemeshDatabase, categories?: string[]): Patt
   if (allCategories || categories!.includes('workflow')) {
     totalCommits = (db.prepare(
       `SELECT COUNT(*) as c FROM entities e WHERE e.type = 'commit' AND ${countedSql('e')}`
-    ).get() as { c: number }).c;
+    ).get() as { c: number }).c + unmarkedCompressedCommits(db);
     // One conversation writes up to three session records, all tagged with the
     // same `session:<id>`: count the ids, and a record with no such tag as one.
     const sessionTypes = SESSION_TYPES.map(() => '?').join(',');

@@ -52,7 +52,7 @@ import { checkForUpdate, getLastUpdateCheck, getUpdateCheck } from '../../core/v
 import { getCurrentInstallChannel, getInstallChannelSupport } from '../../core/install-channel.js';
 import { getDbPath, getMemeshDirFromDbPath, redactTextValues, redactUserPaths } from '../../core/paths.js';
 import { removeGroupAndOtherAccess } from '../../core/file-mode.js';
-import { diagnoseDatabaseFailure } from '../../core/database-diagnosis.js';
+import { databaseOpenFailureReport } from '../../core/database-diagnosis.js';
 import { RETIRED_ROUTES } from './retired-routes.js';
 
 import fs from 'fs';
@@ -1331,9 +1331,9 @@ export function startServer(
   // NB: previously this `else` branch unconditionally set `remoteToken
   // = null`, which would silently de-authenticate any *already-running*
   // remote listener attached to the same Express app. Auth is now
-  // gated per-request via `isLoopbackHost(req.socket.localAddress)` in
-  // `bearerAuth`, so the token only matters for connections that
-  // arrived on a remote-bound socket. Leaving the token in place is
+  // decided per listener in `bearerAuth` (`serverAuthRequired`, keyed on the
+  // http.Server a request arrived on), so the token only matters for
+  // connections that arrived on a remote-bound listener. Leaving the token in place is
   // safe: loopback requests skip the check before it's read.
 
   // F15: Startup health check — fail fast with actionable error if DB
@@ -1348,16 +1348,7 @@ export function startServer(
     db.prepare('SELECT COUNT(*) FROM entities').get();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    const dbPath = getDbPath();
-    console.error('\n❌ MeMesh startup failed: database cannot be opened\n');
-    console.error(`   Database path: ${dbPath}`);
-    console.error(`   Error: ${message}\n`);
-    // The same diagnosis and fix as `memesh doctor`'s database row: a
-    // permission problem gets its chmod, never the advice to move the
-    // database aside, which would hide the owner's data from the server.
-    const { diagnosis, fix } = diagnoseDatabaseFailure(err, dbPath);
-    if (diagnosis !== message) console.error(`   Diagnosis: ${diagnosis}`);
-    console.error(`Fix: ${fix}\n`);
+    console.error(databaseOpenFailureReport(err, getDbPath()));
     throw new Error(`Database initialization failed: ${message}`, { cause: err });
   }
 

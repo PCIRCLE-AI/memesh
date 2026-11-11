@@ -51,7 +51,8 @@ function fixture(): string {
   const apiTools = names.map(name => `### ${name}\n\n${name} API description.\n`).join('\n');
   write(root, 'docs/api/API_REFERENCE.md', `## Tools\n\n${apiTools}\n## HTTP\n`);
   const overview = names.map(name => `\`${name}\``).join(', ');
-  write(root, 'docs/ARCHITECTURE.md', `## Overview\n\n${overview}\n\n\`\`\`\narchitecture\n\`\`\`\n`);
+  const handlers = ['| Tool | Schema | Handler |', '|------|--------|---------|', ...names.map(name => `| \`${name}\` | ${name}Schema | delegates |`)].join('\n');
+  write(root, 'docs/ARCHITECTURE.md', `## Overview\n\n${overview}\n\n\`\`\`\narchitecture\n\`\`\`\n\n## Modules\n\n### transports/mcp/handlers.ts -- MCP Tool Handlers\n\n${handlers}\n\n### transports/http/server.ts -- HTTP\n`);
   write(root, 'scripts/mcp-doc-contract.json', `${JSON.stringify({
     schema_version: 'mcp-doc-contract/v2',
     source_sha256: sourceDigest,
@@ -61,7 +62,7 @@ function fixture(): string {
       'AGENTS.md': digest(table),
       'skills/memesh/SKILL.md': digest(table),
       'docs/api/API_REFERENCE.md': digest(apiTools),
-      'docs/ARCHITECTURE.md': digest(overview),
+      'docs/ARCHITECTURE.md': digest(`${overview}\0${handlers}`),
     },
   }, null, 2)}\n`);
   return root;
@@ -84,6 +85,7 @@ describe('MCP agent-facing documentation parity gate', () => {
     ['skill row', 'skills/memesh/SKILL.md', (text: string) => text.replace(/^\| `improvement` .*\n/m, ''), 'skills/memesh/SKILL.md'],
     ['API section', 'docs/api/API_REFERENCE.md', (text: string) => text.replace(/### message\n\nmessage API description\.\n/m, ''), '### message'],
     ['architecture inventory', 'docs/ARCHITECTURE.md', (text: string) => text.replace('`briefing`, ', ''), 'overview omits MCP tool briefing'],
+    ['architecture handler row', 'docs/ARCHITECTURE.md', (text: string) => text.replace('| `user_patterns` |', '| `user_pattern` |'), 'MCP Tool Handlers table omits user_patterns'],
   ])('rejects a missing %s', (_label, file, mutate, expected) => {
     const root = fixture();
     const target = path.join(root, file);

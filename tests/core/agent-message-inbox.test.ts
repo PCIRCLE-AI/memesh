@@ -350,4 +350,12 @@ describe('inboxUnreadableLine', () => {
     expect(JSON.parse(quoted)).toHaveLength(200);
     expect(line).toContain('run memesh doctor');
   });
+
+  it('quotes a reason with quotes and backslashes as JSON, so it reads back exactly', () => {
+    const reason = 'say "hi"\\ there';
+    const line = inboxUnreadableLine('proj-u', 'reader', reason);
+    const quoted = /could not be read: (".*") — that is not/.exec(line)![1];
+    expect(JSON.parse(quoted)).toBe(reason);
+    expect(quoted).toContain('\\"');
+  });
 });

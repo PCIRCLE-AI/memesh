@@ -102,7 +102,7 @@ function clip(text, maxChars) {
     const flat = text.replace(/\s+/g, ' ').trim();
     if (flat.length <= maxChars)
         return flat;
-    const cut = sliceWholeChars(flat, maxChars);
+    const cut = sliceWholeChars(flat, maxChars - 1);
     const lastSpace = cut.lastIndexOf(' ');
     const base = lastSpace > maxChars * 0.6 ? cut.slice(0, lastSpace) : cut;
     return `${base.trimEnd()}…`;

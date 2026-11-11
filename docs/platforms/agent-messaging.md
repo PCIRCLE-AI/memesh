@@ -483,7 +483,7 @@ actor `memesh-router` in `message receipts`:
 receipts and, for each Codex thread, looks at the newest one. It reports a
 WARN naming every thread whose newest receipt says `no_daemon`: a message
 queued there is still waiting for a prompt, so send that thread one (and
-avoid `--no-daemon` next time). Otherwise, including when no release ran in the window, the row is informational (`[INFO]`) and never fails; if the receipts cannot be read it is a WARN.
+avoid `--no-daemon` next time). Otherwise, including when no release ran in the window, the row is informational (`[INFO]`) and never fails; if the receipts cannot be read it is a WARN. A database from before the message tables existed shows no such row.
 
 The checks live in the router process; a router restart drops the ones still
 pending.

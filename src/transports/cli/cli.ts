@@ -698,7 +698,7 @@ program
 // --- forget ---
 program
   .command('forget')
-  .description('Archive an entity or remove an observation (soft-delete, recoverable)')
+  .description('Archive an entity (reversible) or permanently remove one observation')
   .requiredOption('--name <name>', 'Entity name')
   .option('--observation <text>', 'Remove specific observation only', nonEmpty('--observation'))
   .option('--json', 'Output as JSON')

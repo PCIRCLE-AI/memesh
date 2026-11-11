@@ -2,25 +2,70 @@ import fs from 'fs';
 import path from 'path';
 import { databaseFiles, runOrSay, shellQuote } from './file-mode.js';
 
+/** SQLite's words for damaged pages or a file that is not a database at all. */
+export function isDamagedDatabaseError(message: string): boolean {
+  return /malformed|SQLITE_CORRUPT|not a database|SQLITE_NOTADB/i.test(message);
+}
+
+/** The newest complete `.db` copy in `dir` (a `.tmp` is a backup still being written), or undefined. */
+function newestBackup(dir: string): string | undefined {
+  let newest: { file: string; mtime: number } | undefined;
+  let names: string[];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return undefined;
+  }
+  for (const name of names) {
+    if (!name.endsWith('.db')) continue;
+    const file = path.join(dir, name);
+    try {
+      const stat = fs.statSync(file);
+      if (stat.isFile() && stat.size > 0 && (!newest || stat.mtimeMs > newest.mtime)) newest = { file, mtime: stat.mtimeMs };
+    } catch { /* vanished while listing */ }
+  }
+  return newest?.file;
+}
+
+/**
+ * The shell commands of {@link damagedDatabaseFix}, each one runnable as
+ * printed. SQLite keeps recent writes in `<db>-wal` until they are copied into
+ * the file, so the copy takes the journal along (or the newest memories are
+ * lost), and anything put back in place first removes the old `-wal`/`-shm`
+ * (or SQLite replays that stale journal onto the new file and breaks it).
+ * `.recover` may not bring the keyword index back intact, so the salvage ends
+ * by rebuilding it.
+ */
+export function damagedDatabaseSteps(databasePath: string): { copy: string; restore?: string; salvage: string; replace: string } {
+  const q = shellQuote;
+  const db = q(databasePath);
+  const damaged = `${databasePath}.damaged`;
+  const recovered = q(`${databasePath}.recovered.db`);
+  const dropJournal = `rm -f ${q(`${databasePath}-wal`)} ${q(`${databasePath}-shm`)}`;
+  const journalCopies = ['-wal', '-shm'].map((s) => `[ ! -e ${q(databasePath + s)} ] || cp ${q(databasePath + s)} ${q(damaged + s)}`);
+  const backup = newestBackup(path.join(path.dirname(databasePath), 'backups'));
+  return {
+    copy: [`rm -f ${q(`${damaged}-wal`)} ${q(`${damaged}-shm`)}`, `cp ${db} ${q(damaged)}`, ...journalCopies].join('; '),
+    ...(backup ? { restore: `${dropJournal} && cp ${q(backup)} ${db}` } : {}),
+    salvage: `rm -f ${recovered} && sqlite3 ${q(damaged)} .recover | sqlite3 ${recovered}`,
+    replace: `${dropJournal} && mv ${recovered} ${db} && memesh reindex --fts`,
+  };
+}
+
 /**
  * The one fix for a database file whose pages are damaged (it opens, or fails
  * to open, with "malformed"/"not a database"). Moving it aside and starting
  * fresh would throw away whatever is still readable, so the first step is to
- * copy the damaged file, and the restore choice appears only when a `backups`
- * folder exists (plain installs have none: only the maintenance commands make it).
+ * copy the damaged file, and the restore choice appears only when `backups`
+ * beside it holds a complete copy (plain installs have none: only the
+ * maintenance commands make one).
  */
-export function damagedDatabaseFix(
-  databasePath: string,
-  existsSyncImpl: (p: fs.PathLike) => boolean = fs.existsSync,
-): string {
-  const db = shellQuote(databasePath);
-  const damaged = shellQuote(`${databasePath}.damaged`);
-  const recovered = shellQuote(`${databasePath}.recovered.db`);
-  const backups = path.join(path.dirname(databasePath), 'backups');
-  const restore = existsSyncImpl(backups)
-    ? ` To go back to a backup instead, restore the newest copy in ${shellQuote(backups)}: sqlite3 ${db} ".restore '<backup>'" (this overwrites the file, which is why the copy comes first).`
+export function damagedDatabaseFix(databasePath: string): string {
+  const steps = damagedDatabaseSteps(databasePath);
+  const restore = steps.restore
+    ? ` To go back to the newest backup instead (this overwrites the file, which is why the copy comes first): ${steps.restore}.`
     : '';
-  return `Stop every memesh process, then copy the damaged file so nothing is lost: cp ${db} ${damaged}.${restore} To salvage what is readable: sqlite3 ${damaged} .recover | sqlite3 ${recovered}, check the result, then move it to ${db}.`;
+  return `Stop every memesh process, then copy the damaged file and its journal so nothing is lost: ${steps.copy}.${restore} To salvage what is readable: ${steps.salvage}, check the result, then put it in place and rebuild the keyword index: ${steps.replace}.`;
 }
 
 /**
@@ -40,18 +85,18 @@ export function diagnoseDatabaseFailure(
   let diagnosis: string;
   let fix: string;
 
-  // MeMesh's own permission errors (#520) already say what is wrong and
-  // carry the one command that fixes it; a generic guess below (move the
-  // database away and start fresh) would be wrong for every one of them.
+  // A held lock comes first: the file is fine, and any repair advice
+  // (moving it aside, or salvaging it as damaged) would be wrong.
   const ownFix = (err as { fix?: unknown } | null)?.fix;
-  if (typeof ownFix === 'string') {
-    diagnosis = message;
-    fix = runOrSay(ownFix);
-  } else if (/database is locked|SQLITE_BUSY/i.test(message)) {
-    // Another process holds the write lock: the file is fine, and moving it
-    // aside would hide the owner's data from that process too.
+  if (/database is locked|SQLITE_BUSY/i.test(message)) {
     diagnosis = `Another process has the database locked: ${message}`;
     fix = 'Wait for the other memesh process to finish, or stop it, then retry';
+  } else if (typeof ownFix === 'string') {
+    // MeMesh's own errors (#520 permissions, a failed integrity check) already
+    // say what is wrong and carry the one command that fixes it; a generic
+    // guess below (move the database away and start fresh) would be wrong.
+    diagnosis = message;
+    fix = runOrSay(ownFix);
   } else if (existsSyncImpl(databasePath)) {
     try {
       const stat = statSyncImpl(databasePath);
@@ -70,11 +115,11 @@ export function diagnoseDatabaseFailure(
       } else if (stat.size === 0) {
         diagnosis = 'Database file is empty (0 bytes) — likely corrupted';
         fix = `Delete it; the next memesh command creates a fresh database: rm ${shellQuote(databasePath)} && memesh recall`;
-      } else if (/malformed|SQLITE_CORRUPT|not a database|SQLITE_NOTADB/i.test(message)) {
+      } else if (isDamagedDatabaseError(message)) {
         // Damaged pages (a truncated file, say): the same advice as a file
         // that opens but fails its integrity check, never "move it away".
         diagnosis = `Database file exists (${stat.size} bytes) but cannot be opened: ${message}`;
-        fix = damagedDatabaseFix(databasePath, existsSyncImpl);
+        fix = damagedDatabaseFix(databasePath);
       } else {
         diagnosis = `Database file exists (${stat.size} bytes) but cannot be opened: ${message}`;
         fix = `Backup and reset: mv ${shellQuote(databasePath)} ${shellQuote(`${databasePath}.backup`)} && memesh recall`;
@@ -116,4 +161,18 @@ export function diagnoseDatabaseFailure(
   }
 
   return { diagnosis, fix };
+}
+
+/**
+ * What a long-running entry point (`memesh serve`, the MCP server) prints with
+ * `console.error` (stderr; their tests watch that channel) when its database
+ * will not open: the same diagnosis and fix as `memesh doctor`'s database
+ * row, so a permission problem gets its chmod and damage gets the copy-first
+ * salvage, never "move it aside".
+ */
+export function databaseOpenFailureReport(err: unknown, databasePath: string): string {
+  const message = err instanceof Error ? err.message : String(err);
+  const { diagnosis, fix } = diagnoseDatabaseFailure(err, databasePath);
+  const diagnosisLine = diagnosis !== message ? `   Diagnosis: ${diagnosis}\n` : '';
+  return `\n❌ MeMesh startup failed: database cannot be opened\n\n   Database path: ${databasePath}\n   Error: ${message}\n\n${diagnosisLine}Fix: ${fix}\n`;
 }

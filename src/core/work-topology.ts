@@ -321,7 +321,8 @@ export function extractCitedMemoryIds(text: string): Set<number> {
 function clip(text: string, maxChars: number): string {
   const flat = text.replace(/\s+/g, ' ').trim();
   if (flat.length <= maxChars) return flat;
-  const cut = sliceWholeChars(flat, maxChars);
+  // One unit is left for the ellipsis, so a clipped line is never longer than maxChars.
+  const cut = sliceWholeChars(flat, maxChars - 1);
   const lastSpace = cut.lastIndexOf(' ');
   // Only respect the boundary if it is not pathologically early (a single
   // very long token would otherwise collapse the line to nothing).

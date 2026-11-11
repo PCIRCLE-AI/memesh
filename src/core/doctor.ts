@@ -18,7 +18,8 @@ import {
 } from './install-channel.js';
 import { getInstallRecord } from './install-id.js';
 import { ownerWriteCommand, runOrSay, shellQuote } from './file-mode.js';
-import { damagedDatabaseFix, diagnoseDatabaseFailure } from './database-diagnosis.js';
+import { unreadDeliveryCount } from './agent-message-inbox.js';
+import { damagedDatabaseFix, diagnoseDatabaseFailure, isDamagedDatabaseError } from './database-diagnosis.js';
 import { citationRulePath, citationRuleState, type CitationRuleScope } from './citation-rule.js';
 import { getAgentRouterSocketPath, getDbPath, getMemeshDirFromDbPath, homeDir, memeshDir } from './paths.js';
 import { findProjectIdentitySplits, type ProjectIdentitySplit } from './project-identity-split.js';
@@ -362,15 +363,23 @@ function queryFailedFix(err: unknown): string {
   return 'The error is quoted above. Check that ~/.memesh is readable and that the disk is not full.';
 }
 
-/** `ok`, or one line naming what SQLite's quick_check found (or the error it raised while looking). */
+/**
+ * `ok`, or one line naming what SQLite's quick_check found (or the damage it
+ * hit while looking). Any other error it raises — a held lock, an I/O error —
+ * says nothing about the pages and is thrown as it is, for
+ * `diagnoseDatabaseFailure` to name.
+ */
 function quickIntegrityVerdict(db: DatabaseLike): string {
+  let row: { quick_check?: unknown } | undefined;
   try {
-    const row = db.prepare('PRAGMA quick_check(1)').get() as { quick_check?: unknown } | undefined;
-    if (typeof row?.quick_check !== 'string') return 'quick_check returned no verdict';
-    return row.quick_check.replace(/\s+/g, ' ').slice(0, 200);
+    row = db.prepare('PRAGMA quick_check(1)').get() as { quick_check?: unknown } | undefined;
   } catch (err) {
-    return (err instanceof Error ? err.message : 'quick_check raised an error').replace(/\s+/g, ' ').slice(0, 200);
+    const message = err instanceof Error ? err.message : String(err);
+    if (!isDamagedDatabaseError(message)) throw err;
+    return message.replace(/\s+/g, ' ').slice(0, 200);
   }
+  if (typeof row?.quick_check !== 'string') return 'quick_check returned no verdict';
+  return row.quick_check.replace(/\s+/g, ' ').slice(0, 200);
 }
 
 function createCheck(
@@ -3234,6 +3243,20 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
         new Error(`Database at ${databasePath} opened, but SQLite's quick integrity check failed: ${integrity}`),
         {
           fix: damagedDatabaseFix(databasePath),
+        },
+      );
+    }
+    // The pages can be intact while a table lacks a column this version reads
+    // (changed outside memesh, or by a newer version): briefing then says the
+    // inbox cannot be read and sends the reader here, so run its query.
+    try {
+      unreadDeliveryCount(db as unknown as MemeshDatabase, '', 'memesh-doctor');
+    } catch (err) {
+      const reason = (err instanceof Error ? err.message : String(err)).replace(/\s+/g, ' ').slice(0, 200);
+      throw Object.assign(
+        new Error(`Database at ${databasePath} opened, but its message inbox cannot be read: ${reason}`),
+        {
+          fix: 'This memesh cannot read the message tables, and briefing says the same. If a newer memesh version also uses this database, update this one to match it; otherwise the tables were changed outside memesh: restore a backup you trust, or report the error quoted above.',
         },
       );
     }

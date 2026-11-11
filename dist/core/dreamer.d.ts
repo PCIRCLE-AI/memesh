@@ -1,4 +1,5 @@
 import type { MemeshDatabase } from '../storage/sqlite.js';
+export declare const COMPACTABLE_TYPES: Set<string>;
 interface ProposedDigest {
     name: string;
     type: string;

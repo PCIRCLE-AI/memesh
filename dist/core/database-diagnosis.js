@@ -1,28 +1,65 @@
 import fs from 'fs';
 import path from 'path';
 import { databaseFiles, runOrSay, shellQuote } from './file-mode.js';
-export function damagedDatabaseFix(databasePath, existsSyncImpl = fs.existsSync) {
-    const db = shellQuote(databasePath);
-    const damaged = shellQuote(`${databasePath}.damaged`);
-    const recovered = shellQuote(`${databasePath}.recovered.db`);
-    const backups = path.join(path.dirname(databasePath), 'backups');
-    const restore = existsSyncImpl(backups)
-        ? ` To go back to a backup instead, restore the newest copy in ${shellQuote(backups)}: sqlite3 ${db} ".restore '<backup>'" (this overwrites the file, which is why the copy comes first).`
+export function isDamagedDatabaseError(message) {
+    return /malformed|SQLITE_CORRUPT|not a database|SQLITE_NOTADB/i.test(message);
+}
+function newestBackup(dir) {
+    let newest;
+    let names;
+    try {
+        names = fs.readdirSync(dir);
+    }
+    catch {
+        return undefined;
+    }
+    for (const name of names) {
+        if (!name.endsWith('.db'))
+            continue;
+        const file = path.join(dir, name);
+        try {
+            const stat = fs.statSync(file);
+            if (stat.isFile() && stat.size > 0 && (!newest || stat.mtimeMs > newest.mtime))
+                newest = { file, mtime: stat.mtimeMs };
+        }
+        catch { }
+    }
+    return newest?.file;
+}
+export function damagedDatabaseSteps(databasePath) {
+    const q = shellQuote;
+    const db = q(databasePath);
+    const damaged = `${databasePath}.damaged`;
+    const recovered = q(`${databasePath}.recovered.db`);
+    const dropJournal = `rm -f ${q(`${databasePath}-wal`)} ${q(`${databasePath}-shm`)}`;
+    const journalCopies = ['-wal', '-shm'].map((s) => `[ ! -e ${q(databasePath + s)} ] || cp ${q(databasePath + s)} ${q(damaged + s)}`);
+    const backup = newestBackup(path.join(path.dirname(databasePath), 'backups'));
+    return {
+        copy: [`rm -f ${q(`${damaged}-wal`)} ${q(`${damaged}-shm`)}`, `cp ${db} ${q(damaged)}`, ...journalCopies].join('; '),
+        ...(backup ? { restore: `${dropJournal} && cp ${q(backup)} ${db}` } : {}),
+        salvage: `rm -f ${recovered} && sqlite3 ${q(damaged)} .recover | sqlite3 ${recovered}`,
+        replace: `${dropJournal} && mv ${recovered} ${db} && memesh reindex --fts`,
+    };
+}
+export function damagedDatabaseFix(databasePath) {
+    const steps = damagedDatabaseSteps(databasePath);
+    const restore = steps.restore
+        ? ` To go back to the newest backup instead (this overwrites the file, which is why the copy comes first): ${steps.restore}.`
         : '';
-    return `Stop every memesh process, then copy the damaged file so nothing is lost: cp ${db} ${damaged}.${restore} To salvage what is readable: sqlite3 ${damaged} .recover | sqlite3 ${recovered}, check the result, then move it to ${db}.`;
+    return `Stop every memesh process, then copy the damaged file and its journal so nothing is lost: ${steps.copy}.${restore} To salvage what is readable: ${steps.salvage}, check the result, then put it in place and rebuild the keyword index: ${steps.replace}.`;
 }
 export function diagnoseDatabaseFailure(err, databasePath, existsSyncImpl = fs.existsSync, statSyncImpl = fs.statSync) {
     const message = err instanceof Error ? err.message : 'unknown database error';
     let diagnosis;
     let fix;
     const ownFix = err?.fix;
-    if (typeof ownFix === 'string') {
-        diagnosis = message;
-        fix = runOrSay(ownFix);
-    }
-    else if (/database is locked|SQLITE_BUSY/i.test(message)) {
+    if (/database is locked|SQLITE_BUSY/i.test(message)) {
         diagnosis = `Another process has the database locked: ${message}`;
         fix = 'Wait for the other memesh process to finish, or stop it, then retry';
+    }
+    else if (typeof ownFix === 'string') {
+        diagnosis = message;
+        fix = runOrSay(ownFix);
     }
     else if (existsSyncImpl(databasePath)) {
         try {
@@ -38,9 +75,9 @@ export function diagnoseDatabaseFailure(err, databasePath, existsSyncImpl = fs.e
                 diagnosis = 'Database file is empty (0 bytes) — likely corrupted';
                 fix = `Delete it; the next memesh command creates a fresh database: rm ${shellQuote(databasePath)} && memesh recall`;
             }
-            else if (/malformed|SQLITE_CORRUPT|not a database|SQLITE_NOTADB/i.test(message)) {
+            else if (isDamagedDatabaseError(message)) {
                 diagnosis = `Database file exists (${stat.size} bytes) but cannot be opened: ${message}`;
-                fix = damagedDatabaseFix(databasePath, existsSyncImpl);
+                fix = damagedDatabaseFix(databasePath);
             }
             else {
                 diagnosis = `Database file exists (${stat.size} bytes) but cannot be opened: ${message}`;
@@ -86,5 +123,11 @@ export function diagnoseDatabaseFailure(err, databasePath, existsSyncImpl = fs.e
         }
     }
     return { diagnosis, fix };
+}
+export function databaseOpenFailureReport(err, databasePath) {
+    const message = err instanceof Error ? err.message : String(err);
+    const { diagnosis, fix } = diagnoseDatabaseFailure(err, databasePath);
+    const diagnosisLine = diagnosis !== message ? `   Diagnosis: ${diagnosis}\n` : '';
+    return `\n❌ MeMesh startup failed: database cannot be opened\n\n   Database path: ${databasePath}\n   Error: ${message}\n\n${diagnosisLine}Fix: ${fix}\n`;
 }
 //# sourceMappingURL=database-diagnosis.js.map

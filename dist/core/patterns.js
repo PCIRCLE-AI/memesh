@@ -1,8 +1,12 @@
 import { NOISE_TYPES } from './analytics.js';
-import { NOISE_TYPES as COMPRESSED_TYPES } from './lifecycle.js';
+import { NOISE_TYPES as LIFECYCLE_COMPRESSED_TYPES } from './lifecycle.js';
+import { COMPACTABLE_TYPES as DREAMER_COMPACTED_TYPES } from './dreamer.js';
+import { unmarkedCompressedCommits } from './compression-ledger.js';
 const AUTO_TYPES = [...NOISE_TYPES, 'workflow_checkpoint'];
 const SESSION_TYPES = ['session_keypoint', 'session-insight'];
-const COMPRESSED_TYPE_LIST = [...COMPRESSED_TYPES].map((t) => `'${t.replace(/'/g, "''")}'`).join(',');
+const COMPRESSED_TYPE_LIST = [...new Set([...LIFECYCLE_COMPRESSED_TYPES, ...DREAMER_COMPACTED_TYPES])]
+    .filter((t) => t !== 'weekly-summary' && t !== 'weekly_summary')
+    .map((t) => `'${t.replace(/'/g, "''")}'`).join(',');
 function countedSql(alias) {
     return `(${alias}.type != 'weekly-summary' AND (${alias}.status = 'active' OR (${alias}.status = 'archived'
     AND ${alias}.type IN (${COMPRESSED_TYPE_LIST})
@@ -43,7 +47,7 @@ export function computePatterns(db, categories) {
     let totalSessions = 0;
     let totalCommits = 0;
     if (allCategories || categories.includes('workflow')) {
-        totalCommits = db.prepare(`SELECT COUNT(*) as c FROM entities e WHERE e.type = 'commit' AND ${countedSql('e')}`).get().c;
+        totalCommits = db.prepare(`SELECT COUNT(*) as c FROM entities e WHERE e.type = 'commit' AND ${countedSql('e')}`).get().c + unmarkedCompressedCommits(db);
         const sessionTypes = SESSION_TYPES.map(() => '?').join(',');
         totalSessions = db.prepare(`
       SELECT

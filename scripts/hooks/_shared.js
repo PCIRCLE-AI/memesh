@@ -830,6 +830,17 @@ function inboxReadFailed(err, recordFailure) {
   return [];
 }
 
+/**
+ * The line a hook gives the model when the inbox read failed: stderr and the
+ * ledger are not what the model reads, and no line at all reads exactly like
+ * "no message waiting". One line, bounded, JSON-quoted (the reason is an error
+ * string), as `memesh briefing` says it.
+ */
+export function inboxUnreadableHookLine(recipient, err) {
+  const reason = JSON.stringify(String(err?.message || err).replace(/\s+/g, ' ').trim().slice(0, 200));
+  return `MeMesh could not check for messages waiting for ${JSON.stringify(recipient)}: ${reason} — that is not the same as no messages waiting; run memesh doctor.`;
+}
+
 /** The outcome reason a hook records when {@link hookMessageSessionId} reports a mismatch. */
 export const SESSION_ID_MISMATCH_REASON =
   'session: session_id_mismatch (CODEX_THREAD_ID differs from the payload session_id; neither is trusted, so this hook is counted as one that named no session id)';

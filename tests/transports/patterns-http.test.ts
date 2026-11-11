@@ -66,6 +66,15 @@ describe('GET /v1/patterns categories', () => {
     }
   });
 
+  it('trims spaces around listed names, and leaves workflow empty when it was not asked for', async () => {
+    const spaced = await get('/v1/patterns?categories=workflow,%20focusAreas');
+    expect(spaced.status).toBe(200);
+    expect(spaced.body.data.workflow.totalCommits).toBe(1);
+    const focusOnly = await get('/v1/patterns?categories=focusAreas');
+    expect(focusOnly.status).toBe(200);
+    expect(focusOnly.body.data.workflow.totalCommits).toBe(0);
+  });
+
   it('refuses an unknown category with 400 validation.bad-param', async () => {
     const res = await get('/v1/patterns?categories=bogus');
     expect(res.status).toBe(400);

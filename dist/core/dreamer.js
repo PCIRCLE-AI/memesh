@@ -13,7 +13,7 @@ const COMPACT_MAX_SIGNAL = 0.7;
 const TRANSCRIPT_PACKAGE_MAX_TURNS = 100;
 const TRANSCRIPT_PACKAGE_SOURCE_BYTES = 48 * 1024;
 const WORK_PACKAGE_MAX_BYTES = 64 * 1024;
-const COMPACTABLE_TYPES = new Set([
+export const COMPACTABLE_TYPES = new Set([
     'commit',
     'session_keypoint',
     'session-insight',

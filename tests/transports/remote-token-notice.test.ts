@@ -28,6 +28,8 @@ describe('remote token startup notice says where the token really came from', ()
     const notice = remoteTokenStartupNotice(loaded);
     expect(notice).toContain('Token loaded from MEMESH_REMOTE_TOKEN.');
     expect(notice).not.toContain('ignored');
+    expect(loaded.token.toString('utf8')).toBe('a'.repeat(32));
+    expect(notice, 'the token itself must never reach startup output').not.toContain('a'.repeat(32));
   });
 
   it('says the variable was ignored when it is too short, and names the file actually used', () => {
@@ -52,6 +54,12 @@ describe('remote token startup notice says where the token really came from', ()
     expect(notice).toContain('MEMESH_REMOTE_TOKEN is shorter than 16 characters and was ignored');
     // The override line tells the operator how long a usable value must be.
     expect(notice).toContain('Override: set MEMESH_REMOTE_TOKEN (at least 16 characters).');
+    const file = path.join(dir, 'remote-token');
+    expect(notice).toContain(`Token file: ${file} (mode 600)`);
+    expect(notice).toContain(`Rotate by deleting ${file} and restarting.`);
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    expect(fs.readFileSync(file, 'utf8').trim()).toBe(loaded.token.toString('utf8'));
+    expect(notice, 'the token itself must never reach startup output').not.toContain(loaded.token.toString('utf8'));
   });
 
   it('prints the ignored warning as its own line, not glued into the sentence before it', () => {
@@ -79,5 +87,6 @@ describe('remote token startup notice says where the token really came from', ()
     const notice = remoteTokenStartupNotice(loaded);
     expect(notice).toContain(`Token loaded from ${path.join(dir, 'remote-token')}.`);
     expect(notice).not.toContain('ignored');
+    expect(notice, 'the token itself must never reach startup output').not.toContain('c'.repeat(64));
   });
 });

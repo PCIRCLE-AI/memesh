@@ -47,7 +47,7 @@ memesh doctor
 一個 session 實作，另一個審查、提問或回報結果。MeMesh 提供共用的本機訊息收件匣；Claude Channel 可將訊息即時送進正在執行的 Claude Code session。Codex 使用自己的原生通知路徑，再擷取訊息正文。
 
 1. 安裝上方插件，以相同作業系統使用者、相同 MeMesh 資料庫設定，在同一個 repository 啟動兩個工具。
-2. 符合條件的一般 Claude MCP 對話可在 macOS／Linux 不開 Channel 接收原生通知；選配的 [Claude Channel](docs/platforms/agent-messaging.md#claude-channel-runner) 可傳遞完整封套。一般 Codex CLI session 在插件 SessionStart hook 執行時自動註冊（macOS／Linux）。
+2. 符合條件的一般 Claude MCP 對話可在 macOS／Linux 不開 Channel 接收原生通知；選配的 [Claude Channel](docs/platforms/agent-messaging.md#claude-channel-runner) 可傳遞完整封套。符合條件的一般 Codex CLI session 在插件 SessionStart hook 執行時自動註冊（macOS／Linux）。
 3. 請 agent：「用 `message discover` 找到這個專案正在執行的 Claude／Codex session，送出審查請求，並回報對方回覆。」使用實際查到的收件者，不猜 session ID。接收方讀取訊息、記錄 `intake`，再回覆審查結果。
 
 未啟用 Claude Channel 時，仍可使用持久收件匣與 Claude Code hook 提醒。送達不代表對方已接下或完成工作；已停止的 session 不會自動恢復。Codex Desktop 是否參與，須以 `message discover` 查到的實際 session 為準。本機 channel 不負責跨電腦傳遞訊息。

@@ -24,6 +24,7 @@ import { dropEntityFromIndexes } from './storage/entity-index.js';
 import { ftsIndexIsCurrent } from './storage/schema.js';
 import { addTags, appendObservations, insertOrGetEntity, reindexEntityFts, runEntityWrite } from './storage/entity-write.js';
 import { canonicalEntityType } from './core/work-topology.js';
+import { releaseCompressedRecord } from './core/compression-ledger.js';
 import { KNOWN_ERROR_PATTERNS, MIN_NAME_PROJECT_LENGTH, PROJECT_TAG_PREFIX } from './core/project-attribution.js';
 import { NOT_A_PROJECT_MEMORY } from './core/projects.js';
 import { addsNewText, besideRefusal, clearPartsOfKey, metadataRefusal, redactTextValues, redactTitleAndObservations, redactVersionText, textsIn } from './core/paths.js';
@@ -410,6 +411,11 @@ function projectScopeFilter(scope: string | null): { sql: string; params: string
     };
 }
 
+/** Parsed entity metadata a writer may add keys to: a plain object, never null, an array or a scalar. */
+export function isMetadataObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
 export class KnowledgeGraph {
   constructor(private db: MemeshDatabase) {}
 
@@ -598,7 +604,7 @@ export class KnowledgeGraph {
       if (metaRow?.metadata) {
         try {
           const parsed = JSON.parse(metaRow.metadata);
-          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('metadata is not an object');
+          if (!isMetadataObject(parsed)) throw new Error('metadata is not an object');
           metadata = parsed;
         } catch {
           metadata = undefined;
@@ -642,9 +648,11 @@ export class KnowledgeGraph {
       }));
     }
 
-    // Reactivate archived entities on re-remember
+    // Reactivate archived entities on re-remember. A compression marker must
+    // not outlive the archive it describes (see releaseCompressedRecord).
     const wasArchived = !isNewEntity && row.status === 'archived';
     if (wasArchived) {
+      releaseCompressedRecord(this.db, entityId);
       this.db
         .prepare("UPDATE entities SET status = 'active' WHERE name = ?")
         .run(name);
@@ -744,8 +752,8 @@ export class KnowledgeGraph {
     // NOT reusing `prevObs` here even though it looks like the same set: it
     // is forced to `[]` for a reactivated entity (`isNewEntity || wasArchived`
     // above) because `archiveEntity` already removed the FTS row and there is
-    // nothing to un-index. It does NOT delete `observations` rows — `forget()`
-    // "never permanently deletes data" — so a re-remember of an archived
+    // nothing to un-index. Archiving does NOT delete `observations` rows (only
+    // an observation-level `forget` deletes one, for good), so a re-remember of an archived
     // entity would see no prior content and re-insert every observation as a
     // duplicate, the exact defect this guard exists to close. The dedup set
     // is therefore its own query, keyed on `isNewEntity` alone.

@@ -87,6 +87,14 @@ describe('work-topology', () => {
     expect(next === '' || next === ' ').toBe(true);
   });
 
+  it('keeps a clipped line within its budget, ellipsis included', () => {
+    // A single long token is cut mid-token, so the cut lands exactly at the budget.
+    const plain = topologyLine(entity({ type: 'fact', title: 'Z'.repeat(400) }), 160);
+    expect(plain.replace(/^- \[fact\] /, '')).toHaveLength(160);
+    const decision = topologyLine(entity({ type: 'decision', id: 9, title: 'A decision', why: `${'Z'.repeat(400)}` }), 160);
+    expect(decision.replace(/^- \[decision\] /, '').length).toBeLessThanOrEqual(160);
+  });
+
   it('carries the citation handle when the entity has an id, and never otherwise', () => {
     // The handle is the write side of citation accounting: without it the
     // agent has no id to cite and no hit can ever be earned.

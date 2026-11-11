@@ -26,7 +26,7 @@ import { checkForUpdate, getLastUpdateCheck, getUpdateCheck } from '../../core/v
 import { getCurrentInstallChannel, getInstallChannelSupport } from '../../core/install-channel.js';
 import { getDbPath, getMemeshDirFromDbPath, redactTextValues, redactUserPaths } from '../../core/paths.js';
 import { removeGroupAndOtherAccess } from '../../core/file-mode.js';
-import { diagnoseDatabaseFailure } from '../../core/database-diagnosis.js';
+import { databaseOpenFailureReport } from '../../core/database-diagnosis.js';
 import { RETIRED_ROUTES } from './retired-routes.js';
 import fs from 'fs';
 import path from 'path';
@@ -736,14 +736,7 @@ export function startServer(host = HOST, port = PORT, opts) {
     }
     catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        const dbPath = getDbPath();
-        console.error('\n❌ MeMesh startup failed: database cannot be opened\n');
-        console.error(`   Database path: ${dbPath}`);
-        console.error(`   Error: ${message}\n`);
-        const { diagnosis, fix } = diagnoseDatabaseFailure(err, dbPath);
-        if (diagnosis !== message)
-            console.error(`   Diagnosis: ${diagnosis}`);
-        console.error(`Fix: ${fix}\n`);
+        console.error(databaseOpenFailureReport(err, getDbPath()));
         throw new Error(`Database initialization failed: ${message}`, { cause: err });
     }
     const injectedUpdateSeam = Boolean(opts?.updateCheckImpl || opts?.lastUpdateCheckImpl);

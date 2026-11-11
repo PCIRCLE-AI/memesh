@@ -186,19 +186,24 @@ else ok(`registry and API_REFERENCE.md agree on ${toolsInCode} MCP tools`);
     fail(`docs/ARCHITECTURE.md says ${archTools[1]} MCP tools, handlers.ts registers ${toolsInCode}`);
   else ok(`ARCHITECTURE.md agrees on ${toolsInCode} MCP tools`);
 
-  // (a2) README.md's bold hook count plus every translated README's
+  // (a2) The hook count in README.md and its translations, plus every translated README's
   // Memory-and-Coordination tool table. A newly registered public tool must
   // be visible from every front page, not only from the API reference.
   // orchestration removal updated ARCHITECTURE/SKILL counts (gated above)
   // while the README's `**N hooks**` and tool heading shipped stale in every
   // locale. Counting rows as well as the heading prevents a count-only edit
   // from hiding a newly added feature from users.
-  const readmeSrc = read('README.md');
-  const readmeHooks = readmeSrc.match(/\*\*(\d+) hooks\*\*/);
-  if (!readmeHooks) fail('README.md no longer states its `**N hooks**` count');
-  else if (Number(readmeHooks[1]) !== manifestHooks.size)
-    fail(`README.md says ${readmeHooks[1]} hooks, the manifest registers ${manifestHooks.size}`);
-  else ok(`README.md hook count ${readmeHooks[1]}`);
+  for (const [file, pattern] of [
+    ['README.md', /\*\*(\d+) hooks\*\*/],
+    ['README.zh-TW.md', /Claude Code 插件共有 (\d+) 個 hook 指令/],
+    ['README.vi.md', /Plugin Claude Code có \*\*(\d+) hook\*\*/],
+  ]) {
+    const hooks = read(file).match(pattern);
+    if (!hooks) fail(`${file} no longer states its hook count (${pattern})`);
+    else if (Number(hooks[1]) !== manifestHooks.size)
+      fail(`${file} says ${hooks[1]} hooks, the manifest registers ${manifestHooks.size}`);
+    else ok(`${file} hook count ${hooks[1]}`);
+  }
   const readmeToolSections = [
     ['README.md', /## All (\d+) Memory and Coordination Tools/],
     ['README.zh-TW.md', /## 全部 (\d+) 個記憶與協作工具/],
