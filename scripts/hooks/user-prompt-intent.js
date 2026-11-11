@@ -28,6 +28,7 @@ import {
   unreadMessageLines,
   SESSION_ID_MISMATCH_REASON,
 } from './_shared.js';
+import { hookNodeProblem, NODE_TOO_OLD_REASON } from './_shared.js';
 import { join } from 'path';
 import { existsSync, realpathSync } from 'fs';
 import { sessionFileName } from './_generated/private-session.js';
@@ -319,6 +320,11 @@ if (isMainModule) {
       // we accept either name to survive a similar rename. If both are absent
       // or non-string, detectRememberIntent's type guard returns false safely.
       payload = data;
+      // On a Node that cannot run MeMesh the hints below would send the agent to tools that always fail.
+      if (hookNodeProblem('user-prompt-intent')) {
+        record('error', NODE_TOO_OLD_REASON);
+        return process.exit(0);
+      }
       // A private session whose user is back: its marker is live again before the agent writes anything.
       // Only a session that has a marker pays for the import.
       try {

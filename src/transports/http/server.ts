@@ -57,7 +57,7 @@ import { getCurrentInstallChannel, getInstallChannelSupport } from '../../core/i
 import { getDbPath, getMemeshDirFromDbPath, redactTextValues, redactUserPaths } from '../../core/paths.js';
 import { removeGroupAndOtherAccess } from '../../core/file-mode.js';
 import { databaseOpenFailureReport } from '../../core/database-diagnosis.js';
-import { isUnsupportedNode } from '../../storage/sqlite.js';
+import { assertNodeSupported, isUnsupportedNode } from '../../storage/sqlite.js';
 import { RETIRED_ROUTES } from './retired-routes.js';
 
 import fs from 'fs';
@@ -1312,6 +1312,9 @@ export function startServer(
     lastUpdateCheckImpl?: typeof getLastUpdateCheck;
   }
 ): ReturnType<typeof app.listen> {
+  // Before the first file this server would create (the remote token below, the data folder): a Node that cannot run
+  // MeMesh leaves nothing behind.
+  assertNodeSupported();
   const allowRemote = opts?.allowRemote ?? ALLOW_REMOTE_BY_ENV;
   const isRemote = !isLoopbackHost(host);
   if (!allowRemote && isRemote) {

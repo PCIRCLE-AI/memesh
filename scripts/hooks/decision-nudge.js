@@ -31,7 +31,7 @@
 
 import { openSync, closeSync, writeSync, constants as fsConstants } from 'fs';
 import { join } from 'path';
-import { ensurePrivateDir, getMemeshDirFromDbPath, hookErrorReason, SKIP_REASONS, recordHookOutcome } from './_shared.js';
+import { ensurePrivateDir, getMemeshDirFromDbPath, hookErrorReason, hookNodeProblem, NODE_TOO_OLD_REASON, SKIP_REASONS, recordHookOutcome } from './_shared.js';
 import { privacyForHook } from './_private-session.js';
 import { HOOK_BUDGET_MS } from './_hook-budgets.js';
 
@@ -109,6 +109,12 @@ process.stdin.on('end', () => {
     const privacy = privacyForHook(data, 'decision-nudge', { budgetMs: HOOK_BUDGET_MS.postToolUse.decide });
     if (privacy.state !== 'no') {
       record('skipped', privacy.state === 'yes' ? SKIP_REASONS.privateSession : SKIP_REASONS.privateSessionUnchecked);
+      return pass();
+    }
+
+    // The nudge tells the agent to use MeMesh's remember tool; on a Node that cannot run MeMesh that tool always fails.
+    if (hookNodeProblem('decision-nudge')) {
+      record('error', NODE_TOO_OLD_REASON);
       return pass();
     }
 

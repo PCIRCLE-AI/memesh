@@ -25,7 +25,7 @@ import { detectPluginRuntime, readInstallMarker } from './install-hooks.js';
 import { manifestScope } from './manifest-scope.js';
 import { claudeCodePresent, codexPresent, geminiPresent, isOnPath } from './host-presence.js';
 import { UNSPACED_SCRIPT_GLOB_RUN3 } from '../storage/fts-index.js';
-import { isUnsupportedNode, MemeshDatabase, MIN_NODE_SERIES } from '../storage/sqlite.js';
+import { isSqliteSelfCheckFailure, isUnsupportedNode, MemeshDatabase, nodeProblem } from '../storage/sqlite.js';
 import { AUTO_CAPTURE_TAG } from './types.js';
 import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
 import { parseSqliteUtcMs, sqliteUtcToIso } from './time-utils.js';
@@ -102,7 +102,6 @@ function inspectLocaleReadmeParity(packageRoot, existsSyncImpl, readFileSyncImpl
 function resolveDatabasePath() {
     return getDbPath();
 }
-const NODE_TOO_OLD_FIX = `Upgrade Node to ${MIN_NODE_SERIES} or newer, then run \`memesh doctor\` again.`;
 const NODE_TOO_OLD_SEE_DATABASE_ROW = 'Not checked: this Node cannot open the MeMesh database (the Database row above says why).';
 function queryFailedSummary(err, detail, what, unknownMeans) {
     if (isUnsupportedNode(err))
@@ -147,7 +146,9 @@ function schemaBehindNote(databasePath = getDbPath()) {
 }
 function queryFailedFix(err) {
     if (isUnsupportedNode(err))
-        return NODE_TOO_OLD_FIX;
+        return err.fix;
+    if (isSqliteSelfCheckFailure(err))
+        return err.advice;
     const fix = err?.fix;
     if (typeof fix === 'string') {
         return `MeMesh did not open the database because of its permissions; the Database row above explains why. ${runOrSay(fix)}`;
@@ -158,6 +159,9 @@ function queryFailedFix(err) {
     }
     if (/database is locked|SQLITE_BUSY/i.test(detail)) {
         return 'Another process has the database locked; wait for it to finish, or stop it, then retry.';
+    }
+    if (/malformed|not a database|SQLITE_CORRUPT|SQLITE_NOTADB/i.test(detail)) {
+        return 'The database file is damaged; the Database row above shows how to repair it.';
     }
     return 'The error is quoted above. Check that ~/.memesh is readable and that the disk is not full.';
 }
@@ -1145,7 +1149,11 @@ function defaultNativeBindingProbe(_packageRoot) {
         return { ok: true };
     }
     catch (err) {
-        return { ok: false, message: err instanceof Error ? err.message : String(err), nodeTooOld: isUnsupportedNode(err) };
+        return {
+            ok: false,
+            message: err instanceof Error ? err.message : String(err),
+            ...(isUnsupportedNode(err) ? { fix: err.fix } : isSqliteSelfCheckFailure(err) ? { fix: err.advice } : {}),
+        };
     }
 }
 export function satisfiesMinimumNodeRange(version, range) {
@@ -1187,7 +1195,11 @@ export function inspectNodeRuntime(packageRoot, existsSyncImpl, readFileSyncImpl
     }
     if (!ok) {
         return createCheck('node-runtime', 'Node runtime', 'fail', `${facts} This package requires Node ${declared}, so this runtime is BELOW the ` +
-            `supported floor. Native modules and hooks may fail in ways that look unrelated.`, `Upgrade Node to ${declared.replace(/^>=\s*/, '')} or newer, then run \`memesh doctor\` again.`, { code: 'node-runtime.too-old', params: { detail: facts, required: declared.replace(/^>=\s*/, '') } });
+            `supported floor, so MeMesh cannot open its database.`, `Upgrade Node to ${declared.replace(/^>=\s*/, '')} or newer, then run \`memesh doctor\` again.`, { code: 'node-runtime.too-old', params: { detail: facts, required: declared.replace(/^>=\s*/, '') } });
+    }
+    if (!hasNodeSqliteImpl()) {
+        const problem = nodeProblem(nodeVersion, () => true, false);
+        return createCheck('node-runtime', 'Node runtime', 'fail', `${facts} ${problem?.message ?? 'node:sqlite is not available.'}`, problem?.fix ?? 'Remove the --no-experimental-sqlite option, then run `memesh doctor` again.', { code: 'node-runtime.sqlite-unavailable', params: { detail: facts } });
     }
     return createCheck('node-runtime', 'Node runtime', 'pass', `${facts} Meets the required range ${declared}.`);
 }
@@ -1205,8 +1217,8 @@ function inspectNativeBinding(packageRoot, _existsSyncImpl, probeImpl = defaultN
     if (result.ok)
         return createCheck('native-binding', 'SQLite', 'pass', 'node:sqlite opened a database (probe succeeded).');
     const failed = { code: 'native-binding.load-failed', params: { detail: result.message, root: packageRoot } };
-    if (result.nodeTooOld) {
-        return createCheck('native-binding', 'SQLite', 'fail', 'SQLite is not usable on this Node version (the Database row above says why).', NODE_TOO_OLD_FIX, failed);
+    if (result.fix) {
+        return createCheck('native-binding', 'SQLite', 'fail', 'SQLite is not usable on this Node (the Database row above says why).', result.fix, failed);
     }
     return createCheck('native-binding', 'SQLite', 'fail', `SQLite could not open a database: ${result.message}`, 'Check the Node runtime and reinstall if necessary.', failed);
 }
@@ -1631,13 +1643,25 @@ function inspectAutoUpdate(installSupport) {
     }
     return createCheck('auto-update', 'Automatic updates', 'pass', `Automatic updates are ${setting}. ${what}`);
 }
+function updateCacheFix() {
+    let problem;
+    try {
+        problem = nodeProblem();
+    }
+    catch {
+        problem = null;
+    }
+    return problem
+        ? `\`memesh status\` cannot run on this Node, so it cannot store the answer. ${problem.fix}`
+        : 'Run `memesh status` once while connected to the internet — that stores the answer and this notice goes away.';
+}
 async function inspectUpdateStatus(packageVersion, getUpdateCheckImpl, installSupport, packageRoot, statSyncImpl) {
     const update = await getUpdateCheckImpl(packageVersion, { preferFresh: false });
     if (!update) {
         if (isFreshInstall(packageRoot, statSyncImpl)) {
             return createCheck('update-status', 'Update status', 'pass', 'Installed recently — memesh has not had a chance to check for updates yet. This resolves itself on the first successful check.');
         }
-        return createCheck('update-status', 'Update status', 'warn', 'memesh has not been able to check for newer versions yet, so it cannot tell you whether an update exists.', 'Run `memesh status` once while connected to the internet — that stores the answer and this notice goes away.', { code: 'update-status.no-cache' });
+        return createCheck('update-status', 'Update status', 'warn', 'memesh has not been able to check for newer versions yet, so it cannot tell you whether an update exists.', updateCacheFix(), { code: 'update-status.no-cache' });
     }
     if (update.currentVersionDeprecated && update.deprecationMessage) {
         const target = update.latestVersion && update.latestVersion !== packageVersion
@@ -1665,7 +1689,7 @@ async function inspectUpdateStatus(packageVersion, getUpdateCheckImpl, installSu
         if (isFreshInstall(packageRoot, statSyncImpl) && !update.lastAttemptAt && !update.lastError) {
             return createCheck('update-status', 'Update status', 'pass', 'Installed recently — memesh has not had a chance to check for updates yet. This resolves itself on the first successful check.');
         }
-        return createCheck('update-status', 'Update status', 'warn', 'memesh has not been able to check for newer versions yet, so it cannot tell you whether an update exists.', 'Run `memesh status` once while connected to the internet — that stores the answer and this notice goes away.', { code: 'update-status.no-cache' });
+        return createCheck('update-status', 'Update status', 'warn', 'memesh has not been able to check for newer versions yet, so it cannot tell you whether an update exists.', updateCacheFix(), { code: 'update-status.no-cache' });
     }
     if (update.checkSucceeded && update.lastError) {
         const hasUpdate = Boolean(update.updateAvailable && update.latestVersion);

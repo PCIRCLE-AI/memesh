@@ -38,7 +38,9 @@ import {
   getMemeshDirFromDbPath,
   getProjectName,
   hookErrorReason,
+  hookNodeProblem,
   isAutoCaptureEnabled,
+  NODE_TOO_OLD_REASON,
   openMemeshDb,
   readHookConfig,
   recallSessionPath,
@@ -187,6 +189,13 @@ export async function handlePrompt(data, readPrivacy = defaultReadPrivacy) {
     const sessionId = data.session_id;
     if (typeof sessionId !== 'string' || !SESSION_ID_RE.test(sessionId)) {
       record('skipped', SKIP_REASONS.noSessionId);
+      return null;
+    }
+
+    // Before the privacy read and "no database yet": on a Node that cannot run MeMesh nothing below can work, and
+    // the database can never be created.
+    if (hookNodeProblem('prompt-recall')) {
+      record('error', NODE_TOO_OLD_REASON);
       return null;
     }
 

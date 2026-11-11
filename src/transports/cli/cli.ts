@@ -8,7 +8,7 @@ import { fileURLToPath } from 'url';
 import {
   openDatabase, closeDatabase, getDatabase, reindexFts, explainReadOnlyRefusal, failureMessage,
 } from '../../db.js';
-import { isUnsupportedNode, type MemeshDatabase } from '../../storage/sqlite.js';
+import { isUnsupportedNode, nodeProblem, type MemeshDatabase } from '../../storage/sqlite.js';
 import { remember, recallForAgent, forget, exportMemories, importMemories, learn, setPinned } from '../../core/operations.js';
 import { agentRecallEnvelope } from '../../core/recall-agent-view.js';
 import { getConfigDir, readConfig, updateConfig } from '../../core/config.js';
@@ -3172,6 +3172,14 @@ program
     requireOneOf(opts.scope, ['user', 'project'], '--scope');
     const { installHooks } = await import('../../core/install-hooks.js');
     const scope = opts.scope === 'project' ? 'project' : 'user';
+    // Hooks wired onto a Node that cannot run MeMesh do nothing useful: say so before the success lines.
+    let nodeIssue: ReturnType<typeof nodeProblem> = null;
+    try { nodeIssue = nodeProblem(); } catch { /* a check that could not finish is no reason to refuse an install */ }
+    if (nodeIssue) {
+      console.log(`WARNING: ${nodeIssue.message}`);
+      console.log('  The hooks below are wired anyway, but none of MeMesh works until that is fixed.');
+      console.log('');
+    }
     try {
       const result = installHooks({
         pluginRoot: packageRoot,

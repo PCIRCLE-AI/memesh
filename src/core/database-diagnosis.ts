@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { isUnsupportedNode, MIN_NODE_SERIES } from '../storage/sqlite.js';
+import { isSqliteSelfCheckFailure, isUnsupportedNode } from '../storage/sqlite.js';
 import { databaseFiles, runOrSay, shellQuote } from './file-mode.js';
 
 /** SQLite's words for damaged pages or a file that is not a database at all. */
@@ -93,9 +93,13 @@ export function diagnoseDatabaseFailure(
     diagnosis = `Another process has the database locked: ${message}`;
     fix = 'Wait for the other memesh process to finish, or stop it, then retry';
   } else if (isUnsupportedNode(err)) {
-    // Not a database problem: this Node lacks FTS5, and no file move fixes that.
+    // Not a database problem: this Node cannot run MeMesh, and no file move fixes that.
     diagnosis = message;
-    fix = `Upgrade Node to ${MIN_NODE_SERIES} or newer, then run memesh again`;
+    fix = err.fix;
+  } else if (isSqliteSelfCheckFailure(err)) {
+    // The self-check of the Node's SQLite did not finish: the database was never looked at, so it is not moved aside.
+    diagnosis = message;
+    fix = err.advice;
   } else if (typeof ownFix === 'string') {
     // MeMesh's own errors (#520 permissions, a failed integrity check) already
     // say what is wrong and carry the one command that fixes it; a generic

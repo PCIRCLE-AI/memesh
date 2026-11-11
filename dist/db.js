@@ -1,4 +1,4 @@
-import { BUSY_TIMEOUT_MS, MemeshDatabase } from './storage/sqlite.js';
+import { assertNodeSupported, BUSY_TIMEOUT_MS, MemeshDatabase } from './storage/sqlite.js';
 import path from 'path';
 import fs from 'fs';
 import { backfillCompressionMarkers, runAutoDecay } from './core/lifecycle.js';
@@ -20,6 +20,7 @@ function folderWriteFix(dir) {
 export function openDatabase(dbPath, opts = {}) {
     if (db)
         return db;
+    assertNodeSupported();
     const resolvedPath = dbPath ?? getDbPath();
     if (resolvedPath === ':memory:') {
         db = openInitialisedDatabase(resolvedPath, opts);

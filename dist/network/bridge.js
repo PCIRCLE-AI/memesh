@@ -484,8 +484,8 @@ function loadNodeSqlite() {
   };
   try {
     return require2("node:sqlite");
-  } catch (err) {
-    return { missing: err instanceof Error ? err.message : String(err) };
+  } catch {
+    return null;
   } finally {
     process.emitWarning = original;
   }
@@ -493,18 +493,28 @@ function loadNodeSqlite() {
 var loadedSqlite = loadNodeSqlite();
 var MissingDatabaseSync = class {
   constructor() {
-    const detail = "missing" in loadedSqlite ? loadedSqlite.missing : "unknown";
-    throw new UnsupportedNodeError(`memesh needs Node's built-in SQLite, which this runtime (${process.version}) does not provide. Upgrade Node to ${MIN_NODE_SERIES} or newer and run memesh again. (${detail})`);
+    assertNodeSupported();
+    throw new Error("node:sqlite did not load");
   }
 };
-var DatabaseSync = "DatabaseSync" in loadedSqlite ? loadedSqlite.DatabaseSync : MissingDatabaseSync;
+var DatabaseSync = loadedSqlite?.DatabaseSync ?? MissingDatabaseSync;
 var MIN_NODE_VERSION = "22.16.0";
 var MIN_NODE_SERIES = MIN_NODE_VERSION.split(".").slice(0, 2).join(".");
 var UnsupportedNodeError = class extends Error {
   code = "NODE_TOO_OLD";
-  constructor(message) {
-    super(message);
+  fix;
+  constructor(problem) {
+    super(problem.message);
     this.name = "UnsupportedNodeError";
+    this.fix = problem.fix;
+  }
+};
+var SqliteSelfCheckError = class extends Error {
+  code = "SQLITE_SELF_CHECK_FAILED";
+  advice = "Your database is not the problem. Run the command again; if it keeps failing, free some memory or restart, then run `memesh doctor`.";
+  constructor(cause) {
+    super(`MeMesh could not check this Node's SQLite (${cause instanceof Error ? cause.message : String(cause)}).`, { cause });
+    this.name = "SqliteSelfCheckError";
   }
 };
 function atLeastMinimumNode(version) {
@@ -532,30 +542,50 @@ function fts5ProbeResult(createFtsTable) {
 var ftsProbe;
 function hasFts5() {
   if (ftsProbe === void 0) {
-    const probe = new DatabaseSync(":memory:");
+    let probe;
     try {
-      ftsProbe = fts5ProbeResult(() => probe.exec("CREATE VIRTUAL TABLE memesh_fts5_probe USING fts5(a)"));
+      probe = new DatabaseSync(":memory:");
+      const throwaway = probe;
+      ftsProbe = fts5ProbeResult(() => throwaway.exec("CREATE VIRTUAL TABLE memesh_fts5_probe USING fts5(a)"));
+    } catch (err) {
+      throw new SqliteSelfCheckError(err);
     } finally {
       try {
-        probe.close();
+        probe?.close();
       } catch {
       }
     }
   }
   return ftsProbe;
 }
-function nodeSupportProblem(version = process.versions.node, fts5Available = hasFts5) {
+function nodeProblem(version = process.versions.node, fts5Available = hasFts5, sqliteLoaded = loadedSqlite !== null) {
   const shown = version.replace(/^v/, "");
+  const official = `the official Node ${MIN_NODE_SERIES} or newer from nodejs.org`;
   if (!atLeastMinimumNode(version)) {
-    return `This Node (v${shown}) lacks the full-text search MeMesh needs; upgrade to Node ${MIN_NODE_SERIES} or newer and run memesh again.`;
+    return {
+      kind: "too-old",
+      message: `This Node (v${shown}) lacks the full-text search MeMesh needs; upgrade to Node ${MIN_NODE_SERIES} or newer and run memesh again.`,
+      fix: `Upgrade Node to ${MIN_NODE_SERIES} or newer, then run \`memesh doctor\` again.`
+    };
+  }
+  if (!sqliteLoaded) {
+    return {
+      kind: "sqlite-switched-off",
+      message: `This Node (v${shown}) is new enough, but its built-in SQLite (node:sqlite) is switched off; remove the --no-experimental-sqlite option (from the command line, the NODE_OPTIONS environment variable or a Node config file), or install ${official}, and run memesh again.`,
+      fix: `Remove the --no-experimental-sqlite option (from the command line, NODE_OPTIONS or a Node config file), or install ${official}, then run \`memesh doctor\` again.`
+    };
   }
   if (!fts5Available()) {
-    return `This Node build (v${shown}) lacks the full-text search (FTS5) MeMesh needs; install the official Node ${MIN_NODE_SERIES} or newer from nodejs.org and run memesh again.`;
+    return {
+      kind: "no-fts5",
+      message: `This Node build (v${shown}) lacks the full-text search (FTS5) MeMesh needs; install ${official} and run memesh again.`,
+      fix: `Install ${official}, then run \`memesh doctor\` again.`
+    };
   }
   return null;
 }
 function assertNodeSupported() {
-  const problem = nodeSupportProblem();
+  const problem = nodeProblem();
   if (problem)
     throw new UnsupportedNodeError(problem);
 }

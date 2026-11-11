@@ -1,8 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { DatabaseSync } from 'node:sqlite';
-import { MemeshDatabase } from '../storage/sqlite.js';
+import { DatabaseSync, MemeshDatabase } from '../storage/sqlite.js';
 import { removeGroupAndOtherAccess } from './file-mode.js';
 import { AGENT_MESSAGE_TTL_MS, agentMessageExpiryCutoff } from './agent-message-ttl.js';
 import { AgentMessagingError, sendAgentMessage } from './agent-messaging.js';

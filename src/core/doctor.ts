@@ -31,7 +31,7 @@ import { detectPluginRuntime, readInstallMarker } from './install-hooks.js';
 import { manifestScope } from './manifest-scope.js';
 import { claudeCodePresent, codexPresent, geminiPresent, isOnPath } from './host-presence.js';
 import { UNSPACED_SCRIPT_GLOB_RUN3 } from '../storage/fts-index.js';
-import { isUnsupportedNode, MemeshDatabase, MIN_NODE_SERIES } from '../storage/sqlite.js';
+import { isSqliteSelfCheckFailure, isUnsupportedNode, MemeshDatabase, nodeProblem } from '../storage/sqlite.js';
 import { AUTO_CAPTURE_TAG } from './types.js';
 import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
 import { parseSqliteUtcMs, sqliteUtcToIso } from './time-utils.js';
@@ -187,7 +187,7 @@ interface DoctorOptions {
   /**
    * Test seam: probe that the built-in SQLite runtime can open a database.
    */
-  nativeBindingProbeImpl?: (packageRoot: string) => { ok: true } | { ok: false; message: string };
+  nativeBindingProbeImpl?: (packageRoot: string) => NativeBindingProbeResult;
   /**
    * Test seam: resolve `memesh` on the user's shell PATH. Default uses
    * `which` / `where` via execFileSync. Returns the resolved absolute
@@ -357,9 +357,8 @@ function resolveDatabasePath(): string {
   return getDbPath();
 }
 
-// A Node below the floor fails every database row the same way; the Database
-// row says why, once, and the others point at it.
-const NODE_TOO_OLD_FIX = `Upgrade Node to ${MIN_NODE_SERIES} or newer, then run \`memesh doctor\` again.`;
+// A Node that cannot run MeMesh fails every database row the same way; the Database
+// row says why, once, and the others point at it. The repair is the error's own `fix`.
 const NODE_TOO_OLD_SEE_DATABASE_ROW = 'Not checked: this Node cannot open the MeMesh database (the Database row above says why).';
 
 /** Summary of a database row whose read threw. `detail` is the error's own text. */
@@ -420,7 +419,8 @@ function schemaBehindNote(databasePath: string = getDbPath()): string {
  * same signal the Database row reads, so the rows agree.
  */
 function queryFailedFix(err: unknown): string {
-  if (isUnsupportedNode(err)) return NODE_TOO_OLD_FIX;
+  if (isUnsupportedNode(err)) return err.fix;
+  if (isSqliteSelfCheckFailure(err)) return err.advice;
   const fix = (err as { fix?: unknown } | null)?.fix;
   if (typeof fix === 'string') {
     return `MeMesh did not open the database because of its permissions; the Database row above explains why. ${runOrSay(fix)}`;
@@ -431,6 +431,9 @@ function queryFailedFix(err: unknown): string {
   }
   if (/database is locked|SQLITE_BUSY/i.test(detail)) {
     return 'Another process has the database locked; wait for it to finish, or stop it, then retry.';
+  }
+  if (/malformed|not a database|SQLITE_CORRUPT|SQLITE_NOTADB/i.test(detail)) {
+    return 'The database file is damaged; the Database row above shows how to repair it.';
   }
   return 'The error is quoted above. Check that ~/.memesh is readable and that the disk is not full.';
 }
@@ -2411,13 +2414,20 @@ function defaultResolveShellMemesh(): string | null {
   }
 }
 
-function defaultNativeBindingProbe(_packageRoot: string): { ok: true } | { ok: false; message: string; nodeTooOld?: boolean } {
+/** The SQLite probe's answer; `fix` is set when the failure is this Node's (or the probe's own), not a damaged install. */
+type NativeBindingProbeResult = { ok: true } | { ok: false; message: string; fix?: string };
+
+function defaultNativeBindingProbe(_packageRoot: string): NativeBindingProbeResult {
   try {
     const probe = new MemeshDatabase(':memory:');
     try { probe.prepare('SELECT 1').get(); } finally { probe.close(); }
     return { ok: true };
   } catch (err) {
-    return { ok: false, message: err instanceof Error ? err.message : String(err), nodeTooOld: isUnsupportedNode(err) };
+    return {
+      ok: false,
+      message: err instanceof Error ? err.message : String(err),
+      ...(isUnsupportedNode(err) ? { fix: err.fix } : isSqliteSelfCheckFailure(err) ? { fix: err.advice } : {}),
+    };
   }
 }
 
@@ -2517,9 +2527,21 @@ export function inspectNodeRuntime(
       'Node runtime',
       'fail',
       `${facts} This package requires Node ${declared}, so this runtime is BELOW the ` +
-        `supported floor. Native modules and hooks may fail in ways that look unrelated.`,
+        `supported floor, so MeMesh cannot open its database.`,
       `Upgrade Node to ${declared.replace(/^>=\s*/, '')} or newer, then run \`memesh doctor\` again.`,
       { code: 'node-runtime.too-old', params: { detail: facts, required: declared.replace(/^>=\s*/, '') } },
+    );
+  }
+  if (!hasNodeSqliteImpl()) {
+    // New enough, yet node:sqlite did not load: MeMesh cannot run, and no upgrade changes that.
+    const problem = nodeProblem(nodeVersion, () => true, false);
+    return createCheck(
+      'node-runtime',
+      'Node runtime',
+      'fail',
+      `${facts} ${problem?.message ?? 'node:sqlite is not available.'}`,
+      problem?.fix ?? 'Remove the --no-experimental-sqlite option, then run `memesh doctor` again.',
+      { code: 'node-runtime.sqlite-unavailable', params: { detail: facts } },
     );
   }
   return createCheck(
@@ -2550,13 +2572,13 @@ export function hasBuiltInSqlite(): boolean {
 function inspectNativeBinding(
   packageRoot: string,
   _existsSyncImpl: typeof fs.existsSync,
-  probeImpl: (packageRoot: string) => { ok: true } | { ok: false; message: string; nodeTooOld?: boolean } = defaultNativeBindingProbe,
+  probeImpl: (packageRoot: string) => NativeBindingProbeResult = defaultNativeBindingProbe,
 ): DoctorCheck {
   const result = probeImpl(packageRoot);
   if (result.ok) return createCheck('native-binding', 'SQLite', 'pass', 'node:sqlite opened a database (probe succeeded).');
   const failed = { code: 'native-binding.load-failed', params: { detail: result.message, root: packageRoot } };
-  if (result.nodeTooOld) {
-    return createCheck('native-binding', 'SQLite', 'fail', 'SQLite is not usable on this Node version (the Database row above says why).', NODE_TOO_OLD_FIX, failed);
+  if (result.fix) {
+    return createCheck('native-binding', 'SQLite', 'fail', 'SQLite is not usable on this Node (the Database row above says why).', result.fix, failed);
   }
   return createCheck('native-binding', 'SQLite', 'fail', `SQLite could not open a database: ${result.message}`, 'Check the Node runtime and reinstall if necessary.', failed);
 }
@@ -3275,6 +3297,18 @@ function inspectAutoUpdate(installSupport?: import('./install-channel.js').Insta
   return createCheck('auto-update', 'Automatic updates', 'pass', `Automatic updates are ${setting}. ${what}`);
 }
 
+/**
+ * How to fill the update cache. `memesh status` opens the database, so on a Node that cannot run MeMesh it cannot do
+ * it, and the repair that works is the Node's own (the Database row says why).
+ */
+function updateCacheFix(): string {
+  let problem;
+  try { problem = nodeProblem(); } catch { problem = null; /* the probe could not finish: the usual advice stands */ }
+  return problem
+    ? `\`memesh status\` cannot run on this Node, so it cannot store the answer. ${problem.fix}`
+    : 'Run `memesh status` once while connected to the internet — that stores the answer and this notice goes away.';
+}
+
 async function inspectUpdateStatus(
   packageVersion: string,
   getUpdateCheckImpl: typeof getUpdateCheck,
@@ -3297,7 +3331,7 @@ async function inspectUpdateStatus(
       'Update status',
       'warn',
       'memesh has not been able to check for newer versions yet, so it cannot tell you whether an update exists.',
-      'Run `memesh status` once while connected to the internet — that stores the answer and this notice goes away.',
+      updateCacheFix(),
       { code: 'update-status.no-cache' },
     );
   }
@@ -3377,7 +3411,7 @@ async function inspectUpdateStatus(
       'Update status',
       'warn',
       'memesh has not been able to check for newer versions yet, so it cannot tell you whether an update exists.',
-      'Run `memesh status` once while connected to the internet — that stores the answer and this notice goes away.',
+      updateCacheFix(),
       { code: 'update-status.no-cache' },
     );
   }

@@ -21,6 +21,15 @@ describe('Installation Verification', () => {
       expect(pkg.engines.node).toBe('>=22.16.0');
       expect(fs.readFileSync('llms-install.md', 'utf8')).toContain('v22.16.0');
     });
+
+    it('llms-install.md states the floor at each place a reader acts on it, and no older one', () => {
+      const guide = fs.readFileSync('llms-install.md', 'utf8');
+      // section 1 (plugin): the banner on a Node that cannot be used; section 2: the check, and the failure table
+      for (const phrase of ['MeMesh needs Node 22.16.0 or newer', 'the floor is 22.16.0', '`v22.16.0` or later', 'older than 22.16.0']) {
+        expect(guide, phrase).toContain(phrase);
+      }
+      expect(guide).not.toMatch(/22\.1[0-5](\.|\b)/);
+    });
   });
 
   describe('Configuration Files', () => {

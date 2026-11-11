@@ -33,13 +33,19 @@ Claude Code wires the MCP server, the auto-capture hooks, and the `/memesh`
 skill automatically.
 
 **Verify**: restart Claude Code. A status line beginning `◉ MeMesh` appears at
-the top of the next session.
+the top of the next session. MeMesh needs Node 22.16.0 or newer on the `PATH`
+Claude Code uses (`node --version`); on a Node it cannot use, the top of the
+session shows `MeMesh: This Node (v…) …` instead, with the one repair that
+applies, and none of MeMesh's tools work until it is done (see the table).
 
 | Failure | Remedy |
 |---|---|
 | `/plugin marketplace add` fails | The marketplace is fetched as a git clone. Check `git --version` succeeds and github.com is reachable. |
 | `/plugin install` says plugin not found | The argument is exactly `memesh@pcircle-memesh` — plugin name `memesh`, marketplace name `pcircle-memesh`. Re-run the marketplace add first. |
-| No `◉ MeMesh` line after restart | Run `/plugin` inside Claude Code and confirm the `memesh` plugin is installed and enabled, then restart again. |
+| `MeMesh: This Node (v…) lacks the full-text search MeMesh needs; upgrade to Node 22.16 or newer …` | The Node on `PATH` is older than 22.16.0 (`node --version`). Upgrade it, then restart Claude Code. |
+| `MeMesh: This Node (v…) is new enough, but its built-in SQLite (node:sqlite) is switched off …` | Node was started with `--no-experimental-sqlite`, on its command line, in the `NODE_OPTIONS` environment variable or in a Node config file. Remove it (or install the official Node build from nodejs.org), then restart Claude Code. Upgrading Node does not help. |
+| `MeMesh: This Node build (v…) lacks the full-text search (FTS5) MeMesh needs …` | This Node build has no FTS5. Install the official Node 22.16.0 or newer from nodejs.org, then restart Claude Code. |
+| No `◉ MeMesh` line and no `MeMesh: …` line after restart | Run `/plugin` inside Claude Code and confirm the `memesh` plugin is installed and enabled, then restart again. |
 
 The plugin does **not** put a `memesh` command on the shell PATH. For terminal
 use — and as a prerequisite for section 4 and for section 3's manual
@@ -229,7 +235,9 @@ integration health; it does not prove that a host or model received context.
 | Failure | Remedy |
 |---|---|
 | `command not found: memesh` | npm's global bin dir is not on PATH. Run `npm prefix -g`, append `/bin` to its output, and add that directory to PATH. |
-| `This Node … lacks the full-text search MeMesh needs` or `No such built-in module: node:sqlite` | The running Node is older than 22.16.0. Upgrade Node, then re-run `memesh doctor`. |
+| `This Node … lacks the full-text search MeMesh needs; upgrade to Node 22.16 or newer …` | The running Node is older than 22.16.0 (this includes Node 20). Upgrade Node, then re-run `memesh doctor`. |
+| `This Node … is new enough, but its built-in SQLite (node:sqlite) is switched off …` (`doctor` shows a FAIL on the Node runtime row too) | A Node of 22.16.0 or newer was started with `--no-experimental-sqlite` (command line, `NODE_OPTIONS`, or a Node config file). Remove that option, or use the official Node build from nodejs.org, then re-run `memesh doctor`. Upgrading does not help. |
+| `This Node build … lacks the full-text search (FTS5) MeMesh needs …` | A Node of 22.16.0 or newer built without FTS5. Install the official Node 22.16.0 or newer from nodejs.org, then re-run `memesh doctor`. |
 | `EACCES` during `npm install -g` | The global prefix is not user-writable. Use a user-level Node (nvm/fnm), or `npm config set prefix ~/.npm-global` and add `~/.npm-global/bin` to PATH, then re-install. |
 | `Overall: FAIL` (exit code 1) | The report names the failing check and prints the fix next to it. Apply that fix and re-run `memesh doctor`. |
 

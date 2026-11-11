@@ -81,6 +81,12 @@ process.stdin.on('data', (chunk) => { input += chunk; });
 process.stdin.on('end', () => {
   try {
     const data = JSON.parse(input);
+    // Once per run: an apply_patch that names several files is still one hook run, with one sentence and one record.
+    if (hookNodeProblem('pre-edit-recall')) {
+      payload = data;
+      record('error', NODE_TOO_OLD_REASON);
+      return;
+    }
     const contexts = editInputs(data).map(recallFile).filter(Boolean);
     if (contexts.length) console.log(JSON.stringify({ hookSpecificOutput: {
       hookEventName: 'PreToolUse', additionalContext: contexts.join('\n\n'),
@@ -146,10 +152,6 @@ function recallFile(data) {
     }
     const throttled = seenFiles.includes(fileKey);
 
-    if (hookNodeProblem('pre-edit-recall')) {
-      record('error', NODE_TOO_OLD_REASON);
-      return pass();
-    }
     if (!existsSync(dbPath)) {
       record('skipped', SKIP_REASONS.noDatabaseForRecall);
       return pass();

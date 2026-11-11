@@ -29,7 +29,7 @@ import { getCurrentInstallChannel, getInstallChannelSupport } from '../../core/i
 import { getDbPath, getMemeshDirFromDbPath, redactTextValues, redactUserPaths } from '../../core/paths.js';
 import { removeGroupAndOtherAccess } from '../../core/file-mode.js';
 import { databaseOpenFailureReport } from '../../core/database-diagnosis.js';
-import { isUnsupportedNode } from '../../storage/sqlite.js';
+import { assertNodeSupported, isUnsupportedNode } from '../../storage/sqlite.js';
 import { RETIRED_ROUTES } from './retired-routes.js';
 import fs from 'fs';
 import path from 'path';
@@ -715,6 +715,7 @@ app.use((req, res) => {
     });
 });
 export function startServer(host = HOST, port = PORT, opts) {
+    assertNodeSupported();
     const allowRemote = opts?.allowRemote ?? ALLOW_REMOTE_BY_ENV;
     const isRemote = !isLoopbackHost(host);
     if (!allowRemote && isRemote) {

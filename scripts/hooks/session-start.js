@@ -1076,6 +1076,16 @@ process.stdin.on('end', async () => {
     const data = JSON.parse(input);
     hookPayload = data;
 
+    // First, before anything that opens the database, records a launcher session or promises something: on a Node
+    // that cannot run MeMesh the one true thing to say is the Node's problem and its repair. No writability warning
+    // ("recall still works"), no messaging address, no project to pass to tools that cannot run.
+    const nodeProblem = hookNodeProblem('session-start');
+    if (nodeProblem) {
+      nodeTooOld = true;
+      output(`MeMesh: ${nodeProblem}`, `${NODE_UNSUPPORTED_CONTEXT} ${nodeProblem}`, { outcome: 'error', reason: NODE_TOO_OLD_REASON });
+      return;
+    }
+
     const projectName = getProjectName(data.cwd);
     // Every id this checkout's memories may be filed under (its remote's id, earlier spellings
     // of it, its path's id): the project's memories are read under all of them, written under one.
@@ -1282,19 +1292,6 @@ process.stdin.on('end', async () => {
     if (onClaudeCode) {
       const launcherOutcome = recordLauncherSession(data, claudeLauncher);
       if (data.source === 'clear' || launcherWriteFailed(launcherOutcome)) record(launcherOutcome);
-    }
-
-    // Before the no-database branch: on a Node below the floor the database
-    // can never be created, so "memories will be created as you work" is false.
-    const nodeProblem = hookNodeProblem('session-start');
-    if (nodeProblem) {
-      nodeTooOld = true;
-      output(
-        withChannelFlagWarning(withRecipientRejectionWarning(withAddressLine(withCaptureWarning(`MeMesh: ${nodeProblem}`)))),
-        recipientRejectionLine ?? addressLine ?? null,
-        { outcome: 'error', reason: NODE_TOO_OLD_REASON },
-      );
-      return;
     }
 
     if (!existsSync(dbPath)) {
@@ -2021,6 +2018,9 @@ process.stdin.on('end', async () => {
 // the memory block on every exit path, outside the memory budget, and the
 // outcome below is still decided by the memory context alone.
 let sessionProjectContext = null;
+
+/** What the model is told on a Node that cannot run MeMesh: its tools fail until the Node is fixed, so it must not try them. */
+const NODE_UNSUPPORTED_CONTEXT = "MeMesh cannot run on this Node, so none of its tools (remember, recall, message and the rest) work in this session until that is fixed; do not call them.";
 
 function output(text, memoryContext = undefined, recorded = null) {
   // session-start's only effect is the context it injects, so it records

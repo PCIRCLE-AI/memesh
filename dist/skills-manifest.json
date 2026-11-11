@@ -193,8 +193,8 @@
     },
     {
       "path": "scripts/hooks/_generated/sqlite.js",
-      "sha256": "ccbccf2c3c85210dad035aa914403f97d9cdcb51be3b83425f698fe7c75a1eec",
-      "bytes": 5253
+      "sha256": "2d5b1ae9039466e92b7541406ff2ce210bc1bcfd07bf98c466eb0b68d2d23836",
+      "bytes": 6752
     },
     {
       "path": "scripts/hooks/_generated/task-state.js",
@@ -238,8 +238,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "2980a97eb6b9b60b6fbbf2a2a5772122110b0613008e938efcd4f43b5a6a2ef2",
-      "bytes": 124298
+      "sha256": "997b2cb33635165ff26ed9dc4509fba3c54890de612a1e3d23ed95e4536c4aeb",
+      "bytes": 124642
     },
     {
       "path": "scripts/hooks/_stop-handoff.js",
@@ -268,8 +268,8 @@
     },
     {
       "path": "scripts/hooks/decision-nudge.js",
-      "sha256": "9fe336bff3ddf398042c5921beac780adb1ebf913572e13ad69f58478580dba6",
-      "bytes": 9298
+      "sha256": "c6bda0d33e172bdd521be724d77648d84c57d30dff4ab0d0a1e96114d6c090d0",
+      "bytes": 9574
     },
     {
       "path": "scripts/hooks/guard-check.js",
@@ -288,8 +288,8 @@
     },
     {
       "path": "scripts/hooks/pre-edit-recall.js",
-      "sha256": "d0be3831aa49474522434530f9e8dfffa8a3e431967518c0d7b3e322049a39d5",
-      "bytes": 39524
+      "sha256": "0b1cd5cf4f48c5a8c562d172fff5a6c9d0b54a22dbb6d07c81fdbbcc79b0a78b",
+      "bytes": 39657
     },
     {
       "path": "scripts/hooks/private-session-mark.js",
@@ -298,8 +298,8 @@
     },
     {
       "path": "scripts/hooks/prompt-recall.js",
-      "sha256": "95f91d527e5e3b928b16882ea3d1e49432e737c4516c2a1ebfd1ba3853795df1",
-      "bytes": 12465
+      "sha256": "aeb3bc8e2e20dddf12bdce8ec46ae9eeecdbcd2323a70a8e7c05759d31316f90",
+      "bytes": 12778
     },
     {
       "path": "scripts/hooks/session-end-notes.js",
@@ -308,8 +308,8 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "055bb7e21d0bf93443448c537864e0f9160a9b9a1165a030c6c3a56645772060",
-      "bytes": 107991
+      "sha256": "5205b6d516f5ee14a8494c133f097339f7f36d9aa3767132dc888b6b33a077df",
+      "bytes": 108357
     },
     {
       "path": "scripts/hooks/session-summary.js",
@@ -323,8 +323,8 @@
     },
     {
       "path": "scripts/hooks/user-prompt-intent.js",
-      "sha256": "57b8944c08316ca6de0da84da6ce867c58be8798d4d434117af4e81e0e3ce07b",
-      "bytes": 20644
+      "sha256": "d3c5d6ee2e67fd4aafe6df5bcbe873689165797aabfe309e2e0c50fb19740d93",
+      "bytes": 20956
     },
     {
       "path": "skills/memesh-review/SKILL.md",

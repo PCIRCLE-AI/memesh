@@ -71,6 +71,16 @@
       "reason": "A project with no work items correctly has no anchor candidate.",
       "triaged": "2026-09-06 provider-vector retirement audit"
     },
+    "C1 tests/cli/node-floor-cli.test.ts": {
+      "class": "SAFE-HEURISTIC-FALSE-POSITIVE",
+      "reason": "The detector's `.toBe(0)` matches the exit status of `memesh --version` run with no node:sqlite at all (it must still start and exit 0), not an empty collection. The same assertion block checks that stdout is a version number, and the neighbouring tests check the one sentence, the exit code 1 and the absence of a stack trace. Pointing a module at a static node:sqlite import turned them red.",
+      "triaged": "2026-11-11 Node floor causes"
+    },
+    "C1 tests/storage/node-floor-causes.test.ts": {
+      "class": "SAFE-HEURISTIC-FALSE-POSITIVE",
+      "reason": "The detector's `.toBe(0)` matches the exit status of the child process that runs the driver script (it must exit 0 so its JSON can be read), not an empty collection. Every test then asserts the content of that JSON: the cause (`kind`), the sentence, the fix, the error code, and whether a second open works. Mutating each guarded line (the version-first order, the switched-off branch, the probe's error wrapping, its cache and its close) turned a test red.",
+      "triaged": "2026-11-11 Node floor causes"
+    },
     "C1 tests/codex-plugin-fresh-consumer.test.ts": {
       "class": "SAFE-HEURISTIC-FALSE-POSITIVE",
       "reason": "The detector's `.toBe(0)` matches the short SessionStart launcher's successful process exit status, not an empty collection. The same test separately waits for the detached lifecycle state and router socket, asserts a distinct companion PID, reads back exactly one registered session from SQLite, and performs authenticated exact-companion cleanup.",
@@ -675,15 +685,15 @@
       "reason": "`line.match(/`+/g) ?? []` in buildReferenceContext, moved verbatim from scripts/hooks/_shared.js (which the C5 scan does not cover) so the MCP briefing surface shares the hook's fence. match() returns null when a line contains no backtick run; the empty list truthfully means 'no backticks', and the fence floor Math.max(3, longestRun + 1) still applies. Pinned by tests/hooks/reference-context-fence.test.ts, which feeds lines WITH backtick runs and asserts the fence outruns them.",
       "triaged": "2026-08-16 (A1c briefing); re-keyed 2026-09-20 386\u2192468 (#360: assembleTopologyBlock/budget consts, citation-handle additions, issue-242 global-section additions, and hasBriefingContent all added above buildReferenceContext across several commits; statement byte-identical, classification unchanged); re-keyed 2026-09-24 468\u2192473 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-24 473\u2192598 (#434 step 3: decision/budget helpers added above; statement byte-identical); re-keyed 2026-09-25 598\u2192604 (LESSON_TYPE_LIST export, #443); re-keyed 2026-09-26 604\u2192626 (#451: canonicalEntityType added above LESSON_TYPE_LIST; statement byte-identical); re-keyed 2026-09-27 626\u2192631 (#374: the control-character strip (stripControlChars) and its call sites added above longestRun; statement byte-identical); re-keyed 2026-09-27 631\u2192633 (#409: the routing-hash strip added above in topologyLine; statement byte-identical); re-keyed 2026-10-04 633\u2192641 (M2-a: the noProject entity flag, pool flag and section added above; statement byte-identical) Re-keyed 2026-10-06: decision `why` lines added above; statement byte-identical. Re-keyed 2026-10-06 679\u2192734 (decision reason: utcEpoch, unconfirmedDaysSince, restatesWhy and the reason-first line budget added above; statement byte-identical). Re-keyed 2026-10-07 734\u2192736 (section heading budget fix above; statement byte-identical, detector and classification unchanged).; re-keyed 2026-11-02 after recall data notice addition; statement byte-identical; re-keyed 2026-11-08 738\u2192744 (tag neutralization added above; statement byte-identical); re-keyed 2026-11-11 742\u2192819 (the project-boundary merge moved the unchanged statement; statement byte-identical, classification unchanged); re-keyed 2026-11-11 819\u2192820 (the docs-source-fixes merge moved the unchanged statement; statement byte-identical, classification unchanged)"
     },
-    "C5 src/core/doctor.ts:4254": {
+    "C5 src/core/doctor.ts:4288": {
       "class": "SAFE-MAP-ABSENCE",
       "reason": "A last-run record without a per-type breakdown prints no breakdown; the count beside it is printed regardless.",
-      "triaged": "2026-11-03 memory read path; re-keyed 2026-11-08 3464 to 3471 (unreadable-record branch added above; statement byte-identical); re-keyed 2026-11-11 3471\u21924188 (the recent-index/prompt-recall merge moved the unchanged statement; statement byte-identical, classification unchanged); re-keyed 2026-11-11 4188\u21924240 (the docs-source-fixes merge moved the unchanged statement; statement byte-identical, classification unchanged); re-keyed 2026-11-11 4240\u21924243 (the schema-behind test now leaves errors that carry their own fix alone; statement byte-identical, classification unchanged); re-keyed 2026-11-11 4243 to 4254 (message-expiry round 3 changed lines above; same statement)"
+      "triaged": "2026-11-03 memory read path; re-keyed 2026-11-08 3464 to 3471 (unreadable-record branch added above; statement byte-identical); re-keyed 2026-11-11 3471\u21924188 (the recent-index/prompt-recall merge moved the unchanged statement; statement byte-identical, classification unchanged); re-keyed 2026-11-11 4188\u21924240 (the docs-source-fixes merge moved the unchanged statement; statement byte-identical, classification unchanged); re-keyed 2026-11-11 4240\u21924243 (the schema-behind test now leaves errors that carry their own fix alone; statement byte-identical, classification unchanged); re-keyed 2026-11-11 4243 to 4254 (message-expiry round 3 changed lines above; same statement); re-keyed 2026-11-11 4254 to 4288 (Node-floor round 3 changed lines above; same statement)"
     },
-    "C5 src/core/agent-message-expiry.ts:1118": {
+    "C5 src/core/agent-message-expiry.ts:1117": {
       "class": "SAFE-MAP-ABSENCE",
       "reason": "`unrecorded.get(file) ?? []` in recordRun: a database with no pass waiting to be recorded late has nothing to write before this pass's own row.",
-      "triaged": "2026-11-11 message-expiry round 3 (a pass that meets a lock is recorded late by the next pass); new statement"
+      "triaged": "2026-11-11 message-expiry round 3 (a pass that meets a lock is recorded late by the next pass); new statement; re-keyed 2026-11-11 1118 to 1117 (import line merged; same statement)"
     }
   }
 }

@@ -35,7 +35,7 @@ import { createRequire } from 'node:module';
  * make every importer of this module async for no gain, and `node:sqlite` is a
  * builtin so `require` resolves it in an ESM file without a file lookup.
  */
-function loadNodeSqlite(): typeof import('node:sqlite') | { missing: string } {
+function loadNodeSqlite(): typeof import('node:sqlite') | null {
   const require = createRequire(import.meta.url);
   const original = process.emitWarning;
   process.emitWarning = function (warning: string | Error, ...rest: unknown[]) {
@@ -47,14 +47,14 @@ function loadNodeSqlite(): typeof import('node:sqlite') | { missing: string } {
   } as any;
   try {
     return require('node:sqlite') as typeof import('node:sqlite');
-  } catch (err) {
-    // A runtime without `node:sqlite` (Node 20, or 22.5 to 22.12 without the
-    // flag) must not crash HERE, at import: every entry point, hooks included,
-    // imports this module, and a throw during module evaluation reaches the
-    // user as a stack trace and, for a hook, a non-zero exit. The failure is
-    // deferred to the first open, where it carries the one sentence that
-    // names the fix.
-    return { missing: err instanceof Error ? err.message : String(err) };
+  } catch {
+    // A runtime without `node:sqlite` (Node 20, 22.5 to 22.12 without the flag,
+    // or any Node started with --no-experimental-sqlite) must not crash HERE,
+    // at import: every entry point, hooks included, imports this module, and a
+    // throw during module evaluation reaches the user as a stack trace and, for
+    // a hook, a non-zero exit. The failure is deferred to the first open, where
+    // it carries the sentence that names the right fix for this Node.
+    return null;
   } finally {
     process.emitWarning = original;
   }
@@ -62,21 +62,16 @@ function loadNodeSqlite(): typeof import('node:sqlite') | { missing: string } {
 
 const loadedSqlite = loadNodeSqlite();
 
-/** What stands in for `DatabaseSync` when `node:sqlite` is absent: it refuses to be constructed, with the reason. */
+/** What stands in for `DatabaseSync` when `node:sqlite` is absent: it refuses to be constructed. */
 class MissingDatabaseSync {
   constructor() {
-    const detail = 'missing' in loadedSqlite ? loadedSqlite.missing : 'unknown';
-    throw new UnsupportedNodeError(
-      `memesh needs Node's built-in SQLite, which this runtime (${process.version}) does not provide. ` +
-      `Upgrade Node to ${MIN_NODE_SERIES} or newer and run memesh again. (${detail})`,
-    );
+    assertNodeSupported();
+    throw new Error('node:sqlite did not load');
   }
 }
 
-const DatabaseSync: typeof import('node:sqlite').DatabaseSync =
-  'DatabaseSync' in loadedSqlite
-    ? loadedSqlite.DatabaseSync
-    : (MissingDatabaseSync as unknown as typeof import('node:sqlite').DatabaseSync);
+export const DatabaseSync: typeof import('node:sqlite').DatabaseSync =
+  loadedSqlite?.DatabaseSync ?? (MissingDatabaseSync as unknown as typeof import('node:sqlite').DatabaseSync);
 
 /**
  * The oldest Node whose `node:sqlite` is built with FTS5 (nodejs/node#57621,
@@ -90,18 +85,44 @@ export const MIN_NODE_VERSION = '22.16.0';
 /** The floor as users read it in messages ("22.16"). */
 export const MIN_NODE_SERIES = MIN_NODE_VERSION.split('.').slice(0, 2).join('.');
 
-/** Why MeMesh cannot use this Node; `code` is what a hook records as its outcome reason. */
+/** Why this Node cannot run MeMesh: what to tell the user (`message`, one sentence) and the repair for a `Fix:` line. */
+export interface NodeProblem {
+  kind: 'too-old' | 'sqlite-switched-off' | 'no-fts5';
+  message: string;
+  fix: string;
+}
+
+/** Why MeMesh cannot use this Node; `code` is what a hook records as its outcome reason, `fix` is the repair that works for this case. */
 export class UnsupportedNodeError extends Error {
   readonly code = 'NODE_TOO_OLD';
-  constructor(message: string) {
-    super(message);
+  readonly fix: string;
+  constructor(problem: NodeProblem) {
+    super(problem.message);
     this.name = 'UnsupportedNodeError';
+    this.fix = problem.fix;
   }
 }
 
 /** Is `err` MeMesh's refusal to run on this Node? Callers print its message as the one sentence, not as a database problem. */
-export function isUnsupportedNode(err: unknown): boolean {
+export function isUnsupportedNode(err: unknown): err is UnsupportedNodeError {
   return (err as { code?: unknown } | null)?.code === 'NODE_TOO_OLD';
+}
+
+/**
+ * The self-check of this Node's SQLite could not finish (out of memory, say). Nothing is known to be wrong with the
+ * Node or with the user's database, so the advice must not be to upgrade Node or to move the database aside.
+ */
+export class SqliteSelfCheckError extends Error {
+  readonly code = 'SQLITE_SELF_CHECK_FAILED';
+  readonly advice = 'Your database is not the problem. Run the command again; if it keeps failing, free some memory or restart, then run `memesh doctor`.';
+  constructor(cause: unknown) {
+    super(`MeMesh could not check this Node's SQLite (${cause instanceof Error ? cause.message : String(cause)}).`, { cause });
+    this.name = 'SqliteSelfCheckError';
+  }
+}
+
+export function isSqliteSelfCheckFailure(err: unknown): err is SqliteSelfCheckError {
+  return (err as { code?: unknown } | null)?.code === 'SQLITE_SELF_CHECK_FAILED';
 }
 
 function atLeastMinimumNode(version: string): boolean {
@@ -130,41 +151,73 @@ let ftsProbe: boolean | undefined;
 /** Does this Node's SQLite have FTS5? Asked once per process; a probe that fails for any other reason throws and is not cached. */
 function hasFts5(): boolean {
   if (ftsProbe === undefined) {
-    const probe = new DatabaseSync(':memory:');
+    let probe: import('node:sqlite').DatabaseSync | undefined;
     try {
-      ftsProbe = fts5ProbeResult(() => probe.exec('CREATE VIRTUAL TABLE memesh_fts5_probe USING fts5(a)'));
+      probe = new DatabaseSync(':memory:');
+      const throwaway = probe;
+      ftsProbe = fts5ProbeResult(() => throwaway.exec('CREATE VIRTUAL TABLE memesh_fts5_probe USING fts5(a)'));
+    } catch (err) {
+      throw new SqliteSelfCheckError(err);
     } finally {
-      // The probe is a throwaway in-memory database. A close that throws must
-      // not turn into a failed open of the real database (the caller's own
-      // close-failure handling is tested separately).
-      try { probe.close(); } catch { /* nothing to save: the answer is already in ftsProbe */ }
+      // A throwaway in-memory database: a close that throws must not replace the
+      // probe's own error, nor turn into a failed open of the real database.
+      try { probe?.close(); } catch { /* nothing to save: the answer is already in ftsProbe */ }
     }
   }
   return ftsProbe;
 }
 
 /**
- * One sentence saying this Node cannot run MeMesh, or `null` when it can.
- * The version is checked first (no database touched); the FTS5 probe covers a
- * Node that is new enough but built without it.
+ * Why this Node cannot run MeMesh, or `null` when it can. The three causes are
+ * different and so is their repair, and this is the only place that words them:
+ * a Node that is too old needs upgrading; a new one with `node:sqlite` switched
+ * off needs the switch removed; a new one built without FTS5 needs the
+ * official build. Checked in that order, and the version first, so a Node 20
+ * (which also has no `node:sqlite`) is told to upgrade, not about a flag.
  */
-export function nodeSupportProblem(
+export function nodeProblem(
   version: string = process.versions.node,
   fts5Available: () => boolean = hasFts5,
-): string | null {
+  sqliteLoaded: boolean = loadedSqlite !== null,
+): NodeProblem | null {
   const shown = version.replace(/^v/, '');
+  const official = `the official Node ${MIN_NODE_SERIES} or newer from nodejs.org`;
   if (!atLeastMinimumNode(version)) {
-    return `This Node (v${shown}) lacks the full-text search MeMesh needs; upgrade to Node ${MIN_NODE_SERIES} or newer and run memesh again.`;
+    return {
+      kind: 'too-old',
+      message: `This Node (v${shown}) lacks the full-text search MeMesh needs; upgrade to Node ${MIN_NODE_SERIES} or newer and run memesh again.`,
+      fix: `Upgrade Node to ${MIN_NODE_SERIES} or newer, then run \`memesh doctor\` again.`,
+    };
+  }
+  if (!sqliteLoaded) {
+    return {
+      kind: 'sqlite-switched-off',
+      message: `This Node (v${shown}) is new enough, but its built-in SQLite (node:sqlite) is switched off; remove the --no-experimental-sqlite option (from the command line, the NODE_OPTIONS environment variable or a Node config file), or install ${official}, and run memesh again.`,
+      fix: `Remove the --no-experimental-sqlite option (from the command line, NODE_OPTIONS or a Node config file), or install ${official}, then run \`memesh doctor\` again.`,
+    };
   }
   if (!fts5Available()) {
-    return `This Node build (v${shown}) lacks the full-text search (FTS5) MeMesh needs; install the official Node ${MIN_NODE_SERIES} or newer from nodejs.org and run memesh again.`;
+    return {
+      kind: 'no-fts5',
+      message: `This Node build (v${shown}) lacks the full-text search (FTS5) MeMesh needs; install ${official} and run memesh again.`,
+      fix: `Install ${official}, then run \`memesh doctor\` again.`,
+    };
   }
   return null;
 }
 
+/** The sentence of {@link nodeProblem}, or `null` when this Node can run MeMesh. */
+export function nodeSupportProblem(
+  version?: string,
+  fts5Available?: () => boolean,
+  sqliteLoaded?: boolean,
+): string | null {
+  return nodeProblem(version, fts5Available, sqliteLoaded)?.message ?? null;
+}
+
 /** Throws {@link UnsupportedNodeError} when this Node cannot run MeMesh. */
 export function assertNodeSupported(): void {
-  const problem = nodeSupportProblem();
+  const problem = nodeProblem();
   if (problem) throw new UnsupportedNodeError(problem);
 }
 

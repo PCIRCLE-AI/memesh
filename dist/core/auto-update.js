@@ -3,7 +3,7 @@ import { createHash, X509Certificate } from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { DatabaseSync } from 'node:sqlite';
+import { DatabaseSync } from '../storage/sqlite.js';
 import { detectPluginHost, getCurrentInstallChannel, getInstallChannelSupport } from './install-channel.js';
 import { getMemeshDirFromDbPath, memeshDir } from './paths.js';
 import { updateConfigInDir } from './config.js';

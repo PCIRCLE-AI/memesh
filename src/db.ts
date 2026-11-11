@@ -1,4 +1,4 @@
-import { BUSY_TIMEOUT_MS, MemeshDatabase } from './storage/sqlite.js';
+import { assertNodeSupported, BUSY_TIMEOUT_MS, MemeshDatabase } from './storage/sqlite.js';
 import path from 'path';
 import fs from 'fs';
 import { backfillCompressionMarkers, runAutoDecay } from './core/lifecycle.js';
@@ -61,6 +61,8 @@ function folderWriteFix(dir: string): { notYours: boolean; fix: string } {
  */
 export function openDatabase(dbPath?: string, opts: { busyTimeoutMs?: number; readOnly?: boolean } = {}): MemeshDatabase {
   if (db) return db;
+  // First, so a Node that cannot run MeMesh does not leave an empty data folder behind (the open below would refuse too, but after mkdir).
+  assertNodeSupported();
 
   const resolvedPath = dbPath ?? getDbPath();
 

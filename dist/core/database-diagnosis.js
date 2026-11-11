@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { isUnsupportedNode, MIN_NODE_SERIES } from '../storage/sqlite.js';
+import { isSqliteSelfCheckFailure, isUnsupportedNode } from '../storage/sqlite.js';
 import { databaseFiles, runOrSay, shellQuote } from './file-mode.js';
 export function isDamagedDatabaseError(message) {
     return /malformed|SQLITE_CORRUPT|not a database|SQLITE_NOTADB/i.test(message);
@@ -60,7 +60,11 @@ export function diagnoseDatabaseFailure(err, databasePath, existsSyncImpl = fs.e
     }
     else if (isUnsupportedNode(err)) {
         diagnosis = message;
-        fix = `Upgrade Node to ${MIN_NODE_SERIES} or newer, then run memesh again`;
+        fix = err.fix;
+    }
+    else if (isSqliteSelfCheckFailure(err)) {
+        diagnosis = message;
+        fix = err.advice;
     }
     else if (typeof ownFix === 'string') {
         diagnosis = message;

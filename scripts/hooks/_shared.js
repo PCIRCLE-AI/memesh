@@ -1319,10 +1319,13 @@ export function recordHookOutcome(env, { hook, outcome, reason, entity, count, p
     removeGroupAndOtherAccess(filePath);
     rotateHookOutcomes(filePath);
   } catch (err) {
+    // "Capture itself is unaffected" is true only on a Node that can run MeMesh; on one that cannot, nothing is captured.
+    let nodeCannotRun;
+    try { nodeCannotRun = nodeSupportProblem() !== null; } catch { nodeCannotRun = true; /* the check itself could not finish: say nothing more than the record failure */ }
     try {
       process.stderr.write(
-        `MeMesh: could not record the ${hook} hook outcome (${err?.message ?? err}). ` +
-          `Capture itself is unaffected, but 'memesh doctor' will under-report capture liveness.\n`,
+        `MeMesh: could not record the ${hook} hook outcome (${err?.message ?? err}).` +
+          (nodeCannotRun ? '\n' : ` Capture itself is unaffected, but 'memesh doctor' will under-report capture liveness.\n`),
       );
     } catch { /* stderr gone */ }
   }
