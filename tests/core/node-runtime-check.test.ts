@@ -152,8 +152,10 @@ describe('doctor: Node runtime row', () => {
     const check = inspectNodeRuntime(dir, fs.existsSync, fs.readFileSync, 'v20.20.2', '115', () => false);
 
     expect(check.summary).toContain('node:sqlite: not available');
-    // Absent built-in SQLite is not a failure — nothing requires it today.
-    expect(check.status).toBe('pass');
+    // MeMesh stores everything in the built-in SQLite, so a Node inside the declared range that
+    // has none is a failure with its own next step, not a pass.
+    expect(check.status).toBe('fail');
+    expect(check.fix ?? '').not.toBe('');
   });
 
   it('does not fail an install whose engines range it cannot parse', () => {
