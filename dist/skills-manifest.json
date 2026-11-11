@@ -52,6 +52,11 @@
       "bytes": 11278
     },
     {
+      "path": "scripts/hooks/_generated/agent-network-schema.js",
+      "sha256": "e6184f517eccebcfc5125b7ce57fea37bdb43439e2a5f84e7a454acebdc1834e",
+      "bytes": 2588
+    },
+    {
       "path": "scripts/hooks/_generated/agent-scope-id.js",
       "sha256": "f78667b12dfa128c2575aaa20029874e9e2bf4f99ac13c98f61bb455897aa2df",
       "bytes": 3112
@@ -98,8 +103,8 @@
     },
     {
       "path": "scripts/hooks/_generated/core-paths.js",
-      "sha256": "9ea4a269d337370d6365f91257ea32fe4af3a7176e737dfb192d626846d0741b",
-      "bytes": 23962
+      "sha256": "8b6bbee24f87ffce707778bdc8887ba655e491f54214d8a3508111699de7c260",
+      "bytes": 24001
     },
     {
       "path": "scripts/hooks/_generated/entity-write.js",
@@ -128,8 +133,8 @@
     },
     {
       "path": "scripts/hooks/_generated/schema.js",
-      "sha256": "b993c195b8917773310f8db3f59ccd9f01aa5cda72e064a350d5f2be7b270760",
-      "bytes": 26359
+      "sha256": "e7a61fede74000a5f0ba27e66d667a40e52d2607ff1be8f6c1afeb0605466284",
+      "bytes": 26456
     },
     {
       "path": "scripts/hooks/_generated/scoring.js",
@@ -263,8 +268,8 @@
     },
     {
       "path": "skills/memesh/SKILL.md",
-      "sha256": "ddba4b49790e7c31c378ae55a013164cdbbf43a9d03c7d8eafd74a9f2fee8705",
-      "bytes": 30127
+      "sha256": "ffbcae09d05219f8e299caf2aa698824f881793215c612ae2a8f2bda2ad29301",
+      "bytes": 30196
     }
   ]
 }

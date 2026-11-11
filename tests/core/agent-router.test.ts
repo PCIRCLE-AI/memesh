@@ -504,6 +504,79 @@ describe.runIf(process.platform !== 'win32').sequential('AgentRouter real SQLite
     expect(host.generation).toBe(1);
   });
 
+  it('tells its owner after a host connects, and a failing callback does not fail the host', async () => {
+    const { db, socketPath, token } = setup();
+    let calls = 0;
+    const router = new AgentRouter({
+      db,
+      socket_path: socketPath,
+      memesh_version: '1.0.0',
+      adapters: [{ kind: 'test-host', authenticate: value => value.auth_token === token }],
+      on_host_connected: () => { calls++; throw new Error('the callback failed'); },
+    });
+    await router.start();
+    routers.push(router);
+    expect(calls).toBe(0);
+    const host = await RouterHostClient.connect({
+      socketPath, token, project: 'project-a', principal: 'principal-a', session: 'session-a',
+    });
+    expect(host.generation).toBe(1);
+    await vi.waitFor(() => expect(calls).toBe(1));
+  });
+
+  it('a fresh startup lock that replaces a stale one while it is being cleared is not deleted', async () => {
+    const { db, socketPath, token } = setup();
+    const lockPath = `${socketPath}.startup.lock`;
+    fs.writeFileSync(lockPath, '2147483647\n', { mode: 0o600 });
+    const realUnlink = fs.unlinkSync;
+    const realRename = fs.renameSync;
+    let swapped = false;
+    // Between judging the lock stale and removing it, another starter replaces it with its own.
+    const swapIn = (target: fs.PathLike): void => {
+      if (swapped || String(target) !== lockPath) return;
+      swapped = true;
+      fs.writeFileSync(`${lockPath}.fresh`, `${process.pid}\n`, { mode: 0o600 });
+      realRename(`${lockPath}.fresh`, lockPath);
+    };
+    const unlink = vi.spyOn(fs, 'unlinkSync').mockImplementation(((target: fs.PathLike) => {
+      swapIn(target);
+      realUnlink(target);
+    }) as typeof fs.unlinkSync);
+    const rename = vi.spyOn(fs, 'renameSync').mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+      swapIn(from);
+      realRename(from, to);
+    }) as typeof fs.renameSync);
+    try {
+      await expect(startRouter(db, socketPath, token)).rejects.toMatchObject({ code: 'router_start_in_progress' });
+    } finally {
+      unlink.mockRestore();
+      rename.mockRestore();
+    }
+    expect(swapped).toBe(true);
+    expect(fs.readFileSync(lockPath, 'utf8')).toBe(`${process.pid}\n`);
+    expect(fs.readdirSync(path.dirname(lockPath)).filter(name => name.includes('.stale-'))).toEqual([]);
+    expect(fs.existsSync(socketPath)).toBe(false);
+  });
+
+  it('an empty startup lock older than a moment is stale, not a starter to wait for', async () => {
+    const { db, socketPath, token } = setup();
+    const lockPath = `${socketPath}.startup.lock`;
+    fs.writeFileSync(lockPath, '', { mode: 0o600 });
+    const past = new Date(Date.now() - 3_000);
+    fs.utimesSync(lockPath, past, past);
+    const router = await startRouter(db, socketPath, token);
+    expect(router).toBeDefined();
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  it('an empty startup lock just made is still waited for', async () => {
+    const { db, socketPath, token } = setup();
+    const lockPath = `${socketPath}.startup.lock`;
+    fs.writeFileSync(lockPath, '', { mode: 0o600 });
+    await expect(startRouter(db, socketPath, token)).rejects.toMatchObject({ code: 'router_start_in_progress' });
+    fs.rmSync(lockPath);
+  });
+
   it('recovers a startup lock left by a process that no longer exists', async () => {
     const { db, socketPath, token } = setup();
     fs.writeFileSync(`${socketPath}.startup.lock`, '2147483647\n', { mode: 0o600 });

@@ -703,10 +703,13 @@ quota or automatic retention policy.
 
 ## Local and Cloud boundary
 
-This guide describes only one local MeMesh instance: its SQLite durable event
-store and same-machine host-native input. Remote and cross-machine transport is
-the responsibility of MeMesh Cloud and requires its own verified relay; Cloud
-state is not evidence that this local host accepted a native message. Native
+This guide describes one local MeMesh instance: its SQLite durable event store
+and same-machine host-native input. Computers that joined one team by invite
+(`memesh network`) also exchange the messages agents send, addressed
+`person/handle@machine`, through `relay.memesh.ai` (or your own relay) or
+directly; memory never crosses, and the receiving machine stores each message in
+its own instance like any other. Cloud state is not evidence that this local
+host accepted a native message. Native
 acceptance, persistence, or fetch does not promise exactly-once cognition, a
 reply, or a stopped-session wake-up.
 
@@ -716,7 +719,7 @@ reply, or a stopped-session wake-up.
   describes the explicitly configured ordinary Codex path and the separate
   managed Codex/Claude paths above.
 - Not topic, broadcast, lease/claim, or TTL routing. The current delivery target is one exact recipient.
-- Not arbitrary external-user access or cross-machine delivery. A local MeMesh instance is not a public collaboration service.
+- Not arbitrary external-user access. Cross-machine delivery reaches only computers whose owners joined your team by invite; a local MeMesh instance is not a public collaboration service.
 - Not permission to execute payload content. The receiving host must apply its own policy and required human approval.
 
 ## Support Matrix

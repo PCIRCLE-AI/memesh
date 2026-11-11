@@ -23,6 +23,7 @@ describe('redactSecrets (public-egress credential masking)', () => {
     ['underscore sk key', 'sk_' + 'a1b2c3d4'.repeat(2)],
     ['stripe live secret', 'sk_live_' + 'A1b2C3d4'.repeat(3)],
     ['stripe test restricted', 'rk_test_' + 'A1b2C3d4'.repeat(3)],
+    ['memesh invite link', 'memesh://join/' + 'eyJ2IjoxLCJu'.repeat(8)],
     ['github classic PAT', 'ghp_' + 'A1b2C3d4'.repeat(9)],
     ['github oauth', 'gho_' + 'A1b2C3d4'.repeat(9)],
     ['github server token', 'ghs_' + 'A1b2C3d4'.repeat(9)],
@@ -617,7 +618,7 @@ describe('redactSecrets (public-egress credential masking)', () => {
     // Guard-the-guard: if a pattern is added to SECRET_PATTERN_SOURCES
     // without a sample here, this count goes stale and forces the author
     // to add one. Update BOTH when the list grows.
-    expect(SECRET_PATTERN_SOURCES.length).toBe(16);
+    expect(SECRET_PATTERN_SOURCES.length).toBe(17);
   });
 });
 

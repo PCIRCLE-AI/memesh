@@ -19,7 +19,7 @@ Use the `message` MCP tool, `POST /v1/message`, or `memesh message` commands whe
 - Poll and fetch are reads; neither implies ACK or workflow acceptance.
 - A stopped model session is not resumed or replaced. Managed adapters register only a currently active session; exact-session messages never reroute.
 
-The `team` namespace remains useful for shared durable knowledge and coarse handoffs. Use unique entity names because supplying an existing name can update or move that memory. Topic routing, claims/leases, TTL, cross-machine delivery, and universal host resume remain outside the current local message surface.
+The `team` namespace remains useful for shared durable knowledge and coarse handoffs. Use unique entity names because supplying an existing name can update or move that memory. Topic routing, claims/leases, TTL, and universal host resume remain outside the current message surface. Cross-machine delivery works between computers that joined one team by invite (`memesh network`): only the messages an agent sends cross, addressed `person/handle@machine`; memory stays on each machine. The relay defaults to `relay.memesh.ai` and can be replaced with your own (`--relay`).
 
 ## Option A: HTTP API
 

@@ -16,6 +16,7 @@
 import type { MemeshDatabase } from './sqlite.js';
 import { insertFtsRow } from './fts-index.js';
 import { parseSqliteUtcMs } from '../core/time-utils.js';
+import { AGENT_NETWORK_SCHEMA_SQL } from './agent-network-schema.js';
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS entities (
@@ -346,7 +347,7 @@ CREATE TABLE IF NOT EXISTS hook_runs (
 -- read-only database FILE (measured: "attempt to write a readonly database"
 -- killed recall along with capture). The helper SELECTs first and writes
 -- only when the key is genuinely absent — once per database lifetime.
-`;
+${AGENT_NETWORK_SCHEMA_SQL}`;
 
 // FTS5 virtual table — separate so opens that don't need it stay lean.
 export const FTS_SQL = `

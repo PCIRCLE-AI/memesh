@@ -33,6 +33,8 @@ const DEFAULT_CLIENT_TIMEOUT_MS = 2_000;
 const STALE_SOCKET_PROBE_TIMEOUT_MS = 250;
 const STARTUP_LOCK_WAIT_MS = 1_000;
 const STARTUP_LOCK_STALE_MS = 5_000;
+/** A holder writes its pid right after creating the lock; one still empty after this never will. */
+const STARTUP_LOCK_EMPTY_STALE_MS = 1_500;
 const MAX_FIELD_LENGTH = 200;
 const MAX_ADAPTER_RECEIPT_BYTES = 16 * 1024;
 /** How long an older router refuses to start after a newer host asked it to
@@ -101,6 +103,11 @@ export interface AgentRouterOptions {
   memesh_version: string;
   /** Called after a host of a newer MeMesh version registered: this router should stop and exit. */
   on_superseded?: () => void;
+  /**
+   * Called after a host registered, once the router's own work is done. It must
+   * not throw, block or await anything; the router never waits on it.
+   */
+  on_host_connected?: () => void;
   router_instance_id?: string;
   limits?: AgentRouterLimits;
 }
@@ -275,6 +282,7 @@ export class AgentRouter {
 
   private readonly db: MemeshDatabase;
   private readonly onSuperseded: (() => void) | undefined;
+  private readonly onHostConnected: (() => void) | undefined;
   private readonly adapters: Map<string, AgentHostAdapter>;
   private readonly limits: Required<AgentRouterLimits>;
   private server: net.Server | null = null;
@@ -295,6 +303,7 @@ export class AgentRouter {
     this.socket_path = validateSocketPath(options.socket_path);
     this.memesh_version = validateVersion('memesh_version', options.memesh_version);
     this.onSuperseded = options.on_superseded;
+    this.onHostConnected = options.on_host_connected;
     this.router_instance_id = validateField(
       'router_instance_id',
       options.router_instance_id ?? randomUUID(),
@@ -334,6 +343,11 @@ export class AgentRouter {
           break;
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw error;
+          // Only the lock holder may judge and remove a socket; a lock lost to a
+          // takeover race means another starter is doing this now.
+          if (!holdsStartupLock(startupLock)) {
+            throw new AgentRouterError('router_start_in_progress', 'Another router process is starting.');
+          }
           if (!await removeOrphanedSocket(this.socket_path)) {
             throw new AgentRouterError(
               'router_already_running',
@@ -506,6 +520,12 @@ export class AgentRouter {
       work_summary: registration.work_summary ?? null,
     });
     setImmediate(() => { void this.drainConnection(connection, request.hops + 1).catch(() => undefined); });
+    if (this.onHostConnected) {
+      const onHostConnected = this.onHostConnected;
+      setImmediate(() => {
+        try { onHostConnected(); } catch { /* the callback records its own errors */ }
+      });
+    }
     return {
       connection_id: connection.connection_id,
       generation: connection.generation,
@@ -1534,7 +1554,7 @@ async function acquireStartupLock(socketPath: string): Promise<StartupLock> {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
       const existing = readPrivateLockIdentity(lockPath);
       if (startupLockIsStale(lockPath, existing)) {
-        unlinkPathIfSame(lockPath, existing);
+        takeOverStaleLock(lockPath, existing);
         continue;
       }
       if (Date.now() >= deadline) {
@@ -1543,6 +1563,37 @@ async function acquireStartupLock(socketPath: string): Promise<StartupLock> {
       await new Promise(resolve => setTimeout(resolve, 10));
     }
   }
+}
+
+/**
+ * Clear the lock that was judged stale, and only that one. Checking and then
+ * unlinking the path would delete a fresh lock another starter put there in
+ * between, so the file is moved aside (atomic) and looked at: if it is not the
+ * one judged, it goes straight back. While it is aside a third starter can get
+ * in, which is why a holder re-checks its lock before it touches the socket.
+ */
+function takeOverStaleLock(lockPath: string, judged: SocketIdentity): void {
+  const aside = `${lockPath}.stale-${process.pid}-${randomUUID()}`;
+  try {
+    fs.renameSync(lockPath, aside);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+  try {
+    const moved = lstatIfPresent(aside);
+    if (moved && sameSocketIdentity(judged, moved)) return;
+    fs.linkSync(aside, lockPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+  } finally {
+    fs.rmSync(aside, { force: true });
+  }
+}
+
+function holdsStartupLock(lock: StartupLock): boolean {
+  const current = lstatIfPresent(lock.path);
+  return current !== undefined && sameSocketIdentity(lock.identity, current);
 }
 
 function readPrivateLockIdentity(lockPath: string): SocketIdentity & Pick<fs.Stats, 'mtimeMs'> {
@@ -1560,7 +1611,7 @@ function startupLockIsStale(lockPath: string, identity: Pick<fs.Stats, 'mtimeMs'
   if (Date.now() - identity.mtimeMs >= STARTUP_LOCK_STALE_MS) return true;
   try {
     const raw = fs.readFileSync(lockPath, 'utf8').trim();
-    if (!/^[1-9][0-9]*$/.test(raw)) return false;
+    if (!/^[1-9][0-9]*$/.test(raw)) return Date.now() - identity.mtimeMs >= STARTUP_LOCK_EMPTY_STALE_MS;
     process.kill(Number(raw), 0);
     return false;
   } catch (error) {

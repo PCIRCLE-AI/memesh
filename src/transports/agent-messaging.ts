@@ -33,6 +33,7 @@ import { getAgentRouterSocketPath } from '../core/paths.js';
 import { sessionAliasChain } from '../core/agent-message-inbox.js';
 import { jsonStringLiteral } from '../core/work-topology.js';
 import { sqliteUtcToIso } from '../core/time-utils.js';
+import { networkReceiptFact, remoteDiscoverCards, resolveNetworkRecipient } from '../network/outbound.js';
 
 export type AgentMessageActionInput = z.infer<typeof MessageSchema>;
 
@@ -650,6 +651,11 @@ export async function executeAgentMessageAction(
       if (input.fallback_to_principal !== undefined && resolved.target_kind !== 'session') {
         throw new AgentMessagingError('fallback_to_principal is only valid with target_kind "session".');
       }
+      // Another machine's agent: stored here and carried by the bridge, never pushed to a local host.
+      const network = input.recipient_handle === undefined ? resolveNetworkRecipient(db, resolved.recipient) : null;
+      if (network && (resolved.target_kind !== 'principal' || resolved.intended_session !== undefined || input.fallback_to_principal !== undefined)) {
+        throw new AgentMessagingError('A message to another machine goes to a principal or a handle there: target_kind session, intended_session and fallback_to_principal do not apply.');
+      }
       const message = {
         project: input.project,
         sender: input.sender,
@@ -670,9 +676,10 @@ export async function executeAgentMessageAction(
         ...message,
         ...resolved,
       }, {
-        notifier: resolved.target_kind === 'session' ? undefined : optionalRouterNotifier(),
+        notifier: resolved.target_kind === 'session' || network ? undefined : optionalRouterNotifier(),
         storage_quota_bytes: configuredAgentMessageStorageQuotaBytes(),
       });
+      if (network) return { ...publicSentMessage(sent), delivery_note: network.note };
       if (sent.target_kind !== 'session') return publicSentMessage(sent);
       // A retry of a send that already fell back returns that principal message, with or
       // without the flag, even when the session is back by now; trying the session again
@@ -708,14 +715,18 @@ export async function executeAgentMessageAction(
         limit: input.limit,
         hops: 0,
       };
-      // Discovery is deliberately router-only: it neither reads nor writes
-      // durable message state, and router failures remain explicit errors —
-      // never a silently empty directory. Connection-level failures are
-      // translated into an actionable error the same way requireExactSessionNativeAcceptance
+      // Local discovery is router-only: it neither reads nor writes durable
+      // message state, and router failures remain explicit errors — never a
+      // silently empty directory. Connection-level failures are translated into
+      // an actionable error the same way requireExactSessionNativeAcceptance
       // translates them for `send`; a protocol/identity error (a broken or
       // skewed router, not an unreachable one) still passes through unchanged.
+      // Agents on other machines are the one durable read: what their bridges
+      // last said is live, appended after the router's cards. That part can
+      // never fail discover; it adds a note instead.
+      let local: AgentJsonObject;
       try {
-        return await (dependencies.sendRouterRequest ?? sendAgentRouterRequest)(
+        local = await (dependencies.sendRouterRequest ?? sendAgentRouterRequest)(
           routerSocketPath(),
           request,
         );
@@ -724,6 +735,14 @@ export async function executeAgentMessageAction(
           throw error;
         }
         throw new AgentDiscoveryUnavailableError();
+      }
+      try {
+        const remote = remoteDiscoverCards(db, input.project);
+        if (remote.length === 0) return local;
+        const cards = Array.isArray(local.cards) ? local.cards : [];
+        return { ...local, cards: [...cards, ...remote] };
+      } catch (error) {
+        return { ...local, network_note: `Agents on other machines could not be listed: ${error instanceof Error ? error.message : String(error)}` };
       }
     }
     case 'fetch':
@@ -755,7 +774,11 @@ export async function executeAgentMessageAction(
         host_activation: input.activation,
         detail: receiptDetail(input.detail, context),
       });
-    case 'receipts':
-      return readPublicReceipts(db, input);
+    case 'receipts': {
+      const facts = readPublicReceipts(db, input);
+      const delivery = resolveCanonicalDelivery(db, input.project, input.recipient, input.message_id);
+      const network = networkReceiptFact(db, delivery.delivery_id);
+      return network ? [...facts, network] : facts;
+    }
   }
 }

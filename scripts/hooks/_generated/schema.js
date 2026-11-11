@@ -8,6 +8,7 @@
 // ============================================================================
 import { insertFtsRow } from './fts-index.js';
 import { parseSqliteUtcMs } from './time-utils.js';
+import { AGENT_NETWORK_SCHEMA_SQL } from './agent-network-schema.js';
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS entities (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -337,7 +338,7 @@ CREATE TABLE IF NOT EXISTS hook_runs (
 -- read-only database FILE (measured: "attempt to write a readonly database"
 -- killed recall along with capture). The helper SELECTs first and writes
 -- only when the key is genuinely absent — once per database lifetime.
-`;
+${AGENT_NETWORK_SCHEMA_SQL}`;
 export const FTS_SQL = `
 CREATE VIRTUAL TABLE IF NOT EXISTS entities_fts USING fts5(
   name, observations, content='',
