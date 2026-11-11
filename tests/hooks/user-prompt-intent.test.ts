@@ -9,6 +9,7 @@ import {
   detectRememberIntent,
   stripNonUserBlocks,
   buildHint,
+  buildDoNotSaveHint,
   INTENT_PATTERNS,
   MAX_PROMPT_CHARS,
 } from '../../scripts/hooks/user-prompt-intent.js';
@@ -23,583 +24,98 @@ import {
 
 const HOOK_PATH = path.resolve('scripts/hooks/user-prompt-intent.js');
 
+type Intent = 'save' | 'do-not-save' | 'none';
+type CorpusRow = { text: string; intent: Intent; lang: string; category: string };
+/** What the detector answers for an intent: 'none' is null. */
+const answerFor = (intent: Intent) => (intent === 'none' ? null : intent);
+const CORPUS: CorpusRow[] = JSON.parse(readFileSync(path.resolve('tests/fixtures/remember-intent-corpus.json'), 'utf8'));
+
+// The host kills the hook at the timeout hooks/hooks.json gives it; a timing test leaves a third of it spare.
+const hookEntry = JSON.parse(readFileSync(path.resolve('hooks/hooks.json'), 'utf8')).hooks.UserPromptSubmit
+  .flatMap((group: { hooks: { command: string; timeout: number }[] }) => group.hooks)
+  .find((hook: { command: string }) => hook.command.endsWith('/user-prompt-intent.js'));
+const HOOK_TIMEOUT_MS = hookEntry.timeout * 1000;
+const WITHIN_MS = (HOOK_TIMEOUT_MS * 2) / 3;
+
 describe('Feature: User Prompt Intent Hook', () => {
   describe('Unit — detectRememberIntent (regex matrix)', () => {
-    describe('English imperative — sentence-initial', () => {
-      it.each([
-        'remember this',
-        'Remember this preference',
-        'Please remember this for later sessions',
-        'memorize this preference',
-        'Please memorize that detail',
-        'remember this: always run the tests before pushing',
-        'ok. remember this',
-      ])('detects: %s', (prompt) => {
-        expect(detectRememberIntent(prompt)).toBe(true);
+    // Every sentence with a known answer lives in the corpus, labelled by meaning:
+    // a request to save, a request not to save, or neither. A rule change is judged against all of it.
+    describe('the labelled corpus', () => {
+      it('holds every answer in Chinese and English, save and neither in every language, each sentence once', () => {
+        expect(new Set(CORPUS.map((row) => row.text)).size).toBe(CORPUS.length);
+        for (const lang of ['zh', 'en', 'es', 'fr', 'pt']) {
+          for (const intent of ['save', 'none'] as const) expect(CORPUS.some((row) => row.lang === lang && row.intent === intent), `${lang} ${intent}`).toBe(true);
+        }
+        for (const lang of ['zh', 'en']) expect(CORPUS.some((row) => row.lang === lang && row.intent === 'do-not-save'), lang).toBe(true);
       });
 
-      it.each([
-        'Do you remember when we discussed this?',
-        "I remember reading the docs but can't find it",
-        'Do you remember the docs?',
-        'do you remember the API key we used last week?',
-        'You remember this from before',
-        'Did you remember to commit?',
-      ])('does NOT match conversational: %s', (prompt) => {
-        expect(detectRememberIntent(prompt)).toBe(false);
-      });
+      it.each(CORPUS.map((row) => [row.intent, row.category, row.text] as const))(
+        '%s (%s): %j',
+        (intent, _category, text) => {
+          expect(detectRememberIntent(text)).toBe(answerFor(intent));
+        },
+      );
     });
 
-    describe('Save/add/store/write — memesh-only policy', () => {
-      it.each([
-        'save this to memesh',
-        'save it to memesh',
-        'save this to memesh as a lesson',
-        'add this to memesh please',
-        'store this in memesh',
-        'put it into memesh',
-        'write this to memesh.',
-        'save to memesh',
-        'add to memesh as a fact',
-        'Please store this in memesh',
-      ])('detects: %s', (prompt) => {
-        expect(detectRememberIntent(prompt)).toBe(true);
+    describe('a request after a sentence end and any blank but a newline', () => {
+      it.each([['a tab', '\t'], ['a carriage return', '\r'], ['a no-break space', ' '], ['two spaces', '  ']])('reads a request after a sentence end followed by %s', (_label, gap) => {
+        expect(detectRememberIntent(`Done.${gap}Save this to memesh`)).toBe('save');
+        expect(detectRememberIntent(`ok!${gap}remember this`)).toBe('save');
       });
 
-      it.each([
-        // Generic "memory" — intentionally excluded from save-class verbs
-        // (collides with RAM/heap technical noun).
-        'save this to memory',
-        'save the buffer to memory then flush',
-        'add to memory leak',
-        'store this in memory cache',
-        'put this into memory pool',
-        'write to memory mapped IO',
-        'How do I save this array to memory in Python?',
-        'I want to write it into memory and benchmark',
-        'We add it to memory at boot time',
-        'Help me debug the memory leak in this code',
-        // Unrelated verbs / save actions
-        'save this file as JSON',
-        'git stash save the work',
-        // Interrogative — sentence-initial anchor blocks
-        'What does save to memesh do?',
-        'How does store this in memesh behave under conflict?',
-      ])('does NOT match: %s', (prompt) => {
-        expect(detectRememberIntent(prompt)).toBe(false);
-      });
-    });
-
-    describe('CJK — requests match, statements and questions do not', () => {
-      it.each([
-        // plain requests
-        '記下來',
-        '請記下來',
-        '幫我記下來：部署前要先備份',
-        '把這個記下來',
-        '請把這點記下來',
-        '記到 memesh',
-        '存到記憶',
-        '寫進 memesh',
-        '請記到 memesh',
-        '存到 memesh',
-        '寫進記憶',
-        '存進記憶',
-        // other forms of the same request
-        '收到，記下來',
-        '幫我把這個存到 memesh',
-        '你幫我記下來',
-        '你記下來',
-        '您記下來',
-        '你把這個記下來',
-        '我們把這個記下來',
-        '那就記下來',
-        '所以記下來',
-        '拜託記下來',
-        '拜託幫我記下來',
-        '請幫忙記下來',
-        '請將這條記下來',
-        '將這個存到記憶',
-        '這個記下來',
-        '這點要記下來',
-        '這個要記下來',
-        '這個存到 memesh',
-        '這段存進 memesh',
-        '先記下來',
-        '記得存到 memesh',
-        'OK 記下來',
-        '好 記下來',
-        '嗯 記下來',
-        '好，記下來',
-        '記下來吧',
-        '記下來！',
-        '記下來喔',
-        '記下來 謝謝',
-        '這個很重要，記下來',
-        '把剛剛討論的這個重要的架構決策和背後所有的理由都記下來',
-        '把 A 跟 B 的差異記下來',
-        '請把「不要 squash merge」記下來',
-        '對，存到 memesh',
-        '存到 memesh 吧',
-        '存到記憶裡',
-        // polite questions that are requests
-        '可以幫我記下來嗎？',
-        '能不能幫我記下來',
-        '記下來好嗎？',
-        '記下來，好嗎',
-        // verbs the older pattern never covered
-        '幫我記住這個',
-        '請記住這個',
-        '把這個存起來',
-        '把以上存起來',
-        '請記下',
-        '記得這件事',
-        '請記得這個',
-        '請記住：部署前要備份',
-        '幫我記得部署前要備份',
-      ])('detects request: %s', (prompt) => {
-        expect(detectRememberIntent(prompt)).toBe(true);
-      });
-
-      it.each([
-        // statements and questions
-        '我記下來了',
-        '記下來了',
-        '已經記下來了',
-        '這條已經記下來了',
-        '我先記下來',
-        '我會記下來',
-        '收到，我記下來',
-        '你記下來了嗎？',
-        '要不要記下來？',
-        '有記下來嗎',
-        '我沒有記下來',
-        '這條已經記下來了，現在沒有動 repo',
-        '收到，我先記下來，等審查結果',
-        // done, or asking whether it is done
-        '記下來沒？',
-        '記下來了沒',
-        '你記下來沒',
-        '有沒有記下來',
-        '我剛記下來',
-        '我剛剛記下來了',
-        '我把這個記下來',
-        // storage forms
-        '我已經存到記憶了',
-        '已存到 memesh',
-        '存到 memesh 了',
-        '存到記憶了',
-        '存到記憶體',
-        '把資料存到記憶體裡',
-        // the newer verbs, in statement or question form
-        '我記住了',
-        '你記住了嗎',
-        '把錢存起來',
-        '我把這個存起來了',
-        '我記得部署前要備份',
-        '你還記得嗎',
-        '記得嗎？',
-        '記得這個嗎',
-        // narrative or other uses of the same words
-        '我記到他昨天說過這件事',
-        '我記到 console',
-        '他突然記憶起來那段往事',
-        '記下午三點的會議',
-        // work instructions, not save requests
-        '記得要要求架構及程式碼 simplification, 不要複雜難懂的架構，要容易維護及清楚簡單的架構',
-        '記得切勿 over engineer',
-        '記得部署前要備份',
-        '一定要記得部署前先備份',
-        '記得',
-      ])('does NOT match statement, question or done-form: %s', (prompt) => {
-        expect(detectRememberIntent(prompt)).toBe(false);
-      });
-    });
-
-    describe('CJK — 記得 asks to save only as 幫我記得… or with a demonstrative that ends the clause', () => {
-      it.each([
-        '記得這件事',
-        '請記得這個',
-        '請記得那件事',
-        '記得它',
-        '麻煩記得這個',
-        '幫忙記得這個',
-        '替我記得這個',
-        '幫我記得明天要開會',
-        '記得以上三點',
-        '記得上述規則',
-        '幫我先記得這個',
-        '記得這條',
-        '記得這項',
-        '記得這句',
-        '記得這件事情',
-        '記得這個重點',
-        '記得這個決定',
-      ])('detects request: %s', (prompt) => {
-        expect(detectRememberIntent(prompt)).toBe(true);
-      });
-
-      it.each([
-        '記得這個函式要改',
-        '記得那個 bug 還沒修',
-        '記得這個bug還沒修',
-        '記得那個設定檔不能刪',
-        '記得它要在部署前跑',
-        '記得以上都要測試',
-        '記得上述步驟要照做',
-        '記得這次不要 squash',
-        '記得這邊要加測試',
-        '記得那個 PR 要 rebase',
-        '記得那次部署失敗的原因',
-        '收到，記得這個要改',
-        '記得這個嗎',
-        '請記得這件事嗎',
-      ])('does NOT match a work instruction or question: %s', (prompt) => {
-        expect(detectRememberIntent(prompt)).toBe(false);
-      });
-    });
-
-    describe('CJK — 記下, 記住 and 把…存起來 need a save-shaped object', () => {
-      it.each([
-        '記下這條',
-        '記下那段',
-        '請記下',
-        '記住這個',
-        '幫我記住這個',
-        '請記住這個',
-        '請記住：部署前要備份',
-        '請記住: 部署前要備份',
-        '幫我記住明天要開會',
-        '替我記住這件事',
-        '把這個存起來',
-        '把以上存起來',
-        '把那段存起來',
-        '把這兩點都存起來',
-        '把剛剛的討論存起來',
-        '把上面的內容存起來',
-        '把這段對話存起來',
-        '把這些存起來',
-        '把這段內容存起來',
-        '把這段討論存起來',
-        '把這個也存起來',
-        '把剛剛的對話存起來',
-        '把上面的重點存起來',
-        '把上面內容存起來',
-        '記住：部署前要備份',
-        '麻煩記住：明天開會',
-      ])('detects request: %s', (prompt) => {
-        expect(detectRememberIntent(prompt)).toBe(true);
-      });
-
-      it.each([
-        // 記下 inside another word, or followed by something that is not saved
-        '筆記下載失敗',
-        '在筆記下方加一行',
-        '標記下一個版本',
-        '日記下面那段',
-        '記下一筆',
-        '記下了',
-        '已記下',
-        // 記住 that is not an instruction to keep this conversation's content
-        '勾選記住我',
-        '記住我功能壞掉了',
-        '記住密碼的選項不見了',
-        '這個名字很難記住',
-        '很容易記住',
-        '你能記住嗎？',
-        '我想記住這個',
-        '這個要記住',
-        '記住，這很重要',
-        '記住了',
-        '我會記住',
-        // 存起來 with an object that is a file, money or a picture
-        '把這個檔案存起來',
-        '把這些錢存起來',
-        '把剛剛那張圖存起來',
-        '把這張照片存起來',
-      ])('does NOT match: %s', (prompt) => {
-        expect(detectRememberIntent(prompt)).toBe(false);
-      });
-    });
-
-    describe('CJK — someone else\'s story or an open question is not a request', () => {
-      it.each([
-        '你記下來',
-        '我們把這個記下來',
-        '可以幫我記下來嗎？',
-        '你幫我記下來嗎',
-        '可以記下來嗎',
-        '記下來好嗎？',
-        '能不能幫我記下來',
-        '把他說的記下來',
-        '其他都記下來',
-        '其他也記下來',
-        '其他也存到 memesh',
-        '能不能記下來',
-        '可不可以記下來',
-        '替我記下來',
-        '給我記下來',
-      ])('detects request: %s', (prompt) => {
-        expect(detectRememberIntent(prompt)).toBe(true);
-      });
-
-      it.each([
-        '他把這件事記下來',
-        '她們把這個存到 memesh',
-        '他記下來',
-        '老師叫我們記下來',
-        '老師叫你們記下來',
-        '他們記下來',
-        '主管叫大家記下來',
-        '要記下來嗎？',
-        '需要記下來嗎',
-        '該記下來嗎',
-        '你記下來嗎',
-        '記下來呢',
-        '是不是要記下來',
-        '該不該記下來',
-        '需不需要記下來',
-        '你要不要記下來',
-        '要記下來？',
-        '記下來?',
-        // each statement word on its own
-        '已經記下',
-        '沒記下來',
-        '記下來過',
-      ])('does NOT match: %s', (prompt) => {
-        expect(detectRememberIntent(prompt)).toBe(false);
-      });
-    });
-
-    describe('CJK — a memory card or a memory block is not memesh', () => {
-      it.each([
-        '存到記憶',
-        '存到記憶裡',
-        '存到記憶中',
-        '寫進記憶 謝謝',
-        '存到記憶吧',
-        '存到記憶好嗎',
-        '存到記憶喔',
-        '存到記憶謝謝',
-      ])('detects request: %s', (prompt) => {
-        expect(detectRememberIntent(prompt)).toBe(true);
-      });
-
-      it.each([
-        '把照片存到記憶卡',
-        '存到記憶卡',
-        '寫進記憶區塊',
-        '存到記憶體',
-        '存進記憶庫存表',
-      ])('does NOT match: %s', (prompt) => {
-        expect(detectRememberIntent(prompt)).toBe(false);
-      });
-    });
-
-    describe('CJK — every punctuation mark starts a new clause', () => {
-      it.each([
-        '好。記得這件事',
-        '好！記得這件事',
-        '好？記得這件事',
-        'ok! 記得這件事',
-        'ok? 記得這件事',
-        'ok. 記得這件事',
-        '好\n記得這件事',
-        '好，記得這件事',
-        'ok, 記得這件事',
-        '好；記得這件事',
-        'ok; 記得這件事',
-        '注意：記得這件事',
-        'note: 記得這件事',
-      ])('detects request: %s', (prompt) => {
-        expect(detectRememberIntent(prompt)).toBe(true);
-      });
-    });
-
-    describe('Text the user did not type is ignored', () => {
-      // A block is a line-start opening tag plus a same-name closing tag that
-      // ends a line. The text inside would otherwise match, so only the
-      // stripping keeps these false.
-      it.each([
-        ['cross-session statement', '<cross-session-message from="a">我已經記下來了</cross-session-message>'],
-        ['cross-session request', '<cross-session-message from="a">\nremember this\n</cross-session-message>'],
-        ['cross-session one line', '<cross-session-message from="a">remember this</cross-session-message>'],
-        ['system-reminder', '<system-reminder>\nremember this\n</system-reminder>'],
-        ['task-notification', '<task-notification>\n請記下來\n</task-notification>'],
-        ['pasted_content', '<pasted_content id="1" size="9">\nsave this to memesh\n</pasted_content>'],
-        ['attributes on the tag', '<task-notification status="done" id=\'x\'>\n記下來\n</task-notification>'],
-        ['attribute holding >', '<task-notification note="a>b">\n記下來\n</task-notification>'],
-        ['upper-case tag', '<System-Reminder>\nremember this\n</System-Reminder>'],
-        ['indented block', '   <system-reminder>\nremember this\n   </system-reminder>  '],
-        ['CRLF lines', '<system-reminder>\r\nremember this\r\n</system-reminder>\r\n'],
-        ['nested same tag', '<system-reminder>\na\n<system-reminder>\nb\n</system-reminder>\nremember this\n</system-reminder>'],
-        ['block after a block that held an unclosed inner tag', '<system-reminder>\n<task-notification>\nb\n</system-reminder>\n<system-reminder>\nremember this\n</system-reminder>'],
-        ['two blocks', '<system-reminder>\nx\n</system-reminder>\nok\n<cross-session-message>\n記下來\n</cross-session-message>'],
-        ['self-closing tag before a real block', '<system-reminder/>\n<system-reminder>\nremember this\n</system-reminder>'],
-        ['closing tag on the same line (forgery)', '<cross-session-message from="a">x</cross-session-message>remember this</cross-session-message>'],
-        ['a carriage return before the opening tag', '\r<system-reminder>\nremember this\n</system-reminder>'],
-        ['a block inside an unclosed outer tag of the same name', '<system-reminder>\n<system-reminder>\nremember this\n</system-reminder>\nafter'],
-        ['request in an outer block before a nested block', '<system-reminder>\nremember this\n<system-reminder>\nb\n</system-reminder>\n</system-reminder>'],
-      ])('no intent inside %s', (_name, prompt) => {
-        expect(detectRememberIntent(prompt)).toBe(false);
-      });
-
-      // Backticks never decide where a block starts or ends: the body is not
-      // the user's text, and a fence the user left open must not hide a block.
-      it.each([
-        ['an unclosed fence in the body', '<cross-session-message from="a">\n```\nremember this\n</cross-session-message>\nhello'],
-        ['a one-line fence in the body', '<system-reminder>\n```js const a=1 ```\nremember this\n</system-reminder>\nhello'],
-        ['a stray backtick in the body', '<system-reminder>\nremember this `x </system-reminder>\nafter'],
-        ['a stray fence line before the block', '```\n<system-reminder>\nremember this\n</system-reminder>'],
-        ['a fence opened before the block and closed inside it', '```\n<system-reminder>\nremember this\n```\n</system-reminder>'],
-        ['a fence closed between the tags', '```\n<system-reminder>\n```\nremember this\n</system-reminder>'],
-      ])('no intent from code fences: %s', (_name, prompt) => {
-        expect(detectRememberIntent(prompt)).toBe(false);
-      });
-
-      it.each([
-        ['request after a fenced block', '```\nx\n```\n<system-reminder>\nnoise\n</system-reminder>\nremember this'],
-        ['request after a block whose body opened a fence', '<system-reminder>\n```\n</system-reminder>\nremember this'],
-      ])('still detects the user own request around code fences: %s', (_name, prompt) => {
-        expect(detectRememberIntent(prompt)).toBe(true);
-      });
-
-      it.each([
-        ['request after a block', '<system-reminder>\nnoise\n</system-reminder>\nremember this'],
-        ['request after a block that holds an unclosed inner tag', '<system-reminder>\n<task-notification>\nb\n</system-reminder>\n記下來'],
-        ['opening tag in the middle of a line is not a block', '為什麼 <system-reminder>\nremember this\n</system-reminder>'],
-        ['closing tag of another name does not close', '<system-reminder>\nremember this\n</task-notification>\nstill'],
-        ['a longer tag name is not one of ours', '<system-reminders>\nremember this\n</system-reminders>'],
-        ['self-closing tag whose attribute holds >', '<system-reminder note="a>b" />\nremember this\n</system-reminder>'],
-        ['a closing tag after a closed block has no opener left to close', '<system-reminder>\n<task-notification>\nb\n</system-reminder>\nremember this\n</system-reminder>'],
-        ['request before a block', 'remember this\n<cross-session-message>\nx\n</cross-session-message>'],
-        ['Chinese request after a block', '<pasted_content>\nlog\n</pasted_content>\n把這個記下來'],
-        ['unknown tag is ordinary text', '<note>\nremember this\n</note>'],
-        ['self-closing tag is not a block', '<system-reminder />\nremember this'],
-        ['opening tag never closed', '<system-reminder>\nremember this\nstill inside'],
-        ['user names a tag, then asks', '為什麼 <task-notification> 會出現在 prompt 裡？請記下來'],
-        ['user names a tag in English', 'Why does a <system-reminder> tag show up? remember this'],
-        ['tag in inline code', 'the `<pasted_content>` tag is weird.\nremember this'],
-        ['tag in a code fence', '```\n<system-reminder>\n```\nremember this'],
-        ['misspelled closing tag', '<task-notification>\nx\n</task-notificatio>\nremember this'],
-        ['closing tag inside a line', '<system-reminder>\nx </system-reminder> y\nremember this'],
-        ['text before a mid-line tag, request on the next line', 'note<system-reminder>x</system-reminder>.\nremember this'],
-      ])('still detects the user own request: %s', (_name, prompt) => {
-        expect(detectRememberIntent(prompt)).toBe(true);
-      });
-
-      it('does not turn a mid-line block into a sentence start', () => {
-        expect(detectRememberIntent('note<system-reminder>x</system-reminder>remember this')).toBe(false);
-      });
-
-      it('removes whole lines only and leaves the rest byte for byte', () => {
-        expect(stripNonUserBlocks('a\n<system-reminder>\nx\n</system-reminder>\nb')).toBe('a\nb');
-        expect(stripNonUserBlocks('a\n  <system-reminder>x</system-reminder>  \nb')).toBe('a\nb');
-        expect(stripNonUserBlocks('plain <b> text')).toBe('plain <b> text');
-        expect(stripNonUserBlocks('<system-reminder>\n<system-reminder>\nx\n</system-reminder>\nafter'))
-          .toBe('<system-reminder>\nafter');
-      });
-    });
-
-    describe('no negation is guessed: the match is the plain match on the words of a save request', () => {
-      // Phrases a person might type either way. The hook cannot tell "don't save this" from
-      // "do save this", so it matches both and the reminder it injects says what to do for each.
-      // What each phrase must do is written out here, not derived from the patterns: a pattern that is
-      // changed would otherwise change its own expected answer.
-      const fires = [
-        '這次對話不要記下來',
-        '別存到記憶',
-        '請勿寫進記憶',
-        '不要把這個記下來',
-        '這個不用存到 memesh',
-        '別把這段記到 memesh',
-        '別忘了記下來',
-        '不要忘記存到記憶',
-        '請勿忘記寫進記憶',
-        '不要忘了把這個記下來',
-        '別忘記寫進 memesh',
-        '不要緊. Remember this',
-        '不要改這個檔案. Remember this: use SQLite',
-        '不要擔心。把這個記下來',
-        '別忘了，存到記憶',
-        '好，記下來',
-        'Do not worry. Remember this: use SQLite',
-        'Remember this: use SQLite',
-        'Please remember that we use tabs',
-        'Save this to memesh',
-        '把這個記下來',
-        '記下來',
-        '請記到 memesh',
-        '存到 memesh',
-        '寫進記憶',
-        '存進記憶',
-        'Recordar esto',
-        'Guardar en memesh',
-        'Rappeler ceci',
-        'Lembrar isto',
-        '不用說，記下來',
-        '不能忘記，記下來',
-        '勿忘，存到記憶',
-        '莫忘記到 memesh',
-        '請不要存到記憶',
-      ];
-      const silent = [
-        'Don\'t remember this.',
-        'Please do not save this to memesh',
-        'Never remember this conversation',
-        'No need to store this in memesh',
-        '我記到他昨天說過這件事',
-        '我記到 console',
-        '他突然記憶起來那段往事',
-        'What does save to memesh do?',
-        'do you remember this?',
-        'hello there',
-        '',
-        'save the file',
-        'remember the milk',
-        'forget this',
-        '不要記這個',
-      ];
-      it.each(fires)('fires on %s', (prompt) => {
-        expect(detectRememberIntent(prompt)).toBe(true);
-      });
-
-      it.each(silent)('stays silent on %j', (prompt) => {
-        expect(detectRememberIntent(prompt)).toBe(false);
-      });
-
-      it.each([['a tab', '\t'], ['a carriage return', '\r'], ['a no-break space', '\u00a0'], ['two spaces', '  ']])('reads a request after a sentence end followed by %s', (_label, gap) => {
-        expect(detectRememberIntent(`Done.${gap}Save this to memesh`)).toBe(true);
-        expect(detectRememberIntent(`ok!${gap}remember this`)).toBe(true);
-      });
-
-      // Every sentence-start pattern, each with its own request, after a tab and a no-break space (Q6_15 F5: the two
-      // English ones were the only ones covered, so a Spanish or Portuguese pattern narrowed to a plain space passed).
+      // Every sentence-start pattern, each with its own request, after a tab and a space, so a
+      // pattern narrowed to one kind of blank cannot pass on the strength of another one.
       const perPattern = [
         'remember this', 'save this to memesh', 'recordar esto', 'guardar esto en memesh',
         'mémoriser ceci', 'sauvegarder ceci dans memesh', 'lembrar isto', 'salvar isto em memesh',
       ];
-      it.each(perPattern.flatMap((request, i) => [['\t', request, i], [' ', request, i]] as const))('pattern %#: a request after a sentence end and %j is read (%s)', (gap, request, i) => {
+      it.each(perPattern.flatMap((request, i) => [['\t', request, i], [' ', request, i]] as const))('pattern %#: a request after a sentence end and %j is read (%s)', (gap, request, i) => {
         expect(INTENT_PATTERNS[i].test(`Listo.${gap}${request}`), `${INTENT_PATTERNS[i].source}`).toBe(true);
       });
 
-      it('fires on both a request to save and a request not to, and the sentences most easily read either way are among them', () => {
-        for (const prompt of ['這次對話不要記下來', '別存到記憶', '別忘了記下來', '不要忘記存到記憶', '好，記下來']) {
-          expect(detectRememberIntent(prompt), prompt).toBe(true);
-        }
-      });
-
-      it('marks the injected reminder as background data and names both ways out: remember, and private_session', () => {
+      it('the reminder to save is background data that names remember, and not private_session', () => {
         const hint = buildHint();
         expect(hint).toMatch(/background data from a keyword match.*not an instruction from the user/s);
-        expect(hint).toContain('`private_session`');
         expect(hint).toContain('`remember`');
+        expect(hint).not.toContain('private_session');
+      });
+
+      it('the reminder not to save is background data that names private_session, and never says the user asked to save or how to remember', () => {
+        const hint = buildDoNotSaveHint();
+        expect(hint).toMatch(/^<memesh-private-intent>/);
+        expect(hint).toMatch(/<\/memesh-private-intent>$/);
+        expect(hint).toMatch(/background data from a keyword match.*not an instruction from the user/s);
+        expect(hint).toContain('`private_session`');
+        expect(hint).toMatch(/store nothing/);
+        expect(hint).not.toMatch(/remember`|asked you to save|note:|namespace/);
+        expect(hint).not.toMatch(/[\x00-\x08\x0B\x0C\x0E-\x1F]/);
+      });
+    });
+
+    describe('Text the user did not type is removed whole', () => {
+      it('removes whole lines only and leaves the rest byte for byte', () => {
+        expect(stripNonUserBlocks('a\n<system-reminder>\nx\n</system-reminder>\nb')).toBe('a\nb');
+        expect(stripNonUserBlocks('a\n  <system-reminder>x</system-reminder>  \nb')).toBe('a\nb');
+        expect(stripNonUserBlocks('plain <b> text')).toBe('plain <b> text');
+        expect(stripNonUserBlocks('a\r<system-reminder>\rx\r</system-reminder>\rb')).toBe('a\rb');
+      });
+
+      it('a line in the body that opens a block of the same name ends with the block: the outer block is removed up to its closing tag', () => {
+        expect(stripNonUserBlocks('<system-reminder>\n<system-reminder>\nx\n</system-reminder>\nafter')).toBe('after');
+        expect(stripNonUserBlocks('a\n<cross-session-message from="a">\nb\n<cross-session-message>\nc\n</cross-session-message>\nd'))
+          .toBe('a\nd');
+        // Two such lines in one outer block: everything between them goes with it.
+        expect(stripNonUserBlocks('<system-reminder>\nA\n<system-reminder>\nx\n</system-reminder>\nB\n<system-reminder>\ny\n</system-reminder>\nC'))
+          .toBe('C');
+        // A same-name block that is properly nested is removed with its outer block, as before.
+        expect(stripNonUserBlocks('<system-reminder>\na\n<system-reminder>\nb\n</system-reminder>\nc\n</system-reminder>\nd')).toBe('d');
       });
     });
 
     describe('the scan is linear in the prompt (a blank run after a sentence end excludes the newline: with `\\s*` the time grew with the square of the line breaks)', () => {
       it('no pattern puts `\\s*` right after a sentence boundary (the form whose time grows with the square of the line breaks)', () => {
-        for (const re of INTENT_PATTERNS) expect(re.source).not.toMatch(/\[\.!\?\\n\]\\s\*/);
+        for (const re of INTENT_PATTERNS) expect(re.source).not.toMatch(/\[\.!\?\\n,\]\\s\*/);
       });
 
       it.each([
@@ -608,122 +124,42 @@ describe('Feature: User Prompt Intent Hook', () => {
         ['32,000 sentence ends', '. '.repeat(32_000)],
         ['newline and blank alternating', '\n \n '.repeat(16_000)],
         ['newlines with a request at the end', `${'\n'.repeat(64_000)}remember this`],
-      ])('reads %s well inside the hook\'s 3 seconds', (_label, prompt) => {
+      ])('reads %s in under 100 ms', (_label, prompt) => {
         const started = performance.now();
         const found = detectRememberIntent(prompt);
         expect(performance.now() - started).toBeLessThan(100);
-        expect(found).toBe(prompt.endsWith('remember this'));
+        expect(found).toBe(prompt.endsWith('remember this') ? 'save' : null);
       });
 
-      it('matches exactly what the quadratic form of every pattern matched, on random text built from its own pieces', () => {
-        // The old form of each pattern, rebuilt from the new one: blanks after the boundary were `\s*`.
-        const old = INTENT_PATTERNS.map((re) => new RegExp(re.source.replaceAll('[.!?\\n][^\\S\\n]*', '[.!?\\n]\\s*'), re.flags));
-        expect(old.filter((re, i) => re.source !== INTENT_PATTERNS[i].source).length, 'the old form differs from the new one').toBeGreaterThan(0);
-        const pieces = ['remember this', 'save this to memesh', 'please ', 'Remember that', '\n', '\n\n', ' ', '  ', '.', '!', '?', 'x', 'do you ', 'guardar en memesh', 'por favor ', '\t', 'rappeler ceci'];
+      it('each pattern matches exactly what its quadratic form matched, on random text built from its own pieces', () => {
+        // The old form of each pattern: blanks after the boundary were `\s*`.
+        const old = INTENT_PATTERNS.map((re) => new RegExp(re.source.replace('[^\\S\\n]*', '\\s*'), re.flags));
+        expect(old.every((re, i) => re.source !== INTENT_PATTERNS[i].source), 'every old form differs from the new one').toBe(true);
+        const pieces = ['remember this', 'save this to memesh', 'please ', 'Remember that', '\n', '\n\n', ' ', '  ', '.', '!', '?', ',', 'x', 'do you ', 'guardar en memesh', 'por favor ', '\t', 'rappeler ceci'];
         let seed = 12345;
         const next = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed; };
         let matched = 0;
         for (let i = 0; i < 4000; i++) {
           const text = Array.from({ length: 1 + (next() % 8) }, () => pieces[next() % pieces.length]).join('');
-          const expected = old.some((re) => re.test(text));
-          expect(detectRememberIntent(text), JSON.stringify(text)).toBe(expected);
-          if (expected) matched++;
+          INTENT_PATTERNS.forEach((re, k) => {
+            const expected = old[k].test(text);
+            expect(re.test(text), `${k} ${JSON.stringify(text)}`).toBe(expected);
+            if (expected) matched++;
+          });
         }
-        expect(matched, 'the corpus contains requests as well as non-requests').toBeGreaterThan(200);
-      });
-    });
-
-    describe('Spanish', () => {
-      it.each([
-        'recordar esto',
-        'Recordar eso para más tarde',
-        'Por favor recordar esto',
-        'memorizar eso',
-        'guardar esto en memesh',
-        'guardar en memesh',
-        'añadir esto a memesh',
-        'Por favor almacenar eso en memesh',
-      ])('detects: %s', (prompt) => {
-        expect(detectRememberIntent(prompt)).toBe(true);
-      });
-
-      it.each([
-        '¿Recuerdas esto?',                  // interrogative
-        'Yo recuerdo cuando discutimos eso', // narrative
-        'guardar este archivo',              // generic save (no "memesh")
-      ])('does NOT match: %s', (prompt) => {
-        expect(detectRememberIntent(prompt)).toBe(false);
-      });
-    });
-
-    describe('French', () => {
-      it.each([
-        'rappeler ceci',
-        'Rappeler cela pour plus tard',
-        "S'il vous plaît rappeler ça",
-        'mémoriser ceci',
-        'sauvegarder ceci dans memesh',
-        'sauvegarder dans memesh',
-        'enregistrer cela à memesh',
-        "S'il vous plaît ajouter ça dans memesh",
-      ])('detects: %s', (prompt) => {
-        expect(detectRememberIntent(prompt)).toBe(true);
-      });
-
-      it.each([
-        'Te rappelles-tu ceci?',             // interrogative
-        'Je rappelle quand nous avons discuté', // narrative
-        'sauvegarder ce fichier',            // generic save (no "memesh")
-      ])('does NOT match: %s', (prompt) => {
-        expect(detectRememberIntent(prompt)).toBe(false);
-      });
-    });
-
-    describe('Portuguese', () => {
-      it.each([
-        'lembrar isto',
-        'Lembrar isso para mais tarde',
-        'Por favor lembrar isto',
-        'memorizar isso',
-        'salvar isto em memesh',
-        'salvar em memesh',
-        'guardar isso no memesh',
-        'Por favor adicionar isto em memesh',
-        'armazenar isso em memesh',
-      ])('detects: %s', (prompt) => {
-        expect(detectRememberIntent(prompt)).toBe(true);
-      });
-
-      it.each([
-        'Você lembra disto?',                // interrogative
-        'Eu lembro quando discutimos isso', // narrative
-        'salvar este arquivo',               // generic save (no "memesh")
-      ])('does NOT match: %s', (prompt) => {
-        expect(detectRememberIntent(prompt)).toBe(false);
-      });
-    });
-
-    describe('Multi-line / mid-prompt intent', () => {
-      it('detects intent after multi-line content paste', () => {
-        expect(
-          detectRememberIntent('Here is my note:\n\nfoo bar baz.\n\nRemember this for me.'),
-        ).toBe(true);
-      });
-
-      it('detects intent after newline boundary', () => {
-        expect(detectRememberIntent('first line.\nRemember this.')).toBe(true);
+        expect(matched, 'the random texts contain requests as well as non-requests').toBeGreaterThan(200);
       });
     });
 
     describe('Type robustness', () => {
       it.each([
-        ['', false],
-        [null, false],
-        [undefined, false],
-        [12345, false],
-        [['array', 'remember this'], false],
-        [{ nested: 'remember this' }, false],
-        [true, false],
+        ['', null],
+        [null, null],
+        [undefined, null],
+        [12345, null],
+        [['array', 'remember this'], null],
+        [{ nested: 'remember this' }, null],
+        [true, null],
       ])('handles non-string prompt %p → %p', (input, expected) => {
         expect(detectRememberIntent(input as unknown as string)).toBe(expected);
       });
@@ -737,7 +173,7 @@ describe('Feature: User Prompt Intent Hook', () => {
         const start = Date.now();
         const result = detectRememberIntent(big);
         const elapsed = Date.now() - start;
-        expect(result).toBe(true);
+        expect(result).toBe('save');
         expect(elapsed).toBeLessThan(50);
       });
 
@@ -746,7 +182,7 @@ describe('Feature: User Prompt Intent Hook', () => {
         const start = Date.now();
         const result = detectRememberIntent(big);
         const elapsed = Date.now() - start;
-        expect(result).toBe(true);
+        expect(result).toBe('save');
         expect(elapsed).toBeLessThan(50);
       });
     });
@@ -765,14 +201,15 @@ describe('Feature: User Prompt Intent Hook', () => {
         return Math.min(...runs);
       };
 
-      it('1 MB of plain text and 1 MB of tag-dense text strip in about the same time', () => {
+      it('1 MB of tag-dense text strips in at most 30 times the time of 1 MB of plain text, plus 100 ms', () => {
         const plain = 'abc def\n'.repeat(131072);
         const openers = '<system-reminder '.repeat(61681);
         const blocks = '<system-reminder>\nx\n</system-reminder>\n'.repeat(26214);
         const stacked = '<system-reminder>\n'.repeat(58254);
         const lts = '<'.repeat(1048576);
+        const nested = `${'<system-reminder>\n'.repeat(29127)}${'</system-reminder>\n'.repeat(26000)}`;
         const base = time(() => stripNonUserBlocks(plain));
-        for (const input of [openers, blocks, stacked, lts]) {
+        for (const input of [openers, blocks, stacked, lts, nested]) {
           expect(input.length).toBeGreaterThanOrEqual(1000000);
           expect(time(() => stripNonUserBlocks(input))).toBeLessThan(100 + base * 30);
         }
@@ -783,10 +220,23 @@ describe('Feature: User Prompt Intent Hook', () => {
         expect(run(80000)).toBeLessThan(run(20000) * 8 + 100);
       });
 
-      it('detectRememberIntent stays fast on 1 MB of repeated Chinese verbs', () => {
-        const base = time(() => detectRememberIntent('abc def\n'.repeat(131072)));
-        expect(time(() => detectRememberIntent('我記下來了'.repeat(200000)))).toBeLessThan(100 + base * 10);
-        expect(time(() => detectRememberIntent('記下來'.repeat(300000)))).toBeLessThan(100 + base * 10);
+      // Each input makes every verb, or every match, be read and then turned
+      // down, so a step that rescans the clause for each one shows up.
+      it.each([
+        ['statements', '我記下來了', ''],
+        ['negations someone else said', '他不要記下來', ''],
+        ['subjects of 把', '客戶把這個記下來', ''],
+        ['relative clauses', '記下來的', ''],
+        ['things done', '已記下', ''],
+        ['objects after 把', '把他說的記下來了', ''],
+        ['quote marks', '「', ''],
+        ['double quotes', '"', ''],
+        ['demonstratives', '這個', ''],
+        ['English questions', 'remember this, ', '?'],
+        ['English statements', 'save to memesh is slow, ', ''],
+      ])('time grows linearly with the number of %s in one clause or sentence', (_label, unit, end) => {
+        const run = (n: number) => time(() => expect(detectRememberIntent(`${unit.repeat(n)}${end}`)).toBe(null));
+        expect(run(40000)).toBeLessThan(run(10000) * 8 + 50);
       });
 
       it('time grows linearly with the number of blank lines', () => {
@@ -910,10 +360,11 @@ describe('Feature: User Prompt Intent Hook', () => {
       return readFileSync(file, 'utf8').trim().split('\n').map((line) => JSON.parse(line).reason);
     };
 
-    it('a prompt of 64,000 newlines is read in well under the hook\'s 3 s budget and leaves a record', () => {
+    it('a prompt of 64,000 newlines is read in two thirds of the hook timeout and leaves a record', () => {
+      expect(HOOK_TIMEOUT_MS).toBe(3000);
       const started = Date.now();
       const result = runHook({ session_id: 'perf', cwd: tmpHome, hook_event_name: 'UserPromptSubmit', prompt: '\n'.repeat(64_000) });
-      expect(Date.now() - started).toBeLessThan(2500);
+      expect(Date.now() - started).toBeLessThan(WITHIN_MS);
       expectNoOp(result);
       expect(recordedReasons()).toContain('the prompt carried no remember intent and no update decision');
     });
@@ -958,43 +409,91 @@ describe('Feature: User Prompt Intent Hook', () => {
         expectHint(runHook({ prompt: '幫我記下來：部署前要先備份' }));
       });
 
-      it('answers 15,000 unclosed tags (the most that fits under MAX_PROMPT_CHARS) well inside the hook timeout, and still sees the request after them', () => {
-        const flood = '<system-reminder '.repeat(15000);
-        const start = Date.now();
-        const result = runHook({ prompt: `${flood}\n請記下來` });
-        const elapsed = Date.now() - start;
-        expectHint(result);
-        expect(elapsed).toBeLessThan(2000);
-        const plainStart = Date.now();
-        expectNoOp(runHook({ prompt: 'x '.repeat(125000) }));
-        expect(elapsed).toBeLessThan(500 + (Date.now() - plainStart) * 5);
+      // The real hook on a sample of the corpus: one sentence of every language, category and answer.
+      it('answers like the detector on one corpus sentence of every kind, each with its own reminder', () => {
+        const sample = new Map<string, CorpusRow>();
+        for (const row of CORPUS) {
+          const key = `${row.lang} ${row.category} ${row.intent}`;
+          if (!sample.has(key)) sample.set(key, row);
+        }
+        expect(sample.size).toBeGreaterThan(50);
+        for (const row of sample.values()) {
+          const result = runHook({ prompt: row.text });
+          const label = JSON.stringify(row.text);
+          expect(result.status, label).toBe(0);
+          expect(result.stdout.includes('<memesh-remember-intent>'), label).toBe(row.intent === 'save');
+          expect(result.stdout.includes('<memesh-private-intent>'), label).toBe(row.intent === 'do-not-save');
+        }
       });
 
-      it('answers 200 KB of blank lines well inside the hook timeout, and still sees the request after them', () => {
+      it('a request not to save gets only the private-session reminder, and the record says which reminder it was', () => {
+        const recorded = () => readFileSync(path.join(tmpHome, '.memesh', 'hook-outcomes.jsonl'), 'utf8')
+          .trim().split('\n').map((line) => JSON.parse(line)).filter((r) => r.outcome === 'notified').map((r) => r.entity);
+        const quiet = runHook({ prompt: '這次對話不要記下來' });
+        expect(quiet.status).toBe(0);
+        const context = JSON.parse(quiet.stdout).hookSpecificOutput.additionalContext;
+        expect(context).toBe(buildDoNotSaveHint());
+        expectHint(runHook({ prompt: '別忘了記下來' }));
+        expect(recorded()).toEqual(['hint:do-not-save', 'hint:remember-intent']);
+      });
+
+      // runHook kills a run at 5 s; each run below must answer in two thirds of the host's timeout.
+      const timed = (input: object) => {
+        const start = Date.now();
+        const result = runHook(input);
+        return { ...result, elapsed: Date.now() - start };
+      };
+
+      it('answers 15,000 unclosed tags (the most that fits under MAX_PROMPT_CHARS) in two thirds of the hook timeout, and still sees the request after them', () => {
+        const flood = timed({ prompt: `${'<system-reminder '.repeat(15000)}\n請記下來` });
+        expectHint(flood);
+        expect(flood.elapsed).toBeLessThan(WITHIN_MS);
+        const plain = timed({ prompt: 'x '.repeat(125000) });
+        expectNoOp(plain);
+        expect(flood.elapsed).toBeLessThan(500 + plain.elapsed * 5);
+      });
+
+      it('answers 200 KB of blank lines in two thirds of the hook timeout, and still sees the request after them', () => {
         const blank = '\n'.repeat(200 * 1024);
-        const start = Date.now();
-        expectNoOp(runHook({ prompt: blank }));
-        expectHint(runHook({ prompt: `${blank}remember this` }));
-        expect(Date.now() - start).toBeLessThan(4000);
+        for (const [prompt, hint] of [[blank, false], [`${blank}remember this`, true]] as const) {
+          const result = timed({ prompt });
+          if (hint) expectHint(result);
+          else expectNoOp(result);
+          expect(result.elapsed).toBeLessThan(WITHIN_MS);
+        }
       });
 
-      // Each of these inputs is quadratic if a bound in the hook goes missing:
-      // the text looked at before each Chinese verb, or the lookup of the open
-      // tag a closing tag belongs to. runHook's 5 s timeout turns that into a
-      // failure instead of a test run that never ends.
-      it('answers 1 MB of Chinese verbs and 120,000 unmatched tags well inside the hook timeout', () => {
+      // A run of sentence ends before a letter, with an update-check record in place: an older hook
+      // read such a prompt for an answer to an update notice, in time that grew with its square.
+      it('answers 200,000 full stops and a letter in two thirds of the hook timeout while an update record is present', () => {
+        const version = JSON.parse(readFileSync(path.resolve('package.json'), 'utf8')).version;
+        const now = new Date().toISOString();
+        const record = JSON.stringify({ latestVersion: '99.0.0', lastAttemptAt: now, lastSuccessfulCheckAt: now });
+        writeFileSync(path.join(tmpHome, '.memesh', `update-check.${version}.json`), record);
+        const result = timed({ session_id: 'dots', cwd: tmpHome, hook_event_name: 'UserPromptSubmit', prompt: `${'.'.repeat(200_000)}a` });
+        expectNoOp(result);
+        expect(result.elapsed).toBeLessThan(WITHIN_MS);
+        expect(recordedReasons()).toContain('the prompt carried no remember intent and no update decision');
+      });
+
+      // Each of these inputs is quadratic if a bound in the hook goes missing: a
+      // verb whose clause is rescanned, or the lookup of the open tag a closing
+      // tag belongs to.
+      it('answers 1 MB of Chinese verbs and 120,000 unmatched tags in two thirds of the hook timeout', () => {
         for (const [prompt, hint] of [
-          ['我記下來了'.repeat(200000), false],
-          ['記下來'.repeat(300000), true],
-          [`${'<system-reminder>\n'.repeat(60000)}${'</task-notification>\n'.repeat(60000)}請記下來`, true],
+          ['我記下來了'.repeat(200000), null],
+          ['記下來'.repeat(300000), 'save'],
+          [`${'<system-reminder>\n'.repeat(60000)}${'</task-notification>\n'.repeat(60000)}請記下來`, 'save'],
         ] as const) {
           // The detector itself answers each of them quickly and correctly...
           const start = Date.now();
           expect(detectRememberIntent(prompt)).toBe(hint);
-          expect(Date.now() - start).toBeLessThan(2000);
-          // ...and the hook, which does not scan a prompt over MAX_PROMPT_CHARS at all, answers without a hint inside its timeout.
+          expect(Date.now() - start).toBeLessThan(WITHIN_MS);
+          // ...and the hook, which does not scan a prompt over MAX_PROMPT_CHARS at all, answers without a hint.
           expect(prompt.length).toBeGreaterThan(MAX_PROMPT_CHARS);
-          expectNoOp(runHook({ prompt }));
+          const result = timed({ prompt });
+          expectNoOp(result);
+          expect(result.elapsed).toBeLessThan(WITHIN_MS);
         }
       });
 
