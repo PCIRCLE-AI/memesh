@@ -1,7 +1,8 @@
-import type { MemeshDatabase } from '../storage/sqlite.js';
+import { MemeshDatabase } from '../storage/sqlite.js';
 export declare const AGENT_MESSAGE_EXPIRY_INTERVAL_MS: number;
 export type AgentMessageExpiryOutcome = 'deleted' | 'presence_cleared' | 'archive_purged' | 'notices_sent' | 'read_only' | 'database_busy' | 'skipped_concurrent' | 'nothing_expired' | 'deferred_in_flight' | 'archive_failed' | 'archive_unavailable' | 'no_message_tables' | 'failed';
 export declare const AGENT_MESSAGE_EXPIRY_FAILED_OUTCOMES: ReadonlySet<string>;
+export declare const AGENT_MESSAGE_EXPIRY_DONE_OUTCOMES: ReadonlySet<string>;
 export interface AgentMessageExpiryResult {
     run_id: number | null;
     outcome: AgentMessageExpiryOutcome;
@@ -16,7 +17,7 @@ export interface AgentMessageExpiryResult {
 export interface AgentMessageExpiryOptions {
     trigger: string;
     nowMs?: number;
-    backupDir?: string;
+    signal?: AbortSignal;
     fault?: {
         beforeArchiveCheck?(archivePath: string, batch: number): void;
         afterBatch?(batch: number): void | Promise<void>;
@@ -40,6 +41,8 @@ export type AgentMessageArchiveState = {
 } | {
     kind: 'unusable';
     reason: string;
+} | {
+    kind: 'busy';
 } | {
     kind: 'held';
     messages: number;

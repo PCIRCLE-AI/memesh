@@ -25,8 +25,8 @@
 //      name, commit that, check the archive holds them with the same content,
 //      and only then, in one transaction on the main database, remember the
 //      ids (an unread one with its notice still owed) and delete the messages.
-//      An archive path that is the database itself, a dangling symlink or not
-//      a database is refused, and nothing is deleted. Foreign keys cascade
+//      An archive path that is a symlink (wherever it points), the database
+//      itself or not a database is refused, and nothing is deleted. Foreign keys cascade
 //      to deliveries, events, idempotency keys, receipts, retention facts,
 //      dispatch attempts, host accepts, acks and workflow facts. The archive
 //      and the main database are two files, so their commits are separate
@@ -39,11 +39,14 @@
 //      them. A notice is written once and never changed.
 //   6. Delete presence facts and session connections that are old and no
 //      longer live.
-// Every pass, and every early return, leaves one row in
-// `agent_message_expiry_runs`, which `memesh doctor` reads. A database another
-// process has locked is not waited on: the row is written once the lock goes,
-// within RECORD_RETRY_MS, and only stderr says so if it never does; doctor then
-// still warns, because it measures "behind" from the last pass that did its work.
+// Every pass that can write leaves one row in `agent_message_expiry_runs`,
+// which `memesh doctor` reads. A pass works on a connection of its own that
+// waits at most LOCK_WAIT_MS for another process's lock, so it never holds this
+// process's event loop: a lock at any step ends the pass as database_busy,
+// keeping every batch it committed. When even its row cannot be written, stderr
+// says so and the next pass of this process that writes its own row writes that
+// one too, marked late. A process that stops mid-pass closes its row as
+// interrupted and gives the lease back on the spot (the `signal` option).
 //
 // Left alone on purpose: `agent_message_cursors` (a client may still hold the
 // token; the cursor is a sequence number and keeps working after the events it
@@ -54,10 +57,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import type { MemeshDatabase } from '../storage/sqlite.js';
+import { MemeshDatabase } from '../storage/sqlite.js';
 import { removeGroupAndOtherAccess } from './file-mode.js';
 import { AGENT_MESSAGE_TTL_MS, agentMessageExpiryCutoff } from './agent-message-ttl.js';
 import { AgentMessagingError, sendAgentMessage } from './agent-messaging.js';
+import { DEFAULT_DB_FILE } from './paths.js';
 import { sqliteUtcToIso } from './time-utils.js';
 import { networkDeliveryOf } from '../network/outbound.js';
 
@@ -77,10 +81,8 @@ const MAX_BATCHES_PER_PASS = 200;
 const IN_FLIGHT_GRACE_MS = 10 * 60 * 1000;
 const NOTICE_LIST_MAX = 20;
 const ARCHIVE = 'expiry_archive';
-/** How long the probe and the run record wait for another process's lock before giving up for now: short, they block the event loop. */
+/** How long any statement of a pass waits for another process's lock before the pass gives up for now: short, the wait blocks the event loop. */
 const LOCK_WAIT_MS = 100;
-/** How long a run record that met a lock is retried, between event-loop turns. */
-const RECORD_RETRY_MS = 30_000;
 /** A pass this much short of one interval old already counts as due. */
 const DUE_SLACK_MS = 10_000;
 
@@ -89,8 +91,8 @@ const AGENT_MESSAGE_EXPIRY_NOTICE_SENDER = 'memesh';
 const AGENT_MESSAGE_EXPIRY_TRANSPORT = 'expiry';
 
 // An unread row that still owes its sender a notice (see NO_NOTICE). A row remembered before senders were
-// kept has none, and MeMesh's own notices never produce one.
-const NOTICE_OWED_SQL = `was_read = 0 AND notice_message_id IS NULL AND sender IS NOT NULL AND sender <> '${AGENT_MESSAGE_EXPIRY_NOTICE_SENDER}'`;
+// kept has none (a NULL sender is never <> anything), and MeMesh's own notices never produce one.
+const NOTICE_OWED_SQL = `was_read = 0 AND notice_message_id IS NULL AND sender <> '${AGENT_MESSAGE_EXPIRY_NOTICE_SENDER}'`;
 
 export type AgentMessageExpiryOutcome =
   | 'deleted'
@@ -112,6 +114,11 @@ export const AGENT_MESSAGE_EXPIRY_FAILED_OUTCOMES: ReadonlySet<string> = new Set
   'failed', 'archive_failed', 'archive_unavailable', 'no_message_tables', 'read_only',
 ]);
 
+/** The outcomes of a pass that did its work: what `memesh doctor` measures "keeping up" from. */
+export const AGENT_MESSAGE_EXPIRY_DONE_OUTCOMES: ReadonlySet<string> = new Set<AgentMessageExpiryOutcome>([
+  'deleted', 'presence_cleared', 'archive_purged', 'notices_sent', 'nothing_expired', 'deferred_in_flight',
+]);
+
 export interface AgentMessageExpiryResult {
   run_id: number | null;
   outcome: AgentMessageExpiryOutcome;
@@ -130,8 +137,8 @@ export interface AgentMessageExpiryOptions {
   trigger: string;
   /** The clock for what has expired. The run's own start time is always the real clock. */
   nowMs?: number;
-  /** Where the archive goes. Default: `backups/` beside the database. */
-  backupDir?: string;
+  /** Aborted when the process stops: the pass closes its row as interrupted and gives the lease back at once. */
+  signal?: AbortSignal;
   /** Test seams. */
   fault?: {
     /** Runs after a batch is archived and committed, before the archive is checked. */
@@ -160,6 +167,8 @@ interface ExpiredRow {
   created_at: string;
   is_notice: number;
   was_read: number;
+  /** For the principal copy of a session send its session refused (`fallback_to_principal`): that send's id. */
+  fallback_of: string | null;
 }
 
 /** What one sender is told: every message of theirs that expired unread and has not been in a notice yet. */
@@ -175,14 +184,16 @@ type NetworkFact = { state: string; code: string | null; machine: string };
 
 /**
  * In `agent_message_expiries.notice_message_id`: no notice is owed for this row
- * (it was a notice itself, or its sender cannot be addressed). NULL on an unread
- * row means a notice is still owed; a message id means it was written.
+ * (the bridge told its sender already, its principal copy carries it, or its
+ * sender cannot be addressed). NULL on an unread row of a sender other than
+ * MeMesh means a notice is still owed; a message id means it was written.
  */
 const NO_NOTICE = '';
 
 // "Read" is the recipient having done something with it: recorded intake,
-// acknowledged it, answered it (a reply from the recipient, or from the
-// principal of the session it went to, points at it), or a workflow fact. The
+// acknowledged it, answered it (a reply in the same project points at it, from
+// the recipient, from a session of the recipient sending under its own session
+// id, or from the principal of the session it went to), or a workflow fact. The
 // sender's own follow-up or a third party's reply is not the recipient
 // answering. A host accepting a push is not reading.
 const WAS_READ_SQL = `(
@@ -195,6 +206,8 @@ const WAS_READ_SQL = `(
   OR EXISTS (SELECT 1 FROM agent_messages c
              WHERE c.reply_to_message_id = m.message_id AND c.project = m.project
                AND (c.sender = m.recipient
+                    OR c.sender IN (SELECT s.session_instance_id FROM agent_session_instances s
+                                    WHERE s.project = m.project AND s.principal_id = m.recipient)
                     OR c.sender IN (SELECT s.principal_id FROM agent_session_instances s
                                     WHERE s.project = m.project AND s.session_instance_id = m.recipient)))
 )`;
@@ -217,6 +230,10 @@ const LIVE_CONNECTIONS_SQL = `
   SELECT c.connection_id FROM agent_session_connections c
   WHERE c.disconnected_at IS NULL AND c.lease_expires_at_ms > :now_ms`;
 
+// A presence fact older than a day of a connection that is not live, or any fact of a dead connection.
+const STALE_FACTS_SQL = `(julianday(created_at) < julianday(:cutoff) AND connection_id NOT IN (${LIVE_CONNECTIONS_SQL}))
+  OR connection_id IN (${DEAD_CONNECTIONS_SQL})`;
+
 // Every table a message delete cascades through, with the column that is unique
 // in it and how its rows are found from a list of message ids. Order: parents first.
 // The idempotency copy is keyed by message: a key is free again once its message
@@ -235,123 +252,171 @@ const ARCHIVED_TABLES: ReadonlyArray<{ name: string; unique: string; by: 'messag
   { name: 'agent_workflow_facts', unique: 'workflow_fact_id', by: 'delivery' },
 ];
 
+/** A pass whose row could not be written because the database was locked: the next pass that writes its own row writes this one, marked late. */
+interface PassRecord {
+  startedAtMs: number;
+  endedAtMs: number;
+  trigger: string;
+  result: Omit<AgentMessageExpiryResult, 'run_id'>;
+  startedRunId: number | null;
+}
+
+/** Per database file, in this process only: a process that exits first has said so on stderr. */
+const unrecorded = new Map<string, PassRecord[]>();
+/** Leases this process could not give back (the database was locked): its own next pass takes them over at once. */
+const abandonedLeases = new Set<string>();
+
 /**
- * One pass. It gives the event loop a turn between batches, so a server that
- * runs it keeps answering requests while a large backlog is worked off. Tests
- * and other callers await it.
+ * One pass. It works on a connection of its own (see the file header) and gives
+ * the event loop a turn between batches, so a server that runs it keeps
+ * answering requests while a large backlog is worked off. Tests and other
+ * callers await it.
  */
 export async function runAgentMessageExpiry(db: MemeshDatabase, options: AgentMessageExpiryOptions): Promise<AgentMessageExpiryResult> {
   const startedAtMs = Date.now();
   const clockMs = options.nowMs ?? startedAtMs;
   const tally: Tally = { expired: 0, unread: 0, notices: 0, unaddressable: 0, unreadableTimes: 0, presenceFacts: 0, connections: 0 };
-  let archivePath: string | null = null;
+  const file = databaseFile(db);
+  let pass: MemeshDatabase | null = null;
+  let archiveFile: string | null = null;
   const holder = randomUUID();
   let holdsLease = false;
   let startedRunId: number | null = null;
+  let stopped = false;
 
-  // Async only for a record that met a lock: the first attempt runs before the caller's `finally`.
-  const finish = async (outcome: AgentMessageExpiryOutcome, detail: string | null = null): Promise<AgentMessageExpiryResult> => {
-    const base = {
+  const finish = (outcome: AgentMessageExpiryOutcome, detail: string | null = null): AgentMessageExpiryResult => {
+    const result = {
       outcome,
       expired_message_count: tally.expired,
       unread_message_count: tally.unread,
       notice_count: tally.notices,
       presence_fact_count: tally.presenceFacts,
       connection_count: tally.connections,
-      backup_path: tally.expired > 0 ? archivePath : null,
+      backup_path: tally.expired > 0 ? archiveFile : null,
       detail,
     };
-    return { ...base, run_id: await recordRun(db, startedAtMs, options.trigger, base, startedRunId) };
+    // A stopped pass closed its own row on the way out.
+    if (stopped) return { ...result, run_id: startedRunId };
+    return { ...result, run_id: recordRun(pass, file, { startedAtMs, endedAtMs: Date.now(), trigger: options.trigger, result, startedRunId }) };
   };
+  // The process is stopping and exits right after this returns: close the row and give the lease back now.
+  const stop = (): void => {
+    stopped = true;
+    if (pass === null) return;
+    try {
+      if (startedRunId !== null) {
+        pass.prepare(`
+          UPDATE agent_message_expiry_runs
+          SET outcome = 'interrupted', finished_at_ms = ?, expired_message_count = ?, unread_message_count = ?, notice_count = ?,
+              detail = 'the process stopped during this pass; what it had deleted is kept and the next pass does the rest'
+          WHERE run_id = ? AND outcome = 'started'
+        `).run(Date.now(), tally.expired, tally.unread, tally.notices, startedRunId);
+      }
+      if (holdsLease) pass.prepare('DELETE FROM agent_message_expiry_lease WHERE lease_id = 1 AND holder = ?').run(holder);
+    } catch (error) {
+      reportProblem(`could not close the pass of a process that is stopping (${errorText(error)}); the next pass closes it once its lease runs out`);
+    }
+    // The pass goes no further: its next statement meets a closed connection.
+    if (pass !== db) closeQuietly(pass);
+  };
+  options.signal?.addEventListener('abort', stop, { once: true });
 
   try {
-    if (!tablesExist(db)) return finish('no_message_tables', 'agent_messages, agent_message_expiry_runs, agent_message_expiries or agent_message_expiry_lease is missing');
+    pass = file === '' ? db : openPassConnection(file);
+    const work = pass;
+    if (!tablesExist(work)) return finish('no_message_tables', 'agent_messages, agent_message_expiry_runs, agent_message_expiries or agent_message_expiry_lease is missing');
 
     const cutoff = agentMessageExpiryCutoff(clockMs);
     const inFlightCutoff = new Date(clockMs - IN_FLIGHT_GRACE_MS).toISOString();
     const presenceParams = presenceBindings(cutoff, clockMs);
-    const archiveFile = archiveLocation(db, options);
+    archiveFile = archiveLocation(file);
+    // The archive, and the one an earlier MeMesh shared between all databases of a folder, which a database
+    // with its own archive now still cleans its own rows out of.
+    const shared = archiveFile === null ? null : sharedArchive(archiveFile);
+    const purges: Array<[string, boolean]> = archiveFile === null ? [] : [[archiveFile, false], ...(shared === null ? [] : [[shared, true] as [string, boolean]])];
     // Only whether there is work, so EXISTS: a COUNT over a large backlog blocks the event loop for about a second.
-    const measure = (): { expired: boolean; deletable: boolean; presence: number; purgeable: boolean; owed: boolean } => ({
-      expired: (db.prepare('SELECT EXISTS (SELECT 1 FROM agent_messages WHERE created_at < ?) AS n').get(cutoff) as { n: number }).n === 1,
-      deletable: (db.prepare(
+    const measure = (): { deletable: boolean; presence: boolean; purgeable: boolean; owed: boolean } => ({
+      deletable: (work.prepare(
         `SELECT EXISTS (SELECT 1 FROM agent_messages m WHERE m.created_at < ? AND NOT ${IN_FLIGHT_SQL}) AS n`,
       ).get(cutoff, inFlightCutoff) as { n: number }).n === 1,
-      presence: countStalePresence(db, presenceParams),
+      presence: hasStalePresence(work, presenceParams),
       // An archive that cannot be opened is not a reason to stop here: a batch that needs it fails on it, naming it.
-      purgeable: archiveFile !== null && archiveHasPurgeableRows(db, archiveFile, Date.now()),
-      owed: (db.prepare(`SELECT EXISTS (SELECT 1 FROM agent_message_expiries WHERE ${NOTICE_OWED_SQL}) AS n`).get() as { n: number }).n === 1,
+      purgeable: purges.some(([file, ownOnly]) => archiveHasPurgeableRows(work, file, Date.now(), ownOnly)),
+      owed: (work.prepare(`SELECT EXISTS (SELECT 1 FROM agent_message_expiries WHERE ${NOTICE_OWED_SQL}) AS n`).get() as { n: number }).n === 1,
     });
     type Seen = ReturnType<typeof measure>;
-    const idle = (m: Seen): boolean => !m.deletable && m.presence === 0 && !m.purgeable && !m.owed;
-    const idleOutcome = (m: Seen): AgentMessageExpiryOutcome => (m.expired ? 'deferred_in_flight' : 'nothing_expired');
+    const idle = (m: Seen): boolean => !m.deletable && !m.presence && !m.purgeable && !m.owed;
+    // Idle with messages past their day: only ones still being delivered are left.
+    const idleOutcome = (): AgentMessageExpiryOutcome => (
+      (work.prepare('SELECT EXISTS (SELECT 1 FROM agent_messages WHERE created_at < ?) AS n').get(cutoff) as { n: number }).n === 1 ? 'deferred_in_flight' : 'nothing_expired');
 
     let seen = measure();
     if (idle(seen)) {
-      interruptDeadRuns(db);
-      return finish(idleOutcome(seen));
+      interruptDeadRuns(work, holder);
+      return finish(idleOutcome());
     }
     if (seen.deletable && archiveFile === null) {
-      return finish('archive_unavailable', 'the database has no file path and no archive directory was given, so nothing was deleted');
+      return finish('archive_unavailable', 'the database has no file path, so there is nowhere to archive to and nothing was deleted');
     }
 
     // A database that cannot be written would otherwise do half a pass and
     // fail. Find out first, and tell "locked right now" from "cannot be written".
-    // Without the usual 30-second wait: that wait would hold this process's event loop.
     try {
-      withoutWaiting(db, () => probeWritable(db));
+      probeWritable(work);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (isBusy(error)) return finish('database_busy', `the database was locked by another process, so nothing was deleted this time (${message})`);
-      return finish('read_only', `the database cannot be written, so nothing was archived or deleted (${message})`);
+      if (isBusy(error)) return finish('database_busy', `the database was locked by another process, so nothing was deleted this time (${errorText(error)})`);
+      return finish('read_only', `the database cannot be written, so nothing was archived or deleted (${errorText(error)})`);
     }
 
     // One process at a time. A pass that finds the lease held by another
     // process records that and stops; a lease whose holder died runs out and
     // is taken over.
-    const held = acquireLease(db, holder);
+    const held = acquireLease(work, holder);
     if (held !== null) return finish('skipped_concurrent', `another process is running the pass (its lease runs until ${new Date(held).toISOString()})`);
     holdsLease = true;
     // A row still "started" belongs to a process that died: the lease is ours,
     // so nobody else is running. Its counts (kept up to the last batch) stay.
-    db.prepare("UPDATE agent_message_expiry_runs SET outcome = 'interrupted', detail = 'the process stopped before this pass finished' WHERE outcome = 'started'").run();
+    interruptDeadRuns(work, holder);
 
     // The other process may have finished while this one waited to ask.
     seen = measure();
-    if (idle(seen)) return finish(idleOutcome(seen));
+    if (idle(seen)) return finish(idleOutcome());
 
     // The run is written down before anything is archived or deleted, and its
     // counts follow every batch, so a process killed half way leaves a row that
     // says what it had done.
-    startedRunId = beginRun(db, startedAtMs, options.trigger, seen.deletable ? archiveFile : null);
-    archivePath = seen.deletable ? archiveFile : null;
+    startedRunId = beginRun(work, startedAtMs, options.trigger, seen.deletable ? archiveFile : null);
 
     const notes: string[] = [];
     let purgeFailed = false;
-    if (archiveFile !== null) {
+    for (const [file, ownOnly] of purges) {
       try {
-        const purged = await purgeArchive(db, archiveFile);
-        if (purged > 0) notes.push(`removed ${purged} archived message(s) past their extra day`);
+        const purged = await purgeArchive(work, file, holder, ownOnly);
+        if (purged > 0) notes.push(`removed ${purged} archived message(s) past their extra day${ownOnly ? ` from ${file}, the archive an earlier MeMesh shared between databases` : ''}`);
       } catch (error) {
+        if (isBusy(error)) throw error;
         purgeFailed = true;
-        notes.push(`could not remove archive rows older than a day (${archiveFile}: ${error instanceof Error ? error.message : String(error)}); they stay until the next pass`);
+        notes.push(`could not remove archive rows older than a day (${file}: ${errorText(error)}); they stay until the next pass`);
       }
     }
 
+    let archiveFailure: string | null = null;
     if (seen.deletable && archiveFile !== null) {
       for (let batch = 1; batch <= MAX_BATCHES_PER_PASS; batch++) {
-        const rows = selectBatch(db, cutoff, inFlightCutoff);
+        const rows = selectBatch(work, cutoff, inFlightCutoff);
         if (rows.length === 0) break;
         try {
-          archiveRows(db, archiveFile, rows.map((row) => row.message_id), batch, options);
+          archiveRows(work, archiveFile, rows.map((row) => row.message_id), batch, options);
         } catch (error) {
-          // The notices these batches owe are written by the next pass that finishes its batches.
-          return finish('archive_failed', `could not archive the rows of ${rows.length} message(s) before deleting them (${archiveFile}: ${error instanceof Error ? error.message : String(error)}); nothing in this batch was deleted`);
+          if (isBusy(error)) throw error;
+          // Nothing more is deleted. The notices and the presence below need no archive, so they still run.
+          archiveFailure = `could not archive the rows of ${rows.length} message(s) before deleting them (${archiveFile}: ${errorText(error)}); nothing in this batch was deleted`;
+          break;
         }
-        db.transaction(() => {
-          renewLease(db, holder);
-          deleteBatch(db, rows, tally);
-          saveRunProgress(db, startedRunId, tally, archiveFile);
+        work.transaction(() => {
+          renewLease(work, holder);
+          deleteBatch(work, rows, tally);
+          saveRunProgress(work, startedRunId, tally, archiveFile);
         }).immediate();
         await options.fault?.afterBatch?.(batch);
         await yieldTurn();
@@ -361,33 +426,64 @@ export async function runAgentMessageExpiry(db: MemeshDatabase, options: AgentMe
 
     // One notice per project and sender for everything owed, this pass's batches and any a stopped pass left:
     // written once, never changed afterwards (a host may already have pushed it).
-    db.transaction(() => {
-      renewLease(db, holder);
-      writeOwedNotices(db, tally);
-      saveRunProgress(db, startedRunId, tally, archivePath);
+    // Counted once committed: a rollback writes none.
+    const written = work.transaction(() => {
+      renewLease(work, holder);
+      const counts = writeOwedNotices(work);
+      saveRunProgress(work, startedRunId, { ...tally, notices: tally.notices + counts.notices }, archiveFile);
+      return counts;
     }).immediate();
+    tally.notices += written.notices;
+    tally.unaddressable += written.unaddressable;
     if (tally.unaddressable > 0) notes.push(`${tally.unaddressable} sender(s) could not be addressed, so no notice was written for them`);
 
-    db.transaction(() => {
-      renewLease(db, holder);
-      tally.presenceFacts = deletePresence(db, presenceParams, 'facts');
-      tally.connections = deletePresence(db, presenceParams, 'connections');
+    work.transaction(() => {
+      renewLease(work, holder);
+      tally.presenceFacts = deletePresence(work, presenceParams, 'facts');
+      tally.connections = deletePresence(work, presenceParams, 'connections');
     }).immediate();
 
-    const remaining = (db.prepare('SELECT COUNT(*) AS n FROM agent_messages WHERE created_at < ?').get(cutoff) as { n: number }).n;
+    const remaining = (work.prepare('SELECT COUNT(*) AS n FROM agent_messages WHERE created_at < ?').get(cutoff) as { n: number }).n;
     if (remaining > 0) notes.push(`${remaining} expired message(s) left for the next pass`);
+    if (archiveFailure !== null) notes.unshift(archiveFailure);
     const detail = notes.length > 0 ? notes.join('; ') : null;
-    const outcome = tally.expired > 0 ? 'deleted'
+    const outcome = archiveFailure !== null ? 'archive_failed'
+      : tally.expired > 0 ? 'deleted'
       : tally.presenceFacts + tally.connections > 0 ? 'presence_cleared'
         : seen.purgeable ? (purgeFailed ? 'failed' : 'archive_purged')
           : tally.notices > 0 ? 'notices_sent'
             : remaining > 0 ? 'deferred_in_flight' : 'nothing_expired';
     return finish(outcome, detail);
   } catch (error) {
-    return finish('failed', error instanceof Error ? error.message : String(error));
+    if (isBusy(error)) {
+      return finish('database_busy', `the database was locked by another process, so the pass stopped here; every batch it finished is kept and the next pass does the rest (${errorText(error)})`);
+    }
+    return finish('failed', errorText(error));
   } finally {
-    if (holdsLease) releaseLease(db, holder);
+    options.signal?.removeEventListener('abort', stop);
+    if (pass !== null && !stopped) {
+      if (holdsLease) releaseLease(pass, holder);
+      if (pass !== db) closeQuietly(pass);
+    }
   }
+}
+
+/**
+ * The pass's own connection: the database's file, waiting LOCK_WAIT_MS at most for a lock. Foreign
+ * keys, which the delete cascades through, are on by default in node:sqlite.
+ */
+function openPassConnection(file: string): MemeshDatabase {
+  const pass = new MemeshDatabase(file);
+  pass.pragma(`busy_timeout = ${LOCK_WAIT_MS}`);
+  return pass;
+}
+
+function closeQuietly(db: MemeshDatabase): void {
+  try { db.close(); } catch { /* already closed */ }
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /**
@@ -425,20 +521,25 @@ export function startAgentMessageExpiryScheduler(
   getDb: () => MemeshDatabase | null,
   options: { trigger: string; intervalMs?: number; firstRunDelayMs?: number },
 ): () => void {
-  let running = false;
+  let running: AbortController | null = null;
   const tick = (): void => {
     const db = getDb();
     if (!db || running) return;
-    running = true;
-    void runAgentMessageExpiryIfDue(db, { trigger: options.trigger }).finally(() => { running = false; });
+    const current = new AbortController();
+    running = current;
+    void runAgentMessageExpiryIfDue(db, { trigger: options.trigger, signal: current.signal }).finally(() => { running = null; });
   };
   const first = setTimeout(tick, options.firstRunDelayMs ?? 1_000);
   const every = setInterval(tick, options.intervalMs ?? AGENT_MESSAGE_EXPIRY_INTERVAL_MS);
   first.unref();
   every.unref();
+  // Called on the way out of the process: a running pass closes its row and gives its lease back, and the rows
+  // of passes that met a lock get one more try, before this returns.
   return () => {
     clearTimeout(first);
     clearInterval(every);
+    running?.abort();
+    recordLatePasses(getDb());
   };
 }
 
@@ -472,29 +573,40 @@ export function latestAgentMessageExpiryArchive(db: MemeshDatabase): string | nu
 export type AgentMessageArchiveState =
   | { kind: 'missing' }
   | { kind: 'unusable'; reason: string }
+  /** Another process holds it locked this moment (a pass writing it): not a fault. */
+  | { kind: 'busy' }
   | { kind: 'held'; messages: number };
 
 export function inspectAgentMessageArchive(db: MemeshDatabase, file: string): AgentMessageArchiveState {
   try {
-    fs.statSync(file);
+    const messages = readArchive(db, file, (archive, hasLog) => (hasLog ? (archive.prepare('SELECT COUNT(*) AS n FROM archive_log').get() as { n: number }).n : 0));
+    if (messages === undefined) return { kind: 'missing' };
+    // The next pass writes it.
+    try { fs.accessSync(file, fs.constants.W_OK); } catch { return { kind: 'unusable', reason: 'this user cannot write it' }; }
+    return { kind: 'held', messages };
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
+    if (isBusy(error)) return { kind: 'busy' };
     // EACCES (a folder without search permission) is not "gone": the file may well be there.
-    return code === 'ENOENT' ? { kind: 'missing' } : { kind: 'unusable', reason: `it cannot be read (${code ?? String(error)})` };
+    const code = (error as NodeJS.ErrnoException).syscall === undefined ? undefined : (error as NodeJS.ErrnoException).code;
+    return { kind: 'unusable', reason: code === undefined ? errorText(error) : `it cannot be read (${code})` };
   }
+}
+
+/**
+ * Reads the archive through a read-only handle of its own, which does not wait for a lock:
+ * undefined when there is no file, else what `read` returns (`hasLog` is false for a file that holds no
+ * archive yet). Throws for a path MeMesh does not use as an archive (refuseUnsafeArchive) and for one it
+ * cannot read. Changes nothing.
+ */
+function readArchive<T>(db: MemeshDatabase, file: string, read: (archive: DatabaseSync, hasLog: boolean) => T): T | undefined {
+  if (fs.lstatSync(file, { throwIfNoEntry: false }) === undefined) return undefined;
+  refuseUnsafeArchive(db, file);
+  const archive = new DatabaseSync(file, { readOnly: true });
   try {
-    refuseUnsafeArchive(db, file);
-    const handle = new DatabaseSync(file, { readOnly: true });
-    try {
-      // A pass may be writing it this moment; a short wait, not "unusable".
-      handle.exec('PRAGMA busy_timeout = 1000');
-      const hasLog = (handle.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name = 'archive_log'").get() as { n: number }).n;
-      return { kind: 'held', messages: hasLog === 0 ? 0 : (handle.prepare('SELECT COUNT(*) AS n FROM archive_log').get() as { n: number }).n };
-    } finally {
-      handle.close();
-    }
-  } catch (error) {
-    return { kind: 'unusable', reason: error instanceof Error ? error.message : String(error) };
+    const hasLog = (archive.prepare("SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'archive_log') AS n").get() as { n: number }).n === 1;
+    return read(archive, hasLog);
+  } finally {
+    archive.close();
   }
 }
 
@@ -505,7 +617,8 @@ function selectBatch(db: MemeshDatabase, cutoff: string, inFlightCutoff: string)
            CASE WHEN json_valid(m.provenance_json)
                 THEN COALESCE(json_extract(m.provenance_json, '$.transport') = '${AGENT_MESSAGE_EXPIRY_TRANSPORT}', 0)
                 ELSE 0 END AS is_notice,
-           ${WAS_READ_SQL} AS was_read
+           ${WAS_READ_SQL} AS was_read,
+           CASE WHEN json_valid(m.provenance_json) THEN json_extract(m.provenance_json, '$.fallback_of_message_id') END AS fallback_of
     FROM agent_messages m
     WHERE m.created_at < ? AND NOT ${IN_FLIGHT_SQL}
     ORDER BY m.created_at
@@ -527,16 +640,27 @@ function deleteBatch(db: MemeshDatabase, rows: ExpiredRow[], tally: Tally): void
   const delivery = db.prepare('SELECT delivery_id, recipient FROM agent_message_deliveries WHERE message_id = ? LIMIT 1');
   // The bridge already told the sender when it refused or gave up on a message to another machine.
   const bridgeTold = db.prepare("SELECT 1 FROM agent_messages WHERE reply_to_message_id = ? AND json_extract(provenance_json, '$.via') = 'network-notice' LIMIT 1");
+  // The principal copy of a session send its session refused (`fallback_to_principal`) is the message the
+  // sender got back: its notice names the copy, and an answer to the copy answers the send too, so the send
+  // owes no notice of its own. The copy is written after the send, so it is never older, and on one creation
+  // second the index keeps the order rows were written in: the send is remembered first, in this batch with
+  // its copy, or in an earlier one, whose row `copied` then settles.
+  const copies = new Map(rows.filter((row) => row.fallback_of !== null).map((row) => [row.fallback_of, row]));
+  const copied = db.prepare(`UPDATE agent_message_expiries SET notice_message_id = '${NO_NOTICE}', was_read = MAX(was_read, ?) WHERE message_id = ? AND notice_message_id IS NULL`);
   const now = Date.now();
   for (const row of rows) {
+    const copy = copies.get(row.message_id);
+    const wasRead = row.was_read !== 0 || (copy !== undefined && copy.was_read !== 0);
     // A notice that expires unread does not produce another notice.
-    const owesNotice = row.was_read === 0 && row.is_notice === 0;
+    const unread = !wasRead && row.is_notice === 0;
+    const owesNotice = unread && copy === undefined;
     // The outbox row goes with the delivery, so what the network knew is read now, for the notice written after the batches.
     const sent = owesNotice ? delivery.get(row.message_id) as { delivery_id: string; recipient: string } | undefined : undefined;
     const network = sent ? networkDeliveryOf(db, sent) : null;
     const told = network !== null && bridgeTold.get(row.message_id) !== undefined;
-    remember.run(row.message_id, row.project, row.created_at, now, row.was_read !== 0 ? 1 : 0, row.is_notice !== 0 || told ? NO_NOTICE : null, row.sender, row.recipient, network ? JSON.stringify(network) : null);
-    if (owesNotice) tally.unread += 1;
+    remember.run(row.message_id, row.project, row.created_at, now, wasRead ? 1 : 0, told || copy !== undefined ? NO_NOTICE : null, row.sender, row.recipient, network ? JSON.stringify(network) : null);
+    if (unread) tally.unread += 1;
+    if (row.fallback_of !== null) copied.run(row.was_read !== 0 ? 1 : 0, row.fallback_of);
     if (Number.isNaN(Date.parse(sqliteUtcToIso(row.created_at)))) tally.unreadableTimes += 1;
   }
   const deleted = db.prepare(
@@ -553,7 +677,8 @@ function deleteBatch(db: MemeshDatabase, rows: ExpiredRow[], tally: Tally): void
  * owes one, in the transaction the caller opened, and marks those rows with it.
  * A notice is never changed once written.
  */
-function writeOwedNotices(db: MemeshDatabase, tally: Tally): void {
+function writeOwedNotices(db: MemeshDatabase): { notices: number; unaddressable: number } {
+  const written = { notices: 0, unaddressable: 0 };
   const owed = db.prepare(`
     SELECT message_id, project, sender, recipient, created_at, network_json FROM agent_message_expiries
     WHERE ${NOTICE_OWED_SQL} ORDER BY project, sender, created_at, message_id
@@ -583,9 +708,10 @@ function writeOwedNotices(db: MemeshDatabase, tally: Tally): void {
       }),
     };
     const noticeId = writeNotice(db, group[0].project, group[0].sender, state);
-    if (noticeId === null) tally.unaddressable += 1; else tally.notices += 1;
+    if (noticeId === null) written.unaddressable += 1; else written.notices += 1;
     mark.run(noticeId ?? NO_NOTICE, JSON.stringify(group.map((row) => row.message_id)));
   }
+  return written;
 }
 
 /**
@@ -651,13 +777,14 @@ function writeNotice(db: MemeshDatabase, project: string, sender: string, state:
   }
 }
 
+/** The run's counts so far, and its archive once it has deleted anything. */
 function saveRunProgress(db: MemeshDatabase, runId: number | null, tally: Tally, archiveFile: string | null): void {
   if (runId === null) return;
   db.prepare(`
     UPDATE agent_message_expiry_runs
     SET expired_message_count = ?, unread_message_count = ?, notice_count = ?, backup_path = ?
     WHERE run_id = ?
-  `).run(tally.expired, tally.unread, tally.notices, archiveFile, runId);
+  `).run(tally.expired, tally.unread, tally.notices, tally.expired > 0 ? archiveFile : null, runId);
 }
 
 // ---------------------------------------------------------------------------
@@ -665,47 +792,46 @@ function saveRunProgress(db: MemeshDatabase, runId: number | null, tally: Tally,
 // ---------------------------------------------------------------------------
 
 /**
- * Where the archive is, or null when the database has no file and no directory was given.
+ * Where the archive is, in `backups/` beside the database; null for a database with no file.
  * One archive per database file: the default `knowledge-graph.db` keeps the name it always had
  * (so an archive written before still restores and is still cleaned), any other database file
  * `x.db` uses `agent-messages-expired-x.db`, so two databases in one folder never share one.
  */
-function archiveLocation(db: MemeshDatabase, options: AgentMessageExpiryOptions): string | null {
-  const databasePath = databaseFile(db);
-  const directory = options.backupDir ?? (databasePath ? path.join(path.dirname(databasePath), 'backups') : null);
-  if (directory === null) return null;
+function archiveLocation(databasePath: string): string | null {
+  if (databasePath === '') return null;
   const base = path.basename(databasePath);
-  return path.join(directory, base === '' || base === 'knowledge-graph.db' ? AGENT_MESSAGE_ARCHIVE_FILE : `agent-messages-expired-${base}`);
+  return path.join(path.dirname(databasePath), 'backups', base === DEFAULT_DB_FILE ? AGENT_MESSAGE_ARCHIVE_FILE : `agent-messages-expired-${base}`);
+}
+
+/** The archive an earlier MeMesh used for every database of a folder; null when `archive` is that file. */
+function sharedArchive(archive: string): string | null {
+  return path.basename(archive) === AGENT_MESSAGE_ARCHIVE_FILE ? null : path.join(path.dirname(archive), AGENT_MESSAGE_ARCHIVE_FILE);
 }
 
 const SQLITE_HEADER = 'SQLite format 3\u0000';
 
 /**
- * Refuses an archive path that would make a copy no copy: a symlink to nowhere (MeMesh does
- * not create files through a symlink), something that is not a plain file, the database
- * itself (its check would compare the database with itself), or a file that is not an SQLite
- * database (someone else's file, left exactly as it is). A symlink to a plain archive file is
- * followed, as for the database itself (databaseFiles).
+ * Refuses an archive path that would make a copy no copy: a symlink, wherever it points (it
+ * could point at another database, which would then receive the messages), something that is
+ * not a plain file, the database itself (a hard link: its check would compare the database
+ * with itself), or a file that is not an SQLite database (someone else's file). Each is left
+ * exactly as it is.
  */
 function refuseUnsafeArchive(db: MemeshDatabase, file: string): void {
-  let link: fs.Stats;
-  try {
-    link = fs.lstatSync(file);
-  } catch {
-    return; // not there yet: it is created as a plain, owner-only file
+  const link = fs.lstatSync(file, { throwIfNoEntry: false });
+  if (link === undefined) return; // not there yet: it is created as a plain, owner-only file
+  if (link.isSymbolicLink()) {
+    throw new Error(`${file} is a symlink; MeMesh never reads or writes its archive through a symlink, wherever it points, and leaves it as it is (move it away)`);
   }
-  const real = link.isSymbolicLink() ? (fs.existsSync(file) ? fs.realpathSync(file) : null) : file;
-  if (real === null) throw new Error(`${file} is a symlink to a file that does not exist; MeMesh does not create the archive through a symlink`);
-  const target = fs.statSync(real);
-  if (!target.isFile()) throw new Error(`${file} is not a plain file`);
+  if (!link.isFile()) throw new Error(`${file} is not a plain file`);
   const main = databaseFile(db);
   const mainStat = main === '' ? undefined : fs.statSync(main, { throwIfNoEntry: false });
-  if (mainStat && mainStat.dev === target.dev && mainStat.ino === target.ino) {
+  if (mainStat && mainStat.dev === link.dev && mainStat.ino === link.ino) {
     throw new Error(`${file} is the database itself, so it cannot hold a copy of what is deleted from it`);
   }
-  if (target.size > 0) {
+  if (link.size > 0) {
     const head = Buffer.alloc(SQLITE_HEADER.length);
-    const fd = fs.openSync(real, 'r');
+    const fd = fs.openSync(file, 'r');
     try { fs.readSync(fd, head, 0, head.length, 0); } finally { fs.closeSync(fd); }
     if (head.toString('latin1') !== SQLITE_HEADER) throw new Error(`${file} is not a database (it has no SQLite header), so it is not a MeMesh archive; MeMesh leaves it as it is (move it away)`);
   }
@@ -813,56 +939,55 @@ function archiveRows(db: MemeshDatabase, file: string, messageIds: string[], bat
 }
 
 /** Is any archived message past its extra day? False when there is no archive file. */
-function archiveHasPurgeableRows(db: MemeshDatabase, file: string, nowMs: number): boolean {
-  if (!fs.existsSync(file)) return false;
+function archiveHasPurgeableRows(db: MemeshDatabase, file: string, nowMs: number, ownOnly: boolean): boolean {
   try {
-    refuseUnsafeArchive(db, file);
-    db.prepare(`ATTACH DATABASE ? AS ${ARCHIVE}`).run(file);
+    return readArchive(db, file, (archive, hasLog) => {
+      if (!hasLog) return false;
+      if (ownOnly) archive.prepare('ATTACH DATABASE ? AS live').run(databaseFile(db));
+      return (archive.prepare(`SELECT EXISTS (SELECT 1 FROM archive_log WHERE archived_at_ms < ?${ownOnly ? ' AND message_id IN (SELECT message_id FROM live.agent_message_expiries)' : ''}) AS n`)
+        .get(nowMs - AGENT_MESSAGE_TTL_MS) as { n: number }).n === 1;
+    }) ?? false;
   } catch {
     // Not silent: the purge and every batch attach it too and fail with the reason, naming the
-    // file, and doctor opens it and warns before any pass does. Here it only means "no purge".
+    // file, and doctor opens it and warns before any pass does. Here it only means "no purge now".
     return false;
-  }
-  try {
-    const hasLog = (db.prepare(`SELECT COUNT(*) AS n FROM ${ARCHIVE}.sqlite_master WHERE type = 'table' AND name = 'archive_log'`).get() as { n: number }).n;
-    if (hasLog === 0) return false;
-    return (db.prepare(`SELECT EXISTS (SELECT 1 FROM ${ARCHIVE}.archive_log WHERE archived_at_ms < ?) AS n`).get(nowMs - AGENT_MESSAGE_TTL_MS) as { n: number }).n === 1;
-  } catch {
-    return false; // a damaged archive: as above
-  } finally {
-    db.exec(`DETACH DATABASE ${ARCHIVE}`);
   }
 }
 
 /**
  * Removes what was archived more than one day ago, by the time recorded in the
- * archive (never by file name), BATCH_SIZE messages per transaction with an
- * event-loop turn between, so a large archive does not hold the process.
- * The archive is attached only inside each synchronous step.
+ * archive (never by file name), BATCH_SIZE messages per transaction (which renews
+ * the lease) with an event-loop turn between, so a large archive does not hold the
+ * process. `ownOnly`: only what this database deleted, from a file other databases
+ * share. The archive is attached only inside each synchronous step.
  */
-async function purgeArchive(db: MemeshDatabase, file: string): Promise<number> {
+async function purgeArchive(db: MemeshDatabase, file: string, holder: string, ownOnly: boolean): Promise<number> {
   let purged = 0;
   for (;;) {
-    if (!fs.existsSync(file)) return purged;
+    if (fs.lstatSync(file, { throwIfNoEntry: false }) === undefined) return purged;
     attachArchive(db, file);
+    let removed: number;
     try {
-      const cut = Date.now() - AGENT_MESSAGE_TTL_MS;
-      const batch = (db.prepare(`SELECT message_id FROM ${ARCHIVE}.archive_log WHERE archived_at_ms < ? LIMIT ?`)
-        .all(cut, BATCH_SIZE) as Array<{ message_id: string }>).map((row) => row.message_id);
-      if (batch.length === 0) return purged;
-      const ids = JSON.stringify(batch);
-      db.transaction(() => {
+      removed = db.transaction(() => {
+        renewLease(db, holder);
+        const batch = (db.prepare(`
+          SELECT message_id FROM ${ARCHIVE}.archive_log WHERE archived_at_ms < ?
+          ${ownOnly ? 'AND message_id IN (SELECT message_id FROM main.agent_message_expiries)' : ''} LIMIT ?
+        `).all(Date.now() - AGENT_MESSAGE_TTL_MS, BATCH_SIZE) as Array<{ message_id: string }>).map((row) => row.message_id);
+        const ids = JSON.stringify(batch);
         for (const table of [...ARCHIVED_TABLES].reverse()) {
           db.prepare(`DELETE FROM ${ARCHIVE}.${table.name} WHERE ${where(ARCHIVE, table.by)}`).run(ids);
         }
         db.prepare(`DELETE FROM ${ARCHIVE}.archive_log WHERE message_id IN (SELECT value FROM json_each(?))`).run(ids);
-      })();
-      purged += batch.length;
+        return batch.length;
+      }).immediate();
       // Gives back the pages this batch freed, so the vacuum is as small as the batch.
-      db.exec(`PRAGMA ${ARCHIVE}.incremental_vacuum`);
+      if (removed > 0) db.exec(`PRAGMA ${ARCHIVE}.incremental_vacuum`);
     } finally {
       db.exec(`DETACH DATABASE ${ARCHIVE}`);
     }
+    if (removed === 0) return purged;
+    purged += removed;
     await yieldTurn();
   }
 }
@@ -875,21 +1000,6 @@ async function purgeArchive(db: MemeshDatabase, file: string): Promise<number> {
 function isBusy(error: unknown): boolean {
   const code = (error as { errcode?: unknown } | null)?.errcode;
   return code === 5 || code === 6 || /database (table )?is locked|SQLITE_BUSY/i.test(error instanceof Error ? error.message : String(error));
-}
-
-/**
- * Runs `fn` with a busy timeout of LOCK_WAIT_MS instead of the handle's own, and
- * puts that back. Synchronous on purpose: the handle is shared by the whole
- * process, so the shorter wait must never last across an event-loop turn.
- */
-function withoutWaiting<T>(db: MemeshDatabase, fn: () => T): T {
-  const previous = (db.prepare('PRAGMA busy_timeout').get() as { timeout: number }).timeout;
-  db.pragma(`busy_timeout = ${LOCK_WAIT_MS}`);
-  try {
-    return fn();
-  } finally {
-    db.pragma(`busy_timeout = ${previous}`);
-  }
 }
 
 /**
@@ -921,7 +1031,8 @@ function acquireLease(db: MemeshDatabase, holder: string): number | null {
     const now = Date.now();
     const row = db.prepare('SELECT holder, expires_at_ms FROM agent_message_expiry_lease WHERE lease_id = 1')
       .get() as { holder: string; expires_at_ms: number } | undefined;
-    if (row && row.expires_at_ms > now) return row.expires_at_ms;
+    if (row && row.expires_at_ms > now && !abandonedLeases.has(row.holder)) return row.expires_at_ms;
+    if (row) abandonedLeases.delete(row.holder);
     db.prepare('INSERT OR REPLACE INTO agent_message_expiry_lease (lease_id, holder, expires_at_ms) VALUES (1, ?, ?)')
       .run(holder, now + LEASE_MS);
     return null;
@@ -941,8 +1052,10 @@ function releaseLease(db: MemeshDatabase, holder: string): void {
   try {
     db.prepare('DELETE FROM agent_message_expiry_lease WHERE lease_id = 1 AND holder = ?').run(holder);
   } catch (error) {
-    // Not fatal: the lease runs out by itself. Say so, so a stuck "skipped_concurrent" has an explanation.
-    reportProblem(`could not release the expiry lease (${error instanceof Error ? error.message : String(error)}); it runs out on its own`);
+    // Not fatal: the lease runs out by itself, and this process's next pass takes it over at once.
+    // Said, so a "skipped_concurrent" in another process has an explanation.
+    if (isBusy(error)) abandonedLeases.add(holder);
+    reportProblem(`could not release the expiry lease (${errorText(error)}); it runs out on its own`);
   }
 }
 
@@ -957,29 +1070,22 @@ function presenceBindings(cutoff: string, clockMs: number) {
 
 type PresenceBindings = ReturnType<typeof presenceBindings>;
 
-function countStalePresence(db: MemeshDatabase, bind: PresenceBindings): number {
-  const facts = db.prepare(`
-    SELECT COUNT(*) AS n FROM agent_presence_facts
-    WHERE (julianday(created_at) < julianday(:cutoff) AND connection_id NOT IN (${LIVE_CONNECTIONS_SQL}))
-       OR connection_id IN (${DEAD_CONNECTIONS_SQL})
-  `).get(bind.facts) as { n: number };
-  const connections = db.prepare(`SELECT COUNT(*) AS n FROM (${DEAD_CONNECTIONS_SQL})`).get(bind.dead) as { n: number };
-  return facts.n + connections.n;
+function hasStalePresence(db: MemeshDatabase, bind: PresenceBindings): boolean {
+  return (db.prepare(`
+    SELECT EXISTS (SELECT 1 FROM agent_presence_facts WHERE ${STALE_FACTS_SQL}) OR EXISTS (${DEAD_CONNECTIONS_SQL}) AS n
+  `).get(bind.facts) as { n: number }).n === 1;
 }
 
 function deletePresence(db: MemeshDatabase, bind: PresenceBindings, what: 'facts' | 'connections'): number {
   if (what === 'connections') {
     return Number(db.prepare(`DELETE FROM agent_session_connections WHERE connection_id IN (${DEAD_CONNECTIONS_SQL})`).run(bind.dead).changes);
   }
-  return Number(db.prepare(`
-    DELETE FROM agent_presence_facts
-    WHERE (julianday(created_at) < julianday(:cutoff) AND connection_id NOT IN (${LIVE_CONNECTIONS_SQL}))
-       OR connection_id IN (${DEAD_CONNECTIONS_SQL})
-  `).run(bind.facts).changes);
+  return Number(db.prepare(`DELETE FROM agent_presence_facts WHERE ${STALE_FACTS_SQL}`).run(bind.facts).changes);
 }
 
+/** Forgets old expired ids, except one whose notice is still owed: forgetting it would mean its sender is never told. */
 function trimBookkeeping(db: MemeshDatabase, nowMs: number): void {
-  db.prepare('DELETE FROM agent_message_expiries WHERE expired_at_ms < ?').run(nowMs - AGENT_MESSAGE_EXPIRED_ID_KEEP_MS);
+  db.prepare(`DELETE FROM agent_message_expiries WHERE expired_at_ms < ? AND (${NOTICE_OWED_SQL}) IS NOT 1`).run(nowMs - AGENT_MESSAGE_EXPIRED_ID_KEEP_MS);
 }
 
 function tablesExist(db: MemeshDatabase): boolean {
@@ -998,77 +1104,88 @@ function beginRun(db: MemeshDatabase, startedAtMs: number, trigger: string, arch
     `).run(startedAtMs, startedAtMs, trigger, archiveFile);
     return Number(inserted.lastInsertRowid);
   } catch (error) {
-    reportProblem(`could not record that a pass started: ${error instanceof Error ? error.message : String(error)}`);
+    if (isBusy(error)) throw error;
+    reportProblem(`could not record that a pass started: ${errorText(error)}`);
     return null;
   }
 }
 
 /**
- * Writes the run's row. A lock another process holds is not waited on (that
- * would hold this process): the write is tried again between event-loop turns
- * for RECORD_RETRY_MS, so a pass that met a lock is still on record.
+ * Writes the pass's row, after any row of an earlier pass of this process that met a lock. A
+ * row that meets a lock now is kept for the next pass instead: waiting would hold the process.
  */
-async function recordRun(
-  db: MemeshDatabase,
-  startedAtMs: number,
-  trigger: string,
-  result: Omit<AgentMessageExpiryResult, 'run_id'>,
-  startedRunId: number | null,
-): Promise<number | null> {
-  const deadline = Date.now() + RECORD_RETRY_MS;
-  for (;;) {
-    try {
-      return withoutWaiting(db, () => writeRun(db, startedAtMs, trigger, result, startedRunId));
-    } catch (error) {
-      if (isBusy(error) && Date.now() < deadline) {
-        // Unref'd like the scheduler's timers: a process that is exiting does not wait for the record.
-        await new Promise((resolve) => { setTimeout(resolve, 1_000).unref(); });
-        continue;
-      }
-      // The run cannot be recorded (a read-only database, a missing table, a lock
-      // that outlasted the retries): say so where an operator can see it rather than lose it.
-      reportProblem(`pass ended ${result.outcome}${result.detail ? ` (${result.detail})` : ''} and could not be recorded: ${error instanceof Error ? error.message : String(error)}`);
-      return null;
+function recordRun(pass: MemeshDatabase | null, file: string, record: PassRecord): number | null {
+  const late = unrecorded.get(file) ?? [];
+  try {
+    if (pass === null) throw new Error('the database could not be opened');
+    const runId = pass.transaction(() => {
+      for (const missed of late) writeRun(pass, missed, true);
+      return writeRun(pass, record, false);
+    }).immediate();
+    unrecorded.delete(file);
+    return runId;
+  } catch (error) {
+    const { outcome, detail } = record.result;
+    const ended = `pass ended ${outcome}${detail ? ` (${detail})` : ''}`;
+    if (file !== '' && isBusy(error)) {
+      unrecorded.set(file, [...late, record]);
+      reportProblem(`${ended} and could not be recorded now (${errorText(error)}); the next pass that can write records it`);
+    } else {
+      // A read-only database, a missing table: say so where an operator can see it rather than lose it.
+      reportProblem(`${ended} and could not be recorded: ${errorText(error)}`);
     }
+    return null;
   }
 }
 
-function writeRun(
-  db: MemeshDatabase,
-  startedAtMs: number,
-  trigger: string,
-  result: Omit<AgentMessageExpiryResult, 'run_id'>,
-  startedRunId: number | null,
-): number {
-  return db.transaction(() => {
-    if (startedRunId !== null) {
-      db.prepare(`
-        UPDATE agent_message_expiry_runs
-        SET finished_at_ms = ?, outcome = ?, expired_message_count = ?, unread_message_count = ?,
-            notice_count = ?, presence_fact_count = ?, connection_count = ?, backup_path = ?, detail = ?
-        WHERE run_id = ?
-      `).run(
-        Date.now(), result.outcome, result.expired_message_count, result.unread_message_count,
-        result.notice_count, result.presence_fact_count, result.connection_count, result.backup_path, result.detail,
-        startedRunId,
-      );
-      trimBookkeeping(db, startedAtMs);
-      trimRunLog(db);
-      return startedRunId;
-    }
-    const inserted = db.prepare(`
+/** One try, without waiting, to write the rows still kept for the next pass: the process is about to exit with them. */
+function recordLatePasses(db: MemeshDatabase | null): void {
+  let pass: MemeshDatabase | null = null;
+  try {
+    const file = db === null ? '' : databaseFile(db);
+    const late = unrecorded.get(file);
+    if (file === '' || late === undefined) return;
+    const work = pass = openPassConnection(file);
+    work.transaction(() => { for (const missed of late) writeRun(work, missed, true); }).immediate();
+    unrecorded.delete(file);
+  } catch (error) {
+    reportProblem(`a pass that met a lock could still not be recorded as the process stopped (${errorText(error)})`);
+  } finally {
+    if (pass !== null) closeQuietly(pass);
+  }
+}
+
+/** One run row, in the caller's transaction: the row the pass started with, or a new one. */
+function writeRun(db: MemeshDatabase, record: PassRecord, late: boolean): number {
+  const { result } = record;
+  const detail = late
+    ? `recorded late: the database was locked by another process when this pass ended at ${new Date(record.endedAtMs).toISOString()}${result.detail ? `; ${result.detail}` : ''}`
+    : result.detail;
+  const values = [
+    late ? record.endedAtMs : Date.now(), result.outcome, result.expired_message_count, result.unread_message_count,
+    result.notice_count, result.presence_fact_count, result.connection_count, result.backup_path, detail,
+  ] as const;
+  let runId: number | null = null;
+  if (record.startedRunId !== null) {
+    const updated = db.prepare(`
+      UPDATE agent_message_expiry_runs
+      SET finished_at_ms = ?, outcome = ?, expired_message_count = ?, unread_message_count = ?,
+          notice_count = ?, presence_fact_count = ?, connection_count = ?, backup_path = ?, detail = ?
+      WHERE run_id = ?
+    `).run(...values, record.startedRunId);
+    if (Number(updated.changes) === 1) runId = record.startedRunId;
+  }
+  if (runId === null) {
+    runId = Number(db.prepare(`
       INSERT INTO agent_message_expiry_runs (
-        started_at_ms, finished_at_ms, trigger_source, outcome, expired_message_count, unread_message_count,
+        started_at_ms, trigger_source, finished_at_ms, outcome, expired_message_count, unread_message_count,
         notice_count, presence_fact_count, connection_count, backup_path, detail
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      startedAtMs, Date.now(), trigger, result.outcome, result.expired_message_count, result.unread_message_count,
-      result.notice_count, result.presence_fact_count, result.connection_count, result.backup_path, result.detail,
-    );
-    trimBookkeeping(db, startedAtMs);
-    trimRunLog(db);
-    return Number(inserted.lastInsertRowid);
-  }).immediate();
+    `).run(record.startedAtMs, record.trigger, ...values).lastInsertRowid);
+  }
+  trimBookkeeping(db, record.startedAtMs);
+  trimRunLog(db);
+  return runId;
 }
 
 function trimRunLog(db: MemeshDatabase): void {
@@ -1079,20 +1196,21 @@ function trimRunLog(db: MemeshDatabase): void {
 }
 
 /**
- * A run still "started" whose process is gone (no lease is held) is marked
- * interrupted, so a pass that finds nothing to do still closes it. Best effort:
- * a database that cannot be written is reported by the pass itself.
+ * Marks interrupted every run still "started" whose process is gone: no live lease is held, or
+ * the live one is this pass's own. A lock ends the pass (database_busy); any other failure is
+ * only said, since a database that cannot be written is reported by the pass itself.
  */
-function interruptDeadRuns(db: MemeshDatabase): void {
+function interruptDeadRuns(db: MemeshDatabase, holder: string): void {
   try {
     db.prepare(`
       UPDATE agent_message_expiry_runs
       SET outcome = 'interrupted', detail = 'the process stopped before this pass finished'
       WHERE outcome = 'started'
-        AND NOT EXISTS (SELECT 1 FROM agent_message_expiry_lease WHERE expires_at_ms > ?)
-    `).run(Date.now());
+        AND NOT EXISTS (SELECT 1 FROM agent_message_expiry_lease WHERE expires_at_ms > ? AND holder <> ?)
+    `).run(Date.now(), holder);
   } catch (error) {
-    reportProblem(`could not close a pass that never finished: ${error instanceof Error ? error.message : String(error)}`);
+    if (isBusy(error)) throw error;
+    reportProblem(`could not close a pass that never finished: ${errorText(error)}`);
   }
 }
 

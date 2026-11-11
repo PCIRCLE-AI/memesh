@@ -5154,7 +5154,7 @@ function memeshDir() {
   return process.env.MEMESH_DIR || path.join(homeDir(), ".memesh");
 }
 function getDbPath() {
-  return process.env.MEMESH_DB_PATH ?? path.join(memeshDir(), "knowledge-graph.db");
+  return process.env.MEMESH_DB_PATH ?? path.join(memeshDir(), DEFAULT_DB_FILE);
 }
 function getMemeshDirFromDbPath() {
   return process.env.MEMESH_DB_PATH ? path.dirname(process.env.MEMESH_DB_PATH) : memeshDir();
@@ -5709,11 +5709,12 @@ function clearPartsOfKey(metadata) {
   const clear = (text) => holdsPartOfKeyDecoded(text) ? REDACTED : text;
   return mapJson({ ...metadata, ...entries }, clear, clear);
 }
-var AGENT_ROUTER_SOCKET_FILENAME, projectIdsCache, locatorIdentity, PROJECT_HASH_HEX_LENGTH, PROJECT_ID_MAX_LENGTH, PROJECT_LABEL_MAX_LENGTH, repoRootCache, isSsh, HOSTING_SERVICES, SK_KEY, NAMED_VALUE, JWT_TOKEN, SENDGRID_KEY, SECRET_PATTERN_SOURCES, SECRET_PATTERNS, SEGMENTED, JWT_PATTERN, TOKEN_CHAR, GLUED, PRIVATE_KEY_MARKER, PRIVATE_KEY_END, ANY_PRIVATE_KEY_MARKER, REDACTED, nativeJson, looksLikeJson, JSON_ESCAPE, ESCAPED_CHAR, keepNumberSpelling;
+var AGENT_ROUTER_SOCKET_FILENAME, DEFAULT_DB_FILE, projectIdsCache, locatorIdentity, PROJECT_HASH_HEX_LENGTH, PROJECT_ID_MAX_LENGTH, PROJECT_LABEL_MAX_LENGTH, repoRootCache, isSsh, HOSTING_SERVICES, SK_KEY, NAMED_VALUE, JWT_TOKEN, SENDGRID_KEY, SECRET_PATTERN_SOURCES, SECRET_PATTERNS, SEGMENTED, JWT_PATTERN, TOKEN_CHAR, GLUED, PRIVATE_KEY_MARKER, PRIVATE_KEY_END, ANY_PRIVATE_KEY_MARKER, REDACTED, nativeJson, looksLikeJson, JSON_ESCAPE, ESCAPED_CHAR, keepNumberSpelling;
 var init_paths = __esm({
   "dist/core/paths.js"() {
     "use strict";
     AGENT_ROUTER_SOCKET_FILENAME = "agent-router-v2.sock";
+    DEFAULT_DB_FILE = "knowledge-graph.db";
     projectIdsCache = /* @__PURE__ */ new Map();
     locatorIdentity = (locator) => projectIdentity(path.posix.basename(locator).replace(/\.git$/i, ""), locator);
     PROJECT_HASH_HEX_LENGTH = 32;
@@ -40211,91 +40212,125 @@ async function runAgentMessageExpiry(db2, options) {
   const startedAtMs = Date.now();
   const clockMs = options.nowMs ?? startedAtMs;
   const tally = { expired: 0, unread: 0, notices: 0, unaddressable: 0, unreadableTimes: 0, presenceFacts: 0, connections: 0 };
-  let archivePath = null;
+  const file2 = databaseFile(db2);
+  let pass = null;
+  let archiveFile = null;
   const holder = randomUUID5();
   let holdsLease = false;
   let startedRunId = null;
-  const finish = async (outcome, detail = null) => {
-    const base = {
+  let stopped = false;
+  const finish = (outcome, detail = null) => {
+    const result = {
       outcome,
       expired_message_count: tally.expired,
       unread_message_count: tally.unread,
       notice_count: tally.notices,
       presence_fact_count: tally.presenceFacts,
       connection_count: tally.connections,
-      backup_path: tally.expired > 0 ? archivePath : null,
+      backup_path: tally.expired > 0 ? archiveFile : null,
       detail
     };
-    return { ...base, run_id: await recordRun(db2, startedAtMs, options.trigger, base, startedRunId) };
+    if (stopped)
+      return { ...result, run_id: startedRunId };
+    return { ...result, run_id: recordRun(pass, file2, { startedAtMs, endedAtMs: Date.now(), trigger: options.trigger, result, startedRunId }) };
   };
+  const stop = () => {
+    stopped = true;
+    if (pass === null)
+      return;
+    try {
+      if (startedRunId !== null) {
+        pass.prepare(`
+          UPDATE agent_message_expiry_runs
+          SET outcome = 'interrupted', finished_at_ms = ?, expired_message_count = ?, unread_message_count = ?, notice_count = ?,
+              detail = 'the process stopped during this pass; what it had deleted is kept and the next pass does the rest'
+          WHERE run_id = ? AND outcome = 'started'
+        `).run(Date.now(), tally.expired, tally.unread, tally.notices, startedRunId);
+      }
+      if (holdsLease)
+        pass.prepare("DELETE FROM agent_message_expiry_lease WHERE lease_id = 1 AND holder = ?").run(holder);
+    } catch (error62) {
+      reportProblem(`could not close the pass of a process that is stopping (${errorText2(error62)}); the next pass closes it once its lease runs out`);
+    }
+    if (pass !== db2)
+      closeQuietly(pass);
+  };
+  options.signal?.addEventListener("abort", stop, { once: true });
   try {
-    if (!tablesExist(db2))
+    pass = file2 === "" ? db2 : openPassConnection(file2);
+    const work = pass;
+    if (!tablesExist(work))
       return finish("no_message_tables", "agent_messages, agent_message_expiry_runs, agent_message_expiries or agent_message_expiry_lease is missing");
     const cutoff = agentMessageExpiryCutoff(clockMs);
     const inFlightCutoff = new Date(clockMs - IN_FLIGHT_GRACE_MS).toISOString();
     const presenceParams = presenceBindings(cutoff, clockMs);
-    const archiveFile = archiveLocation(db2, options);
+    archiveFile = archiveLocation(file2);
+    const shared = archiveFile === null ? null : sharedArchive(archiveFile);
+    const purges = archiveFile === null ? [] : [[archiveFile, false], ...shared === null ? [] : [[shared, true]]];
     const measure = () => ({
-      expired: db2.prepare("SELECT EXISTS (SELECT 1 FROM agent_messages WHERE created_at < ?) AS n").get(cutoff).n === 1,
-      deletable: db2.prepare(`SELECT EXISTS (SELECT 1 FROM agent_messages m WHERE m.created_at < ? AND NOT ${IN_FLIGHT_SQL}) AS n`).get(cutoff, inFlightCutoff).n === 1,
-      presence: countStalePresence(db2, presenceParams),
-      purgeable: archiveFile !== null && archiveHasPurgeableRows(db2, archiveFile, Date.now()),
-      owed: db2.prepare(`SELECT EXISTS (SELECT 1 FROM agent_message_expiries WHERE ${NOTICE_OWED_SQL}) AS n`).get().n === 1
+      deletable: work.prepare(`SELECT EXISTS (SELECT 1 FROM agent_messages m WHERE m.created_at < ? AND NOT ${IN_FLIGHT_SQL}) AS n`).get(cutoff, inFlightCutoff).n === 1,
+      presence: hasStalePresence(work, presenceParams),
+      purgeable: purges.some(([file3, ownOnly]) => archiveHasPurgeableRows(work, file3, Date.now(), ownOnly)),
+      owed: work.prepare(`SELECT EXISTS (SELECT 1 FROM agent_message_expiries WHERE ${NOTICE_OWED_SQL}) AS n`).get().n === 1
     });
-    const idle = (m) => !m.deletable && m.presence === 0 && !m.purgeable && !m.owed;
-    const idleOutcome = (m) => m.expired ? "deferred_in_flight" : "nothing_expired";
+    const idle = (m) => !m.deletable && !m.presence && !m.purgeable && !m.owed;
+    const idleOutcome = () => work.prepare("SELECT EXISTS (SELECT 1 FROM agent_messages WHERE created_at < ?) AS n").get(cutoff).n === 1 ? "deferred_in_flight" : "nothing_expired";
     let seen = measure();
     if (idle(seen)) {
-      interruptDeadRuns(db2);
-      return finish(idleOutcome(seen));
+      interruptDeadRuns(work, holder);
+      return finish(idleOutcome());
     }
     if (seen.deletable && archiveFile === null) {
-      return finish("archive_unavailable", "the database has no file path and no archive directory was given, so nothing was deleted");
+      return finish("archive_unavailable", "the database has no file path, so there is nowhere to archive to and nothing was deleted");
     }
     try {
-      withoutWaiting(db2, () => probeWritable(db2));
+      probeWritable(work);
     } catch (error62) {
-      const message = error62 instanceof Error ? error62.message : String(error62);
       if (isBusy(error62))
-        return finish("database_busy", `the database was locked by another process, so nothing was deleted this time (${message})`);
-      return finish("read_only", `the database cannot be written, so nothing was archived or deleted (${message})`);
+        return finish("database_busy", `the database was locked by another process, so nothing was deleted this time (${errorText2(error62)})`);
+      return finish("read_only", `the database cannot be written, so nothing was archived or deleted (${errorText2(error62)})`);
     }
-    const held = acquireLease(db2, holder);
+    const held = acquireLease(work, holder);
     if (held !== null)
       return finish("skipped_concurrent", `another process is running the pass (its lease runs until ${new Date(held).toISOString()})`);
     holdsLease = true;
-    db2.prepare("UPDATE agent_message_expiry_runs SET outcome = 'interrupted', detail = 'the process stopped before this pass finished' WHERE outcome = 'started'").run();
+    interruptDeadRuns(work, holder);
     seen = measure();
     if (idle(seen))
-      return finish(idleOutcome(seen));
-    startedRunId = beginRun(db2, startedAtMs, options.trigger, seen.deletable ? archiveFile : null);
-    archivePath = seen.deletable ? archiveFile : null;
+      return finish(idleOutcome());
+    startedRunId = beginRun(work, startedAtMs, options.trigger, seen.deletable ? archiveFile : null);
     const notes = [];
     let purgeFailed = false;
-    if (archiveFile !== null) {
+    for (const [file3, ownOnly] of purges) {
       try {
-        const purged = await purgeArchive(db2, archiveFile);
+        const purged = await purgeArchive(work, file3, holder, ownOnly);
         if (purged > 0)
-          notes.push(`removed ${purged} archived message(s) past their extra day`);
+          notes.push(`removed ${purged} archived message(s) past their extra day${ownOnly ? ` from ${file3}, the archive an earlier MeMesh shared between databases` : ""}`);
       } catch (error62) {
+        if (isBusy(error62))
+          throw error62;
         purgeFailed = true;
-        notes.push(`could not remove archive rows older than a day (${archiveFile}: ${error62 instanceof Error ? error62.message : String(error62)}); they stay until the next pass`);
+        notes.push(`could not remove archive rows older than a day (${file3}: ${errorText2(error62)}); they stay until the next pass`);
       }
     }
+    let archiveFailure = null;
     if (seen.deletable && archiveFile !== null) {
       for (let batch = 1; batch <= MAX_BATCHES_PER_PASS; batch++) {
-        const rows = selectBatch(db2, cutoff, inFlightCutoff);
+        const rows = selectBatch(work, cutoff, inFlightCutoff);
         if (rows.length === 0)
           break;
         try {
-          archiveRows(db2, archiveFile, rows.map((row) => row.message_id), batch, options);
+          archiveRows(work, archiveFile, rows.map((row) => row.message_id), batch, options);
         } catch (error62) {
-          return finish("archive_failed", `could not archive the rows of ${rows.length} message(s) before deleting them (${archiveFile}: ${error62 instanceof Error ? error62.message : String(error62)}); nothing in this batch was deleted`);
+          if (isBusy(error62))
+            throw error62;
+          archiveFailure = `could not archive the rows of ${rows.length} message(s) before deleting them (${archiveFile}: ${errorText2(error62)}); nothing in this batch was deleted`;
+          break;
         }
-        db2.transaction(() => {
-          renewLease(db2, holder);
-          deleteBatch(db2, rows, tally);
-          saveRunProgress(db2, startedRunId, tally, archiveFile);
+        work.transaction(() => {
+          renewLease(work, holder);
+          deleteBatch(work, rows, tally);
+          saveRunProgress(work, startedRunId, tally, archiveFile);
         }).immediate();
         await options.fault?.afterBatch?.(batch);
         await yieldTurn();
@@ -40303,30 +40338,57 @@ async function runAgentMessageExpiry(db2, options) {
     }
     if (tally.unreadableTimes > 0)
       notes.push(`${tally.unreadableTimes} message(s) had a creation time that cannot be read; readers already treated them as past their day, so they were archived and deleted`);
-    db2.transaction(() => {
-      renewLease(db2, holder);
-      writeOwedNotices(db2, tally);
-      saveRunProgress(db2, startedRunId, tally, archivePath);
+    const written = work.transaction(() => {
+      renewLease(work, holder);
+      const counts = writeOwedNotices(work);
+      saveRunProgress(work, startedRunId, { ...tally, notices: tally.notices + counts.notices }, archiveFile);
+      return counts;
     }).immediate();
+    tally.notices += written.notices;
+    tally.unaddressable += written.unaddressable;
     if (tally.unaddressable > 0)
       notes.push(`${tally.unaddressable} sender(s) could not be addressed, so no notice was written for them`);
-    db2.transaction(() => {
-      renewLease(db2, holder);
-      tally.presenceFacts = deletePresence(db2, presenceParams, "facts");
-      tally.connections = deletePresence(db2, presenceParams, "connections");
+    work.transaction(() => {
+      renewLease(work, holder);
+      tally.presenceFacts = deletePresence(work, presenceParams, "facts");
+      tally.connections = deletePresence(work, presenceParams, "connections");
     }).immediate();
-    const remaining = db2.prepare("SELECT COUNT(*) AS n FROM agent_messages WHERE created_at < ?").get(cutoff).n;
+    const remaining = work.prepare("SELECT COUNT(*) AS n FROM agent_messages WHERE created_at < ?").get(cutoff).n;
     if (remaining > 0)
       notes.push(`${remaining} expired message(s) left for the next pass`);
+    if (archiveFailure !== null)
+      notes.unshift(archiveFailure);
     const detail = notes.length > 0 ? notes.join("; ") : null;
-    const outcome = tally.expired > 0 ? "deleted" : tally.presenceFacts + tally.connections > 0 ? "presence_cleared" : seen.purgeable ? purgeFailed ? "failed" : "archive_purged" : tally.notices > 0 ? "notices_sent" : remaining > 0 ? "deferred_in_flight" : "nothing_expired";
+    const outcome = archiveFailure !== null ? "archive_failed" : tally.expired > 0 ? "deleted" : tally.presenceFacts + tally.connections > 0 ? "presence_cleared" : seen.purgeable ? purgeFailed ? "failed" : "archive_purged" : tally.notices > 0 ? "notices_sent" : remaining > 0 ? "deferred_in_flight" : "nothing_expired";
     return finish(outcome, detail);
   } catch (error62) {
-    return finish("failed", error62 instanceof Error ? error62.message : String(error62));
+    if (isBusy(error62)) {
+      return finish("database_busy", `the database was locked by another process, so the pass stopped here; every batch it finished is kept and the next pass does the rest (${errorText2(error62)})`);
+    }
+    return finish("failed", errorText2(error62));
   } finally {
-    if (holdsLease)
-      releaseLease(db2, holder);
+    options.signal?.removeEventListener("abort", stop);
+    if (pass !== null && !stopped) {
+      if (holdsLease)
+        releaseLease(pass, holder);
+      if (pass !== db2)
+        closeQuietly(pass);
+    }
   }
+}
+function openPassConnection(file2) {
+  const pass = new MemeshDatabase(file2);
+  pass.pragma(`busy_timeout = ${LOCK_WAIT_MS}`);
+  return pass;
+}
+function closeQuietly(db2) {
+  try {
+    db2.close();
+  } catch {
+  }
+}
+function errorText2(error62) {
+  return error62 instanceof Error ? error62.message : String(error62);
 }
 async function runAgentMessageExpiryIfDue(db2, options) {
   try {
@@ -40341,14 +40403,15 @@ async function runAgentMessageExpiryIfDue(db2, options) {
   }
 }
 function startAgentMessageExpiryScheduler(getDb, options) {
-  let running = false;
+  let running = null;
   const tick = () => {
     const db2 = getDb();
     if (!db2 || running)
       return;
-    running = true;
-    void runAgentMessageExpiryIfDue(db2, { trigger: options.trigger }).finally(() => {
-      running = false;
+    const current = new AbortController();
+    running = current;
+    void runAgentMessageExpiryIfDue(db2, { trigger: options.trigger, signal: current.signal }).finally(() => {
+      running = null;
     });
   };
   const first = setTimeout(tick, options.firstRunDelayMs ?? 1e3);
@@ -40358,6 +40421,8 @@ function startAgentMessageExpiryScheduler(getDb, options) {
   return () => {
     clearTimeout(first);
     clearInterval(every);
+    running?.abort();
+    recordLatePasses(getDb());
   };
 }
 function lastAgentMessageExpiryRun(db2) {
@@ -40382,23 +40447,32 @@ function latestAgentMessageExpiryArchive(db2) {
 }
 function inspectAgentMessageArchive(db2, file2) {
   try {
-    fs28.statSync(file2);
-  } catch (error62) {
-    const code = error62.code;
-    return code === "ENOENT" ? { kind: "missing" } : { kind: "unusable", reason: `it cannot be read (${code ?? String(error62)})` };
-  }
-  try {
-    refuseUnsafeArchive(db2, file2);
-    const handle = new DatabaseSync3(file2, { readOnly: true });
+    const messages = readArchive(db2, file2, (archive, hasLog) => hasLog ? archive.prepare("SELECT COUNT(*) AS n FROM archive_log").get().n : 0);
+    if (messages === void 0)
+      return { kind: "missing" };
     try {
-      handle.exec("PRAGMA busy_timeout = 1000");
-      const hasLog = handle.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name = 'archive_log'").get().n;
-      return { kind: "held", messages: hasLog === 0 ? 0 : handle.prepare("SELECT COUNT(*) AS n FROM archive_log").get().n };
-    } finally {
-      handle.close();
+      fs28.accessSync(file2, fs28.constants.W_OK);
+    } catch {
+      return { kind: "unusable", reason: "this user cannot write it" };
     }
+    return { kind: "held", messages };
   } catch (error62) {
-    return { kind: "unusable", reason: error62 instanceof Error ? error62.message : String(error62) };
+    if (isBusy(error62))
+      return { kind: "busy" };
+    const code = error62.syscall === void 0 ? void 0 : error62.code;
+    return { kind: "unusable", reason: code === void 0 ? errorText2(error62) : `it cannot be read (${code})` };
+  }
+}
+function readArchive(db2, file2, read) {
+  if (fs28.lstatSync(file2, { throwIfNoEntry: false }) === void 0)
+    return void 0;
+  refuseUnsafeArchive(db2, file2);
+  const archive = new DatabaseSync3(file2, { readOnly: true });
+  try {
+    const hasLog = archive.prepare("SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'archive_log') AS n").get().n === 1;
+    return read(archive, hasLog);
+  } finally {
+    archive.close();
   }
 }
 function selectBatch(db2, cutoff, inFlightCutoff) {
@@ -40407,7 +40481,8 @@ function selectBatch(db2, cutoff, inFlightCutoff) {
            CASE WHEN json_valid(m.provenance_json)
                 THEN COALESCE(json_extract(m.provenance_json, '$.transport') = '${AGENT_MESSAGE_EXPIRY_TRANSPORT}', 0)
                 ELSE 0 END AS is_notice,
-           ${WAS_READ_SQL} AS was_read
+           ${WAS_READ_SQL} AS was_read,
+           CASE WHEN json_valid(m.provenance_json) THEN json_extract(m.provenance_json, '$.fallback_of_message_id') END AS fallback_of
     FROM agent_messages m
     WHERE m.created_at < ? AND NOT ${IN_FLIGHT_SQL}
     ORDER BY m.created_at
@@ -40422,15 +40497,22 @@ function deleteBatch(db2, rows, tally) {
   `);
   const delivery = db2.prepare("SELECT delivery_id, recipient FROM agent_message_deliveries WHERE message_id = ? LIMIT 1");
   const bridgeTold = db2.prepare("SELECT 1 FROM agent_messages WHERE reply_to_message_id = ? AND json_extract(provenance_json, '$.via') = 'network-notice' LIMIT 1");
+  const copies = new Map(rows.filter((row) => row.fallback_of !== null).map((row) => [row.fallback_of, row]));
+  const copied = db2.prepare(`UPDATE agent_message_expiries SET notice_message_id = '${NO_NOTICE}', was_read = MAX(was_read, ?) WHERE message_id = ? AND notice_message_id IS NULL`);
   const now = Date.now();
   for (const row of rows) {
-    const owesNotice = row.was_read === 0 && row.is_notice === 0;
+    const copy = copies.get(row.message_id);
+    const wasRead = row.was_read !== 0 || copy !== void 0 && copy.was_read !== 0;
+    const unread = !wasRead && row.is_notice === 0;
+    const owesNotice = unread && copy === void 0;
     const sent = owesNotice ? delivery.get(row.message_id) : void 0;
     const network = sent ? networkDeliveryOf(db2, sent) : null;
     const told = network !== null && bridgeTold.get(row.message_id) !== void 0;
-    remember2.run(row.message_id, row.project, row.created_at, now, row.was_read !== 0 ? 1 : 0, row.is_notice !== 0 || told ? NO_NOTICE : null, row.sender, row.recipient, network ? JSON.stringify(network) : null);
-    if (owesNotice)
+    remember2.run(row.message_id, row.project, row.created_at, now, wasRead ? 1 : 0, told || copy !== void 0 ? NO_NOTICE : null, row.sender, row.recipient, network ? JSON.stringify(network) : null);
+    if (unread)
       tally.unread += 1;
+    if (row.fallback_of !== null)
+      copied.run(row.was_read !== 0 ? 1 : 0, row.fallback_of);
     if (Number.isNaN(Date.parse(sqliteUtcToIso(row.created_at))))
       tally.unreadableTimes += 1;
   }
@@ -40440,7 +40522,8 @@ function deleteBatch(db2, rows, tally) {
   }
   tally.expired += rows.length;
 }
-function writeOwedNotices(db2, tally) {
+function writeOwedNotices(db2) {
+  const written = { notices: 0, unaddressable: 0 };
   const owed = db2.prepare(`
     SELECT message_id, project, sender, recipient, created_at, network_json FROM agent_message_expiries
     WHERE ${NOTICE_OWED_SQL} ORDER BY project, sender, created_at, message_id
@@ -40474,11 +40557,12 @@ function writeOwedNotices(db2, tally) {
     };
     const noticeId = writeNotice(db2, group[0].project, group[0].sender, state);
     if (noticeId === null)
-      tally.unaddressable += 1;
+      written.unaddressable += 1;
     else
-      tally.notices += 1;
+      written.notices += 1;
     mark.run(noticeId ?? NO_NOTICE, JSON.stringify(group.map((row) => row.message_id)));
   }
+  return written;
 }
 function noticeSummary(state) {
   const count = state.count;
@@ -40538,37 +40622,34 @@ function saveRunProgress(db2, runId, tally, archiveFile) {
     UPDATE agent_message_expiry_runs
     SET expired_message_count = ?, unread_message_count = ?, notice_count = ?, backup_path = ?
     WHERE run_id = ?
-  `).run(tally.expired, tally.unread, tally.notices, archiveFile, runId);
+  `).run(tally.expired, tally.unread, tally.notices, tally.expired > 0 ? archiveFile : null, runId);
 }
-function archiveLocation(db2, options) {
-  const databasePath = databaseFile(db2);
-  const directory = options.backupDir ?? (databasePath ? path27.join(path27.dirname(databasePath), "backups") : null);
-  if (directory === null)
+function archiveLocation(databasePath) {
+  if (databasePath === "")
     return null;
   const base = path27.basename(databasePath);
-  return path27.join(directory, base === "" || base === "knowledge-graph.db" ? AGENT_MESSAGE_ARCHIVE_FILE : `agent-messages-expired-${base}`);
+  return path27.join(path27.dirname(databasePath), "backups", base === DEFAULT_DB_FILE ? AGENT_MESSAGE_ARCHIVE_FILE : `agent-messages-expired-${base}`);
+}
+function sharedArchive(archive) {
+  return path27.basename(archive) === AGENT_MESSAGE_ARCHIVE_FILE ? null : path27.join(path27.dirname(archive), AGENT_MESSAGE_ARCHIVE_FILE);
 }
 function refuseUnsafeArchive(db2, file2) {
-  let link;
-  try {
-    link = fs28.lstatSync(file2);
-  } catch {
+  const link = fs28.lstatSync(file2, { throwIfNoEntry: false });
+  if (link === void 0)
     return;
+  if (link.isSymbolicLink()) {
+    throw new Error(`${file2} is a symlink; MeMesh never reads or writes its archive through a symlink, wherever it points, and leaves it as it is (move it away)`);
   }
-  const real = link.isSymbolicLink() ? fs28.existsSync(file2) ? fs28.realpathSync(file2) : null : file2;
-  if (real === null)
-    throw new Error(`${file2} is a symlink to a file that does not exist; MeMesh does not create the archive through a symlink`);
-  const target = fs28.statSync(real);
-  if (!target.isFile())
+  if (!link.isFile())
     throw new Error(`${file2} is not a plain file`);
   const main = databaseFile(db2);
   const mainStat = main === "" ? void 0 : fs28.statSync(main, { throwIfNoEntry: false });
-  if (mainStat && mainStat.dev === target.dev && mainStat.ino === target.ino) {
+  if (mainStat && mainStat.dev === link.dev && mainStat.ino === link.ino) {
     throw new Error(`${file2} is the database itself, so it cannot hold a copy of what is deleted from it`);
   }
-  if (target.size > 0) {
+  if (link.size > 0) {
     const head = Buffer.alloc(SQLITE_HEADER.length);
-    const fd = fs28.openSync(real, "r");
+    const fd = fs28.openSync(file2, "r");
     try {
       fs28.readSync(fd, head, 0, head.length, 0);
     } finally {
@@ -40654,64 +40735,54 @@ function archiveRows(db2, file2, messageIds, batch, options) {
     db2.exec(`DETACH DATABASE ${ARCHIVE}`);
   }
 }
-function archiveHasPurgeableRows(db2, file2, nowMs) {
-  if (!fs28.existsSync(file2))
-    return false;
+function archiveHasPurgeableRows(db2, file2, nowMs, ownOnly) {
   try {
-    refuseUnsafeArchive(db2, file2);
-    db2.prepare(`ATTACH DATABASE ? AS ${ARCHIVE}`).run(file2);
+    return readArchive(db2, file2, (archive, hasLog) => {
+      if (!hasLog)
+        return false;
+      if (ownOnly)
+        archive.prepare("ATTACH DATABASE ? AS live").run(databaseFile(db2));
+      return archive.prepare(`SELECT EXISTS (SELECT 1 FROM archive_log WHERE archived_at_ms < ?${ownOnly ? " AND message_id IN (SELECT message_id FROM live.agent_message_expiries)" : ""}) AS n`).get(nowMs - AGENT_MESSAGE_TTL_MS).n === 1;
+    }) ?? false;
   } catch {
     return false;
-  }
-  try {
-    const hasLog = db2.prepare(`SELECT COUNT(*) AS n FROM ${ARCHIVE}.sqlite_master WHERE type = 'table' AND name = 'archive_log'`).get().n;
-    if (hasLog === 0)
-      return false;
-    return db2.prepare(`SELECT EXISTS (SELECT 1 FROM ${ARCHIVE}.archive_log WHERE archived_at_ms < ?) AS n`).get(nowMs - AGENT_MESSAGE_TTL_MS).n === 1;
-  } catch {
-    return false;
-  } finally {
-    db2.exec(`DETACH DATABASE ${ARCHIVE}`);
   }
 }
-async function purgeArchive(db2, file2) {
+async function purgeArchive(db2, file2, holder, ownOnly) {
   let purged = 0;
   for (; ; ) {
-    if (!fs28.existsSync(file2))
+    if (fs28.lstatSync(file2, { throwIfNoEntry: false }) === void 0)
       return purged;
     attachArchive(db2, file2);
+    let removed;
     try {
-      const cut = Date.now() - AGENT_MESSAGE_TTL_MS;
-      const batch = db2.prepare(`SELECT message_id FROM ${ARCHIVE}.archive_log WHERE archived_at_ms < ? LIMIT ?`).all(cut, BATCH_SIZE).map((row) => row.message_id);
-      if (batch.length === 0)
-        return purged;
-      const ids = JSON.stringify(batch);
-      db2.transaction(() => {
+      removed = db2.transaction(() => {
+        renewLease(db2, holder);
+        const batch = db2.prepare(`
+          SELECT message_id FROM ${ARCHIVE}.archive_log WHERE archived_at_ms < ?
+          ${ownOnly ? "AND message_id IN (SELECT message_id FROM main.agent_message_expiries)" : ""} LIMIT ?
+        `).all(Date.now() - AGENT_MESSAGE_TTL_MS, BATCH_SIZE).map((row) => row.message_id);
+        const ids = JSON.stringify(batch);
         for (const table of [...ARCHIVED_TABLES].reverse()) {
           db2.prepare(`DELETE FROM ${ARCHIVE}.${table.name} WHERE ${where(ARCHIVE, table.by)}`).run(ids);
         }
         db2.prepare(`DELETE FROM ${ARCHIVE}.archive_log WHERE message_id IN (SELECT value FROM json_each(?))`).run(ids);
-      })();
-      purged += batch.length;
-      db2.exec(`PRAGMA ${ARCHIVE}.incremental_vacuum`);
+        return batch.length;
+      }).immediate();
+      if (removed > 0)
+        db2.exec(`PRAGMA ${ARCHIVE}.incremental_vacuum`);
     } finally {
       db2.exec(`DETACH DATABASE ${ARCHIVE}`);
     }
+    if (removed === 0)
+      return purged;
+    purged += removed;
     await yieldTurn();
   }
 }
 function isBusy(error62) {
   const code = error62?.errcode;
   return code === 5 || code === 6 || /database (table )?is locked|SQLITE_BUSY/i.test(error62 instanceof Error ? error62.message : String(error62));
-}
-function withoutWaiting(db2, fn) {
-  const previous = db2.prepare("PRAGMA busy_timeout").get().timeout;
-  db2.pragma(`busy_timeout = ${LOCK_WAIT_MS}`);
-  try {
-    return fn();
-  } finally {
-    db2.pragma(`busy_timeout = ${previous}`);
-  }
 }
 function probeWritable(db2) {
   db2.exec("SAVEPOINT expiry_probe");
@@ -40729,8 +40800,10 @@ function acquireLease(db2, holder) {
   return db2.transaction(() => {
     const now = Date.now();
     const row = db2.prepare("SELECT holder, expires_at_ms FROM agent_message_expiry_lease WHERE lease_id = 1").get();
-    if (row && row.expires_at_ms > now)
+    if (row && row.expires_at_ms > now && !abandonedLeases.has(row.holder))
       return row.expires_at_ms;
+    if (row)
+      abandonedLeases.delete(row.holder);
     db2.prepare("INSERT OR REPLACE INTO agent_message_expiry_lease (lease_id, holder, expires_at_ms) VALUES (1, ?, ?)").run(holder, now + LEASE_MS);
     return null;
   }).immediate();
@@ -40745,7 +40818,9 @@ function releaseLease(db2, holder) {
   try {
     db2.prepare("DELETE FROM agent_message_expiry_lease WHERE lease_id = 1 AND holder = ?").run(holder);
   } catch (error62) {
-    reportProblem(`could not release the expiry lease (${error62 instanceof Error ? error62.message : String(error62)}); it runs out on its own`);
+    if (isBusy(error62))
+      abandonedLeases.add(holder);
+    reportProblem(`could not release the expiry lease (${errorText2(error62)}); it runs out on its own`);
   }
 }
 function presenceBindings(cutoff, clockMs) {
@@ -40754,27 +40829,19 @@ function presenceBindings(cutoff, clockMs) {
     facts: { cutoff, dead_lease_ms: clockMs - AGENT_MESSAGE_TTL_MS, now_ms: clockMs }
   };
 }
-function countStalePresence(db2, bind) {
-  const facts = db2.prepare(`
-    SELECT COUNT(*) AS n FROM agent_presence_facts
-    WHERE (julianday(created_at) < julianday(:cutoff) AND connection_id NOT IN (${LIVE_CONNECTIONS_SQL}))
-       OR connection_id IN (${DEAD_CONNECTIONS_SQL})
-  `).get(bind.facts);
-  const connections = db2.prepare(`SELECT COUNT(*) AS n FROM (${DEAD_CONNECTIONS_SQL})`).get(bind.dead);
-  return facts.n + connections.n;
+function hasStalePresence(db2, bind) {
+  return db2.prepare(`
+    SELECT EXISTS (SELECT 1 FROM agent_presence_facts WHERE ${STALE_FACTS_SQL}) OR EXISTS (${DEAD_CONNECTIONS_SQL}) AS n
+  `).get(bind.facts).n === 1;
 }
 function deletePresence(db2, bind, what) {
   if (what === "connections") {
     return Number(db2.prepare(`DELETE FROM agent_session_connections WHERE connection_id IN (${DEAD_CONNECTIONS_SQL})`).run(bind.dead).changes);
   }
-  return Number(db2.prepare(`
-    DELETE FROM agent_presence_facts
-    WHERE (julianday(created_at) < julianday(:cutoff) AND connection_id NOT IN (${LIVE_CONNECTIONS_SQL}))
-       OR connection_id IN (${DEAD_CONNECTIONS_SQL})
-  `).run(bind.facts).changes);
+  return Number(db2.prepare(`DELETE FROM agent_presence_facts WHERE ${STALE_FACTS_SQL}`).run(bind.facts).changes);
 }
 function trimBookkeeping(db2, nowMs) {
-  db2.prepare("DELETE FROM agent_message_expiries WHERE expired_at_ms < ?").run(nowMs - AGENT_MESSAGE_EXPIRED_ID_KEEP_MS);
+  db2.prepare(`DELETE FROM agent_message_expiries WHERE expired_at_ms < ? AND (${NOTICE_OWED_SQL}) IS NOT 1`).run(nowMs - AGENT_MESSAGE_EXPIRED_ID_KEEP_MS);
 }
 function tablesExist(db2) {
   const found = db2.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name IN ('agent_messages', 'agent_message_expiry_runs', 'agent_message_expiries', 'agent_message_expiry_lease')").get();
@@ -40788,50 +40855,92 @@ function beginRun(db2, startedAtMs, trigger, archiveFile) {
     `).run(startedAtMs, startedAtMs, trigger, archiveFile);
     return Number(inserted.lastInsertRowid);
   } catch (error62) {
-    reportProblem(`could not record that a pass started: ${error62 instanceof Error ? error62.message : String(error62)}`);
+    if (isBusy(error62))
+      throw error62;
+    reportProblem(`could not record that a pass started: ${errorText2(error62)}`);
     return null;
   }
 }
-async function recordRun(db2, startedAtMs, trigger, result, startedRunId) {
-  const deadline = Date.now() + RECORD_RETRY_MS;
-  for (; ; ) {
-    try {
-      return withoutWaiting(db2, () => writeRun(db2, startedAtMs, trigger, result, startedRunId));
-    } catch (error62) {
-      if (isBusy(error62) && Date.now() < deadline) {
-        await new Promise((resolve2) => {
-          setTimeout(resolve2, 1e3).unref();
-        });
-        continue;
-      }
-      reportProblem(`pass ended ${result.outcome}${result.detail ? ` (${result.detail})` : ""} and could not be recorded: ${error62 instanceof Error ? error62.message : String(error62)}`);
-      return null;
+function recordRun(pass, file2, record3) {
+  const late = unrecorded.get(file2) ?? [];
+  try {
+    if (pass === null)
+      throw new Error("the database could not be opened");
+    const runId = pass.transaction(() => {
+      for (const missed of late)
+        writeRun(pass, missed, true);
+      return writeRun(pass, record3, false);
+    }).immediate();
+    unrecorded.delete(file2);
+    return runId;
+  } catch (error62) {
+    const { outcome, detail } = record3.result;
+    const ended = `pass ended ${outcome}${detail ? ` (${detail})` : ""}`;
+    if (file2 !== "" && isBusy(error62)) {
+      unrecorded.set(file2, [...late, record3]);
+      reportProblem(`${ended} and could not be recorded now (${errorText2(error62)}); the next pass that can write records it`);
+    } else {
+      reportProblem(`${ended} and could not be recorded: ${errorText2(error62)}`);
     }
+    return null;
   }
 }
-function writeRun(db2, startedAtMs, trigger, result, startedRunId) {
-  return db2.transaction(() => {
-    if (startedRunId !== null) {
-      db2.prepare(`
-        UPDATE agent_message_expiry_runs
-        SET finished_at_ms = ?, outcome = ?, expired_message_count = ?, unread_message_count = ?,
-            notice_count = ?, presence_fact_count = ?, connection_count = ?, backup_path = ?, detail = ?
-        WHERE run_id = ?
-      `).run(Date.now(), result.outcome, result.expired_message_count, result.unread_message_count, result.notice_count, result.presence_fact_count, result.connection_count, result.backup_path, result.detail, startedRunId);
-      trimBookkeeping(db2, startedAtMs);
-      trimRunLog(db2);
-      return startedRunId;
-    }
-    const inserted = db2.prepare(`
+function recordLatePasses(db2) {
+  let pass = null;
+  try {
+    const file2 = db2 === null ? "" : databaseFile(db2);
+    const late = unrecorded.get(file2);
+    if (file2 === "" || late === void 0)
+      return;
+    const work = pass = openPassConnection(file2);
+    work.transaction(() => {
+      for (const missed of late)
+        writeRun(work, missed, true);
+    }).immediate();
+    unrecorded.delete(file2);
+  } catch (error62) {
+    reportProblem(`a pass that met a lock could still not be recorded as the process stopped (${errorText2(error62)})`);
+  } finally {
+    if (pass !== null)
+      closeQuietly(pass);
+  }
+}
+function writeRun(db2, record3, late) {
+  const { result } = record3;
+  const detail = late ? `recorded late: the database was locked by another process when this pass ended at ${new Date(record3.endedAtMs).toISOString()}${result.detail ? `; ${result.detail}` : ""}` : result.detail;
+  const values = [
+    late ? record3.endedAtMs : Date.now(),
+    result.outcome,
+    result.expired_message_count,
+    result.unread_message_count,
+    result.notice_count,
+    result.presence_fact_count,
+    result.connection_count,
+    result.backup_path,
+    detail
+  ];
+  let runId = null;
+  if (record3.startedRunId !== null) {
+    const updated = db2.prepare(`
+      UPDATE agent_message_expiry_runs
+      SET finished_at_ms = ?, outcome = ?, expired_message_count = ?, unread_message_count = ?,
+          notice_count = ?, presence_fact_count = ?, connection_count = ?, backup_path = ?, detail = ?
+      WHERE run_id = ?
+    `).run(...values, record3.startedRunId);
+    if (Number(updated.changes) === 1)
+      runId = record3.startedRunId;
+  }
+  if (runId === null) {
+    runId = Number(db2.prepare(`
       INSERT INTO agent_message_expiry_runs (
-        started_at_ms, finished_at_ms, trigger_source, outcome, expired_message_count, unread_message_count,
+        started_at_ms, trigger_source, finished_at_ms, outcome, expired_message_count, unread_message_count,
         notice_count, presence_fact_count, connection_count, backup_path, detail
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(startedAtMs, Date.now(), trigger, result.outcome, result.expired_message_count, result.unread_message_count, result.notice_count, result.presence_fact_count, result.connection_count, result.backup_path, result.detail);
-    trimBookkeeping(db2, startedAtMs);
-    trimRunLog(db2);
-    return Number(inserted.lastInsertRowid);
-  }).immediate();
+    `).run(record3.startedAtMs, record3.trigger, ...values).lastInsertRowid);
+  }
+  trimBookkeeping(db2, record3.startedAtMs);
+  trimRunLog(db2);
+  return runId;
 }
 function trimRunLog(db2) {
   db2.prepare(`
@@ -40839,16 +40948,18 @@ function trimRunLog(db2) {
     WHERE run_id <= (SELECT run_id FROM agent_message_expiry_runs ORDER BY run_id DESC LIMIT 1 OFFSET ?)
   `).run(RUN_LOG_KEEP);
 }
-function interruptDeadRuns(db2) {
+function interruptDeadRuns(db2, holder) {
   try {
     db2.prepare(`
       UPDATE agent_message_expiry_runs
       SET outcome = 'interrupted', detail = 'the process stopped before this pass finished'
       WHERE outcome = 'started'
-        AND NOT EXISTS (SELECT 1 FROM agent_message_expiry_lease WHERE expires_at_ms > ?)
-    `).run(Date.now());
+        AND NOT EXISTS (SELECT 1 FROM agent_message_expiry_lease WHERE expires_at_ms > ? AND holder <> ?)
+    `).run(Date.now(), holder);
   } catch (error62) {
-    reportProblem(`could not close a pass that never finished: ${error62 instanceof Error ? error62.message : String(error62)}`);
+    if (isBusy(error62))
+      throw error62;
+    reportProblem(`could not close a pass that never finished: ${errorText2(error62)}`);
   }
 }
 function yieldTurn() {
@@ -40861,13 +40972,15 @@ function reportProblem(message) {
   } catch {
   }
 }
-var AGENT_MESSAGE_EXPIRY_INTERVAL_MS, AGENT_MESSAGE_EXPIRED_ID_KEEP_MS, AGENT_MESSAGE_ARCHIVE_FILE, RUN_LOG_KEEP, LEASE_MS, BATCH_SIZE, MAX_BATCHES_PER_PASS, IN_FLIGHT_GRACE_MS, NOTICE_LIST_MAX, ARCHIVE, LOCK_WAIT_MS, RECORD_RETRY_MS, DUE_SLACK_MS, AGENT_MESSAGE_EXPIRY_NOTICE_SENDER, AGENT_MESSAGE_EXPIRY_TRANSPORT, NOTICE_OWED_SQL, AGENT_MESSAGE_EXPIRY_FAILED_OUTCOMES, NO_NOTICE, WAS_READ_SQL, IN_FLIGHT_SQL, DEAD_CONNECTIONS_SQL, LIVE_CONNECTIONS_SQL, ARCHIVED_TABLES, SQLITE_HEADER;
+var AGENT_MESSAGE_EXPIRY_INTERVAL_MS, AGENT_MESSAGE_EXPIRED_ID_KEEP_MS, AGENT_MESSAGE_ARCHIVE_FILE, RUN_LOG_KEEP, LEASE_MS, BATCH_SIZE, MAX_BATCHES_PER_PASS, IN_FLIGHT_GRACE_MS, NOTICE_LIST_MAX, ARCHIVE, LOCK_WAIT_MS, DUE_SLACK_MS, AGENT_MESSAGE_EXPIRY_NOTICE_SENDER, AGENT_MESSAGE_EXPIRY_TRANSPORT, NOTICE_OWED_SQL, AGENT_MESSAGE_EXPIRY_FAILED_OUTCOMES, AGENT_MESSAGE_EXPIRY_DONE_OUTCOMES, NO_NOTICE, WAS_READ_SQL, IN_FLIGHT_SQL, DEAD_CONNECTIONS_SQL, LIVE_CONNECTIONS_SQL, STALE_FACTS_SQL, ARCHIVED_TABLES, unrecorded, abandonedLeases, SQLITE_HEADER;
 var init_agent_message_expiry = __esm({
   "dist/core/agent-message-expiry.js"() {
     "use strict";
+    init_sqlite();
     init_file_mode();
     init_agent_message_ttl();
     init_agent_messaging();
+    init_paths();
     init_time_utils();
     init_outbound();
     AGENT_MESSAGE_EXPIRY_INTERVAL_MS = 5 * 60 * 1e3;
@@ -40881,17 +40994,24 @@ var init_agent_message_expiry = __esm({
     NOTICE_LIST_MAX = 20;
     ARCHIVE = "expiry_archive";
     LOCK_WAIT_MS = 100;
-    RECORD_RETRY_MS = 3e4;
     DUE_SLACK_MS = 1e4;
     AGENT_MESSAGE_EXPIRY_NOTICE_SENDER = "memesh";
     AGENT_MESSAGE_EXPIRY_TRANSPORT = "expiry";
-    NOTICE_OWED_SQL = `was_read = 0 AND notice_message_id IS NULL AND sender IS NOT NULL AND sender <> '${AGENT_MESSAGE_EXPIRY_NOTICE_SENDER}'`;
+    NOTICE_OWED_SQL = `was_read = 0 AND notice_message_id IS NULL AND sender <> '${AGENT_MESSAGE_EXPIRY_NOTICE_SENDER}'`;
     AGENT_MESSAGE_EXPIRY_FAILED_OUTCOMES = /* @__PURE__ */ new Set([
       "failed",
       "archive_failed",
       "archive_unavailable",
       "no_message_tables",
       "read_only"
+    ]);
+    AGENT_MESSAGE_EXPIRY_DONE_OUTCOMES = /* @__PURE__ */ new Set([
+      "deleted",
+      "presence_cleared",
+      "archive_purged",
+      "notices_sent",
+      "nothing_expired",
+      "deferred_in_flight"
     ]);
     NO_NOTICE = "";
     WAS_READ_SQL = `(
@@ -40904,6 +41024,8 @@ var init_agent_message_expiry = __esm({
   OR EXISTS (SELECT 1 FROM agent_messages c
              WHERE c.reply_to_message_id = m.message_id AND c.project = m.project
                AND (c.sender = m.recipient
+                    OR c.sender IN (SELECT s.session_instance_id FROM agent_session_instances s
+                                    WHERE s.project = m.project AND s.principal_id = m.recipient)
                     OR c.sender IN (SELECT s.principal_id FROM agent_session_instances s
                                     WHERE s.project = m.project AND s.session_instance_id = m.recipient)))
 )`;
@@ -40920,6 +41042,8 @@ var init_agent_message_expiry = __esm({
     LIVE_CONNECTIONS_SQL = `
   SELECT c.connection_id FROM agent_session_connections c
   WHERE c.disconnected_at IS NULL AND c.lease_expires_at_ms > :now_ms`;
+    STALE_FACTS_SQL = `(julianday(created_at) < julianday(:cutoff) AND connection_id NOT IN (${LIVE_CONNECTIONS_SQL}))
+  OR connection_id IN (${DEAD_CONNECTIONS_SQL})`;
     ARCHIVED_TABLES = [
       { name: "agent_messages", unique: "message_id", by: "message" },
       { name: "agent_message_deliveries", unique: "delivery_id", by: "message" },
@@ -40933,6 +41057,8 @@ var init_agent_message_expiry = __esm({
       { name: "agent_ack_facts", unique: "ack_fact_id", by: "delivery" },
       { name: "agent_workflow_facts", unique: "workflow_fact_id", by: "delivery" }
     ];
+    unrecorded = /* @__PURE__ */ new Map();
+    abandonedLeases = /* @__PURE__ */ new Set();
     SQLITE_HEADER = "SQLite format 3\0";
   }
 });
@@ -70998,15 +71124,18 @@ function inspectAgentMessageExpiry(db2, nowMs = Date.now()) {
     const present = db2.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name IN ('agent_messages', 'agent_message_expiry_runs')").get();
     if (present?.n !== 2)
       return void 0;
+    const warn = (summary, fix) => createCheck("agent_message_expiry", "Agent message expiry", "warn", summary, fix);
+    const info = (summary) => createInfo("agent_message_expiry", "Agent message expiry", summary);
     const waiting = getAgentMessageStorageReport(db2, {}).expired_pending_message_count;
     const how = "It runs by itself while the MeMesh router, MCP server or memesh serve is running; start a MeMesh session and re-run memesh doctor.";
+    const locked = "another program may be keeping the database locked, so each pass gave up rather than wait. Close other programs that hold the database open (a sqlite3 shell, a sync or backup tool); if messages still wait five minutes later, re-run memesh doctor.";
     const file2 = databaseFile(db2);
     if (file2 !== "") {
       try {
         fs40.accessSync(file2, fs40.constants.W_OK);
       } catch {
-        const writeBack = ownerWriteCommand(file2) ?? `run: chmod u+w ${shellQuote(file2)}`;
-        return createCheck("agent_message_expiry", "Agent message expiry", "warn", `The database file ${file2} cannot be written by this user, so the one-day expiry cannot delete anything (messages past their day are hidden but stay on disk).`, `Make the database writable (${writeBack}), then re-run memesh doctor.`);
+        const writeBack = ownerWriteCommand(file2) ?? "its write bit is already set, so something else refuses the write: an ACL, a read-only mount or a locked file";
+        return warn(`The database file ${file2} cannot be written by this user, so the one-day expiry cannot delete anything (messages past their day are hidden but stay on disk).`, `Make the database writable (${writeBack}), then re-run memesh doctor.`);
       }
     }
     const stuck = db2.prepare("SELECT started_at_ms, expired_message_count, backup_path FROM agent_message_expiry_runs WHERE outcome = 'started' ORDER BY run_id DESC LIMIT 1").get();
@@ -71014,29 +71143,31 @@ function inspectAgentMessageExpiry(db2, nowMs = Date.now()) {
     const last = lastAgentMessageExpiryRun(db2);
     const finishedCheck = () => {
       if (!last) {
-        return waiting > 0 ? createCheck("agent_message_expiry", "Agent message expiry", "warn", `No expiry pass has run on this database, and ${waiting} message(s) are past their one day. ${how}`, how) : createInfo("agent_message_expiry", "Agent message expiry", `No expiry pass has run yet. Messages are kept one day, then deleted. ${how}`);
+        const noRun = `Either no MeMesh router, MCP server or memesh serve has run while messages were waiting, or ${locked}`;
+        return waiting > 0 ? warn(`No expiry pass has run on this database, and ${waiting} message(s) are past their one day. ${noRun}`, noRun) : info(`No expiry pass has run yet. Messages are kept one day, then deleted. ${how}`);
       }
       const did = `${last.expired_message_count} message(s) deleted (${last.unread_message_count} with no intake, acknowledgement, disposition or reply; ${last.notice_count} sender notice(s)), ${last.presence_fact_count} presence fact(s) and ${last.connection_count} connection(s) cleared`;
       const latestArchive = latestAgentMessageExpiryArchive(db2);
       const archive = latestArchive ? inspectAgentMessageArchive(db2, latestArchive) : void 0;
-      const backup = !latestArchive || !archive ? "" : archive.kind === "missing" ? ` The archive of deleted messages, ${latestArchive}, is not there any more.` : archive.kind === "unusable" ? ` The archive of deleted messages, ${latestArchive}, cannot be used: ${archive.reason}.` : archive.messages > 0 ? ` Deleted messages are kept one more day in ${latestArchive} (${archive.messages} there now).` : ` The archive ${latestArchive} holds no deleted message now (each is kept there one more day after it is deleted).`;
+      const backup = !latestArchive || !archive ? "" : archive.kind === "missing" ? ` The archive of deleted messages, ${latestArchive}, is not there any more.` : archive.kind === "unusable" ? ` The archive of deleted messages, ${latestArchive}, cannot be used: ${archive.reason}.` : archive.kind === "busy" ? ` The archive of deleted messages, ${latestArchive}, is in use by another process right now, so what it holds is not shown.` : archive.messages > 0 ? ` Deleted messages are kept one more day in ${latestArchive} (${archive.messages} there now).` : ` The archive ${latestArchive} holds no deleted message now (each is kept there one more day after it is deleted).`;
       const summary = `Last pass ${ago(nowMs - last.finished_at_ms)} (${last.outcome}, started by ${last.trigger_source}): ${did}.${backup}${last.detail ? ` ${last.detail}.` : ""}`;
       const archiveFix = latestArchive ? `for the archive ${latestArchive}: free disk space, give the owner read and write access to it and to its folder, or move it away if it is not a MeMesh archive` : "for the archive: free disk space or permissions on the backups folder next to the database";
       if (AGENT_MESSAGE_EXPIRY_FAILED_OUTCOMES.has(last.outcome)) {
-        return createCheck("agent_message_expiry", "Agent message expiry", "warn", summary, `Nothing is deleted while this fails. Read the detail above, fix it (${archiveFix}; for a read-only database: make it writable), then re-run memesh doctor.`);
+        return warn(summary, `Nothing more is deleted while this fails. Read the detail above, fix it (${archiveFix}; for a read-only database: make it writable), then re-run memesh doctor.`);
       }
       if (archive?.kind === "unusable") {
-        return createCheck("agent_message_expiry", "Agent message expiry", "warn", summary, `The next pass that has messages to delete cannot copy them, so it deletes nothing. Fix it (${archiveFix}), then re-run memesh doctor.`);
+        return warn(summary, `The next pass that has messages to delete cannot copy them, so it deletes nothing. Fix it (${archiveFix}), then re-run memesh doctor.`);
       }
       const lastSuccess = db2.prepare(`
         SELECT MAX(finished_at_ms) AS at FROM agent_message_expiry_runs
-        WHERE outcome NOT IN ('started', 'skipped_concurrent', 'database_busy', 'interrupted', ${[...AGENT_MESSAGE_EXPIRY_FAILED_OUTCOMES].map((o) => `'${o}'`).join(", ")})
+        WHERE outcome IN (${[...AGENT_MESSAGE_EXPIRY_DONE_OUTCOMES].map((o) => `'${o}'`).join(", ")})
       `).get().at;
       if (waiting > 0 && (lastSuccess === null || nowMs - lastSuccess > 2 * AGENT_MESSAGE_EXPIRY_INTERVAL_MS)) {
         const since = lastSuccess === null ? "no pass has done its work yet" : `the last pass that did its work finished ${ago(nowMs - lastSuccess)}`;
-        return createCheck("agent_message_expiry", "Agent message expiry", "warn", `${summary} ${waiting} message(s) are past their one day and ${since}. ${how}`, how);
+        const why = last.outcome === "database_busy" ? `The last pass met a lock: ${locked}` : how;
+        return warn(`${summary} ${waiting} message(s) are past their one day and ${since}. ${why}`, why);
       }
-      return createInfo("agent_message_expiry", "Agent message expiry", summary);
+      return info(summary);
     };
     if (!stuck)
       return finishedCheck();
@@ -71044,10 +71175,10 @@ function inspectAgentMessageExpiry(db2, nowMs = Date.now()) {
     const old = sinceMs > 10 * 6e4;
     const unfinished = `A pass started ${ago(sinceMs)} and has not finished` + (old ? " (the process running it was probably stopped)" : " (it is still working, or it was stopped a moment ago)") + `; it had deleted ${stuck.expired_message_count} message(s) when it last saved its count` + (stuck.backup_path && fs40.existsSync(stuck.backup_path) ? `, and those are in ${stuck.backup_path}` : "") + ". If it was stopped, the next pass takes over once its lease runs out (at most three minutes after its last batch), closes it as interrupted and carries on.";
     if (!last) {
-      return old ? createCheck("agent_message_expiry", "Agent message expiry", "warn", unfinished, how) : createInfo("agent_message_expiry", "Agent message expiry", unfinished);
+      return old ? warn(unfinished, how) : info(unfinished);
     }
     const before = finishedCheck();
-    return old || before.status !== "pass" ? createCheck("agent_message_expiry", "Agent message expiry", "warn", `${unfinished} ${before.summary}`, before.fix ?? how) : createInfo("agent_message_expiry", "Agent message expiry", `${unfinished} ${before.summary}`);
+    return old || before.status !== "pass" ? warn(`${unfinished} ${before.summary}`, before.fix ?? how) : info(`${unfinished} ${before.summary}`);
   } catch {
     return void 0;
   }
@@ -73073,7 +73204,11 @@ function startServer(host = HOST, port = PORT, opts) {
   serverAuthRequired.set(server, isRemote);
   if (opts?.agentMessageExpiry === true) {
     const stopExpiry = startAgentMessageExpiryScheduler(() => isDatabaseOpen() ? getDatabase() : null, { trigger: "http-serve" });
-    server.on("close", stopExpiry);
+    process.once("exit", stopExpiry);
+    server.on("close", () => {
+      process.removeListener("exit", stopExpiry);
+      stopExpiry();
+    });
   }
   return server;
 }
@@ -77950,6 +78085,8 @@ program2.command("serve").description("Start the HTTP API server").option("--por
   const { startServer: startServer2 } = await Promise.resolve().then(() => (init_server(), server_exports));
   try {
     startServer2(opts.host, opts.port, { allowRemote: opts.allowRemote, autoUpdateCheck: true, agentMessageExpiry: true });
+    process.once("SIGINT", () => process.exit(130));
+    process.once("SIGTERM", () => process.exit(143));
     void Promise.resolve().then(() => (init_auto_update(), auto_update_exports)).then(({ ATTEMPT_INTERVAL_MS: ATTEMPT_INTERVAL_MS2, dispatchAutoUpdate: dispatchAutoUpdate2 }) => {
       const dispatch = () => {
         void dispatchAutoUpdate2(packageRoot2);

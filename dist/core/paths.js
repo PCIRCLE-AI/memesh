@@ -17,8 +17,9 @@ export function homeDir() {
 export function memeshDir() {
     return process.env.MEMESH_DIR || path.join(homeDir(), '.memesh');
 }
+export const DEFAULT_DB_FILE = 'knowledge-graph.db';
 export function getDbPath() {
-    return process.env.MEMESH_DB_PATH ?? path.join(memeshDir(), 'knowledge-graph.db');
+    return process.env.MEMESH_DB_PATH ?? path.join(memeshDir(), DEFAULT_DB_FILE);
 }
 export function getMemeshDirFromDbPath() {
     return process.env.MEMESH_DB_PATH

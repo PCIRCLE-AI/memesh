@@ -326,25 +326,33 @@ message send (MCP / HTTP / CLI)
 ```
 router daemon / MCP server / `memesh serve` timer (5 min; first run 1 s after start)
   -> skip if the last finished run is younger than the interval (a run left "started" by a dead process, or dated in the future, does not count)
-  -> any message older than one day, or any archive row older than a day, or old presence rows?  no -> record "nothing_expired", stop
-  -> write probe, without waiting on another process's lock: a locked database records "database_busy" (the row is
-     retried between event-loop turns until the lock goes), an unwritable one "read_only"; both stop
+  -> any message older than one day that is not being delivered, any archive row older than a day, any notice still
+     owed, or old presence rows?  no -> record "nothing_expired" (or "deferred_in_flight" when the only old messages
+     are still being delivered), stop
+  -> write probe. The run works on a connection of its own whose every statement waits at most 100 ms for another
+     process's lock: a lock at this or any later step ends the run as "database_busy", keeping every batch it
+     finished; an unwritable database records "read_only". A row that cannot be written because of the lock is
+     written, marked late, by the next run in the same process; a process that stops mid-run closes its row as
+     "interrupted" and gives the lease back on the way out
   -> take the one-row lease in the database; held by a live process -> record "skipped_concurrent", stop
   -> close any run left "started" as "interrupted"; write this run as "started"
   -> remove archive rows archived more than a day ago (by the time kept in the archive, never by file name), 100
-     messages per transaction with an event-loop turn between; first, so a batch that cannot be archived does not
-     also stop the archive from shrinking
+     messages per transaction (renewing the lease) with an event-loop turn between; first, so a batch that cannot be
+     archived does not also stop the archive from shrinking. A database not named knowledge-graph.db also removes its
+     own rows from backups/agent-messages-expired.db, which an earlier MeMesh shared between the databases of a folder
   -> per batch of 100: copy the rows (message, delivery, events, idempotency key, receipts, retention facts, attempts,
-     host accepts, acks, workflow facts) by column name into backups/agent-messages-expired.db, replacing an older
+     host accepts, acks, workflow facts) by column name into the database's own archive (backups/agent-messages-expired.db
+     for knowledge-graph.db, backups/agent-messages-expired-<file name> for any other), replacing an older
      copy and starting its extra day again, and commit; check the archive holds them with the same content (an
-     archive path that is the database itself, a dangling symlink or not a database is refused); then, in one
+     archive path that is a symlink, wherever it points, the database itself or not a database is refused, and
+     a batch that cannot be archived ends the batches, not the run); then, in one
      transaction on the main database: renew the lease, remember the ids in agent_message_expiries (an unread one
      with its notice still owed), DELETE FROM agent_messages (foreign keys cascade), save the run's counts; give
      the event loop a turn
   -> write one notice per (project, sender) for every remembered id that still owes one, this run's and any a
      stopped run left, and mark those ids; a notice is never changed once written
   -> delete old presence facts and ended connections not pinned by a remaining attempt
-  -> finish the run's row
+  -> finish the run's row; forget remembered ids older than 30 days, except one whose notice is still owed
 ```
 
 Readers do not wait for the run: `poll`, `fetch`, receipts, the unread count and the router's drain all filter on the same cutoff, so a message past its day is gone to them before it is gone from disk. Cursor rows are kept: a cursor is a sequence number, and sequence numbers are never reused. Session instances and principals are kept too: they are one small row per session and answer "is this recipient known".

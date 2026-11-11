@@ -726,13 +726,27 @@ is not exempt.
   message to another computer the archive also holds the bridge's delivery row
   (state, attempts, last error code), so what the network did can still be read
   there; the same
-  same goes for an archive path that is a symlink to the database itself or to
-  nothing, or a file there that is not a database (MeMesh leaves such a file as
+  same goes for an archive path that is a symlink (wherever it points: MeMesh
+  never writes its archive through one), or a file there that is not a database (MeMesh leaves such a file as
   it is). A
-  database that cannot be written, or that is locked right now, is left alone and
-  reported the same way.
-- **A message nobody answered tells its sender.** When the recipient recorded no
-  intake, acknowledgement or disposition for a message and sent no reply to it,
+  database that cannot be written is left alone and reported the same way. One
+  that another program has locked is not waited on: the cleanup stops at once,
+  keeps what it had already done, and is reported as busy; the next one runs five
+  minutes later. If the lock kept it from writing even its own record, the next
+  cleanup of the same process writes that record, marked late, and `memesh doctor`
+  names such a lock as a possible reason when it finds no record at all.
+- **A message nobody answered tells its sender.** This is the one full statement
+  of the rule; other documents point here. A message counts as answered when, in
+  its own project, its recipient recorded intake, an acknowledgement, a
+  disposition or a workflow record for it, or replied to it (`reply_to` set to
+  its id). The reply may come from the recipient, from a session of the recipient
+  sending under its own session id, or, for a message sent to a session, from
+  that session's principal. The sender's own follow-up, a reply from anyone else
+  or from another project, and a host accepting a push do not count. A session
+  send that its session refused and that went to the session's principal instead
+  (`fallback_to_principal`) is one message: the notice names the principal copy,
+  which is the message id the sender got back, and an answer to that copy
+  answers both. When a message expires unanswered,
   the sender receives one message from `memesh` that lists what expired (id,
   recipient, when it was sent and when it expired; up to 20, with the number
   left out). One run writes one such message per sender and project, however
@@ -766,17 +780,21 @@ is not exempt.
   after it was deleted), run this in a shell. It puts the messages that are in
   the archive back into the inbox for another day and changes nothing that is
   there now; running it twice does no harm. You do not need to stop MeMesh. If
-  you keep your database elsewhere it follows `MEMESH_DB_PATH`, or `MEMESH_DIR`.
+  you keep your database elsewhere it follows `MEMESH_DB_PATH`, or `MEMESH_DIR`;
+  the archive is found beside the database's real file even when that path is a
+  symlink, and a path with a quote in it works too.
 
   ```bash
   DB="${MEMESH_DB_PATH:-${MEMESH_DIR:-$HOME/.memesh}/knowledge-graph.db}"
-  case "$(basename "$DB")" in
-    knowledge-graph.db) ARCHIVE="$(dirname "$DB")/backups/agent-messages-expired.db" ;;
-    *) ARCHIVE="$(dirname "$DB")/backups/agent-messages-expired-$(basename "$DB")" ;;
+  REAL="$(sqlite3 "$DB" "SELECT file FROM pragma_database_list WHERE name = 'main'")"
+  case "$(basename "$REAL")" in
+    knowledge-graph.db) ARCHIVE="$(dirname "$REAL")/backups/agent-messages-expired.db" ;;
+    *) ARCHIVE="$(dirname "$REAL")/backups/agent-messages-expired-$(basename "$REAL")" ;;
   esac
-  ls -l "$DB" "$ARCHIVE"
+  ls -l "$REAL" "$ARCHIVE"
+  ARCHIVE_SQL="$(printf '%s' "$ARCHIVE" | sed "s/'/''/g")"
   sqlite3 "$DB" <<SQL
-  ATTACH '$ARCHIVE' AS archive;
+  ATTACH '$ARCHIVE_SQL' AS archive;
   BEGIN;
   INSERT OR IGNORE INTO agent_messages (message_id, project, sender, sender_host, recipient, content_type, correlation_id, reply_to_message_id, privacy, payload_json, payload_sha256, payload_original_bytes, payload_tombstoned_at, provenance_json, created_at)
     SELECT message_id, project, sender, sender_host, recipient, content_type, correlation_id, reply_to_message_id, privacy, payload_json, payload_sha256, payload_original_bytes, payload_tombstoned_at, provenance_json, CURRENT_TIMESTAMP FROM archive.agent_messages;

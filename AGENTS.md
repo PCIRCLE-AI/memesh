@@ -109,8 +109,9 @@ hosts should share memories. Not installed yet? Follow
    mail. A length-limited briefing can omit some project notices; those
    messages remain pending. A message is kept for one day from creation, read or
    not, then deleted (its content stays in a local archive for one more day). If
-   its recipient recorded no intake, acknowledgement or disposition and sent no
-   reply, its sender receives one message from `memesh` per cleanup listing what
+   nobody on the recipient's side recorded or answered it (the full rule is in
+   docs/platforms/agent-messaging.md), its sender receives one message from
+   `memesh` per cleanup and project listing what
    expired (poll your own recipient, then fetch; for a message to another
    computer it says whether it was delivered there, not what its recipient did);
    fetching, acknowledging, checking `status` of or replying to an expired id returns `message_expired`, so handle a message

@@ -1,6 +1,7 @@
 export declare const AGENT_ROUTER_SOCKET_FILENAME = "agent-router-v2.sock";
 export declare function homeDir(): string;
 export declare function memeshDir(): string;
+export declare const DEFAULT_DB_FILE = "knowledge-graph.db";
 export declare function getDbPath(): string;
 export declare function getMemeshDirFromDbPath(): string;
 export declare function getAgentRouterSocketPath(): string;

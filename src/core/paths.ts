@@ -65,6 +65,9 @@ export function memeshDir(): string {
   return process.env.MEMESH_DIR || path.join(homeDir(), '.memesh');
 }
 
+/** The database's file name in the data directory, unless MEMESH_DB_PATH names another. */
+export const DEFAULT_DB_FILE = 'knowledge-graph.db';
+
 /**
  * Resolve the active memesh DB path.
  *
@@ -73,7 +76,7 @@ export function memeshDir(): string {
  * so they automatically inherit the HOME-first override on Windows tests.
  */
 export function getDbPath(): string {
-  return process.env.MEMESH_DB_PATH ?? path.join(memeshDir(), 'knowledge-graph.db');
+  return process.env.MEMESH_DB_PATH ?? path.join(memeshDir(), DEFAULT_DB_FILE);
 }
 
 /**

@@ -2360,6 +2360,9 @@ program
       // autoUpdateCheck: a user-launched serve is online by definition, so it
       // fills the npm update cache itself instead of nagging the user to.
       startServer(opts.host, opts.port, { allowRemote: opts.allowRemote, autoUpdateCheck: true, agentMessageExpiry: true });
+      // A signal's default action skips the 'exit' listeners, which close a running message-expiry pass.
+      process.once('SIGINT', () => process.exit(130));
+      process.once('SIGTERM', () => process.exit(143));
       // A machine whose only MeMesh client is a long-running server (a Hermes host, say) runs no
       // Claude or Codex hook, so nothing else would ever start the updater there. The server is
       // not registered as a running host: replacing files under it is safe (it keeps running the

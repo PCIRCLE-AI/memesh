@@ -29999,10 +29999,140 @@ var StdioServerTransport = class {
 import { fileURLToPath as fileURLToPath7 } from "url";
 
 // dist/core/agent-message-expiry.js
-import fs5 from "node:fs";
-import path4 from "node:path";
+import fs6 from "node:fs";
+import path5 from "node:path";
 import { randomUUID as randomUUID2 } from "node:crypto";
 import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
+
+// dist/storage/sqlite.js
+import { createRequire } from "node:module";
+function loadNodeSqlite() {
+  const require2 = createRequire(import.meta.url);
+  const original = process.emitWarning;
+  process.emitWarning = function(warning, ...rest) {
+    const text = typeof warning === "string" ? warning : String(warning?.message ?? warning);
+    if (text.includes("SQLite is an experimental feature"))
+      return;
+    return original.call(process, warning, ...rest);
+  };
+  try {
+    return require2("node:sqlite");
+  } catch (err) {
+    return { missing: err instanceof Error ? err.message : String(err) };
+  } finally {
+    process.emitWarning = original;
+  }
+}
+var loadedSqlite = loadNodeSqlite();
+var MissingDatabaseSync = class {
+  constructor() {
+    const detail = "missing" in loadedSqlite ? loadedSqlite.missing : "unknown";
+    throw new UnsupportedNodeError(`memesh needs Node's built-in SQLite, which this runtime (${process.version}) does not provide. Upgrade Node to ${MIN_NODE_SERIES} or newer and run memesh again. (${detail})`);
+  }
+};
+var DatabaseSync = "DatabaseSync" in loadedSqlite ? loadedSqlite.DatabaseSync : MissingDatabaseSync;
+var MIN_NODE_VERSION = "22.16.0";
+var MIN_NODE_SERIES = MIN_NODE_VERSION.split(".").slice(0, 2).join(".");
+var UnsupportedNodeError = class extends Error {
+  code = "NODE_TOO_OLD";
+  constructor(message) {
+    super(message);
+    this.name = "UnsupportedNodeError";
+  }
+};
+function isUnsupportedNode(err) {
+  return err?.code === "NODE_TOO_OLD";
+}
+function atLeastMinimumNode(version2) {
+  const want = MIN_NODE_VERSION.split(".").map(Number);
+  const have = version2.replace(/^v/, "").split(".").map((part) => Number.parseInt(part, 10));
+  for (let i = 0; i < 3; i++) {
+    const h = have[i];
+    if (!Number.isFinite(h))
+      return false;
+    if (h !== want[i])
+      return h > want[i];
+  }
+  return true;
+}
+function fts5ProbeResult(createFtsTable) {
+  try {
+    createFtsTable();
+    return true;
+  } catch (err) {
+    if (/no such module/i.test(err instanceof Error ? err.message : String(err)))
+      return false;
+    throw err;
+  }
+}
+var ftsProbe;
+function hasFts5() {
+  if (ftsProbe === void 0) {
+    const probe = new DatabaseSync(":memory:");
+    try {
+      ftsProbe = fts5ProbeResult(() => probe.exec("CREATE VIRTUAL TABLE memesh_fts5_probe USING fts5(a)"));
+    } finally {
+      try {
+        probe.close();
+      } catch {
+      }
+    }
+  }
+  return ftsProbe;
+}
+function nodeSupportProblem(version2 = process.versions.node, fts5Available = hasFts5) {
+  const shown = version2.replace(/^v/, "");
+  if (!atLeastMinimumNode(version2)) {
+    return `This Node (v${shown}) lacks the full-text search MeMesh needs; upgrade to Node ${MIN_NODE_SERIES} or newer and run memesh again.`;
+  }
+  if (!fts5Available()) {
+    return `This Node build (v${shown}) lacks the full-text search (FTS5) MeMesh needs; install the official Node ${MIN_NODE_SERIES} or newer from nodejs.org and run memesh again.`;
+  }
+  return null;
+}
+function assertNodeSupported() {
+  const problem = nodeSupportProblem();
+  if (problem)
+    throw new UnsupportedNodeError(problem);
+}
+var BUSY_TIMEOUT_MS = 3e4;
+var MemeshDatabase = class extends DatabaseSync {
+  #depth = 0;
+  constructor(path27, options = {}) {
+    assertNodeSupported();
+    super(path27, options);
+    this.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
+  }
+  pragma(statement) {
+    this.exec(`PRAGMA ${statement}`);
+  }
+  transaction(fn) {
+    const run = (mode, ...args) => {
+      const nested = this.#depth > 0;
+      const savepoint = `memesh_sp_${this.#depth}`;
+      this.exec(nested ? `SAVEPOINT ${savepoint}` : `BEGIN${mode}`);
+      this.#depth++;
+      try {
+        const result = fn(...args);
+        this.exec(nested ? `RELEASE ${savepoint}` : "COMMIT");
+        return result;
+      } catch (err) {
+        try {
+          this.exec(nested ? `ROLLBACK TO ${savepoint}` : "ROLLBACK");
+          if (nested)
+            this.exec(`RELEASE ${savepoint}`);
+        } catch {
+        }
+        throw err;
+      } finally {
+        this.#depth--;
+      }
+    };
+    const callable = ((...args) => run("", ...args));
+    callable.immediate = (...args) => run(" IMMEDIATE", ...args);
+    return callable;
+  }
+};
 
 // dist/core/file-mode.js
 import fs from "fs";
@@ -31727,16 +31857,643 @@ async function waitForDelay(ms, signal) {
   });
 }
 
+// dist/core/paths.js
+import fs3 from "fs";
+import os from "os";
+import path from "path";
+import { createHash as createHash2 } from "crypto";
+import { execFileSync } from "child_process";
+var AGENT_ROUTER_SOCKET_FILENAME = "agent-router-v2.sock";
+var LEGACY_AGENT_ROUTER_SOCKET_FILENAME = "agent-router.sock";
+function homeDir() {
+  const home = process.env.HOME;
+  if (home && home.length > 0)
+    return home;
+  const fromOs = os.homedir();
+  if (fromOs && fromOs.length > 0)
+    return fromOs;
+  return os.userInfo().homedir;
+}
+function memeshDir() {
+  return process.env.MEMESH_DIR || path.join(homeDir(), ".memesh");
+}
+var DEFAULT_DB_FILE = "knowledge-graph.db";
+function getDbPath() {
+  return process.env.MEMESH_DB_PATH ?? path.join(memeshDir(), DEFAULT_DB_FILE);
+}
+function getMemeshDirFromDbPath() {
+  return process.env.MEMESH_DB_PATH ? path.dirname(process.env.MEMESH_DB_PATH) : memeshDir();
+}
+function getAgentRouterSocketPath() {
+  return path.join(getMemeshDirFromDbPath(), AGENT_ROUTER_SOCKET_FILENAME);
+}
+function normalizeAgentRouterSocketPath(socketPath) {
+  const dataDir = getMemeshDirFromDbPath();
+  return socketPath === path.join(dataDir, LEGACY_AGENT_ROUTER_SOCKET_FILENAME) ? getAgentRouterSocketPath() : socketPath;
+}
+function getProjectName(cwdInput) {
+  return getProjectIds(cwdInput)[0];
+}
+var projectIdsCache = /* @__PURE__ */ new Map();
+function resolveProjectIds(cwd) {
+  const remote = tryGit(cwd, ["config", "--get", "remote.origin.url"]);
+  const locator = remote ? canonicalRemoteLocator(remote) : null;
+  const real = projectRealPath(cwd);
+  const legacy = `${path.basename(real)}-${createHash2("sha256").update(real).digest("hex").slice(0, 8)}`;
+  const pathIds = [projectIdentity(path.basename(real), real), legacy];
+  const remoteIds = remote && locator ? [locatorIdentity(locator), ...remoteLocatorAliases(remote).map(locatorIdentity)] : [];
+  return [.../* @__PURE__ */ new Set([...remoteIds, ...pathIds])];
+}
+var locatorIdentity = (locator) => projectIdentity(path.posix.basename(locator).replace(/\.git$/i, ""), locator);
+function projectRealPath(cwd) {
+  const root = gitRepoRoot(cwd);
+  const commonDir = root ? tryGit(cwd, ["rev-parse", "--git-common-dir"]) : null;
+  const absoluteCommonDir = commonDir ? path.resolve(cwd, commonDir) : null;
+  const localPath = absoluteCommonDir && path.basename(absoluteCommonDir) === ".git" ? path.dirname(absoluteCommonDir) : root ?? cwd;
+  try {
+    return fs3.realpathSync.native(localPath);
+  } catch {
+    return path.resolve(localPath);
+  }
+}
+function getProjectIds(cwdInput) {
+  const cwd = cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd();
+  const cached2 = projectIdsCache.get(cwd);
+  if (cached2 !== void 0)
+    return cached2;
+  const resolved = resolveProjectIds(cwd);
+  projectIdsCache.set(cwd, resolved);
+  return resolved;
+}
+var PROJECT_HASH_HEX_LENGTH = 32;
+var PROJECT_ID_MAX_LENGTH = 200;
+var PROJECT_LABEL_MAX_LENGTH = PROJECT_ID_MAX_LENGTH - PROJECT_HASH_HEX_LENGTH - 1;
+function projectIdentity(label, locator) {
+  const readable = label.normalize("NFC").slice(0, PROJECT_LABEL_MAX_LENGTH) || "project";
+  const suffix = createHash2("sha256").update(locator).digest("hex").slice(0, PROJECT_HASH_HEX_LENGTH);
+  return `${readable}~${suffix}`;
+}
+function tryGit(cwd, args) {
+  try {
+    const out = execFileSync("git", ["-C", cwd, ...args], {
+      encoding: "utf8",
+      timeout: 2e3,
+      stdio: ["ignore", "pipe", "ignore"]
+    });
+    const trimmed = out.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  } catch {
+    return null;
+  }
+}
+function gitRepoRoot(cwdInput) {
+  const cwd = cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd();
+  if (!repoRootCache.has(cwd))
+    repoRootCache.set(cwd, tryGit(cwd, ["rev-parse", "--show-toplevel"]));
+  return repoRootCache.get(cwd) ?? null;
+}
+var repoRootCache = /* @__PURE__ */ new Map();
+function parseRemote(remote) {
+  const value = remote.trim();
+  if (!value)
+    return null;
+  if (path.isAbsolute(value) || /^[A-Za-z]:[\\/]/.test(value) || /^\\\\/.test(value))
+    return null;
+  let host;
+  let port = "";
+  let user;
+  let remotePath;
+  let transport;
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(value)) {
+    let parsed;
+    try {
+      parsed = new URL(value);
+    } catch {
+      return null;
+    }
+    if (parsed.protocol === "file:" || !parsed.hostname)
+      return null;
+    host = parsed.hostname.toLowerCase();
+    port = parsed.port;
+    const protocol = parsed.protocol.toLowerCase();
+    if ((protocol === "ssh:" || protocol === "git+ssh:") && port === "22")
+      port = "";
+    user = parsed.username;
+    remotePath = parsed.pathname;
+    transport = protocol === "ssh:" || protocol === "git+ssh:" ? "ssh-absolute" : protocol.slice(0, -1);
+  } else {
+    const scp = /^(?:([^@]+)@)?(\[[^\]]+\]|[^:/]+):(.+)$/.exec(value);
+    if (!scp)
+      return null;
+    user = scp[1] ?? "";
+    host = scp[2].toLowerCase();
+    remotePath = scp[3];
+    transport = remotePath.startsWith("/") ? "ssh-absolute" : "ssh-relative";
+  }
+  const pathWithoutSlashes = remotePath.replace(/^\/+|\/+$/g, "");
+  if (!host || !pathWithoutSlashes)
+    return null;
+  return { transport, user, host, port, path: pathWithoutSlashes };
+}
+var isSsh = (transport) => transport === "ssh-relative" || transport === "ssh-absolute";
+var HOSTING_SERVICES = /* @__PURE__ */ new Set(["github.com", "gitlab.com", "bitbucket.org"]);
+function onHostingService(parts) {
+  return HOSTING_SERVICES.has(parts.host) && parts.port === "" && (parts.transport === "https" || isSsh(parts.transport) && parts.user === "git");
+}
+function literalLocator(parts) {
+  const endpoint = `${parts.host}${parts.port ? `:${parts.port}` : ""}`;
+  const authority = isSsh(parts.transport) && parts.user ? `${parts.user}@${endpoint}` : endpoint;
+  return `${parts.transport}://${authority}/${parts.path}`;
+}
+function canonicalRemoteLocator(remote) {
+  const parts = parseRemote(remote);
+  if (!parts)
+    return null;
+  if (onHostingService(parts)) {
+    const bare = parts.path.replace(/\.git$/i, "");
+    return parts.host === "github.com" ? `github.com/${bare}` : `https://${parts.host}/${bare}.git`;
+  }
+  return literalLocator(parts);
+}
+function remoteLocatorAliases(remote) {
+  const parts = parseRemote(remote);
+  if (!parts || !onHostingService(parts) || parts.host === "github.com")
+    return [];
+  const bare = parts.path.replace(/\.git$/i, "");
+  const out = /* @__PURE__ */ new Set();
+  for (const suffix of /\.git$/i.test(bare) ? [".git"] : ["", ".git"]) {
+    out.add(`https://${parts.host}/${bare}${suffix}`);
+    for (const transport of ["ssh-relative", "ssh-absolute"])
+      out.add(`${transport}://git@${parts.host}/${bare}${suffix}`);
+  }
+  out.add(literalLocator(parts));
+  out.delete(canonicalRemoteLocator(remote) ?? "");
+  return [...out];
+}
+var SK_KEY = 'sk[-_][^\\s"\\\\]{4,}[A-Za-z0-9]';
+var NAMED_VALUE = `(?:api[-_]?key|access[-_]?token|auth[-_]?token|refresh[-_]?token|session[-_]?token|token|secret|password|passwd|pwd|signature)=[^&\\s"'<>]{8,}`;
+var JWT_TOKEN = "eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}";
+var SENDGRID_KEY = "SG\\.[A-Za-z0-9_-]{16,}\\.[A-Za-z0-9_-]{16,}";
+var SECRET_PATTERN_SOURCES = [
+  "-----BEGIN[A-Z ]*PRIVATE KEY-----(?:[\\s\\S]*?-----END[A-Z ]*PRIVATE KEY-----|[\\s\\S]*)",
+  "(?:postgres|postgresql|mysql|mariadb|mongodb(?:\\+srv)?|redis|rediss|amqp|amqps)://[^\\s:@/]*:[^\\s:@/]+@",
+  JWT_TOKEN,
+  SENDGRID_KEY,
+  "[srp]k_(?:live|test)_[A-Za-z0-9]{16,}",
+  "npm_[A-Za-z0-9]{36}",
+  "memesh://join/[A-Za-z0-9_-]{8,}",
+  `\\b${SK_KEY}`,
+  "Bearer(?:\\s|\\\\[nrt])+[A-Za-z0-9_.\\-]{16,}",
+  `(?<![A-Za-z0-9])${NAMED_VALUE}`,
+  "ghp_[A-Za-z0-9]{30,}",
+  "gho_[A-Za-z0-9]{30,}",
+  "gh[sur]_[A-Za-z0-9]{30,}",
+  "github_pat_[A-Za-z0-9_]{20,}",
+  "A(?:KIA|SIA)[A-Z0-9]{16}",
+  "AIza[A-Za-z0-9_-]{30,}",
+  "xox[baprs]-[A-Za-z0-9-]{10,}"
+];
+var SECRET_PATTERNS = SECRET_PATTERN_SOURCES.map((s) => new RegExp(s, "gi"));
+var SEGMENTED = new Set([SENDGRID_KEY].map((s) => SECRET_PATTERNS[SECRET_PATTERN_SOURCES.indexOf(s)]));
+var JWT_PATTERN = SECRET_PATTERNS[SECRET_PATTERN_SOURCES.indexOf(JWT_TOKEN)];
+var TOKEN_CHAR = /[A-Za-z0-9_-]/;
+function* jwtMatches(input2) {
+  const runEnd = (from) => {
+    let i2 = from;
+    while (i2 < input2.length && TOKEN_CHAR.test(input2[i2]))
+      i2++;
+    return i2;
+  };
+  const eyj = /eyj/gi;
+  const findEyj = (from) => {
+    eyj.lastIndex = from;
+    return eyj.exec(input2)?.index ?? -1;
+  };
+  let nextEyj = findEyj(0);
+  let i = 0;
+  while (i < input2.length && nextEyj !== -1) {
+    if (!TOKEN_CHAR.test(input2[i])) {
+      i++;
+      continue;
+    }
+    const headerEnd = runEnd(i);
+    if (nextEyj < i)
+      nextEyj = findEyj(i);
+    if (nextEyj === -1)
+      break;
+    if (nextEyj + 11 <= headerEnd && input2[headerEnd] === ".") {
+      const payloadEnd = runEnd(headerEnd + 1);
+      if (payloadEnd - (headerEnd + 1) >= 8 && input2[payloadEnd] === ".") {
+        const signatureEnd = runEnd(payloadEnd + 1);
+        if (signatureEnd - (payloadEnd + 1) >= 8) {
+          for (let start = nextEyj; start !== -1 && start + 11 <= headerEnd; start = findEyj(start + 1)) {
+            yield [start, signatureEnd];
+          }
+        }
+      }
+    }
+    i = headerEnd;
+  }
+}
+function redactRaw(input2) {
+  let out = input2;
+  for (let before = ""; out !== before; ) {
+    before = out;
+    out = maskMatches(out);
+  }
+  return out;
+}
+function maskMatches(input2) {
+  const spans = [];
+  const budget = 4 * input2.length + 1024;
+  let work = 0;
+  search: for (const pattern of SECRET_PATTERNS) {
+    if (pattern === JWT_PATTERN) {
+      for (const [start, end] of jwtMatches(input2)) {
+        work += end - start;
+        if (work > budget) {
+          spans.push([start, input2.length]);
+          break search;
+        }
+        spans.push([start, end]);
+      }
+      continue;
+    }
+    pattern.lastIndex = 0;
+    let lastEnd = -1;
+    for (let m = pattern.exec(input2); m !== null; m = pattern.exec(input2)) {
+      const end = m.index + m[0].length;
+      if (end === lastEnd && !SEGMENTED.has(pattern)) {
+        pattern.lastIndex = end;
+        continue;
+      }
+      lastEnd = end;
+      work += m[0].length;
+      if (work > budget) {
+        spans.push([m.index, input2.length]);
+        pattern.lastIndex = 0;
+        break search;
+      }
+      spans.push([m.index, end]);
+      pattern.lastIndex = m.index + 1;
+    }
+  }
+  if (spans.length === 0)
+    return input2;
+  let out = "";
+  let at = 0;
+  for (const [start, end] of gluedAfter(input2, merge2(spans))) {
+    out += `${input2.slice(at, start)}${REDACTED}`;
+    at = end;
+  }
+  return out + input2.slice(at);
+}
+function merge2(spans) {
+  spans.sort((a, b) => a[0] - b[0] || b[1] - a[1]);
+  const merged = [];
+  for (const [start, end] of spans) {
+    const last = merged[merged.length - 1];
+    if (last && start < last[1])
+      last[1] = Math.max(last[1], end);
+    else
+      merged.push([start, end]);
+  }
+  return merged;
+}
+var GLUED = [SK_KEY, NAMED_VALUE].map((s) => new RegExp(s, "iy"));
+function gluedAfter(input2, spans) {
+  const out = [];
+  let next = 0;
+  while (next < spans.length) {
+    const [start] = spans[next];
+    let end = spans[next][1];
+    next++;
+    const skipTo = GLUED.map(() => start);
+    for (let at = start; at <= end && end < input2.length; at++) {
+      GLUED.forEach((pattern, i) => {
+        if (at < skipTo[i])
+          return;
+        pattern.lastIndex = at;
+        const m = pattern.exec(input2);
+        if (m === null)
+          return;
+        skipTo[i] = at + m[0].length;
+        end = Math.max(end, skipTo[i]);
+      });
+      while (next < spans.length && spans[next][0] <= end)
+        end = Math.max(end, spans[next++][1]);
+    }
+    out.push([start, end]);
+  }
+  return out;
+}
+var PRIVATE_KEY_MARKER = /-----(BEGIN|END)[A-Z ]*PRIVATE KEY-----/gi;
+var PRIVATE_KEY_END = /-----END[A-Z ]*PRIVATE KEY-----/i;
+var ANY_PRIVATE_KEY_MARKER = /-----(?:BEGIN|END)[A-Z ]*PRIVATE KEY-----/i;
+var REDACTED = "***REDACTED***";
+var nativeJson = JSON;
+var looksLikeJson = (text) => /^\s*[[{"]/.test(text);
+var JSON_ESCAPE = /\\(?:u([0-9a-fA-F]{4})|(["\\/bfnrt]))/g;
+var ESCAPED_CHAR = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "	" };
+function readEscapes(text) {
+  for (let level = 0; level <= 8; level++) {
+    const read = text.replace(JSON_ESCAPE, (_, hex3, c) => hex3 === void 0 ? ESCAPED_CHAR[c] : String.fromCharCode(parseInt(hex3, 16)));
+    if (read === text)
+      return text;
+    text = read;
+  }
+  return void 0;
+}
+function holdsPartOfKey(text) {
+  let open2 = false;
+  for (const [, marker] of text.matchAll(PRIVATE_KEY_MARKER)) {
+    if (marker.toUpperCase() === "BEGIN")
+      open2 = true;
+    else if (open2)
+      open2 = false;
+    else
+      return true;
+  }
+  return open2;
+}
+function* jsonTexts(value) {
+  const stack = [value];
+  while (stack.length > 0) {
+    const node2 = stack.pop();
+    if (typeof node2 === "string")
+      yield node2;
+    else if (Array.isArray(node2))
+      for (const item of node2)
+        stack.push(item);
+    else if (node2 !== null && typeof node2 === "object" && !nativeJson.isRawJSON?.(node2)) {
+      for (const [key, inner] of Object.entries(node2)) {
+        yield key;
+        stack.push(inner);
+      }
+    }
+  }
+}
+function holdsPartOfKeyDecoded(text) {
+  if (holdsPartOfKey(text))
+    return true;
+  if (!looksLikeJson(text) || !(text.includes("\\") || ANY_PRIVATE_KEY_MARKER.test(text)))
+    return false;
+  const read = readEscapes(text);
+  if (read !== void 0 && holdsPartOfKey(read))
+    return true;
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    return !(err instanceof SyntaxError);
+  }
+  for (const inner of jsonTexts(parsed))
+    if (inner !== text && holdsPartOfKeyDecoded(inner))
+      return true;
+  return false;
+}
+function mapJson(node2, text, key, skipKeys) {
+  if (typeof node2 === "string")
+    return text(node2);
+  if (Array.isArray(node2))
+    return node2.map((item) => mapJson(item, text, key));
+  if (node2 === null || typeof node2 !== "object" || nativeJson.isRawJSON?.(node2))
+    return node2;
+  const out = {};
+  const lastSuffix = /* @__PURE__ */ new Map();
+  for (const [name, inner] of Object.entries(node2)) {
+    const safe = key(name);
+    let unique = safe;
+    if (Object.prototype.hasOwnProperty.call(out, unique)) {
+      let n = lastSuffix.get(safe) ?? 1;
+      do {
+        n++;
+        unique = `${safe} (${n})`;
+      } while (Object.prototype.hasOwnProperty.call(out, unique));
+      lastSuffix.set(safe, n);
+    }
+    Object.defineProperty(out, unique, {
+      value: skipKeys?.has(name) ? inner : mapJson(inner, text, key),
+      enumerable: true,
+      writable: true,
+      configurable: true
+    });
+  }
+  return out;
+}
+function redactSet(items) {
+  if (items.some(holdsPartOfKeyDecoded))
+    return { texts: items.map(() => REDACTED), masked: true };
+  let masked = false;
+  const texts = items.map((item) => {
+    const r = redactOne(item, true);
+    if (r.masked)
+      masked = true;
+    return r.text;
+  });
+  return { texts, masked };
+}
+function redactSecretList(items) {
+  return redactSet(items).texts;
+}
+function redactTitleAndObservations(title, observations) {
+  const head = title === void 0 ? [] : [title];
+  const texts = redactSecretList([...head, ...observations === void 0 ? [] : observations]);
+  return {
+    ...title === void 0 ? {} : { title: texts[0] },
+    ...observations === void 0 ? {} : { observations: texts.slice(head.length) }
+  };
+}
+function holdsSecret(items) {
+  return redactSet(items).masked;
+}
+var keepNumberSpelling = (_key, value, context) => typeof value === "number" && context?.source !== void 0 && nativeJson.rawJSON ? nativeJson.rawJSON(context.source) : value;
+function redactOne(input2, partChecked = false) {
+  const raw = redactRaw(input2);
+  const asRaw = { text: raw, masked: raw !== input2 };
+  if (!looksLikeJson(input2))
+    return asRaw;
+  if (!asRaw.masked && !input2.includes("\\") && !PRIVATE_KEY_END.test(input2))
+    return asRaw;
+  try {
+    const parsed = JSON.parse(input2, keepNumberSpelling);
+    if (!partChecked && holdsPartOfKeyDecoded(input2)) {
+      return { text: JSON.stringify(mapJson(parsed, () => REDACTED, () => REDACTED)), masked: true };
+    }
+    const read = readEscapes(input2);
+    if (read === void 0)
+      return { text: REDACTED, masked: true };
+    let masked = false;
+    const value = mapJson(parsed, (s) => {
+      const r = redactOne(s, true);
+      if (r.masked)
+        masked = true;
+      return r.text;
+    }, (k) => {
+      const r = redactRaw(k);
+      if (r !== k)
+        masked = true;
+      return r;
+    });
+    const maskedInText = asRaw.masked || redactRaw(read) !== read;
+    return { text: JSON.stringify(value), masked: masked || maskedInText };
+  } catch (err) {
+    return err instanceof SyntaxError ? asRaw : { text: REDACTED, masked: true };
+  }
+}
+function redactSecrets(input2) {
+  return redactOne(input2).text;
+}
+function redactUserPaths(text) {
+  const home = homeDir();
+  const roots = /* @__PURE__ */ new Set();
+  const add = (root) => {
+    if (!root || !path.isAbsolute(root))
+      return;
+    roots.add(root);
+    try {
+      roots.add(fs3.realpathSync(root));
+    } catch {
+    }
+  };
+  add(home);
+  const isInside = (child) => {
+    const rel = path.relative(home, child);
+    return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+  };
+  for (const dir of [memeshDir(), path.dirname(getDbPath())]) {
+    if (dir && !isInside(dir))
+      add(dir);
+  }
+  const flags = process.platform === "linux" ? "g" : "gi";
+  let out = text;
+  for (const root of [...roots].sort((a, b) => b.length - a.length)) {
+    const escaped = root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const body = escaped.replace(/\\\\|\//g, "[\\\\/]{1,2}");
+    out = out.replace(new RegExp(`(?<![\\w~](?:[\\\\/]{1,2})?)${body}(?=[\\\\/]|$)`, flags), "~");
+  }
+  return out;
+}
+function redactMemoryText(text) {
+  return redactUserPaths(redactSecrets(text));
+}
+function redactShownTogether(texts) {
+  const present = texts.flatMap((text, i) => text == null ? [] : [{ i, text }]);
+  const masked = redactSecretList(present.map(({ text }) => text));
+  const shown = texts.map(() => null);
+  present.forEach(({ i }, k) => {
+    shown[i] = redactUserPaths(masked[k]);
+  });
+  return shown;
+}
+function redactTextValues(value, skipKeys = /* @__PURE__ */ new Set()) {
+  if (value === void 0)
+    return void 0;
+  const serialized = JSON.stringify(value);
+  if (serialized === void 0)
+    return void 0;
+  return mapJson(JSON.parse(serialized), redactSecrets, redactRaw, skipKeys);
+}
+function redactVersionText(entry) {
+  const rest = redactTextValues(entry, /* @__PURE__ */ new Set(["title", "observations"]));
+  if (rest === null || typeof rest !== "object" || Array.isArray(rest))
+    return rest;
+  const version2 = rest;
+  const observations = Array.isArray(version2.observations) && version2.observations.every((o) => typeof o === "string") ? version2.observations : void 0;
+  if (observations === void 0)
+    return redactTextValues(entry);
+  const title = version2.title;
+  const titleTexts = typeof title === "string" ? [title] : title === void 0 || title === null ? [] : [...textsIn(title)];
+  if ([...titleTexts, ...observations].some(holdsPartOfKeyDecoded)) {
+    return {
+      ...version2,
+      ...titleTexts.length === 0 ? {} : { title: typeof title === "string" ? REDACTED : mapJson(JSON.parse(JSON.stringify(title)), () => REDACTED, () => REDACTED) },
+      observations: observations.map(() => REDACTED)
+    };
+  }
+  return {
+    ...version2,
+    ...typeof title === "string" ? { title: redactSecrets(title) } : titleTexts.length === 0 ? {} : { title: redactTextValues(title) },
+    observations: observations.map(redactSecrets)
+  };
+}
+function textsIn(value) {
+  const serialized = value === void 0 ? void 0 : JSON.stringify(value);
+  return new Set(serialized === void 0 ? [] : jsonTexts(JSON.parse(serialized)));
+}
+function metadataRefusal(value, known, beside = []) {
+  const serialized = value === void 0 ? void 0 : JSON.stringify(value);
+  if (serialized === void 0)
+    return void 0;
+  const stack = [JSON.parse(serialized)];
+  while (stack.length > 0) {
+    const node2 = stack.pop();
+    if (typeof node2 === "string") {
+      if (!known.has(node2) && holdsPartOfKeyDecoded(node2))
+        return "its metadata holds part of a private key (a BEGIN or END line without the rest). Nothing was written; remove that text and try again";
+    } else if (Array.isArray(node2)) {
+      for (const item of node2)
+        stack.push(item);
+    } else if (node2 !== null && typeof node2 === "object") {
+      for (const [key, inner] of Object.entries(node2)) {
+        if (!known.has(key) && (holdsPartOfKeyDecoded(key) || redactRaw(key) !== key))
+          return "a metadata key name holds a credential or part of a private key. Nothing was written; remove that text and try again";
+        stack.push(inner);
+      }
+    }
+  }
+  return besideRefusal(addsNewText(value, known), beside);
+}
+function besideRefusal(addsText, beside) {
+  if (!addsText)
+    return void 0;
+  for (const text of beside) {
+    if (holdsPartOfKeyDecoded(text)) {
+      return 'it adds new text to a memory that holds a BEGIN or END line of a private key without the rest, so MeMesh cannot tell whether the new text continues that key (the line alone is not proof of a key). Nothing was written. To clear such a line in the memory\'s metadata, run `memesh unpin --name <name>` first (it adds no text, and masks every part of a key in the metadata, history included); to remove such a line from its observations, run `memesh forget --name <name> --observation "<that line>"`; to replace such a title, run `memesh remember --name <name> --type <its type> --title "<new title>"`';
+    }
+  }
+  return void 0;
+}
+function addsNewText(value, known) {
+  const serialized = value === void 0 ? void 0 : JSON.stringify(value);
+  if (serialized === void 0)
+    return false;
+  const stack = [JSON.parse(serialized)];
+  while (stack.length > 0) {
+    const node2 = stack.pop();
+    if (typeof node2 === "string") {
+      if (!known.has(node2))
+        return true;
+    } else if (Array.isArray(node2)) {
+      for (const item of node2)
+        stack.push(item);
+    } else if (node2 !== null && typeof node2 === "object") {
+      for (const [key, inner] of Object.entries(node2)) {
+        if (!known.has(key))
+          return true;
+        stack.push(inner);
+      }
+    }
+  }
+  return false;
+}
+function clearPartsOfKey(metadata) {
+  const history = metadata.replaced_history;
+  const entries = Array.isArray(history) ? { replaced_history: history.map((entry) => [...textsIn(entry)].some(holdsPartOfKeyDecoded) ? redactVersionText(entry) : entry) } : {};
+  const clear = (text) => holdsPartOfKeyDecoded(text) ? REDACTED : text;
+  return mapJson({ ...metadata, ...entries }, clear, clear);
+}
+
 // dist/network/address.js
-import { createHash as createHash2 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 
 // dist/network/identity.js
 import { createPrivateKey, createPublicKey, randomBytes as randomBytes2, sign, verify } from "node:crypto";
-import fs3 from "node:fs";
-import path2 from "node:path";
+import fs4 from "node:fs";
+import path3 from "node:path";
 
 // dist/network/types.js
-import path from "node:path";
+import path2 from "node:path";
 var RELAY_OFF = "off";
 var NetworkError = class extends Error {
   code;
@@ -31870,12 +32627,12 @@ function formatNetworkAddress(person, target, machine) {
   return `${person}/${target}@${machine}`;
 }
 function projectHash(networkId, project) {
-  return createHash2("sha256").update(`${networkId}:${project}`).digest("hex");
+  return createHash3("sha256").update(`${networkId}:${project}`).digest("hex");
 }
 
 // dist/network/store.js
-import fs4 from "node:fs";
-import path3 from "node:path";
+import fs5 from "node:fs";
+import path4 from "node:path";
 
 // dist/storage/agent-network-schema.js
 var AGENT_NETWORK_SCHEMA_SQL = `
@@ -31935,136 +32692,6 @@ CREATE TABLE IF NOT EXISTS agent_network_peers (
   seen_at_ms  INTEGER NOT NULL
 );
 `;
-
-// dist/storage/sqlite.js
-import { createRequire } from "node:module";
-function loadNodeSqlite() {
-  const require2 = createRequire(import.meta.url);
-  const original = process.emitWarning;
-  process.emitWarning = function(warning, ...rest) {
-    const text = typeof warning === "string" ? warning : String(warning?.message ?? warning);
-    if (text.includes("SQLite is an experimental feature"))
-      return;
-    return original.call(process, warning, ...rest);
-  };
-  try {
-    return require2("node:sqlite");
-  } catch (err) {
-    return { missing: err instanceof Error ? err.message : String(err) };
-  } finally {
-    process.emitWarning = original;
-  }
-}
-var loadedSqlite = loadNodeSqlite();
-var MissingDatabaseSync = class {
-  constructor() {
-    const detail = "missing" in loadedSqlite ? loadedSqlite.missing : "unknown";
-    throw new UnsupportedNodeError(`memesh needs Node's built-in SQLite, which this runtime (${process.version}) does not provide. Upgrade Node to ${MIN_NODE_SERIES} or newer and run memesh again. (${detail})`);
-  }
-};
-var DatabaseSync = "DatabaseSync" in loadedSqlite ? loadedSqlite.DatabaseSync : MissingDatabaseSync;
-var MIN_NODE_VERSION = "22.16.0";
-var MIN_NODE_SERIES = MIN_NODE_VERSION.split(".").slice(0, 2).join(".");
-var UnsupportedNodeError = class extends Error {
-  code = "NODE_TOO_OLD";
-  constructor(message) {
-    super(message);
-    this.name = "UnsupportedNodeError";
-  }
-};
-function isUnsupportedNode(err) {
-  return err?.code === "NODE_TOO_OLD";
-}
-function atLeastMinimumNode(version2) {
-  const want = MIN_NODE_VERSION.split(".").map(Number);
-  const have = version2.replace(/^v/, "").split(".").map((part) => Number.parseInt(part, 10));
-  for (let i = 0; i < 3; i++) {
-    const h = have[i];
-    if (!Number.isFinite(h))
-      return false;
-    if (h !== want[i])
-      return h > want[i];
-  }
-  return true;
-}
-function fts5ProbeResult(createFtsTable) {
-  try {
-    createFtsTable();
-    return true;
-  } catch (err) {
-    if (/no such module/i.test(err instanceof Error ? err.message : String(err)))
-      return false;
-    throw err;
-  }
-}
-var ftsProbe;
-function hasFts5() {
-  if (ftsProbe === void 0) {
-    const probe = new DatabaseSync(":memory:");
-    try {
-      ftsProbe = fts5ProbeResult(() => probe.exec("CREATE VIRTUAL TABLE memesh_fts5_probe USING fts5(a)"));
-    } finally {
-      try {
-        probe.close();
-      } catch {
-      }
-    }
-  }
-  return ftsProbe;
-}
-function nodeSupportProblem(version2 = process.versions.node, fts5Available = hasFts5) {
-  const shown = version2.replace(/^v/, "");
-  if (!atLeastMinimumNode(version2)) {
-    return `This Node (v${shown}) lacks the full-text search MeMesh needs; upgrade to Node ${MIN_NODE_SERIES} or newer and run memesh again.`;
-  }
-  if (!fts5Available()) {
-    return `This Node build (v${shown}) lacks the full-text search (FTS5) MeMesh needs; install the official Node ${MIN_NODE_SERIES} or newer from nodejs.org and run memesh again.`;
-  }
-  return null;
-}
-function assertNodeSupported() {
-  const problem = nodeSupportProblem();
-  if (problem)
-    throw new UnsupportedNodeError(problem);
-}
-var BUSY_TIMEOUT_MS = 3e4;
-var MemeshDatabase = class extends DatabaseSync {
-  #depth = 0;
-  constructor(path27, options = {}) {
-    assertNodeSupported();
-    super(path27, options);
-    this.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
-  }
-  pragma(statement) {
-    this.exec(`PRAGMA ${statement}`);
-  }
-  transaction(fn) {
-    const run = (mode, ...args) => {
-      const nested = this.#depth > 0;
-      const savepoint = `memesh_sp_${this.#depth}`;
-      this.exec(nested ? `SAVEPOINT ${savepoint}` : `BEGIN${mode}`);
-      this.#depth++;
-      try {
-        const result = fn(...args);
-        this.exec(nested ? `RELEASE ${savepoint}` : "COMMIT");
-        return result;
-      } catch (err) {
-        try {
-          this.exec(nested ? `ROLLBACK TO ${savepoint}` : "ROLLBACK");
-          if (nested)
-            this.exec(`RELEASE ${savepoint}`);
-        } catch {
-        }
-        throw err;
-      } finally {
-        this.#depth--;
-      }
-    };
-    const callable = ((...args) => run("", ...args));
-    callable.immediate = (...args) => run(" IMMEDIATE", ...args);
-    return callable;
-  }
-};
 
 // dist/network/store.js
 function readConfig(db2) {
@@ -32197,11 +32824,10 @@ var IN_FLIGHT_GRACE_MS = 10 * 60 * 1e3;
 var NOTICE_LIST_MAX = 20;
 var ARCHIVE = "expiry_archive";
 var LOCK_WAIT_MS = 100;
-var RECORD_RETRY_MS = 3e4;
 var DUE_SLACK_MS = 1e4;
 var AGENT_MESSAGE_EXPIRY_NOTICE_SENDER = "memesh";
 var AGENT_MESSAGE_EXPIRY_TRANSPORT = "expiry";
-var NOTICE_OWED_SQL = `was_read = 0 AND notice_message_id IS NULL AND sender IS NOT NULL AND sender <> '${AGENT_MESSAGE_EXPIRY_NOTICE_SENDER}'`;
+var NOTICE_OWED_SQL = `was_read = 0 AND notice_message_id IS NULL AND sender <> '${AGENT_MESSAGE_EXPIRY_NOTICE_SENDER}'`;
 var NO_NOTICE = "";
 var WAS_READ_SQL = `(
   EXISTS (SELECT 1 FROM agent_message_receipts r
@@ -32213,6 +32839,8 @@ var WAS_READ_SQL = `(
   OR EXISTS (SELECT 1 FROM agent_messages c
              WHERE c.reply_to_message_id = m.message_id AND c.project = m.project
                AND (c.sender = m.recipient
+                    OR c.sender IN (SELECT s.session_instance_id FROM agent_session_instances s
+                                    WHERE s.project = m.project AND s.principal_id = m.recipient)
                     OR c.sender IN (SELECT s.principal_id FROM agent_session_instances s
                                     WHERE s.project = m.project AND s.session_instance_id = m.recipient)))
 )`;
@@ -32229,6 +32857,8 @@ var DEAD_CONNECTIONS_SQL = `
 var LIVE_CONNECTIONS_SQL = `
   SELECT c.connection_id FROM agent_session_connections c
   WHERE c.disconnected_at IS NULL AND c.lease_expires_at_ms > :now_ms`;
+var STALE_FACTS_SQL = `(julianday(created_at) < julianday(:cutoff) AND connection_id NOT IN (${LIVE_CONNECTIONS_SQL}))
+  OR connection_id IN (${DEAD_CONNECTIONS_SQL})`;
 var ARCHIVED_TABLES = [
   { name: "agent_messages", unique: "message_id", by: "message" },
   { name: "agent_message_deliveries", unique: "delivery_id", by: "message" },
@@ -32242,95 +32872,131 @@ var ARCHIVED_TABLES = [
   { name: "agent_ack_facts", unique: "ack_fact_id", by: "delivery" },
   { name: "agent_workflow_facts", unique: "workflow_fact_id", by: "delivery" }
 ];
+var unrecorded = /* @__PURE__ */ new Map();
+var abandonedLeases = /* @__PURE__ */ new Set();
 async function runAgentMessageExpiry(db2, options) {
   const startedAtMs = Date.now();
   const clockMs = options.nowMs ?? startedAtMs;
   const tally = { expired: 0, unread: 0, notices: 0, unaddressable: 0, unreadableTimes: 0, presenceFacts: 0, connections: 0 };
-  let archivePath = null;
+  const file2 = databaseFile(db2);
+  let pass = null;
+  let archiveFile = null;
   const holder = randomUUID2();
   let holdsLease = false;
   let startedRunId = null;
-  const finish = async (outcome, detail = null) => {
-    const base = {
+  let stopped = false;
+  const finish = (outcome, detail = null) => {
+    const result = {
       outcome,
       expired_message_count: tally.expired,
       unread_message_count: tally.unread,
       notice_count: tally.notices,
       presence_fact_count: tally.presenceFacts,
       connection_count: tally.connections,
-      backup_path: tally.expired > 0 ? archivePath : null,
+      backup_path: tally.expired > 0 ? archiveFile : null,
       detail
     };
-    return { ...base, run_id: await recordRun(db2, startedAtMs, options.trigger, base, startedRunId) };
+    if (stopped)
+      return { ...result, run_id: startedRunId };
+    return { ...result, run_id: recordRun(pass, file2, { startedAtMs, endedAtMs: Date.now(), trigger: options.trigger, result, startedRunId }) };
   };
+  const stop = () => {
+    stopped = true;
+    if (pass === null)
+      return;
+    try {
+      if (startedRunId !== null) {
+        pass.prepare(`
+          UPDATE agent_message_expiry_runs
+          SET outcome = 'interrupted', finished_at_ms = ?, expired_message_count = ?, unread_message_count = ?, notice_count = ?,
+              detail = 'the process stopped during this pass; what it had deleted is kept and the next pass does the rest'
+          WHERE run_id = ? AND outcome = 'started'
+        `).run(Date.now(), tally.expired, tally.unread, tally.notices, startedRunId);
+      }
+      if (holdsLease)
+        pass.prepare("DELETE FROM agent_message_expiry_lease WHERE lease_id = 1 AND holder = ?").run(holder);
+    } catch (error62) {
+      reportProblem(`could not close the pass of a process that is stopping (${errorText(error62)}); the next pass closes it once its lease runs out`);
+    }
+    if (pass !== db2)
+      closeQuietly(pass);
+  };
+  options.signal?.addEventListener("abort", stop, { once: true });
   try {
-    if (!tablesExist(db2))
+    pass = file2 === "" ? db2 : openPassConnection(file2);
+    const work = pass;
+    if (!tablesExist(work))
       return finish("no_message_tables", "agent_messages, agent_message_expiry_runs, agent_message_expiries or agent_message_expiry_lease is missing");
     const cutoff = agentMessageExpiryCutoff(clockMs);
     const inFlightCutoff = new Date(clockMs - IN_FLIGHT_GRACE_MS).toISOString();
     const presenceParams = presenceBindings(cutoff, clockMs);
-    const archiveFile = archiveLocation(db2, options);
+    archiveFile = archiveLocation(file2);
+    const shared = archiveFile === null ? null : sharedArchive(archiveFile);
+    const purges = archiveFile === null ? [] : [[archiveFile, false], ...shared === null ? [] : [[shared, true]]];
     const measure = () => ({
-      expired: db2.prepare("SELECT EXISTS (SELECT 1 FROM agent_messages WHERE created_at < ?) AS n").get(cutoff).n === 1,
-      deletable: db2.prepare(`SELECT EXISTS (SELECT 1 FROM agent_messages m WHERE m.created_at < ? AND NOT ${IN_FLIGHT_SQL}) AS n`).get(cutoff, inFlightCutoff).n === 1,
-      presence: countStalePresence(db2, presenceParams),
-      purgeable: archiveFile !== null && archiveHasPurgeableRows(db2, archiveFile, Date.now()),
-      owed: db2.prepare(`SELECT EXISTS (SELECT 1 FROM agent_message_expiries WHERE ${NOTICE_OWED_SQL}) AS n`).get().n === 1
+      deletable: work.prepare(`SELECT EXISTS (SELECT 1 FROM agent_messages m WHERE m.created_at < ? AND NOT ${IN_FLIGHT_SQL}) AS n`).get(cutoff, inFlightCutoff).n === 1,
+      presence: hasStalePresence(work, presenceParams),
+      purgeable: purges.some(([file3, ownOnly]) => archiveHasPurgeableRows(work, file3, Date.now(), ownOnly)),
+      owed: work.prepare(`SELECT EXISTS (SELECT 1 FROM agent_message_expiries WHERE ${NOTICE_OWED_SQL}) AS n`).get().n === 1
     });
-    const idle = (m) => !m.deletable && m.presence === 0 && !m.purgeable && !m.owed;
-    const idleOutcome = (m) => m.expired ? "deferred_in_flight" : "nothing_expired";
+    const idle = (m) => !m.deletable && !m.presence && !m.purgeable && !m.owed;
+    const idleOutcome = () => work.prepare("SELECT EXISTS (SELECT 1 FROM agent_messages WHERE created_at < ?) AS n").get(cutoff).n === 1 ? "deferred_in_flight" : "nothing_expired";
     let seen = measure();
     if (idle(seen)) {
-      interruptDeadRuns(db2);
-      return finish(idleOutcome(seen));
+      interruptDeadRuns(work, holder);
+      return finish(idleOutcome());
     }
     if (seen.deletable && archiveFile === null) {
-      return finish("archive_unavailable", "the database has no file path and no archive directory was given, so nothing was deleted");
+      return finish("archive_unavailable", "the database has no file path, so there is nowhere to archive to and nothing was deleted");
     }
     try {
-      withoutWaiting(db2, () => probeWritable(db2));
+      probeWritable(work);
     } catch (error62) {
-      const message = error62 instanceof Error ? error62.message : String(error62);
       if (isBusy(error62))
-        return finish("database_busy", `the database was locked by another process, so nothing was deleted this time (${message})`);
-      return finish("read_only", `the database cannot be written, so nothing was archived or deleted (${message})`);
+        return finish("database_busy", `the database was locked by another process, so nothing was deleted this time (${errorText(error62)})`);
+      return finish("read_only", `the database cannot be written, so nothing was archived or deleted (${errorText(error62)})`);
     }
-    const held = acquireLease(db2, holder);
+    const held = acquireLease(work, holder);
     if (held !== null)
       return finish("skipped_concurrent", `another process is running the pass (its lease runs until ${new Date(held).toISOString()})`);
     holdsLease = true;
-    db2.prepare("UPDATE agent_message_expiry_runs SET outcome = 'interrupted', detail = 'the process stopped before this pass finished' WHERE outcome = 'started'").run();
+    interruptDeadRuns(work, holder);
     seen = measure();
     if (idle(seen))
-      return finish(idleOutcome(seen));
-    startedRunId = beginRun(db2, startedAtMs, options.trigger, seen.deletable ? archiveFile : null);
-    archivePath = seen.deletable ? archiveFile : null;
+      return finish(idleOutcome());
+    startedRunId = beginRun(work, startedAtMs, options.trigger, seen.deletable ? archiveFile : null);
     const notes = [];
     let purgeFailed = false;
-    if (archiveFile !== null) {
+    for (const [file3, ownOnly] of purges) {
       try {
-        const purged = await purgeArchive(db2, archiveFile);
+        const purged = await purgeArchive(work, file3, holder, ownOnly);
         if (purged > 0)
-          notes.push(`removed ${purged} archived message(s) past their extra day`);
+          notes.push(`removed ${purged} archived message(s) past their extra day${ownOnly ? ` from ${file3}, the archive an earlier MeMesh shared between databases` : ""}`);
       } catch (error62) {
+        if (isBusy(error62))
+          throw error62;
         purgeFailed = true;
-        notes.push(`could not remove archive rows older than a day (${archiveFile}: ${error62 instanceof Error ? error62.message : String(error62)}); they stay until the next pass`);
+        notes.push(`could not remove archive rows older than a day (${file3}: ${errorText(error62)}); they stay until the next pass`);
       }
     }
+    let archiveFailure = null;
     if (seen.deletable && archiveFile !== null) {
       for (let batch = 1; batch <= MAX_BATCHES_PER_PASS; batch++) {
-        const rows = selectBatch(db2, cutoff, inFlightCutoff);
+        const rows = selectBatch(work, cutoff, inFlightCutoff);
         if (rows.length === 0)
           break;
         try {
-          archiveRows(db2, archiveFile, rows.map((row) => row.message_id), batch, options);
+          archiveRows(work, archiveFile, rows.map((row) => row.message_id), batch, options);
         } catch (error62) {
-          return finish("archive_failed", `could not archive the rows of ${rows.length} message(s) before deleting them (${archiveFile}: ${error62 instanceof Error ? error62.message : String(error62)}); nothing in this batch was deleted`);
+          if (isBusy(error62))
+            throw error62;
+          archiveFailure = `could not archive the rows of ${rows.length} message(s) before deleting them (${archiveFile}: ${errorText(error62)}); nothing in this batch was deleted`;
+          break;
         }
-        db2.transaction(() => {
-          renewLease(db2, holder);
-          deleteBatch(db2, rows, tally);
-          saveRunProgress(db2, startedRunId, tally, archiveFile);
+        work.transaction(() => {
+          renewLease(work, holder);
+          deleteBatch(work, rows, tally);
+          saveRunProgress(work, startedRunId, tally, archiveFile);
         }).immediate();
         await options.fault?.afterBatch?.(batch);
         await yieldTurn();
@@ -32338,30 +33004,57 @@ async function runAgentMessageExpiry(db2, options) {
     }
     if (tally.unreadableTimes > 0)
       notes.push(`${tally.unreadableTimes} message(s) had a creation time that cannot be read; readers already treated them as past their day, so they were archived and deleted`);
-    db2.transaction(() => {
-      renewLease(db2, holder);
-      writeOwedNotices(db2, tally);
-      saveRunProgress(db2, startedRunId, tally, archivePath);
+    const written = work.transaction(() => {
+      renewLease(work, holder);
+      const counts = writeOwedNotices(work);
+      saveRunProgress(work, startedRunId, { ...tally, notices: tally.notices + counts.notices }, archiveFile);
+      return counts;
     }).immediate();
+    tally.notices += written.notices;
+    tally.unaddressable += written.unaddressable;
     if (tally.unaddressable > 0)
       notes.push(`${tally.unaddressable} sender(s) could not be addressed, so no notice was written for them`);
-    db2.transaction(() => {
-      renewLease(db2, holder);
-      tally.presenceFacts = deletePresence(db2, presenceParams, "facts");
-      tally.connections = deletePresence(db2, presenceParams, "connections");
+    work.transaction(() => {
+      renewLease(work, holder);
+      tally.presenceFacts = deletePresence(work, presenceParams, "facts");
+      tally.connections = deletePresence(work, presenceParams, "connections");
     }).immediate();
-    const remaining = db2.prepare("SELECT COUNT(*) AS n FROM agent_messages WHERE created_at < ?").get(cutoff).n;
+    const remaining = work.prepare("SELECT COUNT(*) AS n FROM agent_messages WHERE created_at < ?").get(cutoff).n;
     if (remaining > 0)
       notes.push(`${remaining} expired message(s) left for the next pass`);
+    if (archiveFailure !== null)
+      notes.unshift(archiveFailure);
     const detail = notes.length > 0 ? notes.join("; ") : null;
-    const outcome = tally.expired > 0 ? "deleted" : tally.presenceFacts + tally.connections > 0 ? "presence_cleared" : seen.purgeable ? purgeFailed ? "failed" : "archive_purged" : tally.notices > 0 ? "notices_sent" : remaining > 0 ? "deferred_in_flight" : "nothing_expired";
+    const outcome = archiveFailure !== null ? "archive_failed" : tally.expired > 0 ? "deleted" : tally.presenceFacts + tally.connections > 0 ? "presence_cleared" : seen.purgeable ? purgeFailed ? "failed" : "archive_purged" : tally.notices > 0 ? "notices_sent" : remaining > 0 ? "deferred_in_flight" : "nothing_expired";
     return finish(outcome, detail);
   } catch (error62) {
-    return finish("failed", error62 instanceof Error ? error62.message : String(error62));
+    if (isBusy(error62)) {
+      return finish("database_busy", `the database was locked by another process, so the pass stopped here; every batch it finished is kept and the next pass does the rest (${errorText(error62)})`);
+    }
+    return finish("failed", errorText(error62));
   } finally {
-    if (holdsLease)
-      releaseLease(db2, holder);
+    options.signal?.removeEventListener("abort", stop);
+    if (pass !== null && !stopped) {
+      if (holdsLease)
+        releaseLease(pass, holder);
+      if (pass !== db2)
+        closeQuietly(pass);
+    }
   }
+}
+function openPassConnection(file2) {
+  const pass = new MemeshDatabase(file2);
+  pass.pragma(`busy_timeout = ${LOCK_WAIT_MS}`);
+  return pass;
+}
+function closeQuietly(db2) {
+  try {
+    db2.close();
+  } catch {
+  }
+}
+function errorText(error62) {
+  return error62 instanceof Error ? error62.message : String(error62);
 }
 async function runAgentMessageExpiryIfDue(db2, options) {
   try {
@@ -32376,14 +33069,15 @@ async function runAgentMessageExpiryIfDue(db2, options) {
   }
 }
 function startAgentMessageExpiryScheduler(getDb, options) {
-  let running = false;
+  let running = null;
   const tick = () => {
     const db2 = getDb();
     if (!db2 || running)
       return;
-    running = true;
-    void runAgentMessageExpiryIfDue(db2, { trigger: options.trigger }).finally(() => {
-      running = false;
+    const current = new AbortController();
+    running = current;
+    void runAgentMessageExpiryIfDue(db2, { trigger: options.trigger, signal: current.signal }).finally(() => {
+      running = null;
     });
   };
   const first = setTimeout(tick, options.firstRunDelayMs ?? 1e3);
@@ -32393,7 +33087,21 @@ function startAgentMessageExpiryScheduler(getDb, options) {
   return () => {
     clearTimeout(first);
     clearInterval(every);
+    running?.abort();
+    recordLatePasses(getDb());
   };
+}
+function readArchive(db2, file2, read) {
+  if (fs6.lstatSync(file2, { throwIfNoEntry: false }) === void 0)
+    return void 0;
+  refuseUnsafeArchive(db2, file2);
+  const archive = new DatabaseSync2(file2, { readOnly: true });
+  try {
+    const hasLog = archive.prepare("SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'archive_log') AS n").get().n === 1;
+    return read(archive, hasLog);
+  } finally {
+    archive.close();
+  }
 }
 function selectBatch(db2, cutoff, inFlightCutoff) {
   return db2.prepare(`
@@ -32401,7 +33109,8 @@ function selectBatch(db2, cutoff, inFlightCutoff) {
            CASE WHEN json_valid(m.provenance_json)
                 THEN COALESCE(json_extract(m.provenance_json, '$.transport') = '${AGENT_MESSAGE_EXPIRY_TRANSPORT}', 0)
                 ELSE 0 END AS is_notice,
-           ${WAS_READ_SQL} AS was_read
+           ${WAS_READ_SQL} AS was_read,
+           CASE WHEN json_valid(m.provenance_json) THEN json_extract(m.provenance_json, '$.fallback_of_message_id') END AS fallback_of
     FROM agent_messages m
     WHERE m.created_at < ? AND NOT ${IN_FLIGHT_SQL}
     ORDER BY m.created_at
@@ -32416,15 +33125,22 @@ function deleteBatch(db2, rows, tally) {
   `);
   const delivery = db2.prepare("SELECT delivery_id, recipient FROM agent_message_deliveries WHERE message_id = ? LIMIT 1");
   const bridgeTold = db2.prepare("SELECT 1 FROM agent_messages WHERE reply_to_message_id = ? AND json_extract(provenance_json, '$.via') = 'network-notice' LIMIT 1");
+  const copies = new Map(rows.filter((row) => row.fallback_of !== null).map((row) => [row.fallback_of, row]));
+  const copied = db2.prepare(`UPDATE agent_message_expiries SET notice_message_id = '${NO_NOTICE}', was_read = MAX(was_read, ?) WHERE message_id = ? AND notice_message_id IS NULL`);
   const now = Date.now();
   for (const row of rows) {
-    const owesNotice = row.was_read === 0 && row.is_notice === 0;
+    const copy = copies.get(row.message_id);
+    const wasRead = row.was_read !== 0 || copy !== void 0 && copy.was_read !== 0;
+    const unread = !wasRead && row.is_notice === 0;
+    const owesNotice = unread && copy === void 0;
     const sent = owesNotice ? delivery.get(row.message_id) : void 0;
     const network = sent ? networkDeliveryOf(db2, sent) : null;
     const told = network !== null && bridgeTold.get(row.message_id) !== void 0;
-    remember2.run(row.message_id, row.project, row.created_at, now, row.was_read !== 0 ? 1 : 0, row.is_notice !== 0 || told ? NO_NOTICE : null, row.sender, row.recipient, network ? JSON.stringify(network) : null);
-    if (owesNotice)
+    remember2.run(row.message_id, row.project, row.created_at, now, wasRead ? 1 : 0, told || copy !== void 0 ? NO_NOTICE : null, row.sender, row.recipient, network ? JSON.stringify(network) : null);
+    if (unread)
       tally.unread += 1;
+    if (row.fallback_of !== null)
+      copied.run(row.was_read !== 0 ? 1 : 0, row.fallback_of);
     if (Number.isNaN(Date.parse(sqliteUtcToIso(row.created_at))))
       tally.unreadableTimes += 1;
   }
@@ -32434,7 +33150,8 @@ function deleteBatch(db2, rows, tally) {
   }
   tally.expired += rows.length;
 }
-function writeOwedNotices(db2, tally) {
+function writeOwedNotices(db2) {
+  const written = { notices: 0, unaddressable: 0 };
   const owed = db2.prepare(`
     SELECT message_id, project, sender, recipient, created_at, network_json FROM agent_message_expiries
     WHERE ${NOTICE_OWED_SQL} ORDER BY project, sender, created_at, message_id
@@ -32468,11 +33185,12 @@ function writeOwedNotices(db2, tally) {
     };
     const noticeId = writeNotice(db2, group[0].project, group[0].sender, state);
     if (noticeId === null)
-      tally.unaddressable += 1;
+      written.unaddressable += 1;
     else
-      tally.notices += 1;
+      written.notices += 1;
     mark.run(noticeId ?? NO_NOTICE, JSON.stringify(group.map((row) => row.message_id)));
   }
+  return written;
 }
 function noticeSummary(state) {
   const count = state.count;
@@ -32532,42 +33250,39 @@ function saveRunProgress(db2, runId, tally, archiveFile) {
     UPDATE agent_message_expiry_runs
     SET expired_message_count = ?, unread_message_count = ?, notice_count = ?, backup_path = ?
     WHERE run_id = ?
-  `).run(tally.expired, tally.unread, tally.notices, archiveFile, runId);
+  `).run(tally.expired, tally.unread, tally.notices, tally.expired > 0 ? archiveFile : null, runId);
 }
-function archiveLocation(db2, options) {
-  const databasePath = databaseFile(db2);
-  const directory = options.backupDir ?? (databasePath ? path4.join(path4.dirname(databasePath), "backups") : null);
-  if (directory === null)
+function archiveLocation(databasePath) {
+  if (databasePath === "")
     return null;
-  const base = path4.basename(databasePath);
-  return path4.join(directory, base === "" || base === "knowledge-graph.db" ? AGENT_MESSAGE_ARCHIVE_FILE : `agent-messages-expired-${base}`);
+  const base = path5.basename(databasePath);
+  return path5.join(path5.dirname(databasePath), "backups", base === DEFAULT_DB_FILE ? AGENT_MESSAGE_ARCHIVE_FILE : `agent-messages-expired-${base}`);
+}
+function sharedArchive(archive) {
+  return path5.basename(archive) === AGENT_MESSAGE_ARCHIVE_FILE ? null : path5.join(path5.dirname(archive), AGENT_MESSAGE_ARCHIVE_FILE);
 }
 var SQLITE_HEADER = "SQLite format 3\0";
 function refuseUnsafeArchive(db2, file2) {
-  let link;
-  try {
-    link = fs5.lstatSync(file2);
-  } catch {
+  const link = fs6.lstatSync(file2, { throwIfNoEntry: false });
+  if (link === void 0)
     return;
+  if (link.isSymbolicLink()) {
+    throw new Error(`${file2} is a symlink; MeMesh never reads or writes its archive through a symlink, wherever it points, and leaves it as it is (move it away)`);
   }
-  const real = link.isSymbolicLink() ? fs5.existsSync(file2) ? fs5.realpathSync(file2) : null : file2;
-  if (real === null)
-    throw new Error(`${file2} is a symlink to a file that does not exist; MeMesh does not create the archive through a symlink`);
-  const target = fs5.statSync(real);
-  if (!target.isFile())
+  if (!link.isFile())
     throw new Error(`${file2} is not a plain file`);
   const main2 = databaseFile(db2);
-  const mainStat = main2 === "" ? void 0 : fs5.statSync(main2, { throwIfNoEntry: false });
-  if (mainStat && mainStat.dev === target.dev && mainStat.ino === target.ino) {
+  const mainStat = main2 === "" ? void 0 : fs6.statSync(main2, { throwIfNoEntry: false });
+  if (mainStat && mainStat.dev === link.dev && mainStat.ino === link.ino) {
     throw new Error(`${file2} is the database itself, so it cannot hold a copy of what is deleted from it`);
   }
-  if (target.size > 0) {
+  if (link.size > 0) {
     const head = Buffer.alloc(SQLITE_HEADER.length);
-    const fd = fs5.openSync(real, "r");
+    const fd = fs6.openSync(file2, "r");
     try {
-      fs5.readSync(fd, head, 0, head.length, 0);
+      fs6.readSync(fd, head, 0, head.length, 0);
     } finally {
-      fs5.closeSync(fd);
+      fs6.closeSync(fd);
     }
     if (head.toString("latin1") !== SQLITE_HEADER)
       throw new Error(`${file2} is not a database (it has no SQLite header), so it is not a MeMesh archive; MeMesh leaves it as it is (move it away)`);
@@ -32581,11 +33296,11 @@ function where(schema, by) {
   return by === "message" ? "message_id IN (SELECT value FROM json_each(?))" : `delivery_id IN (SELECT delivery_id FROM ${schema}.agent_message_deliveries WHERE message_id IN (SELECT value FROM json_each(?)))`;
 }
 function attachArchive(db2, file2) {
-  fs5.mkdirSync(path4.dirname(file2), { recursive: true, mode: 448 });
+  fs6.mkdirSync(path5.dirname(file2), { recursive: true, mode: 448 });
   refuseUnsafeArchive(db2, file2);
-  const fresh = !fs5.existsSync(file2);
+  const fresh = !fs6.existsSync(file2);
   if (fresh)
-    fs5.closeSync(fs5.openSync(file2, "a", 384));
+    fs6.closeSync(fs6.openSync(file2, "a", 384));
   removeGroupAndOtherAccess(file2);
   db2.prepare(`ATTACH DATABASE ? AS ${ARCHIVE}`).run(file2);
   try {
@@ -32649,64 +33364,54 @@ function archiveRows(db2, file2, messageIds, batch, options) {
     db2.exec(`DETACH DATABASE ${ARCHIVE}`);
   }
 }
-function archiveHasPurgeableRows(db2, file2, nowMs) {
-  if (!fs5.existsSync(file2))
-    return false;
+function archiveHasPurgeableRows(db2, file2, nowMs, ownOnly) {
   try {
-    refuseUnsafeArchive(db2, file2);
-    db2.prepare(`ATTACH DATABASE ? AS ${ARCHIVE}`).run(file2);
+    return readArchive(db2, file2, (archive, hasLog) => {
+      if (!hasLog)
+        return false;
+      if (ownOnly)
+        archive.prepare("ATTACH DATABASE ? AS live").run(databaseFile(db2));
+      return archive.prepare(`SELECT EXISTS (SELECT 1 FROM archive_log WHERE archived_at_ms < ?${ownOnly ? " AND message_id IN (SELECT message_id FROM live.agent_message_expiries)" : ""}) AS n`).get(nowMs - AGENT_MESSAGE_TTL_MS).n === 1;
+    }) ?? false;
   } catch {
     return false;
-  }
-  try {
-    const hasLog = db2.prepare(`SELECT COUNT(*) AS n FROM ${ARCHIVE}.sqlite_master WHERE type = 'table' AND name = 'archive_log'`).get().n;
-    if (hasLog === 0)
-      return false;
-    return db2.prepare(`SELECT EXISTS (SELECT 1 FROM ${ARCHIVE}.archive_log WHERE archived_at_ms < ?) AS n`).get(nowMs - AGENT_MESSAGE_TTL_MS).n === 1;
-  } catch {
-    return false;
-  } finally {
-    db2.exec(`DETACH DATABASE ${ARCHIVE}`);
   }
 }
-async function purgeArchive(db2, file2) {
+async function purgeArchive(db2, file2, holder, ownOnly) {
   let purged = 0;
   for (; ; ) {
-    if (!fs5.existsSync(file2))
+    if (fs6.lstatSync(file2, { throwIfNoEntry: false }) === void 0)
       return purged;
     attachArchive(db2, file2);
+    let removed;
     try {
-      const cut = Date.now() - AGENT_MESSAGE_TTL_MS;
-      const batch = db2.prepare(`SELECT message_id FROM ${ARCHIVE}.archive_log WHERE archived_at_ms < ? LIMIT ?`).all(cut, BATCH_SIZE).map((row) => row.message_id);
-      if (batch.length === 0)
-        return purged;
-      const ids = JSON.stringify(batch);
-      db2.transaction(() => {
+      removed = db2.transaction(() => {
+        renewLease(db2, holder);
+        const batch = db2.prepare(`
+          SELECT message_id FROM ${ARCHIVE}.archive_log WHERE archived_at_ms < ?
+          ${ownOnly ? "AND message_id IN (SELECT message_id FROM main.agent_message_expiries)" : ""} LIMIT ?
+        `).all(Date.now() - AGENT_MESSAGE_TTL_MS, BATCH_SIZE).map((row) => row.message_id);
+        const ids = JSON.stringify(batch);
         for (const table of [...ARCHIVED_TABLES].reverse()) {
           db2.prepare(`DELETE FROM ${ARCHIVE}.${table.name} WHERE ${where(ARCHIVE, table.by)}`).run(ids);
         }
         db2.prepare(`DELETE FROM ${ARCHIVE}.archive_log WHERE message_id IN (SELECT value FROM json_each(?))`).run(ids);
-      })();
-      purged += batch.length;
-      db2.exec(`PRAGMA ${ARCHIVE}.incremental_vacuum`);
+        return batch.length;
+      }).immediate();
+      if (removed > 0)
+        db2.exec(`PRAGMA ${ARCHIVE}.incremental_vacuum`);
     } finally {
       db2.exec(`DETACH DATABASE ${ARCHIVE}`);
     }
+    if (removed === 0)
+      return purged;
+    purged += removed;
     await yieldTurn();
   }
 }
 function isBusy(error62) {
   const code = error62?.errcode;
   return code === 5 || code === 6 || /database (table )?is locked|SQLITE_BUSY/i.test(error62 instanceof Error ? error62.message : String(error62));
-}
-function withoutWaiting(db2, fn) {
-  const previous = db2.prepare("PRAGMA busy_timeout").get().timeout;
-  db2.pragma(`busy_timeout = ${LOCK_WAIT_MS}`);
-  try {
-    return fn();
-  } finally {
-    db2.pragma(`busy_timeout = ${previous}`);
-  }
 }
 function probeWritable(db2) {
   db2.exec("SAVEPOINT expiry_probe");
@@ -32724,8 +33429,10 @@ function acquireLease(db2, holder) {
   return db2.transaction(() => {
     const now = Date.now();
     const row = db2.prepare("SELECT holder, expires_at_ms FROM agent_message_expiry_lease WHERE lease_id = 1").get();
-    if (row && row.expires_at_ms > now)
+    if (row && row.expires_at_ms > now && !abandonedLeases.has(row.holder))
       return row.expires_at_ms;
+    if (row)
+      abandonedLeases.delete(row.holder);
     db2.prepare("INSERT OR REPLACE INTO agent_message_expiry_lease (lease_id, holder, expires_at_ms) VALUES (1, ?, ?)").run(holder, now + LEASE_MS);
     return null;
   }).immediate();
@@ -32740,7 +33447,9 @@ function releaseLease(db2, holder) {
   try {
     db2.prepare("DELETE FROM agent_message_expiry_lease WHERE lease_id = 1 AND holder = ?").run(holder);
   } catch (error62) {
-    reportProblem(`could not release the expiry lease (${error62 instanceof Error ? error62.message : String(error62)}); it runs out on its own`);
+    if (isBusy(error62))
+      abandonedLeases.add(holder);
+    reportProblem(`could not release the expiry lease (${errorText(error62)}); it runs out on its own`);
   }
 }
 function presenceBindings(cutoff, clockMs) {
@@ -32749,27 +33458,19 @@ function presenceBindings(cutoff, clockMs) {
     facts: { cutoff, dead_lease_ms: clockMs - AGENT_MESSAGE_TTL_MS, now_ms: clockMs }
   };
 }
-function countStalePresence(db2, bind) {
-  const facts = db2.prepare(`
-    SELECT COUNT(*) AS n FROM agent_presence_facts
-    WHERE (julianday(created_at) < julianday(:cutoff) AND connection_id NOT IN (${LIVE_CONNECTIONS_SQL}))
-       OR connection_id IN (${DEAD_CONNECTIONS_SQL})
-  `).get(bind.facts);
-  const connections = db2.prepare(`SELECT COUNT(*) AS n FROM (${DEAD_CONNECTIONS_SQL})`).get(bind.dead);
-  return facts.n + connections.n;
+function hasStalePresence(db2, bind) {
+  return db2.prepare(`
+    SELECT EXISTS (SELECT 1 FROM agent_presence_facts WHERE ${STALE_FACTS_SQL}) OR EXISTS (${DEAD_CONNECTIONS_SQL}) AS n
+  `).get(bind.facts).n === 1;
 }
 function deletePresence(db2, bind, what) {
   if (what === "connections") {
     return Number(db2.prepare(`DELETE FROM agent_session_connections WHERE connection_id IN (${DEAD_CONNECTIONS_SQL})`).run(bind.dead).changes);
   }
-  return Number(db2.prepare(`
-    DELETE FROM agent_presence_facts
-    WHERE (julianday(created_at) < julianday(:cutoff) AND connection_id NOT IN (${LIVE_CONNECTIONS_SQL}))
-       OR connection_id IN (${DEAD_CONNECTIONS_SQL})
-  `).run(bind.facts).changes);
+  return Number(db2.prepare(`DELETE FROM agent_presence_facts WHERE ${STALE_FACTS_SQL}`).run(bind.facts).changes);
 }
 function trimBookkeeping(db2, nowMs) {
-  db2.prepare("DELETE FROM agent_message_expiries WHERE expired_at_ms < ?").run(nowMs - AGENT_MESSAGE_EXPIRED_ID_KEEP_MS);
+  db2.prepare(`DELETE FROM agent_message_expiries WHERE expired_at_ms < ? AND (${NOTICE_OWED_SQL}) IS NOT 1`).run(nowMs - AGENT_MESSAGE_EXPIRED_ID_KEEP_MS);
 }
 function tablesExist(db2) {
   const found = db2.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name IN ('agent_messages', 'agent_message_expiry_runs', 'agent_message_expiries', 'agent_message_expiry_lease')").get();
@@ -32783,50 +33484,92 @@ function beginRun(db2, startedAtMs, trigger, archiveFile) {
     `).run(startedAtMs, startedAtMs, trigger, archiveFile);
     return Number(inserted.lastInsertRowid);
   } catch (error62) {
-    reportProblem(`could not record that a pass started: ${error62 instanceof Error ? error62.message : String(error62)}`);
+    if (isBusy(error62))
+      throw error62;
+    reportProblem(`could not record that a pass started: ${errorText(error62)}`);
     return null;
   }
 }
-async function recordRun(db2, startedAtMs, trigger, result, startedRunId) {
-  const deadline = Date.now() + RECORD_RETRY_MS;
-  for (; ; ) {
-    try {
-      return withoutWaiting(db2, () => writeRun(db2, startedAtMs, trigger, result, startedRunId));
-    } catch (error62) {
-      if (isBusy(error62) && Date.now() < deadline) {
-        await new Promise((resolve) => {
-          setTimeout(resolve, 1e3).unref();
-        });
-        continue;
-      }
-      reportProblem(`pass ended ${result.outcome}${result.detail ? ` (${result.detail})` : ""} and could not be recorded: ${error62 instanceof Error ? error62.message : String(error62)}`);
-      return null;
+function recordRun(pass, file2, record3) {
+  const late = unrecorded.get(file2) ?? [];
+  try {
+    if (pass === null)
+      throw new Error("the database could not be opened");
+    const runId = pass.transaction(() => {
+      for (const missed of late)
+        writeRun(pass, missed, true);
+      return writeRun(pass, record3, false);
+    }).immediate();
+    unrecorded.delete(file2);
+    return runId;
+  } catch (error62) {
+    const { outcome, detail } = record3.result;
+    const ended = `pass ended ${outcome}${detail ? ` (${detail})` : ""}`;
+    if (file2 !== "" && isBusy(error62)) {
+      unrecorded.set(file2, [...late, record3]);
+      reportProblem(`${ended} and could not be recorded now (${errorText(error62)}); the next pass that can write records it`);
+    } else {
+      reportProblem(`${ended} and could not be recorded: ${errorText(error62)}`);
     }
+    return null;
   }
 }
-function writeRun(db2, startedAtMs, trigger, result, startedRunId) {
-  return db2.transaction(() => {
-    if (startedRunId !== null) {
-      db2.prepare(`
-        UPDATE agent_message_expiry_runs
-        SET finished_at_ms = ?, outcome = ?, expired_message_count = ?, unread_message_count = ?,
-            notice_count = ?, presence_fact_count = ?, connection_count = ?, backup_path = ?, detail = ?
-        WHERE run_id = ?
-      `).run(Date.now(), result.outcome, result.expired_message_count, result.unread_message_count, result.notice_count, result.presence_fact_count, result.connection_count, result.backup_path, result.detail, startedRunId);
-      trimBookkeeping(db2, startedAtMs);
-      trimRunLog(db2);
-      return startedRunId;
-    }
-    const inserted = db2.prepare(`
+function recordLatePasses(db2) {
+  let pass = null;
+  try {
+    const file2 = db2 === null ? "" : databaseFile(db2);
+    const late = unrecorded.get(file2);
+    if (file2 === "" || late === void 0)
+      return;
+    const work = pass = openPassConnection(file2);
+    work.transaction(() => {
+      for (const missed of late)
+        writeRun(work, missed, true);
+    }).immediate();
+    unrecorded.delete(file2);
+  } catch (error62) {
+    reportProblem(`a pass that met a lock could still not be recorded as the process stopped (${errorText(error62)})`);
+  } finally {
+    if (pass !== null)
+      closeQuietly(pass);
+  }
+}
+function writeRun(db2, record3, late) {
+  const { result } = record3;
+  const detail = late ? `recorded late: the database was locked by another process when this pass ended at ${new Date(record3.endedAtMs).toISOString()}${result.detail ? `; ${result.detail}` : ""}` : result.detail;
+  const values = [
+    late ? record3.endedAtMs : Date.now(),
+    result.outcome,
+    result.expired_message_count,
+    result.unread_message_count,
+    result.notice_count,
+    result.presence_fact_count,
+    result.connection_count,
+    result.backup_path,
+    detail
+  ];
+  let runId = null;
+  if (record3.startedRunId !== null) {
+    const updated = db2.prepare(`
+      UPDATE agent_message_expiry_runs
+      SET finished_at_ms = ?, outcome = ?, expired_message_count = ?, unread_message_count = ?,
+          notice_count = ?, presence_fact_count = ?, connection_count = ?, backup_path = ?, detail = ?
+      WHERE run_id = ?
+    `).run(...values, record3.startedRunId);
+    if (Number(updated.changes) === 1)
+      runId = record3.startedRunId;
+  }
+  if (runId === null) {
+    runId = Number(db2.prepare(`
       INSERT INTO agent_message_expiry_runs (
-        started_at_ms, finished_at_ms, trigger_source, outcome, expired_message_count, unread_message_count,
+        started_at_ms, trigger_source, finished_at_ms, outcome, expired_message_count, unread_message_count,
         notice_count, presence_fact_count, connection_count, backup_path, detail
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(startedAtMs, Date.now(), trigger, result.outcome, result.expired_message_count, result.unread_message_count, result.notice_count, result.presence_fact_count, result.connection_count, result.backup_path, result.detail);
-    trimBookkeeping(db2, startedAtMs);
-    trimRunLog(db2);
-    return Number(inserted.lastInsertRowid);
-  }).immediate();
+    `).run(record3.startedAtMs, record3.trigger, ...values).lastInsertRowid);
+  }
+  trimBookkeeping(db2, record3.startedAtMs);
+  trimRunLog(db2);
+  return runId;
 }
 function trimRunLog(db2) {
   db2.prepare(`
@@ -32834,16 +33577,18 @@ function trimRunLog(db2) {
     WHERE run_id <= (SELECT run_id FROM agent_message_expiry_runs ORDER BY run_id DESC LIMIT 1 OFFSET ?)
   `).run(RUN_LOG_KEEP);
 }
-function interruptDeadRuns(db2) {
+function interruptDeadRuns(db2, holder) {
   try {
     db2.prepare(`
       UPDATE agent_message_expiry_runs
       SET outcome = 'interrupted', detail = 'the process stopped before this pass finished'
       WHERE outcome = 'started'
-        AND NOT EXISTS (SELECT 1 FROM agent_message_expiry_lease WHERE expires_at_ms > ?)
-    `).run(Date.now());
+        AND NOT EXISTS (SELECT 1 FROM agent_message_expiry_lease WHERE expires_at_ms > ? AND holder <> ?)
+    `).run(Date.now(), holder);
   } catch (error62) {
-    reportProblem(`could not close a pass that never finished: ${error62 instanceof Error ? error62.message : String(error62)}`);
+    if (isBusy(error62))
+      throw error62;
+    reportProblem(`could not close a pass that never finished: ${errorText(error62)}`);
   }
 }
 function yieldTurn() {
@@ -33843,632 +34588,6 @@ var KNOWN_ERROR_PATTERNS = [
   "build-error",
   "other"
 ];
-
-// dist/core/paths.js
-import fs6 from "fs";
-import os from "os";
-import path5 from "path";
-import { createHash as createHash3 } from "crypto";
-import { execFileSync } from "child_process";
-var AGENT_ROUTER_SOCKET_FILENAME = "agent-router-v2.sock";
-var LEGACY_AGENT_ROUTER_SOCKET_FILENAME = "agent-router.sock";
-function homeDir() {
-  const home = process.env.HOME;
-  if (home && home.length > 0)
-    return home;
-  const fromOs = os.homedir();
-  if (fromOs && fromOs.length > 0)
-    return fromOs;
-  return os.userInfo().homedir;
-}
-function memeshDir() {
-  return process.env.MEMESH_DIR || path5.join(homeDir(), ".memesh");
-}
-function getDbPath() {
-  return process.env.MEMESH_DB_PATH ?? path5.join(memeshDir(), "knowledge-graph.db");
-}
-function getMemeshDirFromDbPath() {
-  return process.env.MEMESH_DB_PATH ? path5.dirname(process.env.MEMESH_DB_PATH) : memeshDir();
-}
-function getAgentRouterSocketPath() {
-  return path5.join(getMemeshDirFromDbPath(), AGENT_ROUTER_SOCKET_FILENAME);
-}
-function normalizeAgentRouterSocketPath(socketPath) {
-  const dataDir = getMemeshDirFromDbPath();
-  return socketPath === path5.join(dataDir, LEGACY_AGENT_ROUTER_SOCKET_FILENAME) ? getAgentRouterSocketPath() : socketPath;
-}
-function getProjectName(cwdInput) {
-  return getProjectIds(cwdInput)[0];
-}
-var projectIdsCache = /* @__PURE__ */ new Map();
-function resolveProjectIds(cwd) {
-  const remote = tryGit(cwd, ["config", "--get", "remote.origin.url"]);
-  const locator = remote ? canonicalRemoteLocator(remote) : null;
-  const real = projectRealPath(cwd);
-  const legacy = `${path5.basename(real)}-${createHash3("sha256").update(real).digest("hex").slice(0, 8)}`;
-  const pathIds = [projectIdentity(path5.basename(real), real), legacy];
-  const remoteIds = remote && locator ? [locatorIdentity(locator), ...remoteLocatorAliases(remote).map(locatorIdentity)] : [];
-  return [.../* @__PURE__ */ new Set([...remoteIds, ...pathIds])];
-}
-var locatorIdentity = (locator) => projectIdentity(path5.posix.basename(locator).replace(/\.git$/i, ""), locator);
-function projectRealPath(cwd) {
-  const root = gitRepoRoot(cwd);
-  const commonDir = root ? tryGit(cwd, ["rev-parse", "--git-common-dir"]) : null;
-  const absoluteCommonDir = commonDir ? path5.resolve(cwd, commonDir) : null;
-  const localPath = absoluteCommonDir && path5.basename(absoluteCommonDir) === ".git" ? path5.dirname(absoluteCommonDir) : root ?? cwd;
-  try {
-    return fs6.realpathSync.native(localPath);
-  } catch {
-    return path5.resolve(localPath);
-  }
-}
-function getProjectIds(cwdInput) {
-  const cwd = cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd();
-  const cached2 = projectIdsCache.get(cwd);
-  if (cached2 !== void 0)
-    return cached2;
-  const resolved = resolveProjectIds(cwd);
-  projectIdsCache.set(cwd, resolved);
-  return resolved;
-}
-var PROJECT_HASH_HEX_LENGTH = 32;
-var PROJECT_ID_MAX_LENGTH = 200;
-var PROJECT_LABEL_MAX_LENGTH = PROJECT_ID_MAX_LENGTH - PROJECT_HASH_HEX_LENGTH - 1;
-function projectIdentity(label, locator) {
-  const readable = label.normalize("NFC").slice(0, PROJECT_LABEL_MAX_LENGTH) || "project";
-  const suffix = createHash3("sha256").update(locator).digest("hex").slice(0, PROJECT_HASH_HEX_LENGTH);
-  return `${readable}~${suffix}`;
-}
-function tryGit(cwd, args) {
-  try {
-    const out = execFileSync("git", ["-C", cwd, ...args], {
-      encoding: "utf8",
-      timeout: 2e3,
-      stdio: ["ignore", "pipe", "ignore"]
-    });
-    const trimmed = out.trim();
-    return trimmed.length > 0 ? trimmed : null;
-  } catch {
-    return null;
-  }
-}
-function gitRepoRoot(cwdInput) {
-  const cwd = cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd();
-  if (!repoRootCache.has(cwd))
-    repoRootCache.set(cwd, tryGit(cwd, ["rev-parse", "--show-toplevel"]));
-  return repoRootCache.get(cwd) ?? null;
-}
-var repoRootCache = /* @__PURE__ */ new Map();
-function parseRemote(remote) {
-  const value = remote.trim();
-  if (!value)
-    return null;
-  if (path5.isAbsolute(value) || /^[A-Za-z]:[\\/]/.test(value) || /^\\\\/.test(value))
-    return null;
-  let host;
-  let port = "";
-  let user;
-  let remotePath;
-  let transport;
-  if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(value)) {
-    let parsed;
-    try {
-      parsed = new URL(value);
-    } catch {
-      return null;
-    }
-    if (parsed.protocol === "file:" || !parsed.hostname)
-      return null;
-    host = parsed.hostname.toLowerCase();
-    port = parsed.port;
-    const protocol = parsed.protocol.toLowerCase();
-    if ((protocol === "ssh:" || protocol === "git+ssh:") && port === "22")
-      port = "";
-    user = parsed.username;
-    remotePath = parsed.pathname;
-    transport = protocol === "ssh:" || protocol === "git+ssh:" ? "ssh-absolute" : protocol.slice(0, -1);
-  } else {
-    const scp = /^(?:([^@]+)@)?(\[[^\]]+\]|[^:/]+):(.+)$/.exec(value);
-    if (!scp)
-      return null;
-    user = scp[1] ?? "";
-    host = scp[2].toLowerCase();
-    remotePath = scp[3];
-    transport = remotePath.startsWith("/") ? "ssh-absolute" : "ssh-relative";
-  }
-  const pathWithoutSlashes = remotePath.replace(/^\/+|\/+$/g, "");
-  if (!host || !pathWithoutSlashes)
-    return null;
-  return { transport, user, host, port, path: pathWithoutSlashes };
-}
-var isSsh = (transport) => transport === "ssh-relative" || transport === "ssh-absolute";
-var HOSTING_SERVICES = /* @__PURE__ */ new Set(["github.com", "gitlab.com", "bitbucket.org"]);
-function onHostingService(parts) {
-  return HOSTING_SERVICES.has(parts.host) && parts.port === "" && (parts.transport === "https" || isSsh(parts.transport) && parts.user === "git");
-}
-function literalLocator(parts) {
-  const endpoint = `${parts.host}${parts.port ? `:${parts.port}` : ""}`;
-  const authority = isSsh(parts.transport) && parts.user ? `${parts.user}@${endpoint}` : endpoint;
-  return `${parts.transport}://${authority}/${parts.path}`;
-}
-function canonicalRemoteLocator(remote) {
-  const parts = parseRemote(remote);
-  if (!parts)
-    return null;
-  if (onHostingService(parts)) {
-    const bare = parts.path.replace(/\.git$/i, "");
-    return parts.host === "github.com" ? `github.com/${bare}` : `https://${parts.host}/${bare}.git`;
-  }
-  return literalLocator(parts);
-}
-function remoteLocatorAliases(remote) {
-  const parts = parseRemote(remote);
-  if (!parts || !onHostingService(parts) || parts.host === "github.com")
-    return [];
-  const bare = parts.path.replace(/\.git$/i, "");
-  const out = /* @__PURE__ */ new Set();
-  for (const suffix of /\.git$/i.test(bare) ? [".git"] : ["", ".git"]) {
-    out.add(`https://${parts.host}/${bare}${suffix}`);
-    for (const transport of ["ssh-relative", "ssh-absolute"])
-      out.add(`${transport}://git@${parts.host}/${bare}${suffix}`);
-  }
-  out.add(literalLocator(parts));
-  out.delete(canonicalRemoteLocator(remote) ?? "");
-  return [...out];
-}
-var SK_KEY = 'sk[-_][^\\s"\\\\]{4,}[A-Za-z0-9]';
-var NAMED_VALUE = `(?:api[-_]?key|access[-_]?token|auth[-_]?token|refresh[-_]?token|session[-_]?token|token|secret|password|passwd|pwd|signature)=[^&\\s"'<>]{8,}`;
-var JWT_TOKEN = "eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}";
-var SENDGRID_KEY = "SG\\.[A-Za-z0-9_-]{16,}\\.[A-Za-z0-9_-]{16,}";
-var SECRET_PATTERN_SOURCES = [
-  "-----BEGIN[A-Z ]*PRIVATE KEY-----(?:[\\s\\S]*?-----END[A-Z ]*PRIVATE KEY-----|[\\s\\S]*)",
-  "(?:postgres|postgresql|mysql|mariadb|mongodb(?:\\+srv)?|redis|rediss|amqp|amqps)://[^\\s:@/]*:[^\\s:@/]+@",
-  JWT_TOKEN,
-  SENDGRID_KEY,
-  "[srp]k_(?:live|test)_[A-Za-z0-9]{16,}",
-  "npm_[A-Za-z0-9]{36}",
-  "memesh://join/[A-Za-z0-9_-]{8,}",
-  `\\b${SK_KEY}`,
-  "Bearer(?:\\s|\\\\[nrt])+[A-Za-z0-9_.\\-]{16,}",
-  `(?<![A-Za-z0-9])${NAMED_VALUE}`,
-  "ghp_[A-Za-z0-9]{30,}",
-  "gho_[A-Za-z0-9]{30,}",
-  "gh[sur]_[A-Za-z0-9]{30,}",
-  "github_pat_[A-Za-z0-9_]{20,}",
-  "A(?:KIA|SIA)[A-Z0-9]{16}",
-  "AIza[A-Za-z0-9_-]{30,}",
-  "xox[baprs]-[A-Za-z0-9-]{10,}"
-];
-var SECRET_PATTERNS = SECRET_PATTERN_SOURCES.map((s) => new RegExp(s, "gi"));
-var SEGMENTED = new Set([SENDGRID_KEY].map((s) => SECRET_PATTERNS[SECRET_PATTERN_SOURCES.indexOf(s)]));
-var JWT_PATTERN = SECRET_PATTERNS[SECRET_PATTERN_SOURCES.indexOf(JWT_TOKEN)];
-var TOKEN_CHAR = /[A-Za-z0-9_-]/;
-function* jwtMatches(input2) {
-  const runEnd = (from) => {
-    let i2 = from;
-    while (i2 < input2.length && TOKEN_CHAR.test(input2[i2]))
-      i2++;
-    return i2;
-  };
-  const eyj = /eyj/gi;
-  const findEyj = (from) => {
-    eyj.lastIndex = from;
-    return eyj.exec(input2)?.index ?? -1;
-  };
-  let nextEyj = findEyj(0);
-  let i = 0;
-  while (i < input2.length && nextEyj !== -1) {
-    if (!TOKEN_CHAR.test(input2[i])) {
-      i++;
-      continue;
-    }
-    const headerEnd = runEnd(i);
-    if (nextEyj < i)
-      nextEyj = findEyj(i);
-    if (nextEyj === -1)
-      break;
-    if (nextEyj + 11 <= headerEnd && input2[headerEnd] === ".") {
-      const payloadEnd = runEnd(headerEnd + 1);
-      if (payloadEnd - (headerEnd + 1) >= 8 && input2[payloadEnd] === ".") {
-        const signatureEnd = runEnd(payloadEnd + 1);
-        if (signatureEnd - (payloadEnd + 1) >= 8) {
-          for (let start = nextEyj; start !== -1 && start + 11 <= headerEnd; start = findEyj(start + 1)) {
-            yield [start, signatureEnd];
-          }
-        }
-      }
-    }
-    i = headerEnd;
-  }
-}
-function redactRaw(input2) {
-  let out = input2;
-  for (let before = ""; out !== before; ) {
-    before = out;
-    out = maskMatches(out);
-  }
-  return out;
-}
-function maskMatches(input2) {
-  const spans = [];
-  const budget = 4 * input2.length + 1024;
-  let work = 0;
-  search: for (const pattern of SECRET_PATTERNS) {
-    if (pattern === JWT_PATTERN) {
-      for (const [start, end] of jwtMatches(input2)) {
-        work += end - start;
-        if (work > budget) {
-          spans.push([start, input2.length]);
-          break search;
-        }
-        spans.push([start, end]);
-      }
-      continue;
-    }
-    pattern.lastIndex = 0;
-    let lastEnd = -1;
-    for (let m = pattern.exec(input2); m !== null; m = pattern.exec(input2)) {
-      const end = m.index + m[0].length;
-      if (end === lastEnd && !SEGMENTED.has(pattern)) {
-        pattern.lastIndex = end;
-        continue;
-      }
-      lastEnd = end;
-      work += m[0].length;
-      if (work > budget) {
-        spans.push([m.index, input2.length]);
-        pattern.lastIndex = 0;
-        break search;
-      }
-      spans.push([m.index, end]);
-      pattern.lastIndex = m.index + 1;
-    }
-  }
-  if (spans.length === 0)
-    return input2;
-  let out = "";
-  let at = 0;
-  for (const [start, end] of gluedAfter(input2, merge2(spans))) {
-    out += `${input2.slice(at, start)}${REDACTED}`;
-    at = end;
-  }
-  return out + input2.slice(at);
-}
-function merge2(spans) {
-  spans.sort((a, b) => a[0] - b[0] || b[1] - a[1]);
-  const merged = [];
-  for (const [start, end] of spans) {
-    const last = merged[merged.length - 1];
-    if (last && start < last[1])
-      last[1] = Math.max(last[1], end);
-    else
-      merged.push([start, end]);
-  }
-  return merged;
-}
-var GLUED = [SK_KEY, NAMED_VALUE].map((s) => new RegExp(s, "iy"));
-function gluedAfter(input2, spans) {
-  const out = [];
-  let next = 0;
-  while (next < spans.length) {
-    const [start] = spans[next];
-    let end = spans[next][1];
-    next++;
-    const skipTo = GLUED.map(() => start);
-    for (let at = start; at <= end && end < input2.length; at++) {
-      GLUED.forEach((pattern, i) => {
-        if (at < skipTo[i])
-          return;
-        pattern.lastIndex = at;
-        const m = pattern.exec(input2);
-        if (m === null)
-          return;
-        skipTo[i] = at + m[0].length;
-        end = Math.max(end, skipTo[i]);
-      });
-      while (next < spans.length && spans[next][0] <= end)
-        end = Math.max(end, spans[next++][1]);
-    }
-    out.push([start, end]);
-  }
-  return out;
-}
-var PRIVATE_KEY_MARKER = /-----(BEGIN|END)[A-Z ]*PRIVATE KEY-----/gi;
-var PRIVATE_KEY_END = /-----END[A-Z ]*PRIVATE KEY-----/i;
-var ANY_PRIVATE_KEY_MARKER = /-----(?:BEGIN|END)[A-Z ]*PRIVATE KEY-----/i;
-var REDACTED = "***REDACTED***";
-var nativeJson = JSON;
-var looksLikeJson = (text) => /^\s*[[{"]/.test(text);
-var JSON_ESCAPE = /\\(?:u([0-9a-fA-F]{4})|(["\\/bfnrt]))/g;
-var ESCAPED_CHAR = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "	" };
-function readEscapes(text) {
-  for (let level = 0; level <= 8; level++) {
-    const read = text.replace(JSON_ESCAPE, (_, hex3, c) => hex3 === void 0 ? ESCAPED_CHAR[c] : String.fromCharCode(parseInt(hex3, 16)));
-    if (read === text)
-      return text;
-    text = read;
-  }
-  return void 0;
-}
-function holdsPartOfKey(text) {
-  let open2 = false;
-  for (const [, marker] of text.matchAll(PRIVATE_KEY_MARKER)) {
-    if (marker.toUpperCase() === "BEGIN")
-      open2 = true;
-    else if (open2)
-      open2 = false;
-    else
-      return true;
-  }
-  return open2;
-}
-function* jsonTexts(value) {
-  const stack = [value];
-  while (stack.length > 0) {
-    const node2 = stack.pop();
-    if (typeof node2 === "string")
-      yield node2;
-    else if (Array.isArray(node2))
-      for (const item of node2)
-        stack.push(item);
-    else if (node2 !== null && typeof node2 === "object" && !nativeJson.isRawJSON?.(node2)) {
-      for (const [key, inner] of Object.entries(node2)) {
-        yield key;
-        stack.push(inner);
-      }
-    }
-  }
-}
-function holdsPartOfKeyDecoded(text) {
-  if (holdsPartOfKey(text))
-    return true;
-  if (!looksLikeJson(text) || !(text.includes("\\") || ANY_PRIVATE_KEY_MARKER.test(text)))
-    return false;
-  const read = readEscapes(text);
-  if (read !== void 0 && holdsPartOfKey(read))
-    return true;
-  let parsed;
-  try {
-    parsed = JSON.parse(text);
-  } catch (err) {
-    return !(err instanceof SyntaxError);
-  }
-  for (const inner of jsonTexts(parsed))
-    if (inner !== text && holdsPartOfKeyDecoded(inner))
-      return true;
-  return false;
-}
-function mapJson(node2, text, key, skipKeys) {
-  if (typeof node2 === "string")
-    return text(node2);
-  if (Array.isArray(node2))
-    return node2.map((item) => mapJson(item, text, key));
-  if (node2 === null || typeof node2 !== "object" || nativeJson.isRawJSON?.(node2))
-    return node2;
-  const out = {};
-  const lastSuffix = /* @__PURE__ */ new Map();
-  for (const [name, inner] of Object.entries(node2)) {
-    const safe = key(name);
-    let unique = safe;
-    if (Object.prototype.hasOwnProperty.call(out, unique)) {
-      let n = lastSuffix.get(safe) ?? 1;
-      do {
-        n++;
-        unique = `${safe} (${n})`;
-      } while (Object.prototype.hasOwnProperty.call(out, unique));
-      lastSuffix.set(safe, n);
-    }
-    Object.defineProperty(out, unique, {
-      value: skipKeys?.has(name) ? inner : mapJson(inner, text, key),
-      enumerable: true,
-      writable: true,
-      configurable: true
-    });
-  }
-  return out;
-}
-function redactSet(items) {
-  if (items.some(holdsPartOfKeyDecoded))
-    return { texts: items.map(() => REDACTED), masked: true };
-  let masked = false;
-  const texts = items.map((item) => {
-    const r = redactOne(item, true);
-    if (r.masked)
-      masked = true;
-    return r.text;
-  });
-  return { texts, masked };
-}
-function redactSecretList(items) {
-  return redactSet(items).texts;
-}
-function redactTitleAndObservations(title, observations) {
-  const head = title === void 0 ? [] : [title];
-  const texts = redactSecretList([...head, ...observations === void 0 ? [] : observations]);
-  return {
-    ...title === void 0 ? {} : { title: texts[0] },
-    ...observations === void 0 ? {} : { observations: texts.slice(head.length) }
-  };
-}
-function holdsSecret(items) {
-  return redactSet(items).masked;
-}
-var keepNumberSpelling = (_key, value, context) => typeof value === "number" && context?.source !== void 0 && nativeJson.rawJSON ? nativeJson.rawJSON(context.source) : value;
-function redactOne(input2, partChecked = false) {
-  const raw = redactRaw(input2);
-  const asRaw = { text: raw, masked: raw !== input2 };
-  if (!looksLikeJson(input2))
-    return asRaw;
-  if (!asRaw.masked && !input2.includes("\\") && !PRIVATE_KEY_END.test(input2))
-    return asRaw;
-  try {
-    const parsed = JSON.parse(input2, keepNumberSpelling);
-    if (!partChecked && holdsPartOfKeyDecoded(input2)) {
-      return { text: JSON.stringify(mapJson(parsed, () => REDACTED, () => REDACTED)), masked: true };
-    }
-    const read = readEscapes(input2);
-    if (read === void 0)
-      return { text: REDACTED, masked: true };
-    let masked = false;
-    const value = mapJson(parsed, (s) => {
-      const r = redactOne(s, true);
-      if (r.masked)
-        masked = true;
-      return r.text;
-    }, (k) => {
-      const r = redactRaw(k);
-      if (r !== k)
-        masked = true;
-      return r;
-    });
-    const maskedInText = asRaw.masked || redactRaw(read) !== read;
-    return { text: JSON.stringify(value), masked: masked || maskedInText };
-  } catch (err) {
-    return err instanceof SyntaxError ? asRaw : { text: REDACTED, masked: true };
-  }
-}
-function redactSecrets(input2) {
-  return redactOne(input2).text;
-}
-function redactUserPaths(text) {
-  const home = homeDir();
-  const roots = /* @__PURE__ */ new Set();
-  const add = (root) => {
-    if (!root || !path5.isAbsolute(root))
-      return;
-    roots.add(root);
-    try {
-      roots.add(fs6.realpathSync(root));
-    } catch {
-    }
-  };
-  add(home);
-  const isInside = (child) => {
-    const rel = path5.relative(home, child);
-    return rel !== "" && !rel.startsWith("..") && !path5.isAbsolute(rel);
-  };
-  for (const dir of [memeshDir(), path5.dirname(getDbPath())]) {
-    if (dir && !isInside(dir))
-      add(dir);
-  }
-  const flags = process.platform === "linux" ? "g" : "gi";
-  let out = text;
-  for (const root of [...roots].sort((a, b) => b.length - a.length)) {
-    const escaped = root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const body = escaped.replace(/\\\\|\//g, "[\\\\/]{1,2}");
-    out = out.replace(new RegExp(`(?<![\\w~](?:[\\\\/]{1,2})?)${body}(?=[\\\\/]|$)`, flags), "~");
-  }
-  return out;
-}
-function redactMemoryText(text) {
-  return redactUserPaths(redactSecrets(text));
-}
-function redactShownTogether(texts) {
-  const present = texts.flatMap((text, i) => text == null ? [] : [{ i, text }]);
-  const masked = redactSecretList(present.map(({ text }) => text));
-  const shown = texts.map(() => null);
-  present.forEach(({ i }, k) => {
-    shown[i] = redactUserPaths(masked[k]);
-  });
-  return shown;
-}
-function redactTextValues(value, skipKeys = /* @__PURE__ */ new Set()) {
-  if (value === void 0)
-    return void 0;
-  const serialized = JSON.stringify(value);
-  if (serialized === void 0)
-    return void 0;
-  return mapJson(JSON.parse(serialized), redactSecrets, redactRaw, skipKeys);
-}
-function redactVersionText(entry) {
-  const rest = redactTextValues(entry, /* @__PURE__ */ new Set(["title", "observations"]));
-  if (rest === null || typeof rest !== "object" || Array.isArray(rest))
-    return rest;
-  const version2 = rest;
-  const observations = Array.isArray(version2.observations) && version2.observations.every((o) => typeof o === "string") ? version2.observations : void 0;
-  if (observations === void 0)
-    return redactTextValues(entry);
-  const title = version2.title;
-  const titleTexts = typeof title === "string" ? [title] : title === void 0 || title === null ? [] : [...textsIn(title)];
-  if ([...titleTexts, ...observations].some(holdsPartOfKeyDecoded)) {
-    return {
-      ...version2,
-      ...titleTexts.length === 0 ? {} : { title: typeof title === "string" ? REDACTED : mapJson(JSON.parse(JSON.stringify(title)), () => REDACTED, () => REDACTED) },
-      observations: observations.map(() => REDACTED)
-    };
-  }
-  return {
-    ...version2,
-    ...typeof title === "string" ? { title: redactSecrets(title) } : titleTexts.length === 0 ? {} : { title: redactTextValues(title) },
-    observations: observations.map(redactSecrets)
-  };
-}
-function textsIn(value) {
-  const serialized = value === void 0 ? void 0 : JSON.stringify(value);
-  return new Set(serialized === void 0 ? [] : jsonTexts(JSON.parse(serialized)));
-}
-function metadataRefusal(value, known, beside = []) {
-  const serialized = value === void 0 ? void 0 : JSON.stringify(value);
-  if (serialized === void 0)
-    return void 0;
-  const stack = [JSON.parse(serialized)];
-  while (stack.length > 0) {
-    const node2 = stack.pop();
-    if (typeof node2 === "string") {
-      if (!known.has(node2) && holdsPartOfKeyDecoded(node2))
-        return "its metadata holds part of a private key (a BEGIN or END line without the rest). Nothing was written; remove that text and try again";
-    } else if (Array.isArray(node2)) {
-      for (const item of node2)
-        stack.push(item);
-    } else if (node2 !== null && typeof node2 === "object") {
-      for (const [key, inner] of Object.entries(node2)) {
-        if (!known.has(key) && (holdsPartOfKeyDecoded(key) || redactRaw(key) !== key))
-          return "a metadata key name holds a credential or part of a private key. Nothing was written; remove that text and try again";
-        stack.push(inner);
-      }
-    }
-  }
-  return besideRefusal(addsNewText(value, known), beside);
-}
-function besideRefusal(addsText, beside) {
-  if (!addsText)
-    return void 0;
-  for (const text of beside) {
-    if (holdsPartOfKeyDecoded(text)) {
-      return 'it adds new text to a memory that holds a BEGIN or END line of a private key without the rest, so MeMesh cannot tell whether the new text continues that key (the line alone is not proof of a key). Nothing was written. To clear such a line in the memory\'s metadata, run `memesh unpin --name <name>` first (it adds no text, and masks every part of a key in the metadata, history included); to remove such a line from its observations, run `memesh forget --name <name> --observation "<that line>"`; to replace such a title, run `memesh remember --name <name> --type <its type> --title "<new title>"`';
-    }
-  }
-  return void 0;
-}
-function addsNewText(value, known) {
-  const serialized = value === void 0 ? void 0 : JSON.stringify(value);
-  if (serialized === void 0)
-    return false;
-  const stack = [JSON.parse(serialized)];
-  while (stack.length > 0) {
-    const node2 = stack.pop();
-    if (typeof node2 === "string") {
-      if (!known.has(node2))
-        return true;
-    } else if (Array.isArray(node2)) {
-      for (const item of node2)
-        stack.push(item);
-    } else if (node2 !== null && typeof node2 === "object") {
-      for (const [key, inner] of Object.entries(node2)) {
-        if (!known.has(key))
-          return true;
-        stack.push(inner);
-      }
-    }
-  }
-  return false;
-}
-function clearPartsOfKey(metadata) {
-  const history = metadata.replaced_history;
-  const entries = Array.isArray(history) ? { replaced_history: history.map((entry) => [...textsIn(entry)].some(holdsPartOfKeyDecoded) ? redactVersionText(entry) : entry) } : {};
-  const clear = (text) => holdsPartOfKeyDecoded(text) ? REDACTED : text;
-  return mapJson({ ...metadata, ...entries }, clear, clear);
-}
 
 // dist/core/session-handoff.js
 var SESSION_HANDOFF_TYPE = "session-handoff";

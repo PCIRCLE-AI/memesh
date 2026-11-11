@@ -238,6 +238,8 @@ describe('one-day agent message expiry', () => {
     expect(result).toMatchObject({ outcome: 'deleted', expired_message_count: 1, notice_count: 0 });
     expect(result.detail).toContain('could not be addressed');
     expect(count('agent_messages')).toBe(0);
+    // Settled: the next pass does not try that sender again.
+    expect(await run()).toMatchObject({ outcome: 'nothing_expired', detail: null });
   });
 
   it('answers a read of, a receipt for and a reply to an expired id with a specific error', async () => {
@@ -431,19 +433,20 @@ describe('one-day agent message expiry', () => {
     expect(userMessages()).toBe(1);
   });
 
-  it('does not copy or delete anything on a database it cannot write, and says so', async () => {
+  // The pass opens the database file itself, so what makes it unwritable is the file, as for a real user.
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('does not copy or delete anything on a database it cannot write, and says so', async () => {
     const lost = send('alice', 'bob');
     age(lost.message_id);
-    const readOnly = new MemeshDatabase(dbHandle.dbPath, { readOnly: true });
     const written: string[] = [];
     const realWrite = process.stderr.write.bind(process.stderr);
     process.stderr.write = ((chunk: string | Uint8Array) => { written.push(String(chunk)); return true; }) as typeof process.stderr.write;
+    fs.chmodSync(dbHandle.dbPath, 0o400);
     let result;
     try {
-      result = await runAgentMessageExpiry(readOnly, { trigger: 'test' });
+      result = await runAgentMessageExpiry(db(), { trigger: 'test' });
     } finally {
+      fs.chmodSync(dbHandle.dbPath, 0o600);
       process.stderr.write = realWrite;
-      readOnly.close();
     }
     expect(result.outcome).toBe('read_only');
     expect(result.run_id).toBeNull();
@@ -473,9 +476,9 @@ describe('one-day agent message expiry', () => {
   it('deletes nothing when the archive cannot be made, and records why', async () => {
     const lost = send('alice', 'bob');
     age(lost.message_id);
-    const blocker = path.join(dbHandle.tmpDir, 'not-a-directory');
-    fs.writeFileSync(blocker, 'x');
-    const result = await runAgentMessageExpiry(db(), { trigger: 'test', backupDir: path.join(blocker, 'backups') });
+    // A file where the backups folder would be.
+    fs.writeFileSync(path.dirname(archiveFile()), 'x');
+    const result = await run();
     expect(result.outcome).toBe('archive_failed');
     expect(count('agent_messages')).toBe(1);
     expect(lastAgentMessageExpiryRun(db())).toMatchObject({ outcome: 'archive_failed' });
@@ -689,7 +692,7 @@ describe('a large or failing pass', () => {
     age(doomed.message_id);
     age(other.message_id);
     db().exec(`
-      CREATE TEMP TRIGGER refuse_delete BEFORE DELETE ON agent_messages
+      CREATE TRIGGER refuse_delete BEFORE DELETE ON agent_messages
       WHEN OLD.message_id = '${other.message_id}'
       BEGIN SELECT RAISE(ABORT, 'refused for the test'); END
     `);
@@ -712,7 +715,7 @@ describe('a large or failing pass', () => {
     age(other.message_id);
     // A trigger that quietly skips one row: the delete "succeeds" with the wrong count.
     db().exec(`
-      CREATE TEMP TRIGGER skip_one BEFORE DELETE ON agent_messages
+      CREATE TRIGGER skip_one BEFORE DELETE ON agent_messages
       WHEN OLD.message_id = '${kept.message_id}'
       BEGIN SELECT RAISE(IGNORE); END
     `);
@@ -1056,7 +1059,10 @@ describe('the HTTP server runs the pass too', () => {
       }
       expect(trigger).toBe('http-serve');
     } finally {
+      // serve closes a running pass on the way out: let it finish before its folder goes.
+      const exited = child.exitCode === null && child.signalCode === null ? new Promise((resolve) => { child.once('exit', resolve); }) : undefined;
       child.kill('SIGTERM');
+      await exited;
       fs.rmSync(home, { recursive: true, force: true });
     }
   }, 20_000);
@@ -1212,7 +1218,7 @@ describe('a pass that is killed half way', () => {
     expect(row?.summary).toContain('has not finished');
     expect(row?.summary).toContain('archive_failed');
     expect(row?.summary).toContain('disk full');
-    expect(row?.fix).toContain('Nothing is deleted while this fails');
+    expect(row?.fix).toContain('Nothing more is deleted while this fails');
   });
 
   function finishedPass(): void {
@@ -1356,7 +1362,7 @@ describe('the archive of deleted messages is kept one more day', () => {
     age(lost.message_id);
     // The first attempt archives, then fails to delete: the rows are in both files.
     db().exec(`
-      CREATE TEMP TRIGGER refuse_delete BEFORE DELETE ON agent_messages
+      CREATE TRIGGER refuse_delete BEFORE DELETE ON agent_messages
       BEGIN SELECT RAISE(ABORT, 'refused for the test'); END
     `);
     const failed = await run();
@@ -1375,7 +1381,7 @@ describe('the archive of deleted messages is kept one more day', () => {
     const lost = send('alice', 'bob');
     populate(lost);
     age(lost.message_id);
-    db().exec("CREATE TEMP TRIGGER refuse_delete BEFORE DELETE ON agent_messages BEGIN SELECT RAISE(ABORT, 'refused for the test'); END");
+    db().exec("CREATE TRIGGER refuse_delete BEFORE DELETE ON agent_messages BEGIN SELECT RAISE(ABORT, 'refused for the test'); END");
     expect((await run()).outcome).toBe('failed');
     db().exec('DROP TRIGGER refuse_delete');
     return lost;
@@ -1390,6 +1396,9 @@ describe('the archive of deleted messages is kept one more day', () => {
     }
   }
 
+  // Two defences keep this copy, and either alone keeps this test green: archiving again restarts the extra day
+  // ('starts the extra day again...'), and old archive rows are removed before the batches ('still removes archive
+  // rows past their extra day when a batch cannot be archived'). Each of those tests guards its own.
   it('keeps the copy of a message it deletes, even when that message was first archived more than a day ago', async () => {
     const lost = await archivedNotDeleted();
     // No pass ran for 25 hours after the first copy was made.
@@ -1495,6 +1504,12 @@ describe('the archive of deleted messages is kept one more day', () => {
       expect(result.detail, table).toContain(table);
       expect(userMessages(), table).toBe(1);
     }
+    // Every column is compared, the message body too.
+    const changedBody = await runAgentMessageExpiry(db(), {
+      trigger: 'test', fault: { beforeArchiveCheck: () => inArchive("UPDATE agent_messages SET payload_json = '\"changed\"'") },
+    });
+    expect(changedBody.outcome).toBe('archive_failed');
+    expect(userMessages()).toBe(1);
     // Once the copy matches again, the message goes.
     expect(await run()).toMatchObject({ outcome: 'deleted', expired_message_count: 1 });
   });
@@ -1613,6 +1628,21 @@ describe('getting deleted messages back from the archive', () => {
     expect(viaDir.status, viaDir.stderr).toBe(0);
     expect(countIn(path.join(dirHome, 'knowledge-graph.db'), 'agent_messages')).toBe(before + 1);
   });
+
+  it.skipIf(!haveSqlite)('works when MEMESH_DB_PATH is a symlink to the database, and when the path holds a quote', async () => {
+    const { home } = await prepared();
+    // The archive is beside the real file, which is where MeMesh writes it.
+    const real = fs.mkdtempSync(path.join(dbHandle.tmpDir, "it's real-"));
+    fs.mkdirSync(path.join(real, 'backups'));
+    fs.copyFileSync(path.join(home, '.memesh', 'knowledge-graph.db'), path.join(real, 'work.db'));
+    fs.copyFileSync(archiveFile(), path.join(real, 'backups', 'agent-messages-expired-work.db'));
+    const links = fs.mkdtempSync(path.join(dbHandle.tmpDir, 'links-'));
+    fs.symlinkSync(path.join(real, 'work.db'), path.join(links, 'kg.db'));
+    const before = countIn(path.join(real, 'work.db'), 'agent_messages');
+    const ran = spawnSync('sh', ['-c', guideCommand()], { env: { ...process.env, HOME: home, MEMESH_DB_PATH: path.join(links, 'kg.db') }, encoding: 'utf8' });
+    expect(ran.status, ran.stderr).toBe(0);
+    expect(countIn(path.join(real, 'work.db'), 'agent_messages')).toBe(before + 1);
+  });
 });
 
 describe('what the sender is told, and when a message counts as read', () => {
@@ -1658,6 +1688,85 @@ describe('what the sender is told, and when a message counts as read', () => {
     expect(db().prepare('SELECT was_read FROM agent_message_expiries WHERE message_id = ?').get(asked.message_id)).toEqual({ was_read: 1 });
   });
 
+  function session(project: string, sessionId: string, principal: string): void {
+    db().prepare('INSERT OR IGNORE INTO agent_principals (project, principal_id, activation_event_sequence) VALUES (?, ?, 0)').run(project, principal);
+    db().prepare("INSERT INTO agent_session_instances (project, session_instance_id, principal_id, adapter_kind) VALUES (?, ?, ?, 'claude-channel')")
+      .run(project, sessionId, principal);
+  }
+
+  function sendFrom(project: string, sender: string, recipient: string, extra: { reply_to?: string; target_kind?: 'session' } = {}): SentAgentMessage {
+    return sendAgentMessage(db(), {
+      project, sender, recipient, idempotency_key: `key-${randomUUID()}`, content_type: 'application/json',
+      payload: { body: `from ${sender}` }, reply_to: extra.reply_to, target_kind: extra.target_kind,
+    });
+  }
+
+  /** A session send that its session refused, and the copy MeMesh then sent to that session's principal (fallback_to_principal). */
+  function refusedWithFallback(): { refused: SentAgentMessage; fallback: SentAgentMessage } {
+    session(PROJECT, 'bob-session', 'bob');
+    const refused = sendFrom(PROJECT, 'alice', 'bob-session', { target_kind: 'session' });
+    const fallback = sendAgentMessage(db(), {
+      project: PROJECT, sender: 'alice', recipient: 'bob', intended_session: 'bob-session',
+      idempotency_key: `principal-fallback:${randomUUID()}`, content_type: 'application/json', payload: { body: 'from alice' },
+    }, { fallback_of_message_id: refused.message_id });
+    return { refused, fallback };
+  }
+
+  it('counts a reply to the principal copy of a refused session send as the answer to both, and tells the sender nothing', async () => {
+    const { refused, fallback } = refusedWithFallback();
+    send('bob', 'alice', { reply_to: fallback.message_id });
+    age(refused.message_id);
+    age(fallback.message_id);
+    expect(await run()).toMatchObject({ outcome: 'deleted', expired_message_count: 2, unread_message_count: 0, notice_count: 0 });
+    expect(noticesTo('alice')).toHaveLength(0);
+    expect(db().prepare('SELECT was_read FROM agent_message_expiries WHERE message_id = ?').get(refused.message_id)).toEqual({ was_read: 1 });
+  });
+
+  it('settles the refused send with its answered copy even when the two are deleted in different batches', async () => {
+    // 99 older messages fill the first batch up to the send; its copy is the first of the second batch.
+    const older = agentMessageExpiryCutoff(Date.now() - 2 * 86_400_000);
+    db().transaction(() => { for (let i = 0; i < 99; i++) bareMessage(older, 'carol'); }).immediate();
+    const { refused, fallback } = refusedWithFallback();
+    send('bob', 'alice', { reply_to: fallback.message_id });
+    age(refused.message_id);
+    age(fallback.message_id);
+    expect(await run()).toMatchObject({ outcome: 'deleted', expired_message_count: 101 });
+    expect(noticesTo('alice')).toHaveLength(0);
+    expect(db().prepare('SELECT was_read FROM agent_message_expiries WHERE message_id = ?').get(refused.message_id)).toEqual({ was_read: 1 });
+  });
+
+  it('tells the sender once about a refused session send nobody answered, naming the copy it got back as its message', async () => {
+    const { refused, fallback } = refusedWithFallback();
+    age(refused.message_id);
+    age(fallback.message_id);
+    expect(await run()).toMatchObject({ outcome: 'deleted', expired_message_count: 2, notice_count: 1 });
+    const notices = noticesTo('alice');
+    expect(notices).toHaveLength(1);
+    expect((JSON.parse(notices[0].payload_json) as { messages: Array<{ message_id: string }> }).messages.map((m) => m.message_id))
+      .toEqual([fallback.message_id]);
+  });
+
+  it('counts a reply its recipient\'s session sent under its own session id as the recipient answering', async () => {
+    session(PROJECT, 'bob-s1', 'bob');
+    const asked = send('alice', 'bob');
+    send('bob-s1', 'alice', { reply_to: asked.message_id });
+    age(asked.message_id);
+    expect(await run()).toMatchObject({ outcome: 'deleted', expired_message_count: 1, notice_count: 0 });
+  });
+
+  it('does not count a reply in another project, from the recipient or a session of it, or from the principal of a same-named session there', async () => {
+    const fromElsewhere = send('alice', 'bob');
+    sendFrom('elsewhere', 'bob', 'alice', { reply_to: fromElsewhere.message_id });
+    session('elsewhere', 'bob-s2', 'bob');
+    const fromOtherSession = send('alice', 'bob');
+    send('bob-s2', 'alice', { reply_to: fromOtherSession.message_id });
+    session('elsewhere', 'shared-session', 'carol');
+    const toSession = sendFrom(PROJECT, 'alice', 'shared-session', { target_kind: 'session' });
+    send('carol', 'alice', { reply_to: toSession.message_id });
+    for (const id of [fromElsewhere.message_id, fromOtherSession.message_id, toSession.message_id]) age(id);
+    expect(await run()).toMatchObject({ outcome: 'deleted', expired_message_count: 3, unread_message_count: 3, notice_count: 1 });
+  });
+
   it('writes one notice for each project and sender for the whole pass, however many batches it takes', async () => {
     const old = agentMessageExpiryCutoff(Date.now() - 60_000);
     db().transaction(() => {
@@ -1689,37 +1798,194 @@ describe('what the sender is told, and when a message counts as read', () => {
   });
 });
 
+/**
+ * Another process takes the database's write lock (EXCLUSIVE: readers of a rollback-journal file are
+ * kept out too) and holds it for `ms`; resolves once it holds it.
+ */
+async function lockFromAnotherProcess(file: string, ms: number, mode: 'IMMEDIATE' | 'EXCLUSIVE' = 'IMMEDIATE'): Promise<{ exited: Promise<void> }> {
+  const script = `
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(process.argv[1]);
+    db.exec('PRAGMA busy_timeout = 10000');
+    db.exec('BEGIN ' + process.argv[3]);
+    process.stdout.write('locked\\n');
+    setTimeout(() => { db.exec('ROLLBACK'); db.close(); }, Number(process.argv[2]));
+  `;
+  const child = spawn(process.execPath, ['--no-warnings', '-e', script, file, String(ms), mode], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const exited = new Promise<void>((resolve) => { child.on('exit', () => resolve()); });
+  await new Promise<void>((resolve, reject) => {
+    child.stdout.on('data', (chunk) => { if (String(chunk).includes('locked')) resolve(); });
+    child.on('exit', (code) => reject(new Error(`the lock holder exited (${code}) before it held the lock`)));
+  });
+  return { exited };
+}
+
+/** The longest time the event loop went without a turn, from now until `stop()`. */
+function eventLoopGaps(): { stop(): number } {
+  let longest = 0;
+  let last = Date.now();
+  const ticker = setInterval(() => { const now = Date.now(); longest = Math.max(longest, now - last); last = now; }, 20);
+  return { stop: () => { clearInterval(ticker); return Math.max(longest, Date.now() - last); } };
+}
+
+function busyTimeout(): number {
+  return (db().prepare('PRAGMA busy_timeout').get() as { timeout: number }).timeout;
+}
+
+function lateRows(): Array<{ outcome: string; expired_message_count: number; detail: string }> {
+  return db().prepare("SELECT outcome, expired_message_count, detail FROM agent_message_expiry_runs WHERE detail LIKE '%recorded late%' ORDER BY run_id")
+    .all() as Array<{ outcome: string; expired_message_count: number; detail: string }>;
+}
+
 describe('a database that is locked is not a database that cannot be written', () => {
-  it('records database_busy, not read_only, without holding the process while another connection holds the write lock', async () => {
+  it('records database_busy, not read_only, without holding the process while another process holds the write lock', async () => {
     const lost = send('alice', 'bob');
     age(lost.message_id);
-    // The pass uses the shared handle with its ordinary 30-second busy timeout.
-    const holder = new MemeshDatabase(dbHandle.dbPath);
-    holder.exec('BEGIN IMMEDIATE');
-    let held = true;
-    const letGo = (): void => { if (held) { held = false; holder.exec('ROLLBACK'); holder.close(); } };
-    const release = setTimeout(letGo, 500);
-    let longestGap = 0;
-    let last = Date.now();
-    const ticker = setInterval(() => { const now = Date.now(); longestGap = Math.max(longestGap, now - last); last = now; }, 20);
+    const lock = await lockFromAnotherProcess(dbHandle.dbPath, 3_000);
+    const gaps = eventLoopGaps();
     const started = Date.now();
-    let result;
-    try {
-      result = await runAgentMessageExpiry(db(), { trigger: 'test' });
-    } finally {
-      clearInterval(ticker);
-      clearTimeout(release);
-      letGo();
-    }
-    expect(Date.now() - started).toBeLessThan(15_000);
-    expect(longestGap).toBeLessThan(5_000);
+    const result = await runAgentMessageExpiry(db(), { trigger: 'test' });
+    const took = Date.now() - started;
+    const longest = gaps.stop();
+    expect(longest).toBeLessThan(1_000);
+    expect(took).toBeLessThan(1_000);
     expect(result.outcome).toBe('database_busy');
     expect(result.detail).toContain('locked by another process');
-    // Recorded once the lock was gone, so doctor can say why nothing was deleted.
-    expect(result.run_id).not.toBeNull();
-    expect((await doctorRow())?.summary).toContain('database_busy');
+    // The lock is still held, so the row cannot be written now; the next pass writes it.
+    expect(result.run_id).toBeNull();
+    expect(busyTimeout()).toBe(30_000);
+    await lock.exited;
     expect(userMessages()).toBe(1);
-  }, 120_000);
+    expect(await run()).toMatchObject({ outcome: 'deleted', expired_message_count: 1 });
+    const late = lateRows();
+    expect(late).toHaveLength(1);
+    expect(late[0].outcome).toBe('database_busy');
+    expect(late[0].detail).toMatch(/recorded late: the database was locked by another process when this pass ended at \d{4}-\d\d-\d\dT/);
+  }, 60_000);
+
+  it('does not hold the process on a lock when it has nothing to do', async () => {
+    const lock = await lockFromAnotherProcess(dbHandle.dbPath, 3_000);
+    const gaps = eventLoopGaps();
+    const started = Date.now();
+    const result = await run();
+    const took = Date.now() - started;
+    const longest = gaps.stop();
+    expect(longest).toBeLessThan(1_000);
+    expect(took).toBeLessThan(1_000);
+    expect(result.outcome).toBe('database_busy');
+    expect(busyTimeout()).toBe(30_000);
+    await lock.exited;
+    expect(await run()).toMatchObject({ outcome: 'nothing_expired' });
+    expect(lateRows().map((row) => row.outcome)).toEqual(['database_busy']);
+    // Written once: a later pass does not write it again.
+    expect(await run()).toMatchObject({ outcome: 'nothing_expired' });
+    expect(lateRows()).toHaveLength(1);
+  }, 60_000);
+
+  it('calls an archive another process has locked busy, not broken, and does not wait on it', async () => {
+    const first = send('alice', 'bob');
+    age(first.message_id);
+    expect((await run()).outcome).toBe('deleted');
+    const lost = send('carol', 'bob');
+    age(lost.message_id);
+    const lock = await lockFromAnotherProcess(archiveFile(), 3_000);
+    const gaps = eventLoopGaps();
+    const result = await run();
+    expect(gaps.stop()).toBeLessThan(1_000);
+    await lock.exited;
+    expect(result.outcome).toBe('database_busy');
+    expect(ids()).toContain(lost.message_id);
+    expect(await run()).toMatchObject({ outcome: 'deleted', expired_message_count: 1 });
+  }, 60_000);
+
+  it('calls an archive another process locked between two batches busy too', async () => {
+    const old = agentMessageExpiryCutoff(Date.now() - 60_000);
+    db().transaction(() => { for (let i = 0; i < 150; i++) bareMessage(old, 'alice'); }).immediate();
+    let lock: { exited: Promise<void> } | undefined;
+    const result = await runAgentMessageExpiry(db(), {
+      trigger: 'test',
+      fault: { afterBatch: async (batch) => { if (batch === 1) lock = await lockFromAnotherProcess(archiveFile(), 3_000); } },
+    });
+    await lock!.exited;
+    expect(result).toMatchObject({ outcome: 'database_busy', expired_message_count: 100 });
+    expect(ids()).toHaveLength(50);
+  }, 60_000);
+
+  it('writes the row of a pass that met a lock as the process stops, if it can by then', async () => {
+    const lock = await lockFromAnotherProcess(dbHandle.dbPath, 1_500);
+    expect((await run()).run_id).toBeNull();
+    await lock.exited;
+    expect(lateRows()).toHaveLength(0);
+    const stop = startAgentMessageExpiryScheduler(() => db(), { trigger: 'test', firstRunDelayMs: 60_000 });
+    stop();
+    expect(lateRows().map((row) => row.outcome)).toEqual(['database_busy']);
+  }, 60_000);
+
+  it('stops at the next step, keeping what it did, when another process takes the lock after the pass started', async () => {
+    const old = agentMessageExpiryCutoff(Date.now() - 60_000);
+    db().transaction(() => { for (let i = 0; i < 300; i++) bareMessage(old, 'alice'); }).immediate();
+    let lock: { exited: Promise<void> } | undefined;
+    const gaps = eventLoopGaps();
+    const result = await runAgentMessageExpiry(db(), {
+      trigger: 'test',
+      fault: { afterBatch: async (batch) => { if (batch === 1) lock = await lockFromAnotherProcess(dbHandle.dbPath, 3_000); } },
+    });
+    const longest = gaps.stop();
+    expect(longest).toBeLessThan(1_000);
+    expect(result).toMatchObject({ outcome: 'database_busy', expired_message_count: 100, run_id: null });
+    expect(result.detail).toContain('locked by another process');
+    expect(busyTimeout()).toBe(30_000);
+    await lock!.exited;
+    expect(ids()).toHaveLength(200);
+    // Nothing was half done: the next pass archives and deletes the rest, and the busy pass is on record.
+    expect(await run()).toMatchObject({ outcome: 'deleted', expired_message_count: 200 });
+    expect(ids()).toHaveLength(0);
+    expect(countIn(archiveFile(), 'archive_log')).toBe(300);
+    expect(lateRows()).toMatchObject([{ outcome: 'database_busy', expired_message_count: 100 }]);
+    expect(db().prepare("SELECT COUNT(*) AS n FROM agent_message_expiry_runs WHERE outcome = 'started'").get()).toEqual({ n: 0 });
+    expect(noticesTo('alice')).toHaveLength(1);
+  }, 60_000);
+});
+
+describe('a pass in a process that is shutting down', () => {
+  it('closes its row as interrupted and lets go of its lease at once, and deletes nothing more', async () => {
+    const old = agentMessageExpiryCutoff(Date.now() - 60_000);
+    db().transaction(() => { for (let i = 0; i < 300; i++) bareMessage(old, 'alice'); }).immediate();
+    const stop = new AbortController();
+    let rowAtStop: unknown;
+    let leaseAtStop: unknown = 'not read';
+    await runAgentMessageExpiry(db(), {
+      trigger: 'test',
+      signal: stop.signal,
+      fault: {
+        afterBatch: (batch) => {
+          if (batch !== 1) return;
+          stop.abort();
+          rowAtStop = db().prepare('SELECT outcome, expired_message_count FROM agent_message_expiry_runs ORDER BY run_id DESC LIMIT 1').get();
+          leaseAtStop = leaseRow();
+        },
+      },
+    });
+    expect(rowAtStop).toEqual({ outcome: 'interrupted', expired_message_count: 100 });
+    expect(leaseAtStop).toBeUndefined();
+    expect(ids()).toHaveLength(200);
+    expect(await run()).toMatchObject({ outcome: 'deleted', expired_message_count: 200 });
+  });
+
+  it('the scheduler\'s stop does the same to the pass it is running', async () => {
+    const old = agentMessageExpiryCutoff(Date.now() - 60_000);
+    db().transaction(() => { for (let i = 0; i < 1000; i++) bareMessage(old, 'alice'); }).immediate();
+    const started = (): number => (db().prepare("SELECT COUNT(*) AS n FROM agent_message_expiry_runs WHERE outcome = 'started'").get() as { n: number }).n;
+    const stop = startAgentMessageExpiryScheduler(() => db(), { trigger: 'test', firstRunDelayMs: 0 });
+    for (let i = 0; i < 5_000 && started() === 0; i++) await new Promise((resolve) => setImmediate(resolve));
+    expect(started()).toBe(1);
+    stop();
+    expect(started()).toBe(0);
+    expect(leaseRow()).toBeUndefined();
+    // Let the stopped pass unwind before the test's database goes away.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(ids().length).toBeGreaterThan(0);
+  });
 });
 
 describe('a clock that was set back', () => {
@@ -1861,6 +2127,16 @@ describe('what doctor says about the expiry', () => {
     }
   });
 
+  it('with no pass on record and messages waiting, names a lock another program keeps as a cause too', async () => {
+    const lost = send('alice', 'bob');
+    age(lost.message_id);
+    const row = await doctorRow();
+    expect(row?.status).toBe('warn');
+    expect(row?.summary).toContain('No expiry pass has run on this database');
+    expect(row?.summary).toMatch(/another program may be keeping the database locked/);
+    expect(row?.fix).toMatch(/another program may be keeping the database locked/);
+  });
+
   it('says a database that was locked is not a failure', async () => {
     db().prepare(`
       INSERT INTO agent_message_expiry_runs (started_at_ms, finished_at_ms, trigger_source, outcome, detail)
@@ -1879,24 +2155,41 @@ function noticesTo(sender: string): Array<{ message_id: string; payload_json: st
 }
 
 describe('the notices a pass writes match its record', () => {
-  it('records as many notices as it wrote when it stops part way, and never rewrites a notice already written', async () => {
-    const old = agentMessageExpiryCutoff(Date.now() - 60_000);
-    db().transaction(() => { for (let i = 0; i < 150; i++) bareMessage(old, 'alice'); }).immediate();
-    const seenAfterFirstBatch: Array<{ message_id: string; payload_json: string }> = [];
-    const result = await runAgentMessageExpiry(db(), {
-      trigger: 'test',
-      fault: {
-        afterBatch: (batch) => { if (batch === 1) seenAfterFirstBatch.push(...noticesTo('alice')); },
-        beforeArchiveCheck: (_file, batch) => { if (batch === 2) throw new Error('refused for the test'); },
-      },
-    });
-    expect(result.outcome).toBe('archive_failed');
-    expect(result.notice_count).toBe(noticesTo('alice').length);
-    expect(lastAgentMessageExpiryRun(db())?.notice_count).toBe(noticesTo('alice').length);
-    // Whatever was already written is still exactly as it was.
-    for (const before of seenAfterFirstBatch) {
-      expect(noticesTo('alice').find((n) => n.message_id === before.message_id)?.payload_json).toBe(before.payload_json);
+  it('records as many notices as it wrote when it stops after writing them', async () => {
+    const lost = send('alice', 'bob');
+    age(lost.message_id);
+    // The presence clean-up, which comes after the notices, fails.
+    db().exec("CREATE TRIGGER refuse_presence BEFORE DELETE ON agent_session_connections BEGIN SELECT RAISE(ABORT, 'refused for the test'); END");
+    db().prepare("INSERT OR IGNORE INTO agent_principals (project, principal_id, activation_event_sequence) VALUES (?, 'bob', 0)").run(PROJECT);
+    db().prepare("INSERT INTO agent_session_instances (project, session_instance_id, principal_id, adapter_kind) VALUES (?, 's-gone', 'bob', 'test-adapter')").run(PROJECT);
+    db().prepare(`
+      INSERT INTO agent_session_connections (connection_id, project, principal_id, session_instance_id, generation,
+        adapter_kind, router_instance_id, lease_expires_at_ms, disconnected_at)
+      VALUES ('c-gone', ?, 'bob', 's-gone', 1, 'test-adapter', 'r', ?, datetime('now', '-3 days'))
+    `).run(PROJECT, Date.now() - 3 * 86_400_000);
+    let result;
+    try {
+      result = await run();
+    } finally {
+      db().exec('DROP TRIGGER refuse_presence');
     }
+    expect(result.outcome).toBe('failed');
+    expect(noticesTo('alice')).toHaveLength(1);
+    expect(result.notice_count).toBe(1);
+    expect(lastAgentMessageExpiryRun(db())?.notice_count).toBe(1);
+  });
+
+  it('never rewrites a notice already written: a later pass writes a new one', async () => {
+    const first = send('alice', 'bob');
+    age(first.message_id);
+    expect((await run()).notice_count).toBe(1);
+    const [written] = noticesTo('alice');
+    const second = send('alice', 'bob');
+    age(second.message_id);
+    expect((await run()).notice_count).toBe(1);
+    const notices = noticesTo('alice');
+    expect(notices).toHaveLength(2);
+    expect(notices.find((n) => n.message_id === written.message_id)?.payload_json).toBe(written.payload_json);
   });
 
   it('tells the sender once about everything, even when the pass that deleted the first batch died', async () => {
@@ -1917,7 +2210,7 @@ describe('the notices a pass writes match its record', () => {
     const lost = send('alice', 'bob');
     age(lost.message_id);
     // Every update that would close the row fails, as for a process killed right after its notices.
-    db().exec("CREATE TEMP TRIGGER refuse_finish BEFORE UPDATE OF outcome ON agent_message_expiry_runs WHEN NEW.outcome <> 'started' BEGIN SELECT RAISE(ABORT, 'refused for the test'); END");
+    db().exec("CREATE TRIGGER refuse_finish BEFORE UPDATE OF outcome ON agent_message_expiry_runs WHEN NEW.outcome <> 'started' BEGIN SELECT RAISE(ABORT, 'refused for the test'); END");
     const realWrite = process.stderr.write.bind(process.stderr);
     process.stderr.write = (() => true) as typeof process.stderr.write;
     try {
@@ -1936,8 +2229,372 @@ describe('the notices a pass writes match its record', () => {
     age(lost.message_id);
     expect((await runAgentMessageExpiry(db(), { trigger: 'test', fault: { afterBatch: () => { throw new Error('stopped for the test'); } } })).outcome).toBe('failed');
     const next = await run();
-    expect(next.notice_count).toBe(1);
+    expect(next).toMatchObject({ outcome: 'notices_sent', notice_count: 1 });
     expect(noticesTo('alice')).toHaveLength(1);
+  });
+});
+
+describe('an archive that keeps failing does not stop the work that does not need it', () => {
+  function stalePresence(): void {
+    db().prepare("INSERT OR IGNORE INTO agent_principals (project, principal_id, activation_event_sequence) VALUES (?, 'bob', 0)").run(PROJECT);
+    db().prepare("INSERT INTO agent_session_instances (project, session_instance_id, principal_id, adapter_kind) VALUES (?, 's-gone', 'bob', 'test-adapter')").run(PROJECT);
+    db().prepare(`
+      INSERT INTO agent_session_connections (connection_id, project, principal_id, session_instance_id, generation,
+        adapter_kind, router_instance_id, lease_expires_at_ms, disconnected_at)
+      VALUES ('c-gone', ?, 'bob', 's-gone', 1, 'test-adapter', 'r', ?, datetime('now', '-3 days'))
+    `).run(PROJECT, Date.now() - 3 * 86_400_000);
+  }
+
+  it('writes the notices it owes and clears old presence, and still deletes nothing more', async () => {
+    const first = send('alice', 'bob');
+    age(first.message_id);
+    // Deleted, its notice still owed: the pass stopped after its batch.
+    expect((await runAgentMessageExpiry(db(), { trigger: 'test', fault: { afterBatch: () => { throw new Error('stopped for the test'); } } })).outcome).toBe('failed');
+    expect(noticesTo('alice')).toHaveLength(0);
+    fs.writeFileSync(archiveFile(), 'not a database at all, just text that is long enough to be a header');
+    stalePresence();
+    const next = send('carol', 'bob');
+    age(next.message_id);
+    const result = await run();
+    expect(result.outcome).toBe('archive_failed');
+    expect(result.detail).toMatch(/^could not archive the rows of 1 message\(s\) before deleting them .*not a database/);
+    expect(result.notice_count).toBe(1);
+    expect(noticesTo('alice')).toHaveLength(1);
+    expect(result.connection_count).toBe(1);
+    expect(ids()).toContain(next.message_id);
+  });
+
+  it('keeps the id of a deleted message whose notice is still owed past the 30 days, until the notice is written', async () => {
+    const insert = db().prepare(`
+      INSERT INTO agent_message_expiries (message_id, project, created_at, expired_at_ms, was_read, notice_message_id, sender, recipient)
+      VALUES (?, ?, '2026-01-01 00:00:00', ?, 0, ?, 'alice', 'bob')
+    `);
+    const longAgo = Date.now() - 31 * 86_400_000;
+    insert.run('owed', PROJECT, longAgo, null);
+    insert.run('told', PROJECT, longAgo, 'notice-1');
+    // The notices cannot be written this time.
+    db().exec("CREATE TRIGGER refuse_notice BEFORE INSERT ON agent_messages WHEN NEW.sender = 'memesh' BEGIN SELECT RAISE(ABORT, 'refused for the test'); END");
+    try {
+      expect((await run()).outcome).toBe('failed');
+    } finally {
+      db().exec('DROP TRIGGER refuse_notice');
+    }
+    const kept = (db().prepare('SELECT message_id FROM agent_message_expiries').all() as Array<{ message_id: string }>).map((row) => row.message_id);
+    expect(kept).toEqual(['owed']);
+  });
+});
+
+describe('clearing a large archive', () => {
+  it('renews its lease as it goes, and stops when another process took the lease over', async () => {
+    const old = agentMessageExpiryCutoff(Date.now() - 60_000);
+    db().transaction(() => { for (let i = 0; i < 300; i++) bareMessage(old, 'alice'); }).immediate();
+    expect((await run()).expired_message_count).toBe(300);
+    inArchive(`UPDATE archive_log SET archived_at_ms = ${Date.now() - 25 * 3_600_000}`);
+    const pass = run();
+    let taken = false;
+    await new Promise<void>((resolve) => {
+      const watch = (): void => {
+        if (countIn(archiveFile(), 'archive_log') < 300) {
+          db().prepare("UPDATE agent_message_expiry_lease SET holder = 'another process', expires_at_ms = ?").run(Date.now() + 60_000);
+          taken = true;
+          resolve();
+        } else {
+          setImmediate(watch);
+        }
+      };
+      setImmediate(watch);
+    });
+    const result = await pass;
+    expect(taken).toBe(true);
+    expect(countIn(archiveFile(), 'archive_log')).toBeGreaterThan(0);
+    expect(result.detail).toContain('another process took over the expiry lease');
+  });
+});
+
+describe('the notice count of a pass is what it committed', () => {
+  // The transaction fails while it marks the ids, or after the notices, as it saves the run's count.
+  it.each([
+    'BEFORE UPDATE OF notice_message_id ON agent_message_expiries',
+    'BEFORE UPDATE OF notice_count ON agent_message_expiry_runs WHEN NEW.notice_count > 0',
+  ])('counts no notice when the transaction that wrote it rolled back (%s)', async (when) => {
+    const lost = send('alice', 'bob');
+    age(lost.message_id);
+    db().exec(`CREATE TRIGGER refuse_mark ${when} BEGIN SELECT RAISE(ABORT, 'refused for the test'); END`);
+    let result;
+    try {
+      result = await run();
+    } finally {
+      db().exec('DROP TRIGGER refuse_mark');
+    }
+    expect(result.outcome).toBe('failed');
+    expect(noticesTo('alice')).toHaveLength(0);
+    expect(result.notice_count).toBe(0);
+    expect(lastAgentMessageExpiryRun(db())?.notice_count).toBe(0);
+  });
+});
+
+describe('the archive an earlier MeMesh shared between the databases of a folder', () => {
+  it('a database not named knowledge-graph.db removes its own rows from it after their extra day, and nobody else\'s', async () => {
+    const workPath = path.join(path.dirname(dbHandle.dbPath), 'work.db');
+    const work = new MemeshDatabase(workPath);
+    work.exec(SCHEMA_SQL);
+    try {
+      const theirs = sendAgentMessage(work, {
+        project: PROJECT, sender: 'alice', recipient: 'bob', idempotency_key: 'work-key', content_type: 'application/json', payload: { body: 'work' },
+      });
+      work.prepare("UPDATE agent_messages SET created_at = datetime('now', '-2 days') WHERE message_id = ?").run(theirs.message_id);
+      const first = await runAgentMessageExpiry(work, { trigger: 'test' });
+      expect(first.outcome).toBe('deleted');
+      // What an earlier MeMesh did: every database of the folder archived into the one shared file.
+      const shared = path.join(path.dirname(first.backup_path!), 'agent-messages-expired.db');
+      fs.renameSync(first.backup_path!, shared);
+      const handle = new DatabaseSync(shared);
+      try {
+        handle.exec(`UPDATE archive_log SET archived_at_ms = ${Date.now() - 25 * 3_600_000}`);
+        handle.exec(`INSERT INTO archive_log (message_id, archived_at_ms) VALUES ('someone-elses', ${Date.now() - 25 * 3_600_000})`);
+        handle.exec("INSERT INTO agent_messages (message_id) VALUES ('someone-elses')");
+      } finally {
+        handle.close();
+      }
+      const purged = await runAgentMessageExpiry(work, { trigger: 'test' });
+      expect(purged.outcome).toBe('archive_purged');
+      const left = new DatabaseSync(shared, { readOnly: true });
+      try {
+        expect(left.prepare('SELECT message_id FROM archive_log').all()).toEqual([{ message_id: 'someone-elses' }]);
+        expect(left.prepare('SELECT message_id FROM agent_messages').all()).toEqual([{ message_id: 'someone-elses' }]);
+      } finally {
+        left.close();
+      }
+      // Nothing more of its own there: the next pass has nothing to do.
+      expect((await runAgentMessageExpiry(work, { trigger: 'test' })).outcome).toBe('nothing_expired');
+    } finally {
+      work.close();
+    }
+  });
+});
+
+describe('what doctor says about the archive and the fix', () => {
+  const unix = process.platform !== 'win32';
+
+  async function deletedOnce(): Promise<string> {
+    const lost = send('alice', 'bob');
+    age(lost.message_id);
+    const first = await run();
+    expect(first.outcome).toBe('deleted');
+    return first.backup_path!;
+  }
+
+  it.skipIf(!unix)('warns about an archive path that became a dangling symlink, before a pass fails on it', async () => {
+    const archive = await deletedOnce();
+    fs.rmSync(archive);
+    fs.symlinkSync(path.join(dbHandle.tmpDir, 'nowhere.db'), archive);
+    const row = await doctorRow();
+    expect(row?.status).toBe('warn');
+    expect(row?.summary).toContain('is a symlink');
+  });
+
+  it.skipIf(!unix || process.getuid?.() === 0)('warns about an archive this user cannot write', async () => {
+    const archive = await deletedOnce();
+    fs.chmodSync(archive, 0o400);
+    try {
+      const row = await doctorRow();
+      expect(row?.status).toBe('warn');
+      expect(row?.summary).toContain('this user cannot write it');
+    } finally {
+      fs.chmodSync(archive, 0o600);
+    }
+  });
+
+  it('does not say "nothing is deleted" about a pass that deleted messages before its archive failed', async () => {
+    const old = agentMessageExpiryCutoff(Date.now() - 60_000);
+    db().transaction(() => { for (let i = 0; i < 150; i++) bareMessage(old, 'alice'); }).immediate();
+    const result = await runAgentMessageExpiry(db(), {
+      trigger: 'test', fault: { beforeArchiveCheck: (_file, batch) => { if (batch === 2) throw new Error('refused for the test'); } },
+    });
+    expect(result).toMatchObject({ outcome: 'archive_failed', expired_message_count: 100 });
+    const row = await doctorRow();
+    expect(row?.status).toBe('warn');
+    expect(row?.summary).toContain('100 message(s) deleted');
+    expect(row?.fix).not.toContain('Nothing is deleted');
+    expect(row?.fix).toContain('Nothing more is deleted');
+  });
+
+  it.skipIf(process.platform !== 'darwin' || process.getuid?.() === 0)('does not tell the owner to chmod a database whose write bit is already set', async () => {
+    const user = os.userInfo().username;
+    expect(spawnSync('chmod', ['+a', `user:${user} deny write`, dbHandle.dbPath]).status).toBe(0);
+    try {
+      const row = await doctorRow();
+      expect(row?.status).toBe('warn');
+      expect(row?.summary).toContain('cannot be written');
+      expect(row?.fix).not.toContain('chmod u+w');
+      expect(row?.fix).toContain('write bit is already set');
+    } finally {
+      spawnSync('chmod', ['-N', dbHandle.dbPath]);
+    }
+  });
+
+  for (const outcome of ['skipped_concurrent', 'interrupted', 'database_busy', 'started', 'archive_failed', 'probe']) {
+    it(`does not count a pass that ended ${outcome} as keeping up`, async () => {
+      const insert = db().prepare("INSERT INTO agent_message_expiry_runs (started_at_ms, finished_at_ms, trigger_source, outcome) VALUES (?, ?, 'router', ?)");
+      insert.run(Date.now() - 3_600_000, Date.now() - 3_600_000, 'deleted');
+      insert.run(Date.now() - 1_000, Date.now() - 500, outcome);
+      const lost = send('alice', 'bob');
+      age(lost.message_id);
+      expect((await doctorRow())?.status, outcome).toBe('warn');
+    });
+  }
+
+  it('names a lock another program keeps, not a missing session, when the passes keep meeting one', async () => {
+    db().prepare("INSERT INTO agent_message_expiry_runs (started_at_ms, finished_at_ms, trigger_source, outcome) VALUES (?, ?, 'router', 'database_busy')")
+      .run(Date.now() - 1_000, Date.now() - 500);
+    const lost = send('alice', 'bob');
+    age(lost.message_id);
+    const row = await doctorRow();
+    expect(row?.status).toBe('warn');
+    expect(row?.fix).toMatch(/another program may be keeping the database locked/);
+  });
+
+  it.skipIf(!unix)('calls an archive another process is writing busy, not unusable, and does not warn about it', async () => {
+    const archive = await deletedOnce();
+    const lock = await lockFromAnotherProcess(archive, 2_500, 'EXCLUSIVE');
+    const started = Date.now();
+    const row = await doctorRow();
+    expect(Date.now() - started).toBeLessThan(1_000);
+    await lock.exited;
+    expect(row?.status).toBe('pass');
+    expect(row?.summary).toContain('in use by another process right now');
+    expect(row?.summary).not.toContain('cannot be used');
+  }, 30_000);
+});
+
+describe('rules a review found unguarded', () => {
+  it('names the archive of the default database knowledge-graph.db as it always was', async () => {
+    const dir = fs.mkdtempSync(path.join(dbHandle.tmpDir, 'default-'));
+    const handle = new MemeshDatabase(path.join(dir, 'knowledge-graph.db'));
+    handle.exec(SCHEMA_SQL);
+    try {
+      const sent = sendAgentMessage(handle, {
+        project: PROJECT, sender: 'alice', recipient: 'bob', idempotency_key: 'k', content_type: 'application/json', payload: { body: 'x' },
+      });
+      handle.prepare("UPDATE agent_messages SET created_at = datetime('now', '-2 days') WHERE message_id = ?").run(sent.message_id);
+      const result = await runAgentMessageExpiry(handle, { trigger: 'test' });
+      expect(path.basename(result.backup_path!)).toBe('agent-messages-expired.db');
+    } finally {
+      handle.close();
+    }
+  });
+
+  it('owes no notice for an id a MeMesh notice left, whatever an older MeMesh wrote on its row', async () => {
+    db().prepare(`
+      INSERT INTO agent_message_expiries (message_id, project, created_at, expired_at_ms, was_read, notice_message_id, sender, recipient)
+      VALUES ('old-notice', ?, '2026-01-01 00:00:00', ?, 0, NULL, 'memesh', 'alice')
+    `).run(PROJECT, Date.now());
+    expect(await run()).toMatchObject({ outcome: 'nothing_expired', notice_count: 0 });
+    expect(noticesTo('memesh')).toHaveLength(0);
+  });
+
+  it.skipIf(process.platform === 'win32')('deletes nothing when the archive path is a folder', async () => {
+    fs.mkdirSync(archiveFile(), { recursive: true });
+    const lost = send('alice', 'bob');
+    age(lost.message_id);
+    const result = await run();
+    expect(result.outcome).toBe('archive_failed');
+    expect(result.detail).toContain('is not a plain file');
+    expect(userMessages()).toBe(1);
+  });
+
+  it('names the archive on its row before the first batch is done', async () => {
+    const lost = send('alice', 'bob');
+    age(lost.message_id);
+    let row: unknown;
+    await runAgentMessageExpiry(db(), {
+      trigger: 'test',
+      fault: { beforeArchiveCheck: () => { row = db().prepare("SELECT backup_path FROM agent_message_expiry_runs WHERE outcome = 'started'").get(); } },
+    });
+    expect(row).toEqual({ backup_path: fs.realpathSync(archiveFile()) });
+  });
+
+  it.skipIf(process.platform === 'win32')('takes group and other access away from an archive that has it', async () => {
+    const first = send('alice', 'bob');
+    age(first.message_id);
+    await run();
+    fs.chmodSync(archiveFile(), 0o644);
+    const second = send('carol', 'bob');
+    age(second.message_id);
+    expect((await run()).outcome).toBe('deleted');
+    expect(fs.statSync(archiveFile()).mode & 0o777).toBe(0o600);
+  });
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('with only messages still being delivered, does not even try to write', async () => {
+    const inFlight = send('alice', 'bob');
+    dispatchChain(inFlight, 'started', false);
+    age(inFlight.message_id);
+    fs.chmodSync(dbHandle.dbPath, 0o400);
+    let result;
+    try {
+      result = await run();
+    } finally {
+      fs.chmodSync(dbHandle.dbPath, 0o600);
+    }
+    expect(result.outcome).toBe('deferred_in_flight');
+  });
+
+  it('counts an acknowledgement or a workflow record alone as read', async () => {
+    const acked = send('alice', 'bob');
+    const ackChain = dispatchChain(acked);
+    recordAgentAckFact(db(), { delivery_id: acked.delivery_id, host_accept_id: ackChain.hostAcceptId, actor: 'bob', idempotency_key: `a-${acked.message_id}` });
+    const worked = send('carol', 'bob');
+    recordAgentWorkflowFact(db(), { delivery_id: worked.delivery_id, actor: 'bob', workflow_state: 'completed', idempotency_key: `w-${worked.message_id}` });
+    age(acked.message_id);
+    age(worked.message_id);
+    expect(await run()).toMatchObject({ outcome: 'deleted', expired_message_count: 2, unread_message_count: 0, notice_count: 0 });
+  });
+
+  it('writes one notice per project for a sender with expired messages in two projects', async () => {
+    const here = send('alice', 'bob');
+    const there = sendAgentMessage(db(), {
+      project: 'elsewhere', sender: 'alice', recipient: 'bob', idempotency_key: 'k2', content_type: 'application/json', payload: { body: 'x' },
+    });
+    age(here.message_id);
+    age(there.message_id);
+    expect(await run()).toMatchObject({ outcome: 'deleted', notice_count: 2 });
+    expect((db().prepare("SELECT project FROM agent_messages WHERE sender = 'memesh' ORDER BY project").all() as Array<{ project: string }>).map((r) => r.project))
+      .toEqual(['elsewhere', PROJECT].sort());
+  });
+
+  it('gives the archive\'s freed pages back as it removes old copies', async () => {
+    const old = agentMessageExpiryCutoff(Date.now() - 60_000);
+    const insert = db().prepare(`
+      INSERT INTO agent_messages (message_id, project, sender, recipient, content_type, privacy, payload_json, provenance_json, created_at)
+      VALUES (?, ?, 'alice', 'bob', 'text/plain', 'private', ?, '{}', ?)
+    `);
+    db().transaction(() => { for (let i = 0; i < 200; i++) insert.run(randomUUID(), PROJECT, JSON.stringify('x'.repeat(4000)), old); }).immediate();
+    await run();
+    const pages = (): { pages: number; free: number } => {
+      const handle = new DatabaseSync(archiveFile(), { readOnly: true });
+      try {
+        return {
+          pages: (handle.prepare('PRAGMA page_count').get() as { page_count: number }).page_count,
+          free: (handle.prepare('PRAGMA freelist_count').get() as { freelist_count: number }).freelist_count,
+        };
+      } finally {
+        handle.close();
+      }
+    };
+    const full = pages();
+    inArchive(`UPDATE archive_log SET archived_at_ms = ${Date.now() - 25 * 3_600_000}`);
+    expect((await run()).outcome).toBe('archive_purged');
+    const after = pages();
+    expect(after.free).toBe(0);
+    expect(after.pages).toBeLessThan(full.pages / 4);
+  });
+
+  it('is not due when the last pass started four minutes ago', async () => {
+    const lost = send('alice', 'bob');
+    age(lost.message_id);
+    db().prepare("INSERT INTO agent_message_expiry_runs (started_at_ms, finished_at_ms, trigger_source, outcome) VALUES (?, ?, 'router', 'nothing_expired')")
+      .run(Date.now() - 4 * 60_000, Date.now() - 4 * 60_000);
+    expect(await runAgentMessageExpiryIfDue(db(), { trigger: 'test' })).toBeNull();
   });
 });
 
@@ -1979,9 +2636,59 @@ describe('an archive path that is not a plain archive file', () => {
     age(lost.message_id);
     const result = await run();
     expect(result.outcome).toBe('archive_failed');
+    expect(result.detail).toContain('is a symlink');
+    expect(userMessages()).toBe(1);
+    expect(db().prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'archive_log'").get()).toEqual({ n: 0 });
+  });
+
+  it.skipIf(!unix)('deletes nothing when the archive is a hard link to the database itself', async () => {
+    fs.mkdirSync(path.dirname(archiveFile()), { recursive: true, mode: 0o700 });
+    fs.linkSync(dbHandle.dbPath, archiveFile());
+    const lost = send('alice', 'bob');
+    age(lost.message_id);
+    const result = await run();
+    expect(result.outcome).toBe('archive_failed');
     expect(result.detail).toContain('is the database itself');
     expect(userMessages()).toBe(1);
     expect(db().prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'archive_log'").get()).toEqual({ n: 0 });
+  });
+
+  it.skipIf(!unix)('writes nothing into another database the archive path is a symlink to, deletes nothing, and doctor warns', async () => {
+    const first = send('alice', 'bob');
+    age(first.message_id);
+    expect((await run()).outcome).toBe('deleted');
+    const otherPath = path.join(dbHandle.tmpDir, 'other.db');
+    const other = new MemeshDatabase(otherPath);
+    other.exec(SCHEMA_SQL);
+    other.close();
+    const otherBefore = fs.readFileSync(otherPath);
+    fs.rmSync(archiveFile());
+    fs.symlinkSync(otherPath, archiveFile());
+    const lost = send('carol', 'bob');
+    age(lost.message_id);
+    const result = await run();
+    expect(result.outcome).toBe('archive_failed');
+    expect(result.detail).toContain('is a symlink');
+    expect(ids()).toContain(lost.message_id);
+    expect(fs.readFileSync(otherPath).equals(otherBefore)).toBe(true);
+    const row = await doctorRow();
+    expect(row?.status).toBe('warn');
+    expect(row?.summary).toContain('is a symlink');
+  });
+
+  it.skipIf(!unix)('does not follow a symlink even to a MeMesh archive of its own', async () => {
+    const first = send('alice', 'bob');
+    age(first.message_id);
+    expect((await run()).outcome).toBe('deleted');
+    const moved = path.join(dbHandle.tmpDir, 'moved-archive.db');
+    fs.renameSync(archiveFile(), moved);
+    fs.symlinkSync(moved, archiveFile());
+    const before = fs.readFileSync(moved);
+    const lost = send('carol', 'bob');
+    age(lost.message_id);
+    expect((await run()).outcome).toBe('archive_failed');
+    expect(ids()).toContain(lost.message_id);
+    expect(fs.readFileSync(moved).equals(before)).toBe(true);
   });
 
   it.skipIf(!unix)('leaves a file that is not a database alone, permissions included, and deletes nothing', async () => {

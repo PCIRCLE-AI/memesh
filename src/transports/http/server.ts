@@ -1432,7 +1432,12 @@ export function startServer(
       () => (isDatabaseOpen() ? getDatabase() : null),
       { trigger: 'http-serve' },
     );
-    server.on('close', stopExpiry);
+    // `memesh serve` and memesh-http exit without waiting for 'close': a running pass is closed on the way out too.
+    process.once('exit', stopExpiry);
+    server.on('close', () => {
+      process.removeListener('exit', stopExpiry);
+      stopExpiry();
+    });
   }
   return server;
 }

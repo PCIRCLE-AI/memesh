@@ -777,7 +777,11 @@ export function startServer(host = HOST, port = PORT, opts) {
     serverAuthRequired.set(server, isRemote);
     if (opts?.agentMessageExpiry === true) {
         const stopExpiry = startAgentMessageExpiryScheduler(() => (isDatabaseOpen() ? getDatabase() : null), { trigger: 'http-serve' });
-        server.on('close', stopExpiry);
+        process.once('exit', stopExpiry);
+        server.on('close', () => {
+            process.removeListener('exit', stopExpiry);
+            stopExpiry();
+        });
     }
     return server;
 }

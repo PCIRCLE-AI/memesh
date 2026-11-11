@@ -103,7 +103,7 @@ describe('doctor agent-message storage pressure', () => {
     const row = (await doctor()).checks.find((check) => check.id === 'agent_message_expiry');
     expect(row?.status).toBe('warn');
     expect(row?.summary).toContain('disk full');
-    expect(row?.fix).toContain('Nothing is deleted while this fails');
+    expect(row?.fix).toContain('Nothing more is deleted while this fails');
   });
 
   it('reports the named owner quota environment policy without enabling retention', async () => {

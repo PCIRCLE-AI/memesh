@@ -79,7 +79,8 @@ path; `poll`/`watch` and cursor recovery remain available for compatibility and
 diagnosis.
 
 A message is kept for one day, read or not, and MeMesh deletes it by itself
-(its sender is told when the recipient recorded nothing and did not reply); what
+(its sender is told when nobody on the recipient's side recorded or answered it;
+the full rule is in docs/platforms/agent-messaging.md); what
 it deletes is kept in a local archive for one more day. Nothing is configured. To inspect
 storage and the last cleanup after installation:
 

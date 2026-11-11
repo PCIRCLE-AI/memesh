@@ -47,7 +47,7 @@ import { guardFromMetadata } from './guards.js';
 import { getAgentMessageStorageReport } from './agent-message-storage.js';
 import { HANDLED_RECEIPT_KINDS_SQL } from './agent-messaging.js';
 import {
-  AGENT_MESSAGE_EXPIRY_FAILED_OUTCOMES, AGENT_MESSAGE_EXPIRY_INTERVAL_MS, databaseFile, inspectAgentMessageArchive,
+  AGENT_MESSAGE_EXPIRY_DONE_OUTCOMES, AGENT_MESSAGE_EXPIRY_FAILED_OUTCOMES, AGENT_MESSAGE_EXPIRY_INTERVAL_MS, databaseFile, inspectAgentMessageArchive,
   lastAgentMessageExpiryRun, latestAgentMessageExpiryArchive,
 } from './agent-message-expiry.js';
 import { readHostConfigFile } from '../host-runtime/config.js';
@@ -653,9 +653,13 @@ function inspectAgentMessageExpiry(db: MemeshDatabase, nowMs: number = Date.now(
       "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name IN ('agent_messages', 'agent_message_expiry_runs')",
     ).get() as { n?: number } | undefined;
     if (present?.n !== 2) return undefined;
+    const warn = (summary: string, fix: string): DoctorCheck => createCheck('agent_message_expiry', 'Agent message expiry', 'warn', summary, fix);
+    const info = (summary: string): DoctorCheck => createInfo('agent_message_expiry', 'Agent message expiry', summary);
 
     const waiting = getAgentMessageStorageReport(db, {}).expired_pending_message_count;
     const how = 'It runs by itself while the MeMesh router, MCP server or memesh serve is running; start a MeMesh session and re-run memesh doctor.';
+    const locked = 'another program may be keeping the database locked, so each pass gave up rather than wait. '
+      + 'Close other programs that hold the database open (a sqlite3 shell, a sync or backup tool); if messages still wait five minutes later, re-run memesh doctor.';
     // The pass records itself, and a database file this user cannot write cannot even record that:
     // so doctor looks at the file itself rather than wait for a row that can never be written.
     const file = databaseFile(db);
@@ -664,8 +668,10 @@ function inspectAgentMessageExpiry(db: MemeshDatabase, nowMs: number = Date.now(
         fs.accessSync(file, fs.constants.W_OK);
       } catch {
         // The same command the database check gives: quoted, and covering a -wal/-shm that lost its write bit too.
-        const writeBack = ownerWriteCommand(file) ?? `run: chmod u+w ${shellQuote(file)}`;
-        return createCheck('agent_message_expiry', 'Agent message expiry', 'warn',
+        // None when every write bit is already set: a chmod would change nothing.
+        const writeBack = ownerWriteCommand(file)
+          ?? 'its write bit is already set, so something else refuses the write: an ACL, a read-only mount or a locked file';
+        return warn(
           `The database file ${file} cannot be written by this user, so the one-day expiry cannot delete anything (messages past their day are hidden but stay on disk).`,
           `Make the database writable (${writeBack}), then re-run memesh doctor.`);
       }
@@ -680,10 +686,13 @@ function inspectAgentMessageExpiry(db: MemeshDatabase, nowMs: number = Date.now(
     const last = lastAgentMessageExpiryRun(db);
     const finishedCheck = (): DoctorCheck => {
       if (!last) {
+        // A pass that meets a lock gives up rather than hold its process, and when even its row cannot be
+        // written there is no row: so "none on record" also means a database some other program keeps locked.
+        const noRun = `Either no MeMesh router, MCP server or memesh serve has run while messages were waiting, or ${locked}`;
         return waiting > 0
-          ? createCheck('agent_message_expiry', 'Agent message expiry', 'warn',
-            `No expiry pass has run on this database, and ${waiting} message(s) are past their one day. ${how}`, how)
-          : createInfo('agent_message_expiry', 'Agent message expiry', `No expiry pass has run yet. Messages are kept one day, then deleted. ${how}`);
+          ? warn(
+            `No expiry pass has run on this database, and ${waiting} message(s) are past their one day. ${noRun}`, noRun)
+          : info(`No expiry pass has run yet. Messages are kept one day, then deleted. ${how}`);
       }
       const did = `${last.expired_message_count} message(s) deleted (${last.unread_message_count} with no intake, acknowledgement, disposition or reply; ${last.notice_count} sender notice(s)), `
         + `${last.presence_fact_count} presence fact(s) and ${last.connection_count} connection(s) cleared`;
@@ -692,6 +701,7 @@ function inspectAgentMessageExpiry(db: MemeshDatabase, nowMs: number = Date.now(
       const backup = !latestArchive || !archive ? ''
         : archive.kind === 'missing' ? ` The archive of deleted messages, ${latestArchive}, is not there any more.`
           : archive.kind === 'unusable' ? ` The archive of deleted messages, ${latestArchive}, cannot be used: ${archive.reason}.`
+            : archive.kind === 'busy' ? ` The archive of deleted messages, ${latestArchive}, is in use by another process right now, so what it holds is not shown.`
             : archive.messages > 0 ? ` Deleted messages are kept one more day in ${latestArchive} (${archive.messages} there now).`
               : ` The archive ${latestArchive} holds no deleted message now (each is kept there one more day after it is deleted).`;
       const summary = `Last pass ${ago(nowMs - last.finished_at_ms)} (${last.outcome}, started by ${last.trigger_source}): ${did}.${backup}${last.detail ? ` ${last.detail}.` : ''}`;
@@ -699,25 +709,26 @@ function inspectAgentMessageExpiry(db: MemeshDatabase, nowMs: number = Date.now(
         ? `for the archive ${latestArchive}: free disk space, give the owner read and write access to it and to its folder, or move it away if it is not a MeMesh archive`
         : 'for the archive: free disk space or permissions on the backups folder next to the database';
       if (AGENT_MESSAGE_EXPIRY_FAILED_OUTCOMES.has(last.outcome)) {
-        return createCheck('agent_message_expiry', 'Agent message expiry', 'warn', summary,
-          `Nothing is deleted while this fails. Read the detail above, fix it (${archiveFix}; for a read-only database: make it writable), then re-run memesh doctor.`);
+        return warn(summary,
+          `Nothing more is deleted while this fails. Read the detail above, fix it (${archiveFix}; for a read-only database: make it writable), then re-run memesh doctor.`);
       }
       if (archive?.kind === 'unusable') {
-        return createCheck('agent_message_expiry', 'Agent message expiry', 'warn', summary,
+        return warn(summary,
           `The next pass that has messages to delete cannot copy them, so it deletes nothing. Fix it (${archiveFix}), then re-run memesh doctor.`);
       }
       // Behind means no pass has done its work for a while. A pass that met a lock did no work, so a run
       // of them, or of passes that left no row at all, does not count as keeping up.
       const lastSuccess = (db.prepare(`
         SELECT MAX(finished_at_ms) AS at FROM agent_message_expiry_runs
-        WHERE outcome NOT IN ('started', 'skipped_concurrent', 'database_busy', 'interrupted', ${[...AGENT_MESSAGE_EXPIRY_FAILED_OUTCOMES].map((o) => `'${o}'`).join(', ')})
+        WHERE outcome IN (${[...AGENT_MESSAGE_EXPIRY_DONE_OUTCOMES].map((o) => `'${o}'`).join(', ')})
       `).get() as { at: number | null }).at;
       if (waiting > 0 && (lastSuccess === null || nowMs - lastSuccess > 2 * AGENT_MESSAGE_EXPIRY_INTERVAL_MS)) {
         const since = lastSuccess === null ? 'no pass has done its work yet' : `the last pass that did its work finished ${ago(nowMs - lastSuccess)}`;
-        return createCheck('agent_message_expiry', 'Agent message expiry', 'warn',
-          `${summary} ${waiting} message(s) are past their one day and ${since}. ${how}`, how);
+        const why = last.outcome === 'database_busy' ? `The last pass met a lock: ${locked}` : how;
+        return warn(
+          `${summary} ${waiting} message(s) are past their one day and ${since}. ${why}`, why);
       }
-      return createInfo('agent_message_expiry', 'Agent message expiry', summary);
+      return info(summary);
     };
     if (!stuck) return finishedCheck();
     const sinceMs = nowMs - stuck.started_at_ms;
@@ -730,13 +741,13 @@ function inspectAgentMessageExpiry(db: MemeshDatabase, nowMs: number = Date.now(
     // Whatever the last finished pass said still counts: a stopped pass must not hide a failure behind it.
     if (!last) {
       return old
-        ? createCheck('agent_message_expiry', 'Agent message expiry', 'warn', unfinished, how)
-        : createInfo('agent_message_expiry', 'Agent message expiry', unfinished);
+        ? warn(unfinished, how)
+        : info(unfinished);
     }
     const before = finishedCheck();
     return old || before.status !== 'pass'
-      ? createCheck('agent_message_expiry', 'Agent message expiry', 'warn', `${unfinished} ${before.summary}`, before.fix ?? how)
-      : createInfo('agent_message_expiry', 'Agent message expiry', `${unfinished} ${before.summary}`);
+      ? warn(`${unfinished} ${before.summary}`, before.fix ?? how)
+      : info(`${unfinished} ${before.summary}`);
   } catch {
     return undefined;
   }
