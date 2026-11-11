@@ -920,7 +920,8 @@ function inspectHookActivity(openDatabaseImpl, closeDatabaseImpl, existsSyncImpl
         catch { }
     }
 }
-const SAFE_HANDOFF_NAME = /^session-handoff:[A-Za-z0-9._-]+~[0-9a-f]{32}$/;
+const SAFE_HANDOFF_NAME = /^session-handoff:[^`\\/\p{Cc}]+~[0-9a-f]{32}$/u;
+const shellWord = (text) => (/^[A-Za-z0-9._:~-]+$/.test(text) ? text : `'${text.replaceAll("'", `'\\''`)}'`);
 function archivedHandoffName(file) {
     if (!Object.hasOwn(file.hooks, 'handoff-capture'))
         return null;
@@ -937,7 +938,7 @@ function archivedHandoffName(file) {
 function archivedHandoffCheck(title, runs, name) {
     const summary = `handoff-capture: ${runs} runs, 0 writes — the session handoff was archived with \`forget\`, so it is not updated any more.`;
     if (name) {
-        return createCheck('capture-liveness', title, 'warn', summary, `To turn it back on, run \`memesh remember --name ${name} --type session-handoff --obs restart --project ${name.slice(name.indexOf(':') + 1)}\`; the next Stop replaces it.`, { code: 'capture-liveness.handoff-archived', params: { runs, name } });
+        return createCheck('capture-liveness', title, 'warn', summary, `To turn it back on, run \`memesh remember --name ${shellWord(name)} --type session-handoff --obs restart --project ${shellWord(name.slice(name.indexOf(':') + 1))}\`; the next Stop replaces it.`, { code: 'capture-liveness.handoff-archived', params: { runs, name } });
     }
     return createCheck('capture-liveness', title, 'warn', summary, 'To turn it back on, find its exact name with `memesh recall session-handoff --include-archived`, then remember anything under that name with type session-handoff; the next Stop replaces it.', { code: 'capture-liveness.handoff-archived-unnamed', params: { runs } });
 }

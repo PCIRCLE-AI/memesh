@@ -85,7 +85,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     // tagged write is never refused for lack of one (writeProject).
     || (name === 'remember' && record?.project == null)
     || (name === 'recall' && record?.project == null && (record?.tag == null || record.tag === '') && record?.cross_project !== true);
-  const needsWorkspaceRoots = needsProjectBinding || (name === 'work_package'
+  // A call that names a project by id is still bound when the binding resolves: naming the
+  // session's own project then reads (and may add to) every id its checkout was filed under,
+  // as leaving it out does. A binding that cannot be resolved is not a refusal here: the
+  // named id is used on its own.
+  const namesProject = typeof record?.project === 'string'
+    && ['recall', 'remember', 'learn', 'task_state', 'briefing'].includes(name);
+  const wantsBinding = needsProjectBinding || namesProject;
+  const needsWorkspaceRoots = wantsBinding || (name === 'work_package'
     && (record?.kind === 'transcript' || ref?.kind === 'transcript'));
   let workspaceRootUris: string[] = [];
   // Advertised roots that could not be read: work_package treats them as none,
@@ -110,7 +117,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   }
   // MEMESH_PROJECT_ROOT is set by whoever launched the host for one project;
   // it binds the call alongside the client's roots, never instead of a conflict.
-  const projectBinding = needsProjectBinding
+  const projectBinding = wantsBinding
     ? resolveMcpProject(process.env.MEMESH_PROJECT_ROOT, rootsUnreadable ? null : workspaceRootUris)
     : undefined;
   return handleTool(

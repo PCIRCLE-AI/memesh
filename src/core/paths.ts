@@ -123,7 +123,12 @@ export function normalizeAgentRouterSocketPath(socketPath: string): string {
  * also fall through, matching the most permissive caller's behaviour.
  */
 export function getProjectName(cwdInput?: string | null): string {
-  return getProjectIds(cwdInput)[0];
+  const cwd = cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd();
+  const cached = projectIdsCache.get(cwd);
+  if (cached !== undefined) return cached[0];
+  // With a remote the write id is the remote's: one git call, not the path's two more.
+  const locator = remoteLocatorOf(cwd);
+  return locator ? locatorIdentity(locator) : getProjectIds(cwd)[0];
 }
 
 // Resolved ids are stable for the life of a process (a cwd's git identity
@@ -163,8 +168,8 @@ const projectIdsCache = new Map<string, string[]>();
  * The ids a read also matches come after the first (`getProjectIds`).
  */
 function resolveProjectIds(cwd: string): string[] {
-  const remote = tryGit(cwd, ['config', '--get', 'remote.origin.url']);
-  const locator = remote ? canonicalRemoteLocator(remote) : null;
+  const remote = remoteOf(cwd);
+  const locator = remoteLocatorOf(cwd);
   const real = projectRealPath(cwd);
   // The earlier non-git form (v4.5.1–v4.8.x): the name as it is on disk, not normalized
   // or shortened, and the first 8 hex characters of the same hash.
@@ -185,9 +190,7 @@ function projectRealPath(cwd: string): string {
   // A linked worktree has its own top-level path but shares the primary
   // repository's common `.git` directory. Use that directory's parent when
   // available so no-remote worktrees do not split into separate projects.
-  const commonDir = root
-    ? tryGit(cwd, ['rev-parse', '--git-common-dir'])
-    : null;
+  const commonDir = gitLocation(cwd)?.commonDir;
   const absoluteCommonDir = commonDir ? path.resolve(cwd, commonDir) : null;
   const localPath = absoluteCommonDir && path.basename(absoluteCommonDir) === '.git'
     ? path.dirname(absoluteCommonDir)
@@ -254,12 +257,33 @@ function tryGit(cwd: string, args: string[]): string | null {
  * call serves both.
  */
 export function gitRepoRoot(cwdInput?: string | null): string | null {
-  const cwd = cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd();
-  // Cached like the ids: the pre-edit hook asks for the root, then for the ids of the same directory.
-  if (!repoRootCache.has(cwd)) repoRootCache.set(cwd, tryGit(cwd, ['rev-parse', '--show-toplevel']));
+  return gitLocation(cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd())?.root ?? null;
+}
+
+// Cached like the ids, per cwd: the pre-edit hook asks for the root, then for the ids of the
+// same directory, and a hook asks for a name and then for every id. One git call answers both
+// the root and the common directory (the second line of the same rev-parse).
+const repoRootCache = new Map<string, { root: string; commonDir: string | null } | null>();
+const remoteCache = new Map<string, string | null>();
+
+function gitLocation(cwd: string): { root: string; commonDir: string | null } | null {
+  if (!repoRootCache.has(cwd)) {
+    // Two lines or nothing: no work tree (a bare repository, inside `.git`) has no root.
+    const [root, commonDir, ...rest] = (tryGit(cwd, ['rev-parse', '--show-toplevel', '--git-common-dir']) ?? '').split('\n');
+    repoRootCache.set(cwd, root && commonDir && rest.length === 0 ? { root, commonDir } : null);
+  }
   return repoRootCache.get(cwd) ?? null;
 }
-const repoRootCache = new Map<string, string | null>();
+
+function remoteOf(cwd: string): string | null {
+  if (!remoteCache.has(cwd)) remoteCache.set(cwd, tryGit(cwd, ['config', '--get', 'remote.origin.url']));
+  return remoteCache.get(cwd) ?? null;
+}
+
+function remoteLocatorOf(cwd: string): string | null {
+  const remote = remoteOf(cwd);
+  return remote ? canonicalRemoteLocator(remote) : null;
+}
 
 interface RemoteParts {
   /** `https`, `http`, another URL scheme, or `ssh-relative` / `ssh-absolute`. */
@@ -387,6 +411,7 @@ export function remoteLocatorAliases(remote: string): string[] {
 export function _clearProjectNameCache(): void {
   projectIdsCache.clear();
   repoRootCache.clear();
+  remoteCache.clear();
 }
 
 /**

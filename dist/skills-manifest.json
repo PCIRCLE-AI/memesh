@@ -108,8 +108,8 @@
     },
     {
       "path": "scripts/hooks/_generated/core-paths.js",
-      "sha256": "abb91d5a6fdc7eeff33d257389d24c2559e4528293c7e146866fbca6a983de94",
-      "bytes": 25668
+      "sha256": "4b71dab20ea696ee58d54fa56ae0a55100b963582a5d9ca691b46f72c07193d2",
+      "bytes": 26383
     },
     {
       "path": "scripts/hooks/_generated/entity-write.js",
@@ -148,8 +148,8 @@
     },
     {
       "path": "scripts/hooks/_generated/project-scope.js",
-      "sha256": "e6db2521d657e8c2e51b08ce62993c80615714cc00a9d05349e4a62574314e99",
-      "bytes": 2564
+      "sha256": "a318007976f1f54674253511df2283bfa614516ed9c923f6737dd0a77622c653",
+      "bytes": 2716
     },
     {
       "path": "scripts/hooks/_generated/prompt-recall.js",
@@ -218,8 +218,8 @@
     },
     {
       "path": "scripts/hooks/_generated/work-topology.js",
-      "sha256": "10493dea6ffac0ac38fccec214a988d6e9870fbad4a03dd97b482d677b88b4bc",
-      "bytes": 15576
+      "sha256": "6aac16010952ef9770a0f5436ab9e5c6a3237052c2aba82ab1b6e1984fa39975",
+      "bytes": 15795
     },
     {
       "path": "scripts/hooks/_hook-budgets.js",
@@ -248,8 +248,8 @@
     },
     {
       "path": "scripts/hooks/_stop-notes.js",
-      "sha256": "a620cb340c36ff3ac7957ec3c94b05081197d6649f52ee21b16ecbde44472c5d",
-      "bytes": 43984
+      "sha256": "b5aeb99ab71b0e811f6163f06c1001de6a99603e48989e5ed3887fa3b3dc9177",
+      "bytes": 45117
     },
     {
       "path": "scripts/hooks/auto-update-runner.mjs",
@@ -333,8 +333,8 @@
     },
     {
       "path": "skills/memesh/SKILL.md",
-      "sha256": "4f2eaa44f2262c541f8f215ab6a5549eb2b8bbd1bf21bec2fa8eb74261996b8c",
-      "bytes": 34671
+      "sha256": "7584e0c2cd9ef468eb67e24f1a68ebb4e1e81f58befec0953c494dbea70d97bb",
+      "bytes": 34729
     }
   ]
 }

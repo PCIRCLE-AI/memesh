@@ -1,7 +1,7 @@
 /**
  * The scope of a project's reads is one SQL fragment, mirrored next to the hooks
- * (scripts/hooks/_generated/project-scope.js). A hook that reads a project's
- * memories uses it, so it cannot drift from what recall and the briefing allow.
+ * (scripts/hooks/_generated/project-scope.js): the copy must say exactly what
+ * recall's scope says.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
@@ -34,8 +34,15 @@ beforeEach(() => {
   add('other-untrusted-note-feedback', 'feedback', ['project:b', 'source:note-file'], 'personal', JSON.stringify({ trust: 'untrusted', provenance: { source: 'note-file' } }));
   add('other-untrusted-decision', 'decision', ['project:b'], 'personal', JSON.stringify({ trust: 'untrusted' }));
   add('other-bad-metadata-feedback', 'feedback', ['project:b'], 'personal', '{not json');
+  add('other-bad-metadata-decision', 'decision', ['project:b'], 'personal', '{not json');
+  add('other-note-file-decision', 'decision', ['project:b', 'source:note-file'], 'personal', fromFolder);
+  add('other-missing-note-feedback', 'feedback', ['project:b', 'source:note-file', 'source:note-file:missing'], 'personal', fromFolder);
   add('no-project', 'note', []);
   add('global', 'note', ['project:b'], 'global');
+  // Global is no exception to trust: an untrusted global memory (an imported bundle's) is not shared.
+  add('global-untrusted', 'decision', ['project:b'], 'global', JSON.stringify({ trust: 'untrusted', provenance: { source: 'import' } }));
+  add('global-untrusted-no-project', 'decision', [], 'global', JSON.stringify({ trust: 'untrusted', provenance: { source: 'import' } }));
+  add('own-global-untrusted', 'decision', ['project:a-new'], 'global', JSON.stringify({ trust: 'untrusted' }));
 });
 afterEach(() => {
   db.close();
@@ -50,8 +57,9 @@ const read = (filter: (scope: string[] | null, alias?: string) => { sql: string;
 describe('the mirrored scope fragment', () => {
   it('a hook reads the project under every id, plus shared experience, no project and global', async () => {
     const mirrored = await import(pathToFileURL(path.resolve('scripts/hooks/_generated/project-scope.js')).href) as { projectScopeFilter: typeof coreFilter };
-    const expected = ['global', 'no-project', 'other-decision', 'other-note-feedback', 'own-commit', 'own-under-earlier-id'];
-    // Another project's commit, plain feedback record, untrusted memories and unreadable metadata are not in scope.
+    const expected = ['global', 'no-project', 'other-decision', 'other-note-feedback', 'own-commit', 'own-global-untrusted', 'own-under-earlier-id'];
+    // Another project's commit, plain feedback record, untrusted memories (global ones too), unreadable
+    // metadata, and its memory folder's decisions and deleted notes are not in scope.
     expect(read(mirrored.projectScopeFilter, ['project:a-new', 'project:a-old'])).toEqual(expected);
   });
 

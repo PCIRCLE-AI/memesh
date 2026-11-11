@@ -31924,12 +31924,17 @@ function normalizeAgentRouterSocketPath(socketPath) {
   return socketPath === path.join(dataDir, LEGACY_AGENT_ROUTER_SOCKET_FILENAME) ? getAgentRouterSocketPath() : socketPath;
 }
 function getProjectName(cwdInput) {
-  return getProjectIds(cwdInput)[0];
+  const cwd = cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd();
+  const cached2 = projectIdsCache.get(cwd);
+  if (cached2 !== void 0)
+    return cached2[0];
+  const locator = remoteLocatorOf(cwd);
+  return locator ? locatorIdentity(locator) : getProjectIds(cwd)[0];
 }
 var projectIdsCache = /* @__PURE__ */ new Map();
 function resolveProjectIds(cwd) {
-  const remote = tryGit(cwd, ["config", "--get", "remote.origin.url"]);
-  const locator = remote ? canonicalRemoteLocator(remote) : null;
+  const remote = remoteOf(cwd);
+  const locator = remoteLocatorOf(cwd);
   const real = projectRealPath(cwd);
   const legacy = `${path.basename(real)}-${createHash2("sha256").update(real).digest("hex").slice(0, 8)}`;
   const pathIds = [projectIdentity(path.basename(real), real), legacy];
@@ -31939,7 +31944,7 @@ function resolveProjectIds(cwd) {
 var locatorIdentity = (locator) => projectIdentity(path.posix.basename(locator).replace(/\.git$/i, ""), locator);
 function projectRealPath(cwd) {
   const root = gitRepoRoot(cwd);
-  const commonDir = root ? tryGit(cwd, ["rev-parse", "--git-common-dir"]) : null;
+  const commonDir = gitLocation(cwd)?.commonDir;
   const absoluteCommonDir = commonDir ? path.resolve(cwd, commonDir) : null;
   const localPath = absoluteCommonDir && path.basename(absoluteCommonDir) === ".git" ? path.dirname(absoluteCommonDir) : root ?? cwd;
   try {
@@ -31979,12 +31984,26 @@ function tryGit(cwd, args) {
   }
 }
 function gitRepoRoot(cwdInput) {
-  const cwd = cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd();
-  if (!repoRootCache.has(cwd))
-    repoRootCache.set(cwd, tryGit(cwd, ["rev-parse", "--show-toplevel"]));
-  return repoRootCache.get(cwd) ?? null;
+  return gitLocation(cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd())?.root ?? null;
 }
 var repoRootCache = /* @__PURE__ */ new Map();
+var remoteCache = /* @__PURE__ */ new Map();
+function gitLocation(cwd) {
+  if (!repoRootCache.has(cwd)) {
+    const [root, commonDir, ...rest] = (tryGit(cwd, ["rev-parse", "--show-toplevel", "--git-common-dir"]) ?? "").split("\n");
+    repoRootCache.set(cwd, root && commonDir && rest.length === 0 ? { root, commonDir } : null);
+  }
+  return repoRootCache.get(cwd) ?? null;
+}
+function remoteOf(cwd) {
+  if (!remoteCache.has(cwd))
+    remoteCache.set(cwd, tryGit(cwd, ["config", "--get", "remote.origin.url"]));
+  return remoteCache.get(cwd) ?? null;
+}
+function remoteLocatorOf(cwd) {
+  const remote = remoteOf(cwd);
+  return remote ? canonicalRemoteLocator(remote) : null;
+}
 function parseRemote(remote) {
   const value = remote.trim();
   if (!value)
@@ -34539,8 +34558,9 @@ function projectScopeFilter(scope, alias = "e") {
   const marks = (list) => list.map(() => "?").join(",");
   const shared = `(${alias}.type IN (${marks(SHARED_EXPERIENCE_TYPE_LIST)}) AND (${alias}.metadata IS NULL OR json_valid(${alias}.metadata)) AND ${metadataField(alias, "trust")} IS NOT 'untrusted' AND ${metadataField(alias, "provenance.source")} IS NOT '${NOTE_FILE_PROVENANCE}') OR (${alias}.type IN (${marks(SHARED_NOTE_TYPES)}) AND ${ownFolderNote(alias)})`;
   const own2 = tags.length === 0 ? "" : `EXISTS (SELECT 1 FROM tags st WHERE st.entity_id = ${alias}.id AND st.tag IN (${marks(tags)})) OR `;
+  const notUntrustedGlobal = `NOT (${alias}.namespace = 'global' AND ${metadataField(alias, "trust")} IS 'untrusted')`;
   return {
-    sql: `AND (${own2}${noProjectTag(alias)} OR ${alias}.namespace = 'global' OR ${shared})`,
+    sql: `AND (${own2}((${noProjectTag(alias)} OR ${alias}.namespace = 'global') AND ${notUntrustedGlobal}) OR ${shared})`,
     params: [...tags, ...SHARED_EXPERIENCE_TYPE_LIST, ...SHARED_NOTE_TYPES]
   };
 }
@@ -36604,20 +36624,26 @@ import { fileURLToPath as fileURLToPath3 } from "node:url";
 import { createHash as createHash7 } from "node:crypto";
 
 // dist/storage/memory-mutation.js
-function projectOwnershipRefusal(db2, name, project) {
+function projectOwnershipRefusal(db2, name, project, projectIds = []) {
   const row = db2.prepare("SELECT id FROM entities WHERE name = ?").get(name);
   if (!row)
     return void 0;
-  const projects = db2.prepare("SELECT tag FROM tags WHERE entity_id = ? AND tag LIKE 'project:%' ORDER BY tag").all(row.id).map((t) => t.tag);
+  const projects = projectTagsOf(db2, row.id);
   if (project === null) {
     if (projects.length === 0)
       return void 0;
     return `a memory named ${JSON.stringify(name)} already exists and belongs to ${projects.join(", ")}; a write without a project cannot change it. Use a different name, or write it with that project`;
   }
-  if (projects.includes(`project:${project}`))
+  if (filedUnder(projects, project, projectIds) !== void 0)
     return void 0;
   const owner = projects.length > 0 ? `it belongs to ${projects.join(", ")}` : "it has no project tag";
   return `a memory named ${JSON.stringify(name)} already exists and ${owner}, not project ${project}. Use a different name`;
+}
+function projectTagsOf(db2, entityId) {
+  return db2.prepare("SELECT tag FROM tags WHERE entity_id = ? AND tag LIKE 'project:%' ORDER BY tag").all(entityId).map((t) => t.tag);
+}
+function filedUnder(projectTags, project, projectIds = []) {
+  return [project, ...projectIds.includes(project) ? projectIds : []].find((id) => projectTags.includes(`project:${id}`));
 }
 
 // dist/core/plain-project-tag.js
@@ -37463,9 +37489,16 @@ function rememberInTransaction(args, derived2, typeGiven, db2, kg) {
   const declaredProject = args.project !== void 0 ? args.project : tagProjects[0];
   if (declaredProject !== void 0) {
     for (const name of touched) {
-      const refusal = projectOwnershipRefusal(db2, name, declaredProject);
+      const refusal = projectOwnershipRefusal(db2, name, declaredProject, args.projectIds);
       if (refusal !== void 0)
         throw new Error(`MeMesh did not store this memory: ${refusal}.`);
+    }
+  }
+  if (typeof args.project === "string" && existing) {
+    const filed = filedUnder(projectTagsOf(db2, existing.id), args.project, args.projectIds);
+    if (filed !== void 0 && filed !== args.project) {
+      const current = `project:${args.project}`;
+      args = { ...args, project: filed, tags: args.tags?.filter((t) => t !== current) };
     }
   }
   if (args.replace && existing && existing.status === "archived") {
@@ -37698,11 +37731,11 @@ function forget(args) {
 }
 
 // dist/core/native-memory-editor.js
-async function editMemoryInteractively(name, project, sourceHost, ask, expectedRevision) {
+async function editMemoryInteractively(name, project, sourceHost, ask, expectedRevision, projectIds = []) {
   const db2 = getDatabase();
   const kg = new KnowledgeGraph(db2);
   const snapshot = () => {
-    const refusal = projectOwnershipRefusal(db2, name, project);
+    const refusal = projectOwnershipRefusal(db2, name, project, projectIds);
     if (refusal)
       throw new Error(refusal);
     const entity = kg.getEntity(name);
@@ -37770,6 +37803,7 @@ async function editMemoryInteractively(name, project, sourceHost, ask, expectedR
       name,
       replace: true,
       project,
+      projectIds,
       sourceHost,
       reinforceConfidence: false,
       ...fields.title !== view.title ? { title: fields.title } : {},
@@ -42856,6 +42890,7 @@ function boundIdsFor(project, context) {
   const binding = context.projectBinding;
   return binding && "project" in binding && binding.project === project ? binding.ids : void 0;
 }
+var SHARED_SCOPE = "memories with no project, global memories that are not untrusted, and from any project its decisions, lessons and preferences that are not untrusted and not from its memory folder, plus that folder's trusted preferences and feedback";
 var PROJECT_ACTION = `Pass project ("<id>", or a "project:<id>" tag), or project: false for a memory that belongs to no project (a preference, a general lesson), or bind the session: ${BIND_WORKSPACE}`;
 function writeProject(arg, tags, context) {
   if (arg === false)
@@ -42981,7 +43016,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "recall",
-    description: "Search stored knowledge with full-text search, or retrieve exact memory IDs. Use ids (1\u201320 positive integers) without query, tag or cross_project. ID results report found, archived, unavailable or omitted; only found memories include content and a mem-fetched reference. Retry omitted results individually; an item still omitted on its own cannot fit the response limit. Selectors: `project` (that project, memories with no project, global ones, and the decisions, lessons and preferences of any project, untrusted ones excepted; false = the same without a project of its own), `tag` (exactly that tag) or `cross_project` (every project; a `tag` given with it is ignored). `project` cannot be combined with `tag` or `cross_project`. With none, it uses the project this session is bound to (MEMESH_PROJECT_ROOT, or the client\u2019s workspace root) the same way, or the same without a project of its own when nothing is bound; the detail of another project (commits, session summaries, handoffs, notes) is never included; a launch or workspace root that is set but cannot be resolved is refused with the reason; the response says what it searched (`scope`) and each result carries its `projects` ([] for none). A result carries `archived_relations_omitted` when it leaves out relations to archived memories (a `supersedes` link is kept, its archived far end too, when that end is in the scope searched); add `include_archived` to see them. Call with no query to list recent memories. One- and two-term queries use OR matching; queries with three or more terms try strict all-term matching first and fall back to OR only when strict matching has no hits, with results ranked by relevance. Results are capped for size: each entity's observations+tags at 8 KB, the whole response at 32 KB; a capped entity carries `truncated` with the full shown/total counts, and the response carries `truncated`/`entities_omitted` when anything was cut. `file:*` tags are never included \u2014 they exist for pre-edit lookups, not for reading.",
+    description: "Search stored knowledge with full-text search, or retrieve exact memory IDs. Use ids (1\u201320 positive integers) without query, tag or cross_project. ID results report found, archived, unavailable or omitted; only found memories include content and a mem-fetched reference. Retry omitted results individually; an item still omitted on its own cannot fit the response limit. Selectors: `project` (that project, memories with no project, global ones that are not untrusted, and from any project its decisions, lessons and preferences that are not untrusted and not from its memory folder, plus that folder's trusted preferences and feedback; false = the same without a project of its own), `tag` (exactly that tag) or `cross_project` (every project; a `tag` given with it is ignored). `project` cannot be combined with `tag` or `cross_project`. With none, it uses the project this session is bound to (MEMESH_PROJECT_ROOT, or the client\u2019s workspace root) the same way, or the same without a project of its own when nothing is bound; the detail of another project (commits, session summaries, handoffs, notes) is never included; a launch or workspace root that is set but cannot be resolved is refused with the reason; the response says what it searched (`scope`) and each result carries its `projects` ([] for none). A result carries `archived_relations_omitted` when it leaves out relations to archived memories (a `supersedes` link is kept, its archived far end too, when that end is in the scope searched); add `include_archived` to see them. Call with no query to list recent memories. One- and two-term queries use OR matching; queries with three or more terms try strict all-term matching first and fall back to OR only when strict matching has no hits, with results ranked by relevance. Results are capped for size: each entity's observations+tags at 8 KB, the whole response at 32 KB; a capped entity carries `truncated` with the full shown/total counts, and the response carries `truncated`/`entities_omitted` when anything was cut. `file:*` tags are never included \u2014 they exist for pre-edit lookups, not for reading.",
     inputSchema: {
       type: "object",
       properties: {
@@ -43019,7 +43054,7 @@ var TOOL_DEFINITIONS = [
         },
         project: {
           anyOf: [{ type: "string", minLength: 1 }, { const: false }],
-          description: "Search this project plus memories with no project, global ones, and the decisions, lessons and preferences of any project; false searches the same without a project of its own. Cannot be combined with `tag` or `cross_project`. Omit it to use the bound project."
+          description: "Search this project plus memories with no project, global ones that are not untrusted, and from any project its decisions, lessons and preferences that are not untrusted and not from its memory folder, plus that folder's trusted preferences and feedback; false searches the same without a project of its own. Cannot be combined with `tag` or `cross_project`. Omit it to use the bound project."
         }
       },
       additionalProperties: false
@@ -43343,6 +43378,7 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
       return result.status === "error" ? { ...ok(result), isError: true } : ok(result);
     }
     if (name === "remember") {
+      const idsOf = (project) => typeof project === "string" ? boundIdsFor(project, requestContext) : void 0;
       if (args?.editor !== void 0) {
         const r2 = parseOrFail(PaneMemoryEditorSchema, args);
         if (!r2.ok)
@@ -43351,7 +43387,7 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
         if ("result" in resolved2)
           return resolved2.result;
         const editor = r2.data.editor;
-        return ok(await editMemoryInteractively(r2.data.name, resolved2.project ?? null, sourceHost, async () => editor.action === "prepare" ? void 0 : { title: editor.title, observations: editor.observations }, editor.action === "save" ? editor.revision : void 0));
+        return ok(await editMemoryInteractively(r2.data.name, resolved2.project ?? null, sourceHost, async () => editor.action === "prepare" ? void 0 : { title: editor.title, observations: editor.observations }, editor.action === "save" ? editor.revision : void 0, idsOf(resolved2.project)));
       }
       if (args?.interactive === true) {
         const r2 = parseOrFail(NativeMemoryEditorSchema, args);
@@ -43403,7 +43439,7 @@ ${paragraph.text}`)
               return replacement === void 0 || replacement.trim() === "" ? paragraph.text : replacement;
             })
           });
-        }));
+        }, void 0, idsOf(resolved2.project)));
       }
       const r = parseOrFail(McpRememberSchema, args);
       if (!r.ok)
@@ -43414,7 +43450,7 @@ ${paragraph.text}`)
         return resolved.result;
       const binding = requestContext.projectBinding;
       const currentProject = typeof projectArg === "string" ? projectArg : projectArg === void 0 && binding !== void 0 && "project" in binding ? binding.project : void 0;
-      return ok(remember({ ...input2, sourceHost, project: resolved.project, currentProject }));
+      return ok(remember({ ...input2, sourceHost, project: resolved.project, currentProject, projectIds: idsOf(resolved.project) }));
     }
     if (name === "recall") {
       const r = parseOrFail(McpRecallSchema, args);
@@ -43423,7 +43459,7 @@ ${paragraph.text}`)
       const { project: projectArg, ...input2 } = r.data;
       const tag = input2.tag === "" ? void 0 : input2.tag;
       if (projectArg !== void 0 && (tag !== void 0 || input2.cross_project)) {
-        return fail("recall takes one selector: project, tag or cross_project \u2014 not several. Use project for one project plus memories with no project, global ones and the decisions, lessons and preferences of any project; tag for exactly one tag; cross_project for every project.");
+        return fail("recall takes one selector: project, tag or cross_project \u2014 not several. Use project for one project plus memories with no project, global ones that are not untrusted, and what any project shares (its decisions, lessons and preferences that are not untrusted and not from its memory folder, and that folder's trusted preferences and feedback); tag for exactly one tag; cross_project for every project.");
       }
       if (tag !== void 0 || input2.cross_project) {
         return ok(agentRecallEnvelope(await recallForAgent({ ...input2, tag })));
@@ -43443,7 +43479,7 @@ ${paragraph.text}`)
       }
       const scope = {
         project: boundProject,
-        searched: boundProject === null ? `memories with no project, global memories, and the decisions, lessons and preferences of any project${projectArg === false ? "" : " (no project is bound to this session)"}` : `project ${boundProject}, memories with no project, global memories, and the decisions, lessons and preferences of any project`
+        searched: boundProject === null ? `${SHARED_SCOPE}${projectArg === false ? "" : " (no project is bound to this session)"}` : `project ${boundProject}, ${SHARED_SCOPE}`
       };
       return ok(agentRecallEnvelope(await recallForAgent({ ...input2, tag, projectScope: boundProject === null ? null : boundIds.map((id) => `project:${id}`) }, scope)));
     }
@@ -44982,7 +45018,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   const record3 = args && typeof args === "object" ? args : void 0;
   const ref = record3?.ref && typeof record3.ref === "object" ? record3.ref : void 0;
   const needsProjectBinding = (name === "task_state" || name === "briefing") && record3?.project == null || name === "learn" && record3?.project == null || name === "remember" && record3?.project == null || name === "recall" && record3?.project == null && (record3?.tag == null || record3.tag === "") && record3?.cross_project !== true;
-  const needsWorkspaceRoots = needsProjectBinding || name === "work_package" && (record3?.kind === "transcript" || ref?.kind === "transcript");
+  const namesProject = typeof record3?.project === "string" && ["recall", "remember", "learn", "task_state", "briefing"].includes(name);
+  const wantsBinding = needsProjectBinding || namesProject;
+  const needsWorkspaceRoots = wantsBinding || name === "work_package" && (record3?.kind === "transcript" || ref?.kind === "transcript");
   let workspaceRootUris = [];
   let rootsUnreadable = false;
   if (needsWorkspaceRoots) {
@@ -45002,7 +45040,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
       }
     }
   }
-  const projectBinding = needsProjectBinding ? resolveMcpProject(process.env.MEMESH_PROJECT_ROOT, rootsUnreadable ? null : workspaceRootUris) : void 0;
+  const projectBinding = wantsBinding ? resolveMcpProject(process.env.MEMESH_PROJECT_ROOT, rootsUnreadable ? null : workspaceRootUris) : void 0;
   return handleTool(name, args, normalizeClientHost(server.getClientVersion()?.name), extra.signal, {
     workspaceRootUris,
     projectBinding,

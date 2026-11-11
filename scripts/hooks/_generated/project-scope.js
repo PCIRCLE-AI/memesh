@@ -25,8 +25,9 @@ export function projectScopeFilter(scope, alias = 'e') {
     const own = tags.length === 0
         ? ''
         : `EXISTS (SELECT 1 FROM tags st WHERE st.entity_id = ${alias}.id AND st.tag IN (${marks(tags)})) OR `;
+    const notUntrustedGlobal = `NOT (${alias}.namespace = 'global' AND ${metadataField(alias, 'trust')} IS 'untrusted')`;
     return {
-        sql: `AND (${own}${noProjectTag(alias)} OR ${alias}.namespace = 'global' OR ${shared})`,
+        sql: `AND (${own}((${noProjectTag(alias)} OR ${alias}.namespace = 'global') AND ${notUntrustedGlobal}) OR ${shared})`,
         params: [...tags, ...SHARED_EXPERIENCE_TYPE_LIST, ...SHARED_NOTE_TYPES],
     };
 }

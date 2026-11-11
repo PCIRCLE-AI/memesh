@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 export const DB_COPIES_KEPT = 3;
-export function copyDatabaseBefore(db, prefix) {
+export function copyDatabaseBefore(db, prefix, inCopy) {
     const location = db.location();
     if (!location)
         return { kind: 'failed', reason: 'the database has no file path, so no copy can be made' };
@@ -21,6 +21,8 @@ export function copyDatabaseBefore(db, prefix) {
         let found;
         try {
             found = db.prepare('SELECT COUNT(*) AS n FROM db_copy_check.entities').get().n;
+            if (found >= expected)
+                inCopy?.('db_copy_check');
         }
         finally {
             db.exec('DETACH DATABASE db_copy_check');
@@ -38,8 +40,9 @@ export function copyDatabaseBefore(db, prefix) {
         return { kind: 'failed', reason: `the copy to ${directory} failed (${error instanceof Error ? error.message : String(error)})` };
     }
     try {
-        const mine = fs.readdirSync(directory).filter((name) => copyName(prefix).test(name)).sort();
-        for (const name of mine.slice(0, Math.max(0, mine.length - DB_COPIES_KEPT)))
+        const made = path.basename(finalPath);
+        const older = fs.readdirSync(directory).filter((name) => name !== made && copyName(prefix).test(name)).sort();
+        for (const name of older.slice(0, Math.max(0, older.length - (DB_COPIES_KEPT - 1))))
             fs.rmSync(path.join(directory, name), { force: true });
     }
     catch { }

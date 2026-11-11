@@ -105,3 +105,16 @@ describe('operations: recall and learn take the project from the transport', () 
     expect(r.name.startsWith('lesson-A-')).toBe(true);
   });
 });
+
+// RC2_G probe: the untrusted and memory-folder halves of the shared scope, as behaviour.
+describe('another project\'s decisions that recall leaves out', () => {
+  it('an untrusted decision and a memory-folder decision of B stay out of A\'s recall; a trusted one of B is shared', () => {
+    kg.createEntity('b-untrusted-decision', 'decision', { observations: ['quagga untrusted decision B'], tags: ['project:B'] });
+    kg.createEntity('b-trusted-decision', 'decision', { observations: ['quagga trusted decision B'], tags: ['project:B'] });
+    kg.createEntity('b-note-decision', 'decision', { observations: ['quagga folder decision B'], tags: ['project:B'] });
+    const set = getDatabase().prepare('UPDATE entities SET metadata = ? WHERE name = ?');
+    set.run(JSON.stringify({ trust: 'untrusted' }), 'b-untrusted-decision');
+    set.run(JSON.stringify({ trust: 'trusted', provenance: { source: 'note-file' } }), 'b-note-decision');
+    expect(names(kg.search('quagga', { projectScope: 'project:A' }))).toEqual(['b-trusted-decision']);
+  });
+});

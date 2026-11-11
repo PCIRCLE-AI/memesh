@@ -7,5 +7,5 @@ export type DbCopyOutcome = {
     kind: 'failed';
     reason: string;
 };
-export declare function copyDatabaseBefore(db: MemeshDatabase, prefix: string): DbCopyOutcome;
+export declare function copyDatabaseBefore(db: MemeshDatabase, prefix: string, inCopy?: (schema: string) => void): DbCopyOutcome;
 //# sourceMappingURL=db-copy.d.ts.map

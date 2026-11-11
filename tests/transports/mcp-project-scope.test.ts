@@ -90,11 +90,11 @@ describe('a memory with no project (project: false)', () => {
     const unbound = await recall({ query: 'wombat' });
     expect(names(unbound)).toEqual([lesson, 'pref-tabs'].sort());
     expect(unbound.entities.every((e: { projects: unknown }) => JSON.stringify(e.projects) === '[]')).toBe(true);
-    expect(unbound.scope).toEqual({ project: null, searched: 'memories with no project, global memories, and the decisions, lessons and preferences of any project (no project is bound to this session)' });
+    expect(unbound.scope).toEqual({ project: null, searched: 'memories with no project, global memories that are not untrusted, and from any project its decisions, lessons and preferences that are not untrusted and not from its memory folder, plus that folder\'s trusted preferences and feedback (no project is bound to this session)' });
 
     const explicit = await recall({ query: 'wombat', project: false }, bound('A'));
     expect(names(explicit)).toEqual([lesson, 'pref-tabs'].sort());
-    expect(explicit.scope).toEqual({ project: null, searched: 'memories with no project, global memories, and the decisions, lessons and preferences of any project' });
+    expect(explicit.scope).toEqual({ project: null, searched: 'memories with no project, global memories that are not untrusted, and from any project its decisions, lessons and preferences that are not untrusted and not from its memory folder, plus that folder\'s trusted preferences and feedback' });
   });
 });
 
@@ -132,7 +132,7 @@ describe('an ordinary project session', () => {
     expect(names(fromB)).toEqual(['b-fact', 'everywhere', 'loose']);
     expect(Object.fromEntries(fromB.entities.map((e: { name: string; projects: unknown }) => [e.name, e.projects])))
       .toEqual({ 'b-fact': ['B'], everywhere: ['C'], loose: [] });
-    expect(fromB.scope).toEqual({ project: 'B', searched: 'project B, memories with no project, global memories, and the decisions, lessons and preferences of any project' });
+    expect(fromB.scope).toEqual({ project: 'B', searched: 'project B, memories with no project, global memories that are not untrusted, and from any project its decisions, lessons and preferences that are not untrusted and not from its memory folder, plus that folder\'s trusted preferences and feedback' });
   });
 });
 

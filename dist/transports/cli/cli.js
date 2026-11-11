@@ -4661,6 +4661,9 @@ function canonicalEntityType(type) {
 function isReservedTag(tag) {
   return tag.trim().toLowerCase().startsWith("source:");
 }
+function decisionLacksReason(type, observations) {
+  return type !== void 0 && DECISION_TYPES.has(type) && !observations.some((o) => o.startsWith(WHY_PREFIX));
+}
 function utcEpoch(at2) {
   if (!at2)
     return NaN;
@@ -5037,8 +5040,9 @@ function projectScopeFilter(scope, alias = "e") {
   const marks = (list) => list.map(() => "?").join(",");
   const shared = `(${alias}.type IN (${marks(SHARED_EXPERIENCE_TYPE_LIST)}) AND (${alias}.metadata IS NULL OR json_valid(${alias}.metadata)) AND ${metadataField(alias, "trust")} IS NOT 'untrusted' AND ${metadataField(alias, "provenance.source")} IS NOT '${NOTE_FILE_PROVENANCE}') OR (${alias}.type IN (${marks(SHARED_NOTE_TYPES)}) AND ${ownFolderNote(alias)})`;
   const own2 = tags.length === 0 ? "" : `EXISTS (SELECT 1 FROM tags st WHERE st.entity_id = ${alias}.id AND st.tag IN (${marks(tags)})) OR `;
+  const notUntrustedGlobal = `NOT (${alias}.namespace = 'global' AND ${metadataField(alias, "trust")} IS 'untrusted')`;
   return {
-    sql: `AND (${own2}${noProjectTag(alias)} OR ${alias}.namespace = 'global' OR ${shared})`,
+    sql: `AND (${own2}((${noProjectTag(alias)} OR ${alias}.namespace = 'global') AND ${notUntrustedGlobal}) OR ${shared})`,
     params: [...tags, ...SHARED_EXPERIENCE_TYPE_LIST, ...SHARED_NOTE_TYPES]
   };
 }
@@ -5196,11 +5200,16 @@ function getAgentRouterSocketPath() {
   return path.join(getMemeshDirFromDbPath(), AGENT_ROUTER_SOCKET_FILENAME);
 }
 function getProjectName(cwdInput) {
-  return getProjectIds(cwdInput)[0];
+  const cwd = cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd();
+  const cached2 = projectIdsCache.get(cwd);
+  if (cached2 !== void 0)
+    return cached2[0];
+  const locator = remoteLocatorOf(cwd);
+  return locator ? locatorIdentity(locator) : getProjectIds(cwd)[0];
 }
 function resolveProjectIds(cwd) {
-  const remote = tryGit(cwd, ["config", "--get", "remote.origin.url"]);
-  const locator = remote ? canonicalRemoteLocator(remote) : null;
+  const remote = remoteOf(cwd);
+  const locator = remoteLocatorOf(cwd);
   const real = projectRealPath(cwd);
   const legacy = `${path.basename(real)}-${createHash("sha256").update(real).digest("hex").slice(0, 8)}`;
   const pathIds = [projectIdentity(path.basename(real), real), legacy];
@@ -5209,7 +5218,7 @@ function resolveProjectIds(cwd) {
 }
 function projectRealPath(cwd) {
   const root = gitRepoRoot(cwd);
-  const commonDir = root ? tryGit(cwd, ["rev-parse", "--git-common-dir"]) : null;
+  const commonDir = gitLocation(cwd)?.commonDir;
   const absoluteCommonDir = commonDir ? path.resolve(cwd, commonDir) : null;
   const localPath = absoluteCommonDir && path.basename(absoluteCommonDir) === ".git" ? path.dirname(absoluteCommonDir) : root ?? cwd;
   try {
@@ -5246,10 +5255,23 @@ function tryGit(cwd, args) {
   }
 }
 function gitRepoRoot(cwdInput) {
-  const cwd = cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd();
-  if (!repoRootCache.has(cwd))
-    repoRootCache.set(cwd, tryGit(cwd, ["rev-parse", "--show-toplevel"]));
+  return gitLocation(cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd())?.root ?? null;
+}
+function gitLocation(cwd) {
+  if (!repoRootCache.has(cwd)) {
+    const [root, commonDir, ...rest] = (tryGit(cwd, ["rev-parse", "--show-toplevel", "--git-common-dir"]) ?? "").split("\n");
+    repoRootCache.set(cwd, root && commonDir && rest.length === 0 ? { root, commonDir } : null);
+  }
   return repoRootCache.get(cwd) ?? null;
+}
+function remoteOf(cwd) {
+  if (!remoteCache.has(cwd))
+    remoteCache.set(cwd, tryGit(cwd, ["config", "--get", "remote.origin.url"]));
+  return remoteCache.get(cwd) ?? null;
+}
+function remoteLocatorOf(cwd) {
+  const remote = remoteOf(cwd);
+  return remote ? canonicalRemoteLocator(remote) : null;
 }
 function parseRemote(remote) {
   const value = remote.trim();
@@ -5742,7 +5764,7 @@ function clearPartsOfKey(metadata) {
   const clear = (text) => holdsPartOfKeyDecoded(text) ? REDACTED : text;
   return mapJson({ ...metadata, ...entries }, clear, clear);
 }
-var AGENT_ROUTER_SOCKET_FILENAME, DEFAULT_DB_FILE, projectIdsCache, locatorIdentity, PROJECT_HASH_HEX_LENGTH, PROJECT_ID_MAX_LENGTH, PROJECT_LABEL_MAX_LENGTH, repoRootCache, isSsh, HOSTING_SERVICES, SK_KEY, NAMED_VALUE, JWT_TOKEN, SENDGRID_KEY, SECRET_PATTERN_SOURCES, SECRET_PATTERNS, SEGMENTED, JWT_PATTERN, TOKEN_CHAR, GLUED, PRIVATE_KEY_MARKER, PRIVATE_KEY_END, ANY_PRIVATE_KEY_MARKER, REDACTED, nativeJson, looksLikeJson, JSON_ESCAPE, ESCAPED_CHAR, keepNumberSpelling;
+var AGENT_ROUTER_SOCKET_FILENAME, DEFAULT_DB_FILE, projectIdsCache, locatorIdentity, PROJECT_HASH_HEX_LENGTH, PROJECT_ID_MAX_LENGTH, PROJECT_LABEL_MAX_LENGTH, repoRootCache, remoteCache, isSsh, HOSTING_SERVICES, SK_KEY, NAMED_VALUE, JWT_TOKEN, SENDGRID_KEY, SECRET_PATTERN_SOURCES, SECRET_PATTERNS, SEGMENTED, JWT_PATTERN, TOKEN_CHAR, GLUED, PRIVATE_KEY_MARKER, PRIVATE_KEY_END, ANY_PRIVATE_KEY_MARKER, REDACTED, nativeJson, looksLikeJson, JSON_ESCAPE, ESCAPED_CHAR, keepNumberSpelling;
 var init_paths = __esm({
   "dist/core/paths.js"() {
     "use strict";
@@ -5754,6 +5776,7 @@ var init_paths = __esm({
     PROJECT_ID_MAX_LENGTH = 200;
     PROJECT_LABEL_MAX_LENGTH = PROJECT_ID_MAX_LENGTH - PROJECT_HASH_HEX_LENGTH - 1;
     repoRootCache = /* @__PURE__ */ new Map();
+    remoteCache = /* @__PURE__ */ new Map();
     isSsh = (transport) => transport === "ssh-relative" || transport === "ssh-absolute";
     HOSTING_SERVICES = /* @__PURE__ */ new Set(["github.com", "gitlab.com", "bitbucket.org"]);
     SK_KEY = 'sk[-_][^\\s"\\\\]{4,}[A-Za-z0-9]';
@@ -8008,20 +8031,26 @@ var init_db = __esm({
 });
 
 // dist/storage/memory-mutation.js
-function projectOwnershipRefusal(db2, name, project) {
+function projectOwnershipRefusal(db2, name, project, projectIds = []) {
   const row = db2.prepare("SELECT id FROM entities WHERE name = ?").get(name);
   if (!row)
     return void 0;
-  const projects = db2.prepare("SELECT tag FROM tags WHERE entity_id = ? AND tag LIKE 'project:%' ORDER BY tag").all(row.id).map((t) => t.tag);
+  const projects = projectTagsOf(db2, row.id);
   if (project === null) {
     if (projects.length === 0)
       return void 0;
     return `a memory named ${JSON.stringify(name)} already exists and belongs to ${projects.join(", ")}; a write without a project cannot change it. Use a different name, or write it with that project`;
   }
-  if (projects.includes(`project:${project}`))
+  if (filedUnder(projects, project, projectIds) !== void 0)
     return void 0;
   const owner = projects.length > 0 ? `it belongs to ${projects.join(", ")}` : "it has no project tag";
   return `a memory named ${JSON.stringify(name)} already exists and ${owner}, not project ${project}. Use a different name`;
+}
+function projectTagsOf(db2, entityId) {
+  return db2.prepare("SELECT tag FROM tags WHERE entity_id = ? AND tag LIKE 'project:%' ORDER BY tag").all(entityId).map((t) => t.tag);
+}
+function filedUnder(projectTags, project, projectIds = []) {
+  return [project, ...projectIds.includes(project) ? projectIds : []].find((id) => projectTags.includes(`project:${id}`));
 }
 var init_memory_mutation = __esm({
   "dist/storage/memory-mutation.js"() {
@@ -8930,9 +8959,16 @@ function rememberInTransaction(args, derived2, typeGiven, db2, kg) {
   const declaredProject = args.project !== void 0 ? args.project : tagProjects[0];
   if (declaredProject !== void 0) {
     for (const name of touched) {
-      const refusal = projectOwnershipRefusal(db2, name, declaredProject);
+      const refusal = projectOwnershipRefusal(db2, name, declaredProject, args.projectIds);
       if (refusal !== void 0)
         throw new Error(`MeMesh did not store this memory: ${refusal}.`);
+    }
+  }
+  if (typeof args.project === "string" && existing) {
+    const filed = filedUnder(projectTagsOf(db2, existing.id), args.project, args.projectIds);
+    if (filed !== void 0 && filed !== args.project) {
+      const current = `project:${args.project}`;
+      args = { ...args, project: filed, tags: args.tags?.filter((t) => t !== current) };
     }
   }
   if (args.replace && existing && existing.status === "archived") {
@@ -34604,7 +34640,7 @@ var init_note_dirs = __esm({
 import fs16 from "node:fs";
 import path14 from "node:path";
 import { randomUUID as randomUUID2 } from "node:crypto";
-function copyDatabaseBefore(db2, prefix) {
+function copyDatabaseBefore(db2, prefix, inCopy) {
   const location = db2.location();
   if (!location)
     return { kind: "failed", reason: "the database has no file path, so no copy can be made" };
@@ -34623,6 +34659,8 @@ function copyDatabaseBefore(db2, prefix) {
     let found;
     try {
       found = db2.prepare("SELECT COUNT(*) AS n FROM db_copy_check.entities").get().n;
+      if (found >= expected)
+        inCopy?.("db_copy_check");
     } finally {
       db2.exec("DETACH DATABASE db_copy_check");
     }
@@ -34638,8 +34676,9 @@ function copyDatabaseBefore(db2, prefix) {
     return { kind: "failed", reason: `the copy to ${directory} failed (${error62 instanceof Error ? error62.message : String(error62)})` };
   }
   try {
-    const mine = fs16.readdirSync(directory).filter((name) => copyName(prefix).test(name)).sort();
-    for (const name of mine.slice(0, Math.max(0, mine.length - DB_COPIES_KEPT)))
+    const made = path14.basename(finalPath);
+    const older = fs16.readdirSync(directory).filter((name) => name !== made && copyName(prefix).test(name)).sort();
+    for (const name of older.slice(0, Math.max(0, older.length - (DB_COPIES_KEPT - 1))))
       fs16.rmSync(path14.join(directory, name), { force: true });
   } catch {
   }
@@ -35931,7 +35970,7 @@ function ingestNoteDirectory(opts) {
   const privateSince = privacy.waitSince;
   result.redecideLeft = privacy.redecideLeft;
   const db2 = getDatabase();
-  const trustFor2 = (type, observations) => opts.trusted && !(type !== void 0 && DECISION_TYPES.has(type) && !observations.some((o) => o.startsWith(WHY_PREFIX))) ? "trusted" : "untrusted";
+  const trustFor2 = (type, observations) => opts.trusted && !decisionLacksReason(type, observations) ? "trusted" : "untrusted";
   const existingStmt = db2.prepare(`SELECT e.id, e.metadata, e.status, e.type,
             json_extract(CASE WHEN json_valid(e.metadata) THEN e.metadata END, '$.trust') AS trust,
             EXISTS(SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?) AS is_note,
@@ -36223,7 +36262,7 @@ function ingestNoteDirectory(opts) {
       observations: owner.observations,
       ...existing ? { project } : { tags: [NOTE_FILE_TAG, ...opts.project ? [`project:${opts.project}`] : []] },
       replace: true,
-      trustOverride: existing && existing.trust !== "trusted" ? "untrusted" : trustFor2(owner.type, owner.observations),
+      trustOverride: existing ? existing.trust === "trusted" && !decisionLacksReason(owner.type, owner.observations) ? "trusted" : "untrusted" : trustFor2(owner.type, owner.observations),
       reinforceConfidence: false,
       reasonOptional: true,
       provenanceOverride: {
@@ -36233,7 +36272,8 @@ function ingestNoteDirectory(opts) {
         note_dir_id: dirId,
         note_mtime_ms: owner.stat.mtimeMs,
         note_size: owner.stat.size,
-        note_ino: owner.stat.ino
+        note_ino: owner.stat.ino,
+        edited: void 0
       },
       sourceHost: "note-file"
     };
@@ -36290,6 +36330,7 @@ function liftFolderTrust(db2, dirId, result) {
       WHERE json_extract(${meta3}, '$.provenance.source') = ?
         AND json_extract(${meta3}, '$.provenance.note_dir_id') = ?
         AND json_extract(${meta3}, '$.trust') = 'untrusted'
+        AND json_extract(${meta3}, '$.provenance.edited') IS NULL
         AND NOT EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?)
         AND (e.type NOT IN (${decisionTypes.map(() => "?").join(",")})
              OR EXISTS (SELECT 1 FROM observations o WHERE o.entity_id = e.id AND substr(o.content, 1, ?) = ?))
@@ -36299,17 +36340,15 @@ function liftFolderTrust(db2, dirId, result) {
     return;
   const failed = (why) => `${rows.length} note(s) of this folder should become trusted, but ${why}; none of them was made trusted`;
   const prior = db2.prepare("SELECT value FROM memesh_metadata WHERE key = ?").get(liftedKey)?.value;
-  const setLifted = db2.prepare("INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)");
-  const unsetLifted = () => prior === void 0 ? db2.prepare("DELETE FROM memesh_metadata WHERE key = ?").run(liftedKey) : setLifted.run(liftedKey, prior);
   let priorIds = [];
   try {
     priorIds = JSON.parse(prior ?? "[]");
   } catch {
   }
-  setLifted.run(liftedKey, JSON.stringify([...Array.isArray(priorIds) ? priorIds : [], ...rows.map((r) => r.id)]));
-  const copy = copyDatabaseBefore(db2, "knowledge-graph-before-note-trust");
+  const lifted = JSON.stringify([...Array.isArray(priorIds) ? priorIds : [], ...rows.map((r) => r.id)]);
+  const setLifted = (schema) => db2.prepare(`INSERT OR REPLACE INTO ${schema}.memesh_metadata (key, value) VALUES (?, ?)`).run(liftedKey, lifted);
+  const copy = copyDatabaseBefore(db2, "knowledge-graph-before-note-trust", setLifted);
   if (copy.kind === "failed") {
-    unsetLifted();
     result.retrustFailed = failed(copy.reason);
     return;
   }
@@ -36324,12 +36363,12 @@ function liftFolderTrust(db2, dirId, result) {
       undo: `Restore the database from the backup file, or set metadata.trust back to 'untrusted' on the ids listed here (either way they stay untrusted: a memory is made trusted this way only once): UPDATE entities SET metadata = json_set(metadata, '$.trust', 'untrusted') WHERE id IN (<ids>);`
     }, null, 2), { mode: 384 });
   } catch (error62) {
-    unsetLifted();
     result.retrustFailed = failed(`the record of the change could not be written (${error62 instanceof Error ? error62.message : String(error62)})`);
     return;
   }
   const lift = db2.prepare("UPDATE entities SET metadata = json_set(metadata, '$.trust', 'trusted') WHERE id = ?");
   db2.transaction(() => {
+    setLifted("main");
     for (const row of rows)
       lift.run(row.id);
   })();
@@ -71928,7 +71967,7 @@ function archivedHandoffName(file2) {
 function archivedHandoffCheck(title, runs, name) {
   const summary = `handoff-capture: ${runs} runs, 0 writes \u2014 the session handoff was archived with \`forget\`, so it is not updated any more.`;
   if (name) {
-    return createCheck("capture-liveness", title, "warn", summary, `To turn it back on, run \`memesh remember --name ${name} --type session-handoff --obs restart --project ${name.slice(name.indexOf(":") + 1)}\`; the next Stop replaces it.`, { code: "capture-liveness.handoff-archived", params: { runs, name } });
+    return createCheck("capture-liveness", title, "warn", summary, `To turn it back on, run \`memesh remember --name ${shellWord(name)} --type session-handoff --obs restart --project ${shellWord(name.slice(name.indexOf(":") + 1))}\`; the next Stop replaces it.`, { code: "capture-liveness.handoff-archived", params: { runs, name } });
   }
   return createCheck("capture-liveness", title, "warn", summary, "To turn it back on, find its exact name with `memesh recall session-handoff --include-archived`, then remember anything under that name with type session-handoff; the next Stop replaces it.", { code: "capture-liveness.handoff-archived-unnamed", params: { runs } });
 }
@@ -73114,7 +73153,7 @@ function formatDoctorReport(result, packageVersion2) {
   }
   return lines;
 }
-var EXPECTED_HOOK_TYPES, AGENT_MESSAGE_STORAGE_QUOTA_ENV2, LOCALE_README_FILES, LOCALE_H2_TOLERANCE, NODE_TOO_OLD_SEE_DATABASE_ROW, NoDatabaseYetError, CLEARS, PRIVATE_STATE_ERROR_FIXES, DOCTOR_PRIVACY_CHECK_MS, DOCTOR_PRIVACY_TOTAL_MS, day, hourOf, UNREADABLE_ATTEMPTS_FIX, MCP_PLACEHOLDER, SAFE_HANDOFF_NAME, NO_HOST_NEXT_STEP, CODEX_NEXT_STEP, CODEX_NO_COMMAND_NEXT_STEP, CODEX_MCP_ONLY_NOTE, GEMINI_NEXT_STEP, NOT_WIRED_CODES;
+var EXPECTED_HOOK_TYPES, AGENT_MESSAGE_STORAGE_QUOTA_ENV2, LOCALE_README_FILES, LOCALE_H2_TOLERANCE, NODE_TOO_OLD_SEE_DATABASE_ROW, NoDatabaseYetError, CLEARS, PRIVATE_STATE_ERROR_FIXES, DOCTOR_PRIVACY_CHECK_MS, DOCTOR_PRIVACY_TOTAL_MS, day, hourOf, UNREADABLE_ATTEMPTS_FIX, MCP_PLACEHOLDER, SAFE_HANDOFF_NAME, shellWord, NO_HOST_NEXT_STEP, CODEX_NEXT_STEP, CODEX_NO_COMMAND_NEXT_STEP, CODEX_MCP_ONLY_NOTE, GEMINI_NEXT_STEP, NOT_WIRED_CODES;
 var init_doctor = __esm({
   "dist/core/doctor.js"() {
     "use strict";
@@ -73193,7 +73232,8 @@ var init_doctor = __esm({
     hourOf = (ms) => new Date(ms).toISOString().slice(0, 16).replace("T", " ");
     UNREADABLE_ATTEMPTS_FIX = "Run `memesh doctor` again; if this persists, check the database rows above for the underlying error.";
     MCP_PLACEHOLDER = "${CLAUDE_PLUGIN_ROOT}";
-    SAFE_HANDOFF_NAME = /^session-handoff:[A-Za-z0-9._-]+~[0-9a-f]{32}$/;
+    SAFE_HANDOFF_NAME = /^session-handoff:[^`\\/\p{Cc}]+~[0-9a-f]{32}$/u;
+    shellWord = (text) => /^[A-Za-z0-9._:~-]+$/.test(text) ? text : `'${text.replaceAll("'", `'\\''`)}'`;
     NO_HOST_NEXT_STEP = "Install Claude Code or Codex (or Gemini CLI), then run `memesh setup` to connect memesh to it.";
     CODEX_NEXT_STEP = `Refresh the Codex plugin (\`${PLUGIN_REFRESH_COMMANDS.codex}\`), restart Codex, start one session, and re-run \`memesh doctor\`. If you just updated, start a session first \u2014 the records begin on the next hook run.`;
     CODEX_NO_COMMAND_NEXT_STEP = "Codex's configuration folder is here but the `codex` command is not on PATH, so the Codex plugin cannot be refreshed from this shell. Put `codex` on PATH, then re-run `memesh doctor` for the refresh command.";
@@ -77101,7 +77141,7 @@ function requireOneOf(value, allowed, flag) {
 function shellQuoteIfNeeded(value) {
   return /^[A-Za-z0-9._/:@%+][A-Za-z0-9._/:@%+=-]*$/.test(value) ? value : shellQuote(value);
 }
-function shellWord(value) {
+function shellWord2(value) {
   return /^[A-Za-z0-9._/:@%+][A-Za-z0-9._/:@%+=-]*$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
 }
 function describeImportFlags(cmd, opts, merge3) {
@@ -77251,6 +77291,7 @@ program2.command("remember").argument("[text]", "Quick-capture text \u2014 title
         type: opts.type,
         tags: opts.tags,
         ...projectDeclaration === void 0 ? {} : { project: projectDeclaration },
+        ...typeof projectDeclaration === "string" ? { projectIds: getProjectIds() } : {},
         ...opts.tags?.some((tag) => tag.startsWith("project:")) ? { currentProject: getProjectName() } : {},
         namespace: opts.namespace,
         relations: relations.length > 0 ? relations : void 0,
@@ -77276,8 +77317,8 @@ program2.command("remember").argument("[text]", "Quick-capture text \u2014 title
       if (result.derived) {
         if (result.title)
           console.log(`   title: ${result.title}`);
-        const whyFlag = !DECISION_TYPES.has(result.derived.type) ? "" : opts.why !== void 0 ? ` --why=${shellWord(opts.why)}` : ' --why "\u2026"';
-        console.log(`   fix it with: memesh remember --name=${shellWord(result.name)} --type=${shellWord(result.derived.type)} --title "\u2026" --obs "\u2026"${whyFlag} --replace`);
+        const whyFlag = !DECISION_TYPES.has(result.derived.type) ? "" : opts.why !== void 0 ? ` --why=${shellWord2(opts.why)}` : ' --why "\u2026"';
+        console.log(`   fix it with: memesh remember --name=${shellWord2(result.name)} --type=${shellWord2(result.derived.type)} --title "\u2026" --obs "\u2026"${whyFlag} --replace`);
       }
       if (result.replaced)
         console.log("   replaced: the previous version is kept in metadata.replaced_history");
@@ -77407,7 +77448,7 @@ program2.command("forget").description("Archive an entity (reversible) or perman
       console.log(`\u2702\uFE0F  Removed observation (${result.remaining_observations} remaining)`);
     } else if (opts.observation !== void 0 && result.entity_found) {
       console.log(`Entity "${opts.name}" has no observation matching that text (${result.remaining_observations} observation(s) present).`);
-      console.log(`See them with: memesh recall --json -- ${shellWord(opts.name)}`);
+      console.log(`See them with: memesh recall --json -- ${shellWord2(opts.name)}`);
     } else {
       console.log(`Entity "${opts.name}" not found`);
     }

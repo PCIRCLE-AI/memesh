@@ -171,4 +171,21 @@ describe('a memory folder is read only for the project it belongs to', () => {
     await stop(sessionIn(repoA), path.join(repoA, 'sub'));
     expect(stored()).toEqual({ trust: 'trusted', project: `project:${getProjectName(repoA)}` });
   });
+
+  it('a session that moved into a repository nested below the one it started in does not file them there', async () => {
+    const repoA = path.join(root, 'repo-a');
+    gitInit(repoA);
+    const nested = path.join(repoA, 'vendor', 'lib');
+    fs.mkdirSync(path.join(nested, 'src'), { recursive: true });
+    gitInit(nested);
+    await stop(sessionIn(repoA), path.join(nested, 'src'));
+    expect(stored()).toBeUndefined();
+  });
+
+  it('a session that started outside any repository and moved to a subdirectory does not file them there', async () => {
+    const plain = path.join(root, 'plain');
+    fs.mkdirSync(path.join(plain, 'sub'), { recursive: true });
+    await stop(sessionIn(plain), path.join(plain, 'sub'));
+    expect(stored()).toBeUndefined();
+  });
 });

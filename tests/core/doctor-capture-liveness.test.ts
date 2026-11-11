@@ -581,9 +581,62 @@ describe('doctor: capture-liveness', () => {
       expect(outcomes.at(-1)).toMatchObject({ outcome: 'wrote', entity: name });
     }, 60_000);
 
+    it('a folder name a shell would misread is quoted, and the copied command, pasted into a shell, brings it back', async () => {
+      const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-advice-')));
+      tempRoots.push(home);
+      const proj = path.join(home, "my proj's $(touch pwned) `x`$HOME");
+      fs.mkdirSync(proj);
+      const name = `session-handoff:${getProjectName(proj)}`;
+      const dbFile = path.join(home, 'knowledge-graph.db');
+      try { closeDatabase(); } catch { /* none open */ }
+      openDatabase(dbFile);
+      try {
+        const db = getDatabase();
+        const id = db.prepare("INSERT INTO entities (name, type, status) VALUES (?, 'session-handoff', 'archived')").run(name).lastInsertRowid;
+        db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(id, 'the old handoff');
+        for (const tag of [`project:${getProjectName(proj)}`, 'source:auto-capture']) db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, tag);
+      } finally {
+        closeDatabase();
+      }
+      memeshDirWith([...healthySummary(), ...archivedSkips(name)]);
+      const result = await run();
+      const check = result.checks.find((c) => c.id === 'capture-liveness')!;
+      // A backtick in the folder name would end the copyable span: no name is given then.
+      expect(check.code).toBe('capture-liveness.handoff-archived-unnamed');
+
+      const plainer = path.join(home, "my proj's $(touch pwned) $HOME");
+      fs.mkdirSync(plainer);
+      const name2 = `session-handoff:${getProjectName(plainer)}`;
+      openDatabase(dbFile);
+      try {
+        const db = getDatabase();
+        const id = db.prepare("INSERT INTO entities (name, type, status) VALUES (?, 'session-handoff', 'archived')").run(name2).lastInsertRowid;
+        for (const tag of [`project:${getProjectName(plainer)}`, 'source:auto-capture']) db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, tag);
+      } finally {
+        closeDatabase();
+      }
+      memeshDirWith([...healthySummary(), ...archivedSkips(name2)]);
+      const quoted = (await run()).checks.find((c) => c.id === 'capture-liveness')!;
+      expect(quoted.code).toBe('capture-liveness.handoff-archived');
+      const commands = copyable(quoted.fix);
+      expect(commands).toHaveLength(1);
+      const env: Record<string, string | undefined> = { ...process.env, HOME: home, USERPROFILE: home, MEMESH_DB_PATH: dbFile };
+      delete env.MEMESH_DIR;
+      const cli = `'${process.execPath}' '${path.resolve('dist/transports/cli/cli.js')}'`;
+      const pasted = spawnSync('/bin/sh', ['-c', commands[0].replace(/^memesh/, cli)], { cwd: home, env, encoding: 'utf8', timeout: 30_000 });
+      expect(pasted.status, `the pasted command failed: ${pasted.stderr}`).toBe(0);
+      expect(fs.existsSync(path.join(home, 'pwned')), 'the folder name was run as a command').toBe(false);
+      openDatabase(dbFile);
+      try {
+        expect((getDatabase().prepare('SELECT status FROM entities WHERE name = ?').get(name2) as { status: string }).status).toBe('active');
+      } finally {
+        closeDatabase();
+      }
+    }, 60_000);
+
     it.each([
       ['no name recorded', undefined],
-      ['a label a shell would misread', 'session-handoff:my proj$(x)~' + 'a'.repeat(32)],
+      ['a label holding a backslash, which --project refuses as a path', 'session-handoff:my\\proj~' + 'a'.repeat(32)],
       ['a name cut short by the record limit', 'session-handoff:' + 'p'.repeat(183)],
       ['handoffs of two projects archived', ['session-handoff:proj-a~' + 'a'.repeat(32), 'session-handoff:proj-b~' + 'b'.repeat(32)]],
     ])('offers no copyable remember command for %s, only the safe lookup', async (_label, entity) => {

@@ -2014,11 +2014,16 @@ function inspectHookActivity(
  *
  * The name goes into a command the dashboard offers to copy, so it is used
  * only when it is COMPLETE (outcome records cut an entity at 200 characters;
- * a cut name ends before the 32-hex project hash) and SAFE to paste into a
- * shell unquoted (the project label is a raw folder name and can hold spaces,
- * quotes, `$` or backticks).
+ * a cut name ends before the 32-hex project hash) and can be written as a
+ * shell word (`shellWord`): the project label is a raw folder name and can hold
+ * spaces, quotes or `$`, which are quoted; a control character, a backtick (it
+ * would end the copyable span) or a backslash (`--project` refuses it as a
+ * path) leaves the name out.
  */
-const SAFE_HANDOFF_NAME = /^session-handoff:[A-Za-z0-9._-]+~[0-9a-f]{32}$/;
+const SAFE_HANDOFF_NAME = /^session-handoff:[^`\\/\p{Cc}]+~[0-9a-f]{32}$/u;
+
+/** `text` as one POSIX shell word: as it is when nothing in it is special, else single-quoted. */
+const shellWord = (text: string) => (/^[A-Za-z0-9._:~-]+$/.test(text) ? text : `'${text.replaceAll("'", `'\\''`)}'`);
 
 function archivedHandoffName(file: ReturnType<typeof parseHookOutcomes>): string | null {
   if (!Object.hasOwn(file.hooks, 'handoff-capture')) return null;
@@ -2041,7 +2046,7 @@ function archivedHandoffCheck(title: string, runs: number, name: string | null):
   if (name) {
     return createCheck('capture-liveness', title, 'warn', summary,
       // The handoff is filed under the project its name carries; `remember` refuses a write that names another one.
-      `To turn it back on, run \`memesh remember --name ${name} --type session-handoff --obs restart --project ${name.slice(name.indexOf(':') + 1)}\`; the next Stop replaces it.`,
+      `To turn it back on, run \`memesh remember --name ${shellWord(name)} --type session-handoff --obs restart --project ${shellWord(name.slice(name.indexOf(':') + 1))}\`; the next Stop replaces it.`,
       { code: 'capture-liveness.handoff-archived', params: { runs, name } });
   }
   return createCheck('capture-liveness', title, 'warn', summary,

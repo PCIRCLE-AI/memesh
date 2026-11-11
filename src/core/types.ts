@@ -239,6 +239,10 @@ export interface RememberInput {
   // Transport-set (#511): the caller's own project id (`<name>~<hash>`). A
   // `project:<name>` tag naming it by its plain name is stored as the id.
   currentProject?: string;
+  // Transport-set: every id the write's checkout is filed under (getProjectIds),
+  // when `project` is that checkout's. A memory it stored under an earlier id is
+  // added to where it is, not refused (memory-mutation.ts).
+  projectIds?: readonly string[];
 }
 
 export interface RecallInput {

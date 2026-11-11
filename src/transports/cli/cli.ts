@@ -574,6 +574,8 @@ program
           // project (what learn defaults to) unless a `project:` tag already
           // names one — the tag decides then, as it does for MCP.
           ...(projectDeclaration === undefined ? {} : { project: projectDeclaration }),
+          // This directory's checkout may have stored the memory under an earlier id.
+          ...(typeof projectDeclaration === 'string' ? { projectIds: getProjectIds() } : {}),
           // #511: this directory's project, resolved only when a project tag needs it.
           ...(opts.tags?.some((tag: string) => tag.startsWith('project:')) ? { currentProject: getProjectName() } : {}),
           namespace: opts.namespace,

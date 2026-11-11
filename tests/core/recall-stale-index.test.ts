@@ -94,7 +94,7 @@ describe('#571 recall on a read-only database with an out-of-date keyword index'
     openDatabase(dbPath);
     const result = await recallForAgent(
       { query: '資料庫', projectScope: 'project:B' },
-      { project: 'B', searched: 'project B, memories with no project, global memories, and the decisions, lessons and preferences of any project' },
+      { project: 'B', searched: 'project B, memories with no project, global memories that are not untrusted, and from any project its decisions, lessons and preferences that are not untrusted and not from its memory folder, plus that folder\'s trusted preferences and feedback' },
     );
     expect(result.entities).toHaveLength(2);
     const names = result.entities.map((e) => e.name).sort();
@@ -158,7 +158,7 @@ describe('#571 recall on a read-only database with an out-of-date keyword index'
     openDatabase(dbPath); // writable: the open rebuilds the index and moves the marker
     const result = await recallForAgent(
       { query: '資料庫', projectScope: 'project:B' },
-      { project: 'B', searched: 'project B, memories with no project, global memories, and the decisions, lessons and preferences of any project' },
+      { project: 'B', searched: 'project B, memories with no project, global memories that are not untrusted, and from any project its decisions, lessons and preferences that are not untrusted and not from its memory folder, plus that folder\'s trusted preferences and feedback' },
     );
     expect(result.entities.map((e) => e.name).sort()).toEqual(['資料庫遷移-b', '資料庫遷移-loose']);
     expect(result.retrieval).toEqual({ mode: 'fts', degraded: false, truncated: false });

@@ -2,7 +2,7 @@ import { getDatabase } from '../db.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { removeFromFts, insertFtsRow, indexedObservationText } from '../storage/fts-index.js';
 import { redactSecretList, redactSecrets, redactTitleAndObservations } from './paths.js';
-import { NOTE_FILE_PROVENANCE } from './work-topology.js';
+import { EDITED_BY_TOOL, NOTE_FILE_PROVENANCE, decisionLacksReason } from './work-topology.js';
 export const MEMORY_ROOT = '/memories';
 const NAMESPACES = ['personal', 'team', 'global'];
 const FILE_SUFFIX = '.md';
@@ -140,11 +140,31 @@ function rewriteObservations(kg, entity, observations) {
             namespace: entity.namespace,
             reinforceConfidence: false,
         });
-        kg.updateEntityMetadata(entity.name, (current) => {
-            const provenance = current.provenance;
-            return provenance?.source === NOTE_FILE_PROVENANCE ? { ...current, provenance: { ...provenance, source: 'local' } } : current;
-        });
+        const current = metadataObject(entity.name);
+        if (!current)
+            return;
+        const provenance = current.provenance;
+        const fromFolder = provenance?.source === NOTE_FILE_PROVENANCE;
+        if (!fromFolder && !decisionLacksReason(entity.type, next))
+            return;
+        kg.updateEntityMetadata(entity.name, (meta) => ({
+            ...meta,
+            trust: 'untrusted',
+            ...(fromFolder ? { provenance: { ...provenance, edited: EDITED_BY_TOOL } } : {}),
+        }));
     }).immediate();
+}
+function metadataObject(name) {
+    const { metadata } = getDatabase().prepare('SELECT metadata FROM entities WHERE name = ?').get(name);
+    if (metadata === null)
+        return {};
+    try {
+        const parsed = JSON.parse(metadata);
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+    }
+    catch {
+        return null;
+    }
 }
 function tooLarge(body, path) {
     const bytes = Buffer.byteLength(body, 'utf8');

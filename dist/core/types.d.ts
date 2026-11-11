@@ -77,6 +77,7 @@ export interface RememberInput {
     sourceHost?: string;
     project?: string | null;
     currentProject?: string;
+    projectIds?: readonly string[];
 }
 export interface RecallInput {
     ids?: number[];

@@ -112,6 +112,52 @@ describe('getProjectIds', () => {
     expect(getProjectIds(plain)).toContain(`${path.basename(real)}-${sha(real).slice(0, 8)}`);
   });
 
+  it('the readable part of an id is the folder name composed (NFC), whatever form the file system keeps', () => {
+    const plain = path.join(base, 'cafe\u0301');
+    fs.mkdirSync(plain);
+    const real = fs.realpathSync.native(plain);
+    expect(path.basename(real), 'the file system must keep the decomposed name, or this proves nothing').not.toBe(path.basename(real).normalize('NFC'));
+    expect(getProjectIds(plain)[0]).toBe(`caf\u00e9~${sha(real).slice(0, 32)}`);
+  });
+
+  it('a directory reached through a symbolic link has the ids of the directory itself', () => {
+    const plain = path.join(base, 'notes');
+    fs.mkdirSync(plain);
+    const link = path.join(base, 'notes-link');
+    fs.symlinkSync(plain, link);
+    expect(getProjectIds(link)).toEqual(getProjectIds(plain));
+    expect(getProjectIds(link)[0]).toBe(`notes~${sha(plain).slice(0, 32)}`);
+  });
+
+  it('the id a write uses is the first id a read uses, whichever is asked first', () => {
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'a');
+    git(repo, '-c', 'user.email=t@example.com', '-c', 'user.name=t', 'add', 'a.txt');
+    git(repo, '-c', 'user.email=t@example.com', '-c', 'user.name=t', 'commit', '-qm', 'a');
+    const linked = path.join(base, 'linked');
+    git(repo, 'worktree', 'add', '-q', linked);
+    fs.mkdirSync(path.join(repo, 'sub'));
+    const plain = path.join(base, 'plain');
+    fs.mkdirSync(plain);
+    const dirs = [repo, path.join(repo, 'sub'), linked, plain];
+    const check = (label: string) => {
+      for (const dir of dirs) {
+        _clearProjectNameCache();
+        const name = getProjectName(dir);
+        expect(name, `${label}: ${dir}, name first`).toBe(getProjectIds(dir)[0]);
+        _clearProjectNameCache();
+        const ids = getProjectIds(dir);
+        expect(getProjectName(dir), `${label}: ${dir}, ids first`).toBe(ids[0]);
+      }
+    };
+    check('no remote');
+    git(repo, 'remote', 'add', 'origin', path.join(base, 'elsewhere.git'));
+    check('a remote that is a local path');
+    git(repo, 'remote', 'set-url', 'origin', 'https://github.com/acme/widgets.git');
+    check('a remote');
+    _clearProjectNameCache();
+    expect(getProjectName(path.join(repo, 'sub'))).toBe(remoteId);
+  });
+
   it('a directory that is not a repository has its path ids only', () => {
     const plain = path.join(base, 'notes');
     fs.mkdirSync(plain);

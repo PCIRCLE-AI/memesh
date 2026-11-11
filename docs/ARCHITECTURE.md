@@ -18,7 +18,8 @@ The 13 MCP tools are `work_package`, `remember`, `recall`, `forget`, `export`,
 
 `recall` accepts words or exact memory IDs. ID lookups retain project and
 namespace boundaries (decisions, lessons and preferences of any project are in
-scope; another project's detail is not) and distinguish returned, archived, unavailable and
+scope unless they are untrusted or from its memory folder, as are global memories
+that are not untrusted; another project's detail is not) and distinguish returned, archived, unavailable and
 size-omitted memories. Session usage credits assistant citations or returned
 ID-fetch markers once per injected memory, across turns and resumes.
 
@@ -759,7 +760,7 @@ An existing entity that is archived (forgotten) is left untouched by every strat
 
 `recall` accepts a `cross_project: true` flag. When set, the project-tag filter is lifted and FTS5 search spans all namespaces. The same multi-factor scoring applies.
 
-Over MCP, a `recall` with no `tag` and no `cross_project` is scoped to one project — the `project` argument, else the session's bound project (`MEMESH_PROJECT_ROOT`, or the client's single workspace root) — plus memories with no project tag, `global`-namespace memories, and the decisions, lessons and preferences of any project (`SHARED_EXPERIENCE_TYPES` in `work-topology.ts`, the one list) that are not untrusted and not from a memory folder, plus the trusted preferences and `feedback` of a memory folder (`projectScopeFilter` in `project-scope.ts`), under the same archive, namespace and ranking rules. `project: false`, or a session with nothing bound, has no project of its own; the session's project covers every id its repository has been written under (`getProjectIds`: the remote's id and its earlier spellings, and the path's ids), while a write uses only `getProjectName`; a launch or workspace root that is set but cannot be resolved, or roots that disagree, are refused with their reason; another project's detail (commits, session summaries, handoffs, notes) is never included. The scope is one internal search option (`projectScope`: a project tag, a list of them, or `null` for none). Relations in results use the same scope for their far end. The single agent-facing cap (`capRecallForAgent`) labels each memory with its projects (`projects`, from the uncapped tags), and carries the `scope` it was given, inside the same response budget.
+Over MCP, a `recall` with no `tag` and no `cross_project` is scoped to one project — the `project` argument (the bound project's own id covers every id of its checkout, another project only its own id), else the session's bound project (`MEMESH_PROJECT_ROOT`, or the client's single workspace root) — plus memories with no project tag, `global`-namespace memories that are not untrusted, and the decisions, lessons and preferences of any project (`SHARED_EXPERIENCE_TYPES` in `work-topology.ts`, the one list) that are not untrusted and not from a memory folder, plus the trusted preferences and `feedback` of a memory folder (`projectScopeFilter` in `project-scope.ts`), under the same archive, namespace and ranking rules. `project: false`, or a session with nothing bound, has no project of its own; the session's project covers every id its repository has been written under (`getProjectIds`: the remote's id and its earlier spellings, and the path's ids), while a write uses only `getProjectName`; a launch or workspace root that is set but cannot be resolved, or roots that disagree, are refused with their reason; another project's detail (commits, session summaries, handoffs, notes) is never included. The scope is one internal search option (`projectScope`: a project tag, a list of them, or `null` for none). Relations in results use the same scope for their far end. The single agent-facing cap (`capRecallForAgent`) labels each memory with its projects (`projects`, from the uncapped tags), and carries the `scope` it was given, inside the same response budget.
 
 ### Personal Backup and Cross-Agent Transfer
 
@@ -771,7 +772,7 @@ memesh export --namespace personal --out memesh-backup.json
 memesh import memesh-backup.json --merge skip
 ```
 
-Imported rows are untrusted by default (recallable, but not auto-injected).
+Imported rows are untrusted by default: the project they are filed under recalls them, another project's default recall and every briefing leave them out (global ones too), and `cross_project` finds them.
 For your own backup — never a file someone else gave you — `memesh import
 memesh-backup.json --merge overwrite --trust` marks them trusted, behind a
 confirmation, so they are injected like the originals. `import` suggests

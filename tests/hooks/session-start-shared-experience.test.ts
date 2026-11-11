@@ -221,6 +221,16 @@ describe('SessionStart and briefing carry a few shared experiences of other proj
     expect(pools.handoff?.text).toContain('finish the widget parser');
   });
 
+  it('the hook itself (its own copy of the pools) shows the trusted handoff, not a newer untrusted one', () => {
+    openDatabase(dbPath);
+    new KnowledgeGraph(getDatabase()).createEntity(`session-handoff:${ownId}`, 'session-handoff', { observations: ['Imported handoff text that must not lead'], tags: [`project:${ownId}`] });
+    getDatabase().prepare(`UPDATE entities SET metadata = json_set(COALESCE(metadata, '{}'), '$.trust', 'untrusted', '$.provenance.source', 'import') WHERE name = ?`).run(`session-handoff:${ownId}`);
+    closeDatabase();
+    const context = hookContext();
+    expect(context).toContain('finish the widget parser');
+    expect(context).not.toContain('Imported handoff text that must not lead');
+  });
+
   it('a failed read of the shared pool is reported as the shared pool, so the hook records it', () => {
     openDatabase(dbPath);
     const db = getDatabase();

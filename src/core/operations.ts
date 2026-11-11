@@ -10,7 +10,7 @@
 // =============================================================================
 
 import { getDatabase } from '../db.js';
-import { projectOwnershipRefusal } from '../storage/memory-mutation.js';
+import { filedUnder, projectOwnershipRefusal, projectTagsOf } from '../storage/memory-mutation.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { foldForExactMatch } from '../storage/fts-index.js';
 import { withFullProjectTag } from './plain-project-tag.js';
@@ -275,8 +275,17 @@ function rememberInTransaction(
     // A write that declares its project (or declares none) may change only
     // memories of that same project (or of none).
     for (const name of touched) {
-      const refusal = projectOwnershipRefusal(db, name, declaredProject);
+      const refusal = projectOwnershipRefusal(db, name, declaredProject, args.projectIds);
       if (refusal !== undefined) throw new Error(`MeMesh did not store this memory: ${refusal}.`);
+    }
+  }
+  // The memory this write updates may be filed under an earlier id of the same checkout: it
+  // keeps that one project tag (a memory belongs to one project) instead of gaining a second.
+  if (typeof args.project === 'string' && existing) {
+    const filed = filedUnder(projectTagsOf(db, existing.id), args.project, args.projectIds);
+    if (filed !== undefined && filed !== args.project) {
+      const current = `project:${args.project}`;
+      args = { ...args, project: filed, tags: args.tags?.filter((t) => t !== current) };
     }
   }
 

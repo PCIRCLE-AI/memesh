@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { openDatabase, closeDatabase, getDatabase } from '../../src/db.js';
-import { getProjectName } from '../../src/core/paths.js';
+import { execFileSync } from 'node:child_process';
+import { getProjectName, _clearProjectNameCache } from '../../src/core/paths.js';
 import { handleTool } from '../../src/mcp/tools.js';
 import { runCliFromSource } from '../helpers/cli-source.js';
 
@@ -99,5 +100,19 @@ describe('a memory stored before the CLI filed memories under a project', () => 
     expect(refused.stderr).toContain('--no-project');
     remember(dirA, '--name', 'Legacy cli note', '--type', 'note', '--obs', 'more', '--no-project');
     expect(projectTags('Legacy cli note')).toEqual([]);
+  });
+});
+
+describe('a memory the directory stored before its repository had a remote', () => {
+  it('is added to from that directory, and keeps the project tag it was stored under', () => {
+    execFileSync('git', ['-C', dirA, 'init', '-q']);
+    _clearProjectNameCache();
+    const pathId = getProjectName(dirA);
+    remember(dirA, '--name', 'Widget plan', '--type', 'fact', '--obs', 'ship in May');
+    execFileSync('git', ['-C', dirA, 'remote', 'add', 'origin', 'git@gitlab.com:acme/widgets.git']);
+    remember(dirA, '--name', 'Widget plan', '--type', 'fact', '--obs', 'and a manual');
+    expect(projectTags('Widget plan')).toEqual([`project:${pathId}`]);
+    const obs = (getDatabase().prepare("SELECT o.content FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = 'Widget plan' ORDER BY o.id").all() as Array<{ content: string }>).map(r => r.content);
+    expect(obs).toEqual(['ship in May', 'and a manual']);
   });
 });

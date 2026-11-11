@@ -117,6 +117,8 @@ export const SHARED_EXPERIENCE_TYPE_LIST: readonly string[] = [...SHARED_EXPERIE
 export const SHARED_FEEDBACK_TYPE = 'feedback';
 /** `provenance.source` of a memory the note ingester stored (note-ingest.ts). */
 export const NOTE_FILE_PROVENANCE = 'note-file';
+/** `provenance.edited` of such a memory once the memory tool rewrote it: the text is no longer the note file's. */
+export const EDITED_BY_TOOL = 'memory-tool';
 /**
  * A tag only MeMesh writes: `source:` records where it got a memory (a note file, its own
  * capture), in any case and with leading space. `remember` and a work package refuse one;
@@ -130,6 +132,11 @@ export const NOTE_FILE_MISSING_TAG = 'source:note-file:missing';
 
 /** The observation prefix that carries a decision's reason. */
 export const WHY_PREFIX = 'Why: ';
+
+/** A decision with no observation that starts with `Why: `: it cannot be trusted. */
+export function decisionLacksReason(type: string | undefined, observations: readonly string[]): boolean {
+  return type !== undefined && DECISION_TYPES.has(type) && !observations.some((o) => o.startsWith(WHY_PREFIX));
+}
 
 /** Days without a read or a new observation after which a decision's line asks for a re-check: the decay threshold. */
 export const UNCONFIRMED_DECISION_DAYS = 30;

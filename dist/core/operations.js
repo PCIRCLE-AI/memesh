@@ -1,5 +1,5 @@
 import { getDatabase } from '../db.js';
-import { projectOwnershipRefusal } from '../storage/memory-mutation.js';
+import { filedUnder, projectOwnershipRefusal, projectTagsOf } from '../storage/memory-mutation.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { foldForExactMatch } from '../storage/fts-index.js';
 import { withFullProjectTag } from './plain-project-tag.js';
@@ -135,9 +135,16 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
     const declaredProject = args.project !== undefined ? args.project : tagProjects[0];
     if (declaredProject !== undefined) {
         for (const name of touched) {
-            const refusal = projectOwnershipRefusal(db, name, declaredProject);
+            const refusal = projectOwnershipRefusal(db, name, declaredProject, args.projectIds);
             if (refusal !== undefined)
                 throw new Error(`MeMesh did not store this memory: ${refusal}.`);
+        }
+    }
+    if (typeof args.project === 'string' && existing) {
+        const filed = filedUnder(projectTagsOf(db, existing.id), args.project, args.projectIds);
+        if (filed !== undefined && filed !== args.project) {
+            const current = `project:${args.project}`;
+            args = { ...args, project: filed, tags: args.tags?.filter((t) => t !== current) };
         }
     }
     if (args.replace && existing && existing.status === 'archived') {

@@ -31,6 +31,7 @@ function boundIdsFor(project, context) {
     const binding = context.projectBinding;
     return binding && 'project' in binding && binding.project === project ? binding.ids : undefined;
 }
+const SHARED_SCOPE = 'memories with no project, global memories that are not untrusted, and from any project its decisions, lessons and preferences that are not untrusted and not from its memory folder, plus that folder\'s trusted preferences and feedback';
 const PROJECT_ACTION = `Pass project ("<id>", or a "project:<id>" tag), or project: false for a memory that belongs to no project (a preference, a general lesson), or bind the session: ${BIND_WORKSPACE}`;
 function writeProject(arg, tags, context) {
     if (arg === false)
@@ -164,7 +165,7 @@ export const TOOL_DEFINITIONS = [
     },
     {
         name: 'recall',
-        description: 'Search stored knowledge with full-text search, or retrieve exact memory IDs. Use ids (1–20 positive integers) without query, tag or cross_project. ID results report found, archived, unavailable or omitted; only found memories include content and a mem-fetched reference. Retry omitted results individually; an item still omitted on its own cannot fit the response limit. Selectors: `project` (that project, memories with no project, global ones, and the decisions, lessons and preferences of any project, untrusted ones excepted; false = the same without a project of its own), `tag` (exactly that tag) or `cross_project` (every project; a `tag` given with it is ignored). `project` cannot be combined with `tag` or `cross_project`. With none, it uses the project this session is bound to (MEMESH_PROJECT_ROOT, or the client’s workspace root) the same way, or the same without a project of its own when nothing is bound; the detail of another project (commits, session summaries, handoffs, notes) is never included; a launch or workspace root that is set but cannot be resolved is refused with the reason; the response says what it searched (`scope`) and each result carries its `projects` ([] for none). A result carries `archived_relations_omitted` when it leaves out relations to archived memories (a `supersedes` link is kept, its archived far end too, when that end is in the scope searched); add `include_archived` to see them. Call with no query to list recent memories. One- and two-term queries use OR matching; queries with three or more terms try strict all-term matching first and fall back to OR only when strict matching has no hits, with results ranked by relevance. Results are capped for size: each entity\'s observations+tags at 8 KB, the whole response at 32 KB; a capped entity carries `truncated` with the full shown/total counts, and the response carries `truncated`/`entities_omitted` when anything was cut. `file:*` tags are never included — they exist for pre-edit lookups, not for reading.',
+        description: 'Search stored knowledge with full-text search, or retrieve exact memory IDs. Use ids (1–20 positive integers) without query, tag or cross_project. ID results report found, archived, unavailable or omitted; only found memories include content and a mem-fetched reference. Retry omitted results individually; an item still omitted on its own cannot fit the response limit. Selectors: `project` (that project, memories with no project, global ones that are not untrusted, and from any project its decisions, lessons and preferences that are not untrusted and not from its memory folder, plus that folder\'s trusted preferences and feedback; false = the same without a project of its own), `tag` (exactly that tag) or `cross_project` (every project; a `tag` given with it is ignored). `project` cannot be combined with `tag` or `cross_project`. With none, it uses the project this session is bound to (MEMESH_PROJECT_ROOT, or the client’s workspace root) the same way, or the same without a project of its own when nothing is bound; the detail of another project (commits, session summaries, handoffs, notes) is never included; a launch or workspace root that is set but cannot be resolved is refused with the reason; the response says what it searched (`scope`) and each result carries its `projects` ([] for none). A result carries `archived_relations_omitted` when it leaves out relations to archived memories (a `supersedes` link is kept, its archived far end too, when that end is in the scope searched); add `include_archived` to see them. Call with no query to list recent memories. One- and two-term queries use OR matching; queries with three or more terms try strict all-term matching first and fall back to OR only when strict matching has no hits, with results ranked by relevance. Results are capped for size: each entity\'s observations+tags at 8 KB, the whole response at 32 KB; a capped entity carries `truncated` with the full shown/total counts, and the response carries `truncated`/`entities_omitted` when anything was cut. `file:*` tags are never included — they exist for pre-edit lookups, not for reading.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -202,7 +203,7 @@ export const TOOL_DEFINITIONS = [
                 },
                 project: {
                     anyOf: [{ type: 'string', minLength: 1 }, { const: false }],
-                    description: 'Search this project plus memories with no project, global ones, and the decisions, lessons and preferences of any project; false searches the same without a project of its own. Cannot be combined with `tag` or `cross_project`. Omit it to use the bound project.',
+                    description: 'Search this project plus memories with no project, global ones that are not untrusted, and from any project its decisions, lessons and preferences that are not untrusted and not from its memory folder, plus that folder\'s trusted preferences and feedback; false searches the same without a project of its own. Cannot be combined with `tag` or `cross_project`. Omit it to use the bound project.',
                 },
             },
             additionalProperties: false,
@@ -535,6 +536,7 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
             return result.status === 'error' ? { ...ok(result), isError: true } : ok(result);
         }
         if (name === 'remember') {
+            const idsOf = (project) => (typeof project === 'string' ? boundIdsFor(project, requestContext) : undefined);
             if (args?.editor !== undefined) {
                 const r = parseOrFail(PaneMemoryEditorSchema, args);
                 if (!r.ok)
@@ -543,7 +545,7 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
                 if ('result' in resolved)
                     return resolved.result;
                 const editor = r.data.editor;
-                return ok(await editMemoryInteractively(r.data.name, resolved.project ?? null, sourceHost, async () => editor.action === 'prepare' ? undefined : { title: editor.title, observations: editor.observations }, editor.action === 'save' ? editor.revision : undefined));
+                return ok(await editMemoryInteractively(r.data.name, resolved.project ?? null, sourceHost, async () => editor.action === 'prepare' ? undefined : { title: editor.title, observations: editor.observations }, editor.action === 'save' ? editor.revision : undefined, idsOf(resolved.project)));
             }
             if (args?.interactive === true) {
                 const r = parseOrFail(NativeMemoryEditorSchema, args);
@@ -587,7 +589,7 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
                             return replacement === undefined || replacement.trim() === '' ? paragraph.text : replacement;
                         }),
                     });
-                }));
+                }, undefined, idsOf(resolved.project)));
             }
             const r = parseOrFail(McpRememberSchema, args);
             if (!r.ok)
@@ -600,7 +602,7 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
             const currentProject = typeof projectArg === 'string'
                 ? projectArg
                 : projectArg === undefined && binding !== undefined && 'project' in binding ? binding.project : undefined;
-            return ok(remember({ ...input, sourceHost, project: resolved.project, currentProject }));
+            return ok(remember({ ...input, sourceHost, project: resolved.project, currentProject, projectIds: idsOf(resolved.project) }));
         }
         if (name === 'recall') {
             const r = parseOrFail(McpRecallSchema, args);
@@ -609,7 +611,7 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
             const { project: projectArg, ...input } = r.data;
             const tag = input.tag === '' ? undefined : input.tag;
             if (projectArg !== undefined && (tag !== undefined || input.cross_project)) {
-                return fail('recall takes one selector: project, tag or cross_project — not several. Use project for one project plus memories with no project, global ones and the decisions, lessons and preferences of any project; tag for exactly one tag; cross_project for every project.');
+                return fail('recall takes one selector: project, tag or cross_project — not several. Use project for one project plus memories with no project, global ones that are not untrusted, and what any project shares (its decisions, lessons and preferences that are not untrusted and not from its memory folder, and that folder\'s trusted preferences and feedback); tag for exactly one tag; cross_project for every project.');
             }
             if (tag !== undefined || input.cross_project) {
                 return ok(agentRecallEnvelope(await recallForAgent({ ...input, tag })));
@@ -631,8 +633,8 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
             const scope = {
                 project: boundProject,
                 searched: boundProject === null
-                    ? `memories with no project, global memories, and the decisions, lessons and preferences of any project${projectArg === false ? '' : ' (no project is bound to this session)'}`
-                    : `project ${boundProject}, memories with no project, global memories, and the decisions, lessons and preferences of any project`,
+                    ? `${SHARED_SCOPE}${projectArg === false ? '' : ' (no project is bound to this session)'}`
+                    : `project ${boundProject}, ${SHARED_SCOPE}`,
             };
             return ok(agentRecallEnvelope(await recallForAgent({ ...input, tag, projectScope: boundProject === null ? null : boundIds.map(id => `project:${id}`) }, scope)));
         }

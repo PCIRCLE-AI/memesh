@@ -18,6 +18,7 @@ import { openDatabase, closeDatabase, getDatabase } from '../../src/db.js';
 import { handleTool } from '../../src/mcp/tools.js';
 import { getTaskState, setTaskState } from '../../src/core/task-state-store.js';
 import { taskStateName } from '../../src/core/task-state.js';
+import { _clearProjectNameCache, getProjectName } from '../../src/core/paths.js';
 
 let tmpDir: string;
 
@@ -332,5 +333,29 @@ describe('task_state MCP tool', () => {
     // not quietly ignored while it believes the value was stored.
     const result = await handleTool('task_state', { project: 'alpha', priority: 'high' });
     expect(JSON.stringify(result)).toMatch(/priority|unrecognized|invalid/i);
+  });
+});
+
+// RC2_C T4: `memesh task` passes no ids, so the default must be this directory's ids.
+describe('task state of this directory\'s checkout, stored before its remote was added', () => {
+  it('is read with no ids given, under the id the checkout had before', () => {
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-taskstate-repo-')));
+    const previous = process.cwd();
+    try {
+      expect(spawnSync('git', ['-C', repo, 'init', '-q']).status).toBe(0);
+      process.chdir(repo);
+      _clearProjectNameCache();
+      setTaskState({ project: getProjectName(), patch: { goal: 'TASKGOALOLD' }, sourceHost: 'cli' });
+      expect(spawnSync('git', ['-C', repo, 'remote', 'add', 'origin', 'git@gitlab.com:acme/widgets.git']).status).toBe(0);
+      _clearProjectNameCache();
+      expect(getTaskState(getProjectName()).state.goal).toBe('TASKGOALOLD');
+      expect(getTaskState().state.goal).toBe('TASKGOALOLD');
+      // Another project named explicitly reads only its own id.
+      expect(getTaskState('gadgets~0123456789abcdef0123456789abcdef').state).toEqual({});
+    } finally {
+      process.chdir(previous);
+      _clearProjectNameCache();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
   });
 });

@@ -38,7 +38,7 @@ import { homeDir } from './_generated/core-paths.js';
 import { notePathsWrittenInTranscript } from './_session-written-notes.js';
 import { PRIVATE_WINDOW_MS, privateCheckCacheDir, prunePrivateCheckCache } from './_generated/private-session.js';
 import { isCodexRollout, isCodexToolRequest } from './_generated/host-transcript.js';
-import { basename, dirname, join } from 'path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import {
   ensurePrivateDir,
   getMemeshDirFromDbPath,
@@ -150,9 +150,32 @@ export function memoryDirBelongsTo(memoryDir, { transcriptPath, cwd, project }) 
   for (const line of head.split('\n')) {
     let started;
     try { started = JSON.parse(line)?.cwd; } catch { continue; }
-    if (typeof started === 'string' && slugOf(started) === slug) return getProjectName(started) === project;
+    if (typeof started === 'string' && slugOf(started) === slug) return inSameWorkTree(started, cwd) || getProjectName(started) === project;
   }
   return false;
+}
+
+/**
+ * Whether `cwd` is `started` or below it with no `.git` in between, and `started` is inside a
+ * git work tree: git then finds the same repository from both, so they are one project, and
+ * the git calls of a second identity are not spent (the Stop hook has a 10 s budget). Anything
+ * else (a nested repository or submodule, a directory outside any repository, whose id is its
+ * own path, or `cwd` elsewhere) is left to the project ids.
+ */
+function inSameWorkTree(startedPath, cwdPath) {
+  if (typeof cwdPath !== 'string' || !isAbsolute(startedPath) || !isAbsolute(cwdPath)) return false;
+  const started = resolve(startedPath);
+  const below = relative(started, resolve(cwdPath));
+  if (below === '..' || below.startsWith(`..${sep}`) || isAbsolute(below)) return false;
+  let dir = resolve(cwdPath);
+  while (dir !== started) {
+    if (existsSync(join(dir, '.git'))) return false;
+    dir = dirname(dir);
+  }
+  for (let up = started; ; up = dirname(up)) {
+    if (existsSync(join(up, '.git'))) return true;
+    if (dirname(up) === up) return false;
+  }
 }
 
 /**

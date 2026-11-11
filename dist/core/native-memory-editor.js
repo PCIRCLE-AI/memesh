@@ -3,11 +3,11 @@ import { getDatabase } from '../db.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { projectOwnershipRefusal } from '../storage/memory-mutation.js';
 import { remember, shownEntity } from './operations.js';
-export async function editMemoryInteractively(name, project, sourceHost, ask, expectedRevision) {
+export async function editMemoryInteractively(name, project, sourceHost, ask, expectedRevision, projectIds = []) {
     const db = getDatabase();
     const kg = new KnowledgeGraph(db);
     const snapshot = () => {
-        const refusal = projectOwnershipRefusal(db, name, project);
+        const refusal = projectOwnershipRefusal(db, name, project, projectIds);
         if (refusal)
             throw new Error(refusal);
         const entity = kg.getEntity(name);
@@ -61,7 +61,7 @@ export async function editMemoryInteractively(name, project, sourceHost, ask, ex
             throw new Error('masked_content: Edit the individual observation with the existing memory tools; hidden text was left unchanged.');
         }
         remember({
-            name, replace: true, project, sourceHost, reinforceConfidence: false,
+            name, replace: true, project, projectIds, sourceHost, reinforceConfidence: false,
             ...(fields.title !== view.title ? { title: fields.title } : {}),
             observations: contentUnchanged ? before.entity.observations : fields.observations,
         });

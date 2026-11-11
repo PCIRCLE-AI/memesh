@@ -11,7 +11,7 @@ export interface MemoryEditView {
     type: string;
     createdAt: string;
 }
-export declare function editMemoryInteractively(name: string, project: string | null, sourceHost: string | undefined, ask: (view: MemoryEditView, observations: readonly string[]) => Promise<MemoryEditFields | null | undefined>, expectedRevision?: string): Promise<{
+export declare function editMemoryInteractively(name: string, project: string | null, sourceHost: string | undefined, ask: (view: MemoryEditView, observations: readonly string[]) => Promise<MemoryEditFields | null | undefined>, expectedRevision?: string, projectIds?: readonly string[]): Promise<{
     status: string;
     memory: MemoryEditView;
     revision: string;
