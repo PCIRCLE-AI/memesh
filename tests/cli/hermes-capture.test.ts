@@ -53,3 +53,32 @@ describe('memesh hermes: input is refused in its own terms', () => {
     expect(JSON.parse(r.stdout)).toEqual({ outcome: 'skipped', reason: expect.any(String) });
   });
 });
+
+describe('memesh hermes capture-session: a conversation in which the agent called private_session', () => {
+  const edit = (id: string, file: string) => ({
+    role: 'assistant', content: '',
+    tool_calls: [{ id, type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: `/repo/src/${file}`, content: 'x' }) } }],
+  });
+  const work = [edit('c1', 'a.ts'), edit('c2', 'b.ts'), edit('c3', 'c.ts')];
+  const privateCall = { role: 'assistant', content: '', tool_calls: [{ id: 'p1', type: 'function', function: { name: 'memesh_private_session', arguments: '{}' } }] };
+
+  it('stores the session when the tool was not called', () => {
+    const r = run(['hermes', 'capture-session', '--session', 'hs1'], JSON.stringify({ messages: work }));
+    expect(r.code, r.stderr).toBe(0);
+    expect(JSON.parse(r.stdout)).toMatchObject({ outcome: 'wrote' });
+  });
+
+  it('stores nothing when the call is named without the memesh_ prefix', () => {
+    const bare = { role: 'assistant', content: '', tool_calls: [{ id: 'p2', type: 'function', function: { name: 'private_session', arguments: '{}' } }] };
+    const r = run(['hermes', 'capture-session', '--session', 'hs4'], JSON.stringify({ messages: [...work, bare] }));
+    expect(JSON.parse(r.stdout)).toMatchObject({ outcome: 'skipped', reason: 'private_session' });
+  });
+
+  it('stores nothing when the message list holds the call, so a restart or resume is covered', () => {
+    const r = run(['hermes', 'capture-session', '--session', 'hs2'], JSON.stringify({ messages: [...work, privateCall] }));
+    expect(r.code, r.stderr).toBe(0);
+    expect(JSON.parse(r.stdout)).toMatchObject({ outcome: 'skipped', reason: 'private_session', written: [] });
+    const quoted = run(['hermes', 'capture-session', '--session', 'hs3'], JSON.stringify({ messages: [...work, { role: 'user', content: 'what does memesh_private_session do?' }, { role: 'assistant', content: 'It is a tool named memesh_private_session.' }] }));
+    expect(JSON.parse(quoted.stdout)).toMatchObject({ outcome: 'wrote' });
+  });
+});

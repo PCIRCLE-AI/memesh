@@ -3,7 +3,8 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { ClaudeTranscriptReader } from '../host-runtime/claude-transcript.js';
 import { projectTranscriptSlug } from './transcript-source.js';
-import { homeDir } from './paths.js';
+import { getMemeshDirFromDbPath, homeDir } from './paths.js';
+import { decidePrivacy, findCodexRollout } from './private-session.js';
 
 const MAX_BYTES = 1024 * 1024;
 
@@ -53,9 +54,48 @@ function repoLabel(workspace: string): string | undefined {
   } catch { return undefined; }
 }
 
+/** Time one look at whether a session is private may take; past it the session is hidden this time. */
+const ACTIVITY_CHECK_MS = 250;
+
+/**
+ * Should this session's name and task stay hidden from other agents? The one
+ * answer (`decidePrivacy`: the marker, the transcript, its subagents, a fork's
+ * parents) is asked each time; it remembers each file's verdict by its size
+ * and times, so an unchanged session costs a `stat`. Hidden for `yes` and for
+ * `unchecked` (not knowing hides; one line on stderr says why, once); shown for
+ * `no`. A transcript that cannot be found has nothing to check and does not hide.
+ */
+function privateSessionCheck(locate: () => string | undefined, sessionId: string): () => boolean {
+  let warned = false;
+  return () => {
+    const memeshDir = getMemeshDirFromDbPath();
+    let transcriptPath: string | undefined;
+    let located = true;
+    try { transcriptPath = locate(); } catch { located = false; } // a rollout folder that cannot be read: not knowing hides
+    const state: ReturnType<typeof decidePrivacy> = located ? decidePrivacy({
+      sessionId, transcriptPath, memeshDir,
+      deadlineAt: Date.now() + ACTIVITY_CHECK_MS, cacheDir: path.join(memeshDir, 'private-check-cache'),
+    }) : { state: 'unchecked', reason: 'unreadable', kind: 'transient', detail: 'the folder that holds the session\'s rollout cannot be read' };
+    if (state.state === 'unchecked' && !warned) {
+      warned = true;
+      try { process.stderr.write(`[memesh] could not check whether this session is private, so its name and task are hidden: ${state.reason}\n`); } catch { /* stderr gone */ }
+    }
+    return state.state !== 'no';
+  };
+}
+
+/** The rollout of a Codex thread that is running now: in `sessions/`, never an archived copy. */
+function liveRollout(codexHome: string, session: string): string | undefined {
+  const found = findCodexRollout(codexHome, session);
+  if (found === undefined || found.zst) return undefined;
+  return path.relative(path.join(codexHome, 'archived_sessions'), found.file).startsWith('..') ? found.file : undefined;
+}
+
 export function createClaudeActivity(pid: number, workspace: string, claudeDir = process.env.CLAUDE_CONFIG_DIR || path.join(homeDir(), '.claude')): () => string | undefined {
   let slug: string | undefined;
   let reader: ClaudeTranscriptReader | undefined;
+  let privateSession: (() => boolean) | undefined;
+  let privateFor = '';
   return () => {
     let registry: Record<string, unknown> | undefined;
     try {
@@ -72,11 +112,26 @@ export function createClaudeActivity(pid: number, workspace: string, claudeDir =
       const currentSlug = projectTranscriptSlug(registry.cwd);
       if (currentSlug !== slug) { slug = currentSlug; reader = new ClaudeTranscriptReader(path.join(claudeDir, 'projects'), slug); }
     }
-    const task = typeof registry?.sessionId === 'string' ? reader?.currentTask(registry.sessionId) : undefined;
-    return formatSessionActivity({ repo: repoLabel(workspace), status, title, task });
+    const sessionId = typeof registry?.sessionId === 'string' ? registry.sessionId : undefined;
+    if (sessionId && reader && privateFor !== `${slug}:${sessionId}`) {
+      const r = reader;
+      privateFor = `${slug}:${sessionId}`;
+      privateSession = privateSessionCheck(() => r.transcriptFile(sessionId), sessionId);
+    }
+    // A private session shows its repo and status, not what it is working on or
+    // the name Claude Code generates from the conversation.
+    const isPrivate = sessionId !== undefined && privateSession?.() === true;
+    const task = sessionId && !isPrivate ? reader?.currentTask(sessionId) : undefined;
+    return formatSessionActivity({ repo: repoLabel(workspace), status, title: isPrivate ? undefined : title, task });
   };
 }
 
 export function createCodexActivity(session: string, workspace: string, dataDir: string, codexHome = process.env.CODEX_HOME || path.join(homeDir(), '.codex')): () => string | undefined {
-  return () => formatSessionActivity({ repo: repoLabel(workspace), title: readCodexTitle(codexHome, session), task: readCodexPlanActivity(dataDir, session, workspace) });
+  let rollout: string | undefined;
+  const privateSession = privateSessionCheck(() => (rollout ??= liveRollout(codexHome, session)), session);
+  // A private session shows its repo only: the thread name Codex derives from the
+  // conversation and the plan step are both left out.
+  return () => privateSession()
+    ? formatSessionActivity({ repo: repoLabel(workspace) })
+    : formatSessionActivity({ repo: repoLabel(workspace), title: readCodexTitle(codexHome, session), task: readCodexPlanActivity(dataDir, session, workspace) });
 }

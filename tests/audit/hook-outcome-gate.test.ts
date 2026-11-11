@@ -7,7 +7,11 @@ import {
   findUnreasonedReturns,
   readCaptureHooks,
   validateSessionStart,
+  checkExternalRecorders,
+  findUnlistedRecordedHooks,
 } from '../../scripts/audit/hook-outcome-gate.mjs';
+import os from 'os';
+import { spawnSync } from 'child_process';
 
 /**
  * The gate behind #328 item-1: an exit with no outcome record before it is
@@ -255,5 +259,39 @@ describe('returning helpers must return a reason (#324 H3)', () => {
       '}', // 3
     ].join('\n');
     expect(findUnreasonedReturns(src, 'decide')).toEqual([]);
+  });
+
+  it('passes on this repository (the gate runs main() on the real tree, Q6_21 F4)', () => {
+    const r = spawnSync(process.execPath, [path.resolve('scripts/audit/hook-outcome-gate.mjs')], { encoding: 'utf8' });
+    expect(r.status, `${r.stdout}${r.stderr}`).toBe(0);
+  });
+
+  it('accepts an external recorder only when its file holds the literal record text (Q6_12 F1)', () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-gate-ext-'));
+    try {
+      fs.mkdirSync(path.join(repo, 'ext'));
+      const recorders = { 'x-hook': { file: 'ext/p.py', literal: '"hook": "x-hook"' } };
+      expect(checkExternalRecorders(repo, recorders)[0]).toMatch(/cannot be read/);
+      fs.writeFileSync(path.join(repo, 'ext', 'p.py'), 'print(1)');
+      expect(checkExternalRecorders(repo, recorders)[0]).toMatch(/records no outcome for 'x-hook'/);
+      fs.writeFileSync(path.join(repo, 'ext', 'p.py'), 'line = {"hook": "x-hook"}');
+      expect(checkExternalRecorders(repo, recorders)).toEqual([]);
+    } finally { fs.rmSync(repo, { recursive: true, force: true }); }
+  });
+  it('the other direction: a hook name a script records that CAPTURE_HOOKS lacks is a violation, since doctor drops its records (Q6_20 F5)', () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-gate-rev-'));
+    try {
+      fs.mkdirSync(path.join(repo, 'scripts', 'hooks'), { recursive: true });
+      fs.writeFileSync(path.join(repo, 'scripts', 'hooks', 'a.js'), "recordHookOutcome(env, { hook: 'listed', outcome });\nprivacyForHook(data, 'also-listed', {});\n// hook: 'in-a-comment'\n");
+      expect(findUnlistedRecordedHooks(repo, ['listed', 'also-listed'])).toEqual([]);
+      fs.writeFileSync(path.join(repo, 'scripts', 'hooks', 'b.js'), "const record = (o, r) => recordHookOutcome(process.env, { hook: 'codex-busy-message-notice', outcome: o, reason: r });\nprivacyForHook(data, 'unlisted-check', {});\n");
+      expect(findUnlistedRecordedHooks(repo, ['listed', 'also-listed'])).toEqual([
+        expect.stringMatching(/b\.js: records outcomes as 'codex-busy-message-notice', which is not in CAPTURE_HOOKS/),
+        expect.stringMatching(/b\.js: records outcomes as 'unlisted-check'/),
+      ]);
+    } finally { fs.rmSync(repo, { recursive: true, force: true }); }
+    // On this repository: every recorded name is listed, codex-busy-message-notice among them.
+    expect(findUnlistedRecordedHooks(path.resolve('.'), readCaptureHooks())).toEqual([]);
+    expect(readCaptureHooks()).toContain('codex-busy-message-notice');
   });
 });

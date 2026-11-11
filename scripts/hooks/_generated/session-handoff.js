@@ -8,6 +8,7 @@
 // ============================================================================
 import { parseSqliteUtcMs } from './time-utils.js';
 import { redactMemoryText } from './core-paths.js';
+import { codexAssistantText } from './host-transcript.js';
 export const SESSION_HANDOFF_TYPE = 'session-handoff';
 export const HANDOFF_STALE_HOURS = 72;
 export const HANDOFF_MAX_AGE_DAYS = 14;
@@ -66,6 +67,12 @@ export function lastAssistantText(jsonl) {
             entry = JSON.parse(line);
         }
         catch {
+            continue;
+        }
+        const codex = codexAssistantText(entry);
+        if (codex !== null) {
+            if (codex.trim())
+                return codex;
             continue;
         }
         if (entry?.type !== 'assistant' || entry.isSidechain === true)

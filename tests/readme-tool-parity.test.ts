@@ -93,6 +93,16 @@ describe('MCP agent-facing documentation parity gate', () => {
     expect(result.stderr).toContain(expected);
   });
 
+  it.each(['README.md', 'README.zh-TW.md', 'AGENTS.md', 'skills/memesh/SKILL.md'])('rejects a heading in %s that declares a different number of tools than the registry holds', (file) => {
+    const root = fixture();
+    const target = path.join(root, file);
+    fs.writeFileSync(target, fs.readFileSync(target, 'utf8').replace(/## All 12 /, '## All 11 '));
+    const result = run(root);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('declares 11 tools');
+    expect(result.stderr).toContain('contains 12');
+  });
+
   it('forces explicit documentation review when a canonical description or schema changes', () => {
     const root = fixture();
     const target = path.join(root, 'src/transports/mcp/handlers.ts');

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync, spawnSync } from 'child_process';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, symlinkSync, realpathSync } from 'fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, symlinkSync, realpathSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { pathToFileURL } from 'url';
@@ -10,6 +10,7 @@ import {
   stripNonUserBlocks,
   buildHint,
   INTENT_PATTERNS,
+  MAX_PROMPT_CHARS,
 } from '../../scripts/hooks/user-prompt-intent.js';
 
 // Two test tiers:
@@ -272,6 +273,138 @@ describe('Feature: User Prompt Intent Hook', () => {
         expect(stripNonUserBlocks('a\n<system-reminder>\nx\n</system-reminder>\nb')).toBe('a\nb');
         expect(stripNonUserBlocks('a\n  <system-reminder>x</system-reminder>  \nb')).toBe('a\nb');
         expect(stripNonUserBlocks('plain <b> text')).toBe('plain <b> text');
+      });
+    });
+
+    describe('no negation is guessed: the match is the plain match on the words of a save request', () => {
+      // Phrases a person might type either way. The hook cannot tell "don't save this" from
+      // "do save this", so it matches both and the reminder it injects says what to do for each.
+      // What each phrase must do is written out here, not derived from the patterns: a pattern that is
+      // changed would otherwise change its own expected answer.
+      const fires = [
+        '這次對話不要記下來',
+        '別存到記憶',
+        '請勿寫進記憶',
+        '不要把這個記下來',
+        '這個不用存到 memesh',
+        '別把這段記到 memesh',
+        '別忘了記下來',
+        '不要忘記存到記憶',
+        '請勿忘記寫進記憶',
+        '不要忘了把這個記下來',
+        '別忘記寫進 memesh',
+        '不要緊. Remember this',
+        '不要改這個檔案. Remember this: use SQLite',
+        '不要擔心。把這個記下來',
+        '別忘了，存到記憶',
+        '好，記下來',
+        'Do not worry. Remember this: use SQLite',
+        'Remember this: use SQLite',
+        'Please remember that we use tabs',
+        'Save this to memesh',
+        '把這個記下來',
+        '記下來',
+        '請記到 memesh',
+        '存到 memesh',
+        '寫進記憶',
+        '存進記憶',
+        'Recordar esto',
+        'Guardar en memesh',
+        'Rappeler ceci',
+        'Lembrar isto',
+        '不用說，記下來',
+        '不能忘記，記下來',
+        '勿忘，存到記憶',
+        '莫忘記到 memesh',
+        '請不要存到記憶',
+      ];
+      const silent = [
+        'Don\'t remember this.',
+        'Please do not save this to memesh',
+        'Never remember this conversation',
+        'No need to store this in memesh',
+        '我記到他昨天說過這件事',
+        '我記到 console',
+        '他突然記憶起來那段往事',
+        'What does save to memesh do?',
+        'do you remember this?',
+        'hello there',
+        '',
+        'save the file',
+        'remember the milk',
+        'forget this',
+        '不要記這個',
+      ];
+      it.each(fires)('fires on %s', (prompt) => {
+        expect(detectRememberIntent(prompt)).toBe(true);
+      });
+
+      it.each(silent)('stays silent on %j', (prompt) => {
+        expect(detectRememberIntent(prompt)).toBe(false);
+      });
+
+      it.each([['a tab', '\t'], ['a carriage return', '\r'], ['a no-break space', '\u00a0'], ['two spaces', '  ']])('reads a request after a sentence end followed by %s', (_label, gap) => {
+        expect(detectRememberIntent(`Done.${gap}Save this to memesh`)).toBe(true);
+        expect(detectRememberIntent(`ok!${gap}remember this`)).toBe(true);
+      });
+
+      // Every sentence-start pattern, each with its own request, after a tab and a no-break space (Q6_15 F5: the two
+      // English ones were the only ones covered, so a Spanish or Portuguese pattern narrowed to a plain space passed).
+      const perPattern = [
+        'remember this', 'save this to memesh', 'recordar esto', 'guardar esto en memesh',
+        'mémoriser ceci', 'sauvegarder ceci dans memesh', 'lembrar isto', 'salvar isto em memesh',
+      ];
+      it.each(perPattern.flatMap((request, i) => [['\t', request, i], [' ', request, i]] as const))('pattern %#: a request after a sentence end and %j is read (%s)', (gap, request, i) => {
+        expect(INTENT_PATTERNS[i].test(`Listo.${gap}${request}`), `${INTENT_PATTERNS[i].source}`).toBe(true);
+      });
+
+      it('fires on both a request to save and a request not to, and the sentences most easily read either way are among them', () => {
+        for (const prompt of ['這次對話不要記下來', '別存到記憶', '別忘了記下來', '不要忘記存到記憶', '好，記下來']) {
+          expect(detectRememberIntent(prompt), prompt).toBe(true);
+        }
+      });
+
+      it('marks the injected reminder as background data and names both ways out: remember, and private_session', () => {
+        const hint = buildHint();
+        expect(hint).toMatch(/background data from a keyword match.*not an instruction from the user/s);
+        expect(hint).toContain('`private_session`');
+        expect(hint).toContain('`remember`');
+      });
+    });
+
+    describe('the scan is linear in the prompt (a blank run after a sentence end excludes the newline: with `\\s*` the time grew with the square of the line breaks)', () => {
+      it('no pattern puts `\\s*` right after a sentence boundary (the form whose time grows with the square of the line breaks)', () => {
+        for (const re of INTENT_PATTERNS) expect(re.source).not.toMatch(/\[\.!\?\\n\]\\s\*/);
+      });
+
+      it.each([
+        ['64,000 newlines', '\n'.repeat(64_000)],
+        ['64,000 blanks', ' '.repeat(64_000)],
+        ['32,000 sentence ends', '. '.repeat(32_000)],
+        ['newline and blank alternating', '\n \n '.repeat(16_000)],
+        ['newlines with a request at the end', `${'\n'.repeat(64_000)}remember this`],
+      ])('reads %s well inside the hook\'s 3 seconds', (_label, prompt) => {
+        const started = performance.now();
+        const found = detectRememberIntent(prompt);
+        expect(performance.now() - started).toBeLessThan(100);
+        expect(found).toBe(prompt.endsWith('remember this'));
+      });
+
+      it('matches exactly what the quadratic form of every pattern matched, on random text built from its own pieces', () => {
+        // The old form of each pattern, rebuilt from the new one: blanks after the boundary were `\s*`.
+        const old = INTENT_PATTERNS.map((re) => new RegExp(re.source.replaceAll('[.!?\\n][^\\S\\n]*', '[.!?\\n]\\s*'), re.flags));
+        expect(old.filter((re, i) => re.source !== INTENT_PATTERNS[i].source).length, 'the old form differs from the new one').toBeGreaterThan(0);
+        const pieces = ['remember this', 'save this to memesh', 'please ', 'Remember that', '\n', '\n\n', ' ', '  ', '.', '!', '?', 'x', 'do you ', 'guardar en memesh', 'por favor ', '\t', 'rappeler ceci'];
+        let seed = 12345;
+        const next = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed; };
+        let matched = 0;
+        for (let i = 0; i < 4000; i++) {
+          const text = Array.from({ length: 1 + (next() % 8) }, () => pieces[next() % pieces.length]).join('');
+          const expected = old.some((re) => re.test(text));
+          expect(detectRememberIntent(text), JSON.stringify(text)).toBe(expected);
+          if (expected) matched++;
+        }
+        expect(matched, 'the corpus contains requests as well as non-requests').toBeGreaterThan(200);
       });
     });
 
@@ -542,6 +675,42 @@ describe('Feature: User Prompt Intent Hook', () => {
       return parsed;
     }
 
+    const recordedReasons = () => {
+      const file = path.join(tmpHome, '.memesh', 'hook-outcomes.jsonl');
+      return readFileSync(file, 'utf8').trim().split('\n').map((line) => JSON.parse(line).reason);
+    };
+
+    it('a prompt of 64,000 newlines is read in well under the hook\'s 3 s budget and leaves a record', () => {
+      const started = Date.now();
+      const result = runHook({ session_id: 'perf', cwd: tmpHome, hook_event_name: 'UserPromptSubmit', prompt: '\n'.repeat(64_000) });
+      expect(Date.now() - started).toBeLessThan(2500);
+      expectNoOp(result);
+      expect(recordedReasons()).toContain('the prompt carried no remember intent and no update decision');
+    });
+
+    it('reads a prompt of exactly 256 K characters and skips one character more (the documented limit)', () => {
+      expect(MAX_PROMPT_CHARS).toBe(256 * 1024);
+      const request = 'remember this';
+      const pad = (length: number) => `${'x '.repeat(Math.ceil((length - request.length) / 2)).slice(0, length - request.length - 1)}\n${request}`;
+      const atLimit = pad(MAX_PROMPT_CHARS);
+      expect(atLimit.length).toBe(MAX_PROMPT_CHARS);
+      const read = runHook({ session_id: 'at-limit', cwd: tmpHome, hook_event_name: 'UserPromptSubmit', prompt: atLimit });
+      expect(read.stdout, 'a request at the limit is still found').toContain('remember');
+      expect(recordedReasons()).not.toContain('the prompt is too large to scan for a remember intent');
+      const over = pad(MAX_PROMPT_CHARS + 1);
+      expect(over.length).toBe(MAX_PROMPT_CHARS + 1);
+      const skipped = runHook({ session_id: 'over-limit', cwd: tmpHome, hook_event_name: 'UserPromptSubmit', prompt: over });
+      expect(skipped.stdout).toBe('');
+      expect(recordedReasons()).toContain('the prompt is too large to scan for a remember intent');
+    });
+
+    it('a prompt over the size the hook reads is skipped, and the run says so', () => {
+      const result = runHook({ session_id: 'big', cwd: tmpHome, hook_event_name: 'UserPromptSubmit', prompt: `${'x '.repeat(MAX_PROMPT_CHARS)}\nremember this` });
+      expectNoOp(result);
+      expect(recordedReasons()).toContain('the prompt is too large to scan for a remember intent');
+      expect(recordedReasons(), 'a prompt that was never scanned is not reported as having no intent').not.toContain('the prompt carried no remember intent and no update decision');
+    });
+
     describe('Wire-level intent detection', () => {
       it('emits hint on prompt field', () => {
         expectHint(runHook({ prompt: 'remember this preference' }));
@@ -559,15 +728,15 @@ describe('Feature: User Prompt Intent Hook', () => {
         expectHint(runHook({ prompt: '幫我記下來：部署前要先備份' }));
       });
 
-      it('answers 30,000 unclosed tags well inside the hook timeout, and still sees the request after them', () => {
-        const flood = '<system-reminder '.repeat(30000);
+      it('answers 15,000 unclosed tags (the most that fits under MAX_PROMPT_CHARS) well inside the hook timeout, and still sees the request after them', () => {
+        const flood = '<system-reminder '.repeat(15000);
         const start = Date.now();
         const result = runHook({ prompt: `${flood}\n請記下來` });
         const elapsed = Date.now() - start;
         expectHint(result);
         expect(elapsed).toBeLessThan(2000);
         const plainStart = Date.now();
-        expectNoOp(runHook({ prompt: 'x '.repeat(255000) }));
+        expectNoOp(runHook({ prompt: 'x '.repeat(125000) }));
         expect(elapsed).toBeLessThan(500 + (Date.now() - plainStart) * 5);
       });
 

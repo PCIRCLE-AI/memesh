@@ -7,6 +7,7 @@ import { openDatabase, closeDatabase } from '../../src/db.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import { executeWorkPackage } from '../../src/core/dreamer.js';
 import { getProjectName } from '../../src/core/paths.js';
+import { sessionFileName } from '../../src/core/private-session.js';
 import {
   projectTranscriptSlug,
   scanTranscripts,
@@ -91,6 +92,65 @@ describe('work-package source boundary', () => {
     });
     expect(fs.readFileSync(file)).toEqual(before);
     expect(db.prepare('SELECT count(*) AS n FROM dream_proposals').get()).toEqual({ n: 0 });
+  });
+
+  describe('a private session is not turned into a work package, by the same check the hooks use', () => {
+    const privateCall = { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'p1', name: 'mcp__memesh__private_session', input: {} }] } };
+    const sessionFile = () => writeSession(cwd, 'a visible request');
+    const skipped = () => {
+      const response = prepare();
+      expect(response.status).not.toBe('available');
+      return (response as { skipped_sessions?: Record<string, number> }).skipped_sessions ?? {};
+    };
+
+    it('builds a package from a session that is not private (the control the cases below are measured against)', () => {
+      sessionFile();
+      expect(prepare().status).toBe('available');
+    });
+
+    it('skips a session that has only a marker, though its transcript shows no call', () => {
+      sessionFile();
+      fs.mkdirSync(path.join(root, 'private-sessions'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'private-sessions', `${sessionFileName('snapshot-session')}`), '{}');
+      expect(skipped()).toEqual({ private_session: 1 });
+    });
+
+    it('skips a session whose only call was made inside a subagent', () => {
+      const file = sessionFile();
+      const sub = path.join(file.replace(/\.jsonl$/, ''), 'subagents');
+      fs.mkdirSync(sub, { recursive: true });
+      fs.writeFileSync(path.join(sub, 'agent-a1.jsonl'), `${JSON.stringify(privateCall)}\n`);
+      expect(skipped()).toEqual({ private_session: 1 });
+    });
+
+    it('skips a session in which the call is a progress row of a subagent', () => {
+      const file = sessionFile();
+      fs.appendFileSync(file, `\n${JSON.stringify({ type: 'progress', data: { message: { type: 'assistant', message: privateCall.message } } })}`);
+      expect(skipped()).toEqual({ private_session: 1 });
+    });
+
+    it.each(['removed', 'replaced'] as const)('skips a session whose read bytes hold the call though the file is %s before the check reads it (Q6_22 F2)', (change) => {
+      const file = sessionFile();
+      fs.appendFileSync(file, `\n${JSON.stringify(privateCall)}`);
+      const real = fs.statSync;
+      let fired = false;
+      vi.spyOn(fs, 'statSync').mockImplementation(((p: fs.PathLike, ...rest: unknown[]) => {
+        if (!fired && String(p).includes(`${path.sep}private-sessions${path.sep}`)) {
+          fired = true; // the moment the check starts: the snapshot is already read
+          if (change === 'removed') fs.rmSync(file);
+          else fs.writeFileSync(file, JSON.stringify({ cwd, type: 'user', message: { content: 'a visible request' } }));
+        }
+        return (real as (...a: unknown[]) => fs.Stats)(p, ...rest);
+      }) as typeof fs.statSync);
+      expect(skipped()).toEqual({ private_session: 1 });
+      expect(fired, 'the file changed between the read and the check').toBe(true);
+    });
+
+    it('skips, and says it could not check, a session whose check fails (a damaged fork header here)', () => {
+      const file = sessionFile();
+      fs.writeFileSync(file, `${JSON.stringify({ type: 'session_meta', cwd, payload: { id: 'x', forked_from_id: '' } })}\n${JSON.stringify({ cwd, type: 'user', message: { content: 'a visible request' } })}\n`);
+      expect(skipped()).toEqual({ private_unchecked: 1 });
+    });
   });
 
   it('accepts equivalent project paths and redacts transcript text without changing raw-byte identity', () => {

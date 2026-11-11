@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { TOOL_DEFINITIONS } from '../src/mcp/tools.js';
 import { checkCurrentDocumentationContracts } from '../scripts/lib/current-doc-contract.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -25,7 +26,7 @@ const baseline = {
 
 describe('current source-backed documentation contracts', () => {
   it('accepts the synchronized current docs', () => {
-    expect(checkCurrentDocumentationContracts(baseline)).toMatchObject({ errors: [], routeCount: 31, webRouteCount: 0, toolCount: 12 });
+    expect(checkCurrentDocumentationContracts(baseline)).toMatchObject({ errors: [], routeCount: 31, webRouteCount: 0, toolCount: TOOL_DEFINITIONS.length });
   });
 
   it.each([

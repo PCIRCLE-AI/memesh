@@ -1,20 +1,40 @@
 // #324 piece C: note-file ingestion.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import { getDatabase } from '../../src/db.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import { remember, forget } from '../../src/core/operations.js';
 import {
+  endPrivateSession,
+  holdOutNoteFiles,
   ingestNoteDirectory,
+  markPrivateSession,
+  NOTE_HOLDS_UNREADABLE,
+  NOTE_HOLDS_DIR_UNREADABLE,
+  NOTE_MARKERS_UNREADABLE,
+  NOTE_FILE_MAX_BYTES,
+  renewPrivateSession,
+  summarizeNoteHolds,
   parseFrontmatter,
   NOTE_FILE_TAG,
   NOTE_FILE_MISSING_TAG,
   summarizeNoteIngest,
 } from '../../src/core/note-ingest.js';
+import { getMemeshDirFromDbPath } from '../../src/core/paths.js';
+import { PRIVATE_WINDOW_MS } from '../../src/core/private-session.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
 
 const fixture = useTestDatabase('memesh-note-ingest-');
+
+// Holds and markers live beside the database. Keep them in this test's own folder: without this they would
+// be $HOME/.memesh, and the `beforeEach` of the private-session blocks below would delete the real ones.
+beforeEach(() => { vi.stubEnv('MEMESH_DB_PATH', fixture.dbPath); });
+afterEach(() => { vi.unstubAllEnvs(); });
+
+it('keeps the holds and markers of these tests out of $HOME/.memesh', () => {
+  expect(getMemeshDirFromDbPath()).toBe(fixture.tmpDir);
+});
 const kg = () => new KnowledgeGraph(getDatabase());
 
 function note(name: string, description: string, type: string, body: string): string {
@@ -903,5 +923,393 @@ describe('note-ingest: a name-level refusal is news once too — #324 C3', () =>
     remember({ name: 'note_rev', type: 'decision', observations: ['Beta body.'] });
     const back = ingestNoteDirectory({ dir });
     expect(back.skipped, 'the file was never re-read after its memory came back').toHaveLength(0);
+  });
+});
+
+describe('notes a private session named are held out by content', () => {
+  let counter = 0;
+  const dirWith = (files: Record<string, string>): string => {
+    const dir = path.join(fixture.tmpDir, `held-notes-${++counter}`);
+    fs.mkdirSync(dir, { recursive: true });
+    for (const [rel, content] of Object.entries(files)) fs.writeFileSync(path.join(dir, rel), content);
+    return dir;
+  };
+  beforeEach(() => { fs.rmSync(path.join(getMemeshDirFromDbPath(), 'note-ingest-holds'), { recursive: true, force: true }); });
+  const names = () => (getDatabase().prepare('SELECT name FROM entities').all() as Array<{ name: string }>).map((r) => r.name);
+  const holdsDir = () => path.join(getMemeshDirFromDbPath(), 'note-ingest-holds');
+  const observations = (name: string) => (getDatabase().prepare(
+    'SELECT o.content FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = ?').all(name) as Array<{ content: string }>).map((r) => r.content).join('|');
+
+  it('skips the held content whichever other note changes and after a touch, and imports it once it differs', () => {
+    const dir = dirWith({ 'other.md': note('note_other', 'Other', 'fact', 'Other body.'), 'secret.md': note('note_secret', 'Secret', 'fact', 'SECRET body.') });
+    holdOutNoteFiles({ dir, sessionId: 'sess-1', paths: [path.join(dir, 'secret.md')] });
+    expect(ingestNoteDirectory({ dir }).created).toEqual(['note_other']);
+    expect(ingestNoteDirectory({ dir }).skipped).toEqual([{ path: 'secret.md', reason: expect.stringContaining('private session') }]);
+    fs.writeFileSync(path.join(dir, 'other.md'), note('note_other', 'Other', 'fact', 'Other body changed.'));
+    ingestNoteDirectory({ dir });
+    const later = new Date(Date.now() + 60_000);
+    fs.utimesSync(path.join(dir, 'secret.md'), later, later); // a touch does not release it
+    ingestNoteDirectory({ dir });
+    expect(names()).not.toContain('note_secret');
+    fs.writeFileSync(path.join(dir, 'secret.md'), note('note_secret', 'Secret', 'fact', 'Rewritten later by someone else.'));
+    expect(ingestNoteDirectory({ dir }).created).toEqual(['note_secret']);
+    expect(observations('note_secret')).toContain('Rewritten later');
+  });
+
+  it('leaves an imported note alone when the session edited it: the old memory stays, and a later edit imports', () => {
+    const dir = dirWith({ 'kept.md': note('note_kept', 'Kept', 'fact', 'Old body.') });
+    ingestNoteDirectory({ dir });
+    fs.writeFileSync(path.join(dir, 'kept.md'), note('note_kept', 'Kept', 'fact', 'Edited in the private session.'));
+    holdOutNoteFiles({ dir, sessionId: 'sess-1', paths: [path.join(dir, 'kept.md')] });
+    ingestNoteDirectory({ dir });
+    expect(observations('note_kept')).toContain('Old body');
+    expect(observations('note_kept')).not.toContain('private session');
+    fs.writeFileSync(path.join(dir, 'kept.md'), note('note_kept', 'Kept', 'fact', 'Edited afterwards.'));
+    ingestNoteDirectory({ dir });
+    expect(observations('note_kept')).toContain('Edited afterwards');
+  });
+
+  it('does not touch a note that was imported with the same content', () => {
+    const dir = dirWith({ 'same.md': note('note_same', 'Same', 'fact', 'Same body.') });
+    ingestNoteDirectory({ dir });
+    holdOutNoteFiles({ dir, sessionId: 'sess-1', paths: [path.join(dir, 'same.md')] });
+    expect(ingestNoteDirectory({ dir }).markedMissing).toEqual([]);
+    expect(names()).toContain('note_same');
+    expect(observations('note_same')).toContain('Same body');
+  });
+
+  it('keeps each session\'s record apart: a second session\'s record does not replace the first', () => {
+    const dir = dirWith({ 'one.md': note('note_one', 'One', 'fact', 'One.'), 'two.md': note('note_two', 'Two', 'fact', 'Two.') });
+    holdOutNoteFiles({ dir, sessionId: 'sess-a', paths: [path.join(dir, 'one.md')] });
+    holdOutNoteFiles({ dir, sessionId: 'sess-b', paths: [path.join(dir, 'two.md')] });
+    expect(fs.readdirSync(holdsDir()).filter((f) => f.endsWith('.json')).sort()).toEqual(['sess-a.json', 'sess-b.json']);
+    expect(ingestNoteDirectory({ dir }).created).toEqual([]);
+  });
+
+  it('imports nothing and says what to delete when a record cannot be read', () => {
+    const dir = dirWith({ 'a.md': note('note_a', 'A', 'fact', 'A body.') });
+    holdOutNoteFiles({ dir, sessionId: 'sess-a', paths: [] });
+    fs.mkdirSync(holdsDir(), { recursive: true }); // a record that holds nothing is not kept, so the folder may not be there
+    fs.writeFileSync(path.join(holdsDir(), 'sess-a.json'), '{ this is not json');
+    let error: (Error & { code?: string }) | undefined;
+    try { ingestNoteDirectory({ dir }); } catch (err) { error = err as Error; }
+    expect(error?.code).toBe(NOTE_HOLDS_UNREADABLE);
+    expect(error?.message).toContain('sess-a.json');
+    expect(error?.message).toMatch(/not imported until it is repaired/);
+    expect(names()).not.toContain('note_a');
+    fs.rmSync(path.join(holdsDir(), 'sess-a.json'));
+    expect(ingestNoteDirectory({ dir }).created).toEqual(['note_a']);
+  });
+
+  it.each([
+    ['a record that is a list', '[]'],
+    ['a record with no firm part', '{}'],
+    ['a hash that is not text', JSON.stringify({ firm: { someDir: { 'a.md': 7 } } })],
+    ['a folder entry that is not an object', JSON.stringify({ firm: { someDir: [] } })],
+    ['a tentative part that is incomplete', JSON.stringify({ firm: {}, tentative: { reason: 'x' } })],
+  ])('imports nothing, and says which file, for %s', (_label, text) => {
+    const dir = dirWith({ 'a.md': note('note_a', 'A', 'fact', 'A body.') });
+    fs.mkdirSync(holdsDir(), { recursive: true });
+    fs.writeFileSync(path.join(holdsDir(), 'sess-bad.json'), text);
+    let error: (Error & { code?: string }) | undefined;
+    try { ingestNoteDirectory({ dir }); } catch (err) { error = err as Error; }
+    expect(error?.code).toBe(NOTE_HOLDS_UNREADABLE);
+    expect(error?.message).toContain('sess-bad.json');
+    expect(names()).not.toContain('note_a');
+  });
+
+  it('imports nothing when the holds folder cannot be read (a plain file sits where it should be)', () => {
+    const dir = dirWith({ 'a.md': note('note_a', 'A', 'fact', 'A body.') });
+    fs.rmSync(holdsDir(), { recursive: true, force: true });
+    fs.writeFileSync(holdsDir(), 'a file where the folder should be');
+    let error: (Error & { code?: string }) | undefined;
+    try {
+      try { ingestNoteDirectory({ dir }); } catch (err) { error = err as Error; }
+      expect(error?.code).toBe(NOTE_HOLDS_DIR_UNREADABLE);
+      expect(names()).not.toContain('note_a');
+    } finally { fs.rmSync(holdsDir(), { force: true }); } // a failed assertion must not leave a file where later tests need the folder
+  });
+
+  it('holds a note under any other name or folder once it is held (a rename, a move into a subfolder, a copy)', () => {
+    const dir = dirWith({ 'secret.md': note('note_secret', 'Secret', 'fact', 'SECRET body.') });
+    holdOutNoteFiles({ dir, sessionId: 'sess-1', paths: [path.join(dir, 'secret.md')] });
+    fs.mkdirSync(path.join(dir, 'sub'));
+    fs.renameSync(path.join(dir, 'secret.md'), path.join(dir, 'sub', 'renamed.md'));
+    fs.copyFileSync(path.join(dir, 'sub', 'renamed.md'), path.join(dir, 'copy.md'));
+    const run = ingestNoteDirectory({ dir });
+    expect(run.created).toEqual([]);
+    expect(run.skipped.map((x) => x.path).sort()).toEqual(['copy.md', 'sub/renamed.md']);
+  });
+
+  it('holds every note changed since a time, named or not, and imports a note that is older', () => {
+    const dir = dirWith({ 'old.md': note('note_old', 'Old', 'fact', 'Old body.') });
+    const since = Date.now() + 20;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 40);
+    fs.writeFileSync(path.join(dir, 'new.md'), note('note_new', 'New', 'fact', 'New body.'));
+    expect(holdOutNoteFiles({ dir, sessionId: 'sess-1', paths: [], sinceMs: since })).toBe(1);
+    expect(ingestNoteDirectory({ dir }).created).toEqual(['note_old']);
+  });
+
+  it.skipIf(!canDenyReads)('keeps out a note that could not be read when it was held, and holds its content once it can be read', () => {
+    const dir = dirWith({ 'secret.md': note('note_secret', 'Secret', 'fact', 'SECRET body.') });
+    const file = path.join(dir, 'secret.md');
+    fs.chmodSync(file, 0o000);
+    try {
+      expect(holdOutNoteFiles({ dir, sessionId: 'sess-1', paths: [file] })).toBe(1);
+    } finally { fs.chmodSync(file, 0o644); }
+    expect(ingestNoteDirectory({ dir }).created).toEqual([]);
+    expect(names()).not.toContain('note_secret');
+    expect(JSON.stringify(JSON.parse(fs.readFileSync(path.join(holdsDir(), 'sess-1.json'), 'utf8')))).not.toContain('"?"'); // healed to its hash
+    fs.writeFileSync(file, note('note_secret', 'Secret', 'fact', 'Rewritten, so new content.'));
+    expect(ingestNoteDirectory({ dir }).created).toEqual(['note_secret']);
+  });
+
+  it('does not read a note over the size limit into memory to hold it', () => {
+    const dir = dirWith({ 'big.md': 'x'.repeat(NOTE_FILE_MAX_BYTES + 1) });
+    expect(holdOutNoteFiles({ dir, sessionId: 'sess-1', paths: [path.join(dir, 'big.md')] })).toBe(0);
+  });
+
+  it('never overwrites a session\'s own damaged hold record', () => {
+    const dir = dirWith({ 'a.md': note('note_a', 'A', 'fact', 'A body.') });
+    holdOutNoteFiles({ dir, sessionId: 'sess-1', paths: [path.join(dir, 'a.md')] });
+    fs.writeFileSync(path.join(holdsDir(), 'sess-1.json'), '{ damaged');
+    let error: (Error & { code?: string }) | undefined;
+    try { holdOutNoteFiles({ dir, sessionId: 'sess-1', paths: [] }); } catch (err) { error = err as Error; }
+    expect(error?.code).toBe(NOTE_HOLDS_UNREADABLE);
+    expect(fs.readFileSync(path.join(holdsDir(), 'sess-1.json'), 'utf8')).toBe('{ damaged');
+  });
+
+  describe('holds kept out only because the session could not be checked', () => {
+    const transcript = (rows: object[], name = 't.jsonl') => {
+      const file = path.join(fixture.tmpDir, name);
+      fs.writeFileSync(file, `${rows.map((r) => JSON.stringify(r)).join('\n')}\n`);
+      return file;
+    };
+    const quiet = { type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } };
+    const call = { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'x', name: 'mcp__memesh__private_session', input: {} }] } };
+    const hold = (dir: string, file: string) => holdOutNoteFiles({
+      dir, sessionId: 'sess-1', paths: [path.join(dir, 'secret.md')], transcript: file,
+      // The holds were recorded after every note here was written: none of them waits (a note changed after `holdsAt` would).
+      tentative: { reason: 'unreadable', holdsAt: Date.now() + 1000 },
+    });
+
+    it('lets the note through once the session can be checked and is not private', () => {
+      const dir = dirWith({ 'secret.md': note('note_secret', 'Secret', 'fact', 'Body.') });
+      hold(dir, transcript([quiet]));
+      expect(ingestNoteDirectory({ dir }).created).toEqual(['note_secret']);
+      // Released, and the record held nothing else, so it is gone.
+      expect(fs.existsSync(path.join(holdsDir(), 'sess-1.json'))).toBe(false);
+    });
+
+    it('makes the hold firm when the session turns out to be private', () => {
+      const dir = dirWith({ 'secret.md': note('note_secret', 'Secret', 'fact', 'Body.') });
+      hold(dir, transcript([quiet, call]));
+      expect(ingestNoteDirectory({ dir }).created).toEqual([]);
+      const record = JSON.parse(fs.readFileSync(path.join(holdsDir(), 'sess-1.json'), 'utf8'));
+      expect(record.tentative).toBeUndefined();
+      expect(Object.keys(record.firm)).toHaveLength(1);
+    });
+
+    it('keeps holding while the check still cannot be made, and says why', () => {
+      const dir = dirWith({ 'secret.md': note('note_secret', 'Secret', 'fact', 'Body.') });
+      // A transcript path that is a folder cannot be read: still unchecked. (A transcript that is not there is "no".)
+      const folder = path.join(fixture.tmpDir, 'a-folder.jsonl');
+      fs.mkdirSync(folder, { recursive: true });
+      hold(dir, folder);
+      const run = ingestNoteDirectory({ dir });
+      expect(run.created).toEqual([]);
+      expect(run.held.unchecked).toBe(1);
+      expect(summarizeNoteHolds()).toMatchObject({ sessions: 1, notes: 1, unsettled: [{ reason: 'unreadable', kind: 'transient', notes: 1 }] });
+    });
+  });
+});
+
+describe('notes changed while a private session runs wait for it', () => {
+  let counter = 0;
+  const dirWith = (files: Record<string, string>): string => {
+    const dir = path.join(fixture.tmpDir, `pending-notes-${++counter}`);
+    fs.mkdirSync(dir, { recursive: true });
+    for (const [rel, content] of Object.entries(files)) fs.writeFileSync(path.join(dir, rel), content);
+    return dir;
+  };
+  const at = (file: string, ms: number) => fs.utimesSync(file, new Date(ms), new Date(ms));
+  const names = () => (getDatabase().prepare('SELECT name FROM entities').all() as Array<{ name: string }>).map((r) => r.name);
+  const markersDir = () => path.join(getMemeshDirFromDbPath(), 'private-sessions');
+  beforeEach(() => {
+    fs.rmSync(markersDir(), { recursive: true, force: true });
+    fs.rmSync(path.join(getMemeshDirFromDbPath(), 'note-ingest-holds'), { recursive: true, force: true });
+  });
+
+  const pause = (ms: number) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };
+
+  it('leaves a note changed since the marker alone, imports an older one, and imports it once the session has ended', () => {
+    const dir = dirWith({ 'old.md': note('note_old', 'Old', 'fact', 'Old body.') });
+    pause(30);
+    const start = Date.now();
+    markPrivateSession({ sessionId: 'sess-p', dirs: [dir], now: start });
+    fs.writeFileSync(path.join(dir, 'fresh.md'), note('note_fresh', 'Fresh', 'fact', 'Fresh body.'));
+    const first = ingestNoteDirectory({ dir });
+    expect(first.created).toEqual(['note_old']);
+    expect(first.pendingPrivate).toBe(1);
+    expect(names()).not.toContain('note_fresh');
+    expect(summarizeNoteIngest(first)).toContain("waiting for a private session's next Stop");
+    endPrivateSession('sess-p');
+    expect(ingestNoteDirectory({ dir }).created).toEqual(['note_fresh']);
+  });
+
+  it('waits for a note moved in after the marker even though its modification time is old (mv, cp -p, tar x, rsync -a, touch -t)', () => {
+    const dir = dirWith({ 'other.md': note('note_other', 'Other', 'fact', 'Other body.') });
+    pause(30);
+    markPrivateSession({ sessionId: 'sess-p', dirs: [dir], now: Date.now() });
+    fs.writeFileSync(path.join(dir, 'moved.md'), note('note_moved', 'Moved', 'fact', 'Moved body.'));
+    at(path.join(dir, 'moved.md'), Date.now() - 3 * 24 * 3600 * 1000); // the old time a move or `cp -p` keeps
+    const run = ingestNoteDirectory({ dir });
+    expect(run.pendingPrivate).toBe(1);
+    expect(names()).not.toContain('note_moved');
+  });
+
+  it('keeps the first start time when the marker is renewed, and lets a note the session named stay out after the marker ends', () => {
+    const dir = dirWith({ 'named.md': note('note_named', 'Named', 'fact', 'Named body.') });
+    const start = Date.now();
+    markPrivateSession({ sessionId: 'sess-p', dirs: [dir], now: start });
+    markPrivateSession({ sessionId: 'sess-p', dirs: [dir], now: start + 10_000 });
+    const marker = JSON.parse(fs.readFileSync(path.join(markersDir(), 'sess-p.json'), 'utf8'));
+    expect(marker).toMatchObject({ startedAt: start, updatedAt: start + 10_000 });
+    expect(Object.keys(marker).sort()).toEqual(['dirs', 'holdsAt', 'projectsRoot', 'session', 'startedAt', 'updatedAt', 'v']);
+    at(path.join(dir, 'named.md'), start + 5_000);
+    holdOutNoteFiles({ dir, sessionId: 'sess-p', paths: [path.join(dir, 'named.md')] });
+    endPrivateSession('sess-p');
+    expect(ingestNoteDirectory({ dir }).created).toEqual([]);
+    expect(names()).not.toContain('note_named');
+  });
+
+  it('ignores a marker of a folder under another projects root', () => {
+    const dir = dirWith({ 'fresh.md': note('note_fresh', 'Fresh', 'fact', 'Fresh body.') });
+    const other = path.join(fixture.tmpDir, 'elsewhere', 'project', 'memory');
+    fs.mkdirSync(other, { recursive: true });
+    markPrivateSession({ sessionId: 'sess-other', dirs: [other], now: Date.now() - 1000 });
+    expect(ingestNoteDirectory({ dir }).created).toEqual(['note_fresh']);
+  });
+
+  it('does not release what a private session wrote when it has not been heard from past its time: those notes are held by content, once, up to its last activity', () => {
+    const dir = dirWith({});
+    markPrivateSession({ sessionId: 'sess-stale', dirs: [dir] });
+    fs.writeFileSync(path.join(dir, 'written.md'), note('note_written', 'Written', 'fact', 'Written while private.'));
+    renewPrivateSession('sess-stale', Date.now() + 1000); // its last sign of life comes after the note
+    const later = Date.now() + PRIVATE_WINDOW_MS + 60_000; // the time the import runs: long after
+    const first = ingestNoteDirectory({ dir, now: later });
+    expect(first.created).toEqual([]);
+    expect(first.held.private).toBe(1);
+    expect(names()).not.toContain('note_written');
+    expect(typeof JSON.parse(fs.readFileSync(path.join(markersDir(), 'sess-stale.json'), 'utf8')).finalizedAt).toBe('number');
+    expect(summarizeNoteHolds().notes).toBe(1);
+    expect(ingestNoteDirectory({ dir, now: later }).created).toEqual([]); // finalized once, and still held by content
+  });
+
+  it('does not hold, when it finalizes an idle session, a note written after that session\'s last activity (Q6_09 P2)', () => {
+    const dir = dirWith({});
+    const start = Date.now() - 2000;
+    markPrivateSession({ sessionId: 'sess-quiet', dirs: [dir], now: start });
+    fs.writeFileSync(path.join(dir, 'ordinary.md'), note('note_ordinary', 'Ordinary', 'fact', 'Written by an ordinary session after the private one went quiet.'));
+    const run = ingestNoteDirectory({ dir, now: Date.now() + PRIVATE_WINDOW_MS + 60_000 });
+    expect(run.created).toEqual(['note_ordinary']);
+    expect(summarizeNoteHolds().notes).toBe(0);
+  });
+
+  describe('a marker past its time whose session is still writing its transcript', () => {
+    const idleStart = () => Date.now() - PRIVATE_WINDOW_MS - 60_000;
+    const transcriptAt = (file: string, ageMs: number) => {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, '{}\n');
+      const t = new Date(Date.now() - ageMs);
+      fs.utimesSync(file, t, t);
+      return file;
+    };
+
+    it('is still live: a note written now waits, nothing is finalized', () => {
+      const dir = dirWith({});
+      const transcript = transcriptAt(path.join(fixture.tmpDir, 'live.jsonl'), 1000);
+      markPrivateSession({ sessionId: 'sess-live', dirs: [dir], transcript, now: idleStart() });
+      fs.writeFileSync(path.join(dir, 'new.md'), note('note_new', 'New', 'fact', 'Written by the live session.'));
+      const run = ingestNoteDirectory({ dir });
+      expect(run.pendingPrivate).toBe(1);
+      expect(run.created).toEqual([]);
+      expect(JSON.parse(fs.readFileSync(path.join(markersDir(), 'sess-live.json'), 'utf8')).finalized).toBeUndefined();
+      expect(summarizeNoteHolds().notes).toBe(0);
+    });
+
+    it('is still live when only a subagent\'s transcript was written lately', () => {
+      const dir = dirWith({});
+      const transcript = transcriptAt(path.join(fixture.tmpDir, 'main.jsonl'), PRIVATE_WINDOW_MS + 3_600_000);
+      transcriptAt(path.join(fixture.tmpDir, 'main', 'subagents', 'agent-a1.jsonl'), 1000);
+      markPrivateSession({ sessionId: 'sess-sub', dirs: [dir], transcript, now: idleStart() });
+      fs.writeFileSync(path.join(dir, 'new.md'), note('note_new', 'New', 'fact', 'Written while a subagent runs.'));
+      expect(ingestNoteDirectory({ dir }).pendingPrivate).toBe(1);
+    });
+
+    it('is finalized once its transcripts are idle for that long too, and a note written after that is imported', () => {
+      const dir = dirWith({});
+      const old = PRIVATE_WINDOW_MS + 3_600_000;
+      const transcript = transcriptAt(path.join(fixture.tmpDir, 'gone.jsonl'), old);
+      transcriptAt(path.join(fixture.tmpDir, 'gone', 'subagents', 'agent-a1.jsonl'), old);
+      markPrivateSession({ sessionId: 'sess-gone', dirs: [dir], transcript, now: Date.now() - 1000 });
+      fs.writeFileSync(path.join(dir, 'written.md'), note('note_written', 'Written', 'fact', 'Written before it was found gone.'));
+      const lastWrite = new Date(Date.now() + 1000); // its transcript was written last after the note
+      fs.utimesSync(transcript, lastWrite, lastWrite);
+      const later = Date.now() + old;
+      expect(ingestNoteDirectory({ dir, now: later }).created).toEqual([]);
+      expect(typeof JSON.parse(fs.readFileSync(path.join(markersDir(), 'sess-gone.json'), 'utf8')).finalizedAt).toBe('number');
+      fs.writeFileSync(path.join(dir, 'later.md'), note('note_later', 'Later', 'fact', 'Someone else, after.'));
+      fs.utimesSync(path.join(dir, 'later.md'), new Date(later - 1000), new Date(later - 1000));
+      expect(ingestNoteDirectory({ dir, now: later }).created).toEqual(['note_later']);
+    });
+
+    it('is finalized when it does not know its transcript (a host with none), up to the marker\'s last renewal', () => {
+      const dir = dirWith({});
+      markPrivateSession({ sessionId: 'sess-unknown', dirs: [dir], now: Date.now() - 1000 });
+      fs.writeFileSync(path.join(dir, 'written.md'), note('note_written', 'Written', 'fact', 'Body.'));
+      renewPrivateSession('sess-unknown', Date.now() + 1000);
+      expect(ingestNoteDirectory({ dir, now: Date.now() + PRIVATE_WINDOW_MS + 60_000 }).created).toEqual([]);
+      expect(typeof JSON.parse(fs.readFileSync(path.join(markersDir(), 'sess-unknown.json'), 'utf8')).finalizedAt).toBe('number');
+    });
+
+    it('keeps its transcript path when the marker is renewed', () => {
+      const dir = dirWith({});
+      markPrivateSession({ sessionId: 'sess-p', dirs: [dir], transcript: '/some/where/t.jsonl', now: Date.now() - 1000 });
+      renewPrivateSession('sess-p');
+      markPrivateSession({ sessionId: 'sess-p', dirs: [dir] });
+      expect(JSON.parse(fs.readFileSync(path.join(markersDir(), 'sess-p.json'), 'utf8')).transcript).toBe('/some/where/t.jsonl');
+    });
+  });
+
+  it('renews a marker without moving its start, and does nothing for a session that has none', () => {
+    const dir = dirWith({});
+    expect(renewPrivateSession('sess-none')).toBe(false);
+    const start = Date.now() - 1000;
+    markPrivateSession({ sessionId: 'sess-p', dirs: [dir], now: start });
+    expect(renewPrivateSession('sess-p', start + 5000)).toBe(true);
+    expect(JSON.parse(fs.readFileSync(path.join(markersDir(), 'sess-p.json'), 'utf8'))).toMatchObject({ startedAt: start, updatedAt: start + 5000 });
+  });
+
+  it('writes a marker for a folder that does not exist yet, and waits for the first note once it does', () => {
+    const parent = dirWith({});
+    const dir = path.join(parent, 'memory');
+    markPrivateSession({ sessionId: 'sess-p', dirs: [dir], now: Date.now() - 1000 });
+    expect(JSON.parse(fs.readFileSync(path.join(markersDir(), 'sess-p.json'), 'utf8')).dirs).toEqual([path.join(fs.realpathSync(parent), 'memory')]);
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, 'first.md'), note('note_first', 'First', 'fact', 'First note.'));
+    expect(ingestNoteDirectory({ dir }).pendingPrivate).toBe(1);
+    expect(names()).not.toContain('note_first');
+  });
+
+  it('imports nothing, and says what to delete, when a marker cannot be read', () => {
+    const dir = dirWith({ 'a.md': note('note_a', 'A', 'fact', 'A body.') });
+    markPrivateSession({ sessionId: 'sess-p', dirs: [dir] });
+    fs.writeFileSync(path.join(markersDir(), 'sess-p.json'), '{ not json');
+    let error: (Error & { code?: string }) | undefined;
+    try { ingestNoteDirectory({ dir }); } catch (err) { error = err as Error; }
+    expect(error?.code).toBe(NOTE_MARKERS_UNREADABLE);
+    expect(error?.message).toContain('private-sessions/sess-p.json');
+    expect(names()).not.toContain('note_a');
   });
 });

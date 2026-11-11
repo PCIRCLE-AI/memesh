@@ -15,6 +15,9 @@ export class ClaudeTranscriptReader {
         this.projectsDir = projectsDir;
         this.projectSlug = projectSlug;
     }
+    transcriptFile(session) {
+        return this.locate(session);
+    }
     locate(session) {
         if (!/^[A-Za-z0-9_-]{1,128}$/.test(session))
             return undefined;

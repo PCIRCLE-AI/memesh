@@ -97,6 +97,9 @@ export const CAPTURE_HOOKS = [
     'remember-nudge',
     'handoff-capture',
     'stop-message-gate',
+    'codex-plan-activity',
+    'hermes-private-session',
+    'codex-busy-message-notice',
 ];
 export const FAIL_ELIGIBLE_HOOKS = ['session-summary'];
 export const SILENT_ELIGIBLE_HOOKS = ['post-commit', 'session-summary', 'pre-compact', 'handoff-capture'];
@@ -119,6 +122,38 @@ export const SKIP_REASONS = {
     noDatabaseForGuards: 'no database yet — nothing to guard against',
     noGuardMatched: 'no active guard matched this command',
     autoCaptureOff: 'auto-capture is turned off',
+    privateSession: 'private_session',
+    privateSessionUnchecked: 'the session could not be checked for a private-session call, so nothing is saved',
+    privateCheckUnreadable: 'the private-session check could not read the transcript, so the session is treated as private',
+    privateCheckMarkerUnreadable: 'the private-sessions folder beside the database cannot be read, so every session is treated as private and nothing is saved until it can be',
+    privateCheckParentUnavailable: 'the session\'s fork parent or a subagent transcript could not be found, read or checked, or a rollout header is damaged, so the session is treated as private',
+    notesHeldByTime: 'the transcripts could not be read for note names (too large, too slow or unreadable), so every note changed in the last six hours is held out',
+    privateCheckTooLarge: 'the transcript is too large to check for a private-session call, so the session is treated as private',
+    privateCheckTimeout: 'the private-session check ran out of time, so nothing is saved this time and the next run checks again',
+    privateCheckNoSessionId: 'the host gave no session id, so whether the session is private cannot be told and nothing is saved',
+    notesHeldPrivate: 'note files written in a private session, or in one that could not be checked, are held out; nothing else needed storing',
+    noteHoldsUnreadable: 'a private-session hold record cannot be read, so notes are not imported until it is repaired: it is in the note-ingest-holds folder beside the database (deleting it releases the notes it holds)',
+    noteMarkersUnreadable: 'a private-session marker cannot be read, so notes are not imported until its session rebuilds it: memesh doctor names the file in the private-sessions folder beside the database',
+    noteMarkersDirUnreadable: 'the private-sessions folder beside the database cannot be read, so notes are not imported until it can be',
+    noteMarkerUnwritable: 'a private-session marker could not be written, so notes stay held; check the disk and the private-sessions folder\'s permissions',
+    noteHoldsDirUnreadable: 'the note-ingest-holds folder beside the database cannot be read, so notes are not imported until it can be',
+    noteHoldsUnwritable: 'a private-session hold record could not be written, so notes stay held; check the disk and the note-ingest-holds folder\'s permissions',
+    privateStateBusy: 'the private-session records were locked by another process, so nothing was released this time and the next run tries again',
+    privateMarkerRebuilt: 'this session\'s private-session marker could not be read and was written again from the start of the session',
+    notPrivateSessionTool: 'not a call of the private_session tool',
+    notesWaitingForPrivateSession: 'note files changed while a private session runs are waiting for its next Stop to record what it holds',
+    notesLeftForNextRun: 'more note files changed than one run reads, so the rest are read at the next Stop',
+    transcriptReadTimeout: 'the transcript could not be read within the hook\'s time, so its tool calls are not recorded',
+    busyNoticeNotCodex: 'not Codex',
+    busyNoticeNoSessionId: 'no usable session_id',
+    busyNoticeSessionMismatch: 'session_id_mismatch',
+    busyNoticeNoRecipient: 'no recipient or database',
+    busyNoticeLockHeld: 'session reminder lock held',
+    busyNoticeNothingWaiting: 'no waiting messages',
+    notPrivateSession: 'not a private session',
+    notCodexPlanEvent: 'not a valid Codex plan event',
+    planActivityRecorded: 'activity state recorded; no notification',
+    planActivityCleared: 'invalid or failed plan cleared',
     commitCwdAbsent: 'data.cwd absent — cannot resolve project or repo',
     hashNotACommit: 'the hash is not a commit in this repository',
     noSessionOrTranscript: 'neither session_id nor transcript_path in the payload',
@@ -139,6 +174,7 @@ export const SKIP_REASONS = {
     recallThrottled: 'no guard matched and recall for this file is throttled: this session already looked at it',
     candidateWindowTruncated: 'more candidates may exist than the search window examined',
     noPromptIntent: 'the prompt carried no remember intent and no update decision',
+    promptTooLarge: 'the prompt is too large to scan for a remember intent',
     noMemoryDir: 'no Claude Code memory directory for this project',
     noNoteChanged: 'no note file changed since the last ingestion',
     noteIngesterNotBuilt: 'the note ingester is not built (dist/core/note-ingest.js is missing)',
@@ -232,19 +268,22 @@ function valueEnd(s, i) {
 }
 export const NOT_TRIGGERED_SKIP_REASONS = {
     'post-commit': [SKIP_REASONS.notBash, SKIP_REASONS.notGitCommit],
-    'session-summary': [SKIP_REASONS.alreadyCaptured, SKIP_REASONS.noSessionId, SKIP_REASONS.noRecallSessionRecord, SKIP_REASONS.noEligibleRecallRows],
+    'session-summary': [SKIP_REASONS.privateSession, SKIP_REASONS.alreadyCaptured, SKIP_REASONS.noSessionId, SKIP_REASONS.noRecallSessionRecord, SKIP_REASONS.noEligibleRecallRows],
     'session-start': [SKIP_REASONS.noSessionId],
-    'note-ingest': [SKIP_REASONS.noNoteChanged],
-    'remember-nudge': [SKIP_REASONS.trivialTurn, SKIP_REASONS.noDecisionMove],
-    'handoff-capture': [SKIP_REASONS.handoffTooShort, SKIP_REASONS.autoCaptureOff],
+    'note-ingest': [SKIP_REASONS.noNoteChanged, SKIP_REASONS.privateSession, SKIP_REASONS.privateSessionUnchecked, SKIP_REASONS.notPrivateSession, SKIP_REASONS.notPrivateSessionTool],
+    'remember-nudge': [SKIP_REASONS.trivialTurn, SKIP_REASONS.noDecisionMove, SKIP_REASONS.privateSession, SKIP_REASONS.privateSessionUnchecked],
+    'handoff-capture': [SKIP_REASONS.handoffTooShort, SKIP_REASONS.autoCaptureOff, SKIP_REASONS.privateSession, SKIP_REASONS.privateSessionUnchecked],
+    'pre-compact': [SKIP_REASONS.privateSession],
 };
 export const UNCLASSIFIED_SKIP_HOOKS = [
-    'pre-compact',
     'pre-edit-recall',
     'user-prompt-intent',
     'decision-nudge',
     'guard-check',
     'stop-message-gate',
+    'codex-plan-activity',
+    'hermes-private-session',
+    'codex-busy-message-notice',
 ];
 export const NEVER_RAN_GRACE_HOURS = 72;
 export function parseHookOutcomes(raw, limit = HOOK_OUTCOMES_PER_HOOK) {
@@ -284,7 +323,7 @@ export function parseHookOutcomeLine(line) {
     const record = {
         hook: rec.hook,
         at: rec.at,
-        host: rec.host === 'claude-code' || rec.host === 'codex' ? rec.host : 'unknown',
+        host: rec.host === 'claude-code' || rec.host === 'codex' || rec.host === 'hermes' ? rec.host : 'unknown',
         outcome: rec.outcome,
     };
     const reason = typeof rec.reason === 'string' ? sanitizeRecordText(rec.reason) : '';
@@ -295,8 +334,11 @@ export function parseHookOutcomeLine(line) {
     const entity = typeof rec.entity === 'string' ? sanitizeRecordText(rec.entity) : '';
     if (entity)
         record.entity = entity;
+    if (Number.isSafeInteger(rec.count) && rec.count >= 0 && rec.count <= RECORD_COUNT_MAX)
+        record.count = rec.count;
     return record;
 }
+export const RECORD_COUNT_MAX = 1_000_000;
 export const RECORD_TEXT_MAX = 200;
 export function sanitizeRecordText(text) {
     return text.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, RECORD_TEXT_MAX);
@@ -316,6 +358,25 @@ const FIXED_ERROR_REASONS = new Set([
     'malformed stdin JSON',
     'captureEntity did not land the write',
     'the transcript could not be read',
+    SKIP_REASONS.privateCheckUnreadable,
+    SKIP_REASONS.privateCheckMarkerUnreadable,
+    SKIP_REASONS.transcriptReadTimeout,
+    SKIP_REASONS.privateCheckTooLarge,
+    SKIP_REASONS.privateCheckParentUnavailable,
+    'the private-session marker could not be written',
+    'the private-session marker could not be read',
+    'the private-session marker could not be kept or read: Hermes gave no home folder',
+    'Hermes did not say why the session changed, so the new session is treated as private',
+    SKIP_REASONS.noteHoldsUnreadable,
+    SKIP_REASONS.noteMarkersUnreadable,
+    SKIP_REASONS.privateCheckTimeout,
+    SKIP_REASONS.privateCheckNoSessionId,
+    SKIP_REASONS.noteMarkersDirUnreadable,
+    SKIP_REASONS.noteMarkerUnwritable,
+    SKIP_REASONS.noteHoldsDirUnreadable,
+    SKIP_REASONS.noteHoldsUnwritable,
+    SKIP_REASONS.privateStateBusy,
+    SKIP_REASONS.privateMarkerRebuilt,
     'the host closed stdout before the nudge could be written',
     'the database stayed locked past the hook busy timeout',
     'stdout: host closed the pipe before the block reason was delivered',

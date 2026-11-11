@@ -235,6 +235,32 @@ const HOOK_CASES: HookCase[] = [
     },
   },
   {
+    // Prints nothing in every case: it marks a private session for the note
+    // importer, and with no notes folder (no transcript) does nothing.
+    file: 'private-session-mark.js',
+    boundEvent: 'PostToolUse',
+    input: {
+      session_id: 'contract-11',
+      cwd: '/tmp/contract-project',
+      hook_event_name: 'PostToolUse',
+      tool_name: 'mcp__memesh__private_session',
+      tool_input: {},
+      transcript_path: '',
+    },
+  },
+  {
+    // Prints nothing in every case: it holds out notes for a private session and
+    // otherwise does nothing.
+    file: 'session-end-notes.js',
+    boundEvent: 'SessionEnd',
+    input: {
+      session_id: 'contract-10',
+      cwd: '/tmp/contract-project',
+      hook_event_name: 'SessionEnd',
+      transcript_path: '',
+    },
+  },
+  {
     file: 'codex-session.js',
     commandPath: 'dist/host-runtime/codex-session.js',
     boundEvent: 'SessionEnd',
@@ -346,6 +372,26 @@ describe('Feature: Claude Code hook-output contract', () => {
       expect(hso.hookEventName).toBe(hookCase.boundEvent);
     });
   }
+
+  it('Scenario: private-session-mark.js and session-end-notes.js print nothing, exit 0 and leave a marker and a hold when the session has a real notes folder', () => {
+    // The cases in the loop above carry no transcript, so they stop at "no notes folder": the path that
+    // writes the marker and the hold record was never run for its output.
+    const project = path.join(testDir, 'claude-projects', '-contract-p');
+    fs.mkdirSync(path.join(project, 'memory'), { recursive: true });
+    fs.writeFileSync(path.join(project, 'memory', 'named.md'), '---\nname: contract_named\n---\nbody\n');
+    const transcript = path.join(project, 'contract-12.jsonl');
+    fs.writeFileSync(transcript, `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'w', name: 'Write', input: { file_path: path.join(project, 'memory', 'named.md') } }] } })}\n`);
+    const input = { session_id: 'contract-12', cwd: CONTRACT_CWD, transcript_path: transcript };
+    for (const hookCase of [
+      { file: 'private-session-mark.js', boundEvent: 'PostToolUse', input: { ...input, hook_event_name: 'PostToolUse', tool_name: 'mcp__memesh__private_session', tool_input: {} } },
+      { file: 'session-end-notes.js', boundEvent: 'SessionEnd', input: { ...input, hook_event_name: 'SessionEnd' } },
+    ] as HookCase[]) {
+      const { stdout, status, stderr } = runHook(hookCase);
+      expect(status, `${hookCase.file} exited ${status}\n${stderr}`).toBe(0);
+      expect(stdout, `${hookCase.file} prints nothing`).toBe('');
+    }
+    expect(fs.readdirSync(path.join(testDir, 'note-ingest-holds'))).toEqual(['contract-12.json']);
+  });
 
   it('Scenario: pre-edit-recall.js actually injects the seeded memory, not a vacuous empty pass (#358 round 3 item 5)', () => {
     // The two tests in the loop above only check SHAPE — an empty payload is

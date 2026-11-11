@@ -64,6 +64,8 @@ Yêu cầu trợ lý bằng ngôn ngữ tự nhiên:
 >
 > Lưu tiến độ hiện tại để phiên tiếp theo có thể tiếp tục.
 
+Hãy nói "đừng nhớ cuộc trò chuyện này" và trợ lý sẽ ngừng tự động lưu trong phần còn lại của phiên, bằng bất kỳ ngôn ngữ nào. Chỉ nhắc đến tính năng này, hoặc chỉ yêu cầu không lưu một chi tiết, thì không tính. Việc dừng áp dụng cho việc lưu tự động của hook (tóm tắt phiên, bàn giao, ghi chú trước khi nén, ghi chú được nhập, nhắc lưu) và bước kế hoạch mà Codex chia sẻ với các agent khác. Lệnh gọi có kết quả là lỗi cũng tính, lệnh gọi trong một subagent cũng tính, và một subagent Codex rẽ nhánh từ luồng riêng tư cũng riêng tư. Nội dung đã lưu trước đó, trong phiên này hoặc trước nó, vẫn còn (có thể nhờ trợ lý quên đi), các bản ghi commit vẫn được lưu, và tệp phiên trên đĩa của bạn không bị ảnh hưởng. Tệp ghi chú được chặn theo nội dung, dù sau đó đổi tên: mọi ghi chú có tên tệp xuất hiện trong bất kỳ lệnh gọi công cụ nào của phiên (mọi công cụ tệp, kể cả của máy chủ MCP, mọi lệnh, lệnh gọi của subagent; kể cả chỉ đọc) và mọi ghi chú trong thư mục ghi chú đã thay đổi kể từ lệnh gọi (sao chép cả thư mục, chương trình tự tạo, `mv`), và cũng vậy trong thư mục ghi chú của dự án khác mà phiên nhắc đến hoặc chạm tới; một phiên Codex, vốn không có thư mục ghi chú riêng, bị giữ theo các thư mục ghi chú Claude Code mà nó nhắc đến. Điều đó gồm cả ghi chú mà một phiên khác viết trong cùng dự án cùng lúc: nó bị giữ luôn, sửa nội dung thì nó được nhập, và mọi ghi chú bị giữ đều được đếm trong bản ghi của lần nhập. Cho đến khi Stop hoặc lúc kết thúc của phiên ghi lại điều này, các phiên khác để những ghi chú đó chờ. Nếu phiên không kiểm tra được (không đọc được tệp phiên, thư mục subagent hoặc thư mục private-sessions, các tệp phiên cộng lại lớn hơn 2 GiB, rollout cha của phiên rẽ nhánh không thấy hoặc không đọc được, phần đầu rollout bị hỏng), phiên được coi là riêng tư, không lưu gì, và các ghi chú nó có thể đã viết bị giữ; mỗi lần nhập sẽ kiểm tra lại và cho qua khi kiểm tra được và phiên không riêng tư, và `memesh doctor` liệt kê những gì còn bị giữ, và với lý do không tự hết thì cả tệp mà xóa nó sẽ thả ra. Nếu tệp phiên quá lớn để đọc trong thời gian của hook, mọi ghi chú thay đổi trong sáu giờ qua bị giữ. Một phiên riêng tư không có động tĩnh quá sáu giờ (và tệp phiên của nó cũng không được ghi quá sáu giờ) thì ghi chú của nó bị giữ và không bắt người khác chờ nữa; lời nhắc tiếp theo của nó làm nó hoạt động lại. Tệp phiên hoàn toàn không có thì không bị coi là riêng tư. Với Hermes, thiết lập được lưu trong một tệp nhỏ trong thư mục Hermes, nên vẫn giữ nguyên sau khi nén, tiếp tục hoặc rẽ nhánh; một phiên cũ được tiếp tục chỉ riêng tư nếu chính nó đã được đánh dấu. Khi Hermes không cho biết vì sao phiên thay đổi, phiên mới không lưu gì trong phần còn lại của lần chạy đó và một lỗi ghi rõ lý do; không có tệp nào được ghi cho nó, nên lần chạy sau sẽ quyết định lại. Nếu không ghi được tệp đó, công cụ sẽ nói rõ.
+
 Plugin Claude Code cung cấp tính năng ghi nhận và nhắc nhở tự động. Plugin Codex có thể đưa ngữ cảnh vào đầu phiên khi được phép chạy các hook; những hành vi ghi nhận khác tùy thuộc công cụ. Bạn cũng có thể yêu cầu trợ lý lưu hoặc tìm bộ nhớ trực tiếp.
 
 Nhắc nhở hộp thư trong Claude Code không cần thiết lập Channel: khi chưa cấu hình danh tính riêng, các hook dùng người nhận cục bộ `claude-code`. Chúng kiểm tra khi khởi động, khi bạn gửi lời nhắc tiếp theo và khi kết thúc lượt; nhắc nhở dừng khi trợ lý ghi nhận `intake` cho tin nhắn đó. Đẩy tin trực tiếp qua Channel là tùy chọn; xem [hướng dẫn nhắn tin](docs/platforms/agent-messaging.md#claude-channel-runner).
@@ -77,7 +79,7 @@ Các bản dựng từ mã nguồn chưa phát hành bổ sung `/memesh-memories
 <details>
 <summary>Chi tiết công cụ và tích hợp</summary>
 
-## Toàn bộ 12 công cụ bộ nhớ và phối hợp
+## Toàn bộ 13 công cụ bộ nhớ và phối hợp
 
 | Công cụ | Chức năng |
 |---------|-----------|
@@ -93,10 +95,11 @@ Các bản dựng từ mã nguồn chưa phát hành bổ sung `/memesh-memories
 | `work_package` | Chuẩn bị bản tóm tắt bộ nhớ hoặc trích đoạn hội thoại có giới hạn để người dùng duyệt. |
 | `user_patterns` | Tổng hợp thói quen làm việc. |
 | `improvement` | Đề xuất cải tiến để người dùng duyệt. |
+| `private_session` | Ngừng tự động lưu phiên này khi bạn nói "đừng nhớ cuộc trò chuyện này". |
 
 ---
 
-Các plugin có **10 hook**. Tính năng nhắc khi người dùng muốn ghi nhớ điều gì đó hỗ trợ 5 ngôn ngữ. Bạn có thể sửa bộ nhớ qua MeMesh Mod trên Claude Code/Claude Desktop Code và trong MCP/biểu mẫu tích hợp sẵn trên Codex. Không có Web Dashboard độc lập.
+Các plugin có **12 hook**. Tính năng nhắc khi người dùng muốn ghi nhớ điều gì đó hỗ trợ 5 ngôn ngữ. Bạn có thể sửa bộ nhớ qua MeMesh Mod trên Claude Code/Claude Desktop Code và trong MCP/biểu mẫu tích hợp sẵn trên Codex. Không có Web Dashboard độc lập.
 
 **Xếp hạng theo điểm** — mức liên quan (30%) + độ mới (25%) + tần suất (18%) + độ tin cậy (17%) + tác động của việc truy xuất (10%). Xem [kiến trúc](docs/ARCHITECTURE.md).
 

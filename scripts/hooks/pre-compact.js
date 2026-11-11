@@ -1,8 +1,16 @@
 #!/usr/bin/env node
 
 import { basename } from 'path';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync } from 'fs';
 import { AUTO_CAPTURE_TAG, captureEntity, getProjectName, isAutoCaptureEnabled, openHookDb, hookErrorReason, hookSourceHost, SKIP_REASONS, recordHookOutcome, recordHookRun, redactSecrets, truncateTitle } from './_shared.js';
+import { privacyForHook } from './_private-session.js';
+import { deadlineFor, HOOK_BUDGET_MS } from './_hook-budgets.js';
+import { isCodexToolRequest } from './_generated/host-transcript.js';
+import { forEachTranscriptLine } from './_generated/private-session.js';
+
+/** Thrown when the hook's reading time is used up: the count is not recorded, and the error says so. */
+const READ_TIMEOUT = Object.assign(new Error('the transcript could not be read within the hook\'s time'), { code: 'ETIMEOUT' });
+
 
 // There is no in-process timeout guard, and its absence is deliberate.
 //
@@ -65,6 +73,12 @@ process.stdin.on('end', () => {
       process.exit(0);
     }
     const cwd = data.cwd;
+    const privacy = privacyForHook(data, 'pre-compact', { budgetMs: HOOK_BUDGET_MS.preCompact.decide });
+    if (privacy.state !== 'no') {
+      // `unchecked` already recorded its error: this run is a skip that says so, never "private".
+      record('skipped', privacy.state === 'yes' ? SKIP_REASONS.privateSession : SKIP_REASONS.privateSessionUnchecked);
+      process.exit(0);
+    }
     // Claude Code's PreCompact payload names this field `trigger` ('manual' |
     // 'auto'), not `reason` — verified against the shipped cli.js bundle
     // (`hook_event_name:"PreCompact",trigger:A.trigger,custom_instructions:...`).
@@ -77,12 +91,21 @@ process.stdin.on('end', () => {
     // Parse transcript to gather insights
     let toolCallCount = 0;
     const editedFiles = new Set();
+    // Set when a transcript the payload NAMED could not be read (or is gone): the
+    // tool-call count is then unknown, and is not written as 0.
+    let transcriptUnread = false;
+    let readTimedOut = false;
 
-    if (transcriptPath && existsSync(transcriptPath)) {
+    if (transcriptPath && !existsSync(transcriptPath)) {
+      transcriptUnread = true;
+      try { process.stderr.write(`[memesh pre-compact] transcript ${transcriptPath} does not exist; its tool calls are not recorded.\n`); } catch { /* stderr must never throw */ }
+    } else if (transcriptPath) {
       try {
-        const lines = readFileSync(transcriptPath, 'utf8').split('\n');
-        for (const line of lines) {
-          if (!line.trim()) continue;
+        // Read in pieces: a long session's transcript is larger than a string can be. A line over 64 MiB (a Codex
+        // `compacted` record can be that long; it is no tool call) is skipped, not a read failure.
+        const read = forEachTranscriptLine(transcriptPath, deadlineFor(HOOK_BUDGET_MS.preCompact.read), (bytes) => {
+          const line = bytes.toString('utf8');
+          if (!line.trim()) return;
           try {
             const entry = JSON.parse(line);
             // Claude Code transcript format: {type:'assistant', message:{content:[{type:'tool_use',...}]}}
@@ -91,7 +114,16 @@ process.stdin.on('end', () => {
             // no entry in production transcripts ever shipped that shape.
             // Removed to avoid confusion between two parsers that read
             // different fields for the same logical event.
-            if (entry.type === 'assistant' && Array.isArray(entry.message?.content)) {
+            // Codex rollout: a request is a `function_call` or `custom_tool_call` response item,
+            // and a file it edited is a completed `FileChange` event.
+            if (isCodexToolRequest(entry)) {
+              toolCallCount++;
+            } else if (entry.type === 'event_msg' && entry.payload?.type === 'item_completed' && entry.payload.item?.type === 'FileChange'
+              && entry.payload.item.status === 'completed') {
+              for (const [target, change] of Object.entries(entry.payload.item.changes ?? {})) {
+                if (change?.type === 'add' || change?.type === 'update') editedFiles.add(basename(change.move_path || target));
+              }
+            } else if (entry.type === 'assistant' && Array.isArray(entry.message?.content)) {
               for (const block of entry.message.content) {
                 if (block.type !== 'tool_use') continue;
                 toolCallCount++;
@@ -105,17 +137,20 @@ process.stdin.on('end', () => {
           } catch {
             // Skip malformed lines — benign, per-line, deliberately not traced.
           }
-        }
+        });
+        if (read.timedOut) throw READ_TIMEOUT;
       } catch (err) {
+        readTimedOut = err === READ_TIMEOUT;
         // existsSync passed above, so this is a REAL read failure (permission,
         // I/O, deleted mid-read), not a missing file. Left untraced, the hook
         // still reports "Saved 0 insights" — a success-shaped message hiding
         // that the whole pre-compaction capture was lost. Mirrors the trace
         // added to session-summary.js / extractor.ts for the same pattern.
+        transcriptUnread = true;
         try {
           process.stderr.write(
             `[memesh pre-compact] transcript ${transcriptPath} unreadable ` +
-              `(${err?.message || err}); saved 0 insights this compaction.\n`,
+              `(${err?.message || err}); its tool calls are not recorded.\n`,
           );
         } catch { /* stderr must never throw */ }
       }
@@ -124,7 +159,12 @@ process.stdin.on('end', () => {
     const entityName = `pre-compact-${sessionId}`;
 
     // Build observation content
-    const obsLines = [`Compaction reason: ${reason}`, `Tool calls: ${toolCallCount}`];
+    // An unreadable transcript says nothing about the tool calls: the count is left
+    // out, not written as 0, which would be a wrong fact stored as a memory.
+    const obsLines = [
+      `Compaction reason: ${reason}`,
+      transcriptUnread ? 'Tool calls: not recorded (the transcript could not be read)' : `Tool calls: ${toolCallCount}`,
+    ];
 
     // No free-form human text exists for a pre-compact save (unlike a commit
     // subject) — same date+project+verb heuristic as session-summary.js.
@@ -138,7 +178,7 @@ process.stdin.on('end', () => {
     // #523: `reason` is payload text (the legacy field is free-form), so it
     // is redacted BEFORE the 200-character cut — `captureEntity` redacts
     // again, but a secret already cut in half no longer matches its pattern.
-    const title = truncateTitle(redactSecrets(`${titleDate} ${projectName}: ${reason} compaction (${toolCallCount} tool calls)`));
+    const title = truncateTitle(redactSecrets(`${titleDate} ${projectName}: ${reason} compaction${transcriptUnread ? '' : ` (${toolCallCount} tool calls)`}`));
     if (editedFiles.size > 0) {
       obsLines.push(`Files edited: ${Array.from(editedFiles).join(', ')}`);
     }
@@ -170,7 +210,11 @@ process.stdin.on('end', () => {
       // and so does a null return — captureEntity's null means the write did
       // not land, and this very hook tells the user "could not save" below;
       // stamping would say "alive" to doctor about the same failed run.
-      if (written) {
+      if (written && transcriptUnread) {
+        // The note was written, but not what it should have held: a capture that
+        // lost its input is an error in doctor, and is not stamped as alive.
+        record('error', readTimedOut ? SKIP_REASONS.transcriptReadTimeout : 'the transcript could not be read', entityName);
+      } else if (written) {
         recordHookRun(db, 'pre-compact');
         record('wrote', undefined, entityName);
       } else {
@@ -207,7 +251,9 @@ process.stdin.on('end', () => {
     // there.
     const stored = written ? written.observationsWritten : 0;
     const hookOutput = {
-      systemMessage: written
+      systemMessage: written && transcriptUnread
+        ? 'MeMesh: saved the compaction note, but the transcript could not be read, so its tool calls and edits are not recorded (see stderr)'
+        : written
         ? (stored > 0
           ? `Saved ${stored} observations to MeMesh before compaction`
           : 'MeMesh: this compaction added nothing new (already captured)')

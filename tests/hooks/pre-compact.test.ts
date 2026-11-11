@@ -110,6 +110,105 @@ describe('Feature: PreCompact Hook', () => {
     expect(stderr).toContain('unreadable');
   });
 
+  describe('a transcript the payload names but the hook cannot read', () => {
+    const entityRows = (name: string) => {
+      const db = openDb();
+      try {
+        return {
+          title: (db.prepare('SELECT title FROM entities WHERE name = ?').get(name) as { title: string | null } | undefined)?.title ?? null,
+          observations: (db.prepare('SELECT o.content FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = ?').all(name) as Array<{ content: string }>).map((r) => r.content),
+        };
+      } finally { db.close(); }
+    };
+
+    it('does not store "Tool calls: 0" when the transcript is gone, says so, and records an error', () => {
+      const output = JSON.parse(runHook({ session_id: 'sess-unread', transcript_path: path.join(testDir, 'no-such-transcript.jsonl'), cwd: testDir, trigger: 'auto' }));
+      const stored = entityRows('pre-compact-sess-unread');
+      expect(stored.observations).toContain('Tool calls: not recorded (the transcript could not be read)');
+      expect(stored.observations.join('|')).not.toMatch(/Tool calls: 0/);
+      expect(stored.title).not.toMatch(/0 tool calls/);
+      expect(output.systemMessage).toMatch(/could not be read/);
+      expect(output.systemMessage).not.toMatch(/^Saved/);
+      expect(outcomes().at(-1)).toMatchObject({ hook: 'pre-compact', outcome: 'error', reason: 'the transcript could not be read', entity: 'pre-compact-sess-unread' });
+    });
+
+    it('still stores the real count for a transcript it can read', () => {
+      const file = path.join(testDir, 't.jsonl');
+      fs.writeFileSync(file, `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'a', name: 'Read', input: {} }, { type: 'tool_use', id: 'b', name: 'Edit', input: { file_path: '/r/x.ts' } }] } })}\n`);
+      const output = JSON.parse(runHook({ session_id: 'sess-read', transcript_path: file, cwd: testDir, trigger: 'auto' }));
+      expect(entityRows('pre-compact-sess-read').observations).toContain('Tool calls: 2');
+      expect(output.systemMessage).toMatch(/^Saved/);
+      expect(outcomes().at(-1)).toMatchObject({ hook: 'pre-compact', outcome: 'wrote' });
+    });
+    const writeRows = (file: string, rows: number, rowBytes: number) => {
+      const row = `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'i', name: 'Read', input: { pad: 'x'.repeat(rowBytes - 120) } }] } })}\n`;
+      const buffer = Buffer.from(row);
+      const fd = fs.openSync(file, 'w');
+      try { for (let i = 0; i < rows; i++) fs.writeSync(fd, buffer); } finally { fs.closeSync(fd); }
+    };
+
+    it('counts the tool calls of a transcript larger than a string can be (over 512 MiB), reading it in pieces', () => {
+      const file = path.join(testDir, 'huge.jsonl');
+      writeRows(file, 540, 1024 * 1024);
+      expect(fs.statSync(file).size).toBeGreaterThan(0x1fffffe8);
+      try {
+        const output = JSON.parse(runHook({ session_id: 'sess-huge', transcript_path: file, cwd: testDir, trigger: 'auto' }));
+        expect(output.systemMessage).toMatch(/^Saved/);
+        expect(entityRows('pre-compact-sess-huge').observations).toContain('Tool calls: 540');
+        expect(outcomes().at(-1)).toMatchObject({ hook: 'pre-compact', outcome: 'wrote' });
+      } finally { fs.rmSync(file, { force: true }); }
+    }, 120_000);
+
+    it('counts rows that straddle the pieces it reads in', () => {
+      const file = path.join(testDir, 'straddle.jsonl');
+      writeRows(file, 20, 1024 * 1024 + 4097); // no row ends where a piece of 8 MiB does
+      JSON.parse(runHook({ session_id: 'sess-straddle', transcript_path: file, cwd: testDir, trigger: 'auto' }));
+      expect(entityRows('pre-compact-sess-straddle').observations).toContain('Tool calls: 20');
+    }, 60_000);
+
+    it('counts the rows around a legal line longer than 64 MiB: the long line is skipped, not a read failure (Q6_19 F5)', () => {
+      const file = path.join(testDir, 'longline.jsonl');
+      writeRows(file, 2, 1024);
+      const compacted = JSON.stringify({ type: 'compacted', payload: { message: 'x'.repeat(100 * 1024 * 1024), replacement_history_metadata: [] } });
+      fs.appendFileSync(file, `${compacted}\n`); // a Codex compacted record of 100 MiB: legal, and no tool call
+      const fd = fs.openSync(file, 'a');
+      try { fs.writeSync(fd, `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'z', name: 'Read', input: {} }] } })}\n`); } finally { fs.closeSync(fd); }
+      const output = JSON.parse(runHook({ session_id: 'sess-long', transcript_path: file, cwd: testDir, trigger: 'auto' }));
+      expect(entityRows('pre-compact-sess-long').observations).toContain('Tool calls: 3');
+      expect(output.systemMessage).toMatch(/^Saved/);
+      expect(outcomes().at(-1)).toMatchObject({ hook: 'pre-compact', outcome: 'wrote' });
+    }, 60_000);
+
+    it('stops counting at its own time budget and records why (Q6_19 F3): a read slowed past HOOK_BUDGET_MS.preCompact.read', () => {
+      const file = path.join(testDir, 'slow.jsonl');
+      writeRows(file, 48, 1024 * 1024); // six pieces of 8 MiB
+      runHook({ session_id: 'sess-slow', transcript_path: file, cwd: testDir, trigger: 'auto' }); // the private check's verdict is now on disk
+      expect(outcomes().at(-1)).toMatchObject({ hook: 'pre-compact', outcome: 'wrote' });
+      // Every read of a piece now takes 1.5 s, past the 8 s the hook gives itself after six of them.
+      const slow = `data:text/javascript,${encodeURIComponent("import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module'; const real = fs.readSync; fs.readSync = (...a) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1500); return real(...a); }; syncBuiltinESMExports();")}`;
+      const output = JSON.parse(runHook({ session_id: 'sess-slow', transcript_path: file, cwd: testDir, trigger: 'manual' }, { NODE_OPTIONS: `--import=${slow}` }));
+      expect(output.systemMessage).toMatch(/could not be read/);
+      expect(outcomes().at(-1)).toMatchObject({ hook: 'pre-compact', outcome: 'error', reason: "the transcript could not be read within the hook's time, so its tool calls are not recorded" });
+    }, 120_000);
+
+    it('counts the tool calls and the edited files of a Codex rollout (it is not stored as 0 calls)', () => {
+      const file = path.join(testDir, 'rollout.jsonl');
+      const row = (payload: object) => JSON.stringify({ type: 'response_item', payload });
+      fs.writeFileSync(file, [
+        row({ type: 'function_call', call_id: 'c1', name: 'shell', arguments: '{}' }),
+        row({ type: 'function_call_output', call_id: 'c1', output: 'ok' }),
+        row({ type: 'custom_tool_call', call_id: 'c2', name: 'exec', input: 'text(1)' }),
+        row({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'done' }] }),
+        JSON.stringify({ type: 'event_msg', payload: { type: 'item_completed', item: { type: 'FileChange', id: 'f1', status: 'completed', changes: { '/r/src/a.ts': { type: 'update' }, '/r/src/new.ts': { type: 'add' }, '/r/src/old-name.ts': { type: 'update', move_path: '/r/src/renamed.ts' }, '/r/src/gone.ts': { type: 'delete' } } } } }),
+        JSON.stringify({ type: 'event_msg', payload: { type: 'item_completed', item: { type: 'FileChange', id: 'f2', status: 'failed', changes: { '/r/src/failed.ts': { type: 'update' } } } } }),
+      ].join('\n') + '\n');
+      JSON.parse(runHook({ session_id: 'sess-codex', transcript_path: file, cwd: testDir, trigger: 'auto' }));
+      const stored = entityRows('pre-compact-sess-codex');
+      expect(stored.observations).toContain('Tool calls: 2');
+      expect(stored.observations).toContain('Files edited: a.ts, new.ts, renamed.ts');
+    });
+  });
+
   it('Scenario: payload with neither session_id nor transcript -> no entity, no "Saved" claim', () => {
     // `{"foo":1}` used to write a junk entity whose only content was
     // "Compaction reason: auto", answer "Saved 2 observations to MeMesh",

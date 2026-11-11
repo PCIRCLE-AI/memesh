@@ -3229,8 +3229,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path18) {
-      let input2 = path18;
+    function removeDotSegments(path20) {
+      let input2 = path20;
       const output2 = [];
       let nextSlash = -1;
       let len = 0;
@@ -3482,8 +3482,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path18, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path18 && path18 !== "/" ? path18 : void 0;
+        const [path20, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path20 && path20 !== "/" ? path20 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -6902,12 +6902,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f;
     };
-    function addFormats(ajv, list, fs22, exportName) {
+    function addFormats(ajv, list, fs23, exportName) {
       var _a3;
       var _b;
       (_a3 = (_b = ajv.opts.code).formats) !== null && _a3 !== void 0 ? _a3 : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs22[f]);
+        ajv.addFormat(f, fs23[f]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -6916,8 +6916,8 @@ var require_dist = __commonJS({
 });
 
 // dist/mcp/server.js
-import fs21 from "fs";
-import path17 from "path";
+import fs22 from "fs";
+import path19 from "path";
 
 // node_modules/zod/v4/core/index.js
 var core_exports2 = {};
@@ -7473,10 +7473,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path18) {
-  if (!path18)
+function getElementAtPath(obj, path20) {
+  if (!path20)
     return obj;
-  return path18.reduce((acc, key) => acc?.[key], obj);
+  return path20.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -7816,11 +7816,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path18, issues) {
+function prefixIssues(path20, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path18);
+    iss.path.unshift(path20);
     return iss;
   });
 }
@@ -8282,16 +8282,16 @@ function flattenError(error62, mapper = (issue2) => issue2.message) {
 }
 function formatError(error62, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error63, path18 = []) => {
+  const processError = (error63, path20 = []) => {
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path18, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path20, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path18, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path20, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path18, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path20, ...issue2.path]);
       } else {
-        const fullpath = [...path18, ...issue2.path];
+        const fullpath = [...path20, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -8330,17 +8330,17 @@ function formatError(error62, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error62, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error63, path18 = []) => {
+  const processError = (error63, path20 = []) => {
     var _a3;
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path18, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path20, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path18, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path20, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path18, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path20, ...issue2.path]);
       } else {
-        const fullpath = [...path18, ...issue2.path];
+        const fullpath = [...path20, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -8379,8 +8379,8 @@ function treeifyError(error62, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path18 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path18) {
+  const path20 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path20) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -23309,8 +23309,8 @@ function rewriteKeyNames(ctx) {
       bySchema.set(entry.schema, entry);
   }
   const rewrites = /* @__PURE__ */ new Map();
-  for (const record2 of pendingRecords.get(ctx) ?? []) {
-    const seen = ctx.seen.get(record2);
+  for (const record3 of pendingRecords.get(ctx) ?? []) {
+    const seen = ctx.seen.get(record3);
     const names = (seen?.def ?? seen?.schema)?.propertyNames;
     if (!names || names === true || rewrites.has(names))
       continue;
@@ -25999,13 +25999,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path18 = ref.slice(1).split("/").filter(Boolean);
-  if (path18.length === 0) {
+  const path20 = ref.slice(1).split("/").filter(Boolean);
+  if (path20.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path18[0] === defsKey) {
-    const key = path18[1] === void 0 ? void 0 : decodeJSONPointerSegment(path18[1]);
+  if (path20[0] === defsKey) {
+    const key = path20[1] === void 0 ? void 0 : decodeJSONPointerSegment(path20[1]);
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -30022,8 +30022,8 @@ var { DatabaseSync } = loadNodeSqlite();
 var BUSY_TIMEOUT_MS = 3e4;
 var MemeshDatabase = class extends DatabaseSync {
   #depth = 0;
-  constructor(path18, options = {}) {
-    super(path18, options);
+  constructor(path20, options = {}) {
+    super(path20, options);
     this.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
   }
   pragma(statement) {
@@ -31287,7 +31287,7 @@ function homeDir() {
   return os.userInfo().homedir;
 }
 function memeshDir() {
-  return process.env.MEMESH_DIR ?? path.join(homeDir(), ".memesh");
+  return process.env.MEMESH_DIR || path.join(homeDir(), ".memesh");
 }
 function getDbPath() {
   return process.env.MEMESH_DB_PATH ?? path.join(memeshDir(), "knowledge-graph.db");
@@ -31909,11 +31909,11 @@ function ageText(hours) {
   const d = Math.floor(hours / 24);
   return `${d} day${d === 1 ? "" : "s"} ago`;
 }
-function handoffView(record2, now = /* @__PURE__ */ new Date()) {
-  const text = record2 ? cleanHandoffText(redactMemoryText(record2.text ?? "")) : "";
-  if (!record2 || !text)
+function handoffView(record3, now = /* @__PURE__ */ new Date()) {
+  const text = record3 ? cleanHandoffText(redactMemoryText(record3.text ?? "")) : "";
+  if (!record3 || !text)
     return { lines: [], status: "empty" };
-  const then = typeof record2.observedAt === "string" ? parseSqliteUtcMs(record2.observedAt) : null;
+  const then = typeof record3.observedAt === "string" ? parseSqliteUtcMs(record3.observedAt) : null;
   if (then === null)
     return { lines: [], status: "undatable" };
   const hours = (now.getTime() - then) / 36e5;
@@ -31926,18 +31926,18 @@ function handoffView(record2, now = /* @__PURE__ */ new Date()) {
   const when = stale ? `${ageText(age)} \u2014 may be out of date; check it against the repository` : ageText(age);
   let source = "";
   try {
-    const host = JSON.parse(record2.metadata ?? "null")?.provenance?.source_host;
+    const host = JSON.parse(record3.metadata ?? "null")?.provenance?.source_host;
     if (host === "codex" || host === "claude-code")
       source = `; source: ${host}`;
   } catch {
   }
   return {
-    lines: [`Where the last session left off (${when}${source}): [mem:${record2.id}]`, ...text.split("\n")],
+    lines: [`Where the last session left off (${when}${source}): [mem:${record3.id}]`, ...text.split("\n")],
     status: stale ? "stale" : "shown"
   };
 }
-function handoffLines(record2, now = /* @__PURE__ */ new Date()) {
-  return handoffView(record2, now).lines;
+function handoffLines(record3, now = /* @__PURE__ */ new Date()) {
+  return handoffView(record3, now).lines;
 }
 
 // dist/core/projects.js
@@ -32808,8 +32808,8 @@ function isPathShapedFileName(name) {
   return true;
 }
 var SCRATCH_PREFIXES = ["/dev/", "/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/"];
-function isScratchPath(path18) {
-  return SCRATCH_PREFIXES.some((prefix) => path18.startsWith(prefix));
+function isScratchPath(path20) {
+  return SCRATCH_PREFIXES.some((prefix) => path20.startsWith(prefix));
 }
 function bashEditedPaths(cmd) {
   if (typeof cmd !== "string")
@@ -33507,7 +33507,7 @@ function getDatabase() {
 }
 
 // dist/transports/mcp/handlers.js
-import fs14 from "node:fs";
+import fs15 from "node:fs";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // dist/core/native-memory-editor.js
@@ -34675,11 +34675,555 @@ async function editMemoryInteractively(name, project, sourceHost, ask, expectedR
 
 // dist/core/dreamer.js
 import { createHash as createHash8 } from "node:crypto";
+import path5 from "node:path";
+
+// dist/core/private-session.js
+import crypto from "node:crypto";
+import fs4 from "node:fs";
+import path3 from "node:path";
+import zlib from "node:zlib";
+var PRIVATE_SESSION_TOOL = "private_session";
+var PRIVATE_WINDOW_MS = 6 * 60 * 60 * 1e3;
+var PARENT_NOT_FOUND_PERSISTENT_MS = 7 * 24 * 60 * 60 * 1e3;
+var PRIVATE_CHECK_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+var CHUNK_BYTES = 8 * 1024 * 1024;
+var MAX_CALL_LINE_BYTES = 64 * 1024 * 1024;
+var HEADER_MAX_BYTES = 4 * 1024 * 1024;
+var NEEDLE = Buffer.from(PRIVATE_SESSION_TOOL);
+var CALL_RECORD_TYPES = ['"tool_use"', '"McpToolCall"', '"function_call"', '"compacted"'].map((s) => Buffer.from(s));
+var MAX_FORK_DEPTH = 5;
+var MAX_PARENTS = 8;
+var PARENT_MAX_BYTES = 1024 * 1024 * 1024;
+var PARENT_ZST_MAX_BYTES = 128 * 1024 * 1024;
+var PARENT_ZST_MAX_OUTPUT = 512 * 1024 * 1024;
+var ZST_MIN_TIME_MS = 1e3;
+var SUBAGENT_MAX_DEPTH = 3;
+var SUBAGENT_MAX_ENTRIES = 1e3;
+var UNCHECKED_KIND = Object.freeze({
+  marker_unreadable: "transient",
+  unreadable: "transient",
+  timeout: "transient",
+  parent_not_found: "transient",
+  parent_unreadable: "transient",
+  too_large: "persistent",
+  parent_too_large: "persistent",
+  fork_too_deep: "persistent",
+  header_unreadable: "persistent",
+  no_zstd: "persistent",
+  no_session_id: "persistent"
+});
+var unchecked = (reason, detail) => ({ state: "unchecked", reason, kind: UNCHECKED_KIND[reason], detail });
+var CheckFailure = class extends Error {
+  reason;
+  constructor(reason, message) {
+    super(message);
+    this.reason = reason;
+  }
+};
+var errCode = (err) => err?.code ?? "error";
+var MCP_TOOL_NAME = new RegExp(`^mcp__.+__${PRIVATE_SESSION_TOOL}$`);
+function isPrivateToolName(name) {
+  return name === PRIVATE_SESSION_TOOL || MCP_TOOL_NAME.test(name);
+}
+function sessionFileName(sessionId) {
+  return `${/^[A-Za-z0-9_-]{1,128}$/.test(sessionId) ? sessionId : crypto.createHash("sha256").update(sessionId).digest("hex").slice(0, 32)}.json`;
+}
+function privateMarkerPath(memeshDir2, sessionId) {
+  return path3.join(memeshDir2, "private-sessions", sessionFileName(sessionId));
+}
+function record2(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+function hasToolUse(node2, depth = 0) {
+  if (depth > 16 || node2 === null || typeof node2 !== "object")
+    return false;
+  if (Array.isArray(node2))
+    return node2.some((item) => hasToolUse(item, depth + 1));
+  const obj = node2;
+  if (obj.type === "tool_use")
+    return typeof obj.name === "string" && isPrivateToolName(obj.name);
+  if (obj.type === "tool_result")
+    return false;
+  return Object.values(obj).some((value) => hasToolUse(value, depth + 1));
+}
+function isToolCall(entry) {
+  const payload = record2(entry.payload);
+  if (entry.type === "event_msg") {
+    const item = record2(payload?.item);
+    return payload?.type === "item_completed" && item?.type === "McpToolCall" && item.tool === PRIVATE_SESSION_TOOL;
+  }
+  if (entry.type === "response_item") {
+    return payload?.type === "function_call" && typeof payload.namespace === "string" && payload.namespace.startsWith("mcp__") && payload.name === PRIVATE_SESSION_TOOL;
+  }
+  if (entry.type === "compacted") {
+    const history = payload?.replacement_history_metadata;
+    return Array.isArray(history) && history.some((meta3) => {
+      const sources = record2(record2(meta3)?.mcp_attribution)?.sources;
+      return Array.isArray(sources) && sources.some((source) => record2(source)?.tool_name === PRIVATE_SESSION_TOOL);
+    });
+  }
+  return hasToolUse(entry);
+}
+function chatCallsPrivateTool(messages) {
+  return Array.isArray(messages) && messages.some((message) => {
+    const calls = record2(message)?.tool_calls;
+    return record2(message)?.role === "assistant" && Array.isArray(calls) && calls.some((call) => {
+      const name = record2(record2(call)?.function)?.name;
+      return name === PRIVATE_SESSION_TOOL || name === `memesh_${PRIVATE_SESSION_TOOL}`;
+    });
+  });
+}
+var Scan = class {
+  deadlineAt;
+  found = false;
+  forks = [];
+  headerBroken = false;
+  constructor(deadlineAt = Number.POSITIVE_INFINITY) {
+    this.deadlineAt = deadlineAt;
+  }
+  header(line) {
+    if (!line.includes('"session_meta"'))
+      return;
+    if (line.length > HEADER_MAX_BYTES) {
+      this.headerBroken = true;
+      return;
+    }
+    try {
+      const payload = record2(record2(JSON.parse(line.toString("utf8")))?.payload);
+      for (const field of [payload?.forked_from_id, payload?.parent_thread_id]) {
+        if (field === void 0 || field === null)
+          continue;
+        if (typeof field !== "string" || field === "") {
+          this.headerBroken = true;
+          continue;
+        }
+        if (!this.forks.includes(field))
+          this.forks.push(field);
+      }
+    } catch {
+      this.headerBroken = true;
+    }
+  }
+  line(line) {
+    if (!CALL_RECORD_TYPES.some((type) => line.includes(type)))
+      return;
+    if (Date.now() > this.deadlineAt)
+      throw new CheckFailure("timeout", "the check ran out of time");
+    try {
+      const entry = record2(JSON.parse(line.toString("utf8")));
+      if (entry !== null && isToolCall(entry))
+        this.found = true;
+    } catch {
+    }
+  }
+  feed(buf) {
+    let from = 0;
+    while (!this.found) {
+      const hit = buf.indexOf(NEEDLE, from);
+      if (hit === -1)
+        return;
+      const start = buf.lastIndexOf(10, hit) + 1;
+      let end = buf.indexOf(10, hit);
+      if (end === -1)
+        end = buf.length;
+      from = end + 1;
+      if (end - start > MAX_CALL_LINE_BYTES)
+        throw new CheckFailure("too_large", "a line that names the tool is too long to read");
+      this.line(buf.subarray(start, end));
+    }
+  }
+  verdict() {
+    return { found: this.found, forks: this.forks, headerBroken: this.headerBroken };
+  }
+};
+var asBuffer = (bytes) => typeof bytes === "string" ? Buffer.from(bytes) : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+function scanBytes(bytes, deadlineAt) {
+  const scan = new Scan(deadlineAt);
+  const nl = bytes.indexOf(10);
+  scan.header(nl === -1 ? bytes : bytes.subarray(0, nl));
+  scan.feed(bytes);
+  return scan.verdict();
+}
+function scanPlain(filePath, deadlineAt) {
+  let fd;
+  try {
+    fd = fs4.openSync(filePath, "r");
+  } catch (err) {
+    throw new CheckFailure("unreadable", `a transcript cannot be read (${errCode(err)})`);
+  }
+  const scan = new Scan(deadlineAt);
+  try {
+    if (fs4.fstatSync(fd).isDirectory())
+      throw new CheckFailure("unreadable", "a transcript path is a directory");
+    const chunk = Buffer.alloc(CHUNK_BYTES);
+    let tail = Buffer.alloc(0);
+    let tailDropped = false;
+    let tailHasNeedle = false;
+    let first = true;
+    const overlap = NEEDLE.length - 1;
+    const endLine = (rest) => {
+      if (tailDropped) {
+        if (tailHasNeedle || Buffer.concat([tail.subarray(Math.max(0, tail.length - overlap)), rest]).includes(NEEDLE)) {
+          throw new CheckFailure("too_large", "a line that names the tool is too long to read");
+        }
+        if (first) {
+          scan.headerBroken = scan.headerBroken || tail.includes('"session_meta"');
+          first = false;
+        }
+      } else {
+        const line = tail.length === 0 ? rest : Buffer.concat([tail, rest]);
+        if (first) {
+          scan.header(line);
+          first = false;
+        }
+        if (line.includes(NEEDLE)) {
+          if (line.length > MAX_CALL_LINE_BYTES)
+            throw new CheckFailure("too_large", "a line that names the tool is too long to read");
+          scan.line(line);
+        }
+      }
+      tail = Buffer.alloc(0);
+      tailDropped = false;
+      tailHasNeedle = false;
+    };
+    for (; ; ) {
+      if (scan.found)
+        break;
+      if (Date.now() > deadlineAt)
+        throw new CheckFailure("timeout", "the check ran out of time");
+      let n;
+      try {
+        n = fs4.readSync(fd, chunk, 0, chunk.length, null);
+      } catch (err) {
+        throw new CheckFailure("unreadable", `a transcript cannot be read (${errCode(err)})`);
+      }
+      if (n === 0)
+        break;
+      const data = chunk.subarray(0, n);
+      const firstNl = data.indexOf(10);
+      if (firstNl === -1) {
+        if (!tailDropped && tail.length + n <= MAX_CALL_LINE_BYTES) {
+          tail = Buffer.concat([tail, data]);
+        } else {
+          const joined = Buffer.concat([tail.subarray(Math.max(0, tail.length - overlap)), data]);
+          tailHasNeedle = tailHasNeedle || joined.includes(NEEDLE) || !tailDropped && tail.includes(NEEDLE);
+          if (first && !tailDropped)
+            scan.headerBroken = scan.headerBroken || Buffer.concat([tail, data]).subarray(0, HEADER_MAX_BYTES).includes('"session_meta"');
+          tailDropped = true;
+          tail = Buffer.from(data.subarray(Math.max(0, n - overlap)));
+        }
+        continue;
+      }
+      endLine(data.subarray(0, firstNl));
+      const lastNl = data.lastIndexOf(10);
+      if (lastNl > firstNl)
+        scan.feed(data.subarray(firstNl + 1, lastNl + 1));
+      tail = Buffer.from(data.subarray(lastNl + 1));
+    }
+    if (!scan.found && (tail.length > 0 || tailDropped))
+      endLine(Buffer.alloc(0));
+  } finally {
+    fs4.closeSync(fd);
+  }
+  return scan.verdict();
+}
+function scanZst(filePath, deadlineAt) {
+  if (typeof zlib.zstdDecompressSync !== "function")
+    throw new CheckFailure("no_zstd", "this Node cannot read an archived (.zst) rollout");
+  if (deadlineAt - Date.now() < ZST_MIN_TIME_MS)
+    throw new CheckFailure("timeout", "too little time is left to expand an archived rollout");
+  let bytes;
+  try {
+    bytes = zlib.zstdDecompressSync(fs4.readFileSync(filePath), { maxOutputLength: PARENT_ZST_MAX_OUTPUT });
+  } catch (err) {
+    const code = errCode(err);
+    throw new CheckFailure(code === "ERR_BUFFER_TOO_LARGE" ? "parent_too_large" : "parent_unreadable", `an archived rollout cannot be read (${code})`);
+  }
+  return scanBytes(bytes, deadlineAt);
+}
+var remembered = /* @__PURE__ */ new Map();
+function fileVerdict(file2, stat, zst, cacheDir, deadlineAt) {
+  const key = `${file2}\0${stat.size}\0${stat.mtimeMs}\0${stat.ctimeMs}\0${stat.ino}`;
+  const hit = remembered.get(key);
+  if (hit)
+    return hit;
+  const cacheFile = cacheDir === void 0 ? void 0 : path3.join(cacheDir, `${crypto.createHash("sha256").update(file2).digest("hex").slice(0, 40)}.json`);
+  if (cacheFile !== void 0) {
+    try {
+      const saved = record2(JSON.parse(fs4.readFileSync(cacheFile, "utf8")));
+      if (saved?.key === key && typeof saved.found === "boolean" && typeof saved.headerBroken === "boolean" && Array.isArray(saved.forks) && saved.forks.every((f) => typeof f === "string")) {
+        const verdict2 = { found: saved.found, forks: saved.forks, headerBroken: saved.headerBroken };
+        remembered.set(key, verdict2);
+        return verdict2;
+      }
+    } catch {
+    }
+  }
+  const verdict = zst ? scanZst(file2, deadlineAt) : scanPlain(file2, deadlineAt);
+  remembered.set(key, verdict);
+  if (cacheFile !== void 0) {
+    try {
+      fs4.mkdirSync(cacheDir, { recursive: true, mode: 448 });
+      const temp = `${cacheFile}.${process.pid}.tmp`;
+      fs4.writeFileSync(temp, JSON.stringify({ key, ...verdict }), { mode: 384 });
+      fs4.renameSync(temp, cacheFile);
+    } catch {
+    }
+  }
+  return verdict;
+}
+function sessionTranscriptFiles(transcriptPath) {
+  const files = [transcriptPath];
+  let entriesSeen = 0;
+  const walk = (dir, depth) => {
+    let entries;
+    try {
+      entries = fs4.readdirSync(dir, { withFileTypes: true });
+    } catch (err) {
+      if (errCode(err) === "ENOENT" || errCode(err) === "ENOTDIR")
+        return;
+      throw new CheckFailure("unreadable", `the subagents folder cannot be read (${errCode(err)})`);
+    }
+    for (const entry of entries) {
+      if (++entriesSeen > SUBAGENT_MAX_ENTRIES)
+        throw new CheckFailure("too_large", "the subagents folder holds more than can be checked");
+      const child = path3.join(dir, entry.name);
+      if (entry.isSymbolicLink())
+        continue;
+      if (entry.isDirectory()) {
+        if (depth >= SUBAGENT_MAX_DEPTH)
+          throw new CheckFailure("too_large", "the subagents folder is nested deeper than can be checked");
+        walk(child, depth + 1);
+        continue;
+      }
+      if (entry.isFile() && entry.name.endsWith(".jsonl"))
+        files.push(child);
+    }
+  };
+  walk(`${transcriptPath.replace(/\.jsonl$/, "")}/subagents`, 0);
+  return files;
+}
+function findCodexRollout(codexHome, id, deadlineAt = Number.POSITIVE_INFINITY) {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(id))
+    return void 0;
+  const plain = `-${id}.jsonl`;
+  const zst = `${plain}.zst`;
+  const walk = (dir, depth, found2) => {
+    if (Date.now() > deadlineAt)
+      throw new CheckFailure("timeout", "the check ran out of time looking for a parent rollout");
+    let entries;
+    try {
+      entries = fs4.readdirSync(dir, { withFileTypes: true });
+    } catch (err) {
+      if (errCode(err) === "ENOENT" || errCode(err) === "ENOTDIR")
+        return;
+      throw new CheckFailure("parent_unreadable", `a folder that may hold the parent rollout cannot be read (${errCode(err)})`);
+    }
+    for (const entry of entries) {
+      if (found2.plain)
+        return;
+      const child = path3.join(dir, entry.name);
+      let isFile = entry.isFile();
+      let isDir = entry.isDirectory();
+      if (entry.isSymbolicLink()) {
+        try {
+          const st = fs4.statSync(child);
+          isFile = st.isFile();
+          isDir = st.isDirectory();
+        } catch {
+          continue;
+        }
+      }
+      if (isFile && entry.name.startsWith("rollout-")) {
+        if (entry.name.endsWith(plain))
+          found2.plain = child;
+        else if (entry.name.endsWith(zst))
+          found2.zst ??= child;
+      } else if (isDir && depth < 3) {
+        walk(child, depth + 1, found2);
+      }
+    }
+  };
+  const roots = ["sessions", "archived_sessions"].map((d) => path3.join(codexHome, d));
+  const found = {};
+  for (const root of roots) {
+    walk(root, 0, found);
+    if (found.plain)
+      return { file: found.plain, zst: false };
+  }
+  return found.zst ? { file: found.zst, zst: true } : void 0;
+}
+function codexHomeOf(file2) {
+  let dir = path3.dirname(file2);
+  for (; ; ) {
+    const base = path3.basename(dir);
+    if (base === "sessions" || base === "archived_sessions")
+      return path3.dirname(dir);
+    const up = path3.dirname(dir);
+    if (up === dir)
+      return void 0;
+    dir = up;
+  }
+}
+function decidePrivacy(input2) {
+  let candidate;
+  const note2 = (reason, detail) => {
+    if (candidate === void 0 || candidate.kind === "transient" && UNCHECKED_KIND[reason] === "persistent")
+      candidate = unchecked(reason, detail);
+  };
+  const noteFailure = (err, fallback) => {
+    if (err instanceof CheckFailure)
+      note2(err.reason, err.message);
+    else
+      note2(fallback, `a transcript cannot be read (${errCode(err)})`);
+  };
+  const settled = () => candidate ?? { state: "no" };
+  if (input2.messages !== void 0 && chatCallsPrivateTool(input2.messages))
+    return { state: "yes", evidence: "messages" };
+  if (typeof input2.sessionId === "string" && input2.sessionId !== "") {
+    try {
+      fs4.statSync(privateMarkerPath(input2.memeshDir, input2.sessionId));
+      return { state: "yes", evidence: "marker" };
+    } catch (err) {
+      if (errCode(err) !== "ENOENT")
+        note2("marker_unreadable", `the private-session marker cannot be read (${errCode(err)})`);
+    }
+  }
+  const transcriptPath = input2.transcriptPath;
+  if (typeof transcriptPath !== "string" || transcriptPath === "")
+    return settled();
+  const snapshot = input2.snapshot === void 0 ? void 0 : asBuffer(input2.snapshot);
+  const stats = [];
+  if (snapshot === void 0) {
+    let mainStat;
+    try {
+      mainStat = fs4.statSync(transcriptPath);
+    } catch (err) {
+      if (errCode(err) === "ENOENT")
+        return settled();
+      note2("unreadable", `the transcript cannot be read (${errCode(err)})`);
+      return settled();
+    }
+    if (!mainStat.isFile()) {
+      note2("unreadable", "the transcript path is not a file");
+      return settled();
+    }
+    stats.push({ file: transcriptPath, stat: mainStat });
+  }
+  let files;
+  try {
+    files = sessionTranscriptFiles(transcriptPath);
+  } catch (err) {
+    noteFailure(err, "unreadable");
+    files = [transcriptPath];
+  }
+  for (const file2 of files.slice(1)) {
+    try {
+      stats.push({ file: file2, stat: fs4.statSync(file2) });
+    } catch (err) {
+      note2("unreadable", `a subagent transcript cannot be read (${errCode(err)})`);
+    }
+  }
+  const total = stats.reduce((sum, s) => sum + s.stat.size, snapshot?.length ?? 0);
+  if (total > PRIVATE_CHECK_MAX_BYTES) {
+    for (const { file: file2, stat } of stats) {
+      const key = `${file2}\0${stat.size}\0${stat.mtimeMs}\0${stat.ctimeMs}\0${stat.ino}`;
+      if (remembered.get(key)?.found)
+        return { state: "yes", evidence: file2 === transcriptPath ? "transcript" : "subagent" };
+    }
+    note2("too_large", "the session's transcripts are too large to check");
+    return settled();
+  }
+  let main2;
+  if (snapshot !== void 0) {
+    try {
+      main2 = scanBytes(snapshot, input2.deadlineAt);
+    } catch (err) {
+      noteFailure(err, "unreadable");
+    }
+    if (main2?.found)
+      return { state: "yes", evidence: "transcript" };
+  }
+  for (const { file: file2, stat } of stats) {
+    let verdict;
+    try {
+      verdict = fileVerdict(file2, stat, false, input2.cacheDir, input2.deadlineAt);
+    } catch (err) {
+      noteFailure(err, "unreadable");
+      continue;
+    }
+    if (verdict.found)
+      return { state: "yes", evidence: file2 === transcriptPath ? "transcript" : "subagent" };
+    if (file2 === transcriptPath)
+      main2 = verdict;
+  }
+  if (main2 === void 0)
+    return settled();
+  if (main2.headerBroken) {
+    note2("header_unreadable", "the first line of the rollout is damaged, so whether it is a fork cannot be told");
+    return settled();
+  }
+  const queue = main2.forks.map((id) => ({ id, from: transcriptPath, depth: 0 }));
+  const seen = /* @__PURE__ */ new Set();
+  let parents = 0;
+  while (queue.length > 0) {
+    const { id, from, depth } = queue.shift();
+    if (seen.has(id))
+      continue;
+    seen.add(id);
+    if (depth >= MAX_FORK_DEPTH || ++parents > MAX_PARENTS) {
+      note2("fork_too_deep", `the thread is forked more than ${MAX_FORK_DEPTH} levels deep, or from more than ${MAX_PARENTS} rollouts`);
+      continue;
+    }
+    const home = codexHomeOf(from);
+    let parent;
+    try {
+      parent = home === void 0 ? void 0 : findCodexRollout(home, id, input2.deadlineAt);
+    } catch (err) {
+      noteFailure(err, "parent_unreadable");
+      continue;
+    }
+    if (parent === void 0) {
+      note2("parent_not_found", "the parent rollout of this forked thread was not found");
+      continue;
+    }
+    let stat;
+    try {
+      stat = fs4.statSync(parent.file);
+    } catch (err) {
+      note2("parent_unreadable", `the parent rollout cannot be read (${errCode(err)})`);
+      continue;
+    }
+    if (stat.size > (parent.zst ? PARENT_ZST_MAX_BYTES : PARENT_MAX_BYTES)) {
+      note2("parent_too_large", "the parent rollout is too large to check");
+      continue;
+    }
+    let verdict;
+    try {
+      verdict = fileVerdict(parent.file, stat, parent.zst, input2.cacheDir, input2.deadlineAt);
+    } catch (err) {
+      if (err instanceof CheckFailure && err.reason === "unreadable")
+        note2("parent_unreadable", err.message.replace("a transcript", "the parent rollout"));
+      else
+        noteFailure(err, "parent_unreadable");
+      continue;
+    }
+    if (verdict.found)
+      return { state: "yes", evidence: "fork_parent" };
+    if (verdict.headerBroken) {
+      note2("header_unreadable", "the first line of a parent rollout is damaged, so whether it is a fork cannot be told");
+      continue;
+    }
+    for (const next of verdict.forks)
+      queue.push({ id: next, from: parent.file, depth: depth + 1 });
+  }
+  return settled();
+}
 
 // dist/core/transcript-source.js
-import fs4 from "fs";
+import fs5 from "fs";
 import { createHash as createHash6 } from "node:crypto";
-import path3 from "path";
+import path4 from "path";
 var MAX_TRANSCRIPT_SOURCE_BYTES = 8 * 1024 * 1024;
 var MAX_TRANSCRIPT_SCAN_BYTES = 16 * 1024 * 1024;
 var MAX_TRANSCRIPT_CANDIDATES = 256;
@@ -34689,10 +35233,10 @@ function readTranscriptSnapshot(transcriptPath, expected) {
 function readTranscriptSnapshotWithin(transcriptPath, expected, aggregateBytesRemaining) {
   let fd;
   try {
-    fd = fs4.openSync(transcriptPath, fs4.constants.O_RDONLY | fs4.constants.O_NOFOLLOW);
-    if (fs4.lstatSync(transcriptPath).isSymbolicLink())
+    fd = fs5.openSync(transcriptPath, fs5.constants.O_RDONLY | fs5.constants.O_NOFOLLOW);
+    if (fs5.lstatSync(transcriptPath).isSymbolicLink())
       return { snapshot: null, aggregateLimitExceeded: false };
-    const before = fs4.fstatSync(fd, { bigint: true });
+    const before = fs5.fstatSync(fd, { bigint: true });
     const sizeBytes = Number(before.size);
     if (!before.isFile() || sizeBytes < 0 || sizeBytes > MAX_TRANSCRIPT_SOURCE_BYTES) {
       return { snapshot: null, aggregateLimitExceeded: false };
@@ -34712,12 +35256,12 @@ function readTranscriptSnapshotWithin(transcriptPath, expected, aggregateBytesRe
     const bytes = Buffer.allocUnsafe(sizeBytes);
     let offset = 0;
     while (offset < bytes.length) {
-      const count = fs4.readSync(fd, bytes, offset, bytes.length - offset, offset);
+      const count = fs5.readSync(fd, bytes, offset, bytes.length - offset, offset);
       if (count === 0)
         return { snapshot: null, aggregateLimitExceeded: false };
       offset += count;
     }
-    const after = fs4.fstatSync(fd, { bigint: true });
+    const after = fs5.fstatSync(fd, { bigint: true });
     if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) {
       return { snapshot: null, aggregateLimitExceeded: false };
     }
@@ -34730,7 +35274,7 @@ function readTranscriptSnapshotWithin(transcriptPath, expected, aggregateBytesRe
   } finally {
     if (fd !== void 0) {
       try {
-        fs4.closeSync(fd);
+        fs5.closeSync(fd);
       } catch {
       }
     }
@@ -34740,7 +35284,7 @@ function claudeProjectsDir() {
   const override = process.env.CLAUDE_PROJECTS_DIR;
   if (override && override.trim() !== "")
     return override;
-  return path3.join(homeDir(), ".claude", "projects");
+  return path4.join(homeDir(), ".claude", "projects");
 }
 function projectTranscriptSlug(cwd) {
   return cwd.replace(/[^a-zA-Z0-9]/g, "-");
@@ -34769,10 +35313,10 @@ function recordedCwd(text) {
   }
 }
 function sameProjectPath(a, b) {
-  if (path3.normalize(a) === path3.normalize(b))
+  if (path4.normalize(a) === path4.normalize(b))
     return true;
   try {
-    if (fs4.realpathSync(a) === fs4.realpathSync(b))
+    if (fs5.realpathSync(a) === fs5.realpathSync(b))
       return true;
   } catch {
   }
@@ -34787,13 +35331,13 @@ function scanTranscripts(opts) {
   const windowDays = opts.windowDays ?? 3;
   const now = opts.now ?? /* @__PURE__ */ new Date();
   const cutoffMs = now.getTime() - windowDays * 864e5;
-  const dir = path3.join(claudeProjectsDir(), projectTranscriptSlug(cwd));
+  const dir = path4.join(claudeProjectsDir(), projectTranscriptSlug(cwd));
   let names;
   try {
-    const dirStat = fs4.lstatSync(dir);
+    const dirStat = fs5.lstatSync(dir);
     if (dirStat.isSymbolicLink() || !dirStat.isDirectory())
       return [];
-    names = fs4.readdirSync(dir).filter((name) => name.endsWith(".jsonl")).sort();
+    names = fs5.readdirSync(dir).filter((name) => name.endsWith(".jsonl")).sort();
   } catch {
     return [];
   }
@@ -34806,7 +35350,7 @@ function scanTranscripts(opts) {
   for (const name of names) {
     let stat;
     try {
-      stat = fs4.lstatSync(path3.join(dir, name));
+      stat = fs5.lstatSync(path4.join(dir, name));
     } catch {
       opts.onSkip?.("unreadable", 1);
       continue;
@@ -34827,7 +35371,7 @@ function scanTranscripts(opts) {
   const sessions = [];
   let bytesRead = 0;
   for (const name of eligibleNames) {
-    const full = path3.join(dir, name);
+    const full = path4.join(dir, name);
     const read = readTranscriptSnapshotWithin(full, void 0, MAX_TRANSCRIPT_SCAN_BYTES - bytesRead);
     if (read.aggregateLimitExceeded) {
       opts.onSkip?.("scan_too_large", eligibleNames.length);
@@ -35133,6 +35677,7 @@ var COMPACT_TIME_WINDOW_DAYS = 7;
 var COMPACT_MIN_SIGNAL = 0.2;
 var COMPACT_MAX_SIGNAL = 0.7;
 var TRANSCRIPT_PACKAGE_MAX_TURNS = 100;
+var DREAMER_PRIVACY_CHECK_MS = 1500;
 var TRANSCRIPT_PACKAGE_SOURCE_BYTES = 48 * 1024;
 var WORK_PACKAGE_MAX_BYTES = 64 * 1024;
 var COMPACTABLE_TYPES = /* @__PURE__ */ new Set([
@@ -35319,6 +35864,23 @@ function executeWorkPackage(db2, input2, context = {}) {
           skip("changed_since_scan");
           continue;
         }
+        const memeshDir2 = getMemeshDirFromDbPath();
+        const privacy = decidePrivacy({
+          transcriptPath: session.path,
+          snapshot: snapshot.bytes,
+          sessionId: session.sessionId,
+          memeshDir: memeshDir2,
+          deadlineAt: Date.now() + DREAMER_PRIVACY_CHECK_MS,
+          cacheDir: path5.join(memeshDir2, "private-check-cache")
+        });
+        if (privacy.state === "yes") {
+          skip("private_session");
+          continue;
+        }
+        if (privacy.state === "unchecked") {
+          skip("private_unchecked");
+          continue;
+        }
         const turns = parseVisibleConversation(snapshot.bytes).map((turn) => ({ ...turn, text: redactSecrets(turn.text) }));
         const sources = [];
         let sourceBytes = 2;
@@ -35501,13 +36063,13 @@ function computePatterns(db2, categories) {
 }
 
 // dist/core/config.js
-import fs5 from "fs";
-import path4 from "path";
+import fs6 from "fs";
+import path6 from "path";
 function configDir() {
   return memeshDir();
 }
 function configFilePath() {
-  return path4.join(configDir(), "config.json");
+  return path6.join(configDir(), "config.json");
 }
 var lastConfigReadWarning = null;
 function warnUnreadable(p, detail) {
@@ -35523,10 +36085,10 @@ function warnUnreadable(p, detail) {
 }
 function readRawConfigResult() {
   const p = configFilePath();
-  if (!fs5.existsSync(p))
+  if (!fs6.existsSync(p))
     return { raw: {}, state: "absent" };
   try {
-    const parsed = JSON.parse(fs5.readFileSync(p, "utf8"));
+    const parsed = JSON.parse(fs6.readFileSync(p, "utf8"));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       throw new Error("top-level JSON value is not an object");
     }
@@ -35564,8 +36126,8 @@ function readConfig() {
 
 // dist/core/repo-state.js
 import { execFileSync as execFileSync2 } from "child_process";
-import fs6 from "fs";
-import path5 from "path";
+import fs7 from "fs";
+import path7 from "path";
 var GIT_TIMEOUT_MS = 5e3;
 function tryGit2(cwd, args) {
   try {
@@ -35580,7 +36142,7 @@ function tryGit2(cwd, args) {
 }
 function declaredVersionOf(repoRoot) {
   try {
-    const raw = fs6.readFileSync(path5.join(repoRoot, "package.json"), "utf8");
+    const raw = fs7.readFileSync(path7.join(repoRoot, "package.json"), "utf8");
     const version2 = JSON.parse(raw).version;
     return typeof version2 === "string" && version2.length > 0 ? version2 : null;
   } catch {
@@ -36646,7 +37208,7 @@ import { createHash as createHash10, randomBytes, randomUUID as randomUUID2 } fr
 
 // dist/core/agent-message-storage.js
 import { createHash as createHash9, randomUUID } from "node:crypto";
-import fs7 from "node:fs";
+import fs8 from "node:fs";
 var TERMINAL_WORKFLOW_STATES = /* @__PURE__ */ new Set(["completed", "cancelled", "rejected"]);
 var AgentMessageStorageError = class extends Error {
   code;
@@ -37741,6 +38303,7 @@ var WhySchema = external_exports.object({
   project: external_exports.string().min(1).max(200).optional(),
   limit: external_exports.number().int().min(1).max(50).optional()
 }).strict();
+var PrivateSessionSchema = external_exports.object({}).strict();
 var UserPatternsSchema = external_exports.object({
   categories: external_exports.array(external_exports.enum(["workSchedule", "focusAreas", "workflow", "strengths", "learningAreas"])).optional().describe("Specific categories to return. Omit for all.")
 }).strict();
@@ -37859,9 +38422,9 @@ var MessageSchema = external_exports.discriminatedUnion("action", [
 
 // dist/core/agent-router.js
 import { randomUUID as randomUUID3 } from "node:crypto";
-import fs8 from "node:fs";
+import fs9 from "node:fs";
 import net from "node:net";
-import path6 from "node:path";
+import path8 from "node:path";
 
 // dist/core/semver.js
 var SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
@@ -38094,7 +38657,7 @@ function isNewerVersion(candidate, current) {
   return a !== null && b !== null && compareSemVerPrecedence(a, b) > 0;
 }
 function validateSocketPath(socketPath) {
-  if (typeof socketPath !== "string" || !path6.isAbsolute(socketPath) || Buffer.byteLength(socketPath) > AGENT_ROUTER_SOCKET_PATH_MAX_BYTES) {
+  if (typeof socketPath !== "string" || !path8.isAbsolute(socketPath) || Buffer.byteLength(socketPath) > AGENT_ROUTER_SOCKET_PATH_MAX_BYTES) {
     throw new AgentRouterProtocolError("invalid_socket_path", `Router socket path must be absolute and at most ${AGENT_ROUTER_SOCKET_PATH_MAX_BYTES} bytes.`);
   }
   return socketPath;
@@ -38108,11 +38671,11 @@ import { createHash as createHash11 } from "node:crypto";
 
 // dist/network/identity.js
 import { createPrivateKey, createPublicKey, randomBytes as randomBytes2, sign, verify } from "node:crypto";
-import fs9 from "node:fs";
-import path8 from "node:path";
+import fs10 from "node:fs";
+import path10 from "node:path";
 
 // dist/network/types.js
-import path7 from "node:path";
+import path9 from "node:path";
 var RELAY_OFF = "off";
 var NetworkError = class extends Error {
   code;
@@ -38250,8 +38813,8 @@ function projectHash(networkId, project) {
 }
 
 // dist/network/store.js
-import fs10 from "node:fs";
-import path9 from "node:path";
+import fs11 from "node:fs";
+import path11 from "node:path";
 function readConfig2(db2) {
   const row = db2.prepare(`SELECT network_id, owner_id, machine_id, machine_name, person, relay_url, roster_json, roster_signature
        FROM agent_network_config WHERE id = 1`).get();
@@ -38292,11 +38855,11 @@ function resolveNetworkRecipient(db2, recipient) {
   if (member.person !== address.person) {
     throw new NetworkRecipientError(`Machine ${JSON.stringify(address.machine)} belongs to ${JSON.stringify(member.person)} in this network, not ${JSON.stringify(address.person)}. Use ${formatNetworkAddress(member.person, address.target, address.machine)}.`);
   }
-  const path18 = joined.config.relay_url === RELAY_OFF ? "directly" : "through the relay or directly";
+  const path20 = joined.config.relay_url === RELAY_OFF ? "directly" : "through the relay or directly";
   return {
     address,
     member,
-    note: `This goes to machine ${address.machine} ${path18}; while that machine is offline it is retried for up to one day.`
+    note: `This goes to machine ${address.machine} ${path20}; while that machine is offline it is retried for up to one day.`
   };
 }
 function networkReceiptFact(db2, deliveryId) {
@@ -38870,14 +39433,14 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
 }
 
 // dist/core/update-entrypoint.js
-import fs13 from "fs";
-import path12 from "path";
+import fs14 from "fs";
+import path14 from "path";
 import { spawn } from "child_process";
 import { fileURLToPath } from "url";
 
 // dist/core/version-check.js
-import fs11 from "fs";
-import path10 from "path";
+import fs12 from "fs";
+import path12 from "path";
 var STALE_AFTER_MS = 24 * 60 * 60 * 1e3;
 function isUpdateAvailable(currentVersion, latestVersion) {
   if (latestVersion === null)
@@ -38894,7 +39457,7 @@ function getUpdateCheckPath(updateCheckPath, currentVersion) {
   if (process.env.MEMESH_UPDATE_CHECK_PATH)
     return process.env.MEMESH_UPDATE_CHECK_PATH;
   const versionTag = currentVersion && /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : "unknown";
-  return path10.join(memeshDir(), `update-check.${versionTag}.json`);
+  return path12.join(memeshDir(), `update-check.${versionTag}.json`);
 }
 function parseIsoDate(value) {
   if (!value)
@@ -38970,9 +39533,9 @@ function parseStoredUpdateCheck(raw) {
 function readStoredUpdateCheck(updateCheckPath, currentVersion) {
   try {
     const targetPath = getUpdateCheckPath(updateCheckPath, currentVersion);
-    if (!fs11.existsSync(targetPath))
+    if (!fs12.existsSync(targetPath))
       return null;
-    return parseStoredUpdateCheck(JSON.parse(fs11.readFileSync(targetPath, "utf8")));
+    return parseStoredUpdateCheck(JSON.parse(fs12.readFileSync(targetPath, "utf8")));
   } catch {
     return null;
   }
@@ -38985,8 +39548,8 @@ function getLastUpdateCheck(currentVersion, options = {}) {
 }
 
 // dist/core/update-notice.js
-import fs12 from "fs";
-import path11 from "path";
+import fs13 from "fs";
+import path13 from "path";
 var UP_TO_DATE_REFRESH_MS = 60 * 60 * 1e3;
 var UPGRADE_AVAILABLE_REFRESH_MS = 12 * 60 * 60 * 1e3;
 var ANSWER_VALID_MS = 24 * 60 * 60 * 1e3;
@@ -38996,7 +39559,7 @@ var JUST_UPGRADED_FILE = "just-upgraded.json";
 function staleRunningProcessNotice(runningVersion, packageJsonPath3) {
   let onDisk;
   try {
-    onDisk = JSON.parse(fs12.readFileSync(packageJsonPath3, "utf8")).version;
+    onDisk = JSON.parse(fs13.readFileSync(packageJsonPath3, "utf8")).version;
   } catch {
     return null;
   }
@@ -39033,16 +39596,16 @@ function parseIso(value) {
 }
 function readJson(file2) {
   try {
-    if (!fs12.existsSync(file2))
+    if (!fs13.existsSync(file2))
       return null;
-    const parsed = JSON.parse(fs12.readFileSync(file2, "utf8"));
+    const parsed = JSON.parse(fs13.readFileSync(file2, "utf8"));
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
   }
 }
 function readSnooze(dir) {
-  const raw = readJson(path11.join(dir, SNOOZE_FILE));
+  const raw = readJson(path13.join(dir, SNOOZE_FILE));
   if (!raw)
     return null;
   const { target, level, since } = raw;
@@ -39060,7 +39623,7 @@ function snoozeExpiresAt(state) {
   return since + duration3;
 }
 function readJustUpgradedMarker(dir) {
-  const raw = readJson(path11.join(dir, JUST_UPGRADED_FILE));
+  const raw = readJson(path13.join(dir, JUST_UPGRADED_FILE));
   if (!raw)
     return null;
   const { from, to, at } = raw;
@@ -39070,21 +39633,21 @@ function readJustUpgradedMarker(dir) {
 }
 function clearJustUpgradedMarker(dir) {
   try {
-    fs12.unlinkSync(path11.join(dir, JUST_UPGRADED_FILE));
+    fs13.unlinkSync(path13.join(dir, JUST_UPGRADED_FILE));
   } catch {
   }
 }
 function claimJustUpgradedMarker(dir) {
-  const file2 = path11.join(dir, JUST_UPGRADED_FILE);
+  const file2 = path13.join(dir, JUST_UPGRADED_FILE);
   const taken = `${file2}.claimed-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
   try {
-    fs12.renameSync(file2, taken);
+    fs13.renameSync(file2, taken);
   } catch {
     return null;
   }
   const raw = readJson(taken);
   try {
-    fs12.unlinkSync(taken);
+    fs13.unlinkSync(taken);
   } catch {
   }
   if (!raw)
@@ -39180,31 +39743,31 @@ function formatUpdateNoticeLine(notice) {
   }
 }
 function recentHookNoticeExists(dir, currentVersion, latestVersion, now = /* @__PURE__ */ new Date()) {
-  const claims = path12.join(dir, "update-prompt-claims");
+  const claims = path14.join(dir, "update-prompt-claims");
   let names;
   try {
-    names = fs13.readdirSync(claims);
+    names = fs14.readdirSync(claims);
   } catch {
     return false;
   }
   for (const name of names) {
     if (!name.endsWith(".json"))
       continue;
-    const file2 = path12.join(claims, name);
+    const file2 = path14.join(claims, name);
     let fd = null;
     try {
-      fd = fs13.openSync(file2, "r");
-      const stat = fs13.fstatSync(fd);
+      fd = fs14.openSync(file2, "r");
+      const stat = fs14.fstatSync(fd);
       if (now.getTime() - stat.mtimeMs > RECENT_HOOK_NOTICE_MS)
         continue;
-      const value = JSON.parse(fs13.readFileSync(fd, "utf8"));
+      const value = JSON.parse(fs14.readFileSync(fd, "utf8"));
       if (value.decision === "emitted" && value.currentVersion === currentVersion && (latestVersion === null || value.latestVersion === latestVersion))
         return true;
     } catch {
     } finally {
       if (fd !== null)
         try {
-          fs13.closeSync(fd);
+          fs14.closeSync(fd);
         } catch {
         }
     }
@@ -39213,7 +39776,7 @@ function recentHookNoticeExists(dir, currentVersion, latestVersion, now = /* @__
 }
 function updateCheckEnabledIn(dir) {
   try {
-    const raw = JSON.parse(fs13.readFileSync(path12.join(dir, "config.json"), "utf8"));
+    const raw = JSON.parse(fs14.readFileSync(path14.join(dir, "config.json"), "utf8"));
     return raw.updateCheck !== false;
   } catch {
     return true;
@@ -39221,34 +39784,34 @@ function updateCheckEnabledIn(dir) {
 }
 function cliThrottled(dir, currentVersion, now) {
   const tag = /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : "unknown";
-  const marker = path12.join(dir, `last-cli-update-notice.${tag}.lock`);
+  const marker = path14.join(dir, `last-cli-update-notice.${tag}.lock`);
   let fd = null;
   try {
     try {
-      fd = fs13.openSync(marker, "r+");
+      fd = fs14.openSync(marker, "r+");
     } catch (err) {
       const code = err.code;
       if (code !== "ENOENT") {
         return true;
       }
-      fs13.mkdirSync(dir, { recursive: true, mode: 448 });
+      fs14.mkdirSync(dir, { recursive: true, mode: 448 });
       try {
-        fd = fs13.openSync(marker, "wx", 384);
+        fd = fs14.openSync(marker, "wx", 384);
       } catch (raceErr) {
         if (raceErr.code === "EEXIST")
           return true;
         throw raceErr;
       }
-      fs13.writeSync(fd, String(now.getTime()));
+      fs14.writeSync(fd, String(now.getTime()));
       return false;
     }
-    const stat = fs13.fstatSync(fd);
+    const stat = fs14.fstatSync(fd);
     if (now.getTime() - stat.mtimeMs < CLI_NOTICE_THROTTLE_MS)
       return true;
-    fs13.ftruncateSync(fd, 0);
-    fs13.writeSync(fd, String(now.getTime()), 0);
+    fs14.ftruncateSync(fd, 0);
+    fs14.writeSync(fd, String(now.getTime()), 0);
     try {
-      fs13.fchmodSync(fd, 384);
+      fs14.fchmodSync(fd, 384);
     } catch {
     }
     return false;
@@ -39257,7 +39820,7 @@ function cliThrottled(dir, currentVersion, now) {
   } finally {
     if (fd !== null)
       try {
-        fs13.closeSync(fd);
+        fs14.closeSync(fd);
       } catch {
       }
   }
@@ -39267,8 +39830,8 @@ function spawnCacheRefresh(dir, currentVersion, now) {
   const claim2 = `${process.pid}-${now.getTime()}`;
   const failed = (error62) => {
     try {
-      if (marker && fs13.readFileSync(marker, "utf8") === claim2)
-        fs13.unlinkSync(marker);
+      if (marker && fs14.readFileSync(marker, "utf8") === claim2)
+        fs14.unlinkSync(marker);
     } catch {
     }
     const code = error62?.code;
@@ -39277,25 +39840,25 @@ function spawnCacheRefresh(dir, currentVersion, now) {
   };
   try {
     const modulePath = fileURLToPath(import.meta.url);
-    const bundledCli = path12.basename(modulePath) === "cli.js" && path12.basename(path12.dirname(modulePath)) === "cli" && path12.basename(path12.dirname(path12.dirname(modulePath))) === "transports";
+    const bundledCli = path14.basename(modulePath) === "cli.js" && path14.basename(path14.dirname(modulePath)) === "cli" && path14.basename(path14.dirname(path14.dirname(modulePath))) === "transports";
     const helperUrl = new URL(bundledCli ? "../../core/version-check.js" : "../core/version-check.js", import.meta.url);
-    if (!fs13.existsSync(fileURLToPath(helperUrl)))
+    if (!fs14.existsSync(fileURLToPath(helperUrl)))
       return false;
     const tag = /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : "unknown";
-    marker = path12.join(dir, `last-fresh-refresh.${tag}.lock`);
+    marker = path14.join(dir, `last-fresh-refresh.${tag}.lock`);
     try {
-      if (now.getTime() - fs13.statSync(marker).mtimeMs < FRESH_CHECK_THROTTLE_MS)
+      if (now.getTime() - fs14.statSync(marker).mtimeMs < FRESH_CHECK_THROTTLE_MS)
         return false;
-      fs13.unlinkSync(marker);
+      fs14.unlinkSync(marker);
     } catch {
     }
-    fs13.mkdirSync(dir, { recursive: true, mode: 448 });
+    fs14.mkdirSync(dir, { recursive: true, mode: 448 });
     try {
-      const fd = fs13.openSync(marker, "wx", 384);
+      const fd = fs14.openSync(marker, "wx", 384);
       try {
-        fs13.writeSync(fd, claim2);
+        fs14.writeSync(fd, claim2);
       } finally {
-        fs13.closeSync(fd);
+        fs14.closeSync(fd);
       }
     } catch {
       return false;
@@ -39363,7 +39926,7 @@ function updateNoticeForEntryPoint(input2) {
     const dir = input2.dir ?? memeshDir();
     const updateCheckEnabled = input2.updateCheckEnabled ?? updateCheckEnabledIn(dir);
     const tag = /^[0-9A-Za-z.+-]+$/.test(input2.currentVersion) ? input2.currentVersion : "unknown";
-    const cache = getLastUpdateCheck(input2.currentVersion, { now, updateCheckPath: path12.join(dir, `update-check.${tag}.json`) });
+    const cache = getLastUpdateCheck(input2.currentVersion, { now, updateCheckPath: path14.join(dir, `update-check.${tag}.json`) });
     if (updateCheckEnabled && shouldRefreshUpdateCache(input2.currentVersion, cache, now)) {
       (input2.refresh ?? spawnCacheRefresh)(dir, input2.currentVersion, now);
     }
@@ -39422,8 +39985,8 @@ function resolveTranscriptWorkspace(project, rootUris) {
       const parsed = new URL(uri);
       if (parsed.protocol !== "file:")
         continue;
-      const root = fs14.realpathSync(fileURLToPath2(parsed));
-      if (!fs14.statSync(root).isDirectory() || getProjectName(root) !== project)
+      const root = fs15.realpathSync(fileURLToPath2(parsed));
+      if (!fs15.statSync(root).isDirectory() || getProjectName(root) !== project)
         continue;
       matches.add(root);
     } catch {
@@ -39786,6 +40349,15 @@ var TOOL_DEFINITIONS = [
       required: ["action"],
       additionalProperties: false
     }
+  },
+  {
+    name: "private_session",
+    description: "Call this when the user asks not to remember or save this session or conversation, in any words or language. It changes no state: the call itself is the signal (even if its result is an error), and automatic saving stops for the rest of this session. What was saved earlier stays; `forget` removes it. After calling it, write nothing to memory: no `remember` or `learn`, and no writes to the host's own memory files, unless the user later asks you to store something explicitly. A request not to save one thing (a password, one detail) means simply not saving that thing; do not call this tool for it, and do not call it just because the user mentions or discusses this feature.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false
+    }
   }
 ];
 function ok(data) {
@@ -39795,8 +40367,8 @@ function fail(message) {
   return { content: [{ type: "text", text: message }], isError: true };
 }
 function formatIssue(issue2) {
-  const path18 = issue2.path.join(".");
-  return path18 ? `${path18}: ${issue2.message}` : issue2.message;
+  const path20 = issue2.path.join(".");
+  return path20 ? `${path20}: ${issue2.message}` : issue2.message;
 }
 function stripNullProps(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value))
@@ -39835,7 +40407,7 @@ function normalizeClientHost(name) {
 }
 var packageVersion = (() => {
   try {
-    return JSON.parse(fs14.readFileSync(new URL("../../../package.json", import.meta.url), "utf8")).version ?? "0.0.0";
+    return JSON.parse(fs15.readFileSync(new URL("../../../package.json", import.meta.url), "utf8")).version ?? "0.0.0";
   } catch {
     return "0.0.0";
   }
@@ -40089,6 +40661,12 @@ ${paragraph.text}`)
       }
       return { content: [{ type: "text", text: lines.join("\n") }] };
     }
+    if (name === "private_session") {
+      const r = parseOrFail(PrivateSessionSchema, args);
+      if (!r.ok)
+        return r.result;
+      return { content: [{ type: "text", text: "Automatic saving stops for this session. What was saved earlier stays; `forget` removes it. Write nothing to memory unless the user later asks you to store something explicitly." }] };
+    }
     if (name === "improvement") {
       const r = parseOrFail(ImprovementSchema, args);
       if (!r.ok)
@@ -40126,13 +40704,13 @@ ${paragraph.text}`)
 }
 
 // dist/transports/mcp/project-context.js
-import fs15 from "node:fs";
-import path13 from "node:path";
+import fs16 from "node:fs";
+import path15 from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 function existingDirectory(candidate) {
   try {
-    const real = fs15.realpathSync(candidate);
-    return fs15.statSync(real).isDirectory() ? real : null;
+    const real = fs16.realpathSync(candidate);
+    return fs16.statSync(real).isDirectory() ? real : null;
   } catch {
     return null;
   }
@@ -40166,7 +40744,7 @@ function resolveMcpProject(launchRoot, rootUris) {
     fromRoots.add(getProjectName(directory));
   }
   if (launchRoot !== void 0) {
-    const directory = path13.isAbsolute(launchRoot) ? existingDirectory(launchRoot) : null;
+    const directory = path15.isAbsolute(launchRoot) ? existingDirectory(launchRoot) : null;
     if (!directory) {
       return {
         error: "workspace_unavailable",
@@ -40198,15 +40776,15 @@ function resolveMcpProject(launchRoot, rootUris) {
 }
 
 // dist/host-runtime/claude-inbox.js
-import path16 from "node:path";
+import path18 from "node:path";
 import { spawn as spawn3 } from "node:child_process";
 import { fileURLToPath as fileURLToPath5 } from "node:url";
-import fs20 from "node:fs";
+import fs21 from "node:fs";
 import net3 from "node:net";
 
 // dist/host-runtime/config.js
 import { randomBytes as randomBytes3 } from "node:crypto";
-import fs16 from "node:fs";
+import fs17 from "node:fs";
 var MAX_ROUTER_TOKEN_FILE_BYTES = 8 * 1024;
 var SECURE_LOCAL_HOST_RUNTIME_UNSUPPORTED = "The secure local host runtime is not supported on Windows.";
 function assertSecureLocalHostRuntimeSupported() {
@@ -40221,7 +40799,7 @@ function readTokenFile(tokenFile) {
 function ensureRouterTokenFile(tokenFile) {
   assertSecureLocalHostRuntimeSupported();
   try {
-    fs16.writeFileSync(tokenFile, `${randomBytes3(32).toString("hex")}
+    fs17.writeFileSync(tokenFile, `${randomBytes3(32).toString("hex")}
 `, { mode: 384, flag: "wx" });
   } catch (error62) {
     if (error62.code !== "EEXIST")
@@ -40237,12 +40815,12 @@ function requiredString(value, field) {
 }
 function readOwnerPrivateFile(file2, label, maxBytes) {
   assertSecureLocalHostRuntimeSupported();
-  if (typeof fs16.constants.O_NOFOLLOW !== "number") {
+  if (typeof fs17.constants.O_NOFOLLOW !== "number") {
     throw new Error(`This platform cannot safely reject a symlink ${label}.`);
   }
-  const descriptor = fs16.openSync(file2, fs16.constants.O_RDONLY | fs16.constants.O_NOFOLLOW | fs16.constants.O_NONBLOCK);
+  const descriptor = fs17.openSync(file2, fs17.constants.O_RDONLY | fs17.constants.O_NOFOLLOW | fs17.constants.O_NONBLOCK);
   try {
-    const stat = fs16.fstatSync(descriptor);
+    const stat = fs17.fstatSync(descriptor);
     if (!stat.isFile())
       throw new Error(`The ${label} must be an owner-private regular file.`);
     assertOwnerPrivate(stat, label);
@@ -40251,7 +40829,7 @@ function readOwnerPrivateFile(file2, label, maxBytes) {
     const content = Buffer.allocUnsafe(maxBytes + 1);
     let bytesRead = 0;
     while (bytesRead < content.length) {
-      const chunkBytes = fs16.readSync(descriptor, content, bytesRead, content.length - bytesRead, null);
+      const chunkBytes = fs17.readSync(descriptor, content, bytesRead, content.length - bytesRead, null);
       if (chunkBytes === 0)
         break;
       bytesRead += chunkBytes;
@@ -40260,7 +40838,7 @@ function readOwnerPrivateFile(file2, label, maxBytes) {
       throw new Error(`The ${label} exceeds its ${maxBytes}-byte limit.`);
     return content.subarray(0, bytesRead).toString("utf8");
   } finally {
-    fs16.closeSync(descriptor);
+    fs17.closeSync(descriptor);
   }
 }
 function assertOwnerPrivate(stat, label) {
@@ -40274,7 +40852,7 @@ function assertOwnerPrivate(stat, label) {
 // dist/host-runtime/router-client.js
 import { spawn as spawn2 } from "node:child_process";
 import { randomUUID as randomUUID5 } from "node:crypto";
-import fs17 from "node:fs";
+import fs18 from "node:fs";
 import net2 from "node:net";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
@@ -40730,7 +41308,7 @@ function waitForSocketConnect(socket) {
   });
 }
 function assertPrivateRouterSocket(socketPath) {
-  const stat = fs17.lstatSync(socketPath);
+  const stat = fs18.lstatSync(socketPath);
   if (!stat.isSocket() || (stat.mode & 63) !== 0) {
     throw new Error("The router socket must be owner-private.");
   }
@@ -40831,13 +41409,13 @@ function isRecord(value) {
 }
 
 // dist/core/session-activity.js
-import fs19 from "node:fs";
-import path15 from "node:path";
+import fs20 from "node:fs";
+import path17 from "node:path";
 import { execFileSync as execFileSync3 } from "node:child_process";
 
 // dist/host-runtime/claude-transcript.js
-import fs18 from "node:fs";
-import path14 from "node:path";
+import fs19 from "node:fs";
+import path16 from "node:path";
 var MAX_BYTES = 1024 * 1024;
 var ClaudeTranscriptReader = class {
   projectsDir;
@@ -40853,16 +41431,19 @@ var ClaudeTranscriptReader = class {
     this.projectsDir = projectsDir;
     this.projectSlug = projectSlug;
   }
+  transcriptFile(session) {
+    return this.locate(session);
+  }
   locate(session) {
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(session))
       return void 0;
     try {
-      for (const entry of fs18.readdirSync(this.projectsDir, { withFileTypes: true })) {
+      for (const entry of fs19.readdirSync(this.projectsDir, { withFileTypes: true })) {
         if (!entry.isDirectory() || this.projectSlug !== void 0 && entry.name !== this.projectSlug)
           continue;
-        const candidate = path14.join(this.projectsDir, entry.name, `${session}.jsonl`);
+        const candidate = path16.join(this.projectsDir, entry.name, `${session}.jsonl`);
         try {
-          if (fs18.lstatSync(candidate).isFile())
+          if (fs19.lstatSync(candidate).isFile())
             return candidate;
         } catch {
         }
@@ -40877,21 +41458,21 @@ var ClaudeTranscriptReader = class {
       return void 0;
     let fd;
     try {
-      if (!fs18.lstatSync(path14.dirname(file2)).isDirectory())
+      if (!fs19.lstatSync(path16.dirname(file2)).isDirectory())
         return void 0;
-      fd = fs18.openSync(file2, fs18.constants.O_RDONLY | (fs18.constants.O_NOFOLLOW ?? 0) | (fs18.constants.O_NONBLOCK ?? 0));
-      const stat = fs18.fstatSync(fd);
-      const named = fs18.lstatSync(file2);
+      fd = fs19.openSync(file2, fs19.constants.O_RDONLY | (fs19.constants.O_NOFOLLOW ?? 0) | (fs19.constants.O_NONBLOCK ?? 0));
+      const stat = fs19.fstatSync(fd);
+      const named = fs19.lstatSync(file2);
       if (!stat.isFile() || !named.isFile() || stat.dev !== named.dev || stat.ino !== named.ino || typeof process.getuid === "function" && stat.uid !== process.getuid())
         return void 0;
       const last = Buffer.alloc(1);
-      const discardPartial = stat.size > 0 && fs18.readSync(fd, last, 0, 1, stat.size - 1) === 1 && last[0] !== 10;
+      const discardPartial = stat.size > 0 && fs19.readSync(fd, last, 0, 1, stat.size - 1) === 1 && last[0] !== 10;
       return { session, file: file2, dev: stat.dev, ino: stat.ino, offset: stat.size, pending: Buffer.alloc(0), discardPartial };
     } catch {
       return void 0;
     } finally {
       if (fd !== void 0)
-        fs18.closeSync(fd);
+        fs19.closeSync(fd);
     }
   }
   readNew(session, mark) {
@@ -40899,15 +41480,15 @@ var ClaudeTranscriptReader = class {
       return void 0;
     let fd;
     try {
-      if (!fs18.lstatSync(path14.dirname(mark.file)).isDirectory())
+      if (!fs19.lstatSync(path16.dirname(mark.file)).isDirectory())
         return void 0;
-      fd = fs18.openSync(mark.file, fs18.constants.O_RDONLY | (fs18.constants.O_NOFOLLOW ?? 0) | (fs18.constants.O_NONBLOCK ?? 0));
-      const stat = fs18.fstatSync(fd);
-      const named = fs18.lstatSync(mark.file);
+      fd = fs19.openSync(mark.file, fs19.constants.O_RDONLY | (fs19.constants.O_NOFOLLOW ?? 0) | (fs19.constants.O_NONBLOCK ?? 0));
+      const stat = fs19.fstatSync(fd);
+      const named = fs19.lstatSync(mark.file);
       if (!stat.isFile() || !named.isFile() || stat.dev !== mark.dev || stat.ino !== mark.ino || named.dev !== stat.dev || named.ino !== stat.ino || typeof process.getuid === "function" && stat.uid !== process.getuid() || stat.size < mark.offset || stat.size - mark.offset > MAX_BYTES)
         return void 0;
       const buffer = Buffer.alloc(stat.size - mark.offset);
-      const n = fs18.readSync(fd, buffer, 0, buffer.length, mark.offset);
+      const n = fs19.readSync(fd, buffer, 0, buffer.length, mark.offset);
       mark.offset += n;
       let bytes = Buffer.concat([mark.pending, buffer.subarray(0, n)]);
       if (bytes.length > MAX_BYTES)
@@ -40930,7 +41511,7 @@ var ClaudeTranscriptReader = class {
       return void 0;
     } finally {
       if (fd !== void 0)
-        fs18.closeSync(fd);
+        fs19.closeSync(fd);
     }
   }
   currentTask(session) {
@@ -40947,11 +41528,11 @@ var ClaudeTranscriptReader = class {
       return void 0;
     let fd;
     try {
-      if (!fs18.lstatSync(path14.dirname(this.file)).isDirectory())
+      if (!fs19.lstatSync(path16.dirname(this.file)).isDirectory())
         return void 0;
-      fd = fs18.openSync(this.file, fs18.constants.O_RDONLY | (fs18.constants.O_NOFOLLOW ?? 0) | (fs18.constants.O_NONBLOCK ?? 0));
-      const stat = fs18.fstatSync(fd);
-      const named = fs18.lstatSync(this.file);
+      fd = fs19.openSync(this.file, fs19.constants.O_RDONLY | (fs19.constants.O_NOFOLLOW ?? 0) | (fs19.constants.O_NONBLOCK ?? 0));
+      const stat = fs19.fstatSync(fd);
+      const named = fs19.lstatSync(this.file);
       if (!stat.isFile() || !named.isFile() || stat.dev !== named.dev || stat.ino !== named.ino || typeof process.getuid === "function" && stat.uid !== process.getuid())
         return void 0;
       const identity = `${stat.dev}:${stat.ino}`;
@@ -40962,7 +41543,7 @@ var ClaudeTranscriptReader = class {
       }
       const start = this.offset;
       const buffer = Buffer.alloc(stat.size - start);
-      const n = fs18.readSync(fd, buffer, 0, buffer.length, this.offset);
+      const n = fs19.readSync(fd, buffer, 0, buffer.length, this.offset);
       this.offset += n;
       let bytes = Buffer.concat([this.pending, buffer.subarray(0, n)]);
       if (start > 0 && start === stat.size - MAX_BYTES) {
@@ -40988,7 +41569,7 @@ var ClaudeTranscriptReader = class {
       return void 0;
     } finally {
       if (fd !== void 0)
-        fs18.closeSync(fd);
+        fs19.closeSync(fd);
     }
   }
   reset() {
@@ -40999,15 +41580,15 @@ var ClaudeTranscriptReader = class {
     this.calls.clear();
   }
   consume(line) {
-    let record2;
+    let record3;
     try {
-      record2 = JSON.parse(line);
+      record3 = JSON.parse(line);
     } catch {
       return;
     }
-    if (!record2 || typeof record2 !== "object" || !("type" in record2) || record2.type !== "assistant" || !("message" in record2) || !record2.message || typeof record2.message !== "object" || !("role" in record2.message) || record2.message.role !== "assistant" || !("content" in record2.message))
+    if (!record3 || typeof record3 !== "object" || !("type" in record3) || record3.type !== "assistant" || !("message" in record3) || !record3.message || typeof record3.message !== "object" || !("role" in record3.message) || record3.message.role !== "assistant" || !("content" in record3.message))
       return;
-    const content = record2.message.content;
+    const content = record3.message.content;
     if (!Array.isArray(content))
       return;
     for (const call of content) {
@@ -41052,21 +41633,21 @@ var MAX_BYTES2 = 1024 * 1024;
 function readTail(file2, forbiddenModeBits = 0) {
   let fd;
   try {
-    fd = fs19.openSync(file2, fs19.constants.O_RDONLY | (fs19.constants.O_NOFOLLOW ?? 0) | (fs19.constants.O_NONBLOCK ?? 0));
-    const stat = fs19.fstatSync(fd);
-    const named = fs19.lstatSync(file2);
+    fd = fs20.openSync(file2, fs20.constants.O_RDONLY | (fs20.constants.O_NOFOLLOW ?? 0) | (fs20.constants.O_NONBLOCK ?? 0));
+    const stat = fs20.fstatSync(fd);
+    const named = fs20.lstatSync(file2);
     if (!stat.isFile() || !named.isFile() || named.dev !== stat.dev || named.ino !== stat.ino || typeof process.getuid === "function" && stat.uid !== process.getuid() || process.platform !== "win32" && (stat.mode & forbiddenModeBits) !== 0)
       return void 0;
     const start = Math.max(0, stat.size - MAX_BYTES2);
     const bytes = Buffer.alloc(stat.size - start);
-    const n = fs19.readSync(fd, bytes, 0, bytes.length, start);
+    const n = fs20.readSync(fd, bytes, 0, bytes.length, start);
     const text = bytes.subarray(0, n).toString("utf8");
     return start ? text.slice(text.indexOf("\n") + 1) : text;
   } catch {
     return void 0;
   } finally {
     if (fd !== void 0)
-      fs19.closeSync(fd);
+      fs20.closeSync(fd);
   }
 }
 function formatSessionActivity(fields) {
@@ -41079,18 +41660,50 @@ function formatSessionActivity(fields) {
 function repoLabel(workspace) {
   try {
     const value = execFileSync3("git", ["rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD"], { cwd: workspace, encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim().split("\n");
-    return value.length === 2 && value[0] && value[1] ? `${path15.basename(value[0])}@${value[1]}` : void 0;
+    return value.length === 2 && value[0] && value[1] ? `${path17.basename(value[0])}@${value[1]}` : void 0;
   } catch {
     return void 0;
   }
 }
-function createClaudeActivity(pid, workspace, claudeDir = process.env.CLAUDE_CONFIG_DIR || path15.join(homeDir(), ".claude")) {
+var ACTIVITY_CHECK_MS = 250;
+function privateSessionCheck(locate, sessionId) {
+  let warned2 = false;
+  return () => {
+    const memeshDir2 = getMemeshDirFromDbPath();
+    let transcriptPath;
+    let located = true;
+    try {
+      transcriptPath = locate();
+    } catch {
+      located = false;
+    }
+    const state = located ? decidePrivacy({
+      sessionId,
+      transcriptPath,
+      memeshDir: memeshDir2,
+      deadlineAt: Date.now() + ACTIVITY_CHECK_MS,
+      cacheDir: path17.join(memeshDir2, "private-check-cache")
+    }) : { state: "unchecked", reason: "unreadable", kind: "transient", detail: "the folder that holds the session's rollout cannot be read" };
+    if (state.state === "unchecked" && !warned2) {
+      warned2 = true;
+      try {
+        process.stderr.write(`[memesh] could not check whether this session is private, so its name and task are hidden: ${state.reason}
+`);
+      } catch {
+      }
+    }
+    return state.state !== "no";
+  };
+}
+function createClaudeActivity(pid, workspace, claudeDir = process.env.CLAUDE_CONFIG_DIR || path17.join(homeDir(), ".claude")) {
   let slug;
   let reader;
+  let privateSession;
+  let privateFor = "";
   return () => {
     let registry2;
     try {
-      const value = JSON.parse(readTail(path15.join(claudeDir, "sessions", `${pid}.json`), 18) ?? "");
+      const value = JSON.parse(readTail(path17.join(claudeDir, "sessions", `${pid}.json`), 18) ?? "");
       if (value && typeof value === "object" && !Array.isArray(value))
         registry2 = value;
     } catch {
@@ -41098,7 +41711,7 @@ function createClaudeActivity(pid, workspace, claudeDir = process.env.CLAUDE_CON
     }
     if (registry2) {
       try {
-        if (registry2.pid !== pid || typeof registry2.cwd !== "string" || fs19.realpathSync(registry2.cwd) !== fs19.realpathSync(workspace))
+        if (registry2.pid !== pid || typeof registry2.cwd !== "string" || fs20.realpathSync(registry2.cwd) !== fs20.realpathSync(workspace))
           registry2 = void 0;
       } catch {
         registry2 = void 0;
@@ -41110,11 +41723,18 @@ function createClaudeActivity(pid, workspace, claudeDir = process.env.CLAUDE_CON
       const currentSlug = projectTranscriptSlug(registry2.cwd);
       if (currentSlug !== slug) {
         slug = currentSlug;
-        reader = new ClaudeTranscriptReader(path15.join(claudeDir, "projects"), slug);
+        reader = new ClaudeTranscriptReader(path17.join(claudeDir, "projects"), slug);
       }
     }
-    const task = typeof registry2?.sessionId === "string" ? reader?.currentTask(registry2.sessionId) : void 0;
-    return formatSessionActivity({ repo: repoLabel(workspace), status, title, task });
+    const sessionId = typeof registry2?.sessionId === "string" ? registry2.sessionId : void 0;
+    if (sessionId && reader && privateFor !== `${slug}:${sessionId}`) {
+      const r = reader;
+      privateFor = `${slug}:${sessionId}`;
+      privateSession = privateSessionCheck(() => r.transcriptFile(sessionId), sessionId);
+    }
+    const isPrivate = sessionId !== void 0 && privateSession?.() === true;
+    const task = sessionId && !isPrivate ? reader?.currentTask(sessionId) : void 0;
+    return formatSessionActivity({ repo: repoLabel(workspace), status, title: isPrivate ? void 0 : title, task });
   };
 }
 
@@ -41127,24 +41747,24 @@ function messageNotice(envelope, deliveryId) {
 
 // dist/host-runtime/claude-inbox.js
 function readRegistrySession(workspace) {
-  const root = process.env.CLAUDE_CONFIG_DIR || path16.join(homeDir(), ".claude");
-  const file2 = path16.join(root, "sessions", `${process.ppid}.json`);
+  const root = process.env.CLAUDE_CONFIG_DIR || path18.join(homeDir(), ".claude");
+  const file2 = path18.join(root, "sessions", `${process.ppid}.json`);
   let fd;
   try {
-    fd = fs20.openSync(file2, fs20.constants.O_RDONLY | (fs20.constants.O_NOFOLLOW ?? 0) | (fs20.constants.O_NONBLOCK ?? 0));
-    const stat = fs20.fstatSync(fd);
-    const named = fs20.lstatSync(file2);
+    fd = fs21.openSync(file2, fs21.constants.O_RDONLY | (fs21.constants.O_NOFOLLOW ?? 0) | (fs21.constants.O_NONBLOCK ?? 0));
+    const stat = fs21.fstatSync(fd);
+    const named = fs21.lstatSync(file2);
     if (!stat.isFile() || !named.isFile() || stat.dev !== named.dev || stat.ino !== named.ino || stat.size > 65536 || typeof process.getuid === "function" && stat.uid !== process.getuid() || process.platform !== "win32" && (stat.mode & 18) !== 0)
       return void 0;
-    const data = JSON.parse(fs20.readFileSync(fd, "utf8"));
-    if (data.pid !== process.ppid || typeof data.cwd !== "string" || fs20.realpathSync(data.cwd) !== fs20.realpathSync(workspace) || typeof data.sessionId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(data.sessionId))
+    const data = JSON.parse(fs21.readFileSync(fd, "utf8"));
+    if (data.pid !== process.ppid || typeof data.cwd !== "string" || fs21.realpathSync(data.cwd) !== fs21.realpathSync(workspace) || typeof data.sessionId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(data.sessionId))
       return void 0;
     return { sessionId: data.sessionId, cwd: data.cwd };
   } catch {
     return void 0;
   } finally {
     if (fd !== void 0)
-      fs20.closeSync(fd);
+      fs21.closeSync(fd);
   }
 }
 function sendNativeNotice(socketPath, content, timeoutMs) {
@@ -41154,7 +41774,7 @@ function sendNativeNotice(socketPath, content, timeoutMs) {
       return;
     }
     try {
-      const stat = fs20.lstatSync(socketPath);
+      const stat = fs21.lstatSync(socketPath);
       if (!stat.isSocket() || (stat.mode & 63) !== 0 || typeof process.getuid === "function" && stat.uid !== process.getuid())
         throw new Error("Claude native inbox is unavailable.");
     } catch {
@@ -41176,10 +41796,10 @@ function sendNativeNotice(socketPath, content, timeoutMs) {
 `, () => finish()));
   });
 }
-function confirmedNotice(record2, session, notice) {
-  if (!record2 || typeof record2 !== "object")
+function confirmedNotice(record3, session, notice) {
+  if (!record3 || typeof record3 !== "object")
     return void 0;
-  const entry = record2;
+  const entry = record3;
   if (entry.sessionId !== session)
     return void 0;
   let text;
@@ -41229,8 +41849,8 @@ function createClaudeInboxDeliver(options) {
         const records = reader.readNew(session, mark);
         if (!records)
           throw new Error("Claude session transcript is unavailable.");
-        for (const record2 of records) {
-          const confirmation = confirmedNotice(record2, session, notice);
+        for (const record3 of records) {
+          const confirmation = confirmedNotice(record3, session, notice);
           if (confirmation)
             return { host: "claude-inbox", status: "queued", content: "notice", confirmation };
         }
@@ -41257,7 +41877,7 @@ async function startClaudeInboxPresence(rootUris) {
     return void 0;
   const dataDir = getMemeshDirFromDbPath();
   requirePrivateWritableDirectory(dataDir, "the local router keeps its lifecycle state there");
-  const token = ensureRouterTokenFile(path16.join(dataDir, "agent-router.token"));
+  const token = ensureRouterTokenFile(path18.join(dataDir, "agent-router.token"));
   let workspace = process.env.MEMESH_PROJECT_ROOT ?? process.env.CLAUDE_PROJECT_DIR;
   if (!workspace && rootUris?.length === 1) {
     try {
@@ -41278,7 +41898,7 @@ async function startClaudeInboxPresence(rootUris) {
     deliver: createClaudeInboxDeliver({
       socketPath: process.env.CLAUDE_CODE_MESSAGING_TOKEN ? process.env.CLAUDE_CODE_MESSAGING_SOCKET : void 0,
       sessionId: session,
-      reader: () => new ClaudeTranscriptReader(path16.join(process.env.CLAUDE_CONFIG_DIR || path16.join(homeDir(), ".claude"), "projects"), projectTranscriptSlug(workspace ? readRegistrySession(workspace)?.cwd ?? workspace : "")),
+      reader: () => new ClaudeTranscriptReader(path18.join(process.env.CLAUDE_CONFIG_DIR || path18.join(homeDir(), ".claude"), "projects"), projectTranscriptSlug(workspace ? readRegistrySession(workspace)?.cwd ?? workspace : "")),
       currentSession: () => workspace ? readRegistrySession(workspace)?.sessionId : void 0
     }),
     resilience: {
@@ -41299,8 +41919,8 @@ async function startClaudeInboxPresence(rootUris) {
 }
 
 // dist/mcp/server.js
-var packageJsonPath2 = path17.resolve(path17.dirname(fileURLToPath6(import.meta.url)), "../../package.json");
-var packageVersion2 = JSON.parse(fs21.readFileSync(packageJsonPath2, "utf8")).version ?? "0.0.0";
+var packageJsonPath2 = path19.resolve(path19.dirname(fileURLToPath6(import.meta.url)), "../../package.json");
+var packageVersion2 = JSON.parse(fs22.readFileSync(packageJsonPath2, "utf8")).version ?? "0.0.0";
 configureVersionSource(packageVersion2, packageJsonPath2);
 var server = new Server({ name: "memesh", version: packageVersion2 }, { capabilities: { tools: {} } });
 var presence;
@@ -41328,10 +41948,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 }));
 server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   const { name, arguments: args } = request.params;
-  const record2 = args && typeof args === "object" ? args : void 0;
-  const ref = record2?.ref && typeof record2.ref === "object" ? record2.ref : void 0;
-  const needsProjectBinding = (name === "task_state" || name === "briefing") && record2?.project == null || name === "learn" && record2?.project == null || name === "remember" && record2?.project == null || name === "recall" && record2?.project == null && (record2?.tag == null || record2.tag === "") && record2?.cross_project !== true;
-  const needsWorkspaceRoots = needsProjectBinding || name === "work_package" && (record2?.kind === "transcript" || ref?.kind === "transcript");
+  const record3 = args && typeof args === "object" ? args : void 0;
+  const ref = record3?.ref && typeof record3.ref === "object" ? record3.ref : void 0;
+  const needsProjectBinding = (name === "task_state" || name === "briefing") && record3?.project == null || name === "learn" && record3?.project == null || name === "remember" && record3?.project == null || name === "recall" && record3?.project == null && (record3?.tag == null || record3.tag === "") && record3?.cross_project !== true;
+  const needsWorkspaceRoots = needsProjectBinding || name === "work_package" && (record3?.kind === "transcript" || ref?.kind === "transcript");
   let workspaceRootUris = [];
   let rootsUnreadable = false;
   if (needsWorkspaceRoots) {

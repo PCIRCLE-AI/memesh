@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import { realpathSync, renameSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { ensurePrivateDir, getMemeshDirFromDbPath, hookErrorReason, hookMessageSessionId, isCodexHost, recordHookOutcome, writePrivateJson } from './_shared.js';
+import { ensurePrivateDir, getMemeshDirFromDbPath, hookErrorReason, hookMessageSessionId, isCodexHost, recordHookOutcome, SKIP_REASONS, writePrivateJson } from './_shared.js';
+import { privacyForHook } from './_private-session.js';
+import { HOOK_BUDGET_MS } from './_hook-budgets.js';
 import { pruneSessionState } from './_stop-notes.js';
 import { isValidCodexThreadId } from './_generated/codex-session-principal.js';
 
@@ -23,18 +25,26 @@ process.stdin.on('end', () => {
       record('error', 'input exceeds 1 MiB'); return;
     }
     data = JSON.parse(input);
-    if (!isCodexHost(process.env) || data.hook_event_name !== 'PostToolUse' || data.tool_name !== 'update_plan' || !isValidCodexThreadId(data.session_id) || hookMessageSessionId(data.session_id).mismatch) { record('skipped', 'not a valid Codex plan event'); return; }
+    if (!isCodexHost(process.env) || data.hook_event_name !== 'PostToolUse' || data.tool_name !== 'update_plan' || !isValidCodexThreadId(data.session_id) || hookMessageSessionId(data.session_id).mismatch) { record('skipped', SKIP_REASONS.notCodexPlanEvent); return; }
+    const dir = join(getMemeshDirFromDbPath(), 'codex-plan-activity');
+    // The agent called private_session: the plan step text is not written, and
+    // an activity file this thread already has is removed.
+    const privacy = privacyForHook(data, 'codex-plan-activity', { budgetMs: HOOK_BUDGET_MS.postToolUse.decide });
+    if (privacy.state !== 'no') {
+      try { unlinkSync(join(dir, `${data.session_id}.json`)); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+      record('skipped', privacy.state === 'yes' ? SKIP_REASONS.privateSession : SKIP_REASONS.privateSessionUnchecked); return;
+    }
     const workspace = realpathSync(data.cwd);
     const plan = data.tool_input?.plan;
     const valid = !data.tool_response?.isError && Array.isArray(plan) && plan.every(item => typeof item?.step === 'string' && ['pending', 'in_progress', 'completed'].includes(item.status)) && plan.filter(item => item.status === 'in_progress').length <= 1;
     const task = valid ? plan.find(item => item.status === 'in_progress')?.step.trim().slice(0, 200).replace(/[\uD800-\uDBFF]$/, '') : undefined;
-    const dir = join(getMemeshDirFromDbPath(), 'codex-plan-activity');
     ensurePrivateDir(dir);
     pruneSessionState(dir, Date.now());
     const file = join(dir, `${data.session_id}.json`);
     const temp = `${file}.${process.pid}.tmp`;
     writePrivateJson(temp, { session: data.session_id, workspace, ...(task ? { task } : {}) });
     renameSync(temp, file);
-    record('skipped', valid ? 'activity state recorded; no notification' : 'invalid or failed plan cleared');
+    record('skipped', valid ? SKIP_REASONS.planActivityRecorded : SKIP_REASONS.planActivityCleared);
   } catch (error) { record('error', hookErrorReason(error)); }
 });

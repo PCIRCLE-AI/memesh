@@ -28,6 +28,7 @@
 // exact: it can still miss a failure or report a repeat.
 
 import { bashEditedFileNames, editedFileName, isScratchPath } from './_generated/bash-edited-paths.js';
+import { isCodexToolRequest } from './_generated/host-transcript.js';
 
 const PATCH_HEADER = /\*\*\* (?:Add|Update) File: ([^\n\\"'`]+)/g;
 const CMD_LITERAL = /\bcmd["']?\s*:\s*("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)/g;
@@ -316,7 +317,7 @@ export function readCodexRow(entry, state, redact) {
     return 0;
   }
   if (entry?.type !== 'response_item') return 0;
-  if (item?.type === 'function_call' || item?.type === 'custom_tool_call') {
+  if (isCodexToolRequest(entry)) {
     readCall(item, state, redact);
     return 1;
   }

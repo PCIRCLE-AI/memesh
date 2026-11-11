@@ -25,6 +25,11 @@ export class ClaudeTranscriptReader {
 
   constructor(private readonly projectsDir: string, private readonly projectSlug?: string) {}
 
+  /** The transcript file of a session, if there is one. */
+  transcriptFile(session: string): string | undefined {
+    return this.locate(session);
+  }
+
   private locate(session: string): string | undefined {
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(session)) return undefined;
     try {

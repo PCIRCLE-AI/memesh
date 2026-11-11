@@ -57,6 +57,11 @@
               "type": "command",
               "command": "${CLAUDE_PLUGIN_ROOT}/dist/host-runtime/codex-session.js",
               "timeout": 3
+            },
+            {
+              "type": "command",
+              "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/session-end-notes.js",
+              "timeout": 3
             }
           ]
         }
@@ -64,7 +69,13 @@
       "PostToolUse": [
         {
           "matcher": "update_plan",
-          "hooks": [{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/codex-plan-activity.js", "timeout": 5 }]
+          "hooks": [
+            {
+              "type": "command",
+              "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/codex-plan-activity.js",
+              "timeout": 5
+            }
+          ]
         },
         {
           "matcher": "Bash",
@@ -82,6 +93,16 @@
             {
               "type": "command",
               "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/post-commit.js",
+              "timeout": 5
+            }
+          ]
+        },
+        {
+          "matcher": "private_session$",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/private-session-mark.js",
               "timeout": 5
             }
           ]

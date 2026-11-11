@@ -12,9 +12,9 @@ MeMesh gives local coding agents shared memory and a way to exchange messages.
 It stores memories in SQLite and searches them with FTS5. Claude Code and Codex
 use plugins; other local clients can use MCP, the CLI, or HTTP.
 
-The 12 MCP tools are `work_package`, `remember`, `recall`, `forget`, `export`,
-`import`, `learn`, `task_state`, `briefing`, `user_patterns`, `improvement`, and
-`message`. See the [API reference](api/API_REFERENCE.md) for their contracts.
+The 13 MCP tools are `work_package`, `remember`, `recall`, `forget`, `export`,
+`import`, `learn`, `task_state`, `briefing`, `user_patterns`, `improvement`,
+`message`, and `private_session` (the agent calls it when the user asks not to be remembered; the hooks find the call in the transcript, `src/core/private-session.ts`). See the [API reference](api/API_REFERENCE.md) for their contracts.
 
 `recall` accepts words or exact memory IDs. ID lookups retain project and
 namespace boundaries and distinguish returned, archived, unavailable and
@@ -100,7 +100,7 @@ MeMesh separates concerns into two layers:
 - `cli/cli.ts` — Commander CLI (`memesh` command; `message`, `agent`, `config`, `kg`, `dream`, `hermes`, and `delegation` have subcommands)
 - `http/server.ts` — Express server (`memesh serve`, default port 3737): 31 `/v1` endpoints including two retired 410 routes, HTTP API only; bearer-auth gate when bound non-loopback
 - `agent-messaging.ts` — shared MCP/HTTP/CLI dispatcher that records cooperative transport provenance (not authenticated human/model identity) and never turns a read into a receipt
-- `src/mcp/server.ts` + `src/transports/mcp/handlers.ts` — stdio MCP server (`memesh-mcp`, 12 tools); `src/mcp/tools.ts` is a re-export shim
+- `src/mcp/server.ts` + `src/transports/mcp/handlers.ts` — stdio MCP server (`memesh-mcp`, 13 tools); `src/mcp/tools.ts` is a re-export shim
 
 This separation means the same `remember`/`recall`/`forget` logic runs identically whether invoked from a terminal, an HTTP request, or an MCP tool call. Governed product-improvement proposals reuse the dream staging/review lifecycle: agents can propose over MCP, and humans apply or reject through the CLI or HTTP endpoints.
 
@@ -253,6 +253,7 @@ Thin adapter: imports shared Zod schemas from `transports/schemas.ts`, validates
 | `briefing` | BriefingSchema | Delegates to `core/briefing.assembleBriefing()` |
 | `user_patterns` | UserPatternsSchema | Delegates to `core/patterns.computePatterns()` |
 | `improvement` | ImprovementSchema | Delegates to `core/product-improvements` for proposal staging and status reads |
+| `private_session` | PrivateSessionSchema | Changes no state; returns a confirmation. The hooks find the call in the transcript |
 | `message` | MessageSchema | Delegates to `transports/agent-messaging.executeAgentMessageAction()` |
 
 ### transports/http/server.ts -- HTTP REST API Server
@@ -435,9 +436,9 @@ Foreign key cascades: deleting an entity automatically deletes its observations,
 
 ## Hook Architecture
 
-Hook commands are defined in `hooks/hooks.json`: nine run at Claude Code lifecycle events, while the separate Codex SessionStart/SessionEnd lifecycle registers and retires eligible ordinary Codex CLI sessions. The Codex plugin declares those same commands inline in `.codex-plugin/plugin.json` so it does not parse Claude's Mod-only `modules` field; a parity test keeps the two command sets identical.
+Hook commands are defined in `hooks/hooks.json`: eleven run at Claude Code lifecycle events, while the separate Codex SessionStart/SessionEnd lifecycle registers and retires eligible ordinary Codex CLI sessions. The Codex plugin declares those same commands inline in `.codex-plugin/plugin.json` so it does not parse Claude's Mod-only `modules` field; a parity test keeps the two command sets identical.
 
-### Hook Commands (10 hooks)
+### Hook Commands (12 hooks)
 
 | Hook | Event | Purpose |
 |------|-------|---------|
@@ -448,7 +449,9 @@ Hook commands are defined in `hooks/hooks.json`: nine run at Claude Code lifecyc
 | session-summary.js | Stop | Auto-capture session knowledge + recall effectiveness tracking |
 | stop-message-gate.js | Stop | Claude-Code-only: block the stop once per waiting agent-message id (#468) |
 | pre-compact.js | PreCompact | Save knowledge before compaction |
-| user-prompt-intent.js | UserPromptSubmit | Detect "remember" intent (5 languages: en, es, fr, pt, zh-TW) and remind the agent to use the memesh `remember` tool |
+| private-session-mark.js | PostToolUse (`private_session`) | At once, mark the session private for the note importer: notes changed since then wait until the session has recorded which notes it named. Writes no memory |
+| session-end-notes.js | SessionEnd | In a private session only: hold out the note files it wrote after its last Stop. Writes no memory |
+| user-prompt-intent.js | UserPromptSubmit | Detect "remember" intent (5 languages: en, es, fr, pt, zh-TW) and remind the agent to use the memesh `remember` tool; the reminder says it is background data and to call `private_session` instead when the user said not to remember (no negation is guessed) |
 | guard-check.js | PreToolUse (Bash) | Fire accepted lesson-guards against the command about to run (warn-only; fires counted) |
 | codex-session.js | Codex SessionStart (startup/resume) + SessionEnd | Launch an owner-private detached registration companion, retain a bounded 45-second idle queue window after SessionEnd, replace the exact generation on resume, and retire it at expiry; a matching owner-private config optionally overrides project/principal |
 

@@ -1228,7 +1228,7 @@ const HOOK_RUN_ID = randomBytes(8).toString('hex');
  *
  * @param {{hook: string, outcome: 'wrote'|'notified'|'skipped'|'error', reason?: string, entity?: string, payload?: object}} info
  */
-export function recordHookOutcome(env, { hook, outcome, reason, entity, payload }) {
+export function recordHookOutcome(env, { hook, outcome, reason, entity, count, payload }) {
   try {
     // getMemeshDirFromDbPath(), not memeshDir(): the record must sit beside
     // the database it describes. A test (or a user) that points
@@ -1252,6 +1252,7 @@ export function recordHookOutcome(env, { hook, outcome, reason, entity, payload 
     // JSONL file is a permanent, exportable copy.
     if (reason) record.reason = sliceUtf16UnitsSurrogateSafe(redactSecrets(String(reason)), 200);
     if (entity) record.entity = sliceUtf16UnitsSurrogateSafe(redactSecrets(String(entity)), 200);
+    if (Number.isSafeInteger(count) && count >= 0) record.count = count;
     // One O_APPEND write of one line. `mode` applies only when the file is
     // being created, which is the only moment the permission can be set
     // without a second syscall on the hot path. O_NOFOLLOW: the directory

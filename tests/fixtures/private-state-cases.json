@@ -1,0 +1,11 @@
+[
+  { "name": "no marker and no call is no", "sessionId": "s-plain", "marker": "none", "expect": "no" },
+  { "name": "a marker is yes", "sessionId": "s-marked", "marker": "file", "expect": "yes" },
+  { "name": "a marker under a hashed name (an id that is not a plain token) is yes", "sessionId": "../odd id", "marker": "file", "expect": "yes" },
+  { "name": "a call in the chat list is yes", "sessionId": "s-chat", "marker": "none", "messages": [{ "role": "assistant", "tool_calls": [{ "function": { "name": "memesh_private_session" } }] }], "expect": "yes" },
+  { "name": "the bare tool name in the chat list is yes", "sessionId": "s-chat2", "marker": "none", "messages": [{ "role": "assistant", "tool_calls": [{ "function": { "name": "private_session" } }] }], "expect": "yes" },
+  { "name": "a user message naming the tool is not a call", "sessionId": "s-text", "marker": "none", "messages": [{ "role": "user", "content": "private_session" }], "expect": "no" },
+  { "name": "a markers folder that is a plain file cannot be looked in: unchecked", "sessionId": "s-blocked", "marker": "folder-is-file", "expect": "unchecked", "reason": "marker_unreadable" },
+  { "name": "an empty session id cannot be told apart (Hermes only)", "sessionId": "", "marker": "none", "expect": "unchecked", "reason": "no_session_id", "hermesOnly": true },
+  { "kind": "record-dir", "name": "an empty MEMESH_DIR is no value: records go to ~/.memesh", "env": { "MEMESH_DIR": "" }, "expect": "home" }
+]

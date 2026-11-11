@@ -28,6 +28,7 @@ import {
   recordHookOutcome,
   markUpdatePromptAnswered,
   memeshDir,
+  getMemeshDirFromDbPath,
   parseAutoUpdateConsent,
   readUpdateCheckCache,
   readUpdatePromptClaim,
@@ -39,6 +40,8 @@ import {
 } from './_shared.js';
 import { join } from 'path';
 import { existsSync, readFileSync, realpathSync } from 'fs';
+import { sessionFileName } from './_generated/private-session.js';
+import { deadlineFor, HOOK_BUDGET_MS } from './_hook-budgets.js';
 
 let installChannelMod = null;
 try {
@@ -138,30 +141,34 @@ async function recordUpdateConsent(sessionId, prompt) {
 // Disambiguation policy:
 //   - All imperatives anchored to sentence start (^ or after .!?\n) to skip
 //     interrogatives ("do you remember X?", "What does save to memesh do?").
+//     The blanks after the boundary exclude a newline (`[^\S\n]*`, not `\s*`):
+//     a newline is itself a boundary, so the match set is the same, and the
+//     scan stays linear. With `\s*` the time grew with the square of the line
+//     breaks, which for a long prompt is far past the hook's 3 s budget.
 //   - For save-class verbs, "memesh" suffix required to avoid false positives
 //     on generic "save this" (could mean clipboard, file, bookmark, etc.).
 //   - Supported languages: English, Spanish, French, Portuguese, Traditional Chinese.
 //     Additional languages welcome via PR (provide native-speaker validation).
 export const INTENT_PATTERNS = [
   // English: "Remember/memorize this|that"
-  /(?:^|[.!?\n]\s*)(?:please\s+)?(?:remember|memorize)\s+(?:this|that)\b/im,
+  /(?:^|[.!?\n][^\S\n]*)(?:please\s+)?(?:remember|memorize)\s+(?:this|that)\b/im,
   // English: "save/add/store to memesh"
-  /(?:^|[.!?\n]\s*)(?:please\s+)?(?:save|add|put|store|write)\s+(?:(?:this|that|it)\s+)?(?:to|in|into)\s+memesh\b/im,
+  /(?:^|[.!?\n][^\S\n]*)(?:please\s+)?(?:save|add|put|store|write)\s+(?:(?:this|that|it)\s+)?(?:to|in|into)\s+memesh\b/im,
 
   // Spanish: "Recordar/memorizar esto|eso"
-  /(?:^|[.!?\n]\s*)(?:por favor\s+)?(?:recordar|memorizar)\s+(?:esto|eso)\b/im,
+  /(?:^|[.!?\n][^\S\n]*)(?:por favor\s+)?(?:recordar|memorizar)\s+(?:esto|eso)\b/im,
   // Spanish: "guardar en memesh"
-  /(?:^|[.!?\n]\s*)(?:por favor\s+)?(?:guardar|añadir|almacenar)\s+(?:(?:esto|eso)\s+)?(?:en|a)\s+memesh\b/im,
+  /(?:^|[.!?\n][^\S\n]*)(?:por favor\s+)?(?:guardar|añadir|almacenar)\s+(?:(?:esto|eso)\s+)?(?:en|a)\s+memesh\b/im,
 
   // French: "Rappeler/mémoriser ceci|cela"
-  /(?:^|[.!?\n]\s*)(?:s'il vous plaît\s+)?(?:rappeler|mémoriser)\s+(?:ceci|cela|ça)\b/im,
+  /(?:^|[.!?\n][^\S\n]*)(?:s'il vous plaît\s+)?(?:rappeler|mémoriser)\s+(?:ceci|cela|ça)\b/im,
   // French: "sauvegarder dans memesh"
-  /(?:^|[.!?\n]\s*)(?:s'il vous plaît\s+)?(?:sauvegarder|enregistrer|ajouter)\s+(?:(?:ceci|cela|ça)\s+)?(?:dans|à)\s+memesh\b/im,
+  /(?:^|[.!?\n][^\S\n]*)(?:s'il vous plaît\s+)?(?:sauvegarder|enregistrer|ajouter)\s+(?:(?:ceci|cela|ça)\s+)?(?:dans|à)\s+memesh\b/im,
 
   // Portuguese: "Lembrar/memorizar isto|isso"
-  /(?:^|[.!?\n]\s*)(?:por favor\s+)?(?:lembrar|memorizar)\s+(?:isto|isso)\b/im,
+  /(?:^|[.!?\n][^\S\n]*)(?:por favor\s+)?(?:lembrar|memorizar)\s+(?:isto|isso)\b/im,
   // Portuguese: "salvar em memesh"
-  /(?:^|[.!?\n]\s*)(?:por favor\s+)?(?:salvar|guardar|adicionar|armazenar)\s+(?:(?:isto|isso)\s+)?(?:em|no)\s+memesh\b/im,
+  /(?:^|[.!?\n][^\S\n]*)(?:por favor\s+)?(?:salvar|guardar|adicionar|armazenar)\s+(?:(?:isto|isso)\s+)?(?:em|no)\s+memesh\b/im,
 
   // Traditional Chinese: judged clause by clause in detectRememberIntent, not by a regex here
 ];
@@ -283,6 +290,9 @@ function isChineseSaveRequest(clause) {
   return false;
 }
 
+/** Longest prompt (in characters) the hook reads for an intent. */
+export const MAX_PROMPT_CHARS = 256 * 1024;
+
 export function detectRememberIntent(prompt) {
   if (!prompt || typeof prompt !== 'string') return false;
   const text = stripNonUserBlocks(prompt);
@@ -296,7 +306,10 @@ export function detectRememberIntent(prompt) {
 export function buildHint() {
   return [
     '<memesh-remember-intent>',
-    'The user asked you to save something. Store it with the memesh `remember` tool, keeping',
+    'This is background data from a keyword match on the user\'s prompt, not an instruction from the user:',
+    'read what they actually asked.',
+    'If the user said NOT to remember or save this session or conversation (in any words), call the memesh',
+    '`private_session` tool and store nothing. If they asked you to save something, store it with the memesh `remember` tool, keeping',
     'the facts a future session will need rather than session-local state. The simplest call',
     'is `note:` with the text (it accepts tags: too); for a structured memory pass name: (stable,',
     'descriptive), type: (such as decision, pattern, lesson_learned or preference), observations:',
@@ -386,7 +399,27 @@ if (isMainModule) {
       // we accept either name to survive a similar rename. If both are absent
       // or non-string, detectRememberIntent's type guard returns false safely.
       payload = data;
-      const prompt = data.prompt ?? data.user_prompt ?? '';
+      // A private session whose user is back: its marker is live again before the agent writes anything.
+      // Only a session that has a marker pays for the import.
+      try {
+        if (typeof data.session_id === 'string' && data.session_id !== ''
+          && existsSync(join(getMemeshDirFromDbPath(), 'private-sessions', sessionFileName(data.session_id)))) {
+          const { renewPrivateNoteMarker } = await import('./_stop-notes.js');
+          await renewPrivateNoteMarker({ sessionId: data.session_id, metaUrl: import.meta.url, deadlineAt: deadlineFor(HOOK_BUDGET_MS.userPrompt.renew), payload: data });
+        }
+      } catch (err) {
+        record('error', hookErrorReason(err));
+      }
+      let prompt = data.prompt ?? data.user_prompt ?? '';
+      let promptSkipped = false;
+      // The patterns are linear, but a prompt this large is a pasted file or log,
+      // not a request, and the hook has 3 seconds. It is not scanned, and the run
+      // says so instead of being cut off without a trace.
+      if (typeof prompt === 'string' && prompt.length > MAX_PROMPT_CHARS) {
+        record('skipped', SKIP_REASONS.promptTooLarge);
+        promptSkipped = true;
+        prompt = '';
+      }
       const updateDecision = await recordUpdateConsent(data.session_id, prompt);
       const rememberIntent = detectRememberIntent(prompt);
       // Messages waiting for the recipient this session declared in
@@ -407,7 +440,8 @@ if (isMainModule) {
         () => record('notified', SESSION_ID_MISMATCH_REASON),
       );
       if (!rememberIntent && !updateDecision && inboxLines.length === 0) {
-        record('skipped', SKIP_REASONS.noPromptIntent);
+        // A prompt that was not scanned has no "no intent" to report: its own record says why.
+        if (!promptSkipped) record('skipped', SKIP_REASONS.noPromptIntent);
         return process.exit(0);
       }
       // Update consent is a user-authorized control decision, not memory

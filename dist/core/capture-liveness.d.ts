@@ -1,5 +1,5 @@
 export type HookOutcome = 'wrote' | 'skipped' | 'notified' | 'error';
-export type HookHost = 'claude-code' | 'codex' | 'unknown';
+export type HookHost = 'claude-code' | 'codex' | 'hermes' | 'unknown';
 export interface HookOutcomeRecord {
     hook: string;
     at: string;
@@ -7,6 +7,7 @@ export interface HookOutcomeRecord {
     outcome: HookOutcome;
     reason?: string;
     entity?: string;
+    count?: number;
     run?: string;
 }
 export interface HookOutcomeFile {
@@ -20,7 +21,7 @@ export declare const HOOK_OUTCOMES_ROTATE_BYTES: number;
 export declare function serializeHookOutcome(record: HookOutcomeRecord): string;
 export declare function trimHookOutcomeLines(raw: string, max?: number, maxBytes?: number): string;
 export declare const SILENT_HOOK_MIN_RUNS = 5;
-export declare const CAPTURE_HOOKS: readonly ["post-commit", "session-summary", "pre-compact", "pre-edit-recall", "user-prompt-intent", "decision-nudge", "guard-check", "session-start", "note-ingest", "remember-nudge", "handoff-capture", "stop-message-gate"];
+export declare const CAPTURE_HOOKS: readonly ["post-commit", "session-summary", "pre-compact", "pre-edit-recall", "user-prompt-intent", "decision-nudge", "guard-check", "session-start", "note-ingest", "remember-nudge", "handoff-capture", "stop-message-gate", "codex-plan-activity", "hermes-private-session", "codex-busy-message-notice"];
 export declare const FAIL_ELIGIBLE_HOOKS: readonly ["session-summary"];
 export declare const SILENT_ELIGIBLE_HOOKS: readonly ["post-commit", "session-summary", "pre-compact", "handoff-capture"];
 export declare const SKIP_REASONS: {
@@ -42,6 +43,38 @@ export declare const SKIP_REASONS: {
     readonly noDatabaseForGuards: "no database yet — nothing to guard against";
     readonly noGuardMatched: "no active guard matched this command";
     readonly autoCaptureOff: "auto-capture is turned off";
+    readonly privateSession: "private_session";
+    readonly privateSessionUnchecked: "the session could not be checked for a private-session call, so nothing is saved";
+    readonly privateCheckUnreadable: "the private-session check could not read the transcript, so the session is treated as private";
+    readonly privateCheckMarkerUnreadable: "the private-sessions folder beside the database cannot be read, so every session is treated as private and nothing is saved until it can be";
+    readonly privateCheckParentUnavailable: "the session's fork parent or a subagent transcript could not be found, read or checked, or a rollout header is damaged, so the session is treated as private";
+    readonly notesHeldByTime: "the transcripts could not be read for note names (too large, too slow or unreadable), so every note changed in the last six hours is held out";
+    readonly privateCheckTooLarge: "the transcript is too large to check for a private-session call, so the session is treated as private";
+    readonly privateCheckTimeout: "the private-session check ran out of time, so nothing is saved this time and the next run checks again";
+    readonly privateCheckNoSessionId: "the host gave no session id, so whether the session is private cannot be told and nothing is saved";
+    readonly notesHeldPrivate: "note files written in a private session, or in one that could not be checked, are held out; nothing else needed storing";
+    readonly noteHoldsUnreadable: "a private-session hold record cannot be read, so notes are not imported until it is repaired: it is in the note-ingest-holds folder beside the database (deleting it releases the notes it holds)";
+    readonly noteMarkersUnreadable: "a private-session marker cannot be read, so notes are not imported until its session rebuilds it: memesh doctor names the file in the private-sessions folder beside the database";
+    readonly noteMarkersDirUnreadable: "the private-sessions folder beside the database cannot be read, so notes are not imported until it can be";
+    readonly noteMarkerUnwritable: "a private-session marker could not be written, so notes stay held; check the disk and the private-sessions folder's permissions";
+    readonly noteHoldsDirUnreadable: "the note-ingest-holds folder beside the database cannot be read, so notes are not imported until it can be";
+    readonly noteHoldsUnwritable: "a private-session hold record could not be written, so notes stay held; check the disk and the note-ingest-holds folder's permissions";
+    readonly privateStateBusy: "the private-session records were locked by another process, so nothing was released this time and the next run tries again";
+    readonly privateMarkerRebuilt: "this session's private-session marker could not be read and was written again from the start of the session";
+    readonly notPrivateSessionTool: "not a call of the private_session tool";
+    readonly notesWaitingForPrivateSession: "note files changed while a private session runs are waiting for its next Stop to record what it holds";
+    readonly notesLeftForNextRun: "more note files changed than one run reads, so the rest are read at the next Stop";
+    readonly transcriptReadTimeout: "the transcript could not be read within the hook's time, so its tool calls are not recorded";
+    readonly busyNoticeNotCodex: "not Codex";
+    readonly busyNoticeNoSessionId: "no usable session_id";
+    readonly busyNoticeSessionMismatch: "session_id_mismatch";
+    readonly busyNoticeNoRecipient: "no recipient or database";
+    readonly busyNoticeLockHeld: "session reminder lock held";
+    readonly busyNoticeNothingWaiting: "no waiting messages";
+    readonly notPrivateSession: "not a private session";
+    readonly notCodexPlanEvent: "not a valid Codex plan event";
+    readonly planActivityRecorded: "activity state recorded; no notification";
+    readonly planActivityCleared: "invalid or failed plan cleared";
     readonly commitCwdAbsent: "data.cwd absent — cannot resolve project or repo";
     readonly hashNotACommit: "the hash is not a commit in this repository";
     readonly noSessionOrTranscript: "neither session_id nor transcript_path in the payload";
@@ -62,6 +95,7 @@ export declare const SKIP_REASONS: {
     readonly recallThrottled: "no guard matched and recall for this file is throttled: this session already looked at it";
     readonly candidateWindowTruncated: "more candidates may exist than the search window examined";
     readonly noPromptIntent: "the prompt carried no remember intent and no update decision";
+    readonly promptTooLarge: "the prompt is too large to scan for a remember intent";
     readonly noMemoryDir: "no Claude Code memory directory for this project";
     readonly noNoteChanged: "no note file changed since the last ingestion";
     readonly noteIngesterNotBuilt: "the note ingester is not built (dist/core/note-ingest.js is missing)";
@@ -93,10 +127,11 @@ export declare const UNRECOGNISED_REASON = "unrecognised reason";
 export declare function renderableSkipReason(reason: string | undefined): string;
 export declare function isGitCommitCommand(command: string): boolean;
 export declare const NOT_TRIGGERED_SKIP_REASONS: Readonly<Record<string, readonly string[]>>;
-export declare const UNCLASSIFIED_SKIP_HOOKS: readonly ["pre-compact", "pre-edit-recall", "user-prompt-intent", "decision-nudge", "guard-check", "stop-message-gate"];
+export declare const UNCLASSIFIED_SKIP_HOOKS: readonly ["pre-edit-recall", "user-prompt-intent", "decision-nudge", "guard-check", "stop-message-gate", "codex-plan-activity", "hermes-private-session", "codex-busy-message-notice"];
 export declare const NEVER_RAN_GRACE_HOURS = 72;
 export declare function parseHookOutcomes(raw: string | null | undefined, limit?: number): HookOutcomeFile;
 export declare function parseHookOutcomeLine(line: string): HookOutcomeRecord | null;
+export declare const RECORD_COUNT_MAX = 1000000;
 export declare const RECORD_TEXT_MAX = 200;
 export declare function sanitizeRecordText(text: string): string;
 export interface HookLivenessSummary {

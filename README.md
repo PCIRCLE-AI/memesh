@@ -64,6 +64,8 @@ Ask your agent in plain language:
 >
 > Save where we left off so the next session can pick it up.
 
+Say "don't remember this conversation" and the agent stops automatic saving for the rest of that session, in any language. Talking about the feature, or asking not to save one detail, does not count. Saving stops for the hooks' automatic saving (session summaries, handoffs, pre-compact notes, imported notes, reminders to store things) and for the plan step Codex shares with other agents. A call whose result is an error counts, a call made inside a subagent counts, and so does a Codex subagent forked from a private thread. What was saved earlier, in that session or before it, stays (ask the agent to forget it); commit records are still saved; and your own transcript files on disk are unaffected. Note files are kept out by their content, whatever they are called later: every note whose file name appears in any tool call of the session (any file tool, MCP servers' included, any command, subagent calls; even a file it only read) and every note changed in the notes folder since the call (a copied folder, a script, a `mv`), and the same in another project's notes folder the session names or reaches; a Codex session, which has no notes folder of its own, is held to the Claude Code notes folders it names. That includes a note another session writes in the same project at the same time: it is held for good, editing it changes its content and lets it in, and every held note is counted in the import's record. Until the session's Stop or end has recorded this, other sessions leave those notes waiting. If the session cannot be checked (a transcript, a subagent folder or the private-sessions folder cannot be read, the session's transcripts are over 2 GiB together, a fork's parent rollout is missing or unreadable, a rollout header is damaged), it counts as private, nothing is saved, and the notes it may have written are held; each import checks again and lets them through once the session can be checked and is not private, and `memesh doctor` lists what stays held and, for a reason that does not pass on its own, the file whose deletion releases it. If the transcripts are too large to read within the hook's time, every note changed in the last six hours is held. A private session not heard from for six hours, whose transcripts have also been idle that long, has its notes held and stops making others wait; its next prompt makes it live again. A transcript that is not there at all is not treated as private. In Hermes, the setting is kept in a small file under the Hermes home, so it survives compressing, resuming and branching; a resumed old session is private only if it was marked itself. When Hermes does not say why the session changed, the new session saves nothing for the rest of that run and an error says why; nothing is written for it, so its next run decides again. If that file cannot be written, the tool says so.
+
 Claude Code's plugin provides automatic capture and reminders. The Codex plugin can provide context at session start once its hooks are allowed to run; other capture behavior varies by host. You can also ask the agent to store or look up memories directly.
 
 Claude Code inbox reminders work without Channel setup: hooks use the local `claude-code` recipient unless you configured another identity. They check at startup, your next prompt and turn end, and stop reminding once the agent records `intake` for that message. Live Channel push is optional; see the [messaging guide](docs/platforms/agent-messaging.md#claude-channel-runner).
@@ -77,7 +79,7 @@ Unreleased source builds add `/memesh-memories` in Claude Code to view and edit 
 <details>
 <summary>Tools and integration details</summary>
 
-## All 12 Memory and Coordination Tools
+## All 13 Memory and Coordination Tools
 
 | Tool | What it does |
 |------|-------------|
@@ -93,10 +95,11 @@ Unreleased source builds add `/memesh-memories` in Claude Code to view and edit 
 | `work_package` | Prepare a bounded memory digest or transcript package for human review. |
 | `user_patterns` | Summarize work patterns. |
 | `improvement` | Propose an improvement for human review. |
+| `private_session` | Stop automatic saving for this session when you say "don't remember this conversation". |
 
 ---
 
-Plugins ship **10 hooks**. The intent reminder recognizes "remember this"
+Plugins ship **12 hooks**. The intent reminder recognizes "remember this"
 (5 languages). Memory editing lives in Claude Code/Claude Desktop Code
 through the MeMesh Mod, and in Codex through MCP/native forms. There is no
 standalone Web Dashboard.

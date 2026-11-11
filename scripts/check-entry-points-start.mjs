@@ -527,6 +527,16 @@ async function main() {
         hook_event_name: 'PreCompact', transcript_path: '', reason: 'auto',
       })),
     },
+    'scripts/hooks/private-session-mark.js': {
+      run: (abs, env) => assertHookStarts(abs, env, 'PostToolUse', hookPayload({
+        hook_event_name: 'PostToolUse', tool_name: 'mcp__memesh__private_session', transcript_path: '',
+      })),
+    },
+    'scripts/hooks/session-end-notes.js': {
+      run: (abs, env) => assertHookStarts(abs, env, 'SessionEnd', hookPayload({
+        hook_event_name: 'SessionEnd', transcript_path: '',
+      })),
+    },
     'scripts/hooks/user-prompt-intent.js': {
       run: (abs, env) => assertHookStarts(abs, env, 'UserPromptSubmit', hookPayload({
         hook_event_name: 'UserPromptSubmit', prompt: 'hello',
