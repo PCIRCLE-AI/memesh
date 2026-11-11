@@ -677,10 +677,15 @@ disk.
 - **The content stays one more day, in a local archive.** Before a message is
   deleted, MeMesh copies it, and every record deleted with it, into
   `backups/agent-messages-expired.db` next to your database (owner-only
-  permissions). A copy is removed from the archive one day after it was made, so
+  permissions; a database file other than `knowledge-graph.db`, say `work.db`,
+  has its own `backups/agent-messages-expired-work.db`, so two databases in one
+  folder never share an archive). A copy is removed from the archive one day after it was made, so
   the content of a message exists for about two days in all: one day as a
   message and one day in the archive. If the archive cannot be written or its
-  copy does not match, nothing is deleted and `memesh doctor` says why. A
+  copy does not match, nothing is deleted and `memesh doctor` says why; the
+  same goes for an archive path that is a symlink to the database itself or to
+  nothing, or a file there that is not a database (MeMesh leaves such a file as
+  it is). A
   database that cannot be written, or that is locked right now, is left alone and
   reported the same way.
 - **A message nobody answered tells its sender.** When the recipient recorded no
@@ -718,7 +723,10 @@ disk.
 
   ```bash
   DB="${MEMESH_DB_PATH:-${MEMESH_DIR:-$HOME/.memesh}/knowledge-graph.db}"
-  ARCHIVE="$(dirname "$DB")/backups/agent-messages-expired.db"
+  case "$(basename "$DB")" in
+    knowledge-graph.db) ARCHIVE="$(dirname "$DB")/backups/agent-messages-expired.db" ;;
+    *) ARCHIVE="$(dirname "$DB")/backups/agent-messages-expired-$(basename "$DB")" ;;
+  esac
   ls -l "$DB" "$ARCHIVE"
   sqlite3 "$DB" <<SQL
   ATTACH '$ARCHIVE' AS archive;

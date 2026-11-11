@@ -267,7 +267,9 @@ export class AgentMessageExpiredError extends AgentMessageAccessError {
   readonly code = 'message_expired';
 
   constructor(messageId: string, createdAtIso: string, use: 'read' | 'reply') {
-    const expiredAt = new Date(Date.parse(createdAtIso) + AGENT_MESSAGE_TTL_MS).toISOString();
+    // A creation time that cannot be read (a hand-edited row) still gets this answer, not a RangeError.
+    const sentMs = Date.parse(createdAtIso);
+    const expiredAt = Number.isNaN(sentMs) ? 'an unknown time (its creation time cannot be read)' : new Date(sentMs + AGENT_MESSAGE_TTL_MS).toISOString();
     super(
       use === 'reply'
         ? `message_expired: message ${messageId} (sent ${createdAtIso}) expired at ${expiredAt}; MeMesh keeps a message for one day and then deletes it, `

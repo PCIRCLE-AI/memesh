@@ -37,7 +37,10 @@ import {
 } from './capture-liveness.js';
 import { guardFromMetadata } from './guards.js';
 import { getAgentMessageStorageReport } from './agent-message-storage.js';
-import { AGENT_MESSAGE_EXPIRY_INTERVAL_MS, databaseFile, lastAgentMessageExpiryRun, latestAgentMessageExpiryArchive } from './agent-message-expiry.js';
+import {
+  AGENT_MESSAGE_EXPIRY_FAILED_OUTCOMES, AGENT_MESSAGE_EXPIRY_INTERVAL_MS, databaseFile, inspectAgentMessageArchive,
+  lastAgentMessageExpiryRun, latestAgentMessageExpiryArchive,
+} from './agent-message-expiry.js';
 import { readHostConfigFile } from '../host-runtime/config.js';
 
 export type DoctorCheckStatus = 'pass' | 'warn' | 'fail';
@@ -475,61 +478,72 @@ function inspectAgentMessageExpiry(db: MemeshDatabase, nowMs: number = Date.now(
       try {
         fs.accessSync(file, fs.constants.W_OK);
       } catch {
+        // The same command the database check gives: quoted, and covering a -wal/-shm that lost its write bit too.
+        const writeBack = ownerWriteCommand(file) ?? `run: chmod u+w ${shellQuote(file)}`;
         return createCheck('agent_message_expiry', 'Agent message expiry', 'warn',
           `The database file ${file} cannot be written by this user, so the one-day expiry cannot delete anything (messages past their day are hidden but stay on disk).`,
-          `Make the database writable (for example chmod u+w ${file}), then re-run memesh doctor.`);
+          `Make the database writable (${writeBack}), then re-run memesh doctor.`);
       }
     }
     // A pass that wrote its row ("started") and has not finished: still working, or stopped.
     const stuck = db.prepare(
       "SELECT started_at_ms, expired_message_count, backup_path FROM agent_message_expiry_runs WHERE outcome = 'started' ORDER BY run_id DESC LIMIT 1",
     ).get() as { started_at_ms: number; expired_message_count: number; backup_path: string | null } | undefined;
+    const ago = (ms: number): string => (ms < 90_000 ? 'under a minute ago'
+      : ms < 90 * 60_000 ? `${Math.round(ms / 60_000)} minute(s) ago`
+        : `${Math.round(ms / 3_600_000 * 10) / 10} hour(s) ago`);
+    const last = lastAgentMessageExpiryRun(db);
     const finishedCheck = (): DoctorCheck => {
-      const last = lastAgentMessageExpiryRun(db);
       if (!last) {
         return waiting > 0
           ? createCheck('agent_message_expiry', 'Agent message expiry', 'warn',
             `No expiry pass has run on this database, and ${waiting} message(s) are past their one day. ${how}`, how)
           : createInfo('agent_message_expiry', 'Agent message expiry', `No expiry pass has run yet. Messages are kept one day, then deleted. ${how}`);
       }
-      const ageMs = nowMs - last.finished_at_ms;
-      const ago = ageMs < 90_000 ? 'under a minute ago'
-        : ageMs < 90 * 60_000 ? `${Math.round(ageMs / 60_000)} minute(s) ago`
-          : `${Math.round(ageMs / 3_600_000)} hour(s) ago`;
       const did = `${last.expired_message_count} message(s) deleted (${last.unread_message_count} with no intake, acknowledgement, disposition or reply; ${last.notice_count} sender notice(s)), `
         + `${last.presence_fact_count} presence fact(s) and ${last.connection_count} connection(s) cleared`;
       const latestArchive = latestAgentMessageExpiryArchive(db);
-      const backup = latestArchive
-        ? (fs.existsSync(latestArchive)
-          ? ` Deleted messages are kept one more day in ${latestArchive}.`
-          : ` The archive of deleted messages, ${latestArchive}, is not there any more.`)
-        : '';
-      const summary = `Last pass ${ago} (${last.outcome}, started by ${last.trigger_source}): ${did}.${backup}${last.detail ? ` ${last.detail}.` : ''}`;
-      const failed = last.outcome === 'failed' || last.outcome === 'archive_failed' || last.outcome === 'archive_unavailable'
-        || last.outcome === 'no_message_tables' || last.outcome === 'read_only';
-      if (failed) {
+      const archive = latestArchive ? inspectAgentMessageArchive(db, latestArchive) : undefined;
+      const backup = !latestArchive || !archive ? ''
+        : archive.kind === 'missing' ? ` The archive of deleted messages, ${latestArchive}, is not there any more.`
+          : archive.kind === 'unusable' ? ` The archive of deleted messages, ${latestArchive}, cannot be used: ${archive.reason}.`
+            : archive.messages > 0 ? ` Deleted messages are kept one more day in ${latestArchive} (${archive.messages} there now).`
+              : ` The archive ${latestArchive} holds no deleted message now (each is kept there one more day after it is deleted).`;
+      const summary = `Last pass ${ago(nowMs - last.finished_at_ms)} (${last.outcome}, started by ${last.trigger_source}): ${did}.${backup}${last.detail ? ` ${last.detail}.` : ''}`;
+      const archiveFix = latestArchive
+        ? `for the archive ${latestArchive}: free disk space, give the owner read and write access to it and to its folder, or move it away if it is not a MeMesh archive`
+        : 'for the archive: free disk space or permissions on the backups folder next to the database';
+      if (AGENT_MESSAGE_EXPIRY_FAILED_OUTCOMES.has(last.outcome)) {
         return createCheck('agent_message_expiry', 'Agent message expiry', 'warn', summary,
-          'Nothing is deleted while this fails. Read the detail above, fix it (for the archive: free disk space or permissions on the backups folder next to the database; for a read-only database: make it writable), then re-run memesh doctor.');
+          `Nothing is deleted while this fails. Read the detail above, fix it (${archiveFix}; for a read-only database: make it writable), then re-run memesh doctor.`);
       }
-      if (waiting > 0 && ageMs > 2 * AGENT_MESSAGE_EXPIRY_INTERVAL_MS) {
+      if (archive?.kind === 'unusable') {
+        return createCheck('agent_message_expiry', 'Agent message expiry', 'warn', summary,
+          `The next pass that has messages to delete cannot copy them, so it deletes nothing. Fix it (${archiveFix}), then re-run memesh doctor.`);
+      }
+      // Behind means no pass has done its work for a while. A pass that met a lock did no work, so a run
+      // of them, or of passes that left no row at all, does not count as keeping up.
+      const lastSuccess = (db.prepare(`
+        SELECT MAX(finished_at_ms) AS at FROM agent_message_expiry_runs
+        WHERE outcome NOT IN ('started', 'skipped_concurrent', 'database_busy', 'interrupted', ${[...AGENT_MESSAGE_EXPIRY_FAILED_OUTCOMES].map((o) => `'${o}'`).join(', ')})
+      `).get() as { at: number | null }).at;
+      if (waiting > 0 && (lastSuccess === null || nowMs - lastSuccess > 2 * AGENT_MESSAGE_EXPIRY_INTERVAL_MS)) {
+        const since = lastSuccess === null ? 'no pass has done its work yet' : `the last pass that did its work finished ${ago(nowMs - lastSuccess)}`;
         return createCheck('agent_message_expiry', 'Agent message expiry', 'warn',
-          `${summary} ${waiting} message(s) are past their one day and the last pass is old. ${how}`, how);
+          `${summary} ${waiting} message(s) are past their one day and ${since}. ${how}`, how);
       }
       return createInfo('agent_message_expiry', 'Agent message expiry', summary);
     };
     if (!stuck) return finishedCheck();
     const sinceMs = nowMs - stuck.started_at_ms;
-    const since = sinceMs < 90_000 ? 'under a minute ago'
-      : sinceMs < 90 * 60_000 ? `${Math.round(sinceMs / 60_000)} minute(s) ago`
-        : `${Math.round(sinceMs / 3_600_000 * 10) / 10} hour(s) ago`;
     const old = sinceMs > 10 * 60_000;
-    const unfinished = `A pass started ${since} and has not finished`
+    const unfinished = `A pass started ${ago(sinceMs)} and has not finished`
       + (old ? ' (the process running it was probably stopped)' : ' (it is still working, or it was stopped a moment ago)')
       + `; it had deleted ${stuck.expired_message_count} message(s) when it last saved its count`
       + (stuck.backup_path && fs.existsSync(stuck.backup_path) ? `, and those are in ${stuck.backup_path}` : '')
       + '. If it was stopped, the next pass takes over once its lease runs out (at most three minutes after its last batch), closes it as interrupted and carries on.';
     // Whatever the last finished pass said still counts: a stopped pass must not hide a failure behind it.
-    if (!lastAgentMessageExpiryRun(db)) {
+    if (!last) {
       return old
         ? createCheck('agent_message_expiry', 'Agent message expiry', 'warn', unfinished, how)
         : createInfo('agent_message_expiry', 'Agent message expiry', unfinished);

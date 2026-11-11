@@ -1,10 +1,7 @@
 import type { MemeshDatabase } from '../storage/sqlite.js';
 export declare const AGENT_MESSAGE_EXPIRY_INTERVAL_MS: number;
-export declare const AGENT_MESSAGE_EXPIRED_ID_KEEP_MS: number;
-export declare const AGENT_MESSAGE_ARCHIVE_FILE = "agent-messages-expired.db";
-export declare const AGENT_MESSAGE_EXPIRY_NOTICE_SENDER = "memesh";
-export declare const AGENT_MESSAGE_EXPIRY_TRANSPORT = "expiry";
-export type AgentMessageExpiryOutcome = 'deleted' | 'presence_cleared' | 'archive_purged' | 'read_only' | 'database_busy' | 'skipped_concurrent' | 'nothing_expired' | 'deferred_in_flight' | 'archive_failed' | 'archive_unavailable' | 'no_message_tables' | 'failed';
+export type AgentMessageExpiryOutcome = 'deleted' | 'presence_cleared' | 'archive_purged' | 'notices_sent' | 'read_only' | 'database_busy' | 'skipped_concurrent' | 'nothing_expired' | 'deferred_in_flight' | 'archive_failed' | 'archive_unavailable' | 'no_message_tables' | 'failed';
+export declare const AGENT_MESSAGE_EXPIRY_FAILED_OUTCOMES: ReadonlySet<string>;
 export interface AgentMessageExpiryResult {
     run_id: number | null;
     outcome: AgentMessageExpiryOutcome;
@@ -19,7 +16,6 @@ export interface AgentMessageExpiryResult {
 export interface AgentMessageExpiryOptions {
     trigger: string;
     nowMs?: number;
-    databasePath?: string;
     backupDir?: string;
     fault?: {
         beforeArchiveCheck?(archivePath: string, batch: number): void;
@@ -39,5 +35,15 @@ export declare function lastAgentMessageExpiryRun(db: MemeshDatabase): (AgentMes
     trigger_source: string;
 }) | null;
 export declare function latestAgentMessageExpiryArchive(db: MemeshDatabase): string | null;
+export type AgentMessageArchiveState = {
+    kind: 'missing';
+} | {
+    kind: 'unusable';
+    reason: string;
+} | {
+    kind: 'held';
+    messages: number;
+};
+export declare function inspectAgentMessageArchive(db: MemeshDatabase, file: string): AgentMessageArchiveState;
 export declare function databaseFile(db: MemeshDatabase): string;
 //# sourceMappingURL=agent-message-expiry.d.ts.map
