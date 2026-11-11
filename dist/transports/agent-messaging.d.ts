@@ -12,6 +12,7 @@ export interface AgentMessageTransportContext {
 }
 export interface AgentMessageTransportDependencies {
     sendRouterRequest?: typeof sendAgentRouterRequest;
+    startRouter?: () => Promise<void>;
 }
 export declare class AgentRecipientUnavailableError extends AgentMessagingError {
     readonly code = "recipient_unavailable";

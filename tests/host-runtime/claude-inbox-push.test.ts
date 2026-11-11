@@ -144,6 +144,21 @@ describe.skipIf(process.platform === 'win32')('Claude inbox native notice', () =
     } finally { await f.close(); }
   });
 
+  it('remembers 500 held notices by default: the 501st forgets the first, which can then no longer be confirmed, while the second still can', async () => {
+    const f = await fixture((_line, file) => fs.appendFileSync(file, heldRecord(session)));
+    try {
+      const deliver = createClaudeInboxDeliver({ socketPath: f.socketPath, sessionId: session, reader: f.reader, timeoutMs: 1000 });
+      const withId = (id: string) => ({ ...delivery('principal'), delivery_id: id });
+      for (let i = 0; i < 501; i += 1) await expect(deliver(withId(`d${i}`))).rejects.toMatchObject({ code: 'notice_held' });
+      expect(frames(f.frame())).toBe(501);
+      const noticeOf = (id: string) => f.frame().split('\n').filter(Boolean).map((line) => JSON.parse(JSON.parse(line).message.content)).find((notice) => notice.delivery_id === id);
+      for (const id of ['d0', 'd1']) fs.appendFileSync(f.file, JSON.stringify({ type: 'queue-operation', operation: 'enqueue', sessionId: session, content: JSON.stringify(noticeOf(id)) }) + '\n');
+      await expect(deliver(withId('d1'))).resolves.toMatchObject({ confirmation: 'enqueue' });
+      await expect(deliver(withId('d0'))).rejects.toMatchObject({ code: 'notice_held' });
+      expect(frames(f.frame()), 'nothing was sent again').toBe(501);
+    } finally { await f.close(); }
+  }, 180_000);
+
   it('never sends a notice a third time: one sent again that is then neither confirmed nor held stays unconfirmed', async () => {
     let sent = 0;
     const f = await fixture((_line, file) => { sent += 1; if (sent === 1) fs.appendFileSync(file, heldRecord(session)); });

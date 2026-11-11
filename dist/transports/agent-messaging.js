@@ -4,9 +4,39 @@ import { AgentIntendedSessionUnsupportedError, AgentMessageAccessError, AgentMes
 import { MessageSchema } from './schemas.js';
 import { AGENT_ROUTER_PROTOCOL_VERSION, AgentRouterError, createAgentRouterNotifier, sendAgentRouterRequest, } from '../core/agent-router.js';
 import { getAgentRouterSocketPath } from '../core/paths.js';
+import { isRouterUnavailable, startPackagedRouter } from '../host-runtime/router-client.js';
 import { sessionAliasChain } from '../core/agent-message-inbox.js';
 import { jsonStringLiteral } from '../core/work-topology.js';
 import { sqliteUtcToIso } from '../core/time-utils.js';
+const ROUTER_START_WAIT_MS = 4_000;
+const ROUTER_START_RETRY_MS = 100;
+async function sendToRouter(dependencies, request, timeoutMs) {
+    const send = dependencies.sendRouterRequest ?? sendAgentRouterRequest;
+    try {
+        return await send(routerSocketPath(), request, timeoutMs);
+    }
+    catch (error) {
+        if (!isRouterUnavailable(error))
+            throw error;
+        try {
+            await (dependencies.startRouter ?? startPackagedRouter)();
+        }
+        catch {
+            throw error;
+        }
+        const deadline = Date.now() + ROUTER_START_WAIT_MS;
+        for (;;) {
+            await new Promise((resolve) => setTimeout(resolve, ROUTER_START_RETRY_MS));
+            try {
+                return await send(routerSocketPath(), request, timeoutMs);
+            }
+            catch (retry) {
+                if (!isRouterUnavailable(retry) || Date.now() >= deadline)
+                    throw retry;
+            }
+        }
+    }
+}
 export class AgentRecipientUnavailableError extends AgentMessagingError {
     code = 'recipient_unavailable';
     constructor(detail) {
@@ -16,13 +46,13 @@ export class AgentRecipientUnavailableError extends AgentMessagingError {
 export class AgentRouterUnavailableError extends AgentMessagingError {
     code = 'router_unreachable';
     constructor() {
-        super('router_unreachable: the sender could not reach the local agent router; the durable message is preserved. Start the router and retry.');
+        super('router_unreachable: the sender could not reach the local agent router, and starting it did not make it reachable; the durable message is preserved. Check `memesh doctor`, or start it with `memesh-router`, and retry.');
     }
 }
 export class AgentDiscoveryUnavailableError extends AgentMessagingError {
     code = 'router_unreachable';
     constructor() {
-        super('router_unreachable: could not reach the local agent router to discover live hosts. '
+        super('router_unreachable: could not reach the local agent router to discover live hosts, and starting it did not make it reachable. '
             + 'Start it with `memesh-router` (or your host\'s managed launch step, e.g. `memesh-host-codex`), '
             + 'or skip discovery — `send`/`fetch` to a principal (a stable recipient, not an exact session) work without the router; '
             + 'an exact `target_kind: "session"` send still needs it.');
@@ -124,7 +154,7 @@ async function requireExactSessionNativeAcceptance(db, sent, dependencies) {
         hops: 0,
     };
     try {
-        const result = await (dependencies.sendRouterRequest ?? sendAgentRouterRequest)(routerSocketPath(), request, EXACT_SESSION_NATIVE_TIMEOUT_MS);
+        const result = await sendToRouter(dependencies, request, EXACT_SESSION_NATIVE_TIMEOUT_MS);
         if (result.delivered !== true) {
             const accepted = readHostAccept(db, sent.delivery_id);
             if (accepted)
@@ -616,7 +646,7 @@ export async function executeAgentMessageAction(db, rawInput, context, dependenc
                 hops: 0,
             };
             try {
-                return await (dependencies.sendRouterRequest ?? sendAgentRouterRequest)(routerSocketPath(), request);
+                return await sendToRouter(dependencies, request);
             }
             catch (error) {
                 if (error instanceof AgentRouterError && !['timeout', 'connection_closed'].includes(error.code)) {

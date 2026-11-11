@@ -34,6 +34,7 @@ import {
   type AgentRouterDiscoverRequest,
 } from '../core/agent-router.js';
 import { getAgentRouterSocketPath } from '../core/paths.js';
+import { isRouterUnavailable, startPackagedRouter } from '../host-runtime/router-client.js';
 import { sessionAliasChain } from '../core/agent-message-inbox.js';
 import { jsonStringLiteral } from '../core/work-topology.js';
 import { sqliteUtcToIso } from '../core/time-utils.js';
@@ -55,6 +56,40 @@ export interface AgentMessageTransportContext {
 
 export interface AgentMessageTransportDependencies {
   sendRouterRequest?: typeof sendAgentRouterRequest;
+  /** Starts the packaged router when a send finds none running (a test replaces it). */
+  startRouter?: () => Promise<void>;
+}
+
+const ROUTER_START_WAIT_MS = 4_000;
+const ROUTER_START_RETRY_MS = 100;
+
+/**
+ * Sends one request to the router. The router ends itself when no host has been connected for a while,
+ * so a sender that is not a host (HTTP, the CLI) finds none running: it starts the packaged router, the
+ * way a host does, and asks again once the new router listens. A router that cannot be started or does not
+ * come up within a few seconds leaves the original connection error.
+ */
+async function sendToRouter(
+  dependencies: AgentMessageTransportDependencies,
+  request: AgentRouterNotifyRequest | AgentRouterDiscoverRequest,
+  timeoutMs?: number,
+): Promise<AgentJsonObject> {
+  const send = dependencies.sendRouterRequest ?? sendAgentRouterRequest;
+  try {
+    return await send(routerSocketPath(), request, timeoutMs);
+  } catch (error) {
+    if (!isRouterUnavailable(error)) throw error;
+    try { await (dependencies.startRouter ?? startPackagedRouter)(); } catch { throw error; }
+    const deadline = Date.now() + ROUTER_START_WAIT_MS;
+    for (;;) {
+      await new Promise((resolve) => setTimeout(resolve, ROUTER_START_RETRY_MS));
+      try {
+        return await send(routerSocketPath(), request, timeoutMs);
+      } catch (retry) {
+        if (!isRouterUnavailable(retry) || Date.now() >= deadline) throw retry;
+      }
+    }
+  }
 }
 
 export class AgentRecipientUnavailableError extends AgentMessagingError {
@@ -69,7 +104,7 @@ export class AgentRouterUnavailableError extends AgentMessagingError {
   readonly code = 'router_unreachable';
 
   constructor() {
-    super('router_unreachable: the sender could not reach the local agent router; the durable message is preserved. Start the router and retry.');
+    super('router_unreachable: the sender could not reach the local agent router, and starting it did not make it reachable; the durable message is preserved. Check `memesh doctor`, or start it with `memesh-router`, and retry.');
   }
 }
 
@@ -77,7 +112,7 @@ export class AgentDiscoveryUnavailableError extends AgentMessagingError {
   readonly code = 'router_unreachable';
 
   constructor() {
-    super('router_unreachable: could not reach the local agent router to discover live hosts. '
+    super('router_unreachable: could not reach the local agent router to discover live hosts, and starting it did not make it reachable. '
       + 'Start it with `memesh-router` (or your host\'s managed launch step, e.g. `memesh-host-codex`), '
       + 'or skip discovery — `send`/`fetch` to a principal (a stable recipient, not an exact session) work without the router; '
       + 'an exact `target_kind: "session"` send still needs it.');
@@ -259,11 +294,7 @@ async function requireExactSessionNativeAcceptance(
     hops: 0,
   };
   try {
-    const result = await (dependencies.sendRouterRequest ?? sendAgentRouterRequest)(
-      routerSocketPath(),
-      request,
-      EXACT_SESSION_NATIVE_TIMEOUT_MS,
-    );
+    const result = await sendToRouter(dependencies, request, EXACT_SESSION_NATIVE_TIMEOUT_MS);
     if (result.delivered !== true) {
       const accepted = readHostAccept(db, sent.delivery_id);
       if (accepted) return nativeAcceptance(accepted);
@@ -887,10 +918,7 @@ export async function executeAgentMessageAction(
       // translates them for `send`; a protocol/identity error (a broken or
       // skewed router, not an unreachable one) still passes through unchanged.
       try {
-        return await (dependencies.sendRouterRequest ?? sendAgentRouterRequest)(
-          routerSocketPath(),
-          request,
-        );
+        return await sendToRouter(dependencies, request);
       } catch (error) {
         if (error instanceof AgentRouterError && !['timeout', 'connection_closed'].includes(error.code)) {
           throw error;

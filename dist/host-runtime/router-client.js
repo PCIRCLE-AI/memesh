@@ -488,7 +488,7 @@ function normalizeResilience(options = {}) {
         random: options.random ?? Math.random,
     };
 }
-function startPackagedRouter() {
+export function startPackagedRouter() {
     const entrypoint = fileURLToPath(new URL('./router.js', import.meta.url));
     return new Promise((resolve, reject) => {
         const child = spawn(process.execPath, [entrypoint], {
@@ -546,7 +546,7 @@ function routerOutdatedError() {
 function requiredNonEmptyString(value) {
     return typeof value === 'string' && value.length > 0;
 }
-function isRouterUnavailable(error) {
+export function isRouterUnavailable(error) {
     const code = error?.code;
     return code === 'ENOENT' || code === 'ECONNREFUSED';
 }

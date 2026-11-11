@@ -1212,7 +1212,7 @@ var require_command = __commonJS({
     var EventEmitter = __require("node:events").EventEmitter;
     var childProcess = __require("node:child_process");
     var path22 = __require("node:path");
-    var fs25 = __require("node:fs");
+    var fs26 = __require("node:fs");
     var process2 = __require("node:process");
     var { Argument: Argument2, humanReadableArgName } = require_argument();
     var { CommanderError: CommanderError2 } = require_error();
@@ -2206,7 +2206,7 @@ Expecting one of '${allowedValues.join("', '")}'`);
        * @param {string} subcommandName
        */
       _checkForMissingExecutable(executableFile, executableDir, subcommandName) {
-        if (fs25.existsSync(executableFile)) return;
+        if (fs26.existsSync(executableFile)) return;
         const executableDirMessage = executableDir ? `searched for local subcommand relative to directory '${executableDir}'` : "no directory for search for local subcommand, use .executableDir() to supply a custom directory";
         const executableMissing = `'${executableFile}' does not exist
  - if '${subcommandName}' is not meant to be an executable command, remove description parameter from '.command()' and use '.description()' instead
@@ -2225,10 +2225,10 @@ Expecting one of '${allowedValues.join("', '")}'`);
         const sourceExt = [".js", ".ts", ".tsx", ".mjs", ".cjs"];
         function findFile(baseDir, baseName) {
           const localBin = path22.resolve(baseDir, baseName);
-          if (fs25.existsSync(localBin)) return localBin;
+          if (fs26.existsSync(localBin)) return localBin;
           if (sourceExt.includes(path22.extname(baseName))) return void 0;
           const foundExt = sourceExt.find(
-            (ext) => fs25.existsSync(`${localBin}${ext}`)
+            (ext) => fs26.existsSync(`${localBin}${ext}`)
           );
           if (foundExt) return `${localBin}${foundExt}`;
           return void 0;
@@ -2240,7 +2240,7 @@ Expecting one of '${allowedValues.join("', '")}'`);
         if (this._scriptPath) {
           let resolvedScriptPath;
           try {
-            resolvedScriptPath = fs25.realpathSync(this._scriptPath);
+            resolvedScriptPath = fs26.realpathSync(this._scriptPath);
           } catch {
             resolvedScriptPath = this._scriptPath;
           }
@@ -33075,8 +33075,158 @@ var init_agent_router = __esm({
   }
 });
 
+// dist/host-runtime/config.js
+import { randomBytes as randomBytes4 } from "node:crypto";
+import fs17 from "node:fs";
+function assertSecureLocalHostRuntimeSupported() {
+  if (process.platform === "win32") {
+    throw new Error(SECURE_LOCAL_HOST_RUNTIME_UNSUPPORTED);
+  }
+}
+function readHostConfigFile(configuredPath) {
+  const value = JSON.parse(readOwnerPrivateFile(configuredPath, "host config", HOST_CONFIG_MAX_BYTES));
+  if (!isRecord(value))
+    throw new Error("The host config must contain one JSON object.");
+  return value;
+}
+function readTokenFile(tokenFile) {
+  const file2 = requiredString(tokenFile, "token_file");
+  return requiredString(readOwnerPrivateFile(file2, "router token file", MAX_ROUTER_TOKEN_FILE_BYTES).trim(), "router token");
+}
+function ensureRouterTokenFile(tokenFile) {
+  assertSecureLocalHostRuntimeSupported();
+  try {
+    fs17.writeFileSync(tokenFile, `${randomBytes4(32).toString("hex")}
+`, { mode: 384, flag: "wx" });
+  } catch (error62) {
+    if (error62.code !== "EEXIST")
+      throw error62;
+  }
+  return readTokenFile(tokenFile);
+}
+function requiredString(value, field) {
+  if (typeof value !== "string" || value.length === 0 || Buffer.byteLength(value) > 4096) {
+    throw new Error(`${field} must be a bounded non-empty string.`);
+  }
+  return value;
+}
+function readOwnerPrivateFile(file2, label, maxBytes) {
+  assertSecureLocalHostRuntimeSupported();
+  if (typeof fs17.constants.O_NOFOLLOW !== "number") {
+    throw new Error(`This platform cannot safely reject a symlink ${label}.`);
+  }
+  const descriptor = fs17.openSync(file2, fs17.constants.O_RDONLY | fs17.constants.O_NOFOLLOW | fs17.constants.O_NONBLOCK);
+  try {
+    const stat = fs17.fstatSync(descriptor);
+    if (!stat.isFile())
+      throw new Error(`The ${label} must be an owner-private regular file.`);
+    assertOwnerPrivate(stat, label);
+    if (stat.size > maxBytes)
+      throw new Error(`The ${label} exceeds its ${maxBytes}-byte limit.`);
+    const content = Buffer.allocUnsafe(maxBytes + 1);
+    let bytesRead = 0;
+    while (bytesRead < content.length) {
+      const chunkBytes = fs17.readSync(descriptor, content, bytesRead, content.length - bytesRead, null);
+      if (chunkBytes === 0)
+        break;
+      bytesRead += chunkBytes;
+    }
+    if (bytesRead > maxBytes)
+      throw new Error(`The ${label} exceeds its ${maxBytes}-byte limit.`);
+    return content.subarray(0, bytesRead).toString("utf8");
+  } finally {
+    fs17.closeSync(descriptor);
+  }
+}
+function assertOwnerPrivate(stat, label) {
+  if ((stat.mode & 63) !== 0)
+    throw new Error(`The ${label} must be owner-private.`);
+  if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
+    throw new Error(`The ${label} must be owned by the current user.`);
+  }
+}
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+var MAX_ROUTER_TOKEN_FILE_BYTES, SECURE_LOCAL_HOST_RUNTIME_UNSUPPORTED;
+var init_config2 = __esm({
+  "dist/host-runtime/config.js"() {
+    "use strict";
+    init_paths();
+    init_agent_scope_id();
+    MAX_ROUTER_TOKEN_FILE_BYTES = 8 * 1024;
+    SECURE_LOCAL_HOST_RUNTIME_UNSUPPORTED = "The secure local host runtime is not supported on Windows.";
+  }
+});
+
+// dist/host-runtime/package-version.js
+import { readFileSync } from "node:fs";
+var init_package_version = __esm({
+  "dist/host-runtime/package-version.js"() {
+    "use strict";
+  }
+});
+
+// dist/host-runtime/router-client.js
+import { spawn as spawn2 } from "node:child_process";
+import { randomUUID as randomUUID4 } from "node:crypto";
+import fs18 from "node:fs";
+import net2 from "node:net";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+function startPackagedRouter() {
+  const entrypoint = fileURLToPath2(new URL("./router.js", import.meta.url));
+  return new Promise((resolve2, reject) => {
+    const child = spawn2(process.execPath, [entrypoint], {
+      detached: true,
+      shell: false,
+      stdio: "ignore"
+    });
+    child.once("spawn", () => {
+      child.unref();
+      resolve2();
+    });
+    child.once("error", reject);
+  });
+}
+function isRouterUnavailable(error62) {
+  const code = error62?.code;
+  return code === "ENOENT" || code === "ECONNREFUSED";
+}
+var init_router_client = __esm({
+  "dist/host-runtime/router-client.js"() {
+    "use strict";
+    init_agent_router();
+    init_config2();
+    init_package_version();
+  }
+});
+
 // dist/transports/agent-messaging.js
-import { createHash as createHash10, randomUUID as randomUUID4 } from "node:crypto";
+import { createHash as createHash10, randomUUID as randomUUID5 } from "node:crypto";
+async function sendToRouter(dependencies, request, timeoutMs) {
+  const send = dependencies.sendRouterRequest ?? sendAgentRouterRequest;
+  try {
+    return await send(routerSocketPath(), request, timeoutMs);
+  } catch (error62) {
+    if (!isRouterUnavailable(error62))
+      throw error62;
+    try {
+      await (dependencies.startRouter ?? startPackagedRouter)();
+    } catch {
+      throw error62;
+    }
+    const deadline = Date.now() + ROUTER_START_WAIT_MS;
+    for (; ; ) {
+      await new Promise((resolve2) => setTimeout(resolve2, ROUTER_START_RETRY_MS));
+      try {
+        return await send(routerSocketPath(), request, timeoutMs);
+      } catch (retry) {
+        if (!isRouterUnavailable(retry) || Date.now() >= deadline)
+          throw retry;
+      }
+    }
+  }
+}
 function configuredAgentMessageStorageQuotaBytes() {
   const raw = process.env[AGENT_MESSAGE_STORAGE_QUOTA_ENV];
   if (raw === void 0 || raw === "")
@@ -33150,13 +33300,13 @@ async function requireExactSessionNativeAcceptance(db2, sent, dependencies) {
   const request = {
     version: AGENT_ROUTER_PROTOCOL_VERSION,
     type: "notify",
-    request_id: randomUUID4(),
+    request_id: randomUUID5(),
     project: sent.project,
     delivery_id: sent.delivery_id,
     hops: 0
   };
   try {
-    const result = await (dependencies.sendRouterRequest ?? sendAgentRouterRequest)(routerSocketPath(), request, EXACT_SESSION_NATIVE_TIMEOUT_MS);
+    const result = await sendToRouter(dependencies, request, EXACT_SESSION_NATIVE_TIMEOUT_MS);
     if (result.delivered !== true) {
       const accepted2 = readHostAccept(db2, sent.delivery_id);
       if (accepted2)
@@ -33618,13 +33768,13 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
       const request = {
         version: AGENT_ROUTER_PROTOCOL_VERSION,
         type: "discover",
-        request_id: randomUUID4(),
+        request_id: randomUUID5(),
         project: input2.project,
         limit: input2.limit,
         hops: 0
       };
       try {
-        return await (dependencies.sendRouterRequest ?? sendAgentRouterRequest)(routerSocketPath(), request);
+        return await sendToRouter(dependencies, request);
       } catch (error62) {
         if (error62 instanceof AgentRouterError && !["timeout", "connection_closed"].includes(error62.code)) {
           throw error62;
@@ -33668,7 +33818,7 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
       return readMessageStatus(db2, input2, context.hostSession);
   }
 }
-var AgentRecipientUnavailableError, AgentRouterUnavailableError, AgentDiscoveryUnavailableError, AGENT_MESSAGE_STORAGE_QUOTA_ENV, EXACT_SESSION_NATIVE_TIMEOUT_MS, PUBLIC_DISPOSITIONS;
+var ROUTER_START_WAIT_MS, ROUTER_START_RETRY_MS, AgentRecipientUnavailableError, AgentRouterUnavailableError, AgentDiscoveryUnavailableError, AGENT_MESSAGE_STORAGE_QUOTA_ENV, EXACT_SESSION_NATIVE_TIMEOUT_MS, PUBLIC_DISPOSITIONS;
 var init_agent_messaging2 = __esm({
   "dist/transports/agent-messaging.js"() {
     "use strict";
@@ -33677,9 +33827,12 @@ var init_agent_messaging2 = __esm({
     init_schemas3();
     init_agent_router();
     init_paths();
+    init_router_client();
     init_agent_message_inbox();
     init_work_topology();
     init_time_utils();
+    ROUTER_START_WAIT_MS = 4e3;
+    ROUTER_START_RETRY_MS = 100;
     AgentRecipientUnavailableError = class extends AgentMessagingError {
       code = "recipient_unavailable";
       constructor(detail) {
@@ -33689,102 +33842,18 @@ var init_agent_messaging2 = __esm({
     AgentRouterUnavailableError = class extends AgentMessagingError {
       code = "router_unreachable";
       constructor() {
-        super("router_unreachable: the sender could not reach the local agent router; the durable message is preserved. Start the router and retry.");
+        super("router_unreachable: the sender could not reach the local agent router, and starting it did not make it reachable; the durable message is preserved. Check `memesh doctor`, or start it with `memesh-router`, and retry.");
       }
     };
     AgentDiscoveryUnavailableError = class extends AgentMessagingError {
       code = "router_unreachable";
       constructor() {
-        super('router_unreachable: could not reach the local agent router to discover live hosts. Start it with `memesh-router` (or your host\'s managed launch step, e.g. `memesh-host-codex`), or skip discovery \u2014 `send`/`fetch` to a principal (a stable recipient, not an exact session) work without the router; an exact `target_kind: "session"` send still needs it.');
+        super('router_unreachable: could not reach the local agent router to discover live hosts, and starting it did not make it reachable. Start it with `memesh-router` (or your host\'s managed launch step, e.g. `memesh-host-codex`), or skip discovery \u2014 `send`/`fetch` to a principal (a stable recipient, not an exact session) work without the router; an exact `target_kind: "session"` send still needs it.');
       }
     };
     AGENT_MESSAGE_STORAGE_QUOTA_ENV = "MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES";
     EXACT_SESSION_NATIVE_TIMEOUT_MS = 12e3;
     PUBLIC_DISPOSITIONS = /* @__PURE__ */ new Set(["accepted", "rejected", "completed", "cancelled", "deferred"]);
-  }
-});
-
-// dist/host-runtime/config.js
-import { randomBytes as randomBytes4 } from "node:crypto";
-import fs17 from "node:fs";
-function assertSecureLocalHostRuntimeSupported() {
-  if (process.platform === "win32") {
-    throw new Error(SECURE_LOCAL_HOST_RUNTIME_UNSUPPORTED);
-  }
-}
-function readHostConfigFile(configuredPath) {
-  const value = JSON.parse(readOwnerPrivateFile(configuredPath, "host config", HOST_CONFIG_MAX_BYTES));
-  if (!isRecord(value))
-    throw new Error("The host config must contain one JSON object.");
-  return value;
-}
-function readTokenFile(tokenFile) {
-  const file2 = requiredString(tokenFile, "token_file");
-  return requiredString(readOwnerPrivateFile(file2, "router token file", MAX_ROUTER_TOKEN_FILE_BYTES).trim(), "router token");
-}
-function ensureRouterTokenFile(tokenFile) {
-  assertSecureLocalHostRuntimeSupported();
-  try {
-    fs17.writeFileSync(tokenFile, `${randomBytes4(32).toString("hex")}
-`, { mode: 384, flag: "wx" });
-  } catch (error62) {
-    if (error62.code !== "EEXIST")
-      throw error62;
-  }
-  return readTokenFile(tokenFile);
-}
-function requiredString(value, field) {
-  if (typeof value !== "string" || value.length === 0 || Buffer.byteLength(value) > 4096) {
-    throw new Error(`${field} must be a bounded non-empty string.`);
-  }
-  return value;
-}
-function readOwnerPrivateFile(file2, label, maxBytes) {
-  assertSecureLocalHostRuntimeSupported();
-  if (typeof fs17.constants.O_NOFOLLOW !== "number") {
-    throw new Error(`This platform cannot safely reject a symlink ${label}.`);
-  }
-  const descriptor = fs17.openSync(file2, fs17.constants.O_RDONLY | fs17.constants.O_NOFOLLOW | fs17.constants.O_NONBLOCK);
-  try {
-    const stat = fs17.fstatSync(descriptor);
-    if (!stat.isFile())
-      throw new Error(`The ${label} must be an owner-private regular file.`);
-    assertOwnerPrivate(stat, label);
-    if (stat.size > maxBytes)
-      throw new Error(`The ${label} exceeds its ${maxBytes}-byte limit.`);
-    const content = Buffer.allocUnsafe(maxBytes + 1);
-    let bytesRead = 0;
-    while (bytesRead < content.length) {
-      const chunkBytes = fs17.readSync(descriptor, content, bytesRead, content.length - bytesRead, null);
-      if (chunkBytes === 0)
-        break;
-      bytesRead += chunkBytes;
-    }
-    if (bytesRead > maxBytes)
-      throw new Error(`The ${label} exceeds its ${maxBytes}-byte limit.`);
-    return content.subarray(0, bytesRead).toString("utf8");
-  } finally {
-    fs17.closeSync(descriptor);
-  }
-}
-function assertOwnerPrivate(stat, label) {
-  if ((stat.mode & 63) !== 0)
-    throw new Error(`The ${label} must be owner-private.`);
-  if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
-    throw new Error(`The ${label} must be owned by the current user.`);
-  }
-}
-function isRecord(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-var MAX_ROUTER_TOKEN_FILE_BYTES, SECURE_LOCAL_HOST_RUNTIME_UNSUPPORTED;
-var init_config2 = __esm({
-  "dist/host-runtime/config.js"() {
-    "use strict";
-    init_paths();
-    init_agent_scope_id();
-    MAX_ROUTER_TOKEN_FILE_BYTES = 8 * 1024;
-    SECURE_LOCAL_HOST_RUNTIME_UNSUPPORTED = "The secure local host runtime is not supported on Windows.";
   }
 });
 
@@ -53366,7 +53435,7 @@ var require_view = __commonJS({
     "use strict";
     var debug = require_src()("express:view");
     var path22 = __require("node:path");
-    var fs25 = __require("node:fs");
+    var fs26 = __require("node:fs");
     var dirname = path22.dirname;
     var basename2 = path22.basename;
     var extname = path22.extname;
@@ -53446,7 +53515,7 @@ var require_view = __commonJS({
     function tryStat(path23) {
       debug('stat "%s"', path23);
       try {
-        return fs25.statSync(path23);
+        return fs26.statSync(path23);
       } catch (e) {
         return void 0;
       }
@@ -57190,7 +57259,7 @@ var require_send = __commonJS({
     var escapeHtml = require_escape_html();
     var etag = require_etag();
     var fresh = require_fresh();
-    var fs25 = __require("fs");
+    var fs26 = __require("fs");
     var mime = require_mime_types();
     var ms = require_ms();
     var onFinished = require_on_finished();
@@ -57472,7 +57541,7 @@ var require_send = __commonJS({
       var i = 0;
       var self = this;
       debug('stat "%s"', path23);
-      fs25.stat(path23, function onstat(err, stat) {
+      fs26.stat(path23, function onstat(err, stat) {
         var pathEndsWithSep = path23[path23.length - 1] === sep;
         if (err && err.code === "ENOENT" && !extname(path23) && !pathEndsWithSep) {
           return next(err);
@@ -57489,7 +57558,7 @@ var require_send = __commonJS({
         }
         var p = path23 + "." + self._extensions[i++];
         debug('stat "%s"', p);
-        fs25.stat(p, function(err2, stat) {
+        fs26.stat(p, function(err2, stat) {
           if (err2) return next(err2);
           if (stat.isDirectory()) return next();
           self.emit("file", p, stat);
@@ -57507,7 +57576,7 @@ var require_send = __commonJS({
         }
         var p = join(path23, self._index[i]);
         debug('stat "%s"', p);
-        fs25.stat(p, function(err2, stat) {
+        fs26.stat(p, function(err2, stat) {
           if (err2) return next(err2);
           if (stat.isDirectory()) return next();
           self.emit("file", p, stat);
@@ -57519,7 +57588,7 @@ var require_send = __commonJS({
     SendStream.prototype.stream = function stream(path23, options) {
       var self = this;
       var res = this.res;
-      var stream2 = fs25.createReadStream(path23, options);
+      var stream2 = fs26.createReadStream(path23, options);
       this.emit("stream", stream2);
       stream2.pipe(res);
       function cleanup() {
@@ -61687,9 +61756,9 @@ var init_stats = __esm({
 });
 
 // dist/core/database-diagnosis.js
-import fs18 from "fs";
+import fs19 from "fs";
 import path15 from "path";
-function diagnoseDatabaseFailure(err, databasePath, existsSyncImpl = fs18.existsSync, statSyncImpl = fs18.statSync) {
+function diagnoseDatabaseFailure(err, databasePath, existsSyncImpl = fs19.existsSync, statSyncImpl = fs19.statSync) {
   const message = err instanceof Error ? err.message : "unknown database error";
   let diagnosis;
   let fix;
@@ -61729,7 +61798,7 @@ function diagnoseDatabaseFailure(err, databasePath, existsSyncImpl = fs18.exists
       try {
         const dirStat = statSyncImpl(dir);
         const canWrite = !!(dirStat.mode & 128);
-        if ((dirStat.mode & fs18.constants.S_IFMT) === fs18.constants.S_IFREG) {
+        if ((dirStat.mode & fs19.constants.S_IFMT) === fs19.constants.S_IFREG) {
           diagnosis = `${dir} is a file, not a folder, so no database can be created inside it`;
           fix = "Point MEMESH_DB_PATH at a path inside a folder";
         } else if (!(dirStat.mode & 64)) {
@@ -61906,17 +61975,17 @@ __export(install_id_exports, {
   getInstallId: () => getInstallId,
   getInstallRecord: () => getInstallRecord
 });
-import fs19 from "fs";
+import fs20 from "fs";
 import path16 from "path";
-import { randomUUID as randomUUID5 } from "crypto";
+import { randomUUID as randomUUID6 } from "crypto";
 function installFilePath() {
   return path16.join(memeshDir(), "install.json");
 }
 function getInstallRecord() {
   const filePath = installFilePath();
   try {
-    if (fs19.existsSync(filePath)) {
-      const raw = fs19.readFileSync(filePath, "utf8");
+    if (fs20.existsSync(filePath)) {
+      const raw = fs20.readFileSync(filePath, "utf8");
       const parsed = JSON.parse(raw);
       if (typeof parsed.install_id === "string" && parsed.install_id.length > 0) {
         return {
@@ -61929,14 +61998,14 @@ function getInstallRecord() {
   } catch {
   }
   const record2 = {
-    install_id: randomUUID5(),
+    install_id: randomUUID6(),
     created_at: (/* @__PURE__ */ new Date()).toISOString(),
     schema_version: SCHEMA_VERSION
   };
   try {
-    fs19.mkdirSync(path16.dirname(filePath), { recursive: true });
+    fs20.mkdirSync(path16.dirname(filePath), { recursive: true });
     removeGroupAndOtherAccess(path16.dirname(filePath));
-    fs19.writeFileSync(filePath, JSON.stringify(record2, null, 2), { encoding: "utf8", mode: 384 });
+    fs20.writeFileSync(filePath, JSON.stringify(record2, null, 2), { encoding: "utf8", mode: 384 });
     removeGroupAndOtherAccess(filePath);
   } catch {
   }
@@ -62433,6 +62502,26 @@ var init_guards = __esm({
   }
 });
 
+// dist/host-runtime/router-idle.js
+function readRouterIdleExit(db2) {
+  try {
+    const row = db2.prepare("SELECT value FROM memesh_metadata WHERE key = ?").get(ROUTER_IDLE_EXIT_KEY);
+    return typeof row?.value === "string" ? row.value : void 0;
+  } catch (error62) {
+    if (/no such table: memesh_metadata/.test(error62 instanceof Error ? error62.message : String(error62)))
+      return void 0;
+    throw error62;
+  }
+}
+var DEFAULT_ROUTER_IDLE_MS, ROUTER_IDLE_EXIT_KEY;
+var init_router_idle = __esm({
+  "dist/host-runtime/router-idle.js"() {
+    "use strict";
+    DEFAULT_ROUTER_IDLE_MS = 10 * 6e4;
+    ROUTER_IDLE_EXIT_KEY = "router_idle_exit_at";
+  }
+});
+
 // dist/core/doctor.js
 var doctor_exports = {};
 __export(doctor_exports, {
@@ -62443,10 +62532,10 @@ __export(doctor_exports, {
   runDoctor: () => runDoctor,
   satisfiesMinimumNodeRange: () => satisfiesMinimumNodeRange
 });
-import fs20 from "fs";
+import fs21 from "fs";
 import os2 from "os";
 import path17 from "path";
-import net2 from "node:net";
+import net3 from "node:net";
 import { createHash as createHash12 } from "crypto";
 import { createRequire as createRequire2 } from "module";
 import { execFileSync as execFileSync7 } from "child_process";
@@ -62887,7 +62976,7 @@ function inspectHookWiring(existsSyncImpl, readFileSyncImpl, memeshDir3, install
   }
   return createCheck("hook-wiring", "Hooks wired into Claude Code", "pass", `Wired in ${marker.settings_path} (scope: ${marker.scope ?? "user"}, version: ${marker.version ?? "unknown"}).`, void 0, { params: { captureWired: hasCaptureHook ? 1 : 0 } });
 }
-function inspectHookActivity(openDatabaseImpl, closeDatabaseImpl, existsSyncImpl = fs20.existsSync, statSyncImpl = fs20.statSync, wiringPresent = true) {
+function inspectHookActivity(openDatabaseImpl, closeDatabaseImpl, existsSyncImpl = fs21.existsSync, statSyncImpl = fs21.statSync, wiringPresent = true) {
   const TITLE = "Hook activity";
   const captureOff = autoCaptureOffSource();
   if (captureOff === "config") {
@@ -63016,7 +63105,7 @@ function withRecordedHosts(result) {
     return result;
   return { ...result, check: { ...result.check, summary: `${result.check.summary} Hosts recorded: ${hostsSeen.join(", ")}.` } };
 }
-function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyncImpl = fs20.readFileSync, memeshDirImpl = getMemeshDirFromDbPath, captureWired = true) {
+function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyncImpl = fs21.readFileSync, memeshDirImpl = getMemeshDirFromDbPath, captureWired = true) {
   const TITLE = "Capture liveness";
   if (autoCaptureOffSource() !== null) {
     return {
@@ -63264,7 +63353,7 @@ function inspectNativeBinding(packageRoot3, _existsSyncImpl, probeImpl = default
   const result = probeImpl(packageRoot3);
   return result.ok ? createCheck("native-binding", "SQLite", "pass", "node:sqlite opened a database (probe succeeded).") : createCheck("native-binding", "SQLite", "fail", `SQLite could not open a database: ${result.message}`, "Check the Node runtime and reinstall if necessary.", { code: "native-binding.load-failed", params: { detail: result.message, root: packageRoot3 } });
 }
-function readVersionFromInstalledBinary(binaryPath, existsSyncImpl, readFileSyncImpl, realpathSyncImpl = fs20.realpathSync) {
+function readVersionFromInstalledBinary(binaryPath, existsSyncImpl, readFileSyncImpl, realpathSyncImpl = fs21.realpathSync) {
   let resolved;
   try {
     resolved = realpathSyncImpl(binaryPath);
@@ -63315,7 +63404,7 @@ function inspectShellCli(installChannel, packageRoot3, packageVersion2, resolveS
 function defaultMarketplaceHeadSha(host) {
   if (host === "codex") {
     const codexHome = pluginHostConfigRoot("codex");
-    return readCodexInstallRevision(path17.join(codexHome, ".tmp", "marketplaces", "pcircle-memesh"), fs20.readFileSync);
+    return readCodexInstallRevision(path17.join(codexHome, ".tmp", "marketplaces", "pcircle-memesh"), fs21.readFileSync);
   }
   const dir = path17.join(pluginHostConfigRoot("claude-code"), "plugins", "marketplaces", "pcircle-memesh");
   try {
@@ -63484,11 +63573,11 @@ function isClaudeChannelCommand(command) {
     return false;
   }
   try {
-    const target = fs20.realpathSync(command);
-    const stat = fs20.statSync(target);
+    const target = fs21.realpathSync(command);
+    const stat = fs21.statSync(target);
     if (!stat.isFile())
       return false;
-    fs20.accessSync(target, fs20.constants.X_OK);
+    fs21.accessSync(target, fs21.constants.X_OK);
     return true;
   } catch {
     return false;
@@ -63672,10 +63761,10 @@ function probeInstalledMessageCapability(packageRoot3) {
     "dist/host-adapters/claude-channel.js",
     "dist/host-adapters/acp-client.js"
   ];
-  const absent = required2.filter((relative) => !fs20.existsSync(path17.join(packageRoot3, relative)));
+  const absent = required2.filter((relative) => !fs21.existsSync(path17.join(packageRoot3, relative)));
   if (absent.length > 0)
     return { ok: false, message: `installed runtime is missing ${absent.join(", ")}` };
-  const probeHome = fs20.mkdtempSync(path17.join(os2.tmpdir(), "memesh-doctor-message-"));
+  const probeHome = fs21.mkdtempSync(path17.join(os2.tmpdir(), "memesh-doctor-message-"));
   try {
     execFileSync7(process.execPath, [path17.join(packageRoot3, "dist/transports/cli/doctor-message-probe.js"), packageRoot3], {
       cwd: packageRoot3,
@@ -63687,7 +63776,7 @@ function probeInstalledMessageCapability(packageRoot3) {
   } catch {
     return { ok: false, message: "installed MCP or bundled host adapters did not complete the message capability probe" };
   } finally {
-    fs20.rmSync(probeHome, { recursive: true, force: true });
+    fs21.rmSync(probeHome, { recursive: true, force: true });
   }
 }
 function inspectMessageCapability(packageRoot3, enabled, probe) {
@@ -63707,7 +63796,7 @@ async function defaultMessageRouterStatusProbe() {
   }
   let stat;
   try {
-    stat = fs20.lstatSync(socketPath);
+    stat = fs21.lstatSync(socketPath);
   } catch (error62) {
     const detail = error62 instanceof Error ? error62.message : String(error62);
     return { socket_path: socketPath, socket: "missing", detail };
@@ -63716,7 +63805,7 @@ async function defaultMessageRouterStatusProbe() {
     return { socket_path: socketPath, socket: "insecure" };
   }
   const reachable = await new Promise((resolve2) => {
-    const socket = net2.createConnection({ path: socketPath });
+    const socket = net3.createConnection({ path: socketPath });
     const timer = setTimeout(() => {
       socket.destroy();
       resolve2(false);
@@ -63734,7 +63823,7 @@ async function defaultMessageRouterStatusProbe() {
   });
   return { socket_path: socketPath, socket: reachable ? "reachable" : "unreachable" };
 }
-async function inspectMessageRouterStatus(enabled, probe) {
+async function inspectMessageRouterStatus(enabled, probe, lastIdleExit) {
   if (!enabled) {
     return createInfo("message-router-status", "Live message router / host registration", "Not verified (opt-in). Set MEMESH_DOCTOR_PROBE_MESSAGE_ROUTER=1 to check only whether the owner-private Local router socket is live. This check never starts a router, registers a host, sends a message, or wakes a stopped session.");
   }
@@ -63743,7 +63832,7 @@ async function inspectMessageRouterStatus(enabled, probe) {
     case "reachable":
       return createCheck("message-router-status", "Live message router / host registration", "pass", `Owner-private Local router socket is reachable at ${result.socket_path}. This proves only router availability; it does not prove an active host registration, native delivery, host_accept, ACK, or stopped-session wake-up.`);
     case "missing":
-      return createCheck("message-router-status", "Live message router / host registration", "warn", `No Local router socket exists at ${result.socket_path}. No active host is registered through this router, and MeMesh will not wake a stopped or missing session.`, "Start the owner-configured router with `memesh-router`, then run this opt-in probe again.", { code: "message-router.socket-missing", params: { path: result.socket_path } });
+      return createCheck("message-router-status", "Live message router / host registration", "warn", `No Local router socket exists at ${result.socket_path}. No active host is registered through this router, and MeMesh will not wake a stopped or missing session.${lastIdleExit ? ` The router last ended itself for idleness at ${lastIdleExit}.` : " No idle exit of the router is recorded, so if a session was open a moment ago the router may have stopped for another reason."}`, "The router ends itself after 10 minutes (MEMESH_ROUTER_IDLE_MS) with no host connected and nothing being delivered, so a missing socket is normal while no session is open; a host session or a message send starts it again. To check it now, start a session or the owner-configured router with `memesh-router`, then run this opt-in probe again.", { code: "message-router.socket-missing", params: { path: result.socket_path } });
     case "path-too-long":
       return createCheck("message-router-status", "Live message router / host registration", "fail", `The router socket path is ${result.detail} \u2014 over the ${AGENT_ROUTER_SOCKET_PATH_MAX_BYTES}-byte limit a Unix domain socket allows, so \`memesh-router\` cannot create it at ${result.socket_path}. Starting the router again fails the same way.`, "Set MEMESH_ROUTER_SOCKET to a shorter absolute path, or move HOME / MEMESH_DIR somewhere with a shorter path, then start `memesh-router` again.", { code: "message-router.socket-path-too-long", params: { path: result.socket_path, bytes: result.detail ?? "unknown" } });
     case "insecure":
@@ -63761,7 +63850,7 @@ function summarizeOverallStatus(checks) {
   return "PASS";
 }
 async function runDoctor(options) {
-  const { packageRoot: packageRoot3, packageVersion: packageVersion2, probeHttp = false, httpBaseUrl = "http://127.0.0.1:3737", platform = process.platform, envImpl = process.env, openDatabaseImpl = openDatabase, closeDatabaseImpl = closeDatabase, isDatabaseOpenImpl = isDatabaseOpen, getConfigPathImpl = getConfigPath, getUpdateCheckImpl = getUpdateCheck, getCurrentInstallChannelImpl = getCurrentInstallChannel, installedPluginsPathImpl, marketplaceHeadShaImpl = defaultMarketplaceHeadSha, pluginCacheDiscoveryImpl, getInstallChannelSupportImpl = getInstallChannelSupport, existsSyncImpl = fs20.existsSync, readFileSyncImpl = fs20.readFileSync, statSyncImpl = fs20.statSync, fetchImpl = fetch, agentMessageStoragePolicy, nativeBindingProbeImpl, resolveShellMemeshImpl = defaultResolveShellMemesh, probeMessageCapability = process.env.MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY === "1", messageCapabilityProbeImpl = probeInstalledMessageCapability, probeMessageRouterStatus = process.env.MEMESH_DOCTOR_PROBE_MESSAGE_ROUTER === "1", messageRouterStatusProbeImpl = defaultMessageRouterStatusProbe } = options;
+  const { packageRoot: packageRoot3, packageVersion: packageVersion2, probeHttp = false, httpBaseUrl = "http://127.0.0.1:3737", platform = process.platform, envImpl = process.env, openDatabaseImpl = openDatabase, closeDatabaseImpl = closeDatabase, isDatabaseOpenImpl = isDatabaseOpen, getConfigPathImpl = getConfigPath, getUpdateCheckImpl = getUpdateCheck, getCurrentInstallChannelImpl = getCurrentInstallChannel, installedPluginsPathImpl, marketplaceHeadShaImpl = defaultMarketplaceHeadSha, pluginCacheDiscoveryImpl, getInstallChannelSupportImpl = getInstallChannelSupport, existsSyncImpl = fs21.existsSync, readFileSyncImpl = fs21.readFileSync, statSyncImpl = fs21.statSync, fetchImpl = fetch, agentMessageStoragePolicy, nativeBindingProbeImpl, resolveShellMemeshImpl = defaultResolveShellMemesh, probeMessageCapability = process.env.MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY === "1", messageCapabilityProbeImpl = probeInstalledMessageCapability, probeMessageRouterStatus = process.env.MEMESH_DOCTOR_PROBE_MESSAGE_ROUTER === "1", messageRouterStatusProbeImpl = defaultMessageRouterStatusProbe } = options;
   const wasDbOpenBeforeUs = isDatabaseOpenImpl();
   const safeCloseDatabaseImpl = wasDbOpenBeforeUs ? () => void 0 : closeDatabaseImpl;
   const checks = [];
@@ -63770,8 +63859,14 @@ async function runDoctor(options) {
   checks.push(createCheck("install-channel", "Install method", install === "unknown" ? "warn" : "pass", `Install method detected: ${installSupport.label}.`, install === "unknown" ? "If this is a source checkout, run MeMesh from the repo root. If this is a packaged install, reinstall with `npm install -g @pcircle/memesh`." : void 0, install === "unknown" ? { code: "install-channel.unknown" } : void 0));
   const databasePath = resolveDatabasePath();
   const dbChecks = [];
+  let lastRouterIdleExit;
   try {
     const db2 = openDatabaseImpl(databasePath);
+    try {
+      lastRouterIdleExit = readRouterIdleExit(db2);
+    } catch {
+      lastRouterIdleExit = void 0;
+    }
     const count = db2.prepare("SELECT COUNT(*) as c FROM entities").get()?.c ?? 0;
     const writeBack = ownerWriteCommand(databasePath);
     dbChecks.push(writeBack ? createCheck("database", "Database", "warn", `Database at ${databasePath} (${count} entities) is read-only: reads work, writes are refused.`, `If it should be writable, ${writeBack}`) : createCheck("database", "Database", "pass", `Database opened successfully at ${databasePath} (${count} entities).`));
@@ -63900,7 +63995,7 @@ async function runDoctor(options) {
   checks.push(inspectShellCli(install, packageRoot3, packageVersion2, resolveShellMemeshImpl, existsSyncImpl, readFileSyncImpl));
   checks.push(verifySkillsManifest(packageRoot3, existsSyncImpl, readFileSyncImpl, installSupport));
   checks.push(inspectMessageCapability(packageRoot3, probeMessageCapability, messageCapabilityProbeImpl));
-  checks.push(await inspectMessageRouterStatus(probeMessageRouterStatus, messageRouterStatusProbeImpl));
+  checks.push(await inspectMessageRouterStatus(probeMessageRouterStatus, messageRouterStatusProbeImpl, lastRouterIdleExit));
   checks.push(await inspectUpdateStatus(packageVersion2, getUpdateCheckImpl, installSupport));
   try {
     const record2 = getInstallRecord();
@@ -63967,6 +64062,7 @@ var init_doctor = __esm({
     init_agent_message_storage();
     init_agent_messaging();
     init_config2();
+    init_router_idle();
     EXPECTED_HOOK_TYPES = ["PreToolUse", "SessionStart", "PostToolUse", "Stop", "PreCompact"];
     AGENT_MESSAGE_STORAGE_QUOTA_ENV2 = "MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES";
     LOCALE_README_FILES = [
@@ -63980,7 +64076,7 @@ var init_doctor = __esm({
 });
 
 // dist/core/transcript-source.js
-import fs21 from "fs";
+import fs22 from "fs";
 import { createHash as createHash13 } from "node:crypto";
 import path18 from "path";
 function readTranscriptSnapshot(transcriptPath, expected) {
@@ -63989,10 +64085,10 @@ function readTranscriptSnapshot(transcriptPath, expected) {
 function readTranscriptSnapshotWithin(transcriptPath, expected, aggregateBytesRemaining) {
   let fd;
   try {
-    fd = fs21.openSync(transcriptPath, fs21.constants.O_RDONLY | fs21.constants.O_NOFOLLOW);
-    if (fs21.lstatSync(transcriptPath).isSymbolicLink())
+    fd = fs22.openSync(transcriptPath, fs22.constants.O_RDONLY | fs22.constants.O_NOFOLLOW);
+    if (fs22.lstatSync(transcriptPath).isSymbolicLink())
       return { snapshot: null, aggregateLimitExceeded: false };
-    const before = fs21.fstatSync(fd, { bigint: true });
+    const before = fs22.fstatSync(fd, { bigint: true });
     const sizeBytes = Number(before.size);
     if (!before.isFile() || sizeBytes < 0 || sizeBytes > MAX_TRANSCRIPT_SOURCE_BYTES) {
       return { snapshot: null, aggregateLimitExceeded: false };
@@ -64012,12 +64108,12 @@ function readTranscriptSnapshotWithin(transcriptPath, expected, aggregateBytesRe
     const bytes = Buffer.allocUnsafe(sizeBytes);
     let offset = 0;
     while (offset < bytes.length) {
-      const count = fs21.readSync(fd, bytes, offset, bytes.length - offset, offset);
+      const count = fs22.readSync(fd, bytes, offset, bytes.length - offset, offset);
       if (count === 0)
         return { snapshot: null, aggregateLimitExceeded: false };
       offset += count;
     }
-    const after = fs21.fstatSync(fd, { bigint: true });
+    const after = fs22.fstatSync(fd, { bigint: true });
     if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) {
       return { snapshot: null, aggregateLimitExceeded: false };
     }
@@ -64030,7 +64126,7 @@ function readTranscriptSnapshotWithin(transcriptPath, expected, aggregateBytesRe
   } finally {
     if (fd !== void 0) {
       try {
-        fs21.closeSync(fd);
+        fs22.closeSync(fd);
       } catch {
       }
     }
@@ -64072,7 +64168,7 @@ function sameProjectPath(a, b) {
   if (path18.normalize(a) === path18.normalize(b))
     return true;
   try {
-    if (fs21.realpathSync(a) === fs21.realpathSync(b))
+    if (fs22.realpathSync(a) === fs22.realpathSync(b))
       return true;
   } catch {
   }
@@ -64090,10 +64186,10 @@ function scanTranscripts(opts) {
   const dir = path18.join(claudeProjectsDir(), projectTranscriptSlug(cwd));
   let names;
   try {
-    const dirStat = fs21.lstatSync(dir);
+    const dirStat = fs22.lstatSync(dir);
     if (dirStat.isSymbolicLink() || !dirStat.isDirectory())
       return [];
-    names = fs21.readdirSync(dir).filter((name) => name.endsWith(".jsonl")).sort();
+    names = fs22.readdirSync(dir).filter((name) => name.endsWith(".jsonl")).sort();
   } catch {
     return [];
   }
@@ -64106,7 +64202,7 @@ function scanTranscripts(opts) {
   for (const name of names) {
     let stat;
     try {
-      stat = fs21.lstatSync(path18.join(dir, name));
+      stat = fs22.lstatSync(path18.join(dir, name));
     } catch {
       opts.onSkip?.("unreadable", 1);
       continue;
@@ -65137,9 +65233,9 @@ __export(server_exports, {
   startServer: () => startServer
 });
 import { randomBytes as randomBytes5, timingSafeEqual } from "crypto";
-import fs22 from "fs";
+import fs23 from "fs";
 import path19 from "path";
-import { fileURLToPath as fileURLToPath2 } from "url";
+import { fileURLToPath as fileURLToPath3 } from "url";
 function isLoopbackRequest(req) {
   const ip = req.ip ?? "";
   return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
@@ -65154,18 +65250,18 @@ function loadOrCreateRemoteToken() {
   }
   const dir = memeshDir2();
   const tokenPath = path19.join(dir, "remote-token");
-  fs22.mkdirSync(dir, { recursive: true });
+  fs23.mkdirSync(dir, { recursive: true });
   removeGroupAndOtherAccess(dir);
   const generated = randomBytes5(32).toString("hex");
   try {
-    const fd = fs22.openSync(tokenPath, fs22.constants.O_WRONLY | fs22.constants.O_CREAT | fs22.constants.O_EXCL, 384);
+    const fd = fs23.openSync(tokenPath, fs23.constants.O_WRONLY | fs23.constants.O_CREAT | fs23.constants.O_EXCL, 384);
     try {
-      fs22.writeFileSync(fd, generated + "\n");
+      fs23.writeFileSync(fd, generated + "\n");
     } finally {
-      fs22.closeSync(fd);
+      fs23.closeSync(fd);
     }
     try {
-      fs22.chmodSync(tokenPath, 384);
+      fs23.chmodSync(tokenPath, 384);
     } catch {
     }
     return { token: Buffer.from(generated, "utf8"), freshlyCreated: true };
@@ -65173,7 +65269,7 @@ function loadOrCreateRemoteToken() {
     if (err?.code !== "EEXIST")
       throw err;
   }
-  const value = fs22.readFileSync(tokenPath, "utf8").trim();
+  const value = fs23.readFileSync(tokenPath, "utf8").trim();
   if (value.length < 16) {
     throw new Error(`Existing ${tokenPath} is too short (<16 chars). Delete it and restart memesh-http to regenerate.`);
   }
@@ -65476,9 +65572,9 @@ var init_server = __esm({
     init_file_mode();
     init_database_diagnosis();
     init_retired_routes();
-    packageJsonPath = path19.resolve(path19.dirname(fileURLToPath2(import.meta.url)), "../../../package.json");
+    packageJsonPath = path19.resolve(path19.dirname(fileURLToPath3(import.meta.url)), "../../../package.json");
     packageRoot = path19.dirname(packageJsonPath);
-    packageVersion = JSON.parse(fs22.readFileSync(packageJsonPath, "utf8")).version ?? "0.0.0";
+    packageVersion = JSON.parse(fs23.readFileSync(packageJsonPath, "utf8")).version ?? "0.0.0";
     app = (0, import_express.default)();
     apiLimiter = rate_limit_default({
       windowMs: 15 * 60 * 1e3,
@@ -66549,7 +66645,7 @@ __export(project_tags_exports, {
   renameProjectTag: () => renameProjectTag,
   sameProjectRefusal: () => sameProjectRefusal
 });
-import fs23 from "node:fs";
+import fs24 from "node:fs";
 import os3 from "node:os";
 import path20 from "node:path";
 import { pathToFileURL } from "node:url";
@@ -66692,7 +66788,7 @@ function destinationHolds(conn, table, rid, to) {
   return false;
 }
 function previewOnCopy(source, from, to) {
-  const dir = fs23.mkdtempSync(path20.join(os3.tmpdir(), "memesh-rename-preview-"));
+  const dir = fs24.mkdtempSync(path20.join(os3.tmpdir(), "memesh-rename-preview-"));
   try {
     const file2 = path20.join(dir, "copy.db");
     try {
@@ -66707,7 +66803,7 @@ function previewOnCopy(source, from, to) {
       copy.close();
     }
   } finally {
-    fs23.rmSync(dir, { recursive: true, force: true });
+    fs24.rmSync(dir, { recursive: true, force: true });
   }
 }
 function openReadOnlyForPreview(dbPath, openHandle = (target) => new MemeshDatabase(target, { readOnly: true })) {
@@ -66731,11 +66827,11 @@ function openReadOnlyForPreview(dbPath, openHandle = (target) => new MemeshDatab
   } catch (err) {
     let realPath = dbPath;
     try {
-      realPath = fs23.realpathSync(dbPath);
+      realPath = fs24.realpathSync(dbPath);
     } catch {
     }
     const wal = `${realPath}-wal`;
-    const hasWal = fs23.existsSync(wal) && fs23.statSync(wal).size > 0;
+    const hasWal = fs24.existsSync(wal) && fs24.statSync(wal).size > 0;
     if (hasWal || !/readonly|unable to open/i.test(err instanceof Error ? err.message : String(err)))
       throw err;
     return open2(`${pathToFileURL(dbPath).href}?immutable=1`);
@@ -66775,9 +66871,9 @@ init_recall_agent_view();
 init_config();
 init_session_limit();
 import { createHash as createHash16 } from "crypto";
-import fs24 from "fs";
+import fs25 from "fs";
 import path21 from "path";
-import { fileURLToPath as fileURLToPath3 } from "url";
+import { fileURLToPath as fileURLToPath4 } from "url";
 
 // dist/core/update-entrypoint.js
 init_paths();
@@ -68332,7 +68428,7 @@ function isOnPath(tool) {
       continue;
     for (const ext of exts) {
       try {
-        fs24.accessSync(path21.join(dir, tool + ext), fs24.constants.X_OK);
+        fs25.accessSync(path21.join(dir, tool + ext), fs25.constants.X_OK);
         return true;
       } catch {
       }
@@ -68342,7 +68438,7 @@ function isOnPath(tool) {
 }
 function createHostConfigAtomically(host, configPath, config2) {
   try {
-    fs24.writeFileSync(configPath, `${JSON.stringify(config2, null, 2)}
+    fs25.writeFileSync(configPath, `${JSON.stringify(config2, null, 2)}
 `, { flag: "wx", mode: 384 });
   } catch (error62) {
     if (error62.code === "EEXIST") {
@@ -68359,9 +68455,9 @@ function wireUserHooks() {
   const r = installHooks({ pluginRoot: packageRoot2, pluginVersion: pkg.version, scope: "user" });
   return `hooks: added ${r.added}, skipped ${r.skipped} already-installed${r.backupPath ? ` (backup: ${r.backupPath})` : ""}`;
 }
-var packageJsonPath2 = path21.resolve(path21.dirname(fileURLToPath3(import.meta.url)), "../../../package.json");
+var packageJsonPath2 = path21.resolve(path21.dirname(fileURLToPath4(import.meta.url)), "../../../package.json");
 var packageRoot2 = path21.dirname(packageJsonPath2);
-var pkg = JSON.parse(fs24.readFileSync(packageJsonPath2, "utf8"));
+var pkg = JSON.parse(fs25.readFileSync(packageJsonPath2, "utf8"));
 var RECALL_OMITTED_HINT = "omitted to keep the response under size \u2014 narrow the query, or use memesh export for the full text";
 var RECALL_SCAN_NOTE = "The search index is out of date; these results come from a scan of the stored text.";
 var program2 = new Command();
@@ -68658,12 +68754,12 @@ program2.command("export").description("Export memories as JSON. Defaults to std
     const json2 = JSON.stringify(result, null, 2);
     if (opts.out) {
       const outDir = path21.dirname(path21.resolve(opts.out));
-      if (!fs24.existsSync(outDir)) {
+      if (!fs25.existsSync(outDir)) {
         console.error(`Error: cannot write ${opts.out} \u2014 the directory ${outDir} does not exist.`);
         console.error(`       Create it first (mkdir -p ${shellQuote(outDir)}), or drop -o to write to stdout.`);
         process.exit(1);
       }
-      fs24.writeFileSync(opts.out, json2 + "\n");
+      fs25.writeFileSync(opts.out, json2 + "\n");
       process.stderr.write(`\u2705 Exported ${result.entity_count} entities to ${opts.out}
 `);
     } else {
@@ -68735,7 +68831,7 @@ program2.command("import").description("Import memories from a JSON export file,
   await withDatabase(async () => {
     let raw;
     try {
-      raw = fs24.readFileSync(file2, "utf8");
+      raw = fs25.readFileSync(file2, "utf8");
     } catch (err) {
       if (err?.code === "ENOENT") {
         console.error(`Error: file not found: ${file2}`);
@@ -69101,8 +69197,8 @@ agentCmd.command("setup").description("Write this host's local config (a stable 
   }
   const messageDir = path21.dirname(getDbPath());
   const hostsDir = path21.join(messageDir, "hosts");
-  fs24.mkdirSync(hostsDir, { recursive: true, mode: 448 });
-  const hostsStat = fs24.lstatSync(hostsDir);
+  fs25.mkdirSync(hostsDir, { recursive: true, mode: 448 });
+  const hostsStat = fs25.lstatSync(hostsDir);
   if (!hostsStat.isDirectory() || hostsStat.isSymbolicLink() || (hostsStat.mode & 63) !== 0) {
     throw new Error("The managed host config directory must be a real owner-private directory.");
   }
@@ -69120,7 +69216,7 @@ agentCmd.command("setup").description("Write this host's local config (a stable 
   let sessionWorkspace;
   if (host === "codex-session") {
     try {
-      sessionWorkspace = fs24.realpathSync(path21.resolve(opts.workspace));
+      sessionWorkspace = fs25.realpathSync(path21.resolve(opts.workspace));
     } catch (error62) {
       if (error62 instanceof Error)
         error62.message = `--workspace: ${error62.message}`;
@@ -69580,8 +69676,8 @@ function resolveUpgradePluginScript(packageRootPath, pluginCacheRoot, pluginRegi
   const roots = versionedPluginCacheRoots(pluginCacheRoot);
   const newestRoot = roots[roots.length - 1];
   const bundled = path21.join(packageRootPath, "scripts", "upgrade-plugin.sh");
-  const hasRepairTarget = Boolean(newestRoot || pluginRegistryPath && fs24.existsSync(pluginRegistryPath));
-  if (fs24.existsSync(bundled) && hasRepairTarget) {
+  const hasRepairTarget = Boolean(newestRoot || pluginRegistryPath && fs25.existsSync(pluginRegistryPath));
+  if (fs25.existsSync(bundled) && hasRepairTarget) {
     return { script: bundled, newest: newestRoot ? path21.basename(newestRoot) : null };
   }
   if (!newestRoot)
@@ -69603,7 +69699,7 @@ program2.command("upgrade-plugin").description("Upgrade the Claude Code plugin i
     process.exit(1);
   }
   const { script, newest } = resolved;
-  if (!fs24.existsSync(script)) {
+  if (!fs25.existsSync(script)) {
     console.error(`Plugin install found${newest ? ` (v${newest})` : ""}, but it has no scripts/upgrade-plugin.sh \u2014 plugin versions before 4.2.5 shipped without it.`);
     console.error("Reinstall once from the Claude Code /plugin UI, or run the npm-global copy directly:");
     console.error('  bash "$(npm prefix -g)/lib/node_modules/@pcircle/memesh/scripts/upgrade-plugin.sh"');
@@ -69639,7 +69735,7 @@ function backUpDatabase(label) {
   const backupDir = path21.join(path21.dirname(dbPath), "backups");
   const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
   const backupPath = path21.join(backupDir, `kg-before-${label}-${stamp}.db`);
-  fs24.mkdirSync(backupDir, { recursive: true, mode: 448 });
+  fs25.mkdirSync(backupDir, { recursive: true, mode: 448 });
   getDatabase().prepare("VACUUM INTO ?").run(backupPath);
   return { dbPath, backupPath };
 }
@@ -69666,7 +69762,7 @@ kgCmd.command("backfill-relations").description("Propose relations that connect 
     minNameJaccard: opts.minJaccard
   };
   if (!opts.apply) {
-    if (!fs24.existsSync(getDbPath())) {
+    if (!fs25.existsSync(getDbPath())) {
       if (opts.json)
         console.log(JSON.stringify({ candidates: [], skippedOrphanIds: [] }, null, 2));
       else
@@ -69874,7 +69970,7 @@ Nothing written. Re-run with --apply to commit (the DB is backed up first).`);
     await withDatabase(() => run(to));
     return;
   }
-  if (!fs24.existsSync(getDbPath())) {
+  if (!fs25.existsSync(getDbPath())) {
     if (opts.from) {
       console.error(`Error: No MeMesh database at ${getDbPath()}, so nothing carries project ${opts.from}. Check HOME and MEMESH_DB_PATH.`);
       process.exitCode = 1;
@@ -70250,10 +70346,10 @@ _Diagnostics unavailable: doctor probe failed._`;
   if (opts.diagnostics !== false) {
     console.log("Re-run with --no-diagnostics to leave out the install ID and the doctor report.");
   }
-  const { spawn: spawn2 } = await import("child_process");
+  const { spawn: spawn3 } = await import("child_process");
   const { command, args } = feedbackBrowserOpenCommand(process.platform, url2);
   try {
-    const child = spawn2(command, args, { stdio: "ignore", detached: true });
+    const child = spawn3(command, args, { stdio: "ignore", detached: true });
     const opened = await new Promise((resolve2) => {
       child.once("spawn", () => resolve2(true));
       child.once("error", () => resolve2(false));
@@ -70356,7 +70452,7 @@ hermesCmd.command("capture-turn").description('Store one Hermes turn ({"user": "
 function readLocalFile(flag, file2, maxBytes) {
   let stat;
   try {
-    stat = fs24.statSync(file2);
+    stat = fs25.statSync(file2);
   } catch (err) {
     console.error(`Error: ${flag} ${file2}: ${err.code ?? String(err)}`);
     process.exit(1);
@@ -70369,7 +70465,7 @@ function readLocalFile(flag, file2, maxBytes) {
     console.error(`Error: ${flag} ${file2} is larger than ${maxBytes} bytes.`);
     process.exit(1);
   }
-  return fs24.readFileSync(file2);
+  return fs25.readFileSync(file2);
 }
 function reportDelegationError(err) {
   if (err instanceof DelegationInputError) {
@@ -70480,7 +70576,7 @@ if (cliEntryPath && isExecutedModule(cliEntryPath, import.meta.url)) {
 }
 function isExecutedModule(entryPath, moduleUrl) {
   try {
-    return fs24.realpathSync(entryPath) === fs24.realpathSync(fileURLToPath3(moduleUrl));
+    return fs25.realpathSync(entryPath) === fs25.realpathSync(fileURLToPath4(moduleUrl));
   } catch {
     return false;
   }

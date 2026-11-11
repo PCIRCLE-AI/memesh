@@ -596,7 +596,7 @@ function normalizeResilience(options: RouterClientResilienceOptions = {}): Norma
   };
 }
 
-function startPackagedRouter(): Promise<void> {
+export function startPackagedRouter(): Promise<void> {
   const entrypoint = fileURLToPath(new URL('./router.js', import.meta.url));
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [entrypoint], {
@@ -672,7 +672,8 @@ function requiredNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
 }
 
-function isRouterUnavailable(error: unknown): boolean {
+/** The connection failed because no router is listening (no socket, or a socket nobody answers on). */
+export function isRouterUnavailable(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException | undefined)?.code;
   return code === 'ENOENT' || code === 'ECONNREFUSED';
 }

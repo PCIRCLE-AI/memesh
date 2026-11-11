@@ -29,6 +29,7 @@ import { guardFromMetadata } from './guards.js';
 import { getAgentMessageStorageReport } from './agent-message-storage.js';
 import { HANDLED_RECEIPT_KINDS_SQL } from './agent-messaging.js';
 import { readHostConfigFile } from '../host-runtime/config.js';
+import { readRouterIdleExit } from '../host-runtime/router-idle.js';
 const EXPECTED_HOOK_TYPES = ['PreToolUse', 'SessionStart', 'PostToolUse', 'Stop', 'PreCompact'];
 const AGENT_MESSAGE_STORAGE_QUOTA_ENV = 'MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES';
 const LOCALE_README_FILES = [
@@ -1468,7 +1469,7 @@ async function defaultMessageRouterStatusProbe() {
     });
     return { socket_path: socketPath, socket: reachable ? 'reachable' : 'unreachable' };
 }
-async function inspectMessageRouterStatus(enabled, probe) {
+async function inspectMessageRouterStatus(enabled, probe, lastIdleExit) {
     if (!enabled) {
         return createInfo('message-router-status', 'Live message router / host registration', 'Not verified (opt-in). Set MEMESH_DOCTOR_PROBE_MESSAGE_ROUTER=1 to check only whether the owner-private Local router socket is live. This check never starts a router, registers a host, sends a message, or wakes a stopped session.');
     }
@@ -1477,7 +1478,7 @@ async function inspectMessageRouterStatus(enabled, probe) {
         case 'reachable':
             return createCheck('message-router-status', 'Live message router / host registration', 'pass', `Owner-private Local router socket is reachable at ${result.socket_path}. This proves only router availability; it does not prove an active host registration, native delivery, host_accept, ACK, or stopped-session wake-up.`);
         case 'missing':
-            return createCheck('message-router-status', 'Live message router / host registration', 'warn', `No Local router socket exists at ${result.socket_path}. No active host is registered through this router, and MeMesh will not wake a stopped or missing session.`, 'Start the owner-configured router with `memesh-router`, then run this opt-in probe again.', { code: 'message-router.socket-missing', params: { path: result.socket_path } });
+            return createCheck('message-router-status', 'Live message router / host registration', 'warn', `No Local router socket exists at ${result.socket_path}. No active host is registered through this router, and MeMesh will not wake a stopped or missing session.${lastIdleExit ? ` The router last ended itself for idleness at ${lastIdleExit}.` : ' No idle exit of the router is recorded, so if a session was open a moment ago the router may have stopped for another reason.'}`, 'The router ends itself after 10 minutes (MEMESH_ROUTER_IDLE_MS) with no host connected and nothing being delivered, so a missing socket is normal while no session is open; a host session or a message send starts it again. To check it now, start a session or the owner-configured router with `memesh-router`, then run this opt-in probe again.', { code: 'message-router.socket-missing', params: { path: result.socket_path } });
         case 'path-too-long':
             return createCheck('message-router-status', 'Live message router / host registration', 'fail', `The router socket path is ${result.detail} — over the ${AGENT_ROUTER_SOCKET_PATH_MAX_BYTES}-byte limit a Unix domain socket allows, so \`memesh-router\` cannot create it at ${result.socket_path}. Starting the router again fails the same way.`, 'Set MEMESH_ROUTER_SOCKET to a shorter absolute path, or move HOME / MEMESH_DIR somewhere with a shorter path, then start `memesh-router` again.', { code: 'message-router.socket-path-too-long', params: { path: result.socket_path, bytes: result.detail ?? 'unknown' } });
         case 'insecure':
@@ -1508,8 +1509,15 @@ export async function runDoctor(options) {
         : undefined, install === 'unknown' ? { code: 'install-channel.unknown' } : undefined));
     const databasePath = resolveDatabasePath();
     const dbChecks = [];
+    let lastRouterIdleExit;
     try {
         const db = openDatabaseImpl(databasePath);
+        try {
+            lastRouterIdleExit = readRouterIdleExit(db);
+        }
+        catch {
+            lastRouterIdleExit = undefined;
+        }
         const count = db.prepare('SELECT COUNT(*) as c FROM entities').get()?.c ?? 0;
         const writeBack = ownerWriteCommand(databasePath);
         dbChecks.push(writeBack
@@ -1676,7 +1684,7 @@ export async function runDoctor(options) {
     checks.push(inspectShellCli(install, packageRoot, packageVersion, resolveShellMemeshImpl, existsSyncImpl, readFileSyncImpl));
     checks.push(verifySkillsManifest(packageRoot, existsSyncImpl, readFileSyncImpl, installSupport));
     checks.push(inspectMessageCapability(packageRoot, probeMessageCapability, messageCapabilityProbeImpl));
-    checks.push(await inspectMessageRouterStatus(probeMessageRouterStatus, messageRouterStatusProbeImpl));
+    checks.push(await inspectMessageRouterStatus(probeMessageRouterStatus, messageRouterStatusProbeImpl, lastRouterIdleExit));
     checks.push(await inspectUpdateStatus(packageVersion, getUpdateCheckImpl, installSupport));
     try {
         const record = getInstallRecord();
