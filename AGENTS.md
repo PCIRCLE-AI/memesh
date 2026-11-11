@@ -128,7 +128,7 @@ hosts should share memories. Not installed yet? Follow
    `disposition` from any other session returns `intended_for_other_session`
    — leave such a message for its session (#497).
 
-## All 13 MCP tools
+## All 12 MCP tools
 
 | Tool | Purpose |
 |---|---|
@@ -144,7 +144,6 @@ hosts should share memories. Not installed yet? Follow
 | `user_patterns` | Analyze work schedule, focus areas, and commit workflow from memory |
 | `improvement` | Propose an evidence-linked product improvement or read its status; only a human may accept/reject it |
 | `message` | Discover live agents, then exchange exact-recipient untrusted messages: durable JSON payload max 64 KiB; complete native envelope max 16 KiB with distinct `native_message_too_large` and `recipient_unavailable` errors; delivery reads/acceptance never imply ACK or disposition; a message is kept one day, then deleted |
-| `private_session` | When the user explicitly asks not to remember or save this session (any words, any language): call it first, then write nothing to memory. Automatic saving stops for the session (commit records and the list of edited file paths are still saved); earlier memories stay until `forget` |
 
 Saving is on by default: store decisions, preferences, lessons and context without being asked. The only exception is an explicit request from the user not to save; then do not store that content.
 

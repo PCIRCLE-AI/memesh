@@ -9,17 +9,14 @@ import { openDatabase, closeDatabase, getDatabase } from '../../src/db.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import { MemeshDatabase } from '../../src/storage/sqlite.js';
 import { SKIP_REASONS } from '../../src/core/capture-liveness.js';
-import { sessionPrivacy } from '../../scripts/hooks/prompt-recall.js';
 
 const require = createRequire(import.meta.url);
 const HOOK = path.resolve('scripts/hooks/prompt-recall.js');
 
 // A real process against a throwaway HOME and database. The database is seeded
 // through the product's own writer so its full-text index is the real one.
-// The private-session reader is the shared one S3 owns, which this branch does
-// not carry yet: tests hand the hook's own entry point (`handlePrompt`) a reader
-// that answers 'private', 'open' or fails, and one test runs the whole hook
-// process, where the reader cannot answer and nothing may be shown.
+// Most tests call the hook's own entry point (`handlePrompt`); one block runs the
+// whole hook process.
 describe('Feature: prompt-time recall hook', () => {
   let home: string;
   let project: string;
@@ -52,18 +49,16 @@ describe('Feature: prompt-time recall hook', () => {
     }
   }
 
-  type Reader = 'open' | 'private' | 'fail';
   const DRIVER = `
     import { handlePrompt } from ${JSON.stringify(path.resolve('scripts/hooks/prompt-recall.js'))};
-    const reader = { open: async () => false, private: async () => true, fail: async () => { throw new Error('unreadable'); } }[process.env.READER];
-    const out = await handlePrompt(JSON.parse(process.env.PAYLOAD), reader);
+    const out = await handlePrompt(JSON.parse(process.env.PAYLOAD));
     process.stdout.write(out ?? '');
   `;
 
-  function run(prompt: string, extra: Record<string, unknown> = {}, session = 'sess-a', reader: Reader = 'open') {
+  function run(prompt: string, extra: Record<string, unknown> = {}, session = 'sess-a') {
     const result = spawnSync('node', ['--input-type=module', '-e', DRIVER], {
       env: {
-        ...process.env, HOME: home, USERPROFILE: home, MEMESH_DB_PATH: dbPath, READER: reader,
+        ...process.env, HOME: home, USERPROFILE: home, MEMESH_DB_PATH: dbPath,
         PAYLOAD: JSON.stringify({ prompt, session_id: session, cwd: project, hook_event_name: 'UserPromptSubmit', ...extra }),
       },
       encoding: 'utf8',
@@ -123,37 +118,20 @@ describe('Feature: prompt-time recall hook', () => {
     expect(lastOutcome()).toMatchObject({ outcome: 'notified', entity: 'injected:1:no-recent-index' });
   });
 
-  // The real process with the real privacy reader: nothing is injected into it. (Every other test hands
-  // the hook a reader, which is how an import of a name the reader does not export went unnoticed.)
-  describe('as Claude Code runs it, with no reader injected', () => {
-    const transcript = (privateCall: boolean) => {
+  // The real process, as Claude Code runs it. (Every other test calls `handlePrompt`, which is how an
+  // import of a name a sibling module does not export once went unnoticed.)
+  describe('as Claude Code runs it', () => {
+    const transcript = () => {
       const file = path.join(home, 'transcript.jsonl');
-      const lines = [{ type: 'user', message: { role: 'user', content: 'hello' } }];
-      if (privateCall) lines.push({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'mcp__plugin_memesh_memesh__private_session', input: {} }] } } as never);
-      fs.writeFileSync(file, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+      fs.writeFileSync(file, `${JSON.stringify({ type: 'user', message: { role: 'user', content: 'hello' } })}\n`);
       return file;
     };
 
     it('an ordinary session is shown the memory its words are about, and the success is recorded', () => {
       const { decisionId } = seed();
-      const { stdout } = runHook(MATCHING, { transcript_path: transcript(false) });
+      const { stdout } = runHook(MATCHING, { transcript_path: transcript() });
       expect(JSON.parse(stdout).hookSpecificOutput.additionalContext).toContain(`[mem:${decisionId}]`);
       expect(lastOutcome()).toMatchObject({ outcome: 'notified', entity: expect.stringContaining('injected:1') });
-    });
-
-    it('a private session is shown nothing, and the skip is recorded', () => {
-      seed();
-      const { stdout } = runHook(MATCHING, { transcript_path: transcript(true) });
-      expect(stdout).toBe('');
-      expect(lastOutcome()).toMatchObject({ outcome: 'skipped', reason: SKIP_REASONS.promptPrivateSession });
-    });
-
-    it('a transcript that cannot be read is shown nothing, and both the error and the skip are recorded', () => {
-      seed();
-      const { stdout } = runHook(MATCHING, { transcript_path: home /* a directory: reading it fails */ });
-      expect(stdout).toBe('');
-      expect(outcomes().map((o) => o.outcome)).toEqual(expect.arrayContaining(['skipped']));
-      expect(lastOutcome()).toMatchObject({ outcome: 'skipped', reason: SKIP_REASONS.promptPrivacyUnreadable });
     });
   });
 
@@ -292,43 +270,6 @@ describe('Feature: prompt-time recall hook', () => {
     }));
     expect(run(MATCHING).stdout).toBe('');
     expect(lastOutcome()).toMatchObject({ outcome: 'skipped', reason: SKIP_REASONS.promptAlreadyShown });
-  });
-
-  describe('private sessions (the agent called the private_session tool)', () => {
-    it('shows nothing when the shared reader says the session is private, and keeps showing nothing', () => {
-      seed();
-      expect(run(MATCHING, {}, 'sess-a', 'private').stdout).toBe('');
-      expect(lastOutcome()).toMatchObject({ outcome: 'skipped', reason: SKIP_REASONS.promptPrivateSession });
-      // Private only ratchets: a later prompt stays private even if the reader were to say otherwise.
-      expect(run(MATCHING, {}, 'sess-a', 'open').stdout).toBe('');
-      expect(lastOutcome()).toMatchObject({ outcome: 'skipped', reason: SKIP_REASONS.promptPrivateSession });
-      // Another session is not affected.
-      expect(run(MATCHING, {}, 'sess-other', 'open').stdout).not.toBe('');
-    });
-
-    it('shows nothing, and records why, when the marker cannot be read; it is not read as "not private"', () => {
-      seed();
-      expect(run(MATCHING, {}, 'sess-a', 'fail').stdout).toBe('');
-      expect(lastOutcome()).toMatchObject({ outcome: 'skipped', reason: SKIP_REASONS.promptPrivacyUnreadable });
-      // Not remembered: once the reader can answer, the session is shown memories.
-      expect(run(MATCHING, {}, 'sess-a', 'open').stdout).not.toBe('');
-    });
-
-    it('answers for the reader: private, open, or unreadable (a payload with no transcript is unreadable)', async () => {
-      expect(await sessionPrivacy({ transcript_path: '/x' }, async () => true)).toBe('private');
-      expect(await sessionPrivacy({ transcript_path: '/x' }, async () => false)).toBe('open');
-      expect(await sessionPrivacy({ transcript_path: '/x' }, async () => { throw new Error('nope'); })).toBe('unreadable');
-      expect(await sessionPrivacy({})).toBe('unreadable');
-      expect(await sessionPrivacy({ transcript_path: '' })).toBe('unreadable');
-    });
-
-    it('the whole hook process shows nothing and records why when it has no way to read the marker', () => {
-      seed();
-      const { stdout, stderr } = runHook(MATCHING);
-      expect(stdout).toBe('');
-      expect(stderr).toContain('private-session marker not read');
-      expect(lastOutcome()).toMatchObject({ outcome: 'skipped', reason: SKIP_REASONS.promptPrivacyUnreadable });
-    });
   });
 
   describe('switches', () => {

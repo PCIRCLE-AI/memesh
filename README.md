@@ -66,7 +66,7 @@ Ask your agent in plain language:
 >
 > Save where we left off so the next session can pick it up.
 
-MeMesh remembers by default. If you tell the agent not to save something, it does not save that part itself, but the handoff and activity records written automatically when a conversation ends are still saved. Say "don't remember this conversation" and the agent stops automatic saving for the rest of that session, in any language (talking about the feature, or asking not to save one detail, does not count): no session summary, handoff, pre-compact note, imported note, reminder or shared Codex plan step is saved from it, while earlier memories, commit records and your transcript files stay. The note files the session wrote or named are kept out of memory by their content, wherever they are copied or renamed later, and a session that cannot be checked saves nothing until it can be; `memesh doctor` says what is held and why. When Hermes does not say why the session changed and the session it left was private, the new session saves nothing and an error says why, before and after a restart alike, though it is never marked private itself. A mark, once written, is never removed. The full rules and the known limits are in the [API reference](docs/api/API_REFERENCE.md#private_session).
+MeMesh remembers by default. If you tell the agent not to save something, it does not save that part itself, but the handoff and activity records written automatically when a conversation ends are still saved.
 
 Claude Code's plugin provides automatic capture and reminders. The Codex plugin can provide context at session start once its hooks are allowed to run; other capture behavior varies by host. You can also ask the agent to store or look up memories directly.
 
@@ -81,7 +81,7 @@ MeMesh 4.11.0 and later add `/memesh-memories` in Claude Code to view and edit p
 <details>
 <summary>Tools and integration details</summary>
 
-## All 13 Memory and Coordination Tools
+## All 12 Memory and Coordination Tools
 
 | Tool | What it does |
 |------|-------------|
@@ -97,7 +97,6 @@ MeMesh 4.11.0 and later add `/memesh-memories` in Claude Code to view and edit p
 | `work_package` | Prepare a bounded memory digest or transcript package for human review. |
 | `user_patterns` | Summarize work patterns. |
 | `improvement` | Propose an improvement for human review. |
-| `private_session` | Stop automatic saving for this session when you say "don't remember this conversation". |
 
 **Command-line notes.**
 - `memesh remember` files a memory under the current folder's project, like `memesh learn`; `--project <name>` picks another project and `--no-project` stores one with none.
@@ -106,7 +105,7 @@ MeMesh 4.11.0 and later add `/memesh-memories` in Claude Code to view and edit p
 
 ---
 
-The Claude Code plugin ships **13 hooks**; the Codex plugin adds two Codex-only ones. MeMesh does not scan your words for
+The Claude Code plugin ships **11 hooks**; the Codex plugin adds two Codex-only ones. MeMesh does not scan your words for
 keywords: the agent decides from what you say. Each session starts with the titles of the 30 memories most
 recently written for the project, and when a prompt is plainly about something
 already stored, up to two of those memories (title and `[mem:id]`) ride along

@@ -55,10 +55,10 @@ describe('the Stop hook\'s note ingestion', () => {
     ingestNoteDirectory({ trusted: false, dir: folder, project: 'proj-b' });
     expect(trust('feedback-a')).toBe('untrusted');
     const key = createHash('sha256').update(folder).digest('hex').slice(0, 16);
-    fs.writeFileSync(path.join(root, 'note-ingest-state.json'), JSON.stringify({ [key]: { at: Date.now() + 60_000, more: false } }));
+    fs.writeFileSync(path.join(root, 'note-ingest-state-2.json'), JSON.stringify({ [key]: { at: Date.now() + 60_000, more: false } }));
     closeDatabase();
 
-    const first = await runNoteIngestion({ memoryDir: folder, project: 'proj-b', metaUrl, deadlineAt: Date.now() + 30_000 });
+    const first = await runNoteIngestion({ memoryDir: folder, project: 'proj-b', metaUrl });
     openDatabase(dbPath);
     expect(first.reason, 'the folder must be read, not skipped as unchanged').not.toBe(SKIP_REASONS.noNoteChanged);
     // The outcome says how many were changed and where the copy is, and names one of them.
@@ -70,7 +70,7 @@ describe('the Stop hook\'s note ingestion', () => {
     closeDatabase();
 
     // Read and marked: the next Stop finds nothing changed.
-    const second = await runNoteIngestion({ memoryDir: folder, project: 'proj-b', metaUrl, deadlineAt: Date.now() + 30_000 });
+    const second = await runNoteIngestion({ memoryDir: folder, project: 'proj-b', metaUrl });
     expect(second.reason).toBe(SKIP_REASONS.noNoteChanged);
   });
 
@@ -88,10 +88,10 @@ describe('the Stop hook\'s note ingestion', () => {
     openDatabase(dbPath);
     expect(['feedback-a', 'other-old', 'imported-one', 'no-folder'].map(trust)).toEqual(['untrusted', 'untrusted', 'untrusted', 'untrusted']);
     const key = createHash('sha256').update(folder).digest('hex').slice(0, 16);
-    fs.writeFileSync(path.join(root, 'note-ingest-state.json'), JSON.stringify({ [key]: { at: Date.now() + 60_000, more: false } }));
+    fs.writeFileSync(path.join(root, 'note-ingest-state-2.json'), JSON.stringify({ [key]: { at: Date.now() + 60_000, more: false } }));
     closeDatabase();
 
-    const run = await runNoteIngestion({ memoryDir: folder, project: 'proj-b', metaUrl, deadlineAt: Date.now() + 30_000 });
+    const run = await runNoteIngestion({ memoryDir: folder, project: 'proj-b', metaUrl });
     openDatabase(dbPath);
     expect(run.reason).toMatch(/1 made trusted \(copy of the database: knowledge-graph-before-note-trust-/);
     expect(['feedback-a', 'other-old', 'imported-one', 'no-folder'].map(trust)).toEqual(['trusted', 'untrusted', 'untrusted', 'untrusted']);
@@ -107,11 +107,11 @@ describe('the Stop hook\'s note ingestion', () => {
   it('with no copy the Stop records an error, changes nothing, and reads the folder again next time', async () => {
     ingestNoteDirectory({ trusted: false, dir: folder, project: 'proj-b' });
     const key = createHash('sha256').update(folder).digest('hex').slice(0, 16);
-    fs.writeFileSync(path.join(root, 'note-ingest-state.json'), JSON.stringify({ [key]: { at: Date.now() + 60_000, more: false } }));
+    fs.writeFileSync(path.join(root, 'note-ingest-state-2.json'), JSON.stringify({ [key]: { at: Date.now() + 60_000, more: false } }));
     fs.writeFileSync(path.join(root, 'backups'), 'in the way');
     closeDatabase();
 
-    const blocked = await runNoteIngestion({ memoryDir: folder, project: 'proj-b', metaUrl, deadlineAt: Date.now() + 30_000 });
+    const blocked = await runNoteIngestion({ memoryDir: folder, project: 'proj-b', metaUrl });
     openDatabase(dbPath);
     expect(blocked.outcome).toBe('error');
     expect(blocked.reason).toMatch(/none of them was made trusted/);
@@ -119,7 +119,7 @@ describe('the Stop hook\'s note ingestion', () => {
     closeDatabase();
 
     fs.rmSync(path.join(root, 'backups'));
-    const retried = await runNoteIngestion({ memoryDir: folder, project: 'proj-b', metaUrl, deadlineAt: Date.now() + 30_000 });
+    const retried = await runNoteIngestion({ memoryDir: folder, project: 'proj-b', metaUrl });
     openDatabase(dbPath);
     expect(retried.outcome).toBe('wrote');
     expect(trust('feedback-a')).toBe('trusted');
@@ -146,7 +146,7 @@ describe('a memory folder is read only for the project it belongs to', () => {
   const stop = async (transcript: string, cwd: string) => {
     closeDatabase();
     const run = await runStopNotes({ session_id: 'session-1', transcript_path: transcript, cwd }, {
-      captureEnabled: true, project: getProjectName(cwd), metaUrl, deadlineAt: Date.now() + 30_000, env: { ...process.env, MEMESH_DIR: root, MEMESH_DB_PATH: dbPath },
+      captureEnabled: true, project: getProjectName(cwd), metaUrl, env: { ...process.env, MEMESH_DIR: root, MEMESH_DB_PATH: dbPath },
     });
     run.settle?.(false);
     openDatabase(dbPath);

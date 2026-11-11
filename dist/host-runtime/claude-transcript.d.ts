@@ -18,7 +18,6 @@ export declare class ClaudeTranscriptReader {
     private plan?;
     private calls;
     constructor(projectsDir: string, projectSlug?: string | undefined);
-    transcriptFile(session: string): string | undefined;
     private locate;
     mark(session: string): ClaudeTranscriptMark | undefined;
     readNew(session: string, mark: ClaudeTranscriptMark): unknown[] | undefined;

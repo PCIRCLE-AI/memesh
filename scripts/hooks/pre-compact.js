@@ -3,17 +3,15 @@
 import { basename } from 'path';
 import { existsSync } from 'fs';
 import { AUTO_CAPTURE_TAG, captureEntity, getProjectName, isAutoCaptureEnabled, openHookDb, hookErrorReason, hookSourceHost, SKIP_REASONS, recordHookOutcome, recordHookRun, redactSecrets, truncateTitle } from './_shared.js';
-import { privacyForHook } from './_private-session.js';
-import { deadlineFor, HOOK_BUDGET_MS } from './_hook-budgets.js';
 import { isCodexToolRequest } from './_generated/host-transcript.js';
-import { forEachTranscriptLine } from './_generated/private-session.js';
+import { deadlineFor, forEachTranscriptLine, PRE_COMPACT_READ_BUDGET_MS } from './_generated/transcript-lines.js';
 
 /** Thrown when the hook's reading time is used up: the count is not recorded, and the error says so. */
 const READ_TIMEOUT = Object.assign(new Error('the transcript could not be read within the hook\'s time'), { code: 'ETIMEOUT' });
 
 
 // There is no in-process timer, and its absence is deliberate: the bounds are
-// the transcript read's own deadline (HOOK_BUDGET_MS.preCompact.read) and the
+// the transcript read's own deadline (PRE_COMPACT_READ_BUDGET_MS) and the
 // database lock wait after it, which together stay a second under the host's
 // limit so the outcome record is written.
 //
@@ -76,12 +74,6 @@ process.stdin.on('end', () => {
       process.exit(0);
     }
     const cwd = data.cwd;
-    const privacy = privacyForHook(data, 'pre-compact', { budgetMs: HOOK_BUDGET_MS.preCompact.decide });
-    if (privacy.state !== 'no') {
-      // `unchecked` already recorded its error: this run is a skip that says so, never "private".
-      record('skipped', privacy.skipReason);
-      process.exit(0);
-    }
     // Claude Code's PreCompact payload names this field `trigger` ('manual' |
     // 'auto'), not `reason` — verified against the shipped cli.js bundle
     // (`hook_event_name:"PreCompact",trigger:A.trigger,custom_instructions:...`).
@@ -108,7 +100,7 @@ process.stdin.on('end', () => {
       try {
         // Read in pieces: a long session's transcript is larger than a string can be. A line over 64 MiB (a Codex
         // `compacted` record can be that long; it is no tool call) is skipped, not a read failure.
-        const read = forEachTranscriptLine(transcriptPath, deadlineFor(HOOK_BUDGET_MS.preCompact.read), (bytes) => {
+        const read = forEachTranscriptLine(transcriptPath, deadlineFor(PRE_COMPACT_READ_BUDGET_MS), (bytes) => {
           const line = bytes.toString('utf8');
           if (!line.trim()) return;
           try {

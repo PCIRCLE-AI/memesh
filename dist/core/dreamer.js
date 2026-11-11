@@ -1,7 +1,6 @@
 import { withoutFinalPeriod } from './sentence.js';
 import { createHash } from 'node:crypto';
-import { getMemeshDirFromDbPath, getProjectName, holdsSecret, redactSecretList, redactSecrets } from './paths.js';
-import { decidePrivacy, privateCheckCacheDir } from './private-session.js';
+import { getProjectName, holdsSecret, redactSecretList, redactSecrets } from './paths.js';
 import { readTranscriptSnapshot, scanTranscripts, transcriptMatchesProject } from './transcript-source.js';
 import { parseVisibleConversation } from './transcript-extractor.js';
 import { validateGuardSpec } from './guards.js';
@@ -14,7 +13,6 @@ const COMPACT_TIME_WINDOW_DAYS = 7;
 const COMPACT_MIN_SIGNAL = 0.2;
 const COMPACT_MAX_SIGNAL = 0.7;
 const TRANSCRIPT_PACKAGE_MAX_TURNS = 100;
-const DREAMER_PRIVACY_CHECK_MS = 1500;
 const TRANSCRIPT_PACKAGE_SOURCE_BYTES = 48 * 1024;
 const WORK_PACKAGE_MAX_BYTES = 64 * 1024;
 export const COMPACTABLE_TYPES = new Set([
@@ -210,19 +208,6 @@ export function executeWorkPackage(db, input, context = {}) {
                 const snapshot = readTranscriptSnapshot(session.path, session);
                 if (!snapshot || !transcriptMatchesProject(snapshot.bytes, cwd)) {
                     skip('changed_since_scan');
-                    continue;
-                }
-                const memeshDir = getMemeshDirFromDbPath();
-                const privacy = decidePrivacy({
-                    transcriptPath: session.path, snapshot: snapshot.bytes, sessionId: session.sessionId, memeshDir,
-                    deadlineAt: Date.now() + DREAMER_PRIVACY_CHECK_MS, cacheDir: privateCheckCacheDir(memeshDir),
-                });
-                if (privacy.state === 'yes') {
-                    skip('private_session');
-                    continue;
-                }
-                if (privacy.state === 'unchecked') {
-                    skip('private_unchecked');
                     continue;
                 }
                 const turns = parseVisibleConversation(snapshot.bytes)

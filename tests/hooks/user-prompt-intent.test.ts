@@ -10,8 +10,8 @@ import { SAVE_WORDED_PROMPTS } from '../helpers/save-worded-prompts.js';
 
 // The hook run as a subprocess, against a throwaway HOME so it never reads or
 // writes the developer's real ~/.memesh. The waiting-message reminder is
-// covered in message-recipient-reminder.test.ts, the private-session marker
-// renewal in private-switch.test.ts, the Node floor in node-floor-hooks.test.ts.
+// covered in message-recipient-reminder.test.ts, the Node floor in
+// node-floor-hooks.test.ts.
 
 const HOOK_PATH = path.resolve('scripts/hooks/user-prompt-intent.js');
 const NO_MESSAGE = 'no message was waiting for this session';

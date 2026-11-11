@@ -78,8 +78,7 @@ function readTranscriptTail(transcriptPath) {
  * caller records it and a skip nobody can explain is the silent skip the
  * outcome gate exists to forbid.
  */
-function captureHandoff(payload, { captureEnabled, project, env, privacySkip }) {
-  if (privacySkip) return { outcome: 'skipped', reason: privacySkip };
+function captureHandoff(payload, { captureEnabled, project, env }) {
   if (!captureEnabled) return { outcome: 'skipped', reason: SKIP_REASONS.autoCaptureOff };
   if (project === undefined || project === null) return { outcome: 'skipped', reason: SKIP_REASONS.cwdAbsent };
 
@@ -157,9 +156,9 @@ function captureHandoff(payload, { captureEnabled, project, env, privacySkip }) 
   return { outcome: 'wrote', reason: `kept ${text.length} characters of the last message (from the ${source})${omitted}`, entity: name };
 }
 
-export function runStopHandoff(payload, { captureEnabled, project, privacySkip = undefined, env = process.env }) {
+export function runStopHandoff(payload, { captureEnabled, project, env = process.env }) {
   try {
-    const r = captureHandoff(payload, { captureEnabled, project, env, privacySkip });
+    const r = captureHandoff(payload, { captureEnabled, project, env });
     recordHookOutcome(env, { hook: 'handoff-capture', outcome: r.outcome, reason: r.reason, entity: r.entity, payload });
   } catch (err) {
     try { process.stderr.write(`[memesh handoff-capture] ${err?.message || err}\n`); } catch { /* stderr gone */ }

@@ -16,11 +16,6 @@ function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
-/** A Codex rollout file (`rollout-<time>-<thread>.jsonl`, plain or archived `.zst`): Codex keeps no notes folder of its own. */
-export function isCodexRollout(transcriptPath: unknown): boolean {
-  return typeof transcriptPath === 'string' && /(?:^|[\\/])rollout-[^\\/]*\.jsonl(?:\.zst)?$/.test(transcriptPath);
-}
-
 /** Is this rollout row a Codex tool request? The one definition of "a tool call" there. */
 export function isCodexToolRequest(entry: unknown): boolean {
   const row = record(entry);

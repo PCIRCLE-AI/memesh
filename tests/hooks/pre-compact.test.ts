@@ -179,16 +179,14 @@ describe('Feature: PreCompact Hook', () => {
       expect(outcomes().at(-1)).toMatchObject({ hook: 'pre-compact', outcome: 'wrote' });
     }, 60_000);
 
-    it('stops counting at its own time budget and records why (Q6_19 F3): a read slowed past HOOK_BUDGET_MS.preCompact.read', () => {
+    it('stops counting at its own time budget and records why (Q6_19 F3): a read slowed past PRE_COMPACT_READ_BUDGET_MS', () => {
       const file = path.join(testDir, 'slow.jsonl');
       writeRows(file, 48, 1024 * 1024); // six pieces of 8 MiB
-      runHook({ session_id: 'sess-slow', transcript_path: file, cwd: testDir, trigger: 'auto' }); // the private check's verdict is now on disk
-      expect(outcomes().at(-1)).toMatchObject({ hook: 'pre-compact', outcome: 'wrote' });
       // Every read of a piece (a buffer of 8 MiB) now takes 1.5 s, past the 6 s the hook gives itself after four of them.
       // The time is taken off a clock the preload moves forward, not waited for: the test does not depend on how fast the
       // machine is, and it takes no real seconds. Only a read of a piece is slowed: a preload that slows every `readSync`
       // slows the hook's own module loading too (about thirty reads, 43 s in all), which spends the hook's budget before
-      // it starts, and whether the private check then still answered came down to one millisecond.
+      // it starts.
       const slow = `data:text/javascript,${encodeURIComponent("import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module'; const real = fs.readSync; const now = Date.now; let skew = 0; Date.now = () => now() + skew; fs.readSync = (...a) => { if (a[1].length >= 4 * 1024 * 1024) skew += 1500; return real(...a); }; syncBuiltinESMExports();")}`;
       const output = JSON.parse(runHook({ session_id: 'sess-slow', transcript_path: file, cwd: testDir, trigger: 'manual' }, { NODE_OPTIONS: `--import=${slow}` }));
       expect(output.systemMessage).toMatch(/could not be read/);

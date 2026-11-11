@@ -192,17 +192,14 @@ describe('Stop hook: the session handoff', () => {
     expect(outcomes().at(-1)?.reason).toMatch(/1 channel message\(s\) could not be read/);
   }, 30_000);
 
-  it('stores nothing when the transcript cannot be read, and says why as an error (it may be a private session)', () => {
+  it('still stores the reply when the transcript cannot be read, and says the quotes were not checked', () => {
     fs.rmSync(transcript);
     fs.mkdirSync(transcript);
     const r = runStop({ last_assistant_message: LONG_ENOUGH });
     expect(r.status).toBe(0);
-    expect(handoffRows().observations).toEqual([]);
-    expect(outcomes().at(-1)).toMatchObject({ outcome: 'skipped', reason: 'the session could not be checked for a private-session call, so nothing is saved' });
-    const all = fs.readFileSync(path.join(home, '.memesh', 'hook-outcomes.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
-    expect(all).toEqual(expect.arrayContaining([
-      expect.objectContaining({ outcome: 'error', reason: expect.stringContaining('treated as private') }),
-    ]));
+    expect(handoffRows().observations).toEqual([LONG_ENOUGH]);
+    expect(outcomes().at(-1)).toMatchObject({ outcome: 'wrote' });
+    expect(outcomes().at(-1)?.reason).toMatch(/could not be read.*not checked/);
   }, 30_000);
 
   it('writes the handoff from a Codex rollout when the Stop payload carries no message (rows as Codex writes them)', () => {

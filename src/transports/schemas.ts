@@ -416,9 +416,6 @@ export const WhySchema = z.object({
   limit: z.number().int().min(1).max(50).optional(),
 }).strict();
 
-/** `private_session` takes no arguments. */
-export const PrivateSessionSchema = z.object({}).strict();
-
 export const UserPatternsSchema = z.object({
   categories: z.array(z.enum(['workSchedule', 'focusAreas', 'workflow', 'strengths', 'learningAreas'])).optional()
     .describe('Specific categories to return. Omit for all.'),

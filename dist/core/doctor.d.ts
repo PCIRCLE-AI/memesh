@@ -80,7 +80,6 @@ export declare class NoDatabaseYetError extends Error {
     readonly databasePath: string;
     constructor(databasePath: string);
 }
-export declare function inspectPrivateNoteHolds(now?: number): DoctorCheck | null;
 export interface HostsHere {
     claude: boolean;
     codex: boolean;

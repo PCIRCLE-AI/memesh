@@ -76,39 +76,10 @@ export function readCaptureHooks() {
  * file of its own. `main()` fails on a parsed name that is neither a file nor
  * claimed here, and on a claim for a name CAPTURE_HOOKS does not contain.
  */
-/**
- * Every EXTERNAL_RECORDERS entry whose file is missing or does not record the hook, as violation lines.
- * @param {string} repo
- * @param {Record<string, { file: string, literal: string }>} [recorders]
- */
-export function checkExternalRecorders(repo, recorders = EXTERNAL_RECORDERS) {
-  const out = [];
-  for (const [hook, { file, literal }] of Object.entries(recorders)) {
-    let source;
-    try { source = fs.readFileSync(path.join(repo, file), 'utf8'); } catch (error) {
-      out.push(`${file}: declared as the recorder of '${hook}' but cannot be read (${error.code ?? error.message})`);
-      continue;
-    }
-    if (!source.includes(literal)) out.push(`${file}: records no outcome for '${hook}' (no ${literal}), which it is declared to own`);
-  }
-  return out;
-}
-
 const HELPER_OWNED_HOOKS = {
   'note-ingest': '_stop-notes.js',
   'remember-nudge': '_stop-notes.js',
   'handoff-capture': '_stop-handoff.js',
-};
-
-/**
- * Hook names recorded by code that is not a JavaScript hook (the Hermes plugin
- * is Python): the file that records it, and the exact text of the record's
- * hook field in that file. Declared like HELPER_OWNED_HOOKS, and checked both
- * ways: the file must exist and contain the text, and every name here must be
- * in CAPTURE_HOOKS.
- */
-export const EXTERNAL_RECORDERS = {
-  'hermes-private-session': { file: 'extensions/hermes-memesh/__init__.py', literal: '"hook": "hermes-private-session"' },
 };
 
 /**
@@ -362,7 +333,7 @@ export function findUnreasonedReturns(source, fnName) {
 
 /**
  * The other direction: every hook name a script in scripts/hooks records (a
- * `hook: '<name>'` field, or the name it hands to `privacyForHook`) must be in
+ * `hook: '<name>'` field) must be in
  * CAPTURE_HOOKS. `parseHookOutcomeLine` drops a record of any other name on
  * read, so a hook missing from the list has every error thrown away before
  * doctor sees it. Returns violation lines.
@@ -375,10 +346,7 @@ export function findUnlistedRecordedHooks(repo, captureHooks) {
   for (const name of fs.readdirSync(dir).filter((n) => n.endsWith('.js')).sort()) {
     const source = fs.readFileSync(path.join(dir, name), 'utf8')
       .split('\n').filter((line) => !line.trim().startsWith('//') && !line.trim().startsWith('*')).join('\n');
-    const recorded = new Set([
-      ...[...source.matchAll(/(?<![\w$])hook:\s*'([a-z][a-z0-9-]*)'/g)].map((m) => m[1]),
-      ...[...source.matchAll(/privacyForHook\([^,()]+,\s*'([a-z][a-z0-9-]*)'/g)].map((m) => m[1]),
-    ]);
+    const recorded = new Set([...source.matchAll(/(?<![\w$])hook:\s*'([a-z][a-z0-9-]*)'/g)].map((m) => m[1]));
     for (const hook of recorded) {
       if (!captureHooks.includes(hook)) {
         out.push(`scripts/hooks/${name}: records outcomes as '${hook}', which is not in CAPTURE_HOOKS — doctor drops every such record on read`);
@@ -400,19 +368,18 @@ export function main() {
   for (const hook of captureHooks) {
     const file = path.join(REPO, 'scripts', 'hooks', `${hook}.js`);
     if (fs.existsSync(file)) fileHooks.push(hook);
-    else if (!HELPER_OWNED_HOOKS[hook] && !EXTERNAL_RECORDERS[hook]) {
+    else if (!HELPER_OWNED_HOOKS[hook]) {
       violations.push(
-        `${hook}: named in CAPTURE_HOOKS with no scripts/hooks/${hook}.js and no owner in HELPER_OWNED_HOOKS or EXTERNAL_RECORDERS — `
+        `${hook}: named in CAPTURE_HOOKS with no scripts/hooks/${hook}.js and no owner in HELPER_OWNED_HOOKS — `
           + 'a recording path this gate cannot see',
       );
     }
   }
-  for (const hook of [...Object.keys(HELPER_OWNED_HOOKS), ...Object.keys(EXTERNAL_RECORDERS)]) {
+  for (const hook of Object.keys(HELPER_OWNED_HOOKS)) {
     if (!captureHooks.includes(hook)) {
-      violations.push(`${hook}: claimed in HELPER_OWNED_HOOKS or EXTERNAL_RECORDERS but absent from CAPTURE_HOOKS — a stale claim`);
+      violations.push(`${hook}: claimed in HELPER_OWNED_HOOKS but absent from CAPTURE_HOOKS — a stale claim`);
     }
   }
-  for (const violation of checkExternalRecorders(REPO)) violations.push(violation);
   for (const violation of findUnlistedRecordedHooks(REPO, captureHooks)) violations.push(violation);
 
   for (const hook of fileHooks) {

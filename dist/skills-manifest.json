@@ -18,13 +18,13 @@
     },
     {
       "path": ".codex-plugin/plugin.json",
-      "sha256": "8a8c330e659fa229eccbe66062d7d9a400cbfcbe86b44865f7f7985222fd6c57",
-      "bytes": 4350
+      "sha256": "78cddd4b76a160cbd0aa796e7e2720c042cc3b12511203db56e3a9ff3501c908",
+      "bytes": 3827
     },
     {
       "path": "hooks/hooks.json",
-      "sha256": "9f632a275e209156904b7e81f051dc35491ea7dd88d90fd3c4a2ed77698357a8",
-      "bytes": 3342
+      "sha256": "4d041642bc80c97842dfa91a7cde2c08ccc4023aa2eb6e44e1a4d7bb5ae21bf1",
+      "bytes": 2927
     },
     {
       "path": "hooks/native-memory.js",
@@ -93,8 +93,8 @@
     },
     {
       "path": "scripts/hooks/_generated/capture-liveness.js",
-      "sha256": "111af5fbecb5a5b78af25c010f51fceca66a7aa2a96cc6de8e0d77f9c4f06dae",
-      "bytes": 28992
+      "sha256": "03e74b1f458abbbb9450c5d788e90905d56c4a54802fa13627eda43c4950f8ca",
+      "bytes": 24134
     },
     {
       "path": "scripts/hooks/_generated/citation-rule.js",
@@ -133,13 +133,8 @@
     },
     {
       "path": "scripts/hooks/_generated/host-transcript.js",
-      "sha256": "39c1214b2f49428f4dc9db1c4068d90a9f708ce1d2349c4435b079c4eb5ad620",
-      "bytes": 1612
-    },
-    {
-      "path": "scripts/hooks/_generated/private-session.js",
-      "sha256": "42cbcaa4f2be20fb556ef08ba0803f07c84eddb3f0a322fe9d3d0e8a18a2af12",
-      "bytes": 27619
+      "sha256": "d81da34eff277337e0d981bca7f636ce734de01ab5553f6ba758b8f14725dcaf",
+      "bytes": 1443
     },
     {
       "path": "scripts/hooks/_generated/process-identity.js",
@@ -212,6 +207,11 @@
       "bytes": 1185
     },
     {
+      "path": "scripts/hooks/_generated/transcript-lines.js",
+      "sha256": "c1e6ff37b81d58c5ea213c7de6ee553c32d8e10fbae00baf1e47ebab4dfe9eb9",
+      "bytes": 2655
+    },
+    {
       "path": "scripts/hooks/_generated/update-notice.js",
       "sha256": "83faafeacb9eeb031920a1f290756f6e7c9208a7b6a7e6cf1bea98b4a2289952",
       "bytes": 7246
@@ -222,34 +222,19 @@
       "bytes": 15795
     },
     {
-      "path": "scripts/hooks/_hook-budgets.js",
-      "sha256": "f110910e27dc797571405f7329b17fd0ac8621a4f19ff3241a483d5bfbf49e91",
-      "bytes": 2645
-    },
-    {
-      "path": "scripts/hooks/_private-session.js",
-      "sha256": "4a3756270f7c13e9a3a7252480ce69254d6e46460b2b0a71348ecaf357a9a311",
-      "bytes": 3422
-    },
-    {
-      "path": "scripts/hooks/_session-written-notes.js",
-      "sha256": "d442b0fd4c659b1f06080bd2f8b3b5b58cc05a64d638091112b714887c2cc3a2",
-      "bytes": 12233
-    },
-    {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "64bebf02126478728e618b5f20bd1bb3f5e83e5f8147531f470ac61f1d00fd2b",
-      "bytes": 124763
+      "sha256": "757b81bff067ca1e1c16459486b5a58ef1c6ba353480a412953b10b0464556fb",
+      "bytes": 124683
     },
     {
       "path": "scripts/hooks/_stop-handoff.js",
-      "sha256": "39952557643b89e114fec1d5c387a3d94c2a45bc11b97b21d8e2fb5d949d0751",
-      "bytes": 8085
+      "sha256": "fd292b0ef24f5191404f11f495612d175b455d7e68ef1058f8e5368f13d28758",
+      "bytes": 7963
     },
     {
       "path": "scripts/hooks/_stop-notes.js",
-      "sha256": "4d81bc91e9303a465c880d18f0d06f134c1e9d44c42188043281ca908c2ecbbf",
-      "bytes": 45099
+      "sha256": "c5d2e4684f259739d6b5282944128276d30744cbab9689101c4ee21286452c1d",
+      "bytes": 31548
     },
     {
       "path": "scripts/hooks/auto-update-runner.mjs",
@@ -263,13 +248,13 @@
     },
     {
       "path": "scripts/hooks/codex-plan-activity.js",
-      "sha256": "1815a84e687dcb5dc4b58e70ff809e3acd96c434d44678a2dc439a388369be3b",
-      "bytes": 3156
+      "sha256": "827915acc388a1588e071553f3a586ce2f72d8085fe5fac0788b82e2f2688b1e",
+      "bytes": 2570
     },
     {
       "path": "scripts/hooks/decision-nudge.js",
-      "sha256": "2d2a275dee9479d126d95e110c42e2de0ce554ebc9ab60c07797a9bbf9f28f7b",
-      "bytes": 9389
+      "sha256": "3370150aff296306a9e0c9e04417e5e810e54153ef40951b1b89848f0e3c9c30",
+      "bytes": 8979
     },
     {
       "path": "scripts/hooks/guard-check.js",
@@ -283,8 +268,8 @@
     },
     {
       "path": "scripts/hooks/pre-compact.js",
-      "sha256": "66182a9826acfa77cea270530add4e86a5345e88218440a7bfd5b528fc2fcfb5",
-      "bytes": 14752
+      "sha256": "e593cbdb7e11dd298ab921c5ce059b8a21857ffc23f39a6bb5b89ec14a13eeb7",
+      "bytes": 14352
     },
     {
       "path": "scripts/hooks/pre-edit-recall.js",
@@ -292,19 +277,9 @@
       "bytes": 39657
     },
     {
-      "path": "scripts/hooks/private-session-mark.js",
-      "sha256": "58162c86f4de2d9705f61b803a70aa7b06bc45f466f9123422a84b4f590fd7a8",
-      "bytes": 2659
-    },
-    {
       "path": "scripts/hooks/prompt-recall.js",
-      "sha256": "aeb3bc8e2e20dddf12bdce8ec46ae9eeecdbcd2323a70a8e7c05759d31316f90",
-      "bytes": 12778
-    },
-    {
-      "path": "scripts/hooks/session-end-notes.js",
-      "sha256": "b0dceb334adf99a83cb413e7f6cc84158106f8df0b259f9e61841110dcae5489",
-      "bytes": 2240
+      "sha256": "1334e633d469e8ee2873024a66e5da92ce188c662252ef85f67a98c3a536bc90",
+      "bytes": 10116
     },
     {
       "path": "scripts/hooks/session-start.js",
@@ -313,8 +288,8 @@
     },
     {
       "path": "scripts/hooks/session-summary.js",
-      "sha256": "75a2ffa118311b00365ff6682d7fce950343ead8dd7ec6eef25fa07a865113cb",
-      "bytes": 37869
+      "sha256": "bc9b2c8c965225a6644064b141edb470a0a955e4f9205edb51df47c798792802",
+      "bytes": 36987
     },
     {
       "path": "scripts/hooks/stop-message-gate.js",
@@ -323,8 +298,8 @@
     },
     {
       "path": "scripts/hooks/user-prompt-intent.js",
-      "sha256": "64a36a594975182f89fc8840a455aa0ce1846c071e5d9bcd50e7ba13fde6562f",
-      "bytes": 7803
+      "sha256": "4484d28f13453ec99594dfcf673a1f7f084f11b970d9a3944fe3013675d1f594",
+      "bytes": 6834
     },
     {
       "path": "skills/memesh-review/SKILL.md",
@@ -333,8 +308,8 @@
     },
     {
       "path": "skills/memesh/SKILL.md",
-      "sha256": "aca02ffe0b2e250cced3304eee8ac05c80061ecbedfbaa4b091d38c97d117dc4",
-      "bytes": 34431
+      "sha256": "3fc4339c26a3e7229578ef9d43a6fc9801d35bee55bc88712cef19cd2c194112",
+      "bytes": 33444
     }
   ]
 }

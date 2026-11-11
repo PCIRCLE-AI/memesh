@@ -318,7 +318,7 @@ try {
   const listed = await client.listTools();
   assert.deepEqual(
     listed.tools.map((tool) => tool.name).sort(),
-    ['briefing', 'export', 'forget', 'import', 'improvement', 'learn', 'message', 'private_session', 'recall', 'remember', 'task_state', 'user_patterns', 'work_package'],
+    ['briefing', 'export', 'forget', 'import', 'improvement', 'learn', 'message', 'recall', 'remember', 'task_state', 'user_patterns', 'work_package'],
     'raw plugin cache exposed an unexpected tool surface',
   );
 } finally {
@@ -554,7 +554,7 @@ try {
   const names = listed.tools.map((tool) => tool.name).sort();
   assert.deepEqual(
     names,
-    ['briefing', 'export', 'forget', 'import', 'improvement', 'learn', 'message', 'private_session', 'recall', 'remember', 'task_state', 'user_patterns', 'work_package'],
+    ['briefing', 'export', 'forget', 'import', 'improvement', 'learn', 'message', 'recall', 'remember', 'task_state', 'user_patterns', 'work_package'],
     'installed MCP server exposed an unexpected tool surface'
   );
 

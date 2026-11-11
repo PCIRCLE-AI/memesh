@@ -8,7 +8,6 @@ export declare const TURN_TEXT_CAP = 2000;
 export interface ChatTurnCaptureResult {
     outcome: 'wrote' | 'skipped';
     reason?: string;
-    error?: string;
     name?: string;
     kind?: TurnSignalKind;
 }

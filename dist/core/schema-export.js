@@ -266,14 +266,6 @@ export function exportOpenAITools() {
                 },
             },
         },
-        {
-            type: 'function',
-            function: {
-                name: 'memesh_private_session',
-                description: 'Call this when the user explicitly asks not to remember or save this session or conversation, in any words or language (for example "don\'t keep any of this", "off the record", 「這段不要記」; these illustrate, they are not a list to match). A remark whose meaning is not clearly that is not a request: keep saving as usual. It changes no state: the call itself is the signal (even if its result is an error), and automatic saving stops for the rest of this session. What was saved earlier stays; memesh_forget removes it. After calling it, write nothing to memory: no `remember` or `learn`, and no writes to the host\'s own memory files, unless the user later asks you to store something explicitly. A request not to save one thing (a password, one detail) means simply not saving that thing; do not call this tool for it, and do not call it just because the user mentions or discusses this feature.',
-                parameters: { type: 'object', properties: {}, additionalProperties: false },
-            },
-        },
     ];
 }
 //# sourceMappingURL=schema-export.js.map

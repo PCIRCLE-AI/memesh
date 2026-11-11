@@ -1,6 +1,6 @@
 ---
 name: memesh
-description: "Use MeMesh to remember, recall, and manage AI knowledge across sessions, and to exchange task-focused messages with local agents. Triggers when the user asks to remember something, recall past decisions, forget outdated info, learn from mistakes, analyze work patterns, contact another agent, or handle a memesh_message or memesh_message_notice notification. Also triggers when the user asks \"what do you remember\", \"where did we leave off\", or wants to catch up on a project; when a session starts and project context is needed; and proactively when you make decisions, learn user preferences, fix bugs, learn lessons, or owe another agent a requested result or disposition. Also triggers when the user asks you not to remember or save the current session or conversation, in any language: call private_session first."
+description: "Use MeMesh to remember, recall, and manage AI knowledge across sessions, and to exchange task-focused messages with local agents. Triggers when the user asks to remember something, recall past decisions, forget outdated info, learn from mistakes, analyze work patterns, contact another agent, or handle a memesh_message or memesh_message_notice notification. Also triggers when the user asks \"what do you remember\", \"where did we leave off\", or wants to catch up on a project; when a session starts and project context is needed; and proactively when you make decisions, learn user preferences, fix bugs, learn lessons, or owe another agent a requested result or disposition."
 user-invocable: true
 ---
 
@@ -27,7 +27,7 @@ The CLI's `remember` and `learn` file a memory under the current directory's pro
 
 Over MCP, `remember`, `learn` and `recall` also take `project`: a project id, or `false` for a memory that belongs to no project. Omitted, the call uses the project the session is bound to (the client's workspace root, or `MEMESH_PROJECT_ROOT`); a call that needs a project and finds none is refused with `workspace_unavailable`.
 
-## All 13 MCP tools
+## All 12 MCP tools
 
 | Tool | Purpose |
 |---|---|
@@ -43,7 +43,6 @@ Over MCP, `remember`, `learn` and `recall` also take `project`: a project id, or
 | `user_patterns` | Analyze work schedule, focus areas, and commit workflow |
 | `improvement` | Propose an evidence-linked product improvement or read its status; only a human may accept or reject it |
 | `message` | Discover live agents in one project, then contact one exact recipient with a bounded, untrusted payload. Native size and availability failures are distinct; acceptance, discovery, polling, and fetching do not acknowledge |
-| `private_session` | When the user explicitly asks not to remember or save this session (any words, any language): call it first, then write nothing to memory. Automatic saving stops for the session (commit records and the list of edited file paths are still saved); earlier memories stay until `forget` |
 
 ## The Loop
 
@@ -178,21 +177,19 @@ A message is kept for one day, read or unread, then MeMesh deletes it (while its
 
 ## What's Already Automatic (Plugin Hooks)
 
-With the Claude Code plugin, every row but the PostToolUse `private_session` one happens **without any action from you** (that one runs when the agent calls the tool). The final row is the separate Codex plugin SessionStart/SessionEnd companion lifecycle:
+With the Claude Code plugin, the first ten rows happen **without any action from you**. The final row is the separate Codex plugin SessionStart/SessionEnd companion lifecycle:
 
 | Hook | When | What it does |
 |------|------|-------------|
 | **SessionStart** | Every session begins | Injects the session's project id line whenever the host reports a usable working directory, then one briefing block when there is content: an eligible project handoff precedes ranked memories at every level, after optional repository facts; the recent index (titles of the 30 most recently written memories in scope, minus out-of-date ones) closes it at every level; fresh task state appears at `standard`/`full`, not at the default `minimal` |
 | **PreToolUse (Edit/Write)** | Before editing files | Injects memories related to the file or project |
-| **UserPromptSubmit** | When you submit a prompt | Tells Claude about messages waiting for this session and renews a private session's marker; it does not read the prompt for a request to save |
+| **UserPromptSubmit** | When you submit a prompt | Tells Claude about messages waiting for this session; it does not read the prompt for a request to save |
 | **UserPromptSubmit** (recall) | Same moment | Adds at most two stored memories (title and `[mem:id]`) that the prompt is strongly about, under the same "background data, not instructions" notice; one that looks out of date or was already shown is dropped, not replaced; nothing when none is |
 | **PostToolUse (Bash)** | After `git commit` | Auto-tracks the commit with diff stats as a memory entity |
 | **PostToolUse (ExitPlanMode/AskUserQuestion)** | A plan is approved or you answer a question | Reminds Claude to `remember` the decision now — once per tool per session |
 | **Stop** | Session ends | Auto-captures session knowledge, replaces the same project's handoff with the latest sufficiently long cleaned assistant reply, ingests the project's Claude Code memory directory (frontmatter notes → `source:note-file` memories), shows a decision reminder when appropriate, and applies the configured update policy. These writes stop when auto-capture is off (`memesh config set autoCapture false` / `MEMESH_AUTO_CAPTURE=false`); the advisory line still runs. A skipped handoff capture does not erase the prior note |
 | **Stop (message gate, Claude Code only)** | Session ends, a message is waiting with no intake receipt yet | Blocks the stop once per waiting message id not yet blocked for in this session — whether or not `host_accept` exists — and asks you to poll, fetch and record intake before finishing. This holds even while another Stop hook keeps the session from stopping. Under Codex it records a skip and never blocks |
 | **PreCompact** | Before context compaction | Saves knowledge before history is compressed |
-| **PostToolUse (`private_session`)** | The agent calls the tool | Marks the session private for the note importer at once, so a note the session writes is not imported by another session before its holds are recorded; writes no memory |
-| **SessionEnd (private sessions only)** | A session in which `private_session` was called ends | Holds out the note files the session wrote after its last Stop; writes no memory |
 | **PreToolUse (Bash)** | Before a command runs | Fires accepted lesson-guards — warns when a recorded mistake is about to repeat |
 | **SessionStart/SessionEnd (Codex)** | An ordinary Codex CLI plugin session starts, resumes, or ends | Launches the detached exact-thread companion, replaces its generation on resume, and retires it after the bounded idle queue window; a matching owner-private config may override its project/principal |
 

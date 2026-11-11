@@ -416,30 +416,15 @@ describe('every tool is listed where users and agents look for it', () => {
     expect(missing, `${file} lacks a row for: ${missing.join(', ')}`).toEqual([]);
   });
 
-  it('docs/api/API_REFERENCE.md has a section for each tool, and private_session is one of them', () => {
+  it('docs/api/API_REFERENCE.md has a section for each tool', () => {
     const text = read('docs/api/API_REFERENCE.md');
     expect(names.filter((name) => !new RegExp('^### ' + name + '$', 'm').test(text))).toEqual([]);
-    expect(names).toContain('private_session');
   });
 
   it('docs/ARCHITECTURE.md names each tool in its overview', () => {
     const overview = read('docs/ARCHITECTURE.md').match(/## Overview\n([\s\S]*?)(?=\n## |\n```)/)?.[1] ?? '';
     expect(overview.length).toBeGreaterThan(0);
     expect(names.filter((name) => !overview.includes('`' + name + '`'))).toEqual([]);
-  });
-});
-
-describe('private_session', () => {
-  it('is advertised, takes no arguments, changes no state and says what stays', async () => {
-    const tool = TOOL_DEFINITIONS.find((definition) => definition.name === 'private_session');
-    expect(tool?.description).toMatch(/asks not to remember or save/);
-    expect(tool?.inputSchema.properties).toEqual({});
-    const db = getDatabase();
-    const before = db.prepare('SELECT total_changes() AS n').get();
-    const result = await handleTool('private_session', {});
-    expect(result.isError).toBeUndefined();
-    expect(result.content[0].text).toMatch(/stops for this session.*stays.*forget/);
-    expect(db.prepare('SELECT total_changes() AS n').get()).toEqual(before);
   });
 });
 
@@ -521,18 +506,6 @@ describe('transcript work_package', () => {
     const result = await prepare();
     expect(result.status).toBe('none_available');
     expect(result.skipped_sessions).toEqual({ other_project: 1, no_recorded_cwd: 1 });
-  });
-
-  it('does not offer a session in which the agent called private_session, and says so', async () => {
-    writeSession('asked-not-to-remember', [
-      user('Please do not remember this conversation'),
-      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'mcp__plugin_memesh_memesh__private_session', input: {} }] } },
-    ]);
-    const result = await prepare();
-    expect(result.status).toBe('none_available');
-    expect(result.skipped_sessions).toEqual({ private_session: 1 });
-    writeSession('mentions-it', [user('What does the private_session tool do?')]);
-    expect((await prepare()).package.ref.session_id).toBe('mentions-it');
   });
 
   it('#552 a prepare that finds a session does not report skips', async () => {

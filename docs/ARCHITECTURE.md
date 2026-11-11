@@ -12,9 +12,9 @@ MeMesh gives local coding agents shared memory and a way to exchange messages.
 It stores memories in SQLite and searches them with FTS5. Claude Code and Codex
 use plugins; other local clients can use MCP, the CLI, or HTTP.
 
-The 13 MCP tools are `work_package`, `remember`, `recall`, `forget`, `export`,
-`import`, `learn`, `task_state`, `briefing`, `user_patterns`, `improvement`,
-`message`, and `private_session` (the agent calls it when the user asks not to be remembered; the hooks find the call in the transcript, `src/core/private-session.ts`). See the [API reference](api/API_REFERENCE.md) for their contracts.
+The 12 MCP tools are `work_package`, `remember`, `recall`, `forget`, `export`,
+`import`, `learn`, `task_state`, `briefing`, `user_patterns`, `improvement`, and
+`message`. See the [API reference](api/API_REFERENCE.md) for their contracts.
 
 `recall` accepts words or exact memory IDs. ID lookups retain project and
 namespace boundaries (decisions, lessons and preferences of any project are in
@@ -104,7 +104,7 @@ MeMesh separates concerns into two layers:
 - `cli/cli.ts` — Commander CLI (`memesh` command; `message`, `agent`, `config`, `kg`, `dream`, `hermes`, and `delegation` have subcommands)
 - `http/server.ts` — Express server (`memesh serve`, default port 3737): 31 `/v1` endpoints including two retired 410 routes, HTTP API only; bearer-auth gate when bound non-loopback
 - `agent-messaging.ts` — shared MCP/HTTP/CLI dispatcher that records cooperative transport provenance (not authenticated human/model identity) and never turns a read into a receipt
-- `src/mcp/server.ts` + `src/transports/mcp/handlers.ts` — stdio MCP server (`memesh-mcp`, 13 tools); `src/mcp/tools.ts` is a re-export shim
+- `src/mcp/server.ts` + `src/transports/mcp/handlers.ts` — stdio MCP server (`memesh-mcp`, 12 tools); `src/mcp/tools.ts` is a re-export shim
 
 This separation means the same `remember`/`recall`/`forget` logic runs identically whether invoked from a terminal, an HTTP request, or an MCP tool call. Governed product-improvement proposals reuse the dream staging/review lifecycle: agents can propose over MCP, and humans apply or reject through the CLI or HTTP endpoints.
 
@@ -259,7 +259,6 @@ Thin adapter: imports shared Zod schemas from `transports/schemas.ts`, validates
 | `briefing` | BriefingSchema | Delegates to `core/briefing.assembleBriefing()` |
 | `user_patterns` | UserPatternsSchema | Delegates to `core/patterns.computePatterns()` |
 | `improvement` | ImprovementSchema | Delegates to `core/product-improvements` for proposal staging and status reads |
-| `private_session` | PrivateSessionSchema | Changes no state; returns a confirmation. The hooks find the call in the transcript |
 | `message` | MessageSchema | Delegates to `transports/agent-messaging.executeAgentMessageAction()` |
 
 ### transports/http/server.ts -- HTTP REST API Server
@@ -478,9 +477,9 @@ Foreign key cascades: deleting an entity automatically deletes its observations,
 
 ## Hook Architecture
 
-Hook commands are defined in `hooks/hooks.json`: twelve run at Claude Code lifecycle events, while the separate Codex SessionStart/SessionEnd lifecycle registers and retires eligible ordinary Codex CLI sessions. The Codex plugin declares those same commands inline in `.codex-plugin/plugin.json` so it does not parse Claude's Mod-only `modules` field; plus two Codex-only PostToolUse commands (`codex-busy-message-notice.js` and `codex-plan-activity.js`); a parity test keeps the shared command set identical.
+Hook commands are defined in `hooks/hooks.json`: ten run at Claude Code lifecycle events, while the separate Codex SessionStart/SessionEnd lifecycle registers and retires eligible ordinary Codex CLI sessions. The Codex plugin declares those same commands inline in `.codex-plugin/plugin.json` so it does not parse Claude's Mod-only `modules` field; plus two Codex-only PostToolUse commands (`codex-busy-message-notice.js` and `codex-plan-activity.js`); a parity test keeps the shared command set identical.
 
-### Hook Commands (13 hooks)
+### Hook Commands (11 hooks)
 
 | Hook | Event | Purpose |
 |------|-------|---------|
@@ -491,9 +490,7 @@ Hook commands are defined in `hooks/hooks.json`: twelve run at Claude Code lifec
 | session-summary.js | Stop | Auto-capture session knowledge + recall effectiveness tracking |
 | stop-message-gate.js | Stop | Claude-Code-only: block the stop once per waiting (project, message id) pair (#468); under Codex it records a skip and never blocks |
 | pre-compact.js | PreCompact | Save knowledge before compaction |
-| private-session-mark.js | PostToolUse (`private_session`) | At once, mark the session private for the note importer: notes changed since then wait until the session has recorded which notes it named. Writes no memory |
-| session-end-notes.js | SessionEnd | In a private session only: hold out the note files it wrote after its last Stop. Writes no memory |
-| user-prompt-intent.js | UserPromptSubmit | Remind the agent of waiting messages and renew a private session's marker; does not read the prompt's words |
+| user-prompt-intent.js | UserPromptSubmit | Remind the agent of waiting messages; does not read the prompt's words |
 | prompt-recall.js | UserPromptSubmit | Inject at most two titled `[mem:id]` lines for stored memories the prompt is strongly about, out-of-date ones dropped (see below); silent when nothing is |
 | guard-check.js | PreToolUse (Bash) | Fire accepted lesson-guards against the command about to run (warn-only; fires counted) |
 | codex-session.js | Codex SessionStart (startup/resume) + SessionEnd | Launch an owner-private detached registration companion, retain a bounded 45-second idle queue window after SessionEnd, replace the exact generation on resume, and retire it at expiry; a matching owner-private config optionally overrides project/principal |
@@ -577,7 +574,7 @@ Stop capture omits prose copied verbatim from agent-message payloads in the last
 
 - **Trigger**: `UserPromptSubmit` event (every user prompt)
 - **Matcher**: `*` (all sessions)
-- **Behavior**: Does only deterministic work and never reads the prompt's words. It reminds the agent of messages waiting for this session's recipient (recorded as `notified`, `hint:inbox`), renews a private session's marker when its user is back, records an error and stays silent on a Node that cannot run MeMesh, records a prompt over 256 K characters as skipped, and otherwise records that no message was waiting. Saving is on by default; whether the user explicitly asked not to save is the agent's call. Defensive: never blocks the prompt; malformed stdin and other errors surface to stderr without affecting submission
+- **Behavior**: Does only deterministic work and never reads the prompt's words. It reminds the agent of messages waiting for this session's recipient (recorded as `notified`, `hint:inbox`), records an error and stays silent on a Node that cannot run MeMesh, records a prompt over 256 K characters as skipped, and otherwise records that no message was waiting. Saving is on by default; whether the user explicitly asked not to save is the agent's call. Defensive: never blocks the prompt; malformed stdin and other errors surface to stderr without affecting submission
 
 ### Prompt Recall (`scripts/hooks/prompt-recall.js`)
 
@@ -586,7 +583,7 @@ Stop capture omits prose copied verbatim from agent-message payloads in the last
 - **What is strong**: the prompt's most informative words (at most twelve) are looked up in the same keyword index `recall` searches, candidates arriving in its BM25 order. Latin text splits into words; Chinese, Japanese and Korean runs are cut into words by the platform's word segmenter (the index holds overlapping character pairs, and most pairs straddle a word boundary and mean nothing), and neighbouring single characters the segmenter could not join are tried as one word. A word that appears in more than about one memory in thirty, or in none, takes no part. Each candidate is read back (its name, title and every observation) and scored by how much of those words' weight it covers; it must cover at least half of that weight and contain at least two of the words. Auto-captured work records (commits, session rollups), task state and handoffs, other projects' memories, untrusted or imported memories (note files from your own memory folder are trusted; any other note folder, and an import without `--trust`, stays untrusted and is never shown unasked) and host-scoped memories are never candidates; the project's own (under its id, the other id the same checkout is known by when the hook knows the session's folder — its remote id and its path id — and the hash-less id from before ids carried a hash: `memesh` and `memesh~<hash>` are one project; another folder with the same name is another project, `api~<hashA>` is not `api~<hashB>`, and case counts), and memories with no project and no host are; another project's memory is not, even a global one. Feedback notes (`feedback`, `engineering_feedback`) are candidates like any other type (measured: leaving them out lost more useful matches than it saved; `PROMPT_RECALL_SKIP_TYPES` is empty). A `project` memory (a stored status) not touched for 30 days is not brought along either, since the text does not say that it has gone out of date; a memory read from a note file is dated by the file's own modification time (`note_mtime_ms`), not by the day it was read, so importing an old note does not make it look new. That is `PROMPT_RECALL_MAX_PROJECT_AGE_DAYS` in `src/core/prompt-recall.ts`.
 - **Out of date**: the same filter the session-start recent index applies (`staleReason()` in `src/core/recent-index.ts`). A match is dropped when a newer decision of the same project — in the session's unfiltered recent index (its ids are kept in the session's injection record as `recentPoolIds`) or the other match — shares at least 0.2 of its topic words, or when its title says it is waiting or temporary and nothing was written to it since. Without a session record the matches are compared with each other only, and the `notified` outcome record carries `:no-recent-index`.
 - **Once per session**: an id is injected at most once per session. The ids already shown (kept in `prompt-recall/<hash of session id>.json`) and the ids the session-start block showed (its injection record) are skipped, and the ids injected here are added to that injection record so a `[mem:id]` citation of one is credited like any other.
-- **Skipped, and recorded as skipped**: the `promptRecall` setting is `false` (`memesh config set promptRecall false`; default on), auto-capture is off, no usable session id, no database, nothing strong, everything strong looked out of date, everything strong was already shown, a private session, and a session whose private marker cannot be read. A session is private when the agent called the `private_session` tool: the hook asks the shared private-session reader (`_private-session.js`, the one every capture hook uses) about the session's transcript at every prompt, never looks at the text the person typed, and keeps a private verdict for the rest of the session. A reader that fails, or a payload with no transcript path, is not read as "not private": nothing is shown and the skip is recorded.
+- **Skipped, and recorded as skipped**: the `promptRecall` setting is `false` (`memesh config set promptRecall false`; default on), auto-capture is off, no usable session id, no database, nothing strong, everything strong looked out of date, and everything strong was already shown.
 - **Never blocks the prompt**: the database is opened read-only with a one-second lock wait; any failure is recorded as an `error` outcome and the hook exits 0 with nothing on stdout.
 
 ### Hook outcome records (capture liveness)

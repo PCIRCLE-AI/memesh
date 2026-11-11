@@ -11,10 +11,12 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'child_process';
+import { createHash } from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { MemeshDatabase } from '../../src/storage/sqlite.js';
+import { noteDirId } from '../../src/core/note-dirs.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
 import { expectValidHookOutput } from '../helpers/hook-output-contract.js';
 import { canDenyReads } from '../helpers/permissions.js';
@@ -431,6 +433,55 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     db2.close();
     expect(tags.length).toBeGreaterThan(0);
   }, 60_000);
+
+  // An unreleased 4.13.0 build held some notes back: it left a skip entry marked `held` for each, and
+  // a folder stamp in note-ingest-state.json that says nothing changed. Such a note is imported by the
+  // next Stop, whatever the stamp says and although the file itself is unchanged.
+  it.each([false, true])('imports a note an unreleased build held back, at the next Stop, with the old folder stamp\'s `more` %s', (more) => {
+    fs.mkdirSync(memoryDir);
+    fs.writeFileSync(path.join(memoryDir, 'first.md'), '---\nname: hook_note_first\ndescription: First\nmetadata:\n  type: fact\n---\n\nfirst body\n');
+    write(reads(1));
+    expect(run().status).toBe(0); // creates the database and the folder's skip cache
+    const held = path.join(memoryDir, 'held.md');
+    fs.writeFileSync(held, '---\nname: hook_note_held\ndescription: Held back\nmetadata:\n  type: fact\n---\n\nheld body\n');
+    const past = new Date(Date.now() - 3_600_000);
+    for (const p of [held, path.join(memoryDir, 'first.md'), memoryDir]) fs.utimesSync(p, past, past);
+    const st = fs.statSync(held);
+    const memesh = path.join(home, '.memesh');
+    const db = new MemeshDatabase(path.join(memesh, 'knowledge-graph.db'));
+    db.prepare('INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)').run(
+      `note_ingest_skips:${noteDirId(fs.realpathSync(memoryDir))}`,
+      JSON.stringify({ 'held.md': { mtime: st.mtimeMs, size: st.size, reason: 'held out by a private session — not imported', held: 'a'.repeat(64) } }),
+    );
+    db.close();
+    // The state as that build left it: only the old file, its stamp newer than every note.
+    const key = createHash('sha256').update(memoryDir).digest('hex').slice(0, 16);
+    fs.rmSync(path.join(memesh, 'note-ingest-state-2.json'), { force: true });
+    fs.writeFileSync(path.join(memesh, 'note-ingest-state.json'), JSON.stringify({ [key]: { at: Date.now(), more, trusted: true } }));
+
+    append(reads(1));
+    expect(run().status).toBe(0);
+    const check = new MemeshDatabase(path.join(memesh, 'knowledge-graph.db'));
+    const row = check.prepare("SELECT name FROM entities WHERE name = 'hook_note_held'").get();
+    check.close();
+    expect(row, 'the held note was not imported').toBeDefined();
+    expect(outcomes('note-ingest').at(-1)).toMatchObject({ outcome: 'wrote', entity: 'hook_note_held' });
+  }, 60_000);
+
+  it('a run that read its cap and changed nothing says the rest waits for the next Stop, not that nothing was new', () => {
+    fs.mkdirSync(memoryDir);
+    const files = Array.from({ length: 101 }, (_, i) => path.join(memoryDir, `bulk-${String(i).padStart(3, '0')}.md`));
+    files.forEach((f, i) => fs.writeFileSync(f, `---\nname: cap_note_${i}\ndescription: Cap note ${i}\nmetadata:\n  type: fact\n---\n\nbody ${i}\n`));
+    write(reads(1));
+    expect(run().status).toBe(0); // 100 of them
+    append(reads(1));
+    expect(run().status).toBe(0); // the last one
+    const now = new Date();
+    for (const f of files) fs.utimesSync(f, now, now); // newer than the last run's stamp, the same bytes
+    append(reads(1));
+    expect(run().status).toBe(0); // 100 read and unchanged, the rest past the cap
+    expect(outcomes('note-ingest').at(-1)).toMatchObject({ outcome: 'skipped', reason: 'more note files changed than one run reads, so the rest are read at the next Stop' });
+  }, 120_000);
 
   it('the Stop after an over-cap run resumes it, without any file being touched', () => {
     // The resume flag had no guard: mutating `more: result.more > 0` to

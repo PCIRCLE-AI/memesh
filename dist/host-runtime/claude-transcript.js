@@ -16,9 +16,6 @@ export class ClaudeTranscriptReader {
         this.projectsDir = projectsDir;
         this.projectSlug = projectSlug;
     }
-    transcriptFile(session) {
-        return this.locate(session);
-    }
     locate(session) {
         if (!SESSION_ID.test(session))
             return undefined;

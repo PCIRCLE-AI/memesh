@@ -24,7 +24,7 @@
 //     per-session list, and the ids session start already showed (its
 //     injection record) are never repeated.
 //   - Skipped entirely, and recorded as such, when the feature
-//     (`promptRecall`) or auto-capture is off, and for a private session.
+//     (`promptRecall`) or auto-capture is off.
 //   - The ids it injects are added to the session's injection record so a
 //     `[mem:id]` citation of one of them is credited like any other.
 
@@ -50,47 +50,13 @@ import {
 } from './_shared.js';
 import { SESSION_ID_RE, pruneSessionState, recallListName } from './_stop-notes.js';
 import { selectPromptRecall } from './_generated/prompt-recall.js';
-import { HOOK_BUDGET_MS } from './_hook-budgets.js';
 
 /** The hook's own wait for a database lock; the prompt must not stall behind a writer. */
 const LOCK_WAIT_MS = 1000;
 const SESSION_RECORD_TTL_MS = 24 * 60 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
-// Is this session private? ONE call point.
-//
-// A session is private when the agent called the `private_session` tool — a
-// structured call in the transcript, never text the person typed. The question
-// is answered by the shared reader in `_private-session.js` (the same one every
-// capture hook asks); this hook keeps no second copy of the rule.
-//
-// Anything but a clear "no" means nothing is shown: a transcript that is not
-// named, or that the reader cannot answer for, is not "not private".
-// ---------------------------------------------------------------------------
-async function defaultReadPrivacy(data) {
-  if (typeof data.transcript_path !== 'string' || data.transcript_path === '') {
-    throw Object.assign(new Error('no transcript path'), { code: 'ENOTRANSCRIPT' });
-  }
-  // Loaded when asked, so a tree without the shared reader fails closed instead of crashing.
-  const { privacyForHook } = await import('./_private-session.js');
-  const answer = privacyForHook(data, 'prompt-recall', { budgetMs: HOOK_BUDGET_MS.promptRecall.decide });
-  // `unchecked` (already recorded as an error by privacyForHook) is "could not read": show nothing.
-  if (answer.state === 'unchecked') throw Object.assign(new Error(answer.reason), { code: answer.reason });
-  return answer.state === 'yes';
-}
-
-/** 'private', 'open', or 'unreadable' (show nothing, and say so). */
-export async function sessionPrivacy(data, readPrivacy = defaultReadPrivacy) {
-  try {
-    return (await readPrivacy(data)) === true ? 'private' : 'open';
-  } catch (err) {
-    logError(`private-session marker not read: ${err?.code || err?.message || err}`);
-    return 'unreadable';
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Per-session state: ids already shown, and whether the session was found private.
+// Per-session state: ids already shown.
 // ---------------------------------------------------------------------------
 const stateDir = () => join(getMemeshDirFromDbPath(), 'prompt-recall');
 
@@ -99,7 +65,6 @@ function readState(file) {
     const raw = JSON.parse(readFileSync(file, 'utf8'));
     return {
       ids: Array.isArray(raw.ids) ? raw.ids.filter((id) => Number.isSafeInteger(id) && id > 0) : [],
-      private: raw.private === true,
     };
   } catch (err) {
     if (err?.code === 'ENOENT') return null;
@@ -166,10 +131,9 @@ const isMainModule = Boolean(entryPath)
 
 /**
  * One prompt, start to finish: the text to print on stdout, or null for nothing.
- * Every path records an outcome. `readPrivacy` is the private-session reader
- * (a seam for tests; the hook passes the shared one).
+ * Every path records an outcome.
  */
-export async function handlePrompt(data, readPrivacy = defaultReadPrivacy) {
+export async function handlePrompt(data) {
   const record = (outcome, reason, entity) =>
     recordHookOutcome(process.env, { hook: 'prompt-recall', outcome, reason, entity, payload: data });
   try {
@@ -192,27 +156,15 @@ export async function handlePrompt(data, readPrivacy = defaultReadPrivacy) {
       return null;
     }
 
-    // Before the privacy read and "no database yet": on a Node that cannot run MeMesh nothing below can work, and
+    // Before "no database yet": on a Node that cannot run MeMesh nothing below can work, and
     // the database can never be created.
     if (hookNodeProblem('prompt-recall')) {
       record('error', NODE_TOO_OLD_REASON);
       return null;
     }
 
-    // Private sessions: once found private, always private (it only ratchets);
-    // otherwise ask the shared reader every prompt, since the call can come at any point.
     const statePath = join(stateDir(), recallListName(sessionId, null));
     let state = readState(statePath);
-    const privacy = state?.private === true ? 'private' : await sessionPrivacy(data, readPrivacy);
-    if (privacy === 'private') {
-      writeState(statePath, { ids: state?.ids ?? [], private: true });
-      record('skipped', SKIP_REASONS.promptPrivateSession);
-      return null;
-    }
-    if (privacy === 'unreadable') {
-      record('skipped', SKIP_REASONS.promptPrivacyUnreadable);
-      return null;
-    }
 
     const dbPath = getDbPath();
     if (!existsSync(dbPath)) {
@@ -249,7 +201,7 @@ export async function handlePrompt(data, readPrivacy = defaultReadPrivacy) {
       return null;
     }
 
-    state = { ids: [...(state?.ids ?? []), ...result.ids], private: false };
+    state = { ids: [...(state?.ids ?? []), ...result.ids] };
     writeState(statePath, state);
     const names = new Map(result.scored.map((m) => [m.id, m.name]));
     let credited = true;

@@ -61,7 +61,7 @@ export function homeDir(): string {
  * active DB file should use `getMemeshDirFromDbPath()` instead.
  */
 export function memeshDir(): string {
-  // An empty value is no value (the Hermes plugin reads it the same way): '' would put the database in the working folder.
+  // An empty value is no value: '' would put the database in the working folder.
   return process.env.MEMESH_DIR || path.join(homeDir(), '.memesh');
 }
 

@@ -32,8 +32,6 @@
 import { openSync, closeSync, writeSync, constants as fsConstants } from 'fs';
 import { join } from 'path';
 import { ensurePrivateDir, getMemeshDirFromDbPath, hookErrorReason, hookNodeProblem, NODE_TOO_OLD_REASON, SKIP_REASONS, recordHookOutcome } from './_shared.js';
-import { privacyForHook } from './_private-session.js';
-import { HOOK_BUDGET_MS } from './_hook-budgets.js';
 
 // The only two tools this hook is wired to in hooks/hooks.json — kept as an
 // explicit allowlist (not "any PostToolUse call") so a future matcher typo
@@ -102,13 +100,6 @@ process.stdin.on('end', () => {
     const sessionId = data.session_id;
     if (typeof sessionId !== 'string' || !SESSION_ID_RE.test(sessionId)) {
       record('skipped', SKIP_REASONS.noSessionId);
-      return pass();
-    }
-
-    // The agent called private_session: nothing is stored, so nothing is suggested.
-    const privacy = privacyForHook(data, 'decision-nudge', { budgetMs: HOOK_BUDGET_MS.postToolUse.decide });
-    if (privacy.state !== 'no') {
-      record('skipped', privacy.skipReason);
       return pass();
     }
 

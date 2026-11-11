@@ -78,6 +78,21 @@ describe('F5 mirror parity: scripts/hooks/_shared.js vs src/core', () => {
       }
     });
 
+    it('an empty MEMESH_DIR is no value: core and the hook copy both fall back to ~/.memesh, never the working folder', () => {
+      const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-parity-home-'));
+      const prior = process.env.MEMESH_DIR;
+      try {
+        delete process.env.MEMESH_DB_PATH;
+        process.env.HOME = tmpHome;
+        process.env.MEMESH_DIR = '';
+        expect(coreMemeshDir()).toBe(path.join(tmpHome, '.memesh'));
+        expect(shared.memeshDir()).toBe(coreMemeshDir());
+      } finally {
+        if (prior === undefined) delete process.env.MEMESH_DIR; else process.env.MEMESH_DIR = prior;
+        fs.rmSync(tmpHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      }
+    });
+
     it('getDbPath matches core with and without MEMESH_DB_PATH override', () => {
       const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-parity-home-'));
       try {
@@ -459,8 +474,8 @@ describe('F5 mirror parity: scripts/hooks/_shared.js vs src/core', () => {
   });
 
   // A hook that imports a name its sibling does not export crashes only when that line runs. Hook tests
-  // inject their dependencies, so prompt-recall.js asked for `isPrivateSession` (the reader exports
-  // `privacyForHook`) and never showed a memory in the real process.
+  // inject their dependencies, so a hook that asked for a name its sibling never exported once showed
+  // no memory in the real process while its tests passed.
   describe('every name a hook imports from a sibling module is exported by it', () => {
     const hooksDir = path.resolve('scripts/hooks');
     const listJs = (dir: string) => fs.readdirSync(dir).filter((f) => /\.(js|mjs)$/.test(f)).map((f) => path.join(dir, f));

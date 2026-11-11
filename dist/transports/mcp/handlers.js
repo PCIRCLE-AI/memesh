@@ -12,7 +12,7 @@ import { getTaskState, setTaskState } from '../../core/task-state-store.js';
 import { getProductImprovementStatus, stageProductImprovement, } from '../../core/product-improvements.js';
 import { executeAgentMessageAction } from '../agent-messaging.js';
 import { hostSessionFromEnv } from '../../core/host-session.js';
-import { McpRememberSchema, McpRecallSchema, ForgetSchema, BriefingSchema, ExportSchema, ImportSchema, McpLearnSchema, PrivateSessionSchema, TaskStateSchema, UserPatternsSchema, ImprovementSchema, MessageSchema, WorkPackageSchema, NativeMemoryEditorSchema, NativeMemoryEditFieldsSchema, PaneMemoryEditorSchema, } from '../schemas.js';
+import { McpRememberSchema, McpRecallSchema, ForgetSchema, BriefingSchema, ExportSchema, ImportSchema, McpLearnSchema, TaskStateSchema, UserPatternsSchema, ImprovementSchema, MessageSchema, WorkPackageSchema, NativeMemoryEditorSchema, NativeMemoryEditFieldsSchema, PaneMemoryEditorSchema, } from '../schemas.js';
 import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../../core/agent-messaging.js';
 import { getProjectName, memeshDir } from '../../core/paths.js';
 import { updateNoticeForEntryPoint, updateCheckEnabledIn } from '../../core/update-entrypoint.js';
@@ -424,15 +424,6 @@ export const TOOL_DEFINITIONS = [
             additionalProperties: false,
         },
     },
-    {
-        name: 'private_session',
-        description: 'Call this when the user explicitly asks not to remember or save this session or conversation, in any words or language (for example "don\'t keep any of this", "off the record", 「這段不要記」; these illustrate, they are not a list to match). A remark whose meaning is not clearly that is not a request: keep saving as usual. It changes no state: the call itself is the signal (even if its result is an error), and automatic saving stops for the rest of this session. What was saved earlier stays; `forget` removes it. After calling it, write nothing to memory: no `remember` or `learn`, and no writes to the host\'s own memory files, unless the user later asks you to store something explicitly. A request not to save one thing (a password, one detail) means simply not saving that thing; do not call this tool for it, and do not call it just because the user mentions or discusses this feature.',
-        inputSchema: {
-            type: 'object',
-            properties: {},
-            additionalProperties: false,
-        },
-    },
 ];
 function ok(data) {
     return { content: [{ type: 'text', text: JSON.stringify(data) }] };
@@ -758,12 +749,6 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
                 }
             }
             return { content: [{ type: 'text', text: lines.join('\n') }] };
-        }
-        if (name === 'private_session') {
-            const r = parseOrFail(PrivateSessionSchema, args);
-            if (!r.ok)
-                return r.result;
-            return { content: [{ type: 'text', text: 'Automatic saving stops for this session. What was saved earlier stays; `forget` removes it. Write nothing to memory unless the user later asks you to store something explicitly.' }] };
         }
         if (name === 'improvement') {
             const r = parseOrFail(ImprovementSchema, args);

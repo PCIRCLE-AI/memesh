@@ -256,7 +256,6 @@ export declare const WhySchema: z.ZodObject<{
     project: z.ZodOptional<z.ZodString>;
     limit: z.ZodOptional<z.ZodNumber>;
 }, z.core.$strict>;
-export declare const PrivateSessionSchema: z.ZodObject<{}, z.core.$strict>;
 export declare const UserPatternsSchema: z.ZodObject<{
     categories: z.ZodOptional<z.ZodArray<z.ZodEnum<{
         workflow: "workflow";

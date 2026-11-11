@@ -24,20 +24,15 @@ import {
   existsSync,
   fstatSync,
   lstatSync,
-  statSync,
   openSync,
   readFileSync,
   readSync,
   readdirSync,
-  realpathSync,
   renameSync,
   unlinkSync,
 } from 'fs';
 import { createHash } from 'crypto';
-import { homeDir } from './_generated/core-paths.js';
-import { notePathsWrittenInTranscript } from './_session-written-notes.js';
-import { PRIVATE_WINDOW_MS, privateCheckCacheDir, prunePrivateCheckCache } from './_generated/private-session.js';
-import { isCodexRollout, isCodexToolRequest } from './_generated/host-transcript.js';
+import { isCodexToolRequest } from './_generated/host-transcript.js';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import {
   ensurePrivateDir,
@@ -178,31 +173,6 @@ function inSameWorkTree(startedPath, cwdPath) {
   }
 }
 
-/**
- * Where a project's notes folder is, or will be: Claude Code creates `memory/`
- * when it writes the first note, so the folder next to the transcript need not
- * exist yet. Null when there is no transcript path.
- */
-export function claudeMemoryDirExpected(transcriptPath) {
-  if (typeof transcriptPath !== 'string' || !transcriptPath || isCodexRollout(transcriptPath)) return null;
-  return join(dirname(transcriptPath), 'memory');
-}
-
-/** The real path of a folder, or undefined when it is not there; throws when it cannot be looked at. */
-function realPathIfThere(dir) {
-  try { return realpathSync(dir); } catch (err) {
-    if (err?.code === 'ENOENT') return undefined;
-    throw err;
-  }
-}
-
-
-/** Claude Code's projects folder (`<config dir>/projects`): where a session of another host can still write notes. */
-export function claudeProjectsRoot(env = process.env) {
-  const root = join(env.CLAUDE_CONFIG_DIR || join(homeDir(), '.claude'), 'projects');
-  try { return realpathSync(root); } catch { return root; } // not there yet: nothing in it to protect either
-}
-
 /** Newest mtime among the directory and its `.md` files (links not followed). */
 export function newestNoteMtime(dir) {
   let newest = 0;
@@ -241,154 +211,6 @@ function writeJsonAtomic(path, value) {
 }
 
 /**
- * A private session imports no note. The notes it named, in any notes folder
- * of its projects root, and every note changed while it ran in a folder it
- * reached (its own always counts as reached), are recorded by content hash in
- * a file of its own beside the database, so that content is never imported by
- * a later Stop, after another note changes, or while the database is busy.
- *
- * `state` is the session's answer from `privacyForHook`. For `yes` the marker
- * is written first (it is the evidence of the call, and it makes other imports
- * wait while this hook reads), the holds are permanent, and the marker then
- * records the moment they were recorded from a complete read. For `unchecked`
- * no marker is ever written: the holds are tentative, they are themselves the
- * wait other imports respect, and the session is decided again at its next
- * hook. Returns the number held, or null when the note importer is not built
- * (nothing would ever import them either). Throws when a record cannot be
- * written: the caller reports it.
- */
-/** A hold record or marker that cannot be read or written gets the fixed reason that says what to do; any other error its usual one. */
-export const noteErrorReason = (err) => {
-  switch (err?.code) {
-    case 'MEMESH_NOTE_HOLDS_UNREADABLE': return SKIP_REASONS.noteHoldsUnreadable;
-    case 'MEMESH_NOTE_HOLDS_DIR_UNREADABLE': return SKIP_REASONS.noteHoldsDirUnreadable;
-    case 'MEMESH_NOTE_HOLDS_UNWRITABLE': return SKIP_REASONS.noteHoldsUnwritable;
-    case 'MEMESH_NOTE_MARKERS_UNREADABLE': return SKIP_REASONS.noteMarkersUnreadable;
-    case 'MEMESH_NOTE_MARKERS_DIR_UNREADABLE': return SKIP_REASONS.noteMarkersDirUnreadable;
-    case 'MEMESH_NOTE_MARKER_UNWRITABLE': return SKIP_REASONS.noteMarkerUnwritable;
-    case 'MEMESH_PRIVATE_STATE_BUSY': return SKIP_REASONS.privateStateBusy;
-    case 'MEMESH_NOTE_FOLDER_UNREADABLE': return SKIP_REASONS.noteFolderUnreadable;
-    default: return hookErrorReason(err);
-  }
-};
-
-/** The note importer of this plugin, or null when it is not built. */
-async function loadNoteIngest(metaUrl) {
-  const pluginRoot = resolvePluginRoot(metaUrl);
-  if (!existsSync(join(pluginRoot, 'dist/core/note-ingest.js'))) return null;
-  return importFromPluginRoot(pluginRoot, 'dist/core/note-ingest.js');
-}
-
-/** When the session began, as far as can be told: the transcript's creation, else the window before now. */
-function sessionStartMs(transcriptPath, now) {
-  try { return Math.min(statSync(transcriptPath).birthtimeMs || now, now - PRIVATE_WINDOW_MS); } catch { return now - PRIVATE_WINDOW_MS; }
-}
-
-export async function holdOutNotes({ memoryDir, transcriptPath, sessionId, metaUrl, deadlineAt, env = process.env, payload, state = 'yes', uncheckedReason }) {
-  // A hook that does not pass its deadline would read without one: that is a bug to record, not a default to guess.
-  if (!Number.isFinite(deadlineAt)) throw new Error('holdOutNotes needs the hook\'s deadline');
-  const ni = await loadNoteIngest(metaUrl);
-  if (!ni) return null;
-  const now = Date.now();
-  const id = typeof sessionId === 'string' && sessionId !== '' ? sessionId : 'unknown';
-  const isPrivate = state === 'yes';
-  // A Codex session has no notes folder of its own, but it can write into Claude Code's: those are the folders to protect.
-  const codex = !memoryDir && isCodexRollout(transcriptPath);
-  // Real paths, as the importer compares them; the session's own folder may not exist yet.
-  const ownReal = memoryDir ? realPathIfThere(memoryDir) : undefined;
-  const root = codex ? claudeProjectsRoot(env) : memoryDir ? ni.projectsRootOf(ni.realPathOrExpected(memoryDir)) : undefined;
-  let startedAt = now;
-  if (isPrivate) {
-    // The marker comes first: if this hook is killed while it reads a large transcript, other sessions already wait.
-    const first = { sessionId: id, dirs: memoryDir ? [memoryDir] : [], transcript: transcriptPath, deadlineAt, ...(codex ? { projectsRoot: root } : {}) };
-    try {
-      startedAt = ni.markPrivateSession(first);
-    } catch (err) {
-      if (err?.code !== ni.NOTE_MARKERS_UNREADABLE) throw err;
-      // This session's own marker is damaged: it is written again from no later than the session's start, and that is recorded.
-      startedAt = ni.markPrivateSession({ ...first, rebuildFrom: sessionStartMs(transcriptPath, now) });
-      recordHookOutcome(env, { hook: 'note-ingest', outcome: 'error', reason: SKIP_REASONS.privateMarkerRebuilt, payload });
-    }
-  }
-  // No notes folder to protect and no other host's (no transcript path): for a private session the call itself is recorded above.
-  if (root === undefined) return 0;
-  const folders = [...new Set([...(ownReal ? [ownReal] : []), ...ni.projectMemoryFolders(root)])];
-  const scanStartedAt = Date.now();
-  const scan = folders.length === 0 ? { byDir: new Map(), reached: new Set(), complete: true } : notePathsWrittenInTranscript(transcriptPath, folders, { ownDir: ownReal, deadlineAt });
-  const complete = scan.complete;
-  if (!complete) recordHookOutcome(env, { hook: 'note-ingest', outcome: 'notified', reason: SKIP_REASONS.notesHeldByTime, payload });
-  // Reached folders (and every folder, when the read was not complete) hold what changed while the session may have written there.
-  const windowStart = isPrivate ? (complete ? startedAt : Math.min(startedAt, now - PRIVATE_WINDOW_MS)) : now - PRIVATE_WINDOW_MS;
-  let held = 0;
-  let recorded = false;
-  for (const dir of folders) {
-    const reached = !complete || scan.reached.has(dir);
-    const paths = scan.byDir.get(dir) ?? [];
-    if (!reached && paths.length === 0) continue;
-    recorded = true;
-    held += ni.holdOutNoteFiles({
-      dir, sessionId: id, paths, transcript: transcriptPath, deadlineAt,
-      ...(reached ? { sinceMs: windowStart } : {}),
-      ...(isPrivate ? {} : { tentative: { reason: uncheckedReason ?? 'unreadable', projectsRoot: root, holdsAt: complete ? scanStartedAt : undefined } }),
-    });
-  }
-  // Nothing to hold yet (no notes folder at all, or none reached), but other imports must still wait while this session cannot be checked.
-  if (!isPrivate && !recorded) ni.holdOutNoteFiles({ sessionId: id, paths: [], transcript: transcriptPath, deadlineAt, tentative: { reason: uncheckedReason ?? 'unreadable', projectsRoot: root } });
-  if (isPrivate) {
-    ni.markPrivateSession({ sessionId: id, dirs: [...scan.reached], transcript: transcriptPath, deadlineAt, ...(complete ? { holdsAt: scanStartedAt } : {}) });
-  }
-  return held;
-}
-
-/**
- * The session's user wrote a prompt: a private session's marker is live again.
- * Nothing for a session that has no marker; recorded when the importer is not
- * built, and when the marker cannot be read or written (the importer stops
- * meanwhile, and the session's next hook rebuilds it).
- */
-export async function renewPrivateNoteMarker({ sessionId, metaUrl, deadlineAt, env = process.env, payload }) {
-  if (typeof sessionId !== 'string' || sessionId === '') return;
-  if (!Number.isFinite(deadlineAt)) throw new Error('renewPrivateNoteMarker needs the hook\'s deadline');
-  const ni = await loadNoteIngest(metaUrl);
-  if (!ni) { recordHookOutcome(env, { hook: 'note-ingest', outcome: 'skipped', reason: SKIP_REASONS.noteIngesterNotBuilt, payload }); return; }
-  try {
-    ni.renewPrivateSession(sessionId, Date.now(), deadlineAt);
-  } catch (err) {
-    try { process.stderr.write(`[memesh note-ingest] ${err?.message || err}\n`); } catch { /* stderr gone */ }
-    recordHookOutcome(env, { hook: 'note-ingest', outcome: 'error', reason: noteErrorReason(err), payload });
-  }
-}
-
-/** The private session has ended and its holds are recorded: other imports stop waiting for it (the marker stays as the record of the call). */
-export async function endPrivateNoteMarker({ sessionId, metaUrl, state = 'yes', deadlineAt }) {
-  if (!Number.isFinite(deadlineAt)) throw new Error('endPrivateNoteMarker needs the hook\'s deadline');
-  const ni = await loadNoteIngest(metaUrl);
-  if (!ni) return;
-  const id = typeof sessionId === 'string' && sessionId !== '' ? sessionId : 'unknown';
-  if (state === 'yes') ni.endPrivateSession(id, Date.now(), deadlineAt);
-  else ni.endTentativeWait(id, Date.now(), deadlineAt);
-}
-
-/** The session was decided `no` by its own hook: what was held only while it could not be checked is let through. Returns whether anything changed. */
-export async function releaseOwnTentativeHolds({ sessionId, metaUrl, deadlineAt }) {
-  if (typeof sessionId !== 'string' || sessionId === '') return false;
-  const ni = await loadNoteIngest(metaUrl);
-  if (!ni) return false;
-  return ni.settleTentativeHolds(sessionId, 'no', { deadlineAt });
-}
-
-/** The hold records' newest change: a release or a new hold makes the next import look again. */
-function holdsChangedAt() {
-  const dir = join(getMemeshDirFromDbPath(), 'note-ingest-holds');
-  let newest = 0;
-  try {
-    newest = lstatSync(dir).mtimeMs;
-    for (const name of readdirSync(dir)) { try { newest = Math.max(newest, lstatSync(join(dir, name)).mtimeMs); } catch { /* gone */ } }
-  } catch { /* no holds */ }
-  return newest;
-}
-
-/**
  * Ingest the memory directory when anything in it changed since the last
  * run. The mtime throttle makes the common Stop (nothing changed) cost one
  * directory walk and no database handle at all.
@@ -400,13 +222,16 @@ function holdsChangedAt() {
  * a change to anything the user stored, and reads as a skip. `entity` names one
  * memory the run touched, and is set exactly when the outcome is `wrote`.
  */
-export async function runNoteIngestion({ memoryDir, project, metaUrl, deadlineAt }) {
+export async function runNoteIngestion({ memoryDir, project, metaUrl }) {
   if (!memoryDir) return { outcome: 'skipped', reason: SKIP_REASONS.noMemoryDir };
   const memeshDir = getMemeshDirFromDbPath();
-  const statePath = join(memeshDir, 'note-ingest-state.json');
+  // A new name, so every folder is read once more after an upgrade: an unreleased 4.13.0 build left
+  // notes it held back in the skip cache with an unchanged folder stamp, and only a read clears them.
+  // The old note-ingest-state.json is no longer read.
+  const statePath = join(memeshDir, 'note-ingest-state-2.json');
   const key = createHash('sha256').update(memoryDir).digest('hex').slice(0, 16);
   const state = readJson(statePath) ?? {};
-  const newest = Math.max(newestNoteMtime(memoryDir), holdsChangedAt());
+  const newest = newestNoteMtime(memoryDir);
   const last = typeof state[key]?.at === 'number' ? state[key].at : 0;
   // A folder read before its notes were trusted is read once more, so the notes already stored are made trusted.
   if (newest <= last && !state[key]?.more && state[key]?.trusted === true) {
@@ -425,16 +250,15 @@ export async function runNoteIngestion({ memoryDir, project, metaUrl, deadlineAt
   let result;
   try {
     // The directory is this session's own memory folder (derived from its transcript path): its notes are trusted.
-    result = ingestNoteDirectory({ dir: memoryDir, project, maxFiles: INGEST_MAX_FILES, deadlineAt, trusted: true });
+    result = ingestNoteDirectory({ dir: memoryDir, project, maxFiles: INGEST_MAX_FILES, trusted: true });
   } finally {
     closeDatabase();
   }
   ensurePrivateDir(memeshDir);
   // `startedAt`, not `newest`: a file edited while this run was reading is
-  // newer than the stamp and is picked up next time. A run that left notes
-  // waiting or held only tentatively runs again, whether or not a note changes.
+  // newer than the stamp and is picked up next time.
   // `trusted` is recorded only when the folder's notes are trusted: a run that could not take the copy it needs first leaves it unset, so the next Stop tries again.
-  writeJsonAtomic(statePath, { ...state, [key]: { at: startedAt, more: result.more > 0 || result.pendingPrivate > 0 || result.held.unchecked > 0 || result.redecideLeft > 0, trusted: !result.retrustFailed } });
+  writeJsonAtomic(statePath, { ...state, [key]: { at: startedAt, more: result.more > 0, trusted: !result.retrustFailed } });
   if (result.retrustFailed) return { outcome: 'error', reason: `note trust: ${result.retrustFailed}` };
   // Every shape of MEMORY change counts, not only the ones that store text:
   // a move re-points the memory at its file and a restore takes it out of
@@ -450,7 +274,6 @@ export async function runNoteIngestion({ memoryDir, project, metaUrl, deadlineAt
   // which reads as a bug in doctor rather than as the missing field it is.
   const touched = result.created[0] ?? result.replaced[0] ?? result.repathed[0]
     ?? result.restored[0] ?? result.markedMissing[0] ?? result.retrusted[0];
-  const heldNow = result.held.private + result.held.unchecked;
   const changed = result.created.length + result.replaced.length + result.repathed.length
     + result.restored.length + result.markedMissing.length + result.retrusted.length > 0;
   // A write records the summary (counts only); a skip records a known
@@ -467,13 +290,9 @@ export async function runNoteIngestion({ memoryDir, project, metaUrl, deadlineAt
     reason: changed
       ? summarizeNoteIngest(result)
       : (result.refusedNow > 0 ? SKIP_REASONS.noteFilesRefused
-        : heldNow > 0 ? SKIP_REASONS.notesHeldPrivate
-          : result.pendingPrivate > 0 ? SKIP_REASONS.notesWaitingForPrivateSession
-            : result.more > 0 ? SKIP_REASONS.notesLeftForNextRun
-              : SKIP_REASONS.noteNothingNew),
+        : result.more > 0 ? SKIP_REASONS.notesLeftForNextRun
+          : SKIP_REASONS.noteNothingNew),
     entity: changed ? touched : undefined,
-    // Every note held out or left waiting is counted, whatever else the run did.
-    count: heldNow + result.pendingPrivate > 0 ? heldNow + result.pendingPrivate : undefined,
   };
 }
 
@@ -722,8 +541,7 @@ export function decideNudge({ transcriptPath, sessionId, memoryDir }) {
  * when the line actually went out. A caller that never settles leaves no
  * record, which is the silent skip this whole module exists to avoid.
  */
-export async function runStopNotes(payload, { captureEnabled, project, metaUrl, privacy = { state: 'no' }, deadlineAt, env = process.env }) {
-  if (!Number.isFinite(deadlineAt)) throw new Error('runStopNotes needs the hook\'s deadline');
+export async function runStopNotes(payload, { captureEnabled, project, metaUrl, env = process.env }) {
   // `claudeMemoryDir` throws on anything that is not "no such directory"
   // (EACCES, EIO). That is an error for ingestion — capture is being LOST,
   // not declined — but it must not take the nudge down with it, so it is
@@ -735,49 +553,6 @@ export async function runStopNotes(payload, { captureEnabled, project, metaUrl, 
     memoryDir = claudeMemoryDir(payload?.transcript_path);
   } catch (err) {
     memoryDirError = err;
-  }
-  // Every Stop of every host removes the private-check cache entries of files that are gone, and the temporary files a
-  // writer that died left beside the markers and holds. A marker is never removed: it is the record of the call.
-  prunePrivateCheckCache(privateCheckCacheDir(getMemeshDirFromDbPath()));
-  try {
-    (await loadNoteIngest(metaUrl))?.removeStalePrivateStateTemps();
-  } catch (err) {
-    try { process.stderr.write(`[memesh note-ingest] ${err?.message || err}\n`); } catch { /* stderr gone */ }
-    recordHookOutcome(env, { hook: 'note-ingest', outcome: 'error', reason: noteErrorReason(err), payload });
-  }
-  // The session is private, or could not be checked: no note is imported, the
-  // note files it wrote are held out of every later import (for good, or until
-  // it is decided again), and the nudge, which would ask the agent to remember
-  // something, stays silent.
-  if (privacy.state !== 'no') {
-    let holdFailed = false;
-    try {
-      if (memoryDirError) throw memoryDirError;
-      const held = await holdOutNotes({
-        memoryDir: memoryDir ?? claudeMemoryDirExpected(payload?.transcript_path), transcriptPath: payload?.transcript_path, sessionId: payload?.session_id,
-        metaUrl, deadlineAt, env, payload, state: privacy.state, uncheckedReason: privacy.reason,
-      });
-      recordHookOutcome(env, {
-        hook: 'note-ingest',
-        outcome: 'skipped',
-        reason: held === null ? SKIP_REASONS.noteIngesterNotBuilt : privacy.skipReason,
-        ...(held ? { count: held } : {}),
-        payload,
-      });
-    } catch (err) {
-      holdFailed = true; // the holds are not in place: the caller keeps the session's marker
-      try { process.stderr.write(`[memesh note-ingest] ${err?.message || err}\n`); } catch { /* stderr gone */ }
-      recordHookOutcome(env, { hook: 'note-ingest', outcome: 'error', reason: noteErrorReason(err), payload });
-    }
-    recordHookOutcome(env, { hook: 'remember-nudge', outcome: 'skipped', reason: privacy.skipReason, payload });
-    return { message: null, settle: () => {}, holdFailed };
-  }
-  // Decided `no` by its own hook: what was held while it could not be checked is let through, and imported below.
-  try {
-    await releaseOwnTentativeHolds({ sessionId: payload?.session_id, metaUrl, deadlineAt });
-  } catch (err) {
-    try { process.stderr.write(`[memesh note-ingest] ${err?.message || err}\n`); } catch { /* stderr gone */ }
-    recordHookOutcome(env, { hook: 'note-ingest', outcome: 'error', reason: noteErrorReason(err), payload });
   }
   try {
     if (!captureEnabled) {
@@ -805,12 +580,12 @@ export async function runStopNotes(payload, { captureEnabled, project, metaUrl, 
       // No folder (memoryDir null) is runNoteIngestion's own recorded skip, below.
       recordHookOutcome(env, { hook: 'note-ingest', outcome: 'skipped', reason: SKIP_REASONS.memoryDirOtherProject, payload });
     } else {
-      const r = await runNoteIngestion({ memoryDir, project, metaUrl, deadlineAt });
-      recordHookOutcome(env, { hook: 'note-ingest', outcome: r.outcome, reason: r.reason, entity: r.entity, count: r.count, payload });
+      const r = await runNoteIngestion({ memoryDir, project, metaUrl });
+      recordHookOutcome(env, { hook: 'note-ingest', outcome: r.outcome, reason: r.reason, entity: r.entity, payload });
     }
   } catch (err) {
     try { process.stderr.write(`[memesh note-ingest] ${err?.message || err}\n`); } catch { /* stderr gone */ }
-    recordHookOutcome(env, { hook: 'note-ingest', outcome: 'error', reason: noteErrorReason(err), payload });
+    recordHookOutcome(env, { hook: 'note-ingest', outcome: 'error', reason: hookErrorReason(err), payload });
   }
 
   try {

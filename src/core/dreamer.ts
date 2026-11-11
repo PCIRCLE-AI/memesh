@@ -5,9 +5,8 @@ import type { MemeshDatabase } from '../storage/sqlite.js';
 
 import { createHash } from 'node:crypto';
 
-import { getMemeshDirFromDbPath, getProjectName, holdsSecret, redactSecretList, redactSecrets } from './paths.js';
+import { getProjectName, holdsSecret, redactSecretList, redactSecrets } from './paths.js';
 
-import { decidePrivacy, privateCheckCacheDir } from './private-session.js';
 import { readTranscriptSnapshot, scanTranscripts, transcriptMatchesProject } from './transcript-source.js';
 
 import { parseVisibleConversation } from './transcript-extractor.js';
@@ -35,8 +34,6 @@ const COMPACT_MIN_SIGNAL = 0.2;
 const COMPACT_MAX_SIGNAL = 0.7;
 
 const TRANSCRIPT_PACKAGE_MAX_TURNS = 100;
-/** Time one session's private-session check may take; past it the session is skipped as `private_unchecked`. */
-const DREAMER_PRIVACY_CHECK_MS = 1500;
 
 const TRANSCRIPT_PACKAGE_SOURCE_BYTES = 48 * 1024;
 
@@ -301,18 +298,6 @@ export function executeWorkPackage(
         if (represented.get(project, `transcript:${session.sessionId}`, session.sessionId)) { skip('already_proposed'); continue; }
         const snapshot = readTranscriptSnapshot(session.path, session);
         if (!snapshot || !transcriptMatchesProject(snapshot.bytes, cwd)) { skip('changed_since_scan'); continue; }
-        // The person asked for this session not to be remembered: no digest is built from it. The
-        // same check the hooks use: the marker the tool call left, then the transcript, its
-        // subagents' transcripts and a fork's parent. What cannot be checked counts as private.
-        // The transcript is judged on the very bytes packaged below (`snapshot`), so a file removed
-        // or replaced after it was read cannot answer for them.
-        const memeshDir = getMemeshDirFromDbPath();
-        const privacy = decidePrivacy({
-          transcriptPath: session.path, snapshot: snapshot.bytes, sessionId: session.sessionId, memeshDir,
-          deadlineAt: Date.now() + DREAMER_PRIVACY_CHECK_MS, cacheDir: privateCheckCacheDir(memeshDir),
-        });
-        if (privacy.state === 'yes') { skip('private_session'); continue; }
-        if (privacy.state === 'unchecked') { skip('private_unchecked'); continue; }
         // The visible conversation and its SHA-256 consume this same byte snapshot.
         const turns = parseVisibleConversation(snapshot.bytes)
           .map(turn => ({ ...turn, text: redactSecrets(turn.text) }));

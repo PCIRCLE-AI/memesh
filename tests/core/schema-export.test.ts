@@ -199,14 +199,6 @@ describe('exportOpenAITools', () => {
     expect(tool.function.description).toMatch(/cannot accept or reject/i);
   });
 
-  it('memesh_private_session carries the same words as the MCP tool, takes no properties, and refuses extra ones', async () => {
-    const { TOOL_DEFINITIONS } = await import('../../src/transports/mcp/handlers.js');
-    const mcp = TOOL_DEFINITIONS.find((t) => t.name === 'private_session')!;
-    const tool = tools.find((t: any) => t.function.name === 'memesh_private_session') as any;
-    expect(tool.function.description).toBe(mcp.description.replaceAll('`forget`', 'memesh_forget'));
-    expect(tool.function.parameters).toEqual({ type: 'object', properties: {}, additionalProperties: false });
-  });
-
   it('memesh_message exposes every action and does not collapse reads into ACK', () => {
     const tool = tools.find((t: any) => t.function.name === 'memesh_message') as any;
     expect(tool.function.parameters.required).toEqual(['action']);

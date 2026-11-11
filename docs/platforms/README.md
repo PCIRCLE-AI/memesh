@@ -37,7 +37,3 @@ Desktop Code use the MeMesh Mod; Codex uses MCP/native forms. The shared memory
 core, HTTP API and CLI remain available.
 
 [API reference](../api/API_REFERENCE.md) · [Architecture](../ARCHITECTURE.md)
-
-## Private sessions: what is not covered
-
-When the agent calls `private_session`, a PostToolUse hook records the call at once, and every later hook asks for that record before anything else. Two known gaps remain: a note written before that hook has run (or when it is killed or cannot write the record) can be imported by another session's Stop until the private session's own next Stop reads the call from its transcript; and a note the session's script writes into another project's notes folder is held only when a tool input names that file, that folder or the projects folder. A hook that could not write the record leaves an error that `memesh doctor` shows; one the host killed leaves none. The full rules are in the [API reference](../api/API_REFERENCE.md#private_session).

@@ -3,8 +3,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { ClaudeTranscriptReader } from '../host-runtime/claude-transcript.js';
 import { projectTranscriptSlug } from './transcript-source.js';
-import { getMemeshDirFromDbPath, homeDir } from './paths.js';
-import { decidePrivacy, findCodexRollout, privateCheckCacheDir } from './private-session.js';
+import { homeDir } from './paths.js';
 const MAX_BYTES = 1024 * 1024;
 const MAX_REGISTRY_BYTES = 64 * 1024;
 function readTail(file, forbiddenModeBits = 0, refuseOverBytes = Infinity) {
@@ -73,39 +72,6 @@ function repoLabel(workspace) {
         return undefined;
     }
 }
-const ACTIVITY_CHECK_MS = 250;
-function privateSessionCheck(locate, sessionId) {
-    let warned = false;
-    return () => {
-        const memeshDir = getMemeshDirFromDbPath();
-        let transcriptPath;
-        let located = true;
-        try {
-            transcriptPath = locate();
-        }
-        catch {
-            located = false;
-        }
-        const state = located ? decidePrivacy({
-            sessionId, transcriptPath, memeshDir,
-            deadlineAt: Date.now() + ACTIVITY_CHECK_MS, cacheDir: privateCheckCacheDir(memeshDir),
-        }) : { state: 'unchecked', reason: 'unreadable', kind: 'transient', detail: 'the folder that holds the session\'s rollout cannot be read' };
-        if (state.state === 'unchecked' && !warned) {
-            warned = true;
-            try {
-                process.stderr.write(`[memesh] could not check whether this session is private, so its name and task are hidden: ${state.reason}\n`);
-            }
-            catch { }
-        }
-        return state.state !== 'no';
-    };
-}
-function liveRollout(codexHome, session) {
-    const found = findCodexRollout(codexHome, session);
-    if (found === undefined || found.zst)
-        return undefined;
-    return path.relative(path.join(codexHome, 'archived_sessions'), found.file).startsWith('..') ? found.file : undefined;
-}
 export const defaultClaudeDir = () => process.env.CLAUDE_CONFIG_DIR || path.join(homeDir(), '.claude');
 const startByPid = new Map();
 const unreadableLogged = new Set();
@@ -168,8 +134,6 @@ export function readClaudeRegistry(pid, claudeDir = defaultClaudeDir()) {
 export function createClaudeActivity(pid, workspace, claudeDir = defaultClaudeDir()) {
     let slug;
     let reader;
-    let privateSession;
-    let privateFor = '';
     return () => {
         const registry = readClaudeRegistry(pid, claudeDir);
         const status = registry?.status === 'busy' || registry?.status === 'idle' ? registry.status : undefined;
@@ -181,22 +145,11 @@ export function createClaudeActivity(pid, workspace, claudeDir = defaultClaudeDi
                 reader = new ClaudeTranscriptReader(path.join(claudeDir, 'projects'), slug);
             }
         }
-        const sessionId = typeof registry?.sessionId === 'string' ? registry.sessionId : undefined;
-        if (sessionId && reader && privateFor !== `${slug}:${sessionId}`) {
-            const r = reader;
-            privateFor = `${slug}:${sessionId}`;
-            privateSession = privateSessionCheck(() => r.transcriptFile(sessionId), sessionId);
-        }
-        const isPrivate = sessionId !== undefined && privateSession?.() === true;
-        const task = sessionId && !isPrivate ? reader?.currentTask(sessionId) : undefined;
-        return formatSessionActivity({ repo: repoLabel(typeof registry?.cwd === 'string' ? registry.cwd : workspace), status, title: isPrivate ? undefined : title, task });
+        const task = typeof registry?.sessionId === 'string' ? reader?.currentTask(registry.sessionId) : undefined;
+        return formatSessionActivity({ repo: repoLabel(typeof registry?.cwd === 'string' ? registry.cwd : workspace), status, title, task });
     };
 }
 export function createCodexActivity(session, workspace, dataDir, codexHome = process.env.CODEX_HOME || path.join(homeDir(), '.codex')) {
-    let rollout;
-    const privateSession = privateSessionCheck(() => (rollout ??= liveRollout(codexHome, session)), session);
-    return () => privateSession()
-        ? formatSessionActivity({ repo: repoLabel(workspace) })
-        : formatSessionActivity({ repo: repoLabel(workspace), title: readCodexTitle(codexHome, session), task: readCodexPlanActivity(dataDir, session, workspace) });
+    return () => formatSessionActivity({ repo: repoLabel(workspace), title: readCodexTitle(codexHome, session), task: readCodexPlanActivity(dataDir, session, workspace) });
 }
 //# sourceMappingURL=session-activity.js.map

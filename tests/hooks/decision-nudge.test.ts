@@ -88,28 +88,6 @@ describe('Feature: decision-nudge hook (PostToolUse ExitPlanMode|AskUserQuestion
     return out;
   }
 
-  it('stays silent in a session where the agent called private_session, and says why', () => {
-    const transcript = path.join(tmpHome, 'transcript.jsonl');
-    const call = { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'mcp__plugin_memesh_memesh__private_session', input: {} }] } };
-    fs.writeFileSync(transcript, `${JSON.stringify(call)}\n`);
-    const quiet = runHook(payload('ExitPlanMode', 'private-session-1', { transcript_path: transcript }));
-    expect(quiet.stdout).toBe('');
-    const records = fs.readFileSync(path.join(memeshDir, 'hook-outcomes.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
-    expect(records.at(-1)).toMatchObject({ hook: 'decision-nudge', outcome: 'skipped', reason: 'private_session' });
-    fs.writeFileSync(transcript, `${JSON.stringify({ type: 'user', message: { role: 'user', content: 'private_session' } })}\n`);
-    expect(runHook(payload('ExitPlanMode', 'private-session-2', { transcript_path: transcript })).stdout).not.toBe('');
-  });
-
-  it('records a session that cannot be checked as unchecked, never as private, and stays silent (Q6_18 F5, Q6_19 F2)', () => {
-    const transcript = path.join(tmpHome, 'a-directory.jsonl');
-    fs.mkdirSync(transcript, { recursive: true });
-    const quiet = runHook(payload('ExitPlanMode', 'unchecked-session-1', { transcript_path: transcript }));
-    expect(quiet.stdout).toBe('');
-    const records = fs.readFileSync(path.join(memeshDir, 'hook-outcomes.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((r) => r.hook === 'decision-nudge');
-    expect(records.at(-1)).toMatchObject({ outcome: 'skipped', reason: 'the session could not be checked for a private-session call, so nothing is saved' });
-    expect(records.some((r) => r.reason === 'private_session')).toBe(false);
-  });
-
   it('ExitPlanMode gets the nudge, with the PostToolUse contract shape', () => {
     const { stdout, stderr, status } = runHook(payload('ExitPlanMode'));
     expect(stderr).toBe('');

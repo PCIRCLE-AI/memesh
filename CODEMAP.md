@@ -108,8 +108,6 @@ docs/                # ARCHITECTURE.md, api/API_REFERENCE.md
 | `guard-check.js` | PreToolUse Bash | enforce accepted lesson guards before risky repeats |
 | `src/host-runtime/codex-session.ts` | SessionStart / SessionEnd | launch, supersede, and retire the detached exact-thread companion; apply a matching optional identity override |
 | `session-summary.js` | Stop | deterministic session capture; handoff capture (`_stop-handoff`), note ingest + remember nudge (`_stop-notes`) |
-| `private-session-mark.js` | PostToolUse `private_session` | mark the session private for the note importer at once (notes changed since wait for the session's holds) and hold out the notes its transcript has named so far; writes no memory |
-| `session-end-notes.js` | SessionEnd | in a private session (or one that cannot be checked), hold out the note files it named or changed since the call, after its last Stop too, and end its wait; in one that is not private, release what was held while it could not be checked; writes no memory |
 | `stop-message-gate.js` | Stop | Claude-Code-only: block the stop once per waiting agent-message id (#468) |
 | `pre-compact.js` | PreCompact | end-of-context save |
 | `post-commit.js` | PostToolUse Bash | git commit tracking |
@@ -117,8 +115,8 @@ docs/                # ARCHITECTURE.md, api/API_REFERENCE.md
 | `user-prompt-intent.js` | UserPromptSubmit | waiting-message reminder, private marker renewal |
 | `prompt-recall.js` | UserPromptSubmit | inject up to two strongly matching stored memories (title and `[mem:id]`) beside the prompt, out-of-date ones dropped |
 
-`scripts/hooks/_shared.js`, `_claude-channel.js`, `_clear-alias.js`, `_codex-rollout.js`, `_stop-notes.js`, `_stop-handoff.js`,
-`_private-session.js`, `_session-written-notes.js` and `_hook-budgets.js` (the read budget of each private-session hook, counted from the start of its process) are helpers, not hook commands. `_shared.js` resolves Claude's configured recipient or default `claude-code`; inbox queries suppress message IDs with intake receipts. Channel push is optional. `scripts/hooks/auto-update-runner.mjs` is started in the background by the SessionStart hook (and by `memesh serve`) unless
+`scripts/hooks/_shared.js`, `_claude-channel.js`, `_clear-alias.js`, `_codex-rollout.js`, `_stop-notes.js` and `_stop-handoff.js`
+are helpers, not hook commands. `_shared.js` resolves Claude's configured recipient or default `claude-code`; inbox queries suppress message IDs with intake receipts. Channel push is optional. `scripts/hooks/auto-update-runner.mjs` is started in the background by the SessionStart hook (and by `memesh serve`) unless
 automatic updates are off, and by `memesh update` when asked by hand; there is no consent step. It is not registered in the manifest.
 
 ---

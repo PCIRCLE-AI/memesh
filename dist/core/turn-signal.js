@@ -1,7 +1,6 @@
 import { createHash } from 'crypto';
 import { redactSecrets } from './paths.js';
 import { remember } from './operations.js';
-import { chatPrivacySkip } from './session-insight.js';
 const DECISION_CUES = [
     /\b(?:we|i)(?:'ve| have|'ll| will)?\s+(?:decided|settled on|opted)\b/gi,
     /\bdecision\s*:/gi,
@@ -68,9 +67,6 @@ export function classifyTurn(_userText, assistantText) {
 }
 export const TURN_TEXT_CAP = 2000;
 export function captureChatTurn(input) {
-    const skip = chatPrivacySkip(input.sessionId);
-    if (skip)
-        return { outcome: 'skipped', ...skip };
     const signal = classifyTurn(input.userText, input.assistantText);
     if (!signal)
         return { outcome: 'skipped', reason: 'no decision- or lesson-shaped move in this turn' };

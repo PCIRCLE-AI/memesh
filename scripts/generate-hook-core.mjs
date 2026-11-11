@@ -45,7 +45,7 @@ const outDir = resolve(root, 'scripts/hooks/_generated');
 const SOURCES = [
   { from: 'dist/core/paths.js', to: 'core-paths.js', src: 'src/core/paths.ts' },
   { from: 'dist/core/capture-flag.js', to: 'capture-flag.js', src: 'src/core/capture-flag.ts' },
-  { from: 'dist/core/private-session.js', to: 'private-session.js', src: 'src/core/private-session.ts' },
+  { from: 'dist/core/transcript-lines.js', to: 'transcript-lines.js', src: 'src/core/transcript-lines.ts' },
   { from: 'dist/core/title.js', to: 'title.js', src: 'src/core/title.ts' },
   { from: 'dist/core/work-topology.js', to: 'work-topology.js', src: 'src/core/work-topology.ts' },
   // Which memories a project's reads may see: the graph's recall and the briefing's

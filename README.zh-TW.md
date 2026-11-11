@@ -64,7 +64,7 @@ memesh doctor
 >
 > 記下目前進度，方便下一個對話接手。
 
-MeMesh 預設會記住。你說某段內容不要存時，agent 不會主動去存那一段，但對話結束時自動留下的交接與活動紀錄仍會照常存。跟 agent 說「這次對話不要記」，它就會在這個對話剩下的時間停止自動儲存，任何語言都可以（只是談到這個功能，或只要求不記某一個細節，都不算）：對話摘要、交接、壓縮前的筆記、匯入的筆記、提醒和 Codex 分享的計畫步驟都不會從這個對話存下，先前的記憶、commit 記錄和你的對話檔案則保持不變。這個對話寫過或提到的筆記檔，是用內容擋在記憶之外的，之後被複製或改名到哪裡都一樣；無法檢查的對話在能檢查之前什麼都不存；`memesh doctor` 會說明擋下了什麼、為什麼。Hermes 沒說明為什麼換對話、而且離開的那個對話是私密的時候，新對話什麼都不存，並記一筆錯誤說明原因，重新啟動前後都一樣；但它本身不會被標成私密。標記一旦寫下就不會被刪除。完整規則與已知限制請見 [API 參考](docs/api/API_REFERENCE.md#private_session)。
+MeMesh 預設會記住。你說某段內容不要存時，agent 不會主動去存那一段，但對話結束時自動留下的交接與活動紀錄仍會照常存。
 
 Claude Code 插件提供自動記錄和提醒。Codex 插件在獲准執行 hooks 後，可以在對話開始時帶入記憶；其他自動記錄行為依工具而異。你也可以直接請 agent 儲存或查找記憶。
 
@@ -79,7 +79,7 @@ MeMesh 4.11.0 起在 Claude Code 新增 `/memesh-memories` 入口，可查看及
 <details>
 <summary>工具與整合細節</summary>
 
-## 全部 13 個記憶與協作工具
+## 全部 12 個記憶與協作工具
 
 | 工具 | 用途 |
 |------|------|
@@ -94,7 +94,6 @@ MeMesh 4.11.0 起在 Claude Code 新增 `/memesh-memories` 入口，可查看及
 | `import` | 匯入記憶備份。 |
 | `work_package` | 準備有範圍限制的記憶摘要或對話摘錄，交由使用者審核。 |
 | `user_patterns` | 整理工作習慣。 |
-| `private_session` | 你說「這次對話不要記」時，停止這個對話的自動儲存。 |
 | `improvement` | 提出改善建議，交由使用者審核。 |
 
 **命令列補充。**
@@ -104,7 +103,7 @@ MeMesh 4.11.0 起在 Claude Code 新增 `/memesh-memories` 入口，可查看及
 
 ---
 
-Claude Code 插件共有 13 個 hook 指令；Codex 插件另有 2 個 Codex 專用的 hook。MeMesh 不掃描你訊息裡的關鍵字，由 agent 依你的話自己判斷。每個 session 開始時會帶入這個專案最近寫入的 30 條記憶標題；當你的提問明確與已存的記憶有關時，最多兩條記憶（標題與 `[mem:id]`）會跟著提問一起送出。已被較新決定取代、或標題寫著還在等待的記憶不會帶入。提問的部分可用 `memesh config set promptRecall false` 關閉。
+Claude Code 插件共有 11 個 hook 指令；Codex 插件另有 2 個 Codex 專用的 hook。MeMesh 不掃描你訊息裡的關鍵字，由 agent 依你的話自己判斷。每個 session 開始時會帶入這個專案最近寫入的 30 條記憶標題；當你的提問明確與已存的記憶有關時，最多兩條記憶（標題與 `[mem:id]`）會跟著提問一起送出。已被較新決定取代、或標題寫著還在等待的記憶不會帶入。提問的部分可用 `memesh config set promptRecall false` 關閉。
 記憶介面在 Claude Code／Claude Desktop Code 使用 MeMesh Mod，Codex 使用 MCP／原生表單；不再提供獨立 Web Dashboard。
 
 排序權重：相關性 30%、新近程度 25%、使用頻率 18%、信心 17%、回憶影響 10%。詳見[架構說明](docs/ARCHITECTURE.md)。

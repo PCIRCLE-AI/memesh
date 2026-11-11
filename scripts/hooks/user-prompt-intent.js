@@ -4,14 +4,13 @@
 //
 // Runs on every prompt and does only deterministic work:
 //   - tells the agent about messages waiting for this session's recipient;
-//   - renews a private session's marker when its user is back;
 //   - on a Node that cannot run MeMesh, records why and stays silent;
 //   - records a prompt over MAX_PROMPT_CHARS as skipped;
 //   - leaves a hook-outcome record on every exit path.
 // It does not read the prompt's words. Saving is on by default, and whether
 // the user asked not to save is the model's call, from the `remember` tool
-// description. (The file keeps its old name: renaming
-// it would move the install paths.)
+// description. (The file keeps its old name: renaming it would move the
+// install paths.)
 //
 // Defensive: never blocks user prompts, even on hook failure. Errors are
 // surfaced to stderr (visible in Claude Code debug logs) rather than
@@ -22,15 +21,11 @@ import {
   hookErrorReason,
   SKIP_REASONS,
   recordHookOutcome,
-  getMemeshDirFromDbPath,
   unreadMessageLines,
   SESSION_ID_MISMATCH_REASON,
 } from './_shared.js';
 import { hookNodeProblem, NODE_TOO_OLD_REASON } from './_shared.js';
-import { join } from 'path';
-import { existsSync, realpathSync } from 'fs';
-import { sessionFileName } from './_generated/private-session.js';
-import { deadlineFor, HOOK_BUDGET_MS } from './_hook-budgets.js';
+import { realpathSync } from 'fs';
 
 /** Longest prompt (in characters) the hook accepts; a larger one is recorded as skipped. */
 export const MAX_PROMPT_CHARS = 256 * 1024;
@@ -107,17 +102,6 @@ if (isMainModule) {
       if (hookNodeProblem('user-prompt-intent')) {
         record('error', NODE_TOO_OLD_REASON);
         return process.exit(0);
-      }
-      // A private session whose user is back: its marker is live again before the agent writes anything.
-      // Only a session that has a marker pays for the import.
-      try {
-        if (typeof data.session_id === 'string' && data.session_id !== ''
-          && existsSync(join(getMemeshDirFromDbPath(), 'private-sessions', sessionFileName(data.session_id)))) {
-          const { renewPrivateNoteMarker } = await import('./_stop-notes.js');
-          await renewPrivateNoteMarker({ sessionId: data.session_id, metaUrl: import.meta.url, deadlineAt: deadlineFor(HOOK_BUDGET_MS.userPrompt.renew), payload: data });
-        }
-      } catch (err) {
-        record('error', hookErrorReason(err));
       }
       // Claude Code sends `prompt`; `user_prompt` is the older name. The text itself is never read.
       const prompt = data.prompt ?? data.user_prompt ?? '';
