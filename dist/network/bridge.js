@@ -1265,10 +1265,22 @@ var WORK_LAYER_TYPES = /* @__PURE__ */ new Set([
   "plan",
   "task-state"
 ]);
+var DECISION_TYPES = /* @__PURE__ */ new Set(["decision", "architecture_decision", "design_decision"]);
+var PREFERENCE_TYPES = ["preference", "user_preference"];
+var SHARED_EXPERIENCE_TYPES = /* @__PURE__ */ new Set([
+  ...LESSON_TYPES,
+  ...DECISION_TYPES,
+  ...PREFERENCE_TYPES
+]);
+var SHARED_EXPERIENCE_TYPE_LIST = [...SHARED_EXPERIENCE_TYPES];
 var DECISION_LAYER_TYPES = [...WORK_LAYER_TYPES].filter((type) => !LESSON_TYPES.has(type) && type !== "task-state");
 var DEFAULT_TOPOLOGY_BUDGET = {
   maxChars: 4e3,
   maxLineChars: 160
+};
+var SHARED_TOPOLOGY_BUDGET = {
+  maxChars: 640,
+  maxLineChars: DEFAULT_TOPOLOGY_BUDGET.maxLineChars
 };
 var GLOBAL_TOPOLOGY_BUDGET = {
   maxChars: 640,

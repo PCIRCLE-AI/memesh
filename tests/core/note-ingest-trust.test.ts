@@ -57,12 +57,12 @@ describe('Feature: trust of note memories is decided by the caller, per folder',
     expect(kg().getEntity('steady')!.observations).toEqual(['Fourth version.']);
   });
 
-  it('a trusted decision note without a stated reason is stored as written, not refused', () => {
+  it('a decision note without a stated reason, even in the own folder, is stored as written, not refused, and stays untrusted', () => {
     const dir = folder('own', { 'd.md': note('plain_decision', 'decision', 'Use tabs.') });
     const result = ingestNoteDirectory({ dir, project: 'p', trusted: true });
     expect(result.created).toEqual(['plain_decision']);
     expect(result.skipped).toEqual([]);
-    expect(metaOf('plain_decision').trust).toBe('trusted');
+    expect(metaOf('plain_decision').trust).toBe('untrusted');
   });
 });
 

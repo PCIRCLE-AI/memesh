@@ -20,12 +20,15 @@ hosts should share memories. Not installed yet? Follow
    - `minimal` (**default**): this project — its decisions, lessons,
      knowledge and recent activity, with the repository state in front
      whenever anything else is shown — plus up to five of your memories that
-     belong to no project (every level, under their own heading), then the
+     belong to no project (every level, under their own heading) and up to
+     three preferences of your other projects (a preference, or feedback, that
+     MeMesh imported from your own memory folder), each labelled with the project it came from, in
+     a section after this project's own that cannot take its room, then the
      recent index: the titles of the 30 memories most recently written in this
      project's scope (this project and no project), `- title [mem:id]`,
      minus any that a newer decision on the same topic in the list replaces or
      whose title says it is waiting, at every level. No task state, nothing
-     from other projects in the ranked sections. A project with nothing to
+     from other projects in the ranked sections but those preferences. A project with nothing to
      show injects only the session's project line, and that line appears only
      when the host reports a usable working directory; without one there is no
      project line and nothing is guessed.
@@ -136,7 +139,7 @@ hosts should share memories. Not installed yet? Follow
 | `import` | Import a JSON export; `merge_strategy` (required): skip / append / overwrite |
 | `learn` | Record a structured lesson: error, root cause, fix, prevention |
 | `task_state` | Read or update where the work stands: goal / next / blocked / done |
-| `briefing` | The assembled work topology — an eligible exact-project handoff precedes ranked memories at every level, after optional repository facts; `minimal` then shows this project's decisions, lessons, knowledge and recent activity plus memories with no project, closing with the recent index (titles of the 30 most recently written memories in scope) at every level, `standard` adds fresh task state, and `full` adds other projects and global memory; exact `project` + `recipient` can surface only that recipient's unfetched deliveries |
+| `briefing` | The assembled work topology — an eligible exact-project handoff precedes ranked memories at every level, after optional repository facts; `minimal` then shows this project's decisions, lessons, knowledge and recent activity plus memories with no project and a few preferences of other projects, closing with the recent index (titles of the 30 most recently written memories in scope) at every level, `standard` adds fresh task state, and `full` adds other projects and global memory; exact `project` + `recipient` can surface only that recipient's unfetched deliveries |
 | `user_patterns` | Analyze work schedule, tool preferences, and focus areas from memory |
 | `improvement` | Propose an evidence-linked product improvement or read its status; only a human may accept/reject it |
 | `message` | Discover live agents, then exchange exact-recipient untrusted messages: durable JSON payload max 64 KiB; complete native envelope max 16 KiB with distinct `native_message_too_large` and `recipient_unavailable` errors; delivery reads/acceptance never imply ACK or disposition; a message is kept one day, then deleted |
@@ -161,7 +164,7 @@ When the user asks you not to remember or save this session or conversation, cal
   general lesson). The CLI works the same way: `memesh remember` files the
   memory under the current directory's project, `--project <id>` names another
   and `--no-project` stores one with none. `recall` searches the bound project (or `project`), memories
-  with no project and global ones, and says which in `scope`. When you tag by hand (the CLI, or another
+  with no project, global ones, and the decisions, lessons and preferences of any project, except untrusted ones (each result's `projects` says where it came from; another project's commits, session summaries, handoffs and notes are never included, nor the notes of its memory folder other than preferences and feedback), and says which in `scope`. When you tag by hand (the CLI, or another
   project), use `project:<id>`, where `<id>` is the `project` field of the
   `briefing` result (CLI: `memesh briefing --json`). The first line of the
   injected block gives this session's exact project id (readable name plus a
@@ -248,7 +251,8 @@ Under Claude Code with the MeMesh plugin, hooks capture automatically:
 - **Stop** captures bounded session evidence, including observed error/fix signals, and replaces the exact project's handoff with the latest sufficiently long cleaned assistant reply. A skipped capture leaves the old handoff unchanged; it may describe a side question, so verify it before acting.
   It also ingests the project's Claude Code memory directory
   (`~/.claude/projects/<slug>/memory/*.md` — one memory per file with
-  `name`/`description`/`metadata.type` frontmatter, tagged `source:note-file`;
+  `name`/`description`/`metadata.type` frontmatter, tagged `source:note-file`
+  (tags that start with `source:` are reserved for MeMesh: `remember` refuses them);
   a file that disappears is tagged `source:note-file:missing`, never deleted),
   and when the turn since the last Stop approved a plan, answered a question,
   committed, or turned a test red then green — with no `remember`/`learn` call

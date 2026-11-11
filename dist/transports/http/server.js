@@ -384,7 +384,7 @@ function handleGet(res, produce) {
 }
 app.post('/v1/remember', (req, res) => handlePost(RememberBody, req, res, (data) => remember({ ...data, sourceHost: 'http' })));
 app.post('/v1/recall', (req, res) => handlePost(RecallBody, req, res, async (data) => {
-    const result = await recallWithConflicts(data.ids !== undefined ? { ...data, projectScope: null } : data);
+    const result = await recallWithConflicts(data);
     const { entities, conflicts, retrieval } = result;
     return { data_notice: MEMORY_DATA_NOTICE, entities, retrieval, ...('results' in result ? { results: result.results } : {}), ...(conflicts.length > 0 ? { conflicts } : {}) };
 }));

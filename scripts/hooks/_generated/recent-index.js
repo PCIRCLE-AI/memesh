@@ -6,7 +6,7 @@
 // always-on capture path survives a missing or stale dist/ while staying
 // byte-locked to core — eliminating the hand-mirror drift behind the P0 FTS bug.
 // ============================================================================
-import { checkoutProjectIds, redactMemoryText } from './core-paths.js';
+import { getProjectIds, redactMemoryText } from './core-paths.js';
 import { candidateIsAutoInjectable } from './briefing-index.js';
 import { DECISION_TYPES, EVIDENCE_LAYER_TYPES, jsonStringLiteral, projectLabel, sliceWholeChars, utcEpoch } from './work-topology.js';
 export const RECENT_INDEX_SIZE = 30;
@@ -24,10 +24,10 @@ export const RECENT_INDEX_SKIP_TYPES = ['feedback', 'engineering_feedback'];
 export const PENDING_TITLE = /等\s*KT|等待|待(辦|做|合併|裁決|審|確認|處理)|暫(時|停|緩|維持)|未解|尚未|pending|waiting|todo|\bwip\b|blocked/i;
 const TOPIC_STOP_WORDS = ['kt', 'the', 'a', 'an', 'to', 'of', 'and', 'or', 'in', 'on', 'at', 'for', 'is', 'are', 'be', 'by', 'with', 'not', 'no', 'it', 'as', 'from', 'only', 'per', 'via', 'vs'];
 const DAY_MS = 86_400_000;
-export function projectAliases(project, cwd = null) {
+export function projectAliases(project, scope = null) {
     if (project === null)
         return [];
-    const checkout = cwd === null ? [] : checkoutProjectIds(cwd);
+    const checkout = scope === null ? [] : typeof scope === 'string' ? getProjectIds(scope) : scope;
     const ids = checkout.includes(project) ? [project, ...checkout] : [project];
     return [...new Set([...ids, ...ids.map(projectLabel)])];
 }
@@ -166,8 +166,8 @@ function heading(project) {
     const where = project === null ? '' : ` in ${jsonStringLiteral(projectLabel(project))}`;
     return `Recently written memories${where} (newest first; recall a [mem:id] to read one):`;
 }
-export function buildRecentIndex(db, project, asOf = Date.now(), cwd = null) {
-    const pool = readRecentPool(db, projectAliases(project, cwd), asOf);
+export function buildRecentIndex(db, project, asOf = Date.now(), scope = null) {
+    const pool = readRecentPool(db, projectAliases(project, scope), asOf);
     const shown = [];
     const removed = [];
     for (const row of pool) {

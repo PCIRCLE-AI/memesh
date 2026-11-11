@@ -80,6 +80,7 @@ export declare const SKIP_REASONS: {
     readonly noSessionOrTranscript: "neither session_id nor transcript_path in the payload";
     readonly emptyStdin: "empty stdin";
     readonly cwdAbsent: "cwd absent in payload — cannot resolve project";
+    readonly memoryDirOtherProject: "the memory folder belongs to the project the session started in, not the one of its cwd";
     readonly projectLineNoCwd: "no usable session cwd — the project line was not shown";
     readonly notAgenticLoop: "not an agentic loop";
     readonly transcriptPathAbsent: "transcript_path absent";

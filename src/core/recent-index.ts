@@ -28,7 +28,7 @@
 // the session-start hook, the prompt hook and `briefing` run this file.
 
 import type { MemeshDatabase } from '../storage/sqlite.js';
-import { checkoutProjectIds, redactMemoryText } from './paths.js';
+import { getProjectIds, redactMemoryText } from './paths.js';
 import { candidateIsAutoInjectable } from './briefing-index.js';
 import { DECISION_TYPES, EVIDENCE_LAYER_TYPES, jsonStringLiteral, projectLabel, sliceWholeChars, utcEpoch } from './work-topology.js';
 
@@ -59,15 +59,16 @@ const TOPIC_STOP_WORDS = ['kt', 'the', 'a', 'an', 'to', 'of', 'and', 'or', 'in',
 const DAY_MS = 86_400_000;
 
 /**
- * The ids proven to name `project`'s repository (it first): the ids `cwd`'s
- * checkout is known by, when `project` is one of them, else `project` alone;
+ * The ids proven to name `project`'s repository (it first): the ids the
+ * checkout is known by (`getProjectIds` of a folder, or the ids themselves),
+ * when `project` is one of them, else `project` alone;
  * plus each one's hash-less form from before ids carried a hash. A same-name
  * id with another hash is another repository (two folders called `api`), and
  * case counts.
  */
-export function projectAliases(project: string | null, cwd: string | null = null): string[] {
+export function projectAliases(project: string | null, scope: string | readonly string[] | null = null): string[] {
   if (project === null) return [];
-  const checkout = cwd === null ? [] : checkoutProjectIds(cwd);
+  const checkout = scope === null ? [] : typeof scope === 'string' ? getProjectIds(scope) : scope;
   const ids = checkout.includes(project) ? [project, ...checkout] : [project];
   return [...new Set([...ids, ...ids.map(projectLabel)])];
 }
@@ -267,9 +268,9 @@ function heading(project: string | null): string {
   return `Recently written memories${where} (newest first; recall a [mem:id] to read one):`;
 }
 
-/** The session-start index for `project` as of `asOf` (now, unless replaying); `cwd` is the session's folder, when known. */
-export function buildRecentIndex(db: MemeshDatabase, project: string | null, asOf: number = Date.now(), cwd: string | null = null): RecentIndex {
-  const pool = readRecentPool(db, projectAliases(project, cwd), asOf);
+/** The session-start index for `project` as of `asOf` (now, unless replaying); `scope` is the session's folder or the ids its checkout is filed under, when known. */
+export function buildRecentIndex(db: MemeshDatabase, project: string | null, asOf: number = Date.now(), scope: string | readonly string[] | null = null): RecentIndex {
+  const pool = readRecentPool(db, projectAliases(project, scope), asOf);
   const shown: RecentRow[] = [];
   const removed: RecentIndex['removed'] = [];
   for (const row of pool) {

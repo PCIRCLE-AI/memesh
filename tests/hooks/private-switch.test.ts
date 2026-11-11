@@ -505,7 +505,7 @@ describe('the hooks, end to end', () => {
   beforeEach(() => {
     home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-private-switch-hook-'));
     fs.mkdirSync(path.join(home, '.memesh'), { recursive: true });
-    projectDir = path.join(home, '.claude', 'projects', '-tmp-proj');
+    projectDir = path.join(home, '.claude', 'projects', home.replace(/[^a-zA-Z0-9]/g, '-'));
     fs.mkdirSync(projectDir, { recursive: true });
     transcript = path.join(projectDir, 'sess-1.jsonl');
     memoryDir = path.join(projectDir, 'memory');
@@ -1197,7 +1197,9 @@ describe('the hooks, end to end', () => {
       });
 
       describe('R-F: a note a private session writes into another project\'s notes folder (22543bf03 onwards)', () => {
-        const projectB = () => path.join(home, '.claude', 'projects', '-tmp-proj-b');
+        // Project B's own folder is named after the directory its sessions run in (the Stop hook checks that).
+        const dirB = () => path.join(home, 'proj-b');
+        const projectB = () => path.join(home, '.claude', 'projects', dirB().replace(/[^a-zA-Z0-9]/g, '-'));
         const memoryB = () => path.join(projectB(), 'memory');
         const writeB = () => {
           fs.mkdirSync(memoryB(), { recursive: true });
@@ -1206,7 +1208,7 @@ describe('the hooks, end to end', () => {
         const stopB = (id: string) => {
           const t = path.join(projectB(), `${id}.jsonl`);
           fs.writeFileSync(t, jsonl([claudeUser('go'), ...claudeEdits()]));
-          run(STOP, { session_id: id, transcript_path: t, cwd: projectB() });
+          run(STOP, { session_id: id, transcript_path: t, cwd: dirB() });
         };
         const privateWritesB = () => {
           fs.writeFileSync(transcriptOf('s-p'), jsonl([claudeUser('go'), ...claudeEdits(), ...claudePrivateCall()]));
@@ -1276,7 +1278,9 @@ describe('the hooks, end to end', () => {
         fs.ftruncateSync(fd, bytes);
         fs.closeSync(fd);
       };
-      const projectB = () => path.join(home, '.claude', 'projects', '-tmp-proj-b');
+      // Project B's own folder is named after the directory its sessions run in (the Stop hook checks that).
+        const dirB = () => path.join(home, 'proj-b');
+        const projectB = () => path.join(home, '.claude', 'projects', dirB().replace(/[^a-zA-Z0-9]/g, '-'));
       const memoryB = () => path.join(projectB(), 'memory');
       const noteB = (file: string, name: string, body: string) => {
         fs.mkdirSync(memoryB(), { recursive: true });
@@ -1285,7 +1289,7 @@ describe('the hooks, end to end', () => {
       const stopB = (id: string) => {
         const t = path.join(projectB(), `${id}.jsonl`);
         fs.writeFileSync(t, jsonl([claudeUser('go'), ...claudeEdits()]));
-        run(STOP, { session_id: id, transcript_path: t, cwd: projectB() });
+        run(STOP, { session_id: id, transcript_path: t, cwd: dirB() });
       };
 
       it.skipIf(!canDenyReads)('R-A P1b: an ordinary note written while a session was only unchecked is imported once the session is checked and is not private, never held for good (Q6_17 P1b)', () => {

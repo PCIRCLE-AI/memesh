@@ -2,6 +2,7 @@ import type { MemeshDatabase } from './storage/sqlite.js';
 import { createHash } from 'node:crypto';
 export type { Entity, Relation, CreateEntityInput, SearchOptions } from './core/types.js';
 import type { Entity, Relation, CreateEntityInput, SearchOptions, EntityRow } from './core/types.js';
+import type { ProjectScope } from './core/project-scope.js';
 import { findConflicts, trackAccess } from './storage/conflicts.js';
 import {
   indexedObservationText,
@@ -24,6 +25,7 @@ import { dropEntityFromIndexes } from './storage/entity-index.js';
 import { ftsIndexIsCurrent } from './storage/schema.js';
 import { addTags, appendObservations, insertOrGetEntity, reindexEntityFts, runEntityWrite } from './storage/entity-write.js';
 import { canonicalEntityType } from './core/work-topology.js';
+import { noProjectTag, projectScopeFilter } from './core/project-scope.js';
 import { KNOWN_ERROR_PATTERNS, MIN_NAME_PROJECT_LENGTH, PROJECT_TAG_PREFIX } from './core/project-attribution.js';
 import { NOT_A_PROJECT_MEMORY } from './core/projects.js';
 import { addsNewText, besideRefusal, clearPartsOfKey, metadataRefusal, redactTextValues, redactTitleAndObservations, redactVersionText, textsIn } from './core/paths.js';
@@ -392,22 +394,18 @@ function dropUbiquitousTerms(db: MemeshDatabase, terms: string[]): string[] {
   }
 }
 
-/** Memories that carry no project tag at all (entity alias `e`). */
-const NO_PROJECT_TAG = "NOT EXISTS (SELECT 1 FROM tags sp WHERE sp.entity_id = e.id AND sp.tag LIKE 'project:%')";
-
 /**
- * A default recall's scope over the entity alias `e`. A project tag: that
- * project's memories, memories with no project, and global ones. null (no
- * bound project): memories with no project and global ones. Never another
- * project's memories.
+ * Which relations a read may show. A relation names the memory at its far end,
+ * so a read that is limited to one project must not show a far end outside that
+ * project's default scope: a foreign far end is left out as if it did not
+ * exist. `scope` is a project tag, several, or null (no project) in the sense of
+ * `projectScopeFilter`; undefined leaves the project unrestricted, while the
+ * archived and namespace rules still apply.
  */
-function projectScopeFilter(scope: string | null): { sql: string; params: string[] } {
-  return scope === null
-    ? { sql: `AND (${NO_PROJECT_TAG} OR e.namespace = 'global')`, params: [] }
-    : {
-      sql: `AND (EXISTS (SELECT 1 FROM tags st WHERE st.entity_id = e.id AND st.tag = ?) OR ${NO_PROJECT_TAG} OR e.namespace = 'global')`,
-      params: [scope],
-    };
+export interface RelationView {
+  scope?: ProjectScope;
+  namespace?: string;
+  includeArchived?: boolean;
 }
 
 export class KnowledgeGraph {
@@ -895,7 +893,7 @@ export class KnowledgeGraph {
 
   getEntitiesByIds(
     ids: number[],
-    opts?: { includeArchived?: boolean; namespace?: string; tag?: string; projectScope?: string | null; filterRelations?: boolean; relationIncludeArchived?: boolean }
+    opts?: { includeArchived?: boolean; namespace?: string; tag?: string; projectScope?: ProjectScope; relations?: RelationView }
   ): Entity[] {
     if (ids.length === 0) return [];
 
@@ -957,12 +955,16 @@ export class KnowledgeGraph {
       tagMap.get(row.entity_id)!.push(row.tag);
     }
 
-    // Batch query 4: relations (from_entity_id perspective, matching getRelations)
-    const relationScope = opts?.filterRelations && opts.projectScope !== undefined
-      ? projectScopeFilter(opts.projectScope) : { sql: '', params: [] };
-    const relationScopeSql = relationScope.sql.replaceAll('e.', 'e_to.');
-    const relationNamespaceSql = opts?.filterRelations && opts.namespace ? 'AND e_to.namespace = ?' : '';
-    const relationStatusSql = opts?.filterRelations && !opts.relationIncludeArchived ? "AND e_to.status != 'archived'" : '';
+    // Batch query 4: relations (from_entity_id perspective, matching getRelations).
+    // Without `opts.relations` every relation is returned; with it, a relation
+    // whose far end the read could not have returned is left out (RelationView).
+    const view = opts?.relations;
+    const relationScope = view?.scope !== undefined ? projectScopeFilter(view.scope, 'e_to') : { sql: '', params: [] };
+    const relationNamespaceSql = view?.namespace ? 'AND e_to.namespace = ?' : '';
+    // An archived far end is hidden unless asked for, except the memory a
+    // `supersedes` link replaced: a reader of the new memory should know what it
+    // replaced. The project rule above still applies to it.
+    const relationStatusSql = view && !view.includeArchived ? "AND (e_to.status != 'archived' OR r.relation_type = 'supersedes')" : '';
     const relRows = this.db
       .prepare(
         `SELECT r.from_entity_id, e_from.name AS "from", e_to.name AS "to",
@@ -970,9 +972,27 @@ export class KnowledgeGraph {
          FROM relations r
          JOIN entities e_from ON r.from_entity_id = e_from.id
          JOIN entities e_to ON r.to_entity_id = e_to.id
-         WHERE r.from_entity_id IN (${placeholders}) ${relationScopeSql} ${relationNamespaceSql} ${relationStatusSql}`
+         WHERE r.from_entity_id IN (${placeholders}) ${relationScope.sql} ${relationNamespaceSql} ${relationStatusSql}`
       )
-      .all(...ids, ...relationScope.params, ...(opts?.filterRelations && opts.namespace ? [opts.namespace] : [])) as Array<{ from_entity_id: number; from: string; to: string; type: string }>;
+      .all(...ids, ...relationScope.params, ...(view?.namespace ? [view.namespace] : [])) as Array<{ from_entity_id: number; from: string; to: string; type: string }>;
+
+    // What the archived rule left out, counted for the same far ends the rule
+    // looks at (in scope, in namespace), so the count never names or counts
+    // another project's memory.
+    const omittedArchived = new Map<number, number>();
+    if (view && !view.includeArchived) {
+      const omittedRows = this.db
+        .prepare(
+          `SELECT r.from_entity_id AS id, COUNT(*) AS n
+           FROM relations r
+           JOIN entities e_to ON r.to_entity_id = e_to.id
+           WHERE r.from_entity_id IN (${placeholders}) ${relationScope.sql} ${relationNamespaceSql}
+             AND e_to.status = 'archived' AND r.relation_type != 'supersedes'
+           GROUP BY r.from_entity_id`
+        )
+        .all(...ids, ...relationScope.params, ...(view.namespace ? [view.namespace] : [])) as Array<{ id: number; n: number }>;
+      for (const row of omittedRows) omittedArchived.set(row.id, row.n);
+    }
 
     const relMap = new Map<number, Relation[]>();
     for (const row of relRows) {
@@ -1005,6 +1025,7 @@ export class KnowledgeGraph {
         observations,
         tags,
         relations: relations.length > 0 ? relations : undefined,
+        ...(omittedArchived.has(id) ? { archived_relations_omitted: omittedArchived.get(id) } : {}),
         ...(row.status === 'archived' ? { archived: true } : {}),
         access_count: row.access_count ?? 0,
         recall_hits: row.recall_hits ?? 0,
@@ -1040,21 +1061,36 @@ export class KnowledgeGraph {
     return this.searchWithFacts(query, opts).entities;
   }
 
+  /**
+   * The relation view a search owes its caller (see `RelationView`), or none
+   * when the caller did not ask for one. The project is the one the search
+   * itself was limited to: an explicit project tag, else the default scope.
+   * Any other tag is not a project, and the search it names already spans
+   * projects, so the project is not narrowed (archived and namespace still are).
+   */
+  private relationViewFor(opts?: SearchOptions): RelationView | undefined {
+    if (!opts?.scopeRelations) return undefined;
+    // Same truthiness the search applies to `tag`: an empty tag is no tag.
+    const scope = opts.tag ? (opts.tag.startsWith('project:') ? opts.tag : undefined) : opts.projectScope;
+    return { scope, namespace: opts.namespace, includeArchived: opts.includeArchived };
+  }
+
   /** `search`, plus what this call did (see `SearchResult`). */
   searchWithFacts(query?: string, opts?: SearchOptions): SearchResult {
     const limit = opts?.limit ?? 20;
 
     const countAsAccess = opts?.countAsAccess ?? true;
+    const relations = this.relationViewFor(opts);
 
     if (!query || query.trim() === '') {
       // Listing recent memories reads the tables, not the keyword index.
       if (opts?.tag) {
-        return { entities: this.listRecentByTag(opts.tag, limit, opts?.includeArchived, opts?.namespace, countAsAccess), fallback: null };
+        return { entities: this.listRecentByTag(opts.tag, limit, opts?.includeArchived, opts?.namespace, countAsAccess, relations), fallback: null };
       }
       if (opts?.projectScope !== undefined) {
-        return { entities: this.listRecentInScope(opts.projectScope, limit, opts?.includeArchived, opts?.namespace, countAsAccess), fallback: null };
+        return { entities: this.listRecentInScope(opts.projectScope, limit, opts?.includeArchived, opts?.namespace, countAsAccess, relations), fallback: null };
       }
-      return { entities: this.listRecent(limit, opts?.includeArchived, opts?.namespace, countAsAccess), fallback: null };
+      return { entities: this.listRecent(limit, opts?.includeArchived, opts?.namespace, countAsAccess, 0, relations), fallback: null };
     }
 
     // Start with FTS5's implicit AND so a frequent token cannot make an
@@ -1117,8 +1153,11 @@ export class KnowledgeGraph {
       const queryParams = [ftsQuery, ...scopeParams, exactQuery, exactQuery, limit];
       return this.db
         .prepare(
+          // CROSS JOIN keeps the index first: joined the other way SQLite runs the
+          // match once per active memory (75 s for one recall on 100,000 that all
+          // match; tests/core/fts-query-plan.test.ts).
           `SELECT e.id FROM entities_fts f
-           JOIN entities e ON e.id = f.rowid
+           CROSS JOIN entities e ON e.id = f.rowid
            WHERE entities_fts MATCH ?
              ${tagFilter}
              ${statusFilter}
@@ -1158,6 +1197,7 @@ export class KnowledgeGraph {
     const results = this.getEntitiesByIds(ftsIds, {
       includeArchived: opts?.includeArchived,
       namespace: opts?.namespace,
+      relations,
     });
     const seenIds = new Set(ftsIds);
 
@@ -1222,6 +1262,7 @@ export class KnowledgeGraph {
       const archivedEntities = this.getEntitiesByIds(archivedIds, {
         includeArchived: true,
         namespace: opts?.namespace,
+        relations,
       });
       results.push(...archivedEntities);
     }
@@ -1298,7 +1339,7 @@ export class KnowledgeGraph {
   }
 
   /** `offset` skips that many of the newest rows, for paging (newest first). */
-  listRecent(limit?: number, includeArchived?: boolean, namespace?: string, countAsAccess = true, offset = 0): Entity[] {
+  listRecent(limit?: number, includeArchived?: boolean, namespace?: string, countAsAccess = true, offset = 0, relations?: RelationView): Entity[] {
     const statusFilter = includeArchived ? '' : "AND status = 'active'";
     const namespaceFilter = namespace ? 'AND namespace = ?' : '';
     const params: (string | number)[] = [];
@@ -1313,7 +1354,7 @@ export class KnowledgeGraph {
     // ORDER BY id DESC above is retained.
     const results = this.getEntitiesByIds(
       rows.map((r) => r.id),
-      { includeArchived, namespace }
+      { includeArchived, namespace, relations }
     );
 
     if (countAsAccess) this.trackAccess(results.map((e) => e.id));
@@ -1364,7 +1405,7 @@ export class KnowledgeGraph {
       : [];
     const byName = lessonNames.length === 0
       ? ''
-      : `OR (e.name IN (${lessonNames.map(() => '?').join(',')}) AND ${NO_PROJECT_TAG})`;
+      : `OR (e.name IN (${lessonNames.map(() => '?').join(',')}) AND ${noProjectTag()})`;
     const params: (string | number)[] = [PROJECT_TAG_PREFIX + project, ...lessonNames, NOT_A_PROJECT_MEMORY.param];
     if (namespace) params.push(namespace);
     params.push(limit ?? 20, offset);
@@ -1387,7 +1428,7 @@ export class KnowledgeGraph {
   }
 
   /** `listRecentByTag` for a default recall's scope (see projectScopeFilter). */
-  private listRecentInScope(scope: string | null, limit: number, includeArchived?: boolean, namespace?: string, countAsAccess = true): Entity[] {
+  private listRecentInScope(scope: ProjectScope, limit: number, includeArchived?: boolean, namespace?: string, countAsAccess = true, relations?: RelationView): Entity[] {
     const statusFilter = includeArchived ? '' : "AND e.status = 'active'";
     const namespaceFilter = namespace ? 'AND e.namespace = ?' : '';
     const scoped = projectScopeFilter(scope);
@@ -1398,12 +1439,12 @@ export class KnowledgeGraph {
       .prepare(`SELECT e.id FROM entities e WHERE 1=1 ${scoped.sql} ${statusFilter} ${namespaceFilter} ORDER BY e.id DESC LIMIT ?`)
       .all(...params) as { id: number }[];
     // Batch-hydrate (see listRecent) — order-preserving, same fields/filters.
-    const results = this.getEntitiesByIds(rows.map((r) => r.id), { includeArchived, namespace });
+    const results = this.getEntitiesByIds(rows.map((r) => r.id), { includeArchived, namespace, relations });
     if (countAsAccess) this.trackAccess(results.map((e) => e.id));
     return results;
   }
 
-  private listRecentByTag(tag: string, limit: number, includeArchived?: boolean, namespace?: string, countAsAccess = true): Entity[] {
+  private listRecentByTag(tag: string, limit: number, includeArchived?: boolean, namespace?: string, countAsAccess = true, relations?: RelationView): Entity[] {
     const statusFilter = includeArchived ? '' : "AND e.status = 'active'";
     const namespaceFilter = namespace ? 'AND e.namespace = ?' : '';
     const params: (string | number)[] = [tag];
@@ -1425,7 +1466,7 @@ export class KnowledgeGraph {
     // Batch-hydrate (see listRecent) — order-preserving, same fields/filters.
     const results = this.getEntitiesByIds(
       rows.map((r) => r.id),
-      { includeArchived, namespace }
+      { includeArchived, namespace, relations }
     );
 
     if (countAsAccess) this.trackAccess(results.map((e) => e.id));

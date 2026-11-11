@@ -235,7 +235,9 @@ export function resolveBriefingLevel(envValue: string | undefined, configValue: 
  *     never injected), then the recent index (the titles of the 30 memories
  *     most recently written in this project or with no project; never another
  *     project's, global or not). No task state, nothing else from
- *     outside the project.
+ *     outside the project's own detail; a few preferences of other projects
+ *     (at most three, labelled with their project, after the project's own and
+ *     taking only the room left) follow the project's own.
  *   - `standard`: `minimal` + the task state when fresh.
  *   - `full`: `standard` + memories from your other projects + global
  *     memory. At `full` this MEMORY block is byte-for-byte identical across

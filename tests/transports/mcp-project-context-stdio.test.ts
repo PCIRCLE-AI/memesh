@@ -90,6 +90,9 @@ it('learn and a default recall follow the bound project, survive a restart, and 
   const a = fs.realpathSync(fs.mkdtempSync(path.join(runtime, 'project-a-')));
   const b = fs.realpathSync(fs.mkdtempSync(path.join(runtime, 'project-b-')));
   const names = (text: string) => (JSON.parse(text).entities as Array<{ name: string }>).map(e => e.name).sort();
+  // A lesson is shared by every project: other projects' sessions see it too.
+  const notLesson = (n: string) => !n.startsWith('lesson-');
+  const hasLessonOfA = (list: string[]) => list.some(n => n.startsWith(`lesson-${getProjectName(a)}-`));
   try {
     const seed = await session(runtime, { MEMESH_PROJECT_ROOT: a }, null);
     try {
@@ -115,12 +118,14 @@ it('learn and a default recall follow the bound project, survive a restart, and 
 
     const inB = await session(runtime, { MEMESH_PROJECT_ROOT: b }, null);
     try {
-      expect(names((await inB.tool('recall', { query: 'zebra' })).text)).toEqual(['zebra-b', 'zebra-global']);
+      const seenByB = names((await inB.tool('recall', { query: 'zebra' })).text);
+      expect(seenByB.filter(notLesson)).toEqual(['zebra-b', 'zebra-global']);
+      expect(hasLessonOfA(seenByB)).toBe(true);
       // Blank selectors, as Gemini CLI sends them, take the same bound path.
       for (const blank of [{ tag: null, cross_project: null }, { tag: '' }]) {
         const r = await inB.tool('recall', { query: 'zebra', ...blank });
         expect(r.isError, r.text).toBe(false);
-        expect(names(r.text)).toEqual(['zebra-b', 'zebra-global']);
+        expect(names(r.text).filter(notLesson)).toEqual(['zebra-b', 'zebra-global']);
       }
       expect(names((await inB.tool('recall', { query: 'zebra', tag: `project:${getProjectName(a)}` })).text)).toContain('zebra-a');
     } finally { await inB.client.close(); }
@@ -133,7 +138,8 @@ it('learn and a default recall follow the bound project, survive a restart, and 
       for (const blank of [{}, { tag: '' }]) {
         const recall = await unbound.tool('recall', { query: 'zebra', ...blank });
         expect(recall.isError, recall.text).toBe(false);
-        expect(names(recall.text)).toEqual(['zebra-global']);
+        expect(names(recall.text).filter(notLesson)).toEqual(['zebra-global']);
+        expect(hasLessonOfA(names(recall.text))).toBe(true);
         expect(JSON.parse(recall.text).scope.project).toBeNull();
       }
       const learn = await unbound.tool('learn', { error: 'unbound lesson', fix: 'nowhere' });
@@ -156,22 +162,27 @@ it('remember with no tag files the memory under the bound project: found again i
     try {
       const r = await writeA.tool('remember', { name: 'okapi-decision', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['okapi stripes are for A'] });
       expect(r.isError, r.text).toBe(false);
+      const detail = await writeA.tool('remember', { name: 'okapi-detail', type: 'fact', observations: ['okapi stripes detail of A'] });
+      expect(detail.isError, detail.text).toBe(false);
     } finally { await writeA.client.close(); }
 
     // A new server process, bound to A by its workspace root this time.
     const readA = await session(runtime, {}, [a]);
     try {
       const hits = entities((await readA.tool('recall', { query: 'okapi' })).text);
-      expect(hits.map(e => e.name)).toEqual(['okapi-decision']);
+      expect(hits.map(e => e.name).sort()).toEqual(['okapi-decision', 'okapi-detail']);
       expect(hits[0].tags).toContain(`project:${getProjectName(a)}`);
     } finally { await readA.client.close(); }
 
     const inB = await session(runtime, { MEMESH_PROJECT_ROOT: b }, null);
     try {
-      expect(entities((await inB.tool('recall', { query: 'okapi' })).text)).toEqual([]);
+      // B sees A's decision (shared, with its project named) and not A's detail.
+      const seenByB = entities((await inB.tool('recall', { query: 'okapi' })).text);
+      expect(seenByB.map(e => e.name)).toEqual(['okapi-decision']);
+      expect(seenByB[0].tags).toContain(`project:${getProjectName(a)}`);
       const across = entities((await inB.tool('recall', { query: 'okapi', cross_project: true })).text);
-      expect(across).toHaveLength(1);
-      expect(across.map(e => e.name)).toEqual(['okapi-decision']);
+      expect(across).toHaveLength(2);
+      expect(across.map(e => e.name).sort()).toEqual(['okapi-decision', 'okapi-detail']);
       expect(across[0].tags).toContain(`project:${getProjectName(a)}`);
 
       // Content only: reading through recall itself bumps access counts.

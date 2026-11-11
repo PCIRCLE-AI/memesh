@@ -26,6 +26,7 @@ import { KnowledgeGraph } from '../knowledge-graph.js';
 import { removeFromFts, insertFtsRow, indexedObservationText } from '../storage/fts-index.js';
 import { redactSecretList, redactSecrets, redactTitleAndObservations } from './paths.js';
 import type { Entity, Namespace } from './types.js';
+import { NOTE_FILE_PROVENANCE } from './work-topology.js';
 
 /** The one prefix every path must sit under. Anything else is refused. */
 export const MEMORY_ROOT = '/memories';
@@ -388,6 +389,12 @@ function rewriteObservations(
       tags: entity.tags,
       namespace: entity.namespace,
       reinforceConfidence: false,
+    });
+    // The text is the model's now, not the note file's: like a `remember` rewrite, it loses
+    // the note-file provenance, so it is not shared as a note of the user's memory folder.
+    kg.updateEntityMetadata(entity.name, (current) => {
+      const provenance = current.provenance as Record<string, unknown> | undefined;
+      return provenance?.source === NOTE_FILE_PROVENANCE ? { ...current, provenance: { ...provenance, source: 'local' } } : current;
     });
   }).immediate();
 }

@@ -530,8 +530,8 @@ describe('doctor: capture-liveness', () => {
         const db = getDatabase();
         const id = db.prepare("INSERT INTO entities (name, type, status) VALUES (?, 'session-handoff', 'archived')").run(name).lastInsertRowid;
         db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(id, 'the old handoff');
-        // As the Stop hook files it: under the project its name carries.
-        db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, `project:${getProjectName(proj)}`);
+        // As the Stop hook files it: under the project its name carries, with its source tag. The command is copied from any directory.
+        for (const tag of [`project:${getProjectName(proj)}`, 'source:auto-capture']) db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, tag);
       } finally {
         closeDatabase();
       }

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync, execFileSync } from 'child_process';
+import { createHash } from 'node:crypto';
 import { createRequire } from 'module';
 import fs from 'fs';
 import path from 'path';
@@ -925,6 +926,51 @@ syncBuiltinESMExports();
       } finally {
         fs.rmSync(repoA, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
         fs.rmSync(repoB, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      }
+    });
+
+    it('(iii-b) matches memories filed under any id of the repository, and not another repository\'s', () => {
+      const repo = makeGitRepo();
+      try {
+        execFileSync('git', ['-C', repo, 'remote', 'add', 'origin', 'git@gitlab.com:acme/widgets.git']);
+        const { getProjectName } = require('../../scripts/hooks/_shared.js');
+        const sha32 = (text: string) => createHash('sha256').update(text).digest('hex').slice(0, 32);
+        const real = fs.realpathSync(repo);
+        // What the checkout stored under its path's id before it had a remote is still its own.
+        const pathId = `${path.basename(real)}~${sha32(real)}`;
+        const remoteId = getProjectName(repo);
+        // The id an earlier version gave the https spelling of the same remote.
+        const earlierId = `widgets~${sha32('https://gitlab.com/acme/widgets')}`;
+        expect(remoteId).not.toBe(earlierId);
+        const otherId = `other~${'2'.repeat(32)}`;
+
+        const db = createTestDb();
+        for (const [name, id] of [['by-current-id', remoteId], ['by-earlier-spelling', earlierId], ['by-other-repo', otherId]] as const) {
+          db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run(name, 'decision');
+          const row = db.prepare('SELECT id FROM entities WHERE name = ?').get(name) as any;
+          db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(row.id, `Decision recorded as ${name}`);
+          db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, 'file:auth.ts');
+          db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, `project:${id}`);
+        }
+        // Ones that name the file only in their text (no file tag): reached by the word search, which is scoped too.
+        for (const [name, id] of [['prose-by-path-of-repo', pathId], ['prose-other-repo', otherId]] as const) {
+          db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run(name, 'lesson');
+          const prose = db.prepare('SELECT id FROM entities WHERE name = ?').get(name) as any;
+          const proseText = `Always check auth.ts handles expired tokens (${name})`;
+          db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(prose.id, proseText);
+          db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(prose.id, `project:${id}`);
+          indexFts(db, prose.id, name, proseText);
+        }
+        db.close();
+
+        const result = runHook({ cwd: repo, tool_input: { file_path: path.join(repo, 'auth.ts') } });
+        expect(result).toContain('prose-by-path-of-repo');
+        expect(result).toContain('by-current-id');
+        expect(result).toContain('by-earlier-spelling');
+        expect(result).not.toContain('by-other-repo');
+        expect(result).not.toContain('prose-other-repo');
+      } finally {
+        fs.rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       }
     });
 

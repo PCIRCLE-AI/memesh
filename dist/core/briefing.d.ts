@@ -11,6 +11,6 @@ export interface BriefingResult {
     level: BriefingLevel;
     empty: boolean;
 }
-export declare function readBriefingIndex(db: MemeshDatabase, projectName: string, now?: number): BriefingIndex;
-export declare function assembleBriefing(project?: string, recipient?: string, cwd?: string | null): BriefingResult;
+export declare function readBriefingIndex(db: MemeshDatabase, projectName: string, now?: number, projectIds?: readonly string[]): BriefingIndex;
+export declare function assembleBriefing(project?: string, recipient?: string, projectIds?: readonly string[]): BriefingResult;
 //# sourceMappingURL=briefing.d.ts.map

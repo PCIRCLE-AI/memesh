@@ -31,7 +31,8 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
   beforeEach(() => {
     home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-stop-notes-'));
     fs.mkdirSync(path.join(home, '.memesh'), { recursive: true });
-    projectDir = path.join(home, '.claude', 'projects', '-tmp-proj');
+    // Claude Code's folder for a session started in `home` (the payload's cwd below).
+    projectDir = path.join(home, '.claude', 'projects', home.replace(/[^a-zA-Z0-9]/g, '-'));
     fs.mkdirSync(projectDir, { recursive: true });
     transcript = path.join(projectDir, `${sessionId}.jsonl`);
     memoryDir = path.join(projectDir, 'memory');
@@ -147,7 +148,7 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
 
   it('ingests the memory directory next to the transcript, then skips it while unchanged', () => {
     fs.mkdirSync(memoryDir);
-    fs.writeFileSync(path.join(memoryDir, 'a.md'), '---\nname: hook_note_a\ndescription: Hook alpha\nmetadata:\n  type: decision\n---\n\nalpha body\n');
+    fs.writeFileSync(path.join(memoryDir, 'a.md'), '---\nname: hook_note_a\ndescription: Hook alpha\nmetadata:\n  type: project\n---\n\nalpha body\n');
     fs.writeFileSync(path.join(memoryDir, 'MEMORY.md'), '- index only\n');
     write(reads(1));
     expect(run().status).toBe(0);
@@ -182,7 +183,7 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
   // hook's own wait, record an error, and ingest the note on the next Stop.
   it('#506 a held write lock does not hold the Stop past its 10 s limit, and the note is ingested next time', () => {
     fs.mkdirSync(memoryDir);
-    fs.writeFileSync(path.join(memoryDir, 'a.md'), '---\nname: hook_note_a\ndescription: Hook alpha\nmetadata:\n  type: decision\n---\n\nalpha body\n');
+    fs.writeFileSync(path.join(memoryDir, 'a.md'), '---\nname: hook_note_a\ndescription: Hook alpha\nmetadata:\n  type: project\n---\n\nalpha body\n');
     write(reads(1));
     expect(run().status).toBe(0);
     fs.writeFileSync(path.join(memoryDir, 'b.md'), '---\nname: hook_note_b\ndescription: Hook beta\nmetadata:\n  type: decision\n---\n\nbeta body\n');
@@ -355,6 +356,21 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     expect(second.status).toBe(0);
     expect(JSON.parse(second.stdout).systemMessage).toMatch(/a plan was approved/);
   }, 60_000);
+
+  // A Stop whose transcript has no memory folder beside it, or whose payload names no
+  // transcript, or no cwd either: the hook exits 0 and records a known skip, never an error.
+  const NO_FOLDER = 'no Claude Code memory directory for this project';
+  it.each([
+    ['no memory folder beside the transcript', {}, NO_FOLDER],
+    ['no transcript_path', { transcript_path: undefined }, NO_FOLDER],
+    ['no transcript_path and no cwd', { transcript_path: undefined, cwd: undefined }, 'cwd absent in payload — cannot resolve project'],
+  ])('a Stop with %s records a skip, not an error', (_label, payload, reason) => {
+    fs.writeFileSync(transcript, '');
+    const r = run({}, payload);
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stderr).not.toContain('ERR_INVALID_ARG_TYPE');
+    expect(outcomes('note-ingest').at(-1)).toMatchObject({ outcome: 'skipped', reason });
+  });
 
   it('a payload with no cwd does not file notes under no project at all', () => {
     // Ingestion used to run BEFORE the cwd guard, with

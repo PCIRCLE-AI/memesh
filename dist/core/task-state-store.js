@@ -1,6 +1,6 @@
 import { getDatabase } from '../db.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
-import { getProjectName, redactSecretList } from './paths.js';
+import { getProjectIds, getProjectName, redactSecretList } from './paths.js';
 import { remember } from './operations.js';
 import { truncateTitle } from './title.js';
 import { TASK_STATE_TYPE, TASK_STATE_FIELDS, taskStateName, taskStateUnreadableMessage, parseTaskState, mergeTaskState, } from './task-state.js';
@@ -19,6 +19,14 @@ function readState(name) {
     }
     return { state: parseTaskState(parsed), corrupted: false };
 }
+function readProjectState(project, ids) {
+    const exists = getDatabase().prepare("SELECT 1 FROM entities WHERE name = ? AND status = 'active'");
+    for (const id of new Set([project, ...(ids ?? (project === getProjectName() ? getProjectIds() : []))])) {
+        if (exists.get(taskStateName(id)))
+            return readState(taskStateName(id));
+    }
+    return { state: {}, corrupted: false };
+}
 export class TaskStateUnreadableError extends Error {
     project;
     constructor(project) {
@@ -27,9 +35,9 @@ export class TaskStateUnreadableError extends Error {
         this.name = 'TaskStateUnreadableError';
     }
 }
-export function getTaskState(project) {
+export function getTaskState(project, ids) {
     const resolved = project ?? getProjectName();
-    const { state, corrupted } = readState(taskStateName(resolved));
+    const { state, corrupted } = readProjectState(resolved, ids);
     if (corrupted)
         throw new TaskStateUnreadableError(resolved);
     return { project: resolved, state: redactedState(state) };
@@ -49,7 +57,7 @@ export function setTaskState(input) {
     const patch = { ...input.patch, ...Object.fromEntries(textFields.map(([field], i) => [field, texts[i]])) };
     const db = getDatabase();
     const write = db.transaction(() => {
-        const { state: previous, corrupted } = readState(name);
+        const { state: previous, corrupted } = readProjectState(project, input.ids);
         const { state, changed, observations } = mergeTaskState(previous, patch, new Date().toISOString());
         if (changed.length === 0) {
             if (corrupted)
@@ -83,7 +91,7 @@ export function setTaskState(input) {
         if (!/readonly database|SQLITE_READONLY/i.test(message))
             throw error;
         return db.transaction(() => {
-            const { state: previous, corrupted } = readState(name);
+            const { state: previous, corrupted } = readProjectState(project, input.ids);
             const { state, changed } = mergeTaskState(previous, patch, new Date().toISOString());
             if (changed.length !== 0)
                 throw error;

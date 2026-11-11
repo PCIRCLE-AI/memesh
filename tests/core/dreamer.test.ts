@@ -700,6 +700,42 @@ describe('dreamer', () => {
     expect(tags, 'descriptive tags were thrown away along with the routing one').toContain('topic:auth');
   });
 
+  // A proposal staged before work_package refused `source:` tags can still carry one: accepting
+  // it must not write a tag that only MeMesh may set (the same check remember applies).
+  it('apply: a staged digest proposal carrying a source: tag is written without it', async () => {
+    const { applyProposal } = await import('../../src/core/dreamer.js');
+    const sourceIds = seedCommits(5);
+    db.prepare(`
+      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, prompt_version)
+      VALUES ('memesh', '2026-W30', ?, ?, 'v1')
+    `).run(JSON.stringify(sourceIds), JSON.stringify({
+      name: 'digest-with-reserved-tag', type: 'digest', observations: ['a summary'],
+      tags: ['digest', 'source:note-file', 'Source:auto-capture', ' SOURCE:explicit'],
+    }));
+    const proposalId = (db.prepare("SELECT id FROM dream_proposals WHERE status='pending' ORDER BY id DESC").get() as { id: number }).id;
+    const name = applyProposal(db, proposalId, kg).digestEntityName;
+    const tags = kg.getEntity(name)?.tags ?? [];
+    expect(tags).toContain('digest');
+    expect(tags.filter((tag: string) => tag.trim().toLowerCase().startsWith('source:'))).toEqual([]);
+  });
+
+  it('apply: a staged transcript proposal carrying a source: tag is written without it', async () => {
+    const { applyProposal } = await import('../../src/core/dreamer.js');
+    db.prepare(`
+      INSERT INTO dream_proposals
+        (project, cluster_key, source_ids, proposed_digest, prompt_version, source_kind, kind)
+      VALUES ('memesh', 'transcript:session-reserved', ?, ?, 'work-package-v1', 'transcript', 'digest')
+    `).run(JSON.stringify({ sessionId: 'session-reserved' }), JSON.stringify({
+      name: 'transcript-with-reserved-tag', type: 'decision', observations: ['Use the smaller implementation.'],
+      tags: ['decision', 'source:note-file'],
+    }));
+    const proposalId = (db.prepare("SELECT id FROM dream_proposals WHERE status='pending' ORDER BY id DESC").get() as { id: number }).id;
+    applyProposal(db, proposalId, kg);
+    const tags = kg.getEntity('transcript-with-reserved-tag')?.tags ?? [];
+    expect(tags).toContain('decision');
+    expect(tags).not.toContain('source:note-file');
+  });
+
   it('transcript apply cannot overwrite a rejection that lands after the pending read', async () => {
     const { applyProposal } = await import('../../src/core/dreamer.js');
     db.prepare(`

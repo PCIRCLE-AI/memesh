@@ -39,7 +39,7 @@ Over MCP, `remember`, `learn` and `recall` also take `project`: a project id, or
 | `import` | Import a JSON export with the required skip, append, or overwrite strategy |
 | `learn` | Record a structured lesson with error, fix, root cause, and prevention |
 | `task_state` | Read or update user-stated goal, next step, blocker, and finished work |
-| `briefing` | Assemble the current project's work topology — an eligible handoff precedes ranked memories at every level, after optional repository facts; `minimal` then shows decisions, lessons, knowledge and recent activity plus memories with no project, closing with the recent index (titles of the 30 most recently written memories in scope) at every level, `standard` adds fresh task state, and `full` adds other projects and global memory |
+| `briefing` | Assemble the current project's work topology — an eligible handoff precedes ranked memories at every level, after optional repository facts; `minimal` then shows decisions, lessons, knowledge and recent activity plus memories with no project and a few preferences of other projects, closing with the recent index (titles of the 30 most recently written memories in scope) at every level, `standard` adds fresh task state, and `full` adds other projects and global memory |
 | `user_patterns` | Analyze work schedule, tool preferences, and focus areas |
 | `improvement` | Propose an evidence-linked product improvement or read its status; only a human may accept or reject it |
 | `message` | Discover live agents in one project, then contact one exact recipient with a bounded, untrusted payload. Native size and availability failures are distinct; acceptance, discovery, polling, and fetching do not acknowledge |
@@ -295,7 +295,7 @@ memesh recall --ids 301,302 --json            # read memories named by briefing 
 ```
 
 For a `[mem:301]` handle, use `recall({ ids: [301] })` over MCP. Up to 20
-positive IDs may be requested, within the caller's scope; `query`, `tag` and
+positive IDs may be requested, within the caller's scope (the project, memories with no project, global ones, the decisions, lessons and preferences of any project except untrusted ones, and the preferences and feedback of a memory folder); `query`, `tag` and
 `cross_project` are separate search selectors. Results say `found`, `archived`,
 `unavailable` or `omitted`. Archived content needs `include_archived`; an
 unavailable ID reveals no content or existence outside scope. Retry omitted

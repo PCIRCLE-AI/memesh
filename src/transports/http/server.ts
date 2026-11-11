@@ -748,7 +748,10 @@ app.post('/v1/remember', (req, res) => handlePost(RememberBody, req, res, (data)
 app.post('/v1/recall', (req, res) => handlePost(RecallBody, req, res, async (data) => {
   // FTS5 recall and conflict annotation are owned by core so transports
   // cannot drift on the wrapping rule.
-  const result = await recallWithConflicts(data.ids !== undefined ? { ...data, projectScope: null } : data);
+  // HTTP has no project binding: a word recall here spans every project, and so
+  // does a recall by id (it used to be limited to memories with no project, so a
+  // memory the word search returned could not be fetched by its own id).
+  const result = await recallWithConflicts(data);
   const { entities, conflicts, retrieval } = result;
   // Always return {data_notice, entities, retrieval, results?, conflicts?}
   // to match API_REFERENCE.md and MCP's documented envelope (issue #159).

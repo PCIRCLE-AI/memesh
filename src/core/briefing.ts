@@ -25,7 +25,7 @@
 // unasked" would inflate frequency for whatever happened to be in the window.
 
 import { getDatabase } from '../db.js';
-import { getProjectName } from './paths.js';
+import { getProjectIds, getProjectName } from './paths.js';
 import { readConfig } from './config.js';
 import { resolveSessionLimit } from './session-limit.js';
 import { readRepoState, repoStateLines } from './repo-state.js';
@@ -99,24 +99,32 @@ export interface BriefingResult {
  * includes them: only `global` is excluded, and only rows carrying this
  * project's tag are read, so the index is never cross-project.
  */
+/** Every id this project's memories may be filed under: all of the current checkout's when it is the project asked about. */
+function projectIdsFor(projectName: string): string[] {
+  return projectName === getProjectName() ? getProjectIds() : [projectName];
+}
+
 export function readBriefingIndex(
   db: MemeshDatabase,
   projectName: string,
   now: number = Date.now(),
+  projectIds?: readonly string[],
 ): BriefingIndex {
-  const { candidates, truncated } = readIndexCandidates(db, projectName);
+  const { candidates, truncated } = readIndexCandidates(db, projectName, projectIds ?? projectIdsFor(projectName));
   return buildBriefingIndex(candidates, projectName, now, { truncated });
 }
 
 /**
  * Assemble the same block session-start injects, for a caller that has no
  * session-start: task state first (the one line someone stated on purpose),
- * then the ranked topology, wrapped in the shared fence. `cwd` is the folder
- * `project` was resolved from, when the caller knows it (default: this
- * process's own folder when `project` is omitted).
+ * then the ranked topology, wrapped in the shared fence. `projectIds` are the
+ * ids the checkout `project` was resolved from is filed under (getProjectIds),
+ * when the caller knows them (default: this process's own checkout's when
+ * `project` is its project).
  */
-export function assembleBriefing(project?: string, recipient?: string, cwd: string | null = project === undefined ? process.cwd() : null): BriefingResult {
+export function assembleBriefing(project?: string, recipient?: string, projectIds?: readonly string[]): BriefingResult {
   const projectName = project ?? getProjectName();
+  const ids = projectIds ?? projectIdsFor(projectName);
   const db = getDatabase();
 
   // #360 — env > config > default('minimal'), the same precedence
@@ -172,7 +180,7 @@ export function assembleBriefing(project?: string, recipient?: string, cwd: stri
     // #360: briefingTaskStateLines downgrades a stale record to one line
     // (at every level) and, when fresh, honours the level's own
     // taskState flag — `minimal` omits it entirely.
-    taskLines = boundTaskStateLines(briefingTaskStateLines(getTaskState(projectName).state, projectName, new Date(), {
+    taskLines = boundTaskStateLines(briefingTaskStateLines(getTaskState(projectName, ids).state, projectName, new Date(), {
       includeFresh: policy.taskState,
     }));
   } catch (err) {
@@ -209,6 +217,7 @@ export function assembleBriefing(project?: string, recipient?: string, cwd: stri
   // The same limit the SessionStart hook resolves (env, then config, then the
   // default), so the two surfaces cannot show different sets for one project.
   const pools = selectBriefingPools(db, projectName, {
+    projectIds: ids,
     projectLimit: resolveSessionLimit(process.env.MEMESH_SESSION_LIMIT, config.sessionLimit).value,
     global: policy.global,
     foreign: policy.foreign,
@@ -226,7 +235,7 @@ export function assembleBriefing(project?: string, recipient?: string, cwd: stri
     ),
   ];
 
-  const snippets = readSnippets(db, [...pools.lessons, ...pools.project, ...pools.noProject, ...pools.global, ...pools.recent].map((row) => row.id));
+  const snippets = readSnippets(db, [...pools.lessons, ...pools.project, ...pools.noProject, ...pools.shared, ...pools.global, ...pools.recent].map((row) => row.id));
   const toEntities = (pool: PoolRow[]) => pool.map((row) => toTopologyEntity(row, snippets));
 
   // One memory budget for the ranked sections; the recent index after them is not cut by it.
@@ -236,6 +245,7 @@ export function assembleBriefing(project?: string, recipient?: string, cwd: stri
       { entities: toEntities(pools.lessons), foreign: false },
       { entities: toEntities(pools.project), foreign: false },
       { entities: toEntities(pools.noProject), foreign: false, noProject: true },
+      { entities: toEntities(pools.shared), foreign: false, shared: true },
       { entities: toEntities(pools.global), foreign: false, global: true },
       { entities: toEntities(pools.recent), foreign: true },
     ],
@@ -263,12 +273,12 @@ export function assembleBriefing(project?: string, recipient?: string, cwd: stri
   // `--index` flag, read it on its own) — but its lines only enter the
   // INJECTED block when the level includes it.
   const now = Date.now();
-  const { candidates: indexCandidates, truncated } = readIndexCandidates(db, projectName);
+  const { candidates: indexCandidates, truncated } = readIndexCandidates(db, projectName, ids);
   // The standalone `index` stays the full durable catalog (`memesh briefing --index`);
   // the INJECTED section is the recent index session-start shows (recent-index.ts).
   const index = buildBriefingIndex(indexCandidates, projectName, now, { truncated });
   // The recent index is shown at every level (it is what was measured as worth its cost).
-  const indexLines = buildRecentIndex(db, projectName, now, cwd).lines;
+  const indexLines = buildRecentIndex(db, projectName, now, ids).lines;
   const block = withRepo.length > 0 && indexLines.length > 0
     ? [...withRepo, '', ...indexLines]
     : [...withRepo, ...indexLines];

@@ -16,6 +16,19 @@ export const WORK_LAYER_TYPES = new Set([
     'task-state',
 ]);
 export const DECISION_TYPES = new Set(['decision', 'architecture_decision', 'design_decision']);
+export const PREFERENCE_TYPES = ['preference', 'user_preference'];
+export const SHARED_EXPERIENCE_TYPES = new Set([
+    ...LESSON_TYPES,
+    ...DECISION_TYPES,
+    ...PREFERENCE_TYPES,
+]);
+export const SHARED_EXPERIENCE_TYPE_LIST = [...SHARED_EXPERIENCE_TYPES];
+export const SHARED_FEEDBACK_TYPE = 'feedback';
+export const NOTE_FILE_PROVENANCE = 'note-file';
+export function isReservedTag(tag) {
+    return tag.trim().toLowerCase().startsWith('source:');
+}
+export const NOTE_FILE_MISSING_TAG = 'source:note-file:missing';
 export const WHY_PREFIX = 'Why: ';
 export const UNCONFIRMED_DECISION_DAYS = 30;
 export function utcEpoch(at) {
@@ -70,12 +83,13 @@ export function topologyLine(entity, maxChars) {
     const snippet = entity.snippet?.trim();
     const given = (title || snippet || '').replace(/~[0-9a-f]{32}\b/g, '');
     const handle = Number.isInteger(entity.id) && entity.id > 0 ? ` [mem:${entity.id}]` : '';
+    const origin = entity.sharedFrom !== undefined ? ` (from ${entity.sharedFrom})` : '';
     const unconfirmed = entity.unconfirmedDays ? ` (unconfirmed ${entity.unconfirmedDays} days: re-check before relying)` : '';
     const reason = entity.why ? `${WHY_PREFIX}${entity.why}` : '';
     const noReason = entity.why === null ? ' (no reason recorded)' : '';
     const text = reason && isWhyText(given) ? '' : given || (reason ? '' : `${entity.type} memory`);
-    const room = Math.max(8, maxChars - handle.length - unconfirmed.length - noReason.length);
-    return stripControlChars(`- [${entity.type}] ${lineBody(text, reason, room)}${noReason}${unconfirmed}${handle}`);
+    const room = Math.max(8, maxChars - handle.length - unconfirmed.length - noReason.length - origin.length);
+    return stripControlChars(`- [${entity.type}] ${lineBody(text, reason, room)}${noReason}${unconfirmed}${origin}${handle}`);
 }
 const TITLE_FLOOR_CHARS = 40;
 const REASON_SEPARATOR = ' — ';
@@ -135,6 +149,7 @@ export function groupTopology(entities, projectName) {
     const global = [];
     const noProject = [];
     const foreign = [];
+    const shared = [];
     for (const e of entities) {
         if (e.type === 'task-state' || e.type === 'session-handoff')
             continue;
@@ -144,6 +159,10 @@ export function groupTopology(entities, projectName) {
         }
         if (e.noProject) {
             noProject.push(e);
+            continue;
+        }
+        if (e.sharedFrom !== undefined) {
+            shared.push(e);
             continue;
         }
         if (e.foreign) {
@@ -182,6 +201,8 @@ export function groupTopology(entities, projectName) {
         sections.push({ heading: 'Global memory — applies across projects:', entities: global });
     if (foreign.length)
         sections.push({ heading: 'From your other projects (may or may not apply here):', entities: foreign });
+    if (shared.length)
+        sections.push({ heading: 'Your preferences from your other projects (may or may not apply here):', entities: shared });
     return sections;
 }
 const MAX_PER_SECTION = 8;
@@ -190,6 +211,11 @@ export const DEFAULT_TOPOLOGY_BUDGET = {
     maxLineChars: 160,
 };
 export const GLOBAL_TOPOLOGY_LIMIT = 3;
+export const SHARED_TOPOLOGY_LIMIT = 3;
+const SHARED_TOPOLOGY_BUDGET = {
+    maxChars: 640,
+    maxLineChars: DEFAULT_TOPOLOGY_BUDGET.maxLineChars,
+};
 const GLOBAL_TOPOLOGY_BUDGET = {
     maxChars: 640,
     maxLineChars: DEFAULT_TOPOLOGY_BUDGET.maxLineChars,
@@ -228,12 +254,16 @@ export function assembleTopologyBlock(stateLines, pools, projectName, budget = D
     const seen = new Set();
     const candidates = [];
     const globalCandidates = [];
+    const sharedCandidates = [];
     for (const pool of pools) {
         for (const e of pool.entities) {
             if (seen.has(e.name))
                 continue;
             seen.add(e.name);
-            if (pool.global) {
+            if (pool.shared) {
+                sharedCandidates.push(e.sharedFrom !== undefined ? e : { ...e, sharedFrom: 'another project' });
+            }
+            else if (pool.global) {
                 globalCandidates.push(e.global ? e : { ...e, global: true });
             }
             else {
@@ -249,6 +279,15 @@ export function assembleTopologyBlock(stateLines, pools, projectName, budget = D
     if (lines.length > 0 && topologyLines.length > 0)
         lines.push('');
     lines.push(...topologyLines);
+    const sharedLines = room() > 0
+        ? buildTopologyLines(sharedCandidates.slice(0, SHARED_TOPOLOGY_LIMIT), projectName, {
+            ...budget,
+            maxChars: Math.min(room(), SHARED_TOPOLOGY_BUDGET.maxChars),
+        })
+        : [];
+    if (lines.length > 0 && sharedLines.length > 0)
+        lines.push('');
+    lines.push(...sharedLines);
     const globalLines = room() > 0
         ? buildTopologyLines(globalCandidates, projectName, {
             ...budget,

@@ -5,6 +5,7 @@
 
 import { z } from 'zod';
 import { NAMESPACES } from '../core/types.js';
+import { isReservedTag } from '../core/work-topology.js';
 import { TITLE_MAX_LENGTH } from '../core/title.js';
 import { deriveNote, NOTE_MAX_CHARS, NOTE_MAX_OBSERVATIONS } from '../core/note-derive.js';
 import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../core/agent-messaging.js';
@@ -78,6 +79,8 @@ const workPackageIdentity = {
   ref: z.discriminatedUnion('kind', [digestWorkPackageRef, transcriptWorkPackageRef]),
 };
 const WORK_PACKAGE_RESULT_MAX_BYTES = 16 * 1024;
+/** `source:` tags are MeMesh's own record of where a memory came from (`isReservedTag`, see refineRemember). */
+const RESERVED_TAG_REASON = 'tags that start with `source:` are reserved for MeMesh, which uses them to record where it got a memory (a note file, its own capture). Choose another prefix, for example `origin:`.';
 
 export const WorkPackageSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('prepare'), project: workPackageText, kind: z.enum(['digest', 'transcript']) }).strict(),
@@ -88,7 +91,8 @@ export const WorkPackageSchema = z.discriminatedUnion('action', [
       name: workPackageText,
       type: z.enum(['digest', 'decision', 'lesson_learned', 'fact']),
       observations: z.array(observationField).min(1).max(100),
-      tags: z.array(workPackageText.refine(tag => !tag.startsWith('project:'), 'project tags are server-owned')).min(1).max(50),
+      tags: z.array(workPackageText.refine(tag => !tag.startsWith('project:'), 'project tags are server-owned')
+        .refine(tag => !isReservedTag(tag), RESERVED_TAG_REASON)).min(1).max(50),
     }).strict().refine(result => Buffer.byteLength(JSON.stringify(result), 'utf8') <= WORK_PACKAGE_RESULT_MAX_BYTES, 'output_too_large'),
   }).strict().refine(input => (input.ref.kind === 'digest') === (input.result.type === 'digest'), 'result type must match work kind'),
   z.object({
@@ -119,8 +123,18 @@ const rememberShape = {
   namespace: z.enum(NAMESPACES).optional(),
 };
 
+/**
+ * Tags in the `source:` namespace say where MeMesh got a memory (a note file, its own
+ * capture, an explicit lesson). A caller cannot claim one: MCP, HTTP and the CLI all
+ * refuse it here (and a work package result too), naming the reason, so no agent can
+ * dress its memory as something MeMesh imported (`isReservedTag`, above).
+ */
 function refineRemember(data: z.infer<z.ZodObject<typeof rememberShape>>, ctx: z.RefinementCtx): void {
   for (const [index, tag] of (data.tags ?? []).entries()) {
+    if (isReservedTag(tag)) {
+      ctx.addIssue({ code: 'custom', path: ['tags', index], message: `the tag ${JSON.stringify(tag)} is not allowed: ${RESERVED_TAG_REASON}` });
+      continue;
+    }
     if (!tag.startsWith('project:')) continue;
     const project = tag.slice('project:'.length);
     // Empty tags retain the existing binding/core refusal. A non-empty tag

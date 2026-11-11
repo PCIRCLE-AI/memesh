@@ -14,6 +14,7 @@ export interface PoolRow {
     recall_misses?: number;
     created_at?: string;
     recency?: string | null;
+    project?: string;
 }
 export interface HandoffRow {
     id: number;
@@ -29,14 +30,16 @@ export interface BriefingPools {
     lessons: PoolRow[];
     project: PoolRow[];
     noProject: PoolRow[];
+    shared: PoolRow[];
     global: PoolRow[];
     recent: PoolRow[];
 }
 export interface PoolOptions {
+    projectIds?: readonly string[];
     projectLimit: number;
     global: boolean;
     foreign: boolean;
-    onError?: (label: 'handoff' | 'decisions' | 'lessons', err: unknown) => void;
+    onError?: (label: 'handoff' | 'decisions' | 'lessons' | 'shared', err: unknown) => void;
 }
 export declare function selectBriefingPools(db: MemeshDatabase, projectName: string, options: PoolOptions): BriefingPools;
 export interface Snippet {
@@ -47,7 +50,7 @@ export interface Snippet {
 }
 export declare function readSnippets(db: MemeshDatabase, ids: readonly number[]): Map<number, Snippet>;
 export declare function toTopologyEntity(row: PoolRow, snippets: ReadonlyMap<number, Snippet>, now?: number): TopologyEntity;
-export declare function readIndexCandidates(db: MemeshDatabase, projectName: string): {
+export declare function readIndexCandidates(db: MemeshDatabase, projectName: string, projectIds?: readonly string[]): {
     candidates: Array<IndexCandidate & {
         name: string;
     }>;

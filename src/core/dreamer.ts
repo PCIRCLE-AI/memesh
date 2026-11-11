@@ -17,6 +17,8 @@ import { validateGuardSpec, type GuardSpec } from './guards.js';
 
 import { dropEntityFromIndexes } from '../storage/entity-index.js';
 
+// A proposal staged before work packages refused `source:` tags can still carry one: dropped on accept.
+import { isReservedTag } from './work-topology.js';
 import {
   PRODUCT_IMPROVEMENT_KIND,
   readProductImprovementPayload,
@@ -485,7 +487,7 @@ function applyProductImprovementProposal(
       'State: accepted for product work; implementation and outcome are not verified.',
     ];
     const tags = [
-      ...payload.tags.filter((tag) => !tag.startsWith('project:') && !tag.startsWith('status:')),
+      ...payload.tags.filter((tag) => !tag.startsWith('project:') && !tag.startsWith('status:') && !isReservedTag(tag)),
       'project:' + row.project,
       'status:accepted-for-product',
       'implementation:unverified',
@@ -616,7 +618,7 @@ function applyTranscriptProposal(
   // `project:` tag lifted from injected transcript text must not re-file the
   // memory under another project.
   const tags = [
-    ...digest.tags.filter((tag) => !tag.startsWith('project:')),
+    ...digest.tags.filter((tag) => !tag.startsWith('project:') && !isReservedTag(tag)),
     `project:${row.project}`,
   ];
   // Name-collision guard. createEntity uses INSERT OR IGNORE (see
@@ -734,7 +736,7 @@ export function applyProposal(
   // kept; the routing one is replaced with the cluster's own. (`metadata.project`
   // was already derived from the cluster and is unaffected either way.)
   const tags = [
-    ...digest.tags.filter((tag) => !tag.startsWith('project:')),
+    ...digest.tags.filter((tag) => !tag.startsWith('project:') && !isReservedTag(tag)),
     `project:${row.project}`,
   ];
 

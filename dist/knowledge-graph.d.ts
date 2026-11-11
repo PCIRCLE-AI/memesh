@@ -1,9 +1,15 @@
 import type { MemeshDatabase } from './storage/sqlite.js';
 export type { Entity, Relation, CreateEntityInput, SearchOptions } from './core/types.js';
 import type { Entity, Relation, CreateEntityInput, SearchOptions } from './core/types.js';
+import type { ProjectScope } from './core/project-scope.js';
 export interface SearchResult {
     entities: Entity[];
     fallback: 'index_out_of_date' | null;
+}
+export interface RelationView {
+    scope?: ProjectScope;
+    namespace?: string;
+    includeArchived?: boolean;
 }
 export declare class KnowledgeGraph {
     private db;
@@ -28,17 +34,17 @@ export declare class KnowledgeGraph {
         includeArchived?: boolean;
         namespace?: string;
         tag?: string;
-        projectScope?: string | null;
-        filterRelations?: boolean;
-        relationIncludeArchived?: boolean;
+        projectScope?: ProjectScope;
+        relations?: RelationView;
     }): Entity[];
     getRelations(entityName: string): Relation[];
     search(query?: string, opts?: SearchOptions): Entity[];
+    private relationViewFor;
     searchWithFacts(query?: string, opts?: SearchOptions): SearchResult;
     private scanActiveRows;
     trackAccess(entityIds: number[]): void;
     findConflicts(entityNames: string[]): string[];
-    listRecent(limit?: number, includeArchived?: boolean, namespace?: string, countAsAccess?: boolean, offset?: number): Entity[];
+    listRecent(limit?: number, includeArchived?: boolean, namespace?: string, countAsAccess?: boolean, offset?: number, relations?: RelationView): Entity[];
     listByType(type: string, limit?: number, includeArchived?: boolean, namespace?: string, offset?: number): Entity[];
     listByProject(project: string, limit?: number, includeArchived?: boolean, namespace?: string, offset?: number): Entity[];
     private listRecentInScope;

@@ -111,7 +111,10 @@ describe('doctor: auto-capture activity (C5)', () => {
       'remember', '--name', 'session-abc', '--type', 'session-insight',
       '--obs', 'did some work', '--tags', 'source:auto-capture',
     ]);
-    expect(r.exitCode, r.stderr).toBe(0);
+    // `source:` tags are now reserved, so the CLI refuses it outright; either way
+    // the tag cannot make doctor call the loop alive.
+    expect(r.exitCode, 'the CLI accepted a reserved source: tag').toBe(1);
+    expect(r.stderr).toMatch(/reserved/);
 
     const activity = doctorCheck('hook-activity');
     expect(

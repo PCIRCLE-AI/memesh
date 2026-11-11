@@ -42,6 +42,7 @@ import { basename, dirname, join } from 'path';
 import {
   ensurePrivateDir,
   getMemeshDirFromDbPath,
+  getProjectName,
   HOOK_BUSY_TIMEOUT_MS,
   SKIP_REASONS,
   hookErrorReason,
@@ -118,6 +119,40 @@ export function claudeMemoryDir(transcriptPath) {
     if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') return null;
     throw err;
   }
+}
+
+/** Transcript bytes read to find the directory the session started in. */
+const START_CWD_SCAN_BYTES = 1024 * 1024;
+
+/**
+ * Whether the memory folder (the one of the directory the session started in) belongs to
+ * `project`, the project of the payload's cwd. A session that moved to another repository
+ * would otherwise file that folder's notes, trusted, under the wrong project. Decided by
+ * project identity, so a move within one repository still matches: the transcript records
+ * the directory each line was written in, and the one whose slug names the folder is where
+ * the session started. No such line: false, and the notes wait for a Stop that can tell.
+ */
+export function memoryDirBelongsTo(memoryDir, { transcriptPath, cwd, project }) {
+  const slug = basename(dirname(memoryDir));
+  const slugOf = (dir) => dir.replace(/[^a-zA-Z0-9]/g, '-');
+  if (typeof cwd === 'string' && slugOf(cwd) === slug) return true;
+  let head;
+  let fd;
+  try {
+    fd = openSync(transcriptPath, 'r');
+    const buf = Buffer.alloc(START_CWD_SCAN_BYTES);
+    head = buf.subarray(0, readSync(fd, buf, 0, buf.length, 0)).toString('utf8');
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+  for (const line of head.split('\n')) {
+    let started;
+    try { started = JSON.parse(line)?.cwd; } catch { continue; }
+    if (typeof started === 'string' && slugOf(started) === slug) return getProjectName(started) === project;
+  }
+  return false;
 }
 
 /**
@@ -344,7 +379,8 @@ export async function runNoteIngestion({ memoryDir, project, metaUrl, deadlineAt
   const state = readJson(statePath) ?? {};
   const newest = Math.max(newestNoteMtime(memoryDir), holdsChangedAt());
   const last = typeof state[key]?.at === 'number' ? state[key].at : 0;
-  if (newest <= last && !state[key]?.more) {
+  // A folder read before its notes were trusted is read once more, so the notes already stored are made trusted.
+  if (newest <= last && !state[key]?.more && state[key]?.trusted === true) {
     return { outcome: 'skipped', reason: SKIP_REASONS.noNoteChanged };
   }
 
@@ -359,6 +395,7 @@ export async function runNoteIngestion({ memoryDir, project, metaUrl, deadlineAt
   openDatabase(undefined, { busyTimeoutMs: HOOK_BUSY_TIMEOUT_MS });
   let result;
   try {
+    // The directory is this session's own memory folder (derived from its transcript path): its notes are trusted.
     result = ingestNoteDirectory({ dir: memoryDir, project, maxFiles: INGEST_MAX_FILES, deadlineAt, trusted: true });
   } finally {
     closeDatabase();
@@ -367,7 +404,9 @@ export async function runNoteIngestion({ memoryDir, project, metaUrl, deadlineAt
   // `startedAt`, not `newest`: a file edited while this run was reading is
   // newer than the stamp and is picked up next time. A run that left notes
   // waiting or held only tentatively runs again, whether or not a note changes.
-  writeJsonAtomic(statePath, { ...state, [key]: { at: startedAt, more: result.more > 0 || result.pendingPrivate > 0 || result.held.unchecked > 0 || result.redecideLeft > 0 } });
+  // `trusted` is recorded only when the folder's notes are trusted: a run that could not take the copy it needs first leaves it unset, so the next Stop tries again.
+  writeJsonAtomic(statePath, { ...state, [key]: { at: startedAt, more: result.more > 0 || result.pendingPrivate > 0 || result.held.unchecked > 0 || result.redecideLeft > 0, trusted: !result.retrustFailed } });
+  if (result.retrustFailed) return { outcome: 'error', reason: `note trust: ${result.retrustFailed}` };
   // Every shape of MEMORY change counts, not only the ones that store text:
   // a move re-points the memory at its file and a restore takes it out of
   // missing, and a record saying "nothing new" about a run that changed a
@@ -381,10 +420,10 @@ export async function runNoteIngestion({ memoryDir, project, metaUrl, deadlineAt
   // `lastWriteAt` set and `lastEntity` null — a write with nothing written,
   // which reads as a bug in doctor rather than as the missing field it is.
   const touched = result.created[0] ?? result.replaced[0] ?? result.repathed[0]
-    ?? result.restored[0] ?? result.markedMissing[0];
+    ?? result.restored[0] ?? result.markedMissing[0] ?? result.retrusted[0];
   const heldNow = result.held.private + result.held.unchecked;
   const changed = result.created.length + result.replaced.length + result.repathed.length
-    + result.restored.length + result.markedMissing.length > 0;
+    + result.restored.length + result.markedMissing.length + result.retrusted.length > 0;
   // A write records the summary (counts only); a skip records a known
   // reason, the only kind doctor will quote.
   // A run that stored nothing but REFUSED files is not the same event as a
@@ -735,6 +774,9 @@ export async function runStopNotes(payload, { captureEnabled, project, metaUrl, 
       // with a worse ending, so ingestion waits for a Stop that has a cwd.
       // The nudge below is unaffected: it writes nothing and needs no project.
       recordHookOutcome(env, { hook: 'note-ingest', outcome: 'skipped', reason: SKIP_REASONS.cwdAbsent, payload });
+    } else if (memoryDir && !memoryDirBelongsTo(memoryDir, { transcriptPath: payload?.transcript_path, cwd: payload?.cwd, project })) {
+      // No folder (memoryDir null) is runNoteIngestion's own recorded skip, below.
+      recordHookOutcome(env, { hook: 'note-ingest', outcome: 'skipped', reason: SKIP_REASONS.memoryDirOtherProject, payload });
     } else {
       const r = await runNoteIngestion({ memoryDir, project, metaUrl, deadlineAt });
       recordHookOutcome(env, { hook: 'note-ingest', outcome: r.outcome, reason: r.reason, entity: r.entity, count: r.count, payload });

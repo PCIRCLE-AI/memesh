@@ -6,7 +6,7 @@ export declare const RECENT_TITLE_CHARS = 120;
 export declare const AUTO_CONTEXT_EXCLUDED_TYPES: readonly string[];
 export declare const RECENT_INDEX_SKIP_TYPES: readonly string[];
 export declare const PENDING_TITLE: RegExp;
-export declare function projectAliases(project: string | null, cwd?: string | null): string[];
+export declare function projectAliases(project: string | null, scope?: string | readonly string[] | null): string[];
 export declare function autoContextScope(aliases: readonly string[]): {
     sql: string;
     params: string[];
@@ -37,5 +37,5 @@ export interface RecentIndex {
     }>;
     lines: string[];
 }
-export declare function buildRecentIndex(db: MemeshDatabase, project: string | null, asOf?: number, cwd?: string | null): RecentIndex;
+export declare function buildRecentIndex(db: MemeshDatabase, project: string | null, asOf?: number, scope?: string | readonly string[] | null): RecentIndex;
 //# sourceMappingURL=recent-index.d.ts.map

@@ -19,6 +19,7 @@ import type { MemeshDatabase } from '../storage/sqlite.js';
 import { redactMemoryText, redactShownTogether } from './paths.js';
 import { rankEntities } from './scoring.js';
 import { SESSION_HANDOFF_TYPE, sessionHandoffName } from './session-handoff.js';
+import { folderNoteMayTravel, ownFolderNote } from './project-scope.js';
 import { INDEX_CANDIDATE_CAP, INDEX_EXCLUDED_TYPES, INDEX_SNIPPET_FETCH_CHARS, type IndexCandidate } from './briefing-index.js';
 import {
   DECISION_LAYER_TYPES,
@@ -26,11 +27,15 @@ import {
   EVIDENCE_LAYER_TYPES,
   GLOBAL_TOPOLOGY_LIMIT,
   LESSON_TYPE_LIST,
+  PREFERENCE_TYPES,
+  SHARED_FEEDBACK_TYPE,
+  SHARED_TOPOLOGY_LIMIT,
   SNIPPET_FETCH_CHARS,
   TOPOLOGY_CANDIDATE_CAP,
   WHY_PREFIX,
   isAutoInjectable,
   prioritizeDecisions,
+  projectLabel,
   unconfirmedDaysSince,
   type TopologyEntity,
 } from './work-topology.js';
@@ -113,6 +118,8 @@ export interface PoolRow {
   created_at?: string;
   /** Decision-layer rows only: latest valid activity (see RECENCY_SQL). */
   recency?: string | null;
+  /** Shared-experience rows only: the project this memory of another project belongs to. */
+  project?: string;
 }
 
 interface CandidateRow extends Omit<PoolRow, 'access_count' | 'last_accessed_at' | 'confidence' | 'recall_hits' | 'recall_misses'> {
@@ -121,6 +128,7 @@ interface CandidateRow extends Omit<PoolRow, 'access_count' | 'last_accessed_at'
   confidence: number | null;
   recall_hits: number | null;
   recall_misses: number | null;
+  source_project?: string | null;
 }
 
 // SQLite hands back null for absent scalars; rankEntities wants undefined.
@@ -137,6 +145,7 @@ const toPoolRow = (row: CandidateRow): PoolRow => ({
   recall_misses: row.recall_misses ?? undefined,
   created_at: row.created_at ?? undefined,
   recency: row.recency ?? null,
+  ...(row.source_project ? { project: row.source_project } : {}),
 });
 
 /**
@@ -186,21 +195,26 @@ export interface BriefingPools {
   project: PoolRow[];
   /** Memories with no project (preferences, general lessons), every level. */
   noProject: PoolRow[];
+  /** Preferences and memory-folder feedback of OTHER projects (at most SHARED_TOPOLOGY_LIMIT), newest first. */
+  shared: PoolRow[];
   global: PoolRow[];
   recent: PoolRow[];
 }
 
 export interface PoolOptions {
+  /** Every project id this project's memories may be filed under, the current one first
+   *  (getProjectIds). Omitted: just `projectName`. */
+  projectIds?: readonly string[];
   /** Slots for the project's own memories (decisions first). */
   projectLimit: number;
   global: boolean;
   foreign: boolean;
   /** A failed handoff, decision or lesson read becomes an empty part and is
    *  reported here; without it the read throws. */
-  onError?: (label: 'handoff' | 'decisions' | 'lessons', err: unknown) => void;
+  onError?: (label: 'handoff' | 'decisions' | 'lessons' | 'shared', err: unknown) => void;
 }
 
-function guarded<T>(label: 'handoff' | 'decisions' | 'lessons', fallback: T, read: () => T, onError: PoolOptions['onError']): T {
+function guarded<T>(label: 'handoff' | 'decisions' | 'lessons' | 'shared', fallback: T, read: () => T, onError: PoolOptions['onError']): T {
   if (!onError) return read();
   try { return read(); } catch (err) { onError(label, err); return fallback; }
 }
@@ -208,35 +222,39 @@ function guarded<T>(label: 'handoff' | 'decisions' | 'lessons', fallback: T, rea
 /** Select every pool a briefing renders, for one project, at one level's policy. */
 export function selectBriefingPools(db: MemeshDatabase, projectName: string, options: PoolOptions): BriefingPools {
   const cols = entityColumns(db);
-  const projectTag = `project:${projectName}`;
+  const ids = options.projectIds?.length ? [...options.projectIds] : [projectName];
+  const projectTags = ids.map((id) => `project:${id}`);
+  const tagMarks = projectTags.map(() => '?').join(',');
   const columns = candidateColumns(cols);
 
-  const handoffRead = guarded('handoff', undefined as HandoffRow | undefined, () => db.prepare(
+  // The newest trusted handoff under any id of this project: a handoff is one memory per
+  // project id, replaced at every Stop, so the one under an earlier id is read until
+  // the next Stop writes the current one. An untrusted one (an import) never hides it.
+  const handoffs = guarded('handoff', [] as HandoffRow[], () => db.prepare(
     `SELECT e.id, e.name, e.metadata, o.content AS text, o.created_at AS observedAt
      FROM entities e JOIN observations o ON o.entity_id = e.id
-     WHERE e.name = ? AND e.type = ?${active(cols)}
-     ORDER BY o.id DESC
-     LIMIT 1`,
-  ).get(sessionHandoffName(projectName), SESSION_HANDOFF_TYPE) as HandoffRow | undefined, options.onError);
-  const handoffTrusted = !!handoffRead && trustedForAutoContext(handoffRead.metadata);
+     WHERE e.name IN (${ids.map(() => '?').join(',')}) AND e.type = ?${active(cols)}
+     ORDER BY o.id DESC`,
+  ).all(...ids.map(sessionHandoffName), SESSION_HANDOFF_TYPE) as unknown as HandoffRow[], options.onError);
+  const handoff = handoffs.find((row) => trustedForAutoContext(row.metadata));
 
   const projectRows = db.prepare(
     `SELECT DISTINCT ${columns}
      FROM entities e JOIN tags t ON t.entity_id = e.id
-     WHERE t.tag = ?${active(cols)} AND e.type <> ? AND e.type NOT IN (${EVIDENCE_TYPE_LIST.map(() => '?').join(',')})${nonGlobal(cols)}
+     WHERE t.tag IN (${tagMarks})${active(cols)} AND e.type <> ? AND e.type NOT IN (${EVIDENCE_TYPE_LIST.map(() => '?').join(',')})${nonGlobal(cols)}
      ORDER BY e.id DESC
      LIMIT ?`,
-  ).all(projectTag, SESSION_HANDOFF_TYPE, ...EVIDENCE_TYPE_LIST, TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[];
+  ).all(...projectTags, SESSION_HANDOFF_TYPE, ...EVIDENCE_TYPE_LIST, TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[];
   // Decisions first (#434 step 3): the project's newest trusted decision-layer
   // rows take slots before the score-ordered candidates fill the rest.
   const decisions = guarded('decisions', [] as PoolRow[], () => (db.prepare(
     `SELECT DISTINCT ${columns}, ${RECENCY_SQL} AS recency
      FROM entities e JOIN tags t ON t.entity_id = e.id
-     WHERE t.tag = ?${active(cols)}${nonGlobal(cols)}
+     WHERE t.tag IN (${tagMarks})${active(cols)}${nonGlobal(cols)}
        AND e.type IN (${DECISION_LAYER_TYPES.map(() => '?').join(',')})
      ORDER BY recency IS NULL, recency DESC, e.id DESC
      LIMIT ?`,
-  ).all(projectTag, ...DECISION_LAYER_TYPES, TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[])
+  ).all(...projectTags, ...DECISION_LAYER_TYPES, TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[])
     .map(toPoolRow).filter((row) => trustedForAutoContext(row.metadata)), options.onError);
   // The project's slots go to its decisions, then its other work and knowledge,
   // by score. A flood of commits (or session rollups) used to fill the slots
@@ -246,10 +264,10 @@ export function selectBriefingPools(db: MemeshDatabase, projectName: string, opt
   const activity = selectPool(db.prepare(
     `SELECT DISTINCT ${columns}
      FROM entities e JOIN tags t ON t.entity_id = e.id
-     WHERE t.tag = ?${active(cols)} AND e.type = 'commit'${nonGlobal(cols)}
+     WHERE t.tag IN (${tagMarks})${active(cols)} AND e.type = 'commit'${nonGlobal(cols)}
      ORDER BY e.id DESC
      LIMIT ?`,
-  ).all(projectTag, TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[], ACTIVITY_LIMIT);
+  ).all(...projectTags, TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[], ACTIVITY_LIMIT);
   const project = [
     ...prioritizeDecisions(decisions, selectPool(projectRows, TOPOLOGY_CANDIDATE_CAP), options.projectLimit),
     ...activity,
@@ -258,10 +276,10 @@ export function selectBriefingPools(db: MemeshDatabase, projectName: string, opt
   const lessonRows = guarded('lessons', [] as PoolRow[], () => (db.prepare(
     `SELECT DISTINCT ${columns}
      FROM entities e JOIN tags t ON t.entity_id = e.id
-     WHERE e.type IN (${LESSON_TYPE_LIST.map(() => '?').join(', ')})${active(cols)}${nonGlobal(cols)} AND t.tag = ?
+     WHERE e.type IN (${LESSON_TYPE_LIST.map(() => '?').join(', ')})${active(cols)}${nonGlobal(cols)} AND t.tag IN (${tagMarks})
      ORDER BY e.id DESC
      LIMIT ${LESSON_POOL_LIMIT}`,
-  ).all(...LESSON_TYPE_LIST, projectTag) as unknown as CandidateRow[])
+  ).all(...LESSON_TYPE_LIST, ...projectTags) as unknown as CandidateRow[])
     .map(toPoolRow).filter((row) => trustedForAutoContext(row.metadata)), options.onError);
 
   // Memories that belong to no project (stored with project: false, or legacy
@@ -277,6 +295,35 @@ export function selectBriefingPools(db: MemeshDatabase, projectName: string, opt
      LIMIT ?`,
   ).all(SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[], NO_PROJECT_LIMIT);
 
+  // How the user works is shared between projects: a few preferences, and feedback, from the
+  // user's own memory folder, that belong to ANOTHER project, in a
+  // section of their own after everything of this project's (the assembler fills it last),
+  // each labelled with where it came from, newest first by its latest valid activity.
+  // Only notes of a memory folder (what the user and the agent wrote there), and only what the
+  // note ingester can vouch for: `provenance.source` and `trust` are set by it alone, where a
+  // type or a tag can be written by any agent; a note whose file is gone is left out. Another project's decisions, lessons and agent-written preferences were written
+  // by an agent or a hook, and putting those in front of every other project unasked would let
+  // one project's captured text steer another (a preference that applies everywhere is stored
+  // with no project, which has its own pool above). Measured on a real graph, the
+  // newest lessons and decisions of other projects were about another product's internals,
+  // and an access count put a project's bulk records first. Decisions and lessons of every
+  // project stay one `recall` away.
+  const shared = guarded('shared', [] as PoolRow[], () => (db.prepare(
+    `SELECT DISTINCT ${columns}, ${RECENCY_SQL} AS recency,
+       (SELECT substr(pt.tag, ${'project:'.length + 1}) FROM tags pt
+         WHERE pt.entity_id = e.id AND pt.tag LIKE 'project:%' AND pt.tag NOT IN (${tagMarks})
+         ORDER BY pt.tag LIMIT 1) AS source_project
+     FROM entities e
+     WHERE e.type <> ?${active(cols)}${nonGlobal(cols)}
+       AND (e.type IN (${PREFERENCE_TYPES.map(() => '?').join(',')}) OR e.type = ?)
+       AND ${ownFolderNote('e')}
+       AND EXISTS (SELECT 1 FROM tags pt WHERE pt.entity_id = e.id AND pt.tag LIKE 'project:%')
+       AND NOT EXISTS (SELECT 1 FROM tags pt WHERE pt.entity_id = e.id AND pt.tag IN (${tagMarks}))
+     ORDER BY recency IS NULL, recency DESC, e.id DESC
+     LIMIT ?`,
+  ).all(...projectTags, SESSION_HANDOFF_TYPE, ...PREFERENCE_TYPES, SHARED_FEEDBACK_TYPE, ...projectTags, TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[])
+    .map(toPoolRow).filter((row) => trustedForAutoContext(row.metadata)).slice(0, SHARED_TOPOLOGY_LIMIT), options.onError);
+
   // `global` is an explicit storage scope, not a project tag: its own bounded
   // pool, and the only path a global row can enter by.
   const global = options.global && cols.namespace
@@ -290,22 +337,25 @@ export function selectBriefingPools(db: MemeshDatabase, projectName: string, opt
 
   // Newest activity across ALL projects; anything only here is from another
   // project. Rows with no project are the pool above, not "another project".
+  // Another project's memory-folder notes come only as preferences and feedback.
   const recent = options.foreign
     ? selectPool(db.prepare(
       `SELECT ${columns} FROM entities e
        WHERE NOT ${NO_PROJECT_TAG} AND e.type <> ? AND e.type NOT IN (${EVIDENCE_TYPE_LIST.map(() => '?').join(',')})${active(cols)}${nonGlobal(cols)}
+         AND (EXISTS (SELECT 1 FROM tags rt WHERE rt.entity_id = e.id AND rt.tag IN (${tagMarks})) OR ${folderNoteMayTravel('e')})
        ORDER BY e.id DESC
        LIMIT ?`,
-    ).all(SESSION_HANDOFF_TYPE, ...EVIDENCE_TYPE_LIST, TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[], RECENT_LIMIT)
+    ).all(SESSION_HANDOFF_TYPE, ...EVIDENCE_TYPE_LIST, ...projectTags, TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[], RECENT_LIMIT)
     : [];
 
   return {
-    handoff: handoffTrusted ? handoffRead : undefined,
-    handoffHidden: handoffRead && !handoffTrusted ? 'untrusted' : undefined,
+    handoff,
+    handoffHidden: handoffs.length > 0 && handoff === undefined ? 'untrusted' : undefined,
     lessonCount: lessonRows.length,
     lessons: lessonRows.slice(0, LESSON_LIMIT),
     project,
     noProject,
+    shared,
     global,
     recent,
   };
@@ -406,6 +456,7 @@ export function toTopologyEntity(row: PoolRow, snippets: ReadonlyMap<number, Sni
     snippet: first,
     signalScore: typeof signal === 'number' ? signal : null,
     recency: row.recency ?? null,
+    ...(row.project !== undefined ? { sharedFrom: projectLabel(row.project) } : {}),
     // Confirmed when last read (a recall stamps last_accessed_at) or added to:
     // the newest observation, which every decision type has (`recency` only
     // the decision layer).
@@ -419,9 +470,10 @@ export function toTopologyEntity(row: PoolRow, snippets: ReadonlyMap<number, Sni
  * and how lives in briefing-index.ts; this is only the read.
  */
 export function readIndexCandidates(
-  db: MemeshDatabase, projectName: string,
+  db: MemeshDatabase, projectName: string, projectIds?: readonly string[],
 ): { candidates: Array<IndexCandidate & { name: string }>; truncated: boolean } {
   const cols = entityColumns(db);
+  const projectTags = (projectIds?.length ? [...projectIds] : [projectName]).map((id) => `project:${id}`);
   const excluded = INDEX_EXCLUDED_TYPES.map(() => '?').join(',');
   const decisionTypes = [...DECISION_TYPES];
   const decisionOnly = `e.type IN (${decisionTypes.map(() => '?').join(',')})`;
@@ -438,11 +490,11 @@ export function readIndexCandidates(
            ORDER BY o3.id DESC LIMIT 1) END AS why_content,
        CASE WHEN ${decisionOnly} THEN ${RECENCY_SQL} END AS recency
      FROM entities e
-     WHERE e.id IN (SELECT entity_id FROM tags WHERE tag = ?)${active(cols)}${nonGlobal(cols)}
+     WHERE e.id IN (SELECT entity_id FROM tags WHERE tag IN (${projectTags.map(() => '?').join(',')}))${active(cols)}${nonGlobal(cols)}
        AND e.type NOT IN (${excluded})
      ORDER BY last_activity DESC, e.id DESC
      LIMIT ?`,
-  ).all(...decisionTypes, ...decisionTypes, `project:${projectName}`, ...INDEX_EXCLUDED_TYPES, INDEX_CANDIDATE_CAP) as Array<{
+  ).all(...decisionTypes, ...decisionTypes, ...projectTags, ...INDEX_EXCLUDED_TYPES, INDEX_CANDIDATE_CAP) as Array<{
     id: number; name: string; type: string | null; title: string | null; metadata: string | null;
     last_accessed_at: string | null; snippet: string | null; last_activity: string | null;
     why_content: string | null; recency: string | null;

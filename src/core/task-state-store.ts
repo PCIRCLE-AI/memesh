@@ -14,7 +14,7 @@
 
 import { getDatabase } from '../db.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
-import { getProjectName, redactSecretList } from './paths.js';
+import { getProjectIds, getProjectName, redactSecretList } from './paths.js';
 import { remember } from './operations.js';
 import { truncateTitle } from './title.js';
 import {
@@ -31,6 +31,8 @@ import {
 export interface SetTaskStateInput {
   /** Defaults to the current working directory's project. */
   project?: string;
+  /** Every id the project's state may be stored under (a bound session's); defaults to the checkout's. */
+  ids?: readonly string[];
   patch: Partial<Record<TaskStateField, string>>;
   sourceHost?: string;
 }
@@ -63,6 +65,18 @@ function readState(name: string): { state: TaskState; corrupted: boolean } {
   return { state: parseTaskState(parsed), corrupted: false };
 }
 
+/**
+ * The state of the first of a project's ids that has a record: the current id, then
+ * the ids its checkout was filed under before (`getProjectIds`, or the caller's).
+ */
+function readProjectState(project: string, ids?: readonly string[]): { state: TaskState; corrupted: boolean } {
+  const exists = getDatabase().prepare("SELECT 1 FROM entities WHERE name = ? AND status = 'active'");
+  for (const id of new Set([project, ...(ids ?? (project === getProjectName() ? getProjectIds() : []))])) {
+    if (exists.get(taskStateName(id))) return readState(taskStateName(id));
+  }
+  return { state: {}, corrupted: false };
+}
+
 /** Thrown when unreadable metadata cannot be read or verified as a no-op. */
 export class TaskStateUnreadableError extends Error {
   constructor(public readonly project: string) {
@@ -71,10 +85,10 @@ export class TaskStateUnreadableError extends Error {
   }
 }
 
-/** The state currently recorded for a project. Empty object when there is none. */
-export function getTaskState(project?: string): { project: string; state: TaskState } {
+/** The state currently recorded for a project, under any of its ids. Empty object when there is none. */
+export function getTaskState(project?: string, ids?: readonly string[]): { project: string; state: TaskState } {
   const resolved = project ?? getProjectName();
-  const { state, corrupted } = readState(taskStateName(resolved));
+  const { state, corrupted } = readProjectState(resolved, ids);
   // Corrupted JSON is a failure the reader must see. Returning {} here
   // rendered it as "nothing stated" on every surface — indistinguishable
   // from a project nobody has described.
@@ -127,7 +141,7 @@ export function setTaskState(input: SetTaskStateInput): SetTaskStateResult {
   const write = db.transaction(() => {
     // A corrupted record still merges as "nothing stated before": a changed
     // write is the existing in-product recovery path.
-    const { state: previous, corrupted } = readState(name);
+    const { state: previous, corrupted } = readProjectState(project, input.ids);
     const { state, changed, observations } = mergeTaskState(
       previous,
       patch,
@@ -170,7 +184,7 @@ export function setTaskState(input: SetTaskStateInput): SetTaskStateResult {
     const message = error instanceof Error ? error.message : String(error);
     if (!/readonly database|SQLITE_READONLY/i.test(message)) throw error;
     return db.transaction(() => {
-      const { state: previous, corrupted } = readState(name);
+      const { state: previous, corrupted } = readProjectState(project, input.ids);
       const { state, changed } = mergeTaskState(previous, patch, new Date().toISOString());
       if (changed.length !== 0) throw error;
       if (corrupted) throw new TaskStateUnreadableError(project);

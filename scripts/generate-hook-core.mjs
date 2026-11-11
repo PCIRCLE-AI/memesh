@@ -48,6 +48,9 @@ const SOURCES = [
   { from: 'dist/core/private-session.js', to: 'private-session.js', src: 'src/core/private-session.ts' },
   { from: 'dist/core/title.js', to: 'title.js', src: 'src/core/title.ts' },
   { from: 'dist/core/work-topology.js', to: 'work-topology.js', src: 'src/core/work-topology.ts' },
+  // Which memories a project's reads may see: the graph's recall, the briefing and
+  // every hook that reads a project's memories share this one SQL fragment.
+  { from: 'dist/core/project-scope.js', to: 'project-scope.js', src: 'src/core/project-scope.ts' },
   { from: 'dist/core/task-state.js', to: 'task-state.js', src: 'src/core/task-state.ts' },
   // The one-day message lifetime: the unread count the hooks print must not
   // count a message the expiry pass has not deleted yet.

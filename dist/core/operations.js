@@ -291,6 +291,7 @@ function searchAndScore(args) {
         limit: args.limit,
         includeArchived: args.include_archived,
         namespace: args.namespace,
+        scopeRelations: !args.cross_project,
     });
     const entities = summarizeReplacedHistory(searched.entities).map(shownEntity);
     return {
@@ -329,7 +330,7 @@ export async function recallWithConflicts(args) {
 function recallIds(args, requestedIds) {
     const ids = [...new Set(requestedIds)];
     const kg = new KnowledgeGraph(getDatabase());
-    const rows = kg.getEntitiesByIds(ids, { includeArchived: true, namespace: args.namespace, projectScope: args.projectScope, filterRelations: true, relationIncludeArchived: args.include_archived });
+    const rows = kg.getEntitiesByIds(ids, { includeArchived: true, namespace: args.namespace, projectScope: args.projectScope, relations: { scope: args.projectScope, namespace: args.namespace, includeArchived: args.include_archived } });
     const byId = new Map(rows.map(entity => [entity.id, entity]));
     const results = ids.map(id => {
         const entity = byId.get(id);

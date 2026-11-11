@@ -17,7 +17,7 @@ import { updateNoticeForEntryPoint } from '../../core/update-entrypoint.js';
 import { removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
 import { findPackageRoot } from '../../core/package-root.js';
 import { isOnPath } from '../../core/host-presence.js';
-import { getAgentRouterSocketPath, getDbPath, getMemeshDirFromDbPath, getProjectName, homeDir, redactSecrets, redactUserPaths } from '../../core/paths.js';
+import { getAgentRouterSocketPath, getDbPath, getMemeshDirFromDbPath, getProjectIds, getProjectName, homeDir, redactSecrets, redactUserPaths } from '../../core/paths.js';
 import { agentScopeIdRejection, canonicalAgentScopeId, projectScopeRejection } from '../../core/agent-scope-id.js';
 import { NAMESPACES } from '../../core/types.js';
 import { deriveNote, splitObservations, NOTE_DEFAULT_TYPE, NOTE_MAX_OBSERVATIONS } from '../../core/note-derive.js';
@@ -586,7 +586,13 @@ program
       } catch (err) {
         // remember() refuses an unusable note (e.g. only control characters)
         // with one sentence; a stack trace would bury it.
-        console.error(`Error: ${failureMessage(err)}`);
+        const message = failureMessage(err);
+        // The directory's project was added here, and the memory has none (stored before the CLI
+        // filed memories under a project): say how to add to it as it is.
+        const hint = typeof opts.project !== 'string' && opts.project !== false && !tagNamesProject && message.includes('it has no project tag')
+          ? ' To add to that memory, run the same command with --no-project.'
+          : '';
+        console.error(`Error: ${message}${hint}`);
         process.exit(1);
       }
       if (opts.json) {
@@ -675,7 +681,7 @@ program
       // recallForAgent: recall + conflicts + the agent-facing size cap (#494); see its docstring.
       const result = await recallForAgent({
         ...input,
-        ...(ids !== undefined ? { projectScope: `project:${getProjectName()}` } : {}),
+        ...(ids !== undefined ? { projectScope: getProjectIds().map(id => `project:${id}`) } : {}),
       });
       const { entities, conflicts, retrieval, entities_omitted } = result;
 

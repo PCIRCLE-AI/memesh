@@ -50,11 +50,17 @@ const BIND_WORKSPACE = 'Start the MCP server with MEMESH_PROJECT_ROOT set to the
  * back to this server's working directory, which is the plugin's, not the user's.
  * `action` is what the caller can do about a refusal, in this tool's own terms.
  */
-function projectFor(explicit: string | undefined, context: McpRequestContext, action: string): { project: string; directory?: string } | { result: ToolResult } {
+function projectFor(explicit: string | undefined, context: McpRequestContext, action: string): { project: string } | { result: ToolResult } {
   if (explicit !== undefined) return { project: explicit };
   const binding = context.projectBinding ?? UNBOUND;
-  if ('project' in binding) return { project: binding.project, directory: binding.directory };
+  if ('project' in binding) return { project: binding.project };
   return { result: fail(`${binding.error}: ${binding.reason} ${action}`) };
+}
+
+/** Every id a session bound to `project` reads it under (the binding carries them); undefined for another project. */
+function boundIdsFor(project: string, context: McpRequestContext): readonly string[] | undefined {
+  const binding = context.projectBinding;
+  return binding && 'project' in binding && binding.project === project ? binding.ids : undefined;
 }
 
 /** What the caller can do when a write names no project and none is bound. */
@@ -229,7 +235,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'recall',
     description:
-      'Search stored knowledge with full-text search, or retrieve exact memory IDs. Use ids (1–20 positive integers) without query, tag or cross_project. ID results report found, archived, unavailable or omitted; only found memories include content and a mem-fetched reference. Retry omitted results individually; an item still omitted on its own cannot fit the response limit. Selectors: `project` (that project, memories with no project, and global ones; false = only memories with no project and global ones), `tag` (exactly that tag) or `cross_project` (every project; a `tag` given with it is ignored). `project` cannot be combined with `tag` or `cross_project`. With none, it uses the project this session is bound to (MEMESH_PROJECT_ROOT, or the client’s workspace root) the same way, or only memories with no project and global ones when nothing is bound; a launch or workspace root that is set but cannot be resolved is refused with the reason; the response says what it searched (`scope`) and each result carries its `projects` ([] for none). Call with no query to list recent memories. One- and two-term queries use OR matching; queries with three or more terms try strict all-term matching first and fall back to OR only when strict matching has no hits, with results ranked by relevance. Results are capped for size: each entity\'s observations+tags at 8 KB, the whole response at 32 KB; a capped entity carries `truncated` with the full shown/total counts, and the response carries `truncated`/`entities_omitted` when anything was cut. `file:*` tags are never included — they exist for pre-edit lookups, not for reading.',
+      'Search stored knowledge with full-text search, or retrieve exact memory IDs. Use ids (1–20 positive integers) without query, tag or cross_project. ID results report found, archived, unavailable or omitted; only found memories include content and a mem-fetched reference. Retry omitted results individually; an item still omitted on its own cannot fit the response limit. Selectors: `project` (that project, memories with no project, global ones, and the decisions, lessons and preferences of any project, untrusted ones excepted; false = the same without a project of its own), `tag` (exactly that tag) or `cross_project` (every project; a `tag` given with it is ignored). `project` cannot be combined with `tag` or `cross_project`. With none, it uses the project this session is bound to (MEMESH_PROJECT_ROOT, or the client’s workspace root) the same way, or the same without a project of its own when nothing is bound; the detail of another project (commits, session summaries, handoffs, notes) is never included; a launch or workspace root that is set but cannot be resolved is refused with the reason; the response says what it searched (`scope`) and each result carries its `projects` ([] for none). A result carries `archived_relations_omitted` when it leaves out relations to archived memories (a `supersedes` link is kept, its archived far end too, when that end is in the scope searched); add `include_archived` to see them. Call with no query to list recent memories. One- and two-term queries use OR matching; queries with three or more terms try strict all-term matching first and fall back to OR only when strict matching has no hits, with results ranked by relevance. Results are capped for size: each entity\'s observations+tags at 8 KB, the whole response at 32 KB; a capped entity carries `truncated` with the full shown/total counts, and the response carries `truncated`/`entities_omitted` when anything was cut. `file:*` tags are never included — they exist for pre-edit lookups, not for reading.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -268,7 +274,7 @@ export const TOOL_DEFINITIONS = [
         },
         project: {
           anyOf: [{ type: 'string', minLength: 1 }, { const: false }],
-          description: 'Search this project plus memories with no project and global ones; false searches only memories with no project and global ones. Cannot be combined with `tag` or `cross_project`. Omit it to use the bound project.',
+          description: 'Search this project plus memories with no project, global ones, and the decisions, lessons and preferences of any project; false searches the same without a project of its own. Cannot be combined with `tag` or `cross_project`. Omit it to use the bound project.',
         },
       },
       additionalProperties: false,
@@ -388,7 +394,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'briefing',
     description:
-      'The work topology for a project, assembled and ready to use — assembled under the same rules as Claude Code’s session-start memory block (at `full`, the SessionStart hook additionally appends a work-package notice; that notice is a host-agent instruction, not memory, and is never part of this tool’s output). An eligible exact-project handoff precedes ranked memories at every level, after optional repository facts: fresh through 72 hours, marked stale through 14 days, omitted when older, undatable, or implausibly future-dated. Imported or archived handoffs are not auto-injected. Recent project decisions take priority over routine activity; up to five project lessons are selected separately. The handoff, displayed task state, ranked and global memories share a 4000-character memory-block limit. At every level the block closes with the recent index: the titles of the 30 memories most recently written in this project or with no project (never another project’s, global or not), each `- title [mem:id]`, leaving out one a newer decision on the same topic in the list replaces or whose title says it is waiting; nothing is put in its place. How much else is assembled follows the `briefing` setting: `minimal` (the default) includes this project’s decisions and direction, lessons, known facts and recent activity, plus up to five memories that belong to no project, and no fresh task state (a stale or unknown-age one still collapses to a one-line flag at every level), and may be empty; `standard` adds a fresh goal / next / blocked / done; `full` additionally includes other projects and global memory. Whatever the level, the result’s `index` field carries the standalone catalog of durable memories (`memesh briefing --index`). Call it at the start of a session only when the host has not already injected this block (the MeMesh SessionStart hook does under Claude Code, and under the Codex plugin once Codex runs its hooks; it runs again after context compaction), or when the user asks what is remembered; use recall for specific questions. Content is wrapped as untrusted background data.',
+      'The work topology for a project, assembled and ready to use — assembled under the same rules as Claude Code’s session-start memory block (at `full`, the SessionStart hook additionally appends a work-package notice; that notice is a host-agent instruction, not memory, and is never part of this tool’s output). An eligible exact-project handoff precedes ranked memories at every level, after optional repository facts: fresh through 72 hours, marked stale through 14 days, omitted when older, undatable, or implausibly future-dated. Imported or archived handoffs are not auto-injected. Recent project decisions take priority over routine activity; up to five project lessons are selected separately. The handoff, displayed task state, ranked and global memories share a 4000-character memory-block limit. At every level the block closes with the recent index: the titles of the 30 memories most recently written in this project or with no project (never another project’s, global or not), each `- title [mem:id]`, leaving out one a newer decision on the same topic in the list replaces or whose title says it is waiting; nothing is put in its place. How much else is assembled follows the `briefing` setting: `minimal` (the default) includes this project’s decisions and direction, lessons, known facts and recent activity, plus up to five memories that belong to no project and up to three preferences of other projects (labelled with their project, after the project’s own), and no fresh task state (a stale or unknown-age one still collapses to a one-line flag at every level), and may be empty; `standard` adds a fresh goal / next / blocked / done; `full` additionally includes other projects and global memory. Whatever the level, the result’s `index` field carries the standalone catalog of durable memories (`memesh briefing --index`). Call it at the start of a session only when the host has not already injected this block (the MeMesh SessionStart hook does under Claude Code, and under the Codex plugin once Codex runs its hooks; it runs again after context compaction), or when the user asks what is remembered; use recall for specific questions. Content is wrapped as untrusted background data.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -833,9 +839,11 @@ async function handleToolInner(
       // was out of date, #571) and whether the bounded window filled. `truncated` /
       // `entities_omitted` ride the envelope only when the size cap actually
       // cut something.
-      // No tag and not cross-project: the bound project's memories, memories
-      // with no project, and global ones; with no bound project, only the
-      // latter two — never another project's. A binding that is set but
+      // No tag and not cross-project: the bound project's memories (under every
+      // id its repository has been written with), memories with no project,
+      // global ones, and the decisions, lessons and preferences of any project;
+      // with no bound project, all of those but the first — never another
+      // project's detail. A binding that is set but
       // cannot be resolved, or is ambiguous, is refused. An explicit tag or cross_project keeps its own meaning. An
       // empty tag selects nothing, so it is no tag here.
       // `project` (an id, or false for none) asks for that scope explicitly
@@ -843,14 +851,17 @@ async function handleToolInner(
       const { project: projectArg, ...input } = r.data;
       const tag = input.tag === '' ? undefined : input.tag;
       if (projectArg !== undefined && (tag !== undefined || input.cross_project)) {
-        return fail('recall takes one selector: project, tag or cross_project — not several. Use project for one project plus memories with no project and global ones; tag for exactly one tag; cross_project for every project.');
+        return fail('recall takes one selector: project, tag or cross_project — not several. Use project for one project plus memories with no project, global ones and the decisions, lessons and preferences of any project; tag for exactly one tag; cross_project for every project.');
       }
       if (tag !== undefined || input.cross_project) {
         return ok(agentRecallEnvelope(await recallForAgent({ ...input, tag })));
       }
       let boundProject: string | null;
+      let boundIds: readonly string[] = [];
       if (projectArg !== undefined) {
         boundProject = projectArg === false ? null : projectArg;
+        // Naming the session's own project reads every id its repository has.
+        boundIds = boundProject === null ? [] : boundIdsFor(boundProject, requestContext) ?? [boundProject];
       } else {
         const binding = requestContext.projectBinding ?? UNBOUND;
         // Only a session with nothing bound falls back to memories with no
@@ -860,16 +871,17 @@ async function handleToolInner(
           return fail(`${binding.error}: ${binding.reason} Pass project, tag or cross_project.`);
         }
         boundProject = 'project' in binding ? binding.project : null;
+        boundIds = 'project' in binding ? binding.ids ?? [binding.project] : [];
       }
       // Each memory says which project it belongs to (null: none), and the
       // envelope says what was searched; both inside the response cap.
       const scope = {
         project: boundProject,
         searched: boundProject === null
-          ? `memories with no project, and global memories${projectArg === false ? '' : ' (no project is bound to this session)'}`
-          : `project ${boundProject}, memories with no project, and global memories`,
+          ? `memories with no project, global memories, and the decisions, lessons and preferences of any project${projectArg === false ? '' : ' (no project is bound to this session)'}`
+          : `project ${boundProject}, memories with no project, global memories, and the decisions, lessons and preferences of any project`,
       };
-      return ok(agentRecallEnvelope(await recallForAgent({ ...input, tag, projectScope: boundProject === null ? null : `project:${boundProject}` }, scope)));
+      return ok(agentRecallEnvelope(await recallForAgent({ ...input, tag, projectScope: boundProject === null ? null : boundIds.map(id => `project:${id}`) }, scope)));
     }
     if (name === 'forget') {
       const r = parseOrFail(ForgetSchema, args);
@@ -920,18 +932,21 @@ async function handleToolInner(
       const bound = projectFor(explicit, requestContext, 'Pass project explicitly.');
       if ('result' in bound) return bound.result;
       const { project } = bound;
+      // The bound project's state may be stored under an earlier id of its checkout.
+      const ids = boundIdsFor(project, requestContext);
       // No field mentioned at all = a read. Distinguished by which KEYS
       // arrived, not by their values: `blocked: ""` is a write that clears,
       // and treating it as "nothing to do" would make a blocker unremovable.
-      if (Object.keys(patch).length === 0) return ok(getTaskState(project));
-      return ok(setTaskState({ project, patch, sourceHost }));
+      if (Object.keys(patch).length === 0) return ok(getTaskState(project, ids));
+      return ok(setTaskState({ project, ids, patch, sourceHost }));
     }
     if (name === 'briefing') {
       const r = parseOrFail(BriefingSchema, args);
       if (!r.ok) return r.result;
       const bound = projectFor(r.data.project, requestContext, 'Pass project explicitly.');
       if ('result' in bound) return bound.result;
-      return ok(assembleBriefing(bound.project, r.data.recipient, bound.directory ?? null));
+      // A session bound to this project reads it under every id its checkout has.
+      return ok(assembleBriefing(bound.project, r.data.recipient, boundIdsFor(bound.project, requestContext)));
     }
     if (name === 'user_patterns') {
       const r = parseOrFail(UserPatternsSchema, args);
