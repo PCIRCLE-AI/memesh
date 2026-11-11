@@ -138,30 +138,32 @@ async function recordUpdateConsent(sessionId, prompt) {
 // Disambiguation policy:
 //   - All imperatives anchored to sentence start (^ or after .!?\n) to skip
 //     interrogatives ("do you remember X?", "What does save to memesh do?").
+//     Only spaces and tabs may follow the anchor: with \s a run of blank lines
+//     made every newline a fresh start that rescanned the whole run.
 //   - For save-class verbs, "memesh" suffix required to avoid false positives
 //     on generic "save this" (could mean clipboard, file, bookmark, etc.).
 //   - Supported languages: English, Spanish, French, Portuguese, Traditional Chinese.
 //     Additional languages welcome via PR (provide native-speaker validation).
 export const INTENT_PATTERNS = [
   // English: "Remember/memorize this|that"
-  /(?:^|[.!?\n]\s*)(?:please\s+)?(?:remember|memorize)\s+(?:this|that)\b/im,
+  /(?:^|[.!?\n][ \t]*)(?:please\s+)?(?:remember|memorize)\s+(?:this|that)\b/im,
   // English: "save/add/store to memesh"
-  /(?:^|[.!?\n]\s*)(?:please\s+)?(?:save|add|put|store|write)\s+(?:(?:this|that|it)\s+)?(?:to|in|into)\s+memesh\b/im,
+  /(?:^|[.!?\n][ \t]*)(?:please\s+)?(?:save|add|put|store|write)\s+(?:(?:this|that|it)\s+)?(?:to|in|into)\s+memesh\b/im,
 
   // Spanish: "Recordar/memorizar esto|eso"
-  /(?:^|[.!?\n]\s*)(?:por favor\s+)?(?:recordar|memorizar)\s+(?:esto|eso)\b/im,
+  /(?:^|[.!?\n][ \t]*)(?:por favor\s+)?(?:recordar|memorizar)\s+(?:esto|eso)\b/im,
   // Spanish: "guardar en memesh"
-  /(?:^|[.!?\n]\s*)(?:por favor\s+)?(?:guardar|añadir|almacenar)\s+(?:(?:esto|eso)\s+)?(?:en|a)\s+memesh\b/im,
+  /(?:^|[.!?\n][ \t]*)(?:por favor\s+)?(?:guardar|añadir|almacenar)\s+(?:(?:esto|eso)\s+)?(?:en|a)\s+memesh\b/im,
 
   // French: "Rappeler/mémoriser ceci|cela"
-  /(?:^|[.!?\n]\s*)(?:s'il vous plaît\s+)?(?:rappeler|mémoriser)\s+(?:ceci|cela|ça)\b/im,
+  /(?:^|[.!?\n][ \t]*)(?:s'il vous plaît\s+)?(?:rappeler|mémoriser)\s+(?:ceci|cela|ça)\b/im,
   // French: "sauvegarder dans memesh"
-  /(?:^|[.!?\n]\s*)(?:s'il vous plaît\s+)?(?:sauvegarder|enregistrer|ajouter)\s+(?:(?:ceci|cela|ça)\s+)?(?:dans|à)\s+memesh\b/im,
+  /(?:^|[.!?\n][ \t]*)(?:s'il vous plaît\s+)?(?:sauvegarder|enregistrer|ajouter)\s+(?:(?:ceci|cela|ça)\s+)?(?:dans|à)\s+memesh\b/im,
 
   // Portuguese: "Lembrar/memorizar isto|isso"
-  /(?:^|[.!?\n]\s*)(?:por favor\s+)?(?:lembrar|memorizar)\s+(?:isto|isso)\b/im,
+  /(?:^|[.!?\n][ \t]*)(?:por favor\s+)?(?:lembrar|memorizar)\s+(?:isto|isso)\b/im,
   // Portuguese: "salvar em memesh"
-  /(?:^|[.!?\n]\s*)(?:por favor\s+)?(?:salvar|guardar|adicionar|armazenar)\s+(?:(?:isto|isso)\s+)?(?:em|no)\s+memesh\b/im,
+  /(?:^|[.!?\n][ \t]*)(?:por favor\s+)?(?:salvar|guardar|adicionar|armazenar)\s+(?:(?:isto|isso)\s+)?(?:em|no)\s+memesh\b/im,
 
   // Traditional Chinese: judged clause by clause in detectRememberIntent, not by a regex here
 ];
@@ -170,9 +172,13 @@ export const INTENT_PATTERNS = [
 // from other sessions, system notices, task results, pasted blocks. That text
 // must never count as a save request. A block is an opening tag that starts a
 // line, a name from NON_USER_TAGS and a closing tag of the SAME name that ends
-// a line; same-name blocks nest. Everything else is the user's own text and is
-// kept: an unclosed tag (probably quoted), a tag mid-line, in `inline code` or
-// in a ``` fence, a self-closing tag, a mismatched closing tag.
+// a line; same-name blocks nest, and a block inside an opening tag that never
+// closes is still removed. Everything else is the user's own text and is kept:
+// an unclosed tag (probably quoted), a tag mid-line (so also one in `inline
+// code`), a self-closing tag, a mismatched closing tag.
+// Backticks are not looked at: a code fence inside a block's body, or one the
+// user left open above it, must not decide where a block ends. A block the
+// user quotes inside a fence is removed too, which can only hide a request.
 // Known limit: a closing tag that ends a line INSIDE a block's body cannot be
 // told from the real one, so the rest of that message counts as the user's.
 // Linear time: the tag pattern never scans past the next "<", the character
@@ -188,35 +194,22 @@ const LINE_END_AT = /[ \t\r]*(?:\n|$)/y;
 export function stripNonUserBlocks(prompt) {
   const stack = []; // open tags: { name, start }, start = where the tag's line begins
   const openByName = new Map(NON_USER_TAGS.map((name) => [name, []])); // name -> indices into `stack`
-  let out = '';
-  let kept = 0; // prompt[kept..] is not copied to `out` yet
+  const removed = []; // closed blocks as { start, end }, in prompt order, none inside another
   let pos = 0; // the character walk
   let lineStart = 0;
   let lineHasText = false;
-  let inInline = false;
-  let inFence = false;
 
   for (const tag of prompt.matchAll(NON_USER_TAG_RE)) {
-    // Walk up to the tag to learn whether it starts a line or sits in code.
+    // Walk up to the tag to learn whether it starts a line.
     for (; pos < tag.index; pos += 1) {
       const c = prompt[pos];
       if (c === '\n') {
         lineStart = pos + 1;
         lineHasText = false;
-        inInline = false;
-      } else if (c === '`') {
-        if (!lineHasText && prompt.startsWith('```', pos)) {
-          inFence = !inFence;
-          pos += 2;
-        } else {
-          inInline = !inInline;
-        }
-        lineHasText = true;
       } else if (c !== ' ' && c !== '\t' && c !== '\r') {
         lineHasText = true;
       }
     }
-    if (inFence || inInline) continue;
 
     const [tagText, closing, rawName, attributes] = tag;
     const name = rawName.toLowerCase();
@@ -227,58 +220,79 @@ export function stripNonUserBlocks(prompt) {
       continue;
     }
 
-    const openIndices = openByName.get(name);
-    if (openIndices.length === 0) continue;
+    const blockIndex = openByName.get(name).at(-1);
     LINE_END_AT.lastIndex = tag.index + tagText.length;
     const lineEnd = LINE_END_AT.exec(prompt);
-    if (!lineEnd) continue;
+    if (blockIndex === undefined || !lineEnd) continue;
     // Close the innermost same-name block, and any unclosed tag opened inside it.
-    const blockIndex = openIndices.at(-1);
-    const block = stack[blockIndex];
+    const { start } = stack[blockIndex];
     while (stack.length > blockIndex) openByName.get(stack.pop().name).pop();
-    if (blockIndex === 0) {
-      out += prompt.slice(kept, block.start);
-      kept = lineEnd.index + lineEnd[0].length;
-    }
+    while (removed.at(-1)?.start >= start) removed.pop(); // blocks inside this one
+    removed.push({ start, end: lineEnd.index + lineEnd[0].length });
+  }
+
+  let out = '';
+  let kept = 0;
+  for (const block of removed) {
+    out += prompt.slice(kept, block.start);
+    kept = block.end;
   }
   return out + prompt.slice(kept);
 }
 
 // Traditional Chinese has no sentence-initial imperative marker, so "記下來"
 // (a request) looks like "我記下來了" (a statement) or "有記下來嗎" (a question).
-// A save verb is only a candidate: each clause is judged by exclusion.
+// Each clause is judged on its own; when unsure, it is not a request.
 const ZH_THIS = '這|那|它|以上|上述';
+// A demonstrative and what may follow it in the same noun phrase: 這件事,
+// 那個, 以上三點, 上述規則, 這段對話. Anything longer (這個函式) is a new topic.
+const ZH_THIS_PHRASE = `(?:${ZH_THIS})(?:[一兩二三四五六七八九十幾]?[個件點條段些項句])?(?:事情?|規則|內容|討論|對話|重點|決定)?`;
 const ZH_SAVE_VERBS = [
-  '記下(?!午)來?',
-  '記住',
-  '(?:記到|存到|寫進|存進)\\s*(?:memesh|記憶(?!體))', // 記憶體 is RAM
-  // A bare 存起來 also means saving money or a file. The gap may be any character:
-  // a clause never holds sentence punctuation, ZH_CLAUSE_SPLIT removed it.
-  `把(?:${ZH_THIS}|上面|剛剛)[\\s\\S]{0,15}?存起來`,
+  // 記下來, or 記下 before a demonstrative or the clause end (not 筆記下載, 標記下一個).
+  `記下(?:來|(?=${ZH_THIS})|\\s*$)`,
+  // 記憶 only as the store itself (not 記憶體, 記憶卡, 記憶區塊).
+  '(?:記到|存到|寫進|存進)\\s*(?:memesh|記憶(?=[\\s裡中吧喔好謝]|$))',
+  // A bare 存起來 also means saving money or a file: the object must be this conversation.
+  `把(?:${ZH_THIS_PHRASE}|(?:上面|剛剛)的?(?:內容|討論|對話|重點))[都也]?存起來`,
 ];
 const ZH_SAVE_VERB = new RegExp(ZH_SAVE_VERBS.join('|'), 'g');
-// Right before the verb (先/再/也/都/就/還/又 may sit in between): 我 (but not
-// 幫我/替我/給我), 已經, 已, 有 (so also 沒有), 沒, 剛 (so also 剛剛), 會, 要不要.
-const ZH_STATEMENT_BEFORE_WORDS = ['(?<![幫替給])我', '已經', '已', '有', '沒', '剛', '會', '要不要'];
-const ZH_STATEMENT_BEFORE = new RegExp(`(?:${ZH_STATEMENT_BEFORE_WORDS.join('|')})\\s*(?:[先再也都就還又]\\s*)?$`);
-const ZH_DONE_AFTER = /^\s*[了過沒]/; // done, or "done yet?"
-const ZH_I_WILL_PUT = /^\s*我把/; // "I will put this down"
-// 記得 alone is a work instruction ("記得切勿 over engineer"); only 幫我記得…
-// or 記得 plus a demonstrative object at the clause start is a save request.
-const ZH_REMEMBER_TO = new RegExp(`^\\s*(?:(?:幫我|替我|幫忙)先?記得|(?:請|麻煩)?記得(?:${ZH_THIS}))`);
-const ZH_QUESTION_PARTICLE = /[嗎呢]/; // polite questions with a save verb stay requests; this one does not
-const ZH_CLAUSE_SPLIT = /[。！？!?.\n，,；;：:]+/;
+// What makes a clause with a save verb a statement or someone else's story.
+const ZH_STATEMENT = {
+  // At the clause start: 我把…, 他把…, 她們把… tell what someone put down.
+  start: /^\s*(?:我|[他她]們?)把/,
+  // Right before the verb, with 先/再/也/都/就/還/又 allowed in between: the
+  // speaker or a third person (not 幫我/替我/給我, not 其他), 已經, 已, 有 (so also
+  // 沒有), 沒, 剛 (so also 剛剛), 會, or 叫我們/叫你們/叫大家 (an order to others).
+  before: new RegExp(`(?:(?<![幫替給其])(?:我|[他她]們?)|已經|已|有|沒|剛|會|叫(?:我們|你們|大家))\\s*(?:[先再也都就還又]\\s*)?$`),
+  // Right after the verb: done, or "done yet?".
+  after: /^\s*[了過沒]/,
+};
+// A question asks whether to save (要記下來嗎, 記下來？, the A-not-A forms
+// 要不要/該不該/是不是) unless it is a polite request (可以幫我記下來嗎,
+// 能不能記下來, 記下來好嗎).
+const ZH_QUESTION = /[嗎呢]|(\p{Script=Han})不\1/u;
+const ZH_POLITE = /幫|可以|能不能|好嗎/;
+// 記得 alone is a work instruction (記得切勿 over engineer, 記得這個函式要改).
+// It asks to save as 幫我記得… or with a demonstrative that ends the clause
+// (記得這件事); 記住 the same way, or before a colon (請記住：部署前要備份).
+const ZH_REMEMBER_FOR_ME = /^\s*(?:幫我|替我|幫忙)先?(?:記得|記住)/;
+const ZH_REMEMBER_THIS = new RegExp(`^\\s*(?:請|麻煩)?(?:記得|記住)${ZH_THIS_PHRASE}\\s*$`);
+const ZH_REMEMBER_BEFORE_COLON = /^\s*(?:請|麻煩)?記住\s*$/;
+const ZH_CLAUSE = /[^。！？!?.\n，,；;：:]+/g;
 
-function isChineseSaveRequest(clause) {
-  if (clause.length < 2) return false;
-  if (ZH_REMEMBER_TO.test(clause) && !ZH_QUESTION_PARTICLE.test(clause)) return true;
-  if (ZH_I_WILL_PUT.test(clause)) return false;
+// `next` is the punctuation mark that ends the clause, if any.
+function isChineseSaveRequest(clause, next) {
+  const asks = ZH_QUESTION.test(clause) || next === '？' || next === '?';
+  if (asks && !ZH_POLITE.test(clause)) return false;
+  if (ZH_REMEMBER_FOR_ME.test(clause) || ZH_REMEMBER_THIS.test(clause)) return true;
+  if (ZH_REMEMBER_BEFORE_COLON.test(clause)) return next === '：' || next === ':';
+  if (ZH_STATEMENT.start.test(clause)) return false;
   for (const verb of clause.matchAll(ZH_SAVE_VERB)) {
     const end = verb.index + verb[0].length;
-    // Only the few characters around the verb count.
+    // Only the few characters before the verb count: ZH_STATEMENT.before ends
+    // in $, so an unbounded slice would be rescanned for every verb.
     const before = clause.slice(Math.max(0, verb.index - 12), verb.index);
-    const after = clause.slice(end, end + 6);
-    if (!ZH_STATEMENT_BEFORE.test(before) && !ZH_DONE_AFTER.test(after)) return true;
+    if (!ZH_STATEMENT.before.test(before) && !ZH_STATEMENT.after.test(clause.slice(end))) return true;
   }
   return false;
 }
@@ -286,8 +300,11 @@ function isChineseSaveRequest(clause) {
 export function detectRememberIntent(prompt) {
   if (!prompt || typeof prompt !== 'string') return false;
   const text = stripNonUserBlocks(prompt);
-  return INTENT_PATTERNS.some((re) => re.test(text))
-    || text.split(ZH_CLAUSE_SPLIT).some(isChineseSaveRequest);
+  if (INTENT_PATTERNS.some((re) => re.test(text))) return true;
+  for (const clause of text.matchAll(ZH_CLAUSE)) {
+    if (isChineseSaveRequest(clause[0], text[clause.index + clause[0].length])) return true;
+  }
+  return false;
 }
 
 // The returned string is consumed BY THE LLM as additionalContext, NOT by

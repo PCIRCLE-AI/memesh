@@ -253,8 +253,8 @@
     },
     {
       "path": "scripts/hooks/user-prompt-intent.js",
-      "sha256": "62fce230be1ea228b74346903819b3248d1f1715d52a65f0a0d26b425cfd7fe1",
-      "bytes": 21601
+      "sha256": "020e395783726dfefd52a203650f82b0f9ef7affc40bd1967d4af42b1000e6d2",
+      "bytes": 23407
     },
     {
       "path": "skills/memesh-review/SKILL.md",
