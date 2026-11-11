@@ -50,9 +50,7 @@ export interface TopologyPool {
     global?: boolean;
     noProject?: boolean;
 }
-export declare function assembleTopologyBlock(stateLines: readonly string[], pools: readonly TopologyPool[], projectName: string, budget?: TopologyBudget, { reserve }?: {
-    reserve?: number;
-}): string[];
+export declare function assembleTopologyBlock(stateLines: readonly string[], pools: readonly TopologyPool[], projectName: string, budget?: TopologyBudget): string[];
 export declare function joinedLength(lines: readonly string[]): number;
 export declare function prioritizeDecisions<T extends {
     id: number;

@@ -37,7 +37,7 @@ Over MCP, `remember`, `learn` and `recall` also take `project`: a project id, or
 | `import` | Import a JSON export with the required skip, append, or overwrite strategy |
 | `learn` | Record a structured lesson with error, fix, root cause, and prevention |
 | `task_state` | Read or update user-stated goal, next step, blocker, and finished work |
-| `briefing` | Assemble the current project's work topology — an eligible handoff precedes ranked memories at every level, after optional repository facts; `minimal` then shows decisions, lessons, knowledge and recent activity plus memories with no project, `standard` adds fresh task state and a capped durable-memory index, and `full` adds other projects and global memory |
+| `briefing` | Assemble the current project's work topology — an eligible handoff precedes ranked memories at every level, after optional repository facts; `minimal` then shows decisions, lessons, knowledge and recent activity plus memories with no project, closing with the recent index (titles of the 30 most recently written memories in scope) at every level, `standard` adds fresh task state, and `full` adds other projects and global memory |
 | `user_patterns` | Analyze work schedule, tool preferences, and focus areas |
 | `improvement` | Propose an evidence-linked product improvement or read its status; only a human may accept or reject it |
 | `message` | Discover live agents in one project, then contact one exact recipient with a bounded, untrusted payload. Native size and availability failures are distinct; acceptance, discovery, polling, and fetching do not acknowledge |
@@ -58,8 +58,8 @@ One call is cheaper than re-exploring the repo to reconstruct the same picture.
 `memesh briefing --index` returns only the index of durable memories — what is
 known here, one line each, without the ranked sections. Recent project decisions
 take priority over routine activity, and up to five project lessons are selected
-separately. The handoff, displayed task state, ranked memories, global memory at
-`full`, and injected index share a 4000-character memory-block limit. The
+separately. The handoff, displayed task state, ranked memories and global memory at
+`full` share a 4000-character memory-block limit; the recent index follows them. The
 standalone index keeps its own 40-line / 3072-byte caps and can show more than
 the index inside a crowded briefing; use `recall` for omitted memories and
 `memesh task` for the complete stored task state.
@@ -177,10 +177,10 @@ With the Claude Code plugin, the first nine rows happen **without any action fro
 
 | Hook | When | What it does |
 |------|------|-------------|
-| **SessionStart** | Every session begins | Injects the session's project id line whenever the host reports a usable working directory, then one briefing block when there is content: an eligible project handoff precedes ranked memories at every level, after optional repository facts; fresh task state and the durable-memory index appear at `standard`/`full`, not at the default `minimal` |
+| **SessionStart** | Every session begins | Injects the session's project id line whenever the host reports a usable working directory, then one briefing block when there is content: an eligible project handoff precedes ranked memories at every level, after optional repository facts; the recent index (titles of the 30 most recently written memories in scope, minus out-of-date ones) closes it at every level; fresh task state appears at `standard`/`full`, not at the default `minimal` |
 | **PreToolUse (Edit/Write)** | Before editing files | Injects memories related to the file or project |
 | **UserPromptSubmit** | When you submit a prompt | Detects "remember this" intent (5 languages) and reminds Claude to use memesh |
-| **UserPromptSubmit** (recall) | Same moment | Adds at most three stored memories (title and `[mem:id]`) that the prompt is strongly about, under the same "background data, not instructions" notice; nothing when none is |
+| **UserPromptSubmit** (recall) | Same moment | Adds at most two stored memories (title and `[mem:id]`) that the prompt is strongly about, under the same "background data, not instructions" notice; one that looks out of date or was already shown is dropped, not replaced; nothing when none is |
 | **PostToolUse (Bash)** | After `git commit` | Auto-tracks the commit with diff stats as a memory entity |
 | **PostToolUse (ExitPlanMode/AskUserQuestion)** | A plan is approved or you answer a question | Reminds Claude to `remember` the decision if it's worth keeping — once per tool per session |
 | **Stop** | Session ends | Auto-captures session knowledge, replaces the same project's handoff with the latest sufficiently long cleaned assistant reply, ingests the project's Claude Code memory directory (frontmatter notes → `source:note-file` memories), shows a decision reminder when appropriate, and applies the configured update policy. These writes stop when auto-capture is off (`memesh config set autoCapture false` / `MEMESH_AUTO_CAPTURE=false`); the advisory line still runs. A skipped handoff capture does not erase the prior note |

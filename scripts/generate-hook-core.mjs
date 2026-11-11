@@ -84,6 +84,9 @@ const SOURCES = [
   // The prompt-time recall (UserPromptSubmit): the hook and the replay script
   // run the same scoring, so what a grader replays is what the hook injects.
   { from: 'dist/core/prompt-recall.js', to: 'prompt-recall.js', src: 'src/core/prompt-recall.ts' },
+  // What is brought into context unasked: the session-start recent
+  // index, its out-of-date filter and the scope prompt-time recall shares.
+  { from: 'dist/core/recent-index.js', to: 'recent-index.js', src: 'src/core/recent-index.ts' },
   // The briefing-level policy (#360): SessionStart and `briefing` must agree
   // on what `minimal` / `standard` / `full` include, so the ONE policy table
   // is mirrored rather than re-decided per hook.

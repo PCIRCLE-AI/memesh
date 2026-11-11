@@ -232,10 +232,11 @@ export function resolveBriefingLevel(envValue: string | undefined, configValue: 
  *   - `minimal` (default): only this project — its decisions, lessons, known
  *     facts and recent activity, with the live repository state in front of
  *     them whenever anything else is injected (the repository state alone is
- *     never injected). No task state, no durable index, nothing from outside
- *     the project.
- *   - `standard`: `minimal` + the task state when fresh + the capped index of
- *     this project's durable memories.
+ *     never injected), then the recent index (the titles of the 30 memories
+ *     most recently written in this project or with no project; never another
+ *     project's, global or not). No task state, nothing else from
+ *     outside the project.
+ *   - `standard`: `minimal` + the task state when fresh.
  *   - `full`: `standard` + memories from your other projects + global
  *     memory. At `full` this MEMORY block is byte-for-byte identical across
  *     every surface (hook, `briefing` MCP tool, CLI) and to the output from
@@ -279,8 +280,6 @@ export interface BriefingLevelPolicy {
    *  one-line flag regardless of this flag — see task-state.ts's
    *  `briefingTaskStateLines` and `STALE_TASK_STATE_HOURS`. */
   taskState: boolean;
-  /** The durable-memory index (#323). */
-  index: boolean;
   /**
    * SessionStart-HOOK-ONLY — identical boilerplate every session, appended
    * AFTER the memory block, never part of `assembleBriefing()`'s result (so
@@ -301,9 +300,9 @@ export interface BriefingLevelPolicy {
 }
 
 const POLICIES: Readonly<Record<BriefingLevel, BriefingLevelPolicy>> = {
-  minimal: { global: false, foreign: false, taskState: false, index: false, workPackageNotice: false },
-  standard: { global: false, foreign: false, taskState: true, index: true, workPackageNotice: false },
-  full: { global: true, foreign: true, taskState: true, index: true, workPackageNotice: true },
+  minimal: { global: false, foreign: false, taskState: false, workPackageNotice: false },
+  standard: { global: false, foreign: false, taskState: true, workPackageNotice: false },
+  full: { global: true, foreign: true, taskState: true, workPackageNotice: true },
 };
 
 export function briefingLevelPolicy(level: BriefingLevel): BriefingLevelPolicy {

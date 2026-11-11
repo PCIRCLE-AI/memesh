@@ -31,16 +31,19 @@
 
 import type { MemeshDatabase } from '../storage/sqlite.js';
 import { renderPhraseExpression, tokenizeQuery, UNSPACED_SCRIPT_CLASS } from '../storage/fts-index.js';
-import { redactMemoryText } from './paths.js';
+import { buildReferenceContext, isAutoInjectable } from './work-topology.js';
 import {
-  EVIDENCE_LAYER_TYPES,
-  buildReferenceContext,
-  isAutoInjectable,
-  topologyLine,
-} from './work-topology.js';
+  AUTO_CONTEXT_EXCLUDED_TYPES,
+  autoContextScope,
+  projectAliases,
+  readRecentRows,
+  recentLine,
+  staleReason,
+  tableColumns,
+} from './recent-index.js';
 
-/** Most memories one prompt may bring along. */
-export const PROMPT_RECALL_MAX_LINES = 3;
+/** Most memories one prompt may bring along (before the out-of-date filter, which does not back-fill). */
+export const PROMPT_RECALL_MAX_LINES = 2;
 /** Share of the prompt's information a memory must cover to count as strong. */
 export const PROMPT_RECALL_MIN_COVERAGE = 0.5;
 /** Distinct prompt words a memory must contain. One shared word is a topic, not a match. */
@@ -48,15 +51,15 @@ export const PROMPT_RECALL_MIN_TERMS = 2;
 /** Only the start of a prompt is read: a pasted log is not a question. */
 const PROMPT_CHARS = 1500;
 /** The most informative terms of a prompt that take part in scoring. */
-const MAX_TERMS = 8;
+const MAX_TERMS = 12;
 /** A term in more than this share of memories says nothing about any one of them. */
 export const PROMPT_RECALL_MAX_TERM_SHARE = 0.03;
 /**
- * Memory types a prompt never brings along: the person's writing-style and
- * working-style notes. A session already carries them, and a phrase like "in
- * plain words" matches them whatever the prompt is about.
+ * Memory types a prompt never brings along beyond the bookkeeping types.
+ * Empty: feedback notes are offered like any other memory (measured:
+ * leaving them out lost more useful matches than it saved).
  */
-export const PROMPT_RECALL_SKIP_TYPES: ReadonlySet<string> = new Set(['feedback', 'engineering_feedback']);
+export const PROMPT_RECALL_SKIP_TYPES: ReadonlySet<string> = new Set();
 /**
  * A `project` memory (a stored status) not touched for this many days is not
  * brought along: the text does not say that it has gone out of date.
@@ -66,22 +69,13 @@ export const PROMPT_RECALL_MAX_PROJECT_AGE_DAYS = 30;
 const CANDIDATE_WINDOW = 30;
 /** Characters of a memory's observations read back for scoring. */
 const SCORED_TEXT_CHARS = 20000;
-/** One injected line, title and `[mem:id]` handle included. */
-const LINE_CHARS = 160;
 /** Fewer memories than this and document frequency means nothing: only stop words are dropped. */
 const MIN_ROWS_FOR_DF = 20;
 /** Terms looked up per prompt, so a pasted document cannot turn into hundreds of queries. */
 const MAX_LATIN_TERMS = 60;
 const MAX_CJK_TERMS = 30;
 
-/** Memories that are bookkeeping about work, not knowledge: never injected for a prompt. */
-const EXCLUDED_TYPES = [
-  ...EVIDENCE_LAYER_TYPES,
-  'task-state',
-  'session-handoff',
-  'digest',
-  'release-notice',
-];
+const EXCLUDED_TYPES = AUTO_CONTEXT_EXCLUDED_TYPES;
 
 const STOP_WORDS = new Set([
   'the', 'and', 'for', 'are', 'was', 'were', 'you', 'your', 'with', 'this', 'that', 'these', 'those',
@@ -111,10 +105,18 @@ export interface ScoredMemory {
 }
 
 export interface PromptRecallOptions {
-  /** The session's project id (without the `project:` prefix), or null for none. */
+  /** The session's project id (without the `project:` prefix), or null for none. Its proven aliases are searched (recent-index.ts `projectAliases`). */
   project: string | null;
-  /** Ids already shown in this session; never returned again. */
+  /** The session's folder, when known: the other id its checkout is known by is then searched too. */
+  cwd?: string | null;
+  /** Ids already shown in this session; never returned again (and not replaced by the next match). */
   exclude?: ReadonlySet<number>;
+  /**
+   * The session-start index before its filter (recent-index.ts `poolIds`):
+   * a match a newer decision in it replaces is out of date. Absent: the
+   * matches are compared with each other only.
+   */
+  recentPool?: readonly number[];
   minCoverage?: number;
   minTerms?: number;
   maxLines?: number;
@@ -149,7 +151,9 @@ export interface PromptRecallResult {
   text: string;
   ids: number[];
   /** Why nothing was injected; undefined when something was. */
-  reason?: 'no-terms' | 'no-candidates' | 'below-threshold' | 'already-shown';
+  reason?: 'no-terms' | 'no-candidates' | 'below-threshold' | 'stale' | 'already-shown';
+  /** Strong matches the out-of-date filter removed, and why. */
+  removed?: Array<{ id: number; reason: 'superseded' | 'waiting' }>;
   /** Every scored candidate, best first, for threshold studies. */
   scored: ScoredMemory[];
   /** Prompt terms that took part in scoring. */
@@ -233,10 +237,6 @@ function promptTerms(prompt: string): Term[] {
   return [...latin, ...cjk];
 }
 
-function tableColumns(db: MemeshDatabase, table: string): Set<string> {
-  return new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name));
-}
-
 /** How many memories hold each term, from the vocabulary view for plain words and a phrase count for CJK words. */
 function documentFrequencies(db: MemeshDatabase, terms: Term[]): Map<string, number> {
   const df = new Map<string, number>();
@@ -257,10 +257,6 @@ function documentFrequencies(db: MemeshDatabase, terms: Term[]): Map<string, num
   return df;
 }
 
-const NO_PROJECT_TAG = "NOT EXISTS (SELECT 1 FROM tags pt WHERE pt.entity_id = e.id AND pt.tag LIKE 'project:%')";
-/** Tags that scope a memory to one host or agent rather than to its owner's work. */
-const HOST_SCOPED_TAG = "EXISTS (SELECT 1 FROM tags ht WHERE ht.entity_id = e.id AND (ht.tag LIKE 'platform:%' OR ht.tag LIKE 'agent:%'))";
-
 function parseMetadata(raw: string | null): unknown {
   if (!raw) return null;
   try { return JSON.parse(raw); } catch { return undefined; }
@@ -274,7 +270,7 @@ function parseMetadata(raw: string | null): unknown {
 export function scorePrompt(
   db: MemeshDatabase,
   prompt: string,
-  options: Pick<PromptRecallOptions, 'project' | 'createdBefore' | 'maxTermShare' | 'skipTypes' | 'maxProjectAgeDays' | 'projectAgeFromNoteDate'>,
+  options: Pick<PromptRecallOptions, 'project' | 'cwd' | 'createdBefore' | 'maxTermShare' | 'skipTypes' | 'maxProjectAgeDays' | 'projectAgeFromNoteDate'>,
 ): { scored: ScoredMemory[]; terms: string[] } {
   const all = promptTerms(prompt);
   if (all.length === 0) return { scored: [], terms: [] };
@@ -297,13 +293,7 @@ export function scorePrompt(
   const promptWeight = informative.reduce((sum, t) => sum + t.weight, 0);
 
   const match = informative.map((t) => t.term.match).join(' OR ');
-  const projects = options.project === null ? [] : [options.project];
-  const projectScope = projects.length === 0
-    ? `(${NO_PROJECT_TAG} AND NOT ${HOST_SCOPED_TAG})`
-    : `(EXISTS (SELECT 1 FROM tags st WHERE st.entity_id = e.id AND st.tag IN (${projects.map(() => '?').join(', ')})) OR (${NO_PROJECT_TAG} AND NOT ${HOST_SCOPED_TAG}))`;
-  const scope = entityCols.has('namespace')
-    ? `(${projectScope} OR e.namespace = 'global')`
-    : projectScope;
+  const scope = autoContextScope(projectAliases(options.project, options.cwd));
   const before = options.createdBefore === undefined ? null : new Date(options.createdBefore).toISOString();
   const skipTypes = [...(options.skipTypes ?? PROMPT_RECALL_SKIP_TYPES)];
   const maxProjectAgeDays = options.maxProjectAgeDays === undefined ? PROMPT_RECALL_MAX_PROJECT_AGE_DAYS : options.maxProjectAgeDays;
@@ -314,12 +304,12 @@ export function scorePrompt(
      WHERE entities_fts MATCH ?${entityCols.has('status') ? " AND e.status = 'active'" : ''}
        AND e.type NOT IN (${[...EXCLUDED_TYPES, ...skipTypes].map(() => '?').join(',')})
        AND NOT EXISTS (SELECT 1 FROM tags ac WHERE ac.entity_id = e.id AND ac.tag = 'source:auto-capture')
-       AND ${scope}
+       AND ${scope.sql}
        ${before === null ? '' : 'AND julianday(e.created_at) < julianday(?)'}
      ORDER BY fts.rank, e.id DESC
      LIMIT ?`,
   ).all(
-    match, ...EXCLUDED_TYPES, ...skipTypes, ...projects.map((id) => `project:${id}`), ...(before === null ? [] : [before]), CANDIDATE_WINDOW,
+    match, ...EXCLUDED_TYPES, ...skipTypes, ...scope.params, ...(before === null ? [] : [before]), CANDIDATE_WINDOW,
   ) as Array<{ id: number; name: string; type: string; title: string | null; metadata: string | null; rank: number }>;
 
   const observations = db.prepare(
@@ -377,16 +367,25 @@ export function selectPromptRecall(db: MemeshDatabase, prompt: string, options: 
   const minCoverage = options.minCoverage ?? PROMPT_RECALL_MIN_COVERAGE;
   const minTerms = options.minTerms ?? PROMPT_RECALL_MIN_TERMS;
   const maxLines = options.maxLines ?? PROMPT_RECALL_MAX_LINES;
-  const strong = scored.filter((m) => m.coverage >= minCoverage && m.matched.length >= minTerms);
-  if (strong.length === 0) return { text: '', ids: [], reason: 'below-threshold', scored, terms };
-  const fresh = strong.filter((m) => !options.exclude?.has(m.id)).slice(0, maxLines);
-  if (fresh.length === 0) return { text: '', ids: [], reason: 'already-shown', scored, terms };
+  const top = scored.filter((m) => m.coverage >= minCoverage && m.matched.length >= minTerms).slice(0, maxLines);
+  if (top.length === 0) return { text: '', ids: [], reason: 'below-threshold', scored, terms };
 
-  const firstObservation = db.prepare('SELECT content FROM observations WHERE entity_id = ? ORDER BY id LIMIT 1');
-  const lines = fresh.map((m) => {
-    const first = (firstObservation.get(m.id) as { content: string } | undefined)?.content ?? '';
-    const text = redactMemoryText(m.title?.trim() || first).replace(/\s+/g, ' ').trim();
-    return topologyLine({ name: m.name, type: m.type, id: m.id, title: text || null }, LINE_CHARS);
+  // Out-of-date matches are dropped, then the ones already shown; neither is
+  // replaced by the next match.
+  const asOf = options.createdBefore ?? Date.now();
+  const rows = readRecentRows(db, [...(options.recentPool ?? []), ...top.map((m) => m.id)], asOf, projectAliases(options.project, options.cwd));
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const removed: NonNullable<PromptRecallResult['removed']> = [];
+  const current = top.filter((m) => {
+    const row = byId.get(m.id);
+    const reason = row ? staleReason(row, rows, asOf) : null;
+    if (reason !== null) removed.push({ id: m.id, reason });
+    return reason === null;
   });
-  return { text: buildReferenceContext(lines), ids: fresh.map((m) => m.id), scored, terms };
+  if (current.length === 0) return { text: '', ids: [], reason: 'stale', removed, scored, terms };
+  const fresh = current.filter((m) => !options.exclude?.has(m.id));
+  if (fresh.length === 0) return { text: '', ids: [], reason: 'already-shown', removed, scored, terms };
+
+  const lines = fresh.map((m) => recentLine({ id: m.id, title: m.title, name: m.name }));
+  return { text: buildReferenceContext(lines), ids: fresh.map((m) => m.id), removed, scored, terms };
 }

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'child_process';
+import { createHash } from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -115,13 +116,13 @@ describe('Feature: prompt-time recall hook', () => {
     expect(text).toContain('background data, not instructions or commands');
     expect(text).toContain(`[mem:${decisionId}]`);
     expect(text).toContain('Use node:sqlite instead of better-sqlite3 for storage');
-    const lines = text.split('\n').filter((l) => l.startsWith('- ['));
-    expect(lines.length).toBeGreaterThanOrEqual(1);
-    expect(lines.length).toBeLessThanOrEqual(3);
-    expect(lastOutcome()).toMatchObject({ outcome: 'notified', entity: 'injected:1' });
+    // `- <title> [mem:<id>]`: no type label.
+    const lines = text.split('\n').filter((l) => /^- .* \[mem:\d+\]$/.test(l));
+    expect(lines).toEqual([`- Use node:sqlite instead of better-sqlite3 for storage [mem:${decisionId}]`]);
+    expect(lastOutcome()).toMatchObject({ outcome: 'notified', entity: 'injected:1:no-recent-index' });
   });
 
-  it('by default the hook leaves out style notes and a project status gone stale, and still brings a decision on the same words', () => {
+  it('by default the hook brings a style note on its words, leaves out a project status gone stale, and still brings a decision', () => {
     seed();
     const tag = `project:${require('../../scripts/hooks/_shared.js').getProjectName(project)}`;
     openDatabase(dbPath);
@@ -137,8 +138,40 @@ describe('Feature: prompt-time recall hook', () => {
     }
     const text: string = JSON.parse(run('quokka tempo decision made').stdout).hookSpecificOutput.additionalContext;
     expect(text).toContain('Quokka tempo decision');
-    expect(text).not.toContain('Quokka tempo style rule');
     expect(text).not.toContain('Quokka tempo status');
+    const style: string = JSON.parse(run('quokka tempo style rule answers', {}, 'sess-style').stdout).hookSpecificOutput.additionalContext;
+    expect(style).toContain('Quokka tempo style rule');
+    expect(style).not.toContain('Quokka tempo status');
+  });
+
+  it('a match a newer decision in the session-start index replaces is not brought along, and the skip says why', () => {
+    const tag = `project:${require('../../scripts/hooks/_shared.js').getProjectName(project)}`;
+    openDatabase(dbPath);
+    let olderId: number;
+    try {
+      const kg = new KnowledgeGraph(getDatabase());
+      olderId = kg.createEntity('plan-roles-old', 'decision', { title: 'Codex runs the upgrade plan', observations: ['zebrafish quokka marmot handover'], tags: [tag] });
+      kg.createEntity('plan-roles-new', 'decision', { title: 'Claude runs the upgrade plan', observations: ['ownership moved'], tags: [tag] });
+      getDatabase().prepare("UPDATE entities SET created_at = datetime('now', '-1 day') WHERE name = 'plan-roles-old'").run();
+      getDatabase().prepare("UPDATE observations SET created_at = datetime('now', '-1 day') WHERE entity_id = ?").run(olderId);
+    } finally {
+      closeDatabase();
+    }
+    // Session start records the unfiltered index the prompt hook compares with.
+    const start = spawnSync('node', [path.resolve('scripts/hooks/session-start.js')], {
+      input: JSON.stringify({ cwd: project, session_id: 'sess-a' }),
+      env: { ...process.env, HOME: home, USERPROFILE: home, MEMESH_DB_PATH: dbPath },
+      encoding: 'utf8',
+      timeout: 15000,
+    });
+    expect(start.status).toBe(0);
+    const { stdout } = run('zebrafish quokka marmot handover');
+    expect(stdout).toBe('');
+    expect(lastOutcome()).toMatchObject({ hook: 'prompt-recall', outcome: 'skipped', reason: SKIP_REASONS.promptStale });
+    // Without the session's index the older decision has nothing to compare with, and is brought along.
+    const fresh = run('zebrafish quokka marmot handover', {}, 'sess-other');
+    expect(fresh.stdout).toContain(`[mem:${olderId}]`);
+    expect(lastOutcome()).toMatchObject({ outcome: 'notified', entity: 'injected:1:no-recent-index' });
   });
 
   it('prints nothing at all for a prompt no memory is about, and records the skip', () => {
@@ -170,7 +203,7 @@ describe('Feature: prompt-time recall hook', () => {
     expect(strong).not.toContain('Epsilon zeta');
   });
 
-  it('never brings along more than three memories', () => {
+  it('never brings along more than two memories', () => {
     openDatabase(dbPath);
     try {
       const kg = new KnowledgeGraph(getDatabase());
@@ -180,7 +213,7 @@ describe('Feature: prompt-time recall hook', () => {
       closeDatabase();
     }
     const text = JSON.parse(run('mauve falcon harbor').stdout).hookSpecificOutput.additionalContext as string;
-    expect(text.split('\n').filter((l) => l.startsWith('- ['))).toHaveLength(3);
+    expect(text.split('\n').filter((l) => /^- .* \[mem:\d+\]$/.test(l))).toHaveLength(2);
   });
 
   it('does not repeat an id within a session, but shows it again to a new session', () => {
@@ -197,7 +230,7 @@ describe('Feature: prompt-time recall hook', () => {
     // A file where the sessions folder should be: the record cannot be updated.
     fs.writeFileSync(path.join(memeshDir, 'sessions'), 'not a folder');
     expect(run(MATCHING).stdout).not.toBe('');
-    expect(lastOutcome()).toMatchObject({ outcome: 'notified', entity: 'injected:1:uncredited' });
+    expect(lastOutcome()).toMatchObject({ outcome: 'notified', entity: 'injected:1:uncredited:no-recent-index' });
     expect(run('remind me why storage moved to node:sqlite from better-sqlite3').stdout).toBe('');
     expect(lastOutcome()).toMatchObject({ outcome: 'skipped', reason: SKIP_REASONS.promptAlreadyShown });
   });
@@ -303,6 +336,9 @@ describe('Feature: prompt-time recall hook', () => {
       expect(bad.status).toBe(0);
       expect(bad.stdout).toBe('');
       expect(lastOutcome()).toMatchObject({ outcome: 'error' });
+      const literalNull = spawnSync('node', [HOOK], { input: 'null', env: { ...process.env, HOME: home, MEMESH_DB_PATH: dbPath }, encoding: 'utf8' });
+      expect(literalNull.status).toBe(0);
+      expect(lastOutcome()).toMatchObject({ outcome: 'error' });
       expect(run('   ').stdout).toBe('');
       expect(lastOutcome()).toMatchObject({ outcome: 'skipped', reason: SKIP_REASONS.promptEmpty });
     });
@@ -319,6 +355,37 @@ describe('Feature: prompt-time recall hook', () => {
     it('does not show another project\'s memory', () => {
       seed('project:some-other-project~0123456789abcdef0123456789abcdef');
       expect(run(MATCHING).stdout).toBe('');
+    });
+
+    it('in a checkout with a remote, both hooks show memories under its path id, and neither shows a same-name repository\'s', () => {
+      expect(spawnSync('git', ['init', '-q', project]).status).toBe(0);
+      expect(spawnSync('git', ['-C', project, 'remote', 'add', 'origin', 'https://github.com/acme/storage-app.git']).status).toBe(0);
+      // The id this folder had before it got a remote, computed here rather than by the product.
+      const pathId = `storage-app~${createHash('sha256').update(fs.realpathSync.native(project)).digest('hex').slice(0, 32)}`;
+      const { decisionId } = seed(`project:${pathId}`);
+      openDatabase(dbPath);
+      let foreignId: number;
+      try {
+        foreignId = new KnowledgeGraph(getDatabase()).createEntity('foreign-storage', 'decision', {
+          title: 'Use better-sqlite3 instead of node:sqlite for storage',
+          observations: ['Storage keeps better-sqlite3 over node:sqlite here.'],
+          tags: ['project:storage-app~0123456789abcdef0123456789abcdef'],
+        });
+      } finally {
+        closeDatabase();
+      }
+      const start = spawnSync('node', [path.resolve('scripts/hooks/session-start.js')], {
+        input: JSON.stringify({ cwd: project, session_id: 'sess-a' }),
+        env: { ...process.env, HOME: home, USERPROFILE: home, MEMESH_DB_PATH: dbPath },
+        encoding: 'utf8',
+        timeout: 15000,
+      });
+      expect(start.status, start.stderr).toBe(0);
+      expect(start.stdout).toContain(`[mem:${decisionId}]`);
+      expect(start.stdout).not.toContain(`[mem:${foreignId}]`);
+      const text = JSON.parse(run(MATCHING, {}, 'sess-b').stdout).hookSpecificOutput.additionalContext as string;
+      expect(text).toContain(`[mem:${decisionId}]`);
+      expect(text).not.toContain(`[mem:${foreignId}]`);
     });
 
     it('shows a memory that belongs to no project, but not one scoped to a host or agent', () => {

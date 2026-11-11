@@ -522,16 +522,16 @@ describe('projectLabel — the name a heading uses for a project', () => {
       expect(cutOnSurrogate, 'no offset put the cut on a high surrogate, so this proves nothing').toBeGreaterThan(0);
     });
 
-    it('everything in the block, state lines included, fits one budget with the reserve kept back', () => {
+    it('everything in the block, state lines included, fits one budget', () => {
       const state = ['Task state:', `- goal: ${'g'.repeat(300)}`];
       const many = (n: number, global = false) => Array.from({ length: n }, (_, i) =>
         entity({ type: global ? 'directive' : 'decision', name: `${global ? 'g' : 'd'}${i}`, id: (global ? 500 : 1) + i, title: `${'long title '.repeat(12)}${i}` }));
-      for (const [maxChars, reserve] of [[4000, 0], [4000, 700], [1200, 300], [400, 0]] as const) {
+      for (const maxChars of [4000, 1200, 400] as const) {
         const lines = assembleTopologyBlock(state, [
           { entities: many(30), foreign: false },
           { entities: many(3, true), foreign: false, global: true },
-        ], 'p', { maxChars, maxLineChars: 160 }, { reserve });
-        expect(lines.join('\n').length, `${maxChars}/${reserve}`).toBeLessThanOrEqual(maxChars - reserve);
+        ], 'p', { maxChars, maxLineChars: 160 });
+        expect(lines.join('\n').length, `${maxChars}`).toBeLessThanOrEqual(maxChars);
         expect(lines.slice(0, 2)).toEqual(state);
       }
     });
@@ -542,9 +542,9 @@ describe('projectLabel — the name a heading uses for a project', () => {
       const inbox = Array.from({ length: 5 }, (_, i) => `- ${'r'.repeat(200)} has 1 message waiting in project-${i} — fetch it as ${'r'.repeat(200)}`);
       const lines = assembleTopologyBlock([...handoff, ...task, ...inbox], [{
         entities: [entity({ type: 'decision', name: 'd', id: 9, title: 'STILL-HERE' })], foreign: false,
-      }], 'p', DEFAULT_TOPOLOGY_BUDGET, { reserve: 300 });
+      }], 'p', DEFAULT_TOPOLOGY_BUDGET);
       const text = lines.join('\n');
-      expect(text.length).toBeLessThanOrEqual(DEFAULT_TOPOLOGY_BUDGET.maxChars - 300);
+      expect(text.length).toBeLessThanOrEqual(DEFAULT_TOPOLOGY_BUDGET.maxChars);
       expect(lines.slice(0, handoff.length + task.length)).toEqual([...handoff, ...task]);
       const cut = text.match(/- … \((\d+) more lines? of session state not shown here, to stay within the memory budget; unread messages among them stay pending until their intake is recorded\)/);
       expect(cut).not.toBeNull();

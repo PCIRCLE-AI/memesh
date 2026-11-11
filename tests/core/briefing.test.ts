@@ -519,19 +519,19 @@ describe('assembleBriefing', () => {
         `Lessons from "${label}" — do not repeat these:`,
         `What is known about "${label}":`,
         `Recent activity in "${label}":`,
-        `Index of durable memories for "${label}" (newest first):`,
+        `Recently written memories in "${label}" (newest first; recall a [mem:id] to read one):`,
       ]) expect(result.text, heading).toContain(heading);
       expect(result.text, 'the routing hash reached the model').not.toContain(hash);
       expect(result.index.lines.join('\n')).not.toContain(hash);
     });
 
-    it('the empty-state lines of a project with nothing yet', () => {
+    it('a project with nothing yet: nothing is injected, and the catalog names it by its label', () => {
       atStandard();
       const { id, label, hash } = idFor('label-empty');
       const result = assembleBriefing(id);
-      expect(result.text).toContain(`Index of durable memories for "${label}" (newest first):`);
-      expect(result.text).toContain(`- No durable memories (decisions, lessons, patterns, references) for "${label}" yet.`);
-      expect(result.text).not.toContain(hash);
+      expect(result.text).toBe('');
+      expect(result.index.lines.join('\n')).toContain(`- No durable memories (decisions, lessons, patterns, references) for "${label}" yet.`);
+      expect(result.index.lines.join('\n')).not.toContain(hash);
     });
 
     it('the stale flag and the unreadable-record line', () => {
@@ -592,18 +592,11 @@ describe('assembleBriefing', () => {
         ['Lessons from ', ' — do not repeat these:'],
         ['What is known about ', ':'],
         ['Recent activity in ', ':'],
-        ['Index of durable memories for ', ' (newest first):'],
+        ['Recently written memories in ', ' (newest first; recall a [mem:id] to read one):'],
       ]) expect(literalIn(result.text, prefix, suffix), prefix).toBe(label);
       // The budget charges the heading string itself, so it is the escaped one that is counted.
       const [section] = groupTopology([{ name: 'w-decision', type: 'decision', title: 'Use the label' }], id);
       expect(result.text.split('\n')).toContain(section.heading);
-    });
-
-    it('the empty index line', () => {
-      atStandard();
-      const { id, label } = weird();
-      const result = assembleBriefing(id);
-      expect(literalIn(result.text, '- No durable memories (decisions, lessons, patterns, references) for ', ' yet.')).toBe(label);
     });
 
     it('the stale, age-unknown and unreadable task-state lines', () => {
@@ -784,14 +777,11 @@ describe('assembleBriefing', () => {
     });
   });
 
-  it('a project with nothing recorded gets the index empty-state line, not nothing (#323)', () => {
+  it('a project with nothing recorded injects nothing at standard; the catalog still says so (#323)', () => {
     atStandard();
     const result = assembleBriefing('no-such-project');
-    expect(result.text).toContain('Index of durable memories for "no-such-project" (newest first):');
-    expect(result.text).toContain('- No durable memories (decisions, lessons, patterns, references) for "no-such-project" yet.');
-    // Repository facts still prefix only ranked memories: the empty-state
-    // line is not a reason to tell the agent its own branch name.
-    expect(result.text).not.toMatch(/branch/i);
+    expect(result.text).toBe('');
+    expect(result.index.lines.join('\n')).toContain('- No durable memories (decisions, lessons, patterns, references) for "no-such-project" yet.');
     expect(result.entityCount).toBe(0);
     expect(result.hasTaskState).toBe(false);
     expect(result.index.shown).toBe(0);
@@ -1051,11 +1041,10 @@ describe('assembleBriefing', () => {
     // context, the separate cap, and trust/status rejection without pinning a
     // database-specific ranking implementation.
     expect(contentLines(briefing)).toEqual(contentLines(injected));
-    // The durable-memory index (#323) is compared byte-for-byte, footer
-    // included: its caps are a frozen contract and both sides render it
+    // The recent index is compared byte-for-byte: both sides render it
     // from the same leaf, so there is no legitimate tail difference.
     const indexSection = (block: string) => {
-      const start = block.indexOf('Index of durable memories for');
+      const start = block.indexOf('Recently written memories');
       if (start < 0) return null;
       const lines = block.slice(start).split('\n');
       const fenceAt = lines.findIndex((l) => /^`{3,}$/.test(l));
@@ -1063,15 +1052,13 @@ describe('assembleBriefing', () => {
     };
     expect(indexSection(briefing)).not.toBeNull();
     expect(indexSection(briefing)).toEqual(indexSection(injected));
-    expect(indexSection(briefing)!.join('\n')).not.toContain('Global rule 3');
-    // Printed by the ranked block (the same limit on both sides), so the index does not list it again.
     expect(briefing).toContain('Project decision 6');
-    expect(indexSection(briefing)!.join('\n')).not.toContain('Project decision 6');
     expect(briefing).toContain('Prove the parity');
     expect(briefing).toContain('Global memory — applies across projects:');
     expect(briefing).toContain('Global rule 2');
     expect((briefing.match(/- \[directive\] Global rule/g) ?? [])).toHaveLength(3);
-    expect(briefing).not.toContain('Global rule 0');
+    // Past the global section's cap.
+    expect(briefing.split('Recently written memories')[0]).not.toContain('Global rule 0');
     expect(briefing).not.toContain('Archived global rule');
     expect(briefing).not.toContain('Untrusted global rule');
     expect(briefing).not.toContain('Imported global rule');
@@ -1147,9 +1134,10 @@ describe('assembleBriefing', () => {
     for (const block of [injected, briefing]) {
       expect(block).toContain('Prove standard parity');
       expect(block).toContain('Ship the standard level');
-      expect(block).toContain('Index of durable memories for');
+      expect(block).toContain('Recently written memories');
+      // The ranked block drops global at standard; the recent index never lists another project's memories.
       expect(block).not.toContain('Global memory — applies across projects');
-      expect(block).not.toContain('A global rule');
+      expect(block.split('Recently written memories')[0]).not.toContain('A global rule');
       expect(block).not.toContain('From your other projects');
       // `standard.workPackageNotice = false`, so NEITHER side should ever
       // carry it — unlike `full`, where only the hook does (see the
@@ -1214,7 +1202,7 @@ describe('assembleBriefing', () => {
         expect(block, `${surface}: this project's lesson`).toContain('A default nobody chose must be the small one');
         expect(block, `${surface}: no fresh task state by default`).not.toContain('Stated about');
         expect(block, `${surface}: no stated goal by default`).not.toContain('Prove the default level');
-        expect(block, `${surface}: no durable-memory index by default`).not.toContain('Index of durable memories for');
+        expect(block, `${surface}: the recent index at the default level`).toContain('Recently written memories');
       }
       expect(injected, 'hook and CLI must be byte-equal at the default level').toBe(cliJson.text);
       expect(mcp.text, 'MCP tool and CLI must be byte-equal at the default level').toBe(cliJson.text);
@@ -1223,7 +1211,7 @@ describe('assembleBriefing', () => {
       const standardJson = runCli({ ...noSetting, MEMESH_BRIEFING: 'standard' });
       expect(standardJson.level).toBe('standard');
       expect(standardJson.text).toContain('Stated about');
-      expect(standardJson.text).toContain('Index of durable memories for');
+      expect(standardJson.text).toContain('Recently written memories');
     } finally {
       removeTempDir(configDir);
     }
@@ -1293,7 +1281,7 @@ describe('assembleBriefing', () => {
       expect(block).toContain('Tied commit 40');
       expect(block).toContain('Tied lesson 12');
       // The oldest lesson only appears if a lesson pool keeps the OLDEST.
-      expect(block).not.toMatch(/Tied lesson 1\b/);
+      expect(block.split('Recently written memories')[0]).not.toMatch(/Tied lesson 1\b/);
     }
     expect(injected, 'hook and CLI/MCP must be byte-equal at minimal (no notice to strip)').toBe(briefing);
   });
@@ -1373,7 +1361,7 @@ describe('assembleBriefing', () => {
   // not framing (#323), so `empty` is `false` on every surface, not `true`
   // (that only happens at `minimal`, which has no index to fall back to at
   // all — see the sibling `empty-minimal parity` test above).
-  it('empty-full parity: the hook appends the work-package notice AFTER the empty-index line; CLI/MCP never do', async () => {
+  it('empty-full parity: the hook injects only the work-package notice on an empty project; CLI/MCP never do', async () => {
     const cwd = path.join(tmpDir, 'proj-empty-full');
     fs.mkdirSync(cwd, { recursive: true });
     const project = getProjectName(cwd);
@@ -1386,8 +1374,8 @@ describe('assembleBriefing', () => {
       timeout: 15000,
     });
     const hookCtx = hookMemoryContext(hookOut, cwd);
-    expect(hookCtx, 'hook full: must inject something (the empty-index line, at least)').toBeTruthy();
-    expect(hookCtx).toContain('No durable memories');
+    expect(hookCtx, 'hook full: must inject something (the notice, at least)').toBeTruthy();
+    expect(hookCtx).not.toContain('Recently written memories');
     const noticeIndex = hookCtx!.indexOf(WORK_PACKAGE_NOTICE);
     expect(noticeIndex, 'hook full: must still append the notice on an otherwise-empty project').toBeGreaterThan(-1);
     expect(hookCtx!.slice(noticeIndex), 'hook full: the notice must be the exact remainder').toBe(WORK_PACKAGE_NOTICE);
@@ -1400,7 +1388,7 @@ describe('assembleBriefing', () => {
     );
     const cliJson = JSON.parse(cliJsonOut.trim());
     expect(cliJson.level).toBe('full');
-    expect(cliJson.text).toContain('No durable memories');
+    expect(cliJson.text).toBe('');
     expect(cliJson.text, 'CLI --json full: must never carry the notice').not.toContain('Work packages:');
     // Same byte-equality relationship as the populated-fixture parity test:
     // hook memory block (notice stripped) === CLI/MCP text, exactly.
@@ -1792,7 +1780,7 @@ describe('the session handoff leads every briefing (#434 step 2)', () => {
     db.exec('COMMIT');
     // The ranked sections only — the durable index below them lists the
     // decision too, and would hide a ranked slot lost to handoff rows.
-    const ranked = assembleBriefing(PROJECT).text.split('Index of durable memories')[0];
+    const ranked = assembleBriefing(PROJECT).text.split('Recently written memories')[0];
     expect(ranked).toContain('CROWD-DECISION survives');
     for (let i = 1; i <= 5; i++) expect(ranked, `other project decision ${i}`).toContain(`CROWD-OTHER-${i}`);
   }, 60_000);
@@ -1824,7 +1812,7 @@ describe('the session handoff leads every briefing (#434 step 2)', () => {
     const result = assembleBriefing(PROJECT);
     expect(result.hasHandoff).toBe(true);
     const inner = result.text.slice(result.text.indexOf('\n', result.text.indexOf('```')) + 1, result.text.lastIndexOf('\n```'));
-    const ranked = inner.split('Index of durable memories')[0];
+    const ranked = inner.split('Recently written memories')[0];
     expect(ranked.length).toBeLessThanOrEqual(DEFAULT_TOPOLOGY_BUDGET.maxChars);
     expect(result.entityCount, 'the handoff took all the room').toBeGreaterThan(0);
   });
@@ -1892,14 +1880,16 @@ describe('decisions first, one budget — both readers (#434 step 3)', () => {
     vi.stubEnv('MEMESH_BRIEFING', level);
     return assembleBriefing(project).text;
   };
-  /** Everything inside the fence: the part the one budget governs. */
+  /** Everything inside the fence up to the recent index: the part the one budget governs (the index sits outside it). */
   const fenceBody = (text: string) => {
     const lines = text.split('\n');
     const open = lines.findIndex((l) => /^`{3,}/.test(l));
     const close = lines.findIndex((l, i) => i > open && l === lines[open].match(/^`+/)![0]);
-    return lines.slice(open + 1, close).join('\n');
+    const body = lines.slice(open + 1, close).join('\n');
+    const at = body.indexOf('Recently written memories');
+    return at < 0 ? body : body.slice(0, at).replace(/\n+$/, '');
   };
-  const ranked = (text: string) => text.split('Index of durable memories for')[0];
+  const ranked = (text: string) => text.split('Recently written memories')[0];
 
   it('F1: one decision under 450 newer commits reaches the ranked block on both readers', () => {
     add('lone-decision', 'decision', 'LONE-DECISION keep one SQLite file', { obs: [ts(3)] });
@@ -1928,7 +1918,7 @@ describe('decisions first, one budget — both readers (#434 step 3)', () => {
     const order = (text: string) => [...text.matchAll(/D1 commit (\d+)/g)].map((m) => Number(m[1]));
     const hook = runHook('minimal', 30).context;
     const briefing = core('minimal');
-    expect(order(hook)).toEqual([5, 4, 3, 2, 1, 35, 34, 33]);
+    expect(order(ranked(hook))).toEqual([5, 4, 3, 2, 1, 35, 34, 33]);
     expect(hook).toBe(briefing);
   }, 60_000);
 
@@ -2242,7 +2232,7 @@ describe('decisions first, one budget — both readers (#434 step 3)', () => {
     vi.stubEnv('MEMESH_SESSION_LIMIT', '1');
     for (const [label, text] of [['core', core('standard')], ['hook', runHook('standard', 1).context]] as const) {
       expect(ranked(text), `${label} ranked`).toContain('😀');
-      expect(text.split('Index of durable memories for')[1] ?? '', `${label} index`).toContain('😀');
+      expect(text.split('Recently written memories')[1] ?? '', `${label} index`).toContain('😀');
       expect(text, label).not.toMatch(LONE_SURROGATE);
     }
   });
@@ -2384,7 +2374,6 @@ describe('decisions first, one budget — both readers (#434 step 3)', () => {
       expect(body, label).toContain('目標😀');                   // oversized goal shown shortened…
       expect(body, label).not.toContain('END');
       expect(body, label).toContain('Run both readers');        // …and the rest of the state still shows
-      expect(body, label).toMatch(/- \d+\+? more — memesh recall/); // the index says what it left out
       expect(body, label).toContain(newestDecision);
     }
     // Display-only: the stored task state is untouched.

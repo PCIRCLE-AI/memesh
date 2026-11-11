@@ -519,9 +519,9 @@ export interface TopologyPool {
  * keeps its no-imports charter. It leads the block and is charged first.
  *
  * Everything inside the fence shares ONE budget (`budget.maxChars`, measured
- * as the lines joined by '\n'): the state lines, the project/foreign sections,
- * the global section, and `reserve` — the room the caller keeps back for the
- * durable-memory index it appends after this block. Global rules used to have
+ * as the lines joined by '\n'): the state lines, the project/foreign sections
+ * and the global section. The recent index the caller appends after this
+ * block is outside it (recent-index.ts). Global rules used to have
  * a separate additive allowance (#242); they now take what the project leaves,
  * still capped at their old size, so no category can push the total past the
  * budget.
@@ -536,7 +536,6 @@ export function assembleTopologyBlock(
   pools: readonly TopologyPool[],
   projectName: string,
   budget: TopologyBudget = DEFAULT_TOPOLOGY_BUDGET,
-  { reserve = 0 }: { reserve?: number } = {},
 ): string[] {
   const seen = new Set<string>();
   const candidates: TopologyEntity[] = [];
@@ -554,12 +553,11 @@ export function assembleTopologyBlock(
   }
 
   // ONE budget for everything the caller will put inside the fence: these
-  // state lines, the project/foreign sections, the global section and
-  // `reserve` (what the caller keeps back for the index that follows).
+  // state lines, the project/foreign sections and the global section.
   // Measured the way the payload is measured — lines joined by '\n' — so the
   // arithmetic here and the length of the final block cannot disagree.
   const lines = boundStateLines(stateLines);
-  const room = () => budget.maxChars - reserve - joinedLength(lines) - (lines.length > 0 ? 2 : 0);
+  const room = () => budget.maxChars - joinedLength(lines) - (lines.length > 0 ? 2 : 0);
   const topologyLines = room() > 0
     ? buildTopologyLines(candidates, projectName, { ...budget, maxChars: room() })
     : [];

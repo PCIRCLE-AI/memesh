@@ -5,9 +5,11 @@
 // Agents almost never call `recall` themselves, and a memory used to reach
 // them only at session start or when they edited a file. This is the third
 // moment: the user asks about something, and the stored memories that are
-// plainly about it ride along with the prompt — at most three lines, each a
+// plainly about it ride along with the prompt — at most two lines, each a
 // title and its `[mem:id]` handle, under the same "background data, not
-// instructions" notice the session-start block carries.
+// instructions" notice the session-start block carries. A match that looks
+// out of date (src/core/recent-index.ts) or was already shown is dropped and
+// not replaced by the next one.
 //
 // What counts as plainly about it is decided by src/core/prompt-recall.ts
 // (this hook runs its generated copy; scripts/audit/prompt-recall-replay.mjs
@@ -208,11 +210,17 @@ export async function handlePrompt(data, readPrivacy = defaultReadPrivacy) {
     const injectionState = injectionRecord(sessionId, project);
     const shown = new Set([...(state?.ids ?? []), ...(injectionState.prior?.entityIds ?? [])]);
 
+    // The session-start index before its filter: a match a newer decision in
+    // it replaces is out of date. A session with no such record (session start
+    // did not run, or showed nothing) compares the matches with each other
+    // only, and says so on the outcome below.
+    const hasPool = Array.isArray(injectionState.prior?.recentPoolIds);
+    const recentPool = hasPool ? injectionState.prior.recentPoolIds.filter((id) => Number.isSafeInteger(id) && id > 0) : [];
     const db = openMemeshDb(dbPath, { readOnly: true });
     let result;
     try {
       db.pragma(`busy_timeout = ${LOCK_WAIT_MS}`);
-      result = selectPromptRecall(db, prompt, { project, exclude: shown });
+      result = selectPromptRecall(db, prompt, { project, cwd: project === null ? null : data.cwd, exclude: shown, recentPool });
     } finally {
       db.close();
     }
@@ -222,6 +230,7 @@ export async function handlePrompt(data, readPrivacy = defaultReadPrivacy) {
         'no-terms': SKIP_REASONS.promptNoTerms,
         'no-candidates': SKIP_REASONS.promptNoMatch,
         'below-threshold': SKIP_REASONS.promptNoMatch,
+        stale: SKIP_REASONS.promptStale,
         'already-shown': SKIP_REASONS.promptAlreadyShown,
       }[result.reason] ?? SKIP_REASONS.promptNoMatch);
       return null;
@@ -239,7 +248,7 @@ export async function handlePrompt(data, readPrivacy = defaultReadPrivacy) {
       record('error', `injection-record: ${hookErrorReason(err)}`);
     }
     try { pruneSessionState(stateDir(), Date.now()); } catch { /* best-effort housekeeping */ }
-    record('notified', undefined, `injected:${result.ids.length}${credited ? '' : ':uncredited'}`);
+    record('notified', undefined, `injected:${result.ids.length}${credited ? '' : ':uncredited'}${hasPool ? '' : ':no-recent-index'}`);
     return JSON.stringify({
       hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: result.text },
     });
@@ -259,18 +268,17 @@ if (isMainModule) {
   process.stdin.setEncoding('utf8');
   process.stdin.on('data', (chunk) => { input += chunk; });
   process.stdin.on('end', async () => {
-    let data = {};
-    if (input.trim()) {
-      try {
-        data = JSON.parse(input);
-      } catch (parseErr) {
-        logError(`malformed stdin JSON (len=${input.length}): ${parseErr.message}`);
-        record('error', 'malformed stdin JSON');
-        return process.exit(0);
-      }
+    // One exit: a malformed payload records its error here, every other path
+    // records inside handlePrompt.
+    let malformed = false;
+    try {
+      payload = input.trim() ? JSON.parse(input) : {};
+    } catch (parseErr) {
+      malformed = true;
+      logError(`malformed stdin JSON (len=${input.length}): ${parseErr.message}`);
+      record('error', 'malformed stdin JSON');
     }
-    payload = data;
-    const out = await handlePrompt(data);
+    const out = malformed ? null : await handlePrompt(payload);
     if (out) process.stdout.write(out);
     process.exit(0);
   });

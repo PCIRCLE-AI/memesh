@@ -162,14 +162,35 @@ const projectNameCache = new Map<string, string>();
  * git binary, a non-repo cwd, or a deleted directory must never break capture.
  */
 function resolveProjectIdentity(cwd: string): string {
+  return remoteProjectIdentity(cwd) ?? pathProjectIdentity(cwd);
+}
+
+/**
+ * Every id this directory's checkout is known by: the remote id (when it has
+ * a network remote) and the path id it had before one, the same two
+ * computations as getProjectName. The first is getProjectName's answer.
+ */
+export function checkoutProjectIds(cwd: string): string[] {
+  const cached = checkoutIdsCache.get(cwd);
+  if (cached !== undefined) return cached;
+  const first = getProjectName(cwd);
+  const local = pathProjectIdentity(cwd);
+  const ids = first === local ? [local] : [first, local];
+  checkoutIdsCache.set(cwd, ids);
+  return ids;
+}
+const checkoutIdsCache = new Map<string, string[]>();
+
+function remoteProjectIdentity(cwd: string): string | null {
   const remote = tryGit(cwd, ['config', '--get', 'remote.origin.url']);
-  if (remote) {
-    const locator = canonicalRemoteLocator(remote);
-    if (locator) {
-      const label = path.posix.basename(locator).replace(/\.git$/i, '');
-      return projectIdentity(label, locator);
-    }
-  }
+  if (!remote) return null;
+  const locator = canonicalRemoteLocator(remote);
+  if (!locator) return null;
+  const label = path.posix.basename(locator).replace(/\.git$/i, '');
+  return projectIdentity(label, locator);
+}
+
+function pathProjectIdentity(cwd: string): string {
   const root = tryGit(cwd, ['rev-parse', '--show-toplevel']);
   // A linked worktree has its own top-level path but shares the primary
   // repository's common `.git` directory. Use that directory's parent when
@@ -296,6 +317,7 @@ export function canonicalRemoteLocator(remote: string): string | null {
 /** Test seam: clear the per-cwd resolution cache between cases. */
 export function _clearProjectNameCache(): void {
   projectNameCache.clear();
+  checkoutIdsCache.clear();
 }
 
 /**

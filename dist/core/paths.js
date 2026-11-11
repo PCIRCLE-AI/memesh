@@ -45,14 +45,30 @@ export function getProjectName(cwdInput) {
 }
 const projectNameCache = new Map();
 function resolveProjectIdentity(cwd) {
+    return remoteProjectIdentity(cwd) ?? pathProjectIdentity(cwd);
+}
+export function checkoutProjectIds(cwd) {
+    const cached = checkoutIdsCache.get(cwd);
+    if (cached !== undefined)
+        return cached;
+    const first = getProjectName(cwd);
+    const local = pathProjectIdentity(cwd);
+    const ids = first === local ? [local] : [first, local];
+    checkoutIdsCache.set(cwd, ids);
+    return ids;
+}
+const checkoutIdsCache = new Map();
+function remoteProjectIdentity(cwd) {
     const remote = tryGit(cwd, ['config', '--get', 'remote.origin.url']);
-    if (remote) {
-        const locator = canonicalRemoteLocator(remote);
-        if (locator) {
-            const label = path.posix.basename(locator).replace(/\.git$/i, '');
-            return projectIdentity(label, locator);
-        }
-    }
+    if (!remote)
+        return null;
+    const locator = canonicalRemoteLocator(remote);
+    if (!locator)
+        return null;
+    const label = path.posix.basename(locator).replace(/\.git$/i, '');
+    return projectIdentity(label, locator);
+}
+function pathProjectIdentity(cwd) {
     const root = tryGit(cwd, ['rev-parse', '--show-toplevel']);
     const commonDir = root
         ? tryGit(cwd, ['rev-parse', '--git-common-dir'])
@@ -154,6 +170,7 @@ export function canonicalRemoteLocator(remote) {
 }
 export function _clearProjectNameCache() {
     projectNameCache.clear();
+    checkoutIdsCache.clear();
 }
 const SK_KEY = 'sk[-_][^\\s"\\\\]{4,}[A-Za-z0-9]';
 const NAMED_VALUE = '(?:api[-_]?key|access[-_]?token|auth[-_]?token|refresh[-_]?token|session[-_]?token|token|secret|password|passwd|pwd|signature)=[^&\\s"\'<>]{8,}';

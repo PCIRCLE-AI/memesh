@@ -1,5 +1,5 @@
 import type { MemeshDatabase } from '../storage/sqlite.js';
-export declare const PROMPT_RECALL_MAX_LINES = 3;
+export declare const PROMPT_RECALL_MAX_LINES = 2;
 export declare const PROMPT_RECALL_MIN_COVERAGE = 0.5;
 export declare const PROMPT_RECALL_MIN_TERMS = 2;
 export declare const PROMPT_RECALL_MAX_TERM_SHARE = 0.03;
@@ -18,7 +18,9 @@ export interface ScoredMemory {
 }
 export interface PromptRecallOptions {
     project: string | null;
+    cwd?: string | null;
     exclude?: ReadonlySet<number>;
+    recentPool?: readonly number[];
     minCoverage?: number;
     minTerms?: number;
     maxLines?: number;
@@ -31,11 +33,15 @@ export interface PromptRecallOptions {
 export interface PromptRecallResult {
     text: string;
     ids: number[];
-    reason?: 'no-terms' | 'no-candidates' | 'below-threshold' | 'already-shown';
+    reason?: 'no-terms' | 'no-candidates' | 'below-threshold' | 'stale' | 'already-shown';
+    removed?: Array<{
+        id: number;
+        reason: 'superseded' | 'waiting';
+    }>;
     scored: ScoredMemory[];
     terms: string[];
 }
-export declare function scorePrompt(db: MemeshDatabase, prompt: string, options: Pick<PromptRecallOptions, 'project' | 'createdBefore' | 'maxTermShare' | 'skipTypes' | 'maxProjectAgeDays' | 'projectAgeFromNoteDate'>): {
+export declare function scorePrompt(db: MemeshDatabase, prompt: string, options: Pick<PromptRecallOptions, 'project' | 'cwd' | 'createdBefore' | 'maxTermShare' | 'skipTypes' | 'maxProjectAgeDays' | 'projectAgeFromNoteDate'>): {
     scored: ScoredMemory[];
     terms: string[];
 };

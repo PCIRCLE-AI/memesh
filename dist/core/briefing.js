@@ -9,15 +9,16 @@ import { hostSessionFromEnv } from './host-session.js';
 import { canonicalAgentScopeId } from './agent-scope-id.js';
 import { briefingTaskStateLines } from './task-state.js';
 import { handoffLines } from './session-handoff.js';
-import { buildBriefingIndex, injectedIndexReserve, } from './briefing-index.js';
-import { DEFAULT_TOPOLOGY_BUDGET, assembleTopologyBlock, boundTaskStateLines, buildReferenceContext, hasBriefingContent, joinedLength, jsonStringLiteral, projectLabel, } from './work-topology.js';
+import { buildBriefingIndex } from './briefing-index.js';
+import { buildRecentIndex } from './recent-index.js';
+import { DEFAULT_TOPOLOGY_BUDGET, assembleTopologyBlock, boundTaskStateLines, buildReferenceContext, hasBriefingContent, jsonStringLiteral, projectLabel, } from './work-topology.js';
 import { readIndexCandidates, readSnippets, selectBriefingPools, toTopologyEntity } from './briefing-pools.js';
 import { briefingLevelPolicy, resolveBriefingLevel, } from './briefing-level.js';
 export function readBriefingIndex(db, projectName, now = Date.now()) {
     const { candidates, truncated } = readIndexCandidates(db, projectName);
     return buildBriefingIndex(candidates, projectName, now, { truncated });
 }
-export function assembleBriefing(project, recipient) {
+export function assembleBriefing(project, recipient, cwd = project === undefined ? process.cwd() : null) {
     const projectName = project ?? getProjectName();
     const db = getDatabase();
     const config = readConfig();
@@ -63,28 +64,20 @@ export function assembleBriefing(project, recipient) {
     ];
     const snippets = readSnippets(db, [...pools.lessons, ...pools.project, ...pools.noProject, ...pools.global, ...pools.recent].map((row) => row.id));
     const toEntities = (pool) => pool.map((row) => toTopologyEntity(row, snippets));
-    const indexReserve = policy.index ? injectedIndexReserve(projectName) + 2 : 0;
     const lines = assembleTopologyBlock(stateLines, [
         { entities: toEntities(pools.lessons), foreign: false },
         { entities: toEntities(pools.project), foreign: false },
         { entities: toEntities(pools.noProject), foreign: false, noProject: true },
         { entities: toEntities(pools.global), foreign: false, global: true },
         { entities: toEntities(pools.recent), foreign: true },
-    ], projectName, DEFAULT_TOPOLOGY_BUDGET, { reserve: indexReserve });
+    ], projectName, DEFAULT_TOPOLOGY_BUDGET);
     const withRepo = lines.length > 0 && repoLines.length > 0
         ? [...repoLines, '', ...lines]
         : lines;
     const now = Date.now();
     const { candidates: indexCandidates, truncated } = readIndexCandidates(db, projectName);
-    const shownAbove = new Set(lines.flatMap((line) => {
-        const match = line.match(/ \[mem:(\d{1,10})\]$/);
-        return match ? [Number(match[1])] : [];
-    }));
     const index = buildBriefingIndex(indexCandidates, projectName, now, { truncated });
-    const used = lines.length === 0 ? 0 : joinedLength(lines) + 2;
-    const indexLines = policy.index
-        ? buildBriefingIndex(indexCandidates, projectName, now, { truncated, maxChars: DEFAULT_TOPOLOGY_BUDGET.maxChars - used, exclude: shownAbove }).lines
-        : [];
+    const indexLines = buildRecentIndex(db, projectName, now, cwd).lines;
     const block = withRepo.length > 0 && indexLines.length > 0
         ? [...withRepo, '', ...indexLines]
         : [...withRepo, ...indexLines];

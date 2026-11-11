@@ -35,11 +35,8 @@ import { hostSessionFromEnv } from './host-session.js';
 import { canonicalAgentScopeId } from './agent-scope-id.js';
 import { briefingTaskStateLines } from './task-state.js';
 import { handoffLines } from './session-handoff.js';
-import {
-  buildBriefingIndex,
-  injectedIndexReserve,
-  type BriefingIndex,
-} from './briefing-index.js';
+import { buildBriefingIndex, type BriefingIndex } from './briefing-index.js';
+import { buildRecentIndex } from './recent-index.js';
 import type { MemeshDatabase } from '../storage/sqlite.js';
 import {
   DEFAULT_TOPOLOGY_BUDGET,
@@ -47,7 +44,6 @@ import {
   boundTaskStateLines,
   buildReferenceContext,
   hasBriefingContent,
-  joinedLength,
   jsonStringLiteral,
   projectLabel,
 } from './work-topology.js';
@@ -115,9 +111,11 @@ export function readBriefingIndex(
 /**
  * Assemble the same block session-start injects, for a caller that has no
  * session-start: task state first (the one line someone stated on purpose),
- * then the ranked topology, wrapped in the shared fence.
+ * then the ranked topology, wrapped in the shared fence. `cwd` is the folder
+ * `project` was resolved from, when the caller knows it (default: this
+ * process's own folder when `project` is omitted).
  */
-export function assembleBriefing(project?: string, recipient?: string): BriefingResult {
+export function assembleBriefing(project?: string, recipient?: string, cwd: string | null = project === undefined ? process.cwd() : null): BriefingResult {
   const projectName = project ?? getProjectName();
   const db = getDatabase();
 
@@ -231,9 +229,7 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
   const snippets = readSnippets(db, [...pools.lessons, ...pools.project, ...pools.noProject, ...pools.global, ...pools.recent].map((row) => row.id));
   const toEntities = (pool: PoolRow[]) => pool.map((row) => toTopologyEntity(row, snippets));
 
-  // One memory budget for everything inside the fence; when this level shows
-  // the index, room for its heading and "N more" line is kept back first.
-  const indexReserve = policy.index ? injectedIndexReserve(projectName) + 2 : 0;
+  // One memory budget for the ranked sections; the recent index after them is not cut by it.
   const lines = assembleTopologyBlock(
     stateLines,
     [
@@ -245,7 +241,6 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
     ],
     projectName,
     DEFAULT_TOPOLOGY_BUDGET,
-    { reserve: indexReserve },
   );
 
   // Repository facts PREFIX a briefing; they never constitute one. Prepending
@@ -269,28 +264,19 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
   // INJECTED block when the level includes it.
   const now = Date.now();
   const { candidates: indexCandidates, truncated } = readIndexCandidates(db, projectName);
-  // The injected index lists the durable memories the ranked block does not
-  // already print; the standalone `index` below stays the full catalog.
-  const shownAbove = new Set(lines.flatMap((line) => {
-    const match = line.match(/ \[mem:(\d{1,10})\]$/);
-    return match ? [Number(match[1])] : [];
-  }));
+  // The standalone `index` stays the full durable catalog (`memesh briefing --index`);
+  // the INJECTED section is the recent index session-start shows (recent-index.ts).
   const index = buildBriefingIndex(indexCandidates, projectName, now, { truncated });
-  // The injected index gets what the block left of the shared budget; the
-  // standalone `index` above keeps its own caps (`memesh briefing --index`).
-  const used = lines.length === 0 ? 0 : joinedLength(lines) + 2;
-  const indexLines = policy.index
-    ? buildBriefingIndex(indexCandidates, projectName, now, { truncated, maxChars: DEFAULT_TOPOLOGY_BUDGET.maxChars - used, exclude: shownAbove }).lines
-    : [];
+  // The recent index is shown at every level (it is what was measured as worth its cost).
+  const indexLines = buildRecentIndex(db, projectName, now, cwd).lines;
   const block = withRepo.length > 0 && indexLines.length > 0
     ? [...withRepo, '', ...indexLines]
     : [...withRepo, ...indexLines];
 
-  // #360: `block` can be genuinely empty — `minimal` on a
-  // project with nothing yet: no ranked topology, no repo-state prefix
-  // (repo lines only prepend onto EXISTING topology lines, unchanged from
-  // before #360), and `indexLines` itself empty because `minimal` excludes
-  // the index entirely (`policy.index === false`). Wrapping nothing in the
+  // `block` can be genuinely empty — a project with nothing yet: no ranked
+  // topology, no repo-state prefix (repo lines only prepend onto EXISTING
+  // topology lines), and `indexLines` itself empty because the recent index
+  // has nothing in scope to list. Wrapping nothing in the
   // preamble + an empty fence is not "nothing" — `hasBriefingContent` is
   // the SAME rule the hook applies to its own assembled lines (see
   // session-start.js's `memoryContext` construction), so the two cannot

@@ -146,6 +146,7 @@ export const SKIP_REASONS = {
     promptPrivacyUnreadable: 'private_session_unreadable: whether this session is private could not be read, so no memory was shown',
     promptNoTerms: 'the prompt held no word distinctive enough to search for',
     promptNoMatch: 'no stored memory matched the prompt strongly enough',
+    promptStale: 'the memories that matched look out of date (a newer decision on the same topic, or a waiting status)',
     promptAlreadyShown: 'the memories that matched were already shown in this session',
     noMemoryDir: 'no Claude Code memory directory for this project',
     noNoteChanged: 'no note file changed since the last ingestion',

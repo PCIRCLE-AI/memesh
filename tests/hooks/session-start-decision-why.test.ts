@@ -56,13 +56,8 @@ function runHook(): string {
 const decisionLines = (text: string): string[] => text.split('\n').filter((l) => /^- \[(decision|architecture_decision)\]/.test(l));
 
 describe('SessionStart: a decision is shown with its reason and its age', () => {
-  it('the ranked block and the index carry the reason, the missing reason and the age note, as `briefing` does', () => {
+  it('the ranked block carries the reason, the missing reason and the age note, as `briefing` does; the recent index lists titles only', () => {
     const project = mirrorProjectName(dir);
-    // A window of one: the newest decision is the ranked block, and the other
-    // two reach the block only through the index, which lists what the ranked
-    // block does not print.
-    const previousLimit = process.env.MEMESH_SESSION_LIMIT;
-    process.env.MEMESH_SESSION_LIMIT = '1';
     openDatabase(dbPath);
     // An architecture_decision is not in the decision layer: its age comes from its observations.
     remember({ name: 'old-choice', type: 'architecture_decision', title: 'Queue it', observations: ['Queue it'], why: 'buffers bursts; revisit if flat', project });
@@ -75,19 +70,15 @@ describe('SessionStart: a decision is shown with its reason and its age', () => 
     const briefing = assembleBriefing(project).text;
     closeDatabase();
 
-    let context: string;
-    try {
-      context = runHook();
-    } finally {
-      if (previousLimit === undefined) delete process.env.MEMESH_SESSION_LIMIT; else process.env.MEMESH_SESSION_LIMIT = previousLimit;
-    }
-    const [ranked, index] = context.split('Index of durable memories for');
+    const context = runHook();
+    const [ranked, index] = context.split('Recently written memories');
     expect(index, 'the hook printed no index').toBeTruthy();
     expect(ranked).toMatch(/- \[decision\] Keep the cache layer — Why: the API is rate limited; revisit if the vendor lifts the limit \[mem:\d+\]/);
-    expect(index).not.toContain('Keep the cache layer');
-    expect(index).toMatch(/- \[decision\] Use tabs \(no reason recorded\) \[mem:\d+\]/);
-    expect(index).toMatch(/- \[architecture_decision\] Queue it — Why: buffers bursts; revisit if flat \(unconfirmed 40 days: re-check before relying\) \[mem:\d+\]/);
-    // Nothing is printed twice, and the same lines come in the same order as the briefing prints.
+    expect(ranked).toMatch(/- \[decision\] Use tabs \(no reason recorded\) \[mem:\d+\]/);
+    expect(ranked).toMatch(/- \[architecture_decision\] Queue it — Why: buffers bursts; revisit if flat \(unconfirmed 40 days: re-check before relying\) \[mem:\d+\]/);
+    // The index: title and handle only — no type, no reason, no age note.
+    expect(index.split('\n').filter((l) => l.startsWith('- ')).map((l) => l.replace(/ \[mem:\d+\]$/, ''))).toEqual(['- Keep the cache layer', '- Use tabs', '- Queue it']);
+    // The same decision lines in the same order as the briefing prints.
     expect(decisionLines(context)).toHaveLength(3);
     expect(decisionLines(context)).toEqual(decisionLines(briefing));
   });

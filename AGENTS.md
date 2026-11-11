@@ -20,14 +20,17 @@ hosts should share memories. Not installed yet? Follow
    - `minimal` (**default**): this project — its decisions, lessons,
      knowledge and recent activity, with the repository state in front
      whenever anything else is shown — plus up to five of your memories that
-     belong to no project (every level, under their own heading). No task
-     state, no index, nothing from other projects. A project with nothing to
+     belong to no project (every level, under their own heading), then the
+     recent index: the titles of the 30 memories most recently written in this
+     project's scope (this project and no project), `- title [mem:id]`,
+     minus any that a newer decision on the same topic in the list replaces or
+     whose title says it is waiting, at every level. No task state, nothing
+     from other projects in the ranked sections. A project with nothing to
      show injects only the session's project line, and that line appears only
      when the host reports a usable working directory; without one there is no
      project line and nothing is guessed.
-   - `standard`: adds the stated goal / next / blocked / done when fresh, and
-     a capped index of durable memories with `[mem:id]` handles
-     (`memesh briefing --index` prints just the index).
+   - `standard`: adds the stated goal / next / blocked / done when fresh
+     (`memesh briefing --index` prints the catalog of durable memories).
    - `full`: adds other projects' recent activity and global memory. The
      SessionStart hook also appends a work-package notice at `full`; that
      notice is an instruction to the host agent, not memory, and `briefing`
@@ -126,7 +129,7 @@ hosts should share memories. Not installed yet? Follow
 | `import` | Import a JSON export; `merge_strategy` (required): skip / append / overwrite |
 | `learn` | Record a structured lesson: error, root cause, fix, prevention |
 | `task_state` | Read or update where the work stands: goal / next / blocked / done |
-| `briefing` | The assembled work topology — an eligible exact-project handoff precedes ranked memories at every level, after optional repository facts; `minimal` then shows this project's decisions, lessons, knowledge and recent activity plus memories with no project, `standard` adds fresh task state and a capped durable-memory index, and `full` adds other projects and global memory; exact `project` + `recipient` can surface only that recipient's unfetched deliveries |
+| `briefing` | The assembled work topology — an eligible exact-project handoff precedes ranked memories at every level, after optional repository facts; `minimal` then shows this project's decisions, lessons, knowledge and recent activity plus memories with no project, closing with the recent index (titles of the 30 most recently written memories in scope) at every level, `standard` adds fresh task state, and `full` adds other projects and global memory; exact `project` + `recipient` can surface only that recipient's unfetched deliveries |
 | `user_patterns` | Analyze work schedule, tool preferences, and focus areas from memory |
 | `improvement` | Propose an evidence-linked product improvement or read its status; only a human may accept/reject it |
 | `message` | Discover live agents, then exchange exact-recipient untrusted messages: durable JSON payload max 64 KiB; complete native envelope max 16 KiB with distinct `native_message_too_large` and `recipient_unavailable` errors; delivery reads/acceptance never imply ACK or disposition |
@@ -160,7 +163,7 @@ hosts should share memories. Not installed yet? Follow
   AND what would make it stop holding ("too heavy to deploy for one user;
   revisit if we add a hosted tier"). A new decision, or a `replace` of one,
   without one is refused.
-  Briefings, session start and the durable-memory index show each decision with
+  Briefings, session start and `briefing --index` show each decision with
   its reason (or "no reason recorded"), and one nobody has read or added to for
   30 days as "unconfirmed N days: re-check before relying" — recall it to check
   it still holds before you follow it.

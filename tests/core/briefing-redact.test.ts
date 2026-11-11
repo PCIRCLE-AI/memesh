@@ -117,7 +117,7 @@ function seedUnredactedRows(): void {
 
 /** The ranked block: everything before the index heading. */
 function rankedPart(text: string): string {
-  return text.split('Index of durable memories for')[0];
+  return text.split('Recently written memories')[0];
 }
 
 function expectRedactedEverywhere(text: string): void {

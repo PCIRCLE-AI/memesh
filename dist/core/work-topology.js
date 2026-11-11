@@ -224,7 +224,7 @@ export function buildTopologyLines(entities, projectName, budget) {
         lines.pop();
     return lines;
 }
-export function assembleTopologyBlock(stateLines, pools, projectName, budget = DEFAULT_TOPOLOGY_BUDGET, { reserve = 0 } = {}) {
+export function assembleTopologyBlock(stateLines, pools, projectName, budget = DEFAULT_TOPOLOGY_BUDGET) {
     const seen = new Set();
     const candidates = [];
     const globalCandidates = [];
@@ -242,7 +242,7 @@ export function assembleTopologyBlock(stateLines, pools, projectName, budget = D
         }
     }
     const lines = boundStateLines(stateLines);
-    const room = () => budget.maxChars - reserve - joinedLength(lines) - (lines.length > 0 ? 2 : 0);
+    const room = () => budget.maxChars - joinedLength(lines) - (lines.length > 0 ? 2 : 0);
     const topologyLines = room() > 0
         ? buildTopologyLines(candidates, projectName, { ...budget, maxChars: room() })
         : [];

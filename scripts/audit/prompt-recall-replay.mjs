@@ -100,8 +100,10 @@ const rows = readFileSync(resolve(args.prompts), 'utf8').split('\n').filter(Bool
 const ms = [];
 const per = rows.map((row) => {
   const project = projectOf(row, fixedProject);
+  // Like the hook: the folder counts only when the project was resolved from it.
+  const cwd = typeof row.project !== 'string' && fixedProject === undefined && project !== null ? row.cwd : null;
   const t0 = process.hrtime.bigint();
-  const result = selectPromptRecall(db, row.prompt, { project, minCoverage, minTerms });
+  const result = selectPromptRecall(db, row.prompt, { project, cwd, minCoverage, minTerms });
   ms.push(Number(process.hrtime.bigint() - t0) / 1e6);
   return { project, result };
 });

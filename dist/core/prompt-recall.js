@@ -1,27 +1,20 @@
 import { renderPhraseExpression, tokenizeQuery, UNSPACED_SCRIPT_CLASS } from '../storage/fts-index.js';
-import { redactMemoryText } from './paths.js';
-import { EVIDENCE_LAYER_TYPES, buildReferenceContext, isAutoInjectable, topologyLine, } from './work-topology.js';
-export const PROMPT_RECALL_MAX_LINES = 3;
+import { buildReferenceContext, isAutoInjectable } from './work-topology.js';
+import { AUTO_CONTEXT_EXCLUDED_TYPES, autoContextScope, projectAliases, readRecentRows, recentLine, staleReason, tableColumns, } from './recent-index.js';
+export const PROMPT_RECALL_MAX_LINES = 2;
 export const PROMPT_RECALL_MIN_COVERAGE = 0.5;
 export const PROMPT_RECALL_MIN_TERMS = 2;
 const PROMPT_CHARS = 1500;
-const MAX_TERMS = 8;
+const MAX_TERMS = 12;
 export const PROMPT_RECALL_MAX_TERM_SHARE = 0.03;
-export const PROMPT_RECALL_SKIP_TYPES = new Set(['feedback', 'engineering_feedback']);
+export const PROMPT_RECALL_SKIP_TYPES = new Set();
 export const PROMPT_RECALL_MAX_PROJECT_AGE_DAYS = 30;
 const CANDIDATE_WINDOW = 30;
 const SCORED_TEXT_CHARS = 20000;
-const LINE_CHARS = 160;
 const MIN_ROWS_FOR_DF = 20;
 const MAX_LATIN_TERMS = 60;
 const MAX_CJK_TERMS = 30;
-const EXCLUDED_TYPES = [
-    ...EVIDENCE_LAYER_TYPES,
-    'task-state',
-    'session-handoff',
-    'digest',
-    'release-notice',
-];
+const EXCLUDED_TYPES = AUTO_CONTEXT_EXCLUDED_TYPES;
 const STOP_WORDS = new Set([
     'the', 'and', 'for', 'are', 'was', 'were', 'you', 'your', 'with', 'this', 'that', 'these', 'those',
     'have', 'has', 'had', 'not', 'but', 'can', 'could', 'should', 'would', 'will', 'shall', 'may', 'might',
@@ -102,9 +95,6 @@ function promptTerms(prompt) {
     }
     return [...latin, ...cjk];
 }
-function tableColumns(db, table) {
-    return new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name));
-}
 function documentFrequencies(db, terms) {
     const df = new Map();
     const count = db.prepare('SELECT count(*) AS c FROM entities_fts WHERE entities_fts MATCH ?');
@@ -128,8 +118,6 @@ function documentFrequencies(db, terms) {
         df.set(t.text, count.get(t.match).c);
     return df;
 }
-const NO_PROJECT_TAG = "NOT EXISTS (SELECT 1 FROM tags pt WHERE pt.entity_id = e.id AND pt.tag LIKE 'project:%')";
-const HOST_SCOPED_TAG = "EXISTS (SELECT 1 FROM tags ht WHERE ht.entity_id = e.id AND (ht.tag LIKE 'platform:%' OR ht.tag LIKE 'agent:%'))";
 function parseMetadata(raw) {
     if (!raw)
         return null;
@@ -161,13 +149,7 @@ export function scorePrompt(db, prompt, options) {
         return { scored: [], terms: [] };
     const promptWeight = informative.reduce((sum, t) => sum + t.weight, 0);
     const match = informative.map((t) => t.term.match).join(' OR ');
-    const projects = options.project === null ? [] : [options.project];
-    const projectScope = projects.length === 0
-        ? `(${NO_PROJECT_TAG} AND NOT ${HOST_SCOPED_TAG})`
-        : `(EXISTS (SELECT 1 FROM tags st WHERE st.entity_id = e.id AND st.tag IN (${projects.map(() => '?').join(', ')})) OR (${NO_PROJECT_TAG} AND NOT ${HOST_SCOPED_TAG}))`;
-    const scope = entityCols.has('namespace')
-        ? `(${projectScope} OR e.namespace = 'global')`
-        : projectScope;
+    const scope = autoContextScope(projectAliases(options.project, options.cwd));
     const before = options.createdBefore === undefined ? null : new Date(options.createdBefore).toISOString();
     const skipTypes = [...(options.skipTypes ?? PROMPT_RECALL_SKIP_TYPES)];
     const maxProjectAgeDays = options.maxProjectAgeDays === undefined ? PROMPT_RECALL_MAX_PROJECT_AGE_DAYS : options.maxProjectAgeDays;
@@ -177,10 +159,10 @@ export function scorePrompt(db, prompt, options) {
      WHERE entities_fts MATCH ?${entityCols.has('status') ? " AND e.status = 'active'" : ''}
        AND e.type NOT IN (${[...EXCLUDED_TYPES, ...skipTypes].map(() => '?').join(',')})
        AND NOT EXISTS (SELECT 1 FROM tags ac WHERE ac.entity_id = e.id AND ac.tag = 'source:auto-capture')
-       AND ${scope}
+       AND ${scope.sql}
        ${before === null ? '' : 'AND julianday(e.created_at) < julianday(?)'}
      ORDER BY fts.rank, e.id DESC
-     LIMIT ?`).all(match, ...EXCLUDED_TYPES, ...skipTypes, ...projects.map((id) => `project:${id}`), ...(before === null ? [] : [before]), CANDIDATE_WINDOW);
+     LIMIT ?`).all(match, ...EXCLUDED_TYPES, ...skipTypes, ...scope.params, ...(before === null ? [] : [before]), CANDIDATE_WINDOW);
     const observations = db.prepare(`SELECT content, created_at FROM observations WHERE entity_id = ?${before === null ? '' : ' AND julianday(created_at) < julianday(?)'} ORDER BY id`);
     const scored = [];
     for (const row of rows) {
@@ -235,18 +217,26 @@ export function selectPromptRecall(db, prompt, options) {
     const minCoverage = options.minCoverage ?? PROMPT_RECALL_MIN_COVERAGE;
     const minTerms = options.minTerms ?? PROMPT_RECALL_MIN_TERMS;
     const maxLines = options.maxLines ?? PROMPT_RECALL_MAX_LINES;
-    const strong = scored.filter((m) => m.coverage >= minCoverage && m.matched.length >= minTerms);
-    if (strong.length === 0)
+    const top = scored.filter((m) => m.coverage >= minCoverage && m.matched.length >= minTerms).slice(0, maxLines);
+    if (top.length === 0)
         return { text: '', ids: [], reason: 'below-threshold', scored, terms };
-    const fresh = strong.filter((m) => !options.exclude?.has(m.id)).slice(0, maxLines);
-    if (fresh.length === 0)
-        return { text: '', ids: [], reason: 'already-shown', scored, terms };
-    const firstObservation = db.prepare('SELECT content FROM observations WHERE entity_id = ? ORDER BY id LIMIT 1');
-    const lines = fresh.map((m) => {
-        const first = firstObservation.get(m.id)?.content ?? '';
-        const text = redactMemoryText(m.title?.trim() || first).replace(/\s+/g, ' ').trim();
-        return topologyLine({ name: m.name, type: m.type, id: m.id, title: text || null }, LINE_CHARS);
+    const asOf = options.createdBefore ?? Date.now();
+    const rows = readRecentRows(db, [...(options.recentPool ?? []), ...top.map((m) => m.id)], asOf, projectAliases(options.project, options.cwd));
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    const removed = [];
+    const current = top.filter((m) => {
+        const row = byId.get(m.id);
+        const reason = row ? staleReason(row, rows, asOf) : null;
+        if (reason !== null)
+            removed.push({ id: m.id, reason });
+        return reason === null;
     });
-    return { text: buildReferenceContext(lines), ids: fresh.map((m) => m.id), scored, terms };
+    if (current.length === 0)
+        return { text: '', ids: [], reason: 'stale', removed, scored, terms };
+    const fresh = current.filter((m) => !options.exclude?.has(m.id));
+    if (fresh.length === 0)
+        return { text: '', ids: [], reason: 'already-shown', removed, scored, terms };
+    const lines = fresh.map((m) => recentLine({ id: m.id, title: m.title, name: m.name }));
+    return { text: buildReferenceContext(lines), ids: fresh.map((m) => m.id), removed, scored, terms };
 }
 //# sourceMappingURL=prompt-recall.js.map

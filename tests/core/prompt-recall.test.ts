@@ -86,14 +86,13 @@ describe('Feature: prompt recall scoring', () => {
     expect(terms).not.toContain('input');
   });
 
-  it('by default writing-style and working-style notes (feedback, engineering_feedback) are never brought along; other types are', () => {
+  it('by default every type is offered, feedback included; a named set of types is left out', () => {
     kg().createEntity('style-rule', 'feedback', { title: 'Heron migration notes', observations: ['heron migration notes for the lagoon'], tags });
     kg().createEntity('eng-rule', 'engineering_feedback', { title: 'Heron migration habits', observations: ['heron migration habits for the lagoon'], tags });
     kg().createEntity('plain-fact', 'reference', { title: 'Heron migration lagoon', observations: ['heron migration lagoon counts'], tags });
     const prompt = 'heron migration lagoon';
-    expect(pick(prompt).scored.map((m) => m.name)).toEqual(['plain-fact']);
-    // An explicit empty set offers every type, and a named set only that one.
-    expect(pick(prompt, { skipTypes: new Set() }).scored.map((m) => m.name).sort()).toEqual(['eng-rule', 'plain-fact', 'style-rule']);
+    expect(pick(prompt).scored.map((m) => m.name).sort()).toEqual(['eng-rule', 'plain-fact', 'style-rule']);
+    expect(pick(prompt, { skipTypes: new Set(['feedback', 'engineering_feedback']) }).scored.map((m) => m.name)).toEqual(['plain-fact']);
     expect(pick(prompt, { skipTypes: new Set(['reference']) }).scored.map((m) => m.name).sort()).toEqual(['eng-rule', 'style-rule']);
   });
 
@@ -129,7 +128,7 @@ describe('Feature: prompt recall scoring', () => {
   it('keeps the measured defaults', () => {
     expect(PROMPT_RECALL_MIN_COVERAGE).toBe(0.5);
     expect(PROMPT_RECALL_MAX_TERM_SHARE).toBe(0.03);
-    expect([...PROMPT_RECALL_SKIP_TYPES].sort()).toEqual(['engineering_feedback', 'feedback']);
+    expect([...PROMPT_RECALL_SKIP_TYPES]).toEqual([]);
     expect(PROMPT_RECALL_MAX_PROJECT_AGE_DAYS).toBe(30);
   });
 });
