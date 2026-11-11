@@ -166,7 +166,7 @@ describe('Feature: PreCompact Hook', () => {
       expect(entityRows('pre-compact-sess-straddle').observations).toContain('Tool calls: 20');
     }, 60_000);
 
-    it('counts the rows around a legal line longer than 64 MiB: the long line is skipped, not a read failure (Q6_19 F5)', () => {
+    it('counts the rows around a legal line longer than 64 MiB: the long line is skipped, not a read failure, and the count says so (Q6_19 F5, G04 F3)', () => {
       const file = path.join(testDir, 'longline.jsonl');
       writeRows(file, 2, 1024);
       const compacted = JSON.stringify({ type: 'compacted', payload: { message: 'x'.repeat(100 * 1024 * 1024), replacement_history_metadata: [] } });
@@ -174,7 +174,7 @@ describe('Feature: PreCompact Hook', () => {
       const fd = fs.openSync(file, 'a');
       try { fs.writeSync(fd, `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'z', name: 'Read', input: {} }] } })}\n`); } finally { fs.closeSync(fd); }
       const output = JSON.parse(runHook({ session_id: 'sess-long', transcript_path: file, cwd: testDir, trigger: 'auto' }));
-      expect(entityRows('pre-compact-sess-long').observations).toContain('Tool calls: 3');
+      expect(entityRows('pre-compact-sess-long').observations).toContain('Tool calls: 3 (1 line(s) over 64 MiB were not read and may hold more)');
       expect(output.systemMessage).toMatch(/^Saved/);
       expect(outcomes().at(-1)).toMatchObject({ hook: 'pre-compact', outcome: 'wrote' });
     }, 60_000);
@@ -184,12 +184,16 @@ describe('Feature: PreCompact Hook', () => {
       writeRows(file, 48, 1024 * 1024); // six pieces of 8 MiB
       runHook({ session_id: 'sess-slow', transcript_path: file, cwd: testDir, trigger: 'auto' }); // the private check's verdict is now on disk
       expect(outcomes().at(-1)).toMatchObject({ hook: 'pre-compact', outcome: 'wrote' });
-      // Every read of a piece now takes 1.5 s, past the 8 s the hook gives itself after six of them.
-      const slow = `data:text/javascript,${encodeURIComponent("import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module'; const real = fs.readSync; fs.readSync = (...a) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1500); return real(...a); }; syncBuiltinESMExports();")}`;
+      // Every read of a piece (a buffer of 8 MiB) now takes 1.5 s, past the 6 s the hook gives itself after four of them.
+      // The time is taken off a clock the preload moves forward, not waited for: the test does not depend on how fast the
+      // machine is, and it takes no real seconds. Only a read of a piece is slowed: a preload that slows every `readSync`
+      // slows the hook's own module loading too (about thirty reads, 43 s in all), which spends the hook's budget before
+      // it starts, and whether the private check then still answered came down to one millisecond.
+      const slow = `data:text/javascript,${encodeURIComponent("import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module'; const real = fs.readSync; const now = Date.now; let skew = 0; Date.now = () => now() + skew; fs.readSync = (...a) => { if (a[1].length >= 4 * 1024 * 1024) skew += 1500; return real(...a); }; syncBuiltinESMExports();")}`;
       const output = JSON.parse(runHook({ session_id: 'sess-slow', transcript_path: file, cwd: testDir, trigger: 'manual' }, { NODE_OPTIONS: `--import=${slow}` }));
       expect(output.systemMessage).toMatch(/could not be read/);
       expect(outcomes().at(-1)).toMatchObject({ hook: 'pre-compact', outcome: 'error', reason: "the transcript could not be read within the hook's time, so its tool calls are not recorded" });
-    }, 120_000);
+    }, 30_000);
 
     it('counts the tool calls and the edited files of a Codex rollout (it is not stored as 0 calls)', () => {
       const file = path.join(testDir, 'rollout.jsonl');

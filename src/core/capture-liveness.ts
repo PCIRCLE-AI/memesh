@@ -375,8 +375,8 @@ export const SKIP_REASONS = {
   /** As an error: the private-sessions folder beside the database (the markers) cannot be read; the transcript is not the problem. */
   privateCheckMarkerUnreadable: 'the private-sessions folder beside the database cannot be read, so every session is treated as private and nothing is saved until it can be',
   privateCheckParentUnavailable: 'the session\'s fork parent or a subagent transcript could not be found, read or checked, or a rollout header is damaged, so the session is treated as private',
-  /** note-ingest, notified: the transcripts of a private session were too large or too slow to read for note names, so every note changed in the last six hours is held out. */
-  notesHeldByTime: 'the transcripts could not be read for note names (too large, too slow or unreadable), so every note changed in the last six hours is held out',
+  /** note-ingest, notified: the transcripts of a private session were too large or too slow to read for note names, so every note in every notes folder of the projects folder changed since the session began (at least the last six hours) is held out. */
+  notesHeldByTime: 'the transcripts could not be read for note names (too large, too slow or unreadable), so every note changed since the session began (at least the last six hours) is held in every notes folder',
   privateCheckTooLarge: 'the transcript is too large to check for a private-session call, so the session is treated as private',
   /** As an error: the check ran out of the hook's time; nothing is saved this time and the next run checks again. */
   privateCheckTimeout: 'the private-session check ran out of time, so nothing is saved this time and the next run checks again',
@@ -385,7 +385,7 @@ export const SKIP_REASONS = {
   /** note-ingest, skipped with a `count`: notes were held out (a private session, or one that could not be checked) and nothing else needed storing. */
   notesHeldPrivate: 'note files written in a private session, or in one that could not be checked, are held out; nothing else needed storing',
   /** note-ingest, as an error: a private-session record of held-out notes could not be read, so no note is imported. */
-  noteHoldsUnreadable: 'a private-session hold record cannot be read, so notes are not imported until it is repaired: it is in the note-ingest-holds folder beside the database (deleting it releases the notes it holds)',
+  noteHoldsUnreadable: 'a private-session hold record cannot be read, so notes are not imported until it can be: it is in the note-ingest-holds folder beside the database, and memesh doctor names it',
   /** note-ingest, as an error: a private-session marker could not be read, so no note is imported. */
   noteMarkersUnreadable: 'a private-session marker cannot be read, so notes are not imported until its session rebuilds it: memesh doctor names the file in the private-sessions folder beside the database',
   /** note-ingest, as an error: the private-sessions folder cannot be listed. */
@@ -396,6 +396,8 @@ export const SKIP_REASONS = {
   noteHoldsDirUnreadable: 'the note-ingest-holds folder beside the database cannot be read, so notes are not imported until it can be',
   /** note-ingest, as an error: a hold record could not be written (disk full, permissions); nothing was released. */
   noteHoldsUnwritable: 'a private-session hold record could not be written, so notes stay held; check the disk and the note-ingest-holds folder\'s permissions',
+  /** note-ingest, as an error: a notes folder, a folder in one, or the projects folder cannot be listed, so what a private session wrote there cannot be held; nothing was released. */
+  noteFolderUnreadable: 'a notes folder or the projects folder holding them cannot be read, so what a private session wrote there cannot be held; nothing was released',
   /** note-ingest, as an error: another process held the private-session lock past this run's time. */
   privateStateBusy: 'the private-session records were locked by another process, so nothing was released this time and the next run tries again',
   /** note-ingest, as an error: this session's own marker could not be read and was written again, with a start no later than the session's. */
@@ -902,6 +904,7 @@ const FIXED_ERROR_REASONS: ReadonlySet<string> = new Set([
   SKIP_REASONS.noteHoldsUnwritable,
   SKIP_REASONS.privateStateBusy,
   SKIP_REASONS.privateMarkerRebuilt,
+  SKIP_REASONS.noteFolderUnreadable,
   'the host closed stdout before the nudge could be written',
   'the database stayed locked past the hook busy timeout',
   'stdout: host closed the pipe before the block reason was delivered',

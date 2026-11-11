@@ -15,6 +15,7 @@
 import { createHash } from 'crypto';
 import { redactSecrets } from './paths.js';
 import { remember } from './operations.js';
+import { chatPrivacySkip } from './session-insight.js';
 
 export type TurnSignalKind = 'decision' | 'lesson';
 
@@ -134,6 +135,8 @@ export const TURN_TEXT_CAP = 2000;
 export interface ChatTurnCaptureResult {
   outcome: 'wrote' | 'skipped';
   reason?: string;
+  /** An unchecked session: the fixed error sentence for the caller to record. */
+  error?: string;
   name?: string;
   kind?: TurnSignalKind;
 }
@@ -151,6 +154,8 @@ export function captureChatTurn(input: {
   namePrefix: string;
   baseTags: string[];
 }): ChatTurnCaptureResult {
+  const skip = chatPrivacySkip(input.sessionId);
+  if (skip) return { outcome: 'skipped', ...skip };
   const signal = classifyTurn(input.userText, input.assistantText);
   if (!signal) return { outcome: 'skipped', reason: 'no decision- or lesson-shaped move in this turn' };
   const digest = createHash('sha256')

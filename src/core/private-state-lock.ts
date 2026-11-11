@@ -27,16 +27,17 @@ function sleepMs(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-function holderIsGone(lock: string, now: number): boolean {
+/** The lock file, when it was left by a process that is gone (too old, or its pid is not running on this host); undefined otherwise. */
+function deadLock(lock: string, now: number): fs.Stats | undefined {
   let st: fs.Stats;
-  try { st = fs.statSync(lock); } catch { return false; }
-  if (now - st.mtimeMs > STALE_MS) return true;
+  try { st = fs.statSync(lock); } catch { return undefined; }
+  if (now - st.mtimeMs > STALE_MS) return st;
   try {
     const holder = JSON.parse(fs.readFileSync(lock, 'utf8')) as { pid?: unknown; host?: unknown };
-    if (holder.host !== os.hostname() || typeof holder.pid !== 'number') return false;
-    try { process.kill(holder.pid, 0); return false; } catch (err) { return (err as NodeJS.ErrnoException).code === 'ESRCH'; }
+    if (holder.host !== os.hostname() || typeof holder.pid !== 'number') return undefined;
+    try { process.kill(holder.pid, 0); return undefined; } catch (err) { return (err as NodeJS.ErrnoException).code === 'ESRCH' ? st : undefined; }
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -52,22 +53,31 @@ export function withPrivateStateLock<T>(memeshDir: string, deadlineAt: number, f
       if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
     }
     if (fd !== undefined) {
+      const token = crypto.randomBytes(8).toString('hex');
       try {
-        fs.writeSync(fd, JSON.stringify({ pid: process.pid, host: os.hostname(), at: Date.now() }));
+        fs.writeSync(fd, JSON.stringify({ pid: process.pid, host: os.hostname(), at: Date.now(), token }));
       } finally {
         fs.closeSync(fd);
       }
       try {
         return fn();
       } finally {
-        fs.rmSync(lock, { force: true });
+        // Only this lock: one that was broken while this process ran (it outlived STALE_MS) and taken by another is that one's.
+        try { if ((JSON.parse(fs.readFileSync(lock, 'utf8')) as { token?: unknown }).token === token) fs.rmSync(lock, { force: true }); } catch { /* gone already */ }
       }
     }
     const now = Date.now();
-    if (holderIsGone(lock, now)) {
-      // Only one process wins the rename; the others find the lock gone or taken again.
+    const dead = deadLock(lock, now);
+    if (dead) {
+      // Moved aside, then checked: the file moved must be the one judged dead. If another process broke that one and took
+      // the lock in between, its lock was moved instead, and it is put back (a link fails if yet another lock is there).
       const aside = `${lock}.stale-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
-      try { fs.renameSync(lock, aside); fs.rmSync(aside, { force: true }); } catch { /* someone else broke it first */ }
+      try {
+        fs.renameSync(lock, aside);
+        const moved = fs.statSync(aside);
+        if (moved.ino !== dead.ino || moved.mtimeMs !== dead.mtimeMs || moved.size !== dead.size) { try { fs.linkSync(aside, lock); } catch { /* a newer lock is in place */ } }
+        fs.rmSync(aside, { force: true });
+      } catch { /* someone else broke it first */ }
       continue;
     }
     if (now >= deadlineAt) {

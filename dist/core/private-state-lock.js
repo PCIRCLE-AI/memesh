@@ -8,30 +8,30 @@ const LOCK_FILE = 'private-state.lock';
 function sleepMs(ms) {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
-function holderIsGone(lock, now) {
+function deadLock(lock, now) {
     let st;
     try {
         st = fs.statSync(lock);
     }
     catch {
-        return false;
+        return undefined;
     }
     if (now - st.mtimeMs > STALE_MS)
-        return true;
+        return st;
     try {
         const holder = JSON.parse(fs.readFileSync(lock, 'utf8'));
         if (holder.host !== os.hostname() || typeof holder.pid !== 'number')
-            return false;
+            return undefined;
         try {
             process.kill(holder.pid, 0);
-            return false;
+            return undefined;
         }
         catch (err) {
-            return err.code === 'ESRCH';
+            return err.code === 'ESRCH' ? st : undefined;
         }
     }
     catch {
-        return false;
+        return undefined;
     }
 }
 export function withPrivateStateLock(memeshDir, deadlineAt, fn) {
@@ -47,8 +47,9 @@ export function withPrivateStateLock(memeshDir, deadlineAt, fn) {
                 throw err;
         }
         if (fd !== undefined) {
+            const token = crypto.randomBytes(8).toString('hex');
             try {
-                fs.writeSync(fd, JSON.stringify({ pid: process.pid, host: os.hostname(), at: Date.now() }));
+                fs.writeSync(fd, JSON.stringify({ pid: process.pid, host: os.hostname(), at: Date.now(), token }));
             }
             finally {
                 fs.closeSync(fd);
@@ -57,14 +58,26 @@ export function withPrivateStateLock(memeshDir, deadlineAt, fn) {
                 return fn();
             }
             finally {
-                fs.rmSync(lock, { force: true });
+                try {
+                    if (JSON.parse(fs.readFileSync(lock, 'utf8')).token === token)
+                        fs.rmSync(lock, { force: true });
+                }
+                catch { }
             }
         }
         const now = Date.now();
-        if (holderIsGone(lock, now)) {
+        const dead = deadLock(lock, now);
+        if (dead) {
             const aside = `${lock}.stale-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
             try {
                 fs.renameSync(lock, aside);
+                const moved = fs.statSync(aside);
+                if (moved.ino !== dead.ino || moved.mtimeMs !== dead.mtimeMs || moved.size !== dead.size) {
+                    try {
+                        fs.linkSync(aside, lock);
+                    }
+                    catch { }
+                }
                 fs.rmSync(aside, { force: true });
             }
             catch { }

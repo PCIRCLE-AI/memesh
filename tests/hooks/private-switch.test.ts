@@ -14,6 +14,7 @@ import zlib from 'zlib';
 import { pathToFileURL } from 'url';
 import { MemeshDatabase } from '../../src/storage/sqlite.js';
 import { deadlineFor, HOOK_BUDGET_MS } from '../../scripts/hooks/_hook-budgets.js';
+import { HOOK_BUSY_TIMEOUT_MS } from '../../scripts/hooks/_shared.js';
 import { decidePrivacy, findCodexRollout, isPrivateToolName } from '../../src/core/private-session.js';
 
 /** The one decider, over a transcript file alone (no marker folder): a test helper with the old shape. */
@@ -1271,7 +1272,7 @@ describe('the hooks, end to end', () => {
       const subagents = (id: string) => path.join(projectDir, id, 'subagents');
       const MARKER_FOLDER = 'the private-sessions folder beside the database cannot be read, so every session is treated as private and nothing is saved until it can be';
       const UNREAD = 'the private-session check could not read the transcript, so the session is treated as private';
-      const HELD_BY_TIME = 'the transcripts could not be read for note names (too large, too slow or unreadable), so every note changed in the last six hours is held out';
+      const HELD_BY_TIME = 'the transcripts could not be read for note names (too large, too slow or unreadable), so every note changed since the session began (at least the last six hours) is held in every notes folder';
       const LARGE = 'the transcript is too large to check for a private-session call, so the session is treated as private';
       const sparse = (file: string, bytes: number) => {
         fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -1434,6 +1435,38 @@ describe('the hooks, end to end', () => {
         expect(names()).not.toContain('probe_codex_secret');
         expect(fs.readdirSync(path.join(home, '.memesh', 'note-ingest-holds')).map((f) => fs.readFileSync(path.join(home, '.memesh', 'note-ingest-holds', f), 'utf8')).join(' ')).toContain('x.md');
       });
+
+      it('A: a private marker is kept whatever its age, and while its transcript is missing (G02 F1, G04 F1, G18 F5)', () => {
+        const month = 31 * 24 * 3600_000;
+        run(PRIVATE_MARK, { session_id: 's-old', transcript_path: undefined, hook_event_name: 'PostToolUse', tool_name: CLAUDE_TOOL, tool_input: {} });
+        run(SESSION_END, { session_id: 's-old', transcript_path: undefined, hook_event_name: 'SessionEnd', reason: 'other' });
+        const old = JSON.parse(fs.readFileSync(markerOf('s-old'), 'utf8'));
+        for (const key of ['startedAt', 'updatedAt', 'holdsAt', 'endedAt']) old[key] -= month;
+        fs.writeFileSync(markerOf('s-old'), JSON.stringify(old));
+        fs.writeFileSync(transcriptOf('s-fin'), jsonl([claudeUser('go'), ...claudePrivateCall()]));
+        run(PRIVATE_MARK, { session_id: 's-fin', transcript_path: transcriptOf('s-fin'), hook_event_name: 'PostToolUse', tool_name: CLAUDE_TOOL, tool_input: {} });
+        const fin = JSON.parse(fs.readFileSync(markerOf('s-fin'), 'utf8'));
+        fs.writeFileSync(markerOf('s-fin'), JSON.stringify({ ...fin, finalizedAt: Date.now() })); // idle, not ended: it may come back
+        fs.rmSync(transcriptOf('s-fin'));
+        normal('s-other');
+        expect(fs.existsSync(markerOf('s-old')), 'no transcript, a month old').toBe(true);
+        expect(fs.existsSync(markerOf('s-fin')), 'finalized, transcript missing for now').toBe(true);
+      });
+
+      it.skipIf(!canDenyReads)('D: a session that could not be checked, under a root with no notes folder yet, keeps the first note written later out of other imports (G06 F1, F2)', () => {
+        fs.rmSync(memoryDir, { recursive: true });
+        fs.writeFileSync(transcriptOf('s-u'), jsonl([claudeUser('go'), ...claudeEdits()]));
+        fs.mkdirSync(subagents('s-u'), { recursive: true });
+        fs.chmodSync(subagents('s-u'), 0o000);
+        try {
+          run(STOP, { session_id: 's-u', transcript_path: transcriptOf('s-u') });
+          const rec = JSON.parse(fs.readFileSync(path.join(home, '.memesh', 'note-ingest-holds', 's-u.json'), 'utf8'));
+          expect(rec.tentative.projectsRoot, 'the root as the importer sees it').toBe(fs.realpathSync(path.join(home, '.claude', 'projects')));
+          note('first.md', 'switch_note_unchecked_first', 'UNCHECKED-FIRST-SECRET');
+          normal('s-other');
+          expect(names()).not.toContain('switch_note_unchecked_first');
+        } finally { fs.chmodSync(subagents('s-u'), 0o755); }
+      });
     });
 
     it('treats a resumed session as one that named everything its transcript names', () => {
@@ -1483,8 +1516,25 @@ describe('the hooks, end to end', () => {
         if (timeout === undefined && manifest !== manifests[0]) continue; // a hook the Codex manifest does not register
         expect(timeout, `${script} declares a timeout`).toBeGreaterThan(0);
         for (const ms of Object.values(budget)) expect(ms, `${script} budget`).toBeLessThanOrEqual((timeout as number) * 1000 - 1000);
+        // Stop and PreCompact open the database after their read: its lock wait, then the outcome record, fit in the last second too (G10 F1).
+        const thenDatabase = script === 'pre-compact.js' ? HOOK_BUDGET_MS.preCompact.read : script === 'session-summary.js' ? HOOK_BUDGET_MS.stop.notes : 0;
+        expect(thenDatabase + HOOK_BUSY_TIMEOUT_MS, `${script} read and the lock wait`).toBeLessThanOrEqual((timeout as number) * 1000 - 1000);
       }
     }
+  });
+
+  it('L: SessionEnd ends a marker within its own deadline, never the default five seconds its host does not give it (G06 F3, G10 F2)', async () => {
+    const { endPrivateNoteMarker } = await import('../../scripts/hooks/_stop-notes.js');
+    const metaUrl = pathToFileURL(SESSION_END).href;
+    await expect(endPrivateNoteMarker({ sessionId: 's-l', metaUrl } as never)).rejects.toThrow(/deadline/);
+    vi.stubEnv('MEMESH_DB_PATH', path.join(home, '.memesh', 'knowledge-graph.db'));
+    const lock = path.join(home, '.memesh', 'private-state.lock');
+    fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, host: os.hostname(), at: Date.now() })); // a live holder
+    const started = Date.now();
+    try {
+      await expect(endPrivateNoteMarker({ sessionId: 's-l', metaUrl, state: 'yes', deadlineAt: Date.now() + 200 })).rejects.toMatchObject({ code: 'MEMESH_PRIVATE_STATE_BUSY' });
+    } finally { fs.rmSync(lock, { force: true }); vi.unstubAllEnvs(); }
+    expect(Date.now() - started).toBeLessThan(1500);
   });
 
   it('has a PostToolUse matcher in both manifests that matches every name the detector accepts', () => {
@@ -1569,7 +1619,7 @@ describe('the hooks, end to end', () => {
       const script = `
         const { runStopNotes } = await import(${JSON.stringify(pathToFileURL(path.resolve('scripts/hooks/_stop-notes.js')).href)});
         await runStopNotes({ session_id: 'sess-1', transcript_path: ${JSON.stringify(transcript)} },
-          { captureEnabled: true, project: 'p', privacy: { state: 'yes' }, deadlineAt: Date.now() + 5000, metaUrl: ${JSON.stringify(pathToFileURL(path.join(root, 'scripts', 'hooks', 'x.js')).href)} });`;
+          { captureEnabled: true, project: 'p', privacy: { state: 'yes', skipReason: 'private_session' }, deadlineAt: Date.now() + 5000, metaUrl: ${JSON.stringify(pathToFileURL(path.join(root, 'scripts', 'hooks', 'x.js')).href)} });`;
       const env: Record<string, string | undefined> = { ...process.env, HOME: home, USERPROFILE: home };
       delete env.MEMESH_DB_PATH; delete env.MEMESH_DIR;
       const r = spawnSync(process.execPath, ['--input-type=module', '-e', script], { env, encoding: 'utf8' });

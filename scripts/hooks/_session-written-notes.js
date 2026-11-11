@@ -92,11 +92,10 @@ const comparable = (text) => text.normalize('NFC').toLowerCase();
 
 /**
  * Every simple brace list (`{a,b}`, no nesting, no spaces) expanded with the
- * word around it, the expansions joined by spaces; '' when there is none. The
- * word is taken at most `maxLen` characters each way, so the work stays linear.
+ * word around it, one expansion at a time (`tick` before each, so a deadline
+ * stops a huge list). The word is taken at most `maxLen` characters each way.
  */
-function braceExpansions(text, maxLen) {
-  const out = [];
+function* braceExpansions(text, maxLen, tick) {
   const stop = (c) => c === ' ' || c === '\n' || c === '\t' || c === '{' || c === '}' || c === '"' || c === "'";
   for (const m of text.matchAll(/\{([^{}\s]{0,4096})\}/g)) {
     if (!m[1].includes(',')) continue;
@@ -106,23 +105,24 @@ function braceExpansions(text, maxLen) {
     for (const hi = Math.min(text.length, end + maxLen); end < hi && !stop(text[end]);) end++;
     const pre = text.slice(start, m.index);
     const post = text.slice(m.index + m[0].length, end);
-    for (const item of m[1].split(',')) out.push(pre + item + post);
+    for (const item of m[1].split(',')) { tick(); yield pre + item + post; }
   }
-  return out.join(' ');
 }
 
 /**
  * The readings of a string: as it is; with every backslash dropped
- * (`my\ note.md`); with shell quotes and backslashes dropped (`sec"ret".md`);
- * and with its brace lists expanded (`{secret,other}.md`).
+ * (`my\ note.md`); with a written `\n`, `\t` or `\r` (a Codex script's source)
+ * read as a space; with shell quotes and backslashes dropped (`sec"ret".md`);
+ * and each of those with its brace lists expanded (`{"secret",other}.md`).
  */
-function readings(text, maxLen) {
+function* readings(text, maxLen, tick) {
   const lower = comparable(text);
   const out = [lower];
   if (lower.includes('\\')) out.push(lower.replace(/\\/g, ''));
+  if (/\\[ntr]/.test(lower)) out.push(lower.replace(/\\[ntr]/g, ' '));
   if (lower.includes('"') || lower.includes("'")) out.push(lower.replace(/["'\\]/g, ''));
-  if (lower.includes('{')) { const expanded = braceExpansions(lower, maxLen); if (expanded) out.push(expanded); }
-  return out;
+  yield* out;
+  if (lower.includes('{')) for (const base of out) yield* braceExpansions(base, maxLen, tick);
 }
 
 /**
@@ -184,6 +184,7 @@ export function notePathsWrittenInTranscript(transcriptPath, folders, { ownDir, 
   // A folder is reached by its project's name (`<root>/<project>/memory`): long and distinctive.
   const projects = list.map((dir) => ({ dir, project: basename(dirname(dir)).toLowerCase() })).filter((p) => p.project.length >= 3);
   const rootMentions = list.length > 0 ? ['.claude/projects', dirname(dirname(list[0])).toLowerCase()] : [];
+  const needles = [...PREFILTER, ...rootMentions.map((m) => Buffer.from(m)), ...(list.length > 0 ? [Buffer.from(dirname(dirname(list[0])))] : [])];
   const hit = new Set();
   const reached = new Set(own ? [own] : []);
   let reachedAll = false;
@@ -192,17 +193,17 @@ export function notePathsWrittenInTranscript(transcriptPath, folders, { ownDir, 
   const tick = () => { if ((++ticks & 1023) === 0 && Date.now() > deadlineAt) throw TIMEOUT; };
   const names = new Set(byName.keys());
   const look = (text) => {
-    for (const reading of readings(text, maxLen)) {
+    for (const reading of readings(text, maxLen, tick)) {
       collect(reading, names, maxLen, hit, tick);
       if (reachedAll || !reading.includes('memory') && !rootMentions.some((m) => reading.includes(m))) continue;
       let named = false;
-      for (const { dir, project } of projects) { if (reading.includes(project)) { reached.add(dir); named = true; } }
+      for (const { dir, project } of projects) { if (Date.now() > deadlineAt) throw TIMEOUT; if (reading.includes(project)) { reached.add(dir); named = true; } }
       if (!named && rootMentions.some((m) => reading.includes(m))) reachedAll = true;
     }
   };
   const feed = (line) => {
     if (Date.now() > deadlineAt) throw TIMEOUT;
-    if (!TOOL_ROWS.some((row) => line.includes(row)) || !PREFILTER.some((spelling) => line.includes(spelling))) return;
+    if (!TOOL_ROWS.some((row) => line.includes(row)) || !needles.some((spelling) => line.includes(spelling))) return;
     let entry;
     try { entry = JSON.parse(line.toString('utf8')); } catch { return; }
     const strings = [];
@@ -218,10 +219,10 @@ export function notePathsWrittenInTranscript(transcriptPath, folders, { ownDir, 
   };
   let files;
   try {
-    files = sessionTranscriptFiles(transcriptPath);
-  } catch {
+    files = sessionTranscriptFiles(transcriptPath, deadlineAt);
+  } catch (err) {
     files = [transcriptPath];
-    reason = 'unreadable';
+    reason = err?.reason === 'timeout' ? 'time' : 'unreadable';
   }
   let total = 0;
   for (const file of files) { try { total += statSync(file).size; } catch { /* read below says so */ } }
@@ -243,7 +244,8 @@ export function notePathsWrittenInTranscript(transcriptPath, folders, { ownDir, 
       const dir = list.find((d) => abs.startsWith(d + '/') || abs.startsWith(d + '\\'));
       if (dir === undefined) continue;
       byDir.set(dir, [...(byDir.get(dir) ?? []), abs]);
-      reached.add(dir);
+      // A name found in one folder only reaches it; a name every folder has (MEMORY.md) holds those files, not the folders.
+      if (byName.get(name).length === 1) reached.add(dir);
     }
   }
   if (reachedAll) for (const dir of list) reached.add(dir);

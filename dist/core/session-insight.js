@@ -169,10 +169,18 @@ export function buildSessionInsights(activity, ctx) {
     }
     return out;
 }
+export function chatPrivacySkip(sessionId, messages) {
+    const privacy = decidePrivacy({ sessionId, messages, memeshDir: getMemeshDirFromDbPath(), deadlineAt: Date.now() + 1000 });
+    if (privacy.state === 'no')
+        return null;
+    return privacy.state === 'yes'
+        ? { reason: SKIP_REASONS.privateSession }
+        : { reason: SKIP_REASONS.privateSessionUnchecked, error: SKIP_REASONS.privateCheckMarkerUnreadable };
+}
 export function captureChatSession(input) {
-    if (decidePrivacy({ messages: input.messages, memeshDir: getMemeshDirFromDbPath(), deadlineAt: Date.now() + 1000 }).state === 'yes') {
-        return { outcome: 'skipped', reason: SKIP_REASONS.privateSession, written: [], toolCallCount: 0, filesEdited: 0, errorsEncountered: 0, unrecognizedTools: [], toolResultsNonJson: 0 };
-    }
+    const skip = chatPrivacySkip(input.sessionId, input.messages);
+    if (skip)
+        return { outcome: 'skipped', ...skip, written: [], toolCallCount: 0, filesEdited: 0, errorsEncountered: 0, unrecognizedTools: [], toolResultsNonJson: 0 };
     const activity = activityFromChatMessages(input.messages);
     const counts = {
         toolCallCount: activity.toolCallCount,

@@ -66,9 +66,10 @@ const PARENT_ZST_MAX_BYTES = 128 * 1024 * 1024;
 const PARENT_ZST_MAX_OUTPUT = 512 * 1024 * 1024;
 /** Time left that an archived parent needs: expanding it cannot be interrupted. */
 const ZST_MIN_TIME_MS = 1000;
-/** Subagent transcripts: how deep, and how many entries in all. */
+/** Subagent transcripts: how deep (their number is bounded by the size cap and the deadline). */
 const SUBAGENT_MAX_DEPTH = 3;
-const SUBAGENT_MAX_ENTRIES = 1000;
+/** A temporary file older than this was left by a writer that died between writing and renaming. */
+const STALE_TEMP_MS = 60_000;
 
 export type UncheckedReason = 'marker_unreadable' | 'unreadable' | 'timeout' | 'parent_not_found'
   | 'parent_unreadable' | 'too_large' | 'parent_too_large' | 'fork_too_deep' | 'header_unreadable'
@@ -134,6 +135,9 @@ export function isPrivateToolName(name: string): boolean {
 export function sessionFileName(sessionId: string): string {
   return `${/^[A-Za-z0-9_-]{1,128}$/.test(sessionId) ? sessionId : crypto.createHash('sha256').update(sessionId).digest('hex').slice(0, 32)}.json`;
 }
+
+/** Where the verdicts of transcript files are remembered between processes. */
+export const privateCheckCacheDir = (memeshDir: string): string => path.join(memeshDir, 'private-check-cache');
 
 /** Where the marker of a session is kept. */
 export function privateMarkerPath(memeshDir: string, sessionId: string): string {
@@ -404,6 +408,25 @@ function scanZst(filePath: string, deadlineAt: number): FileVerdict {
   return scanBytes(bytes, deadlineAt);
 }
 
+/** Writes `data` to `file` whole or not at all (a temporary file renamed over it), the file 0600 and its folder 0700. */
+export function writeFileAtomic(file: string, data: string): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const temp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(temp, data, { mode: 0o600 });
+  fs.renameSync(temp, file);
+}
+
+/** Removes the temporary files a writer that died left in `dir` (a live writer holds one for milliseconds). Returns how many. */
+export function removeStaleTemps(dir: string, now = Date.now()): number {
+  let names: string[];
+  try { names = fs.readdirSync(dir); } catch { return 0; } // no folder, or one that cannot be listed: its reader reports that
+  let removed = 0;
+  for (const name of names.filter((n) => n.endsWith('.tmp'))) {
+    try { const p = path.join(dir, name); if (now - fs.statSync(p).mtimeMs > STALE_TEMP_MS) { fs.rmSync(p, { force: true }); removed++; } } catch { /* gone */ }
+  }
+  return removed;
+}
+
 /**
  * A file's verdict, remembered by path, size, modification time, change time
  * and inode: size and mtime can be put back by a replacement, the change time
@@ -412,12 +435,12 @@ function scanZst(filePath: string, deadlineAt: number): FileVerdict {
  * say is remembered, never an answer about the session: `unchecked` is decided
  * again every time. A missing, damaged or unwritable entry is only a re-scan.
  */
-const remembered = new Map<string, FileVerdict>();
+const remembered = new Map<string, { key: string; verdict: FileVerdict }>();
 
 function fileVerdict(file: string, stat: fs.Stats, zst: boolean, cacheDir: string | undefined, deadlineAt: number): FileVerdict {
   const key = `${file}\0${stat.size}\0${stat.mtimeMs}\0${stat.ctimeMs}\0${stat.ino}`;
-  const hit = remembered.get(key);
-  if (hit) return hit;
+  const hit = remembered.get(file);
+  if (hit?.key === key) return hit.verdict;
   const cacheFile = cacheDir === undefined ? undefined : path.join(cacheDir, `${crypto.createHash('sha256').update(file).digest('hex').slice(0, 40)}.json`);
   if (cacheFile !== undefined) {
     try {
@@ -425,20 +448,15 @@ function fileVerdict(file: string, stat: fs.Stats, zst: boolean, cacheDir: strin
       if (saved?.key === key && typeof saved.found === 'boolean' && typeof saved.headerBroken === 'boolean'
         && Array.isArray(saved.forks) && saved.forks.every((f) => typeof f === 'string')) {
         const verdict = { found: saved.found, forks: saved.forks as string[], headerBroken: saved.headerBroken };
-        remembered.set(key, verdict);
+        remembered.set(file, { key, verdict });
         return verdict;
       }
     } catch { /* no usable entry: scan */ }
   }
   const verdict = zst ? scanZst(file, deadlineAt) : scanPlain(file, deadlineAt);
-  remembered.set(key, verdict);
+  remembered.set(file, { key, verdict });
   if (cacheFile !== undefined) {
-    try {
-      fs.mkdirSync(cacheDir as string, { recursive: true, mode: 0o700 });
-      const temp = `${cacheFile}.${process.pid}.tmp`;
-      fs.writeFileSync(temp, JSON.stringify({ key, ...verdict }), { mode: 0o600 });
-      fs.renameSync(temp, cacheFile);
-    } catch { /* a cache that cannot be written is only slower */ }
+    try { writeFileAtomic(cacheFile, JSON.stringify({ key, ...verdict })); } catch { /* a cache that cannot be written is only slower */ }
   }
   return verdict;
 }
@@ -457,16 +475,12 @@ const CACHE_PRUNE_MAX = 50;
 export function prunePrivateCheckCache(cacheDir: string, now = Date.now()): number {
   let names: string[];
   try { names = fs.readdirSync(cacheDir); } catch { return 0; }
-  let removed = 0;
+  let removed = removeStaleTemps(cacheDir, now);
   const start = names.length === 0 ? 0 : Math.floor(Math.random() * names.length);
   for (let i = 0; i < Math.min(names.length, CACHE_PRUNE_LOOK) && removed < CACHE_PRUNE_MAX; i++) {
     const name = names[(start + i) % names.length];
     const entry = path.join(cacheDir, name);
     try {
-      if (name.endsWith('.tmp')) {
-        if (now - fs.statSync(entry).mtimeMs > 60_000) { fs.rmSync(entry, { force: true }); removed++; }
-        continue;
-      }
       if (!name.endsWith('.json')) continue;
       const key = record(JSON.parse(fs.readFileSync(entry, 'utf8')))?.key;
       const file = typeof key === 'string' ? key.split('\0')[0] : '';
@@ -482,13 +496,13 @@ export function prunePrivateCheckCache(cacheDir: string, now = Date.now()): numb
  * The transcript and the transcripts of the subagents it ran. Claude Code keeps
  * a subagent's rows in `<transcript without .jsonl>/subagents/**.jsonl`; a call
  * made there is part of the session. Throws a `CheckFailure` when the folder
- * exists but cannot be listed, or holds more than can be checked: that is not
- * "no subagents".
+ * exists but cannot be listed, is nested deeper than is checked, or `deadlineAt`
+ * passes while it is listed (`timeout`): none of that is "no subagents".
  */
-export function sessionTranscriptFiles(transcriptPath: string): string[] {
+export function sessionTranscriptFiles(transcriptPath: string, deadlineAt = Number.POSITIVE_INFINITY): string[] {
   const files = [transcriptPath];
-  let entriesSeen = 0;
   const walk = (dir: string, depth: number): void => {
+    if (Date.now() > deadlineAt) throw new CheckFailure('timeout', 'the check ran out of time listing the subagents folder');
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -498,9 +512,7 @@ export function sessionTranscriptFiles(transcriptPath: string): string[] {
       throw new CheckFailure('unreadable', `the subagents folder cannot be read (${errCode(err)})`);
     }
     for (const entry of entries) {
-      if (++entriesSeen > SUBAGENT_MAX_ENTRIES) throw new CheckFailure('too_large', 'the subagents folder holds more than can be checked');
       const child = path.join(dir, entry.name);
-      if (entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) {
         if (depth >= SUBAGENT_MAX_DEPTH) throw new CheckFailure('too_large', 'the subagents folder is nested deeper than can be checked');
         walk(child, depth + 1);
@@ -513,10 +525,10 @@ export function sessionTranscriptFiles(transcriptPath: string): string[] {
   return files;
 }
 
-/** The newest write among a session's files, or undefined when they cannot be listed (the caller treats that as live). */
-export function sessionLastWriteMs(transcriptPath: string): number | undefined {
+/** The newest write among a session's files, or undefined when they cannot be listed by `deadlineAt` (the caller treats that as live). */
+export function sessionLastWriteMs(transcriptPath: string, deadlineAt = Number.POSITIVE_INFINITY): number | undefined {
   let files: string[];
-  try { files = sessionTranscriptFiles(transcriptPath); } catch { return undefined; }
+  try { files = sessionTranscriptFiles(transcriptPath, deadlineAt); } catch { return undefined; }
   let newest = 0;
   for (const file of files) {
     try { newest = Math.max(newest, fs.statSync(file).mtimeMs); } catch (err) { if (errCode(err) !== 'ENOENT') return undefined; }
@@ -621,9 +633,18 @@ export function decidePrivacy(input: {
     }
   }
   const transcriptPath = input.transcriptPath;
-  if (typeof transcriptPath !== 'string' || transcriptPath === '') return settled();
-
   const snapshot = input.snapshot === undefined ? undefined : asBuffer(input.snapshot);
+  if (typeof transcriptPath !== 'string' || transcriptPath === '') {
+    // Bytes with no file behind them: they are judged alone (a fork's parents cannot be looked for without the file's place).
+    if (snapshot === undefined) return settled();
+    let alone: FileVerdict | undefined;
+    try { alone = scanBytes(snapshot, input.deadlineAt); } catch (err) { noteFailure(err, 'unreadable'); }
+    if (alone?.found) return { state: 'yes', evidence: 'transcript' };
+    if (alone?.headerBroken) note('header_unreadable', 'the first line of the rollout is damaged, so whether it is a fork cannot be told');
+    else if (alone && alone.forks.length > 0) note('parent_not_found', 'the parent rollout of this forked thread cannot be looked for without the transcript\'s path');
+    return settled();
+  }
+
   const stats: Array<{ file: string; stat: fs.Stats }> = [];
   if (snapshot === undefined) {
     // The one place where a missing file means "no": the transcript itself is not there, so there is nothing to look in.
@@ -640,18 +661,13 @@ export function decidePrivacy(input: {
   }
 
   let files: string[];
-  try { files = sessionTranscriptFiles(transcriptPath); } catch (err) { noteFailure(err, 'unreadable'); files = [transcriptPath]; }
+  try { files = sessionTranscriptFiles(transcriptPath, input.deadlineAt); } catch (err) { noteFailure(err, 'unreadable'); files = [transcriptPath]; }
   for (const file of files.slice(1)) {
     try { stats.push({ file, stat: fs.statSync(file) }); }
     catch (err) { note('unreadable', `a subagent transcript cannot be read (${errCode(err)})`); }
   }
   const total = stats.reduce((sum, s) => sum + s.stat.size, snapshot?.length ?? 0);
   if (total > PRIVATE_CHECK_MAX_BYTES) {
-    // Too large to scan: only a verdict already remembered can still say yes.
-    for (const { file, stat } of stats) {
-      const key = `${file}\0${stat.size}\0${stat.mtimeMs}\0${stat.ctimeMs}\0${stat.ino}`;
-      if (remembered.get(key)?.found) return { state: 'yes', evidence: file === transcriptPath ? 'transcript' : 'subagent' };
-    }
     note('too_large', 'the session\'s transcripts are too large to check');
     return settled();
   }

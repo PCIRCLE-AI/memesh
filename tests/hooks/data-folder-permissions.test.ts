@@ -329,13 +329,15 @@ describe('#520: src constructs MemeshDatabase only at known, guarded sites', () 
     // once each: a second, identical or different, constructor in db.ts fails
     // too. db.ts's open runs after guardDatabaseFiles in openDatabase;
     // project-tags.ts's runs after it in openReadOnlyForPreview; doctor's is an
-    // in-memory probe; sqlite.ts's is a comment.
+    // in-memory probe; agent-message-expiry.ts's is the cleanup pass's own second connection to the file the process
+    // already opened through openDatabase (its guard ran at that open); sqlite.ts's is a comment.
     const known = [
       "db.ts: ? new MemeshDatabase(immutableAddress(mode.immutableFile), { readOnly: true })",
       "db.ts: : new MemeshDatabase(resolvedPath, mode.readOnly ? { readOnly: true } : undefined);",
       "core/doctor.ts: const probe = new MemeshDatabase(':memory:');",
       "network/store.ts: const db = new MemeshDatabase(dbPath);",
       "core/project-tags.ts: openHandle: (target: string) => MemeshDatabase = (target) => new MemeshDatabase(target, { readOnly: true }),",
+      "core/agent-message-expiry.ts: const pass = new MemeshDatabase(file);",
       "storage/sqlite.ts: // so `new MemeshDatabase(p)` would throw if the parameter were passed",
     ];
     expect([...sites].sort()).toEqual([...known].sort());

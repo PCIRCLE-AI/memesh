@@ -26,7 +26,7 @@ const PARENT_ZST_MAX_BYTES = 128 * 1024 * 1024;
 const PARENT_ZST_MAX_OUTPUT = 512 * 1024 * 1024;
 const ZST_MIN_TIME_MS = 1000;
 const SUBAGENT_MAX_DEPTH = 3;
-const SUBAGENT_MAX_ENTRIES = 1000;
+const STALE_TEMP_MS = 60_000;
 export const UNCHECKED_KIND = Object.freeze({
     marker_unreadable: 'transient',
     unreadable: 'transient',
@@ -61,6 +61,7 @@ export function isPrivateToolName(name) {
 export function sessionFileName(sessionId) {
     return `${/^[A-Za-z0-9_-]{1,128}$/.test(sessionId) ? sessionId : crypto.createHash('sha256').update(sessionId).digest('hex').slice(0, 32)}.json`;
 }
+export const privateCheckCacheDir = (memeshDir) => path.join(memeshDir, 'private-check-cache');
 export function privateMarkerPath(memeshDir, sessionId) {
     return path.join(memeshDir, 'private-sessions', sessionFileName(sessionId));
 }
@@ -328,12 +329,39 @@ function scanZst(filePath, deadlineAt) {
     }
     return scanBytes(bytes, deadlineAt);
 }
+export function writeFileAtomic(file, data) {
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    const temp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(temp, data, { mode: 0o600 });
+    fs.renameSync(temp, file);
+}
+export function removeStaleTemps(dir, now = Date.now()) {
+    let names;
+    try {
+        names = fs.readdirSync(dir);
+    }
+    catch {
+        return 0;
+    }
+    let removed = 0;
+    for (const name of names.filter((n) => n.endsWith('.tmp'))) {
+        try {
+            const p = path.join(dir, name);
+            if (now - fs.statSync(p).mtimeMs > STALE_TEMP_MS) {
+                fs.rmSync(p, { force: true });
+                removed++;
+            }
+        }
+        catch { }
+    }
+    return removed;
+}
 const remembered = new Map();
 function fileVerdict(file, stat, zst, cacheDir, deadlineAt) {
     const key = `${file}\0${stat.size}\0${stat.mtimeMs}\0${stat.ctimeMs}\0${stat.ino}`;
-    const hit = remembered.get(key);
-    if (hit)
-        return hit;
+    const hit = remembered.get(file);
+    if (hit?.key === key)
+        return hit.verdict;
     const cacheFile = cacheDir === undefined ? undefined : path.join(cacheDir, `${crypto.createHash('sha256').update(file).digest('hex').slice(0, 40)}.json`);
     if (cacheFile !== undefined) {
         try {
@@ -341,20 +369,17 @@ function fileVerdict(file, stat, zst, cacheDir, deadlineAt) {
             if (saved?.key === key && typeof saved.found === 'boolean' && typeof saved.headerBroken === 'boolean'
                 && Array.isArray(saved.forks) && saved.forks.every((f) => typeof f === 'string')) {
                 const verdict = { found: saved.found, forks: saved.forks, headerBroken: saved.headerBroken };
-                remembered.set(key, verdict);
+                remembered.set(file, { key, verdict });
                 return verdict;
             }
         }
         catch { }
     }
     const verdict = zst ? scanZst(file, deadlineAt) : scanPlain(file, deadlineAt);
-    remembered.set(key, verdict);
+    remembered.set(file, { key, verdict });
     if (cacheFile !== undefined) {
         try {
-            fs.mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
-            const temp = `${cacheFile}.${process.pid}.tmp`;
-            fs.writeFileSync(temp, JSON.stringify({ key, ...verdict }), { mode: 0o600 });
-            fs.renameSync(temp, cacheFile);
+            writeFileAtomic(cacheFile, JSON.stringify({ key, ...verdict }));
         }
         catch { }
     }
@@ -370,19 +395,12 @@ export function prunePrivateCheckCache(cacheDir, now = Date.now()) {
     catch {
         return 0;
     }
-    let removed = 0;
+    let removed = removeStaleTemps(cacheDir, now);
     const start = names.length === 0 ? 0 : Math.floor(Math.random() * names.length);
     for (let i = 0; i < Math.min(names.length, CACHE_PRUNE_LOOK) && removed < CACHE_PRUNE_MAX; i++) {
         const name = names[(start + i) % names.length];
         const entry = path.join(cacheDir, name);
         try {
-            if (name.endsWith('.tmp')) {
-                if (now - fs.statSync(entry).mtimeMs > 60_000) {
-                    fs.rmSync(entry, { force: true });
-                    removed++;
-                }
-                continue;
-            }
             if (!name.endsWith('.json'))
                 continue;
             const key = record(JSON.parse(fs.readFileSync(entry, 'utf8')))?.key;
@@ -405,10 +423,11 @@ export function prunePrivateCheckCache(cacheDir, now = Date.now()) {
     }
     return removed;
 }
-export function sessionTranscriptFiles(transcriptPath) {
+export function sessionTranscriptFiles(transcriptPath, deadlineAt = Number.POSITIVE_INFINITY) {
     const files = [transcriptPath];
-    let entriesSeen = 0;
     const walk = (dir, depth) => {
+        if (Date.now() > deadlineAt)
+            throw new CheckFailure('timeout', 'the check ran out of time listing the subagents folder');
         let entries;
         try {
             entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -419,11 +438,7 @@ export function sessionTranscriptFiles(transcriptPath) {
             throw new CheckFailure('unreadable', `the subagents folder cannot be read (${errCode(err)})`);
         }
         for (const entry of entries) {
-            if (++entriesSeen > SUBAGENT_MAX_ENTRIES)
-                throw new CheckFailure('too_large', 'the subagents folder holds more than can be checked');
             const child = path.join(dir, entry.name);
-            if (entry.isSymbolicLink())
-                continue;
             if (entry.isDirectory()) {
                 if (depth >= SUBAGENT_MAX_DEPTH)
                     throw new CheckFailure('too_large', 'the subagents folder is nested deeper than can be checked');
@@ -437,10 +452,10 @@ export function sessionTranscriptFiles(transcriptPath) {
     walk(`${transcriptPath.replace(/\.jsonl$/, '')}/subagents`, 0);
     return files;
 }
-export function sessionLastWriteMs(transcriptPath) {
+export function sessionLastWriteMs(transcriptPath, deadlineAt = Number.POSITIVE_INFINITY) {
     let files;
     try {
-        files = sessionTranscriptFiles(transcriptPath);
+        files = sessionTranscriptFiles(transcriptPath, deadlineAt);
     }
     catch {
         return undefined;
@@ -548,9 +563,25 @@ export function decidePrivacy(input) {
         }
     }
     const transcriptPath = input.transcriptPath;
-    if (typeof transcriptPath !== 'string' || transcriptPath === '')
-        return settled();
     const snapshot = input.snapshot === undefined ? undefined : asBuffer(input.snapshot);
+    if (typeof transcriptPath !== 'string' || transcriptPath === '') {
+        if (snapshot === undefined)
+            return settled();
+        let alone;
+        try {
+            alone = scanBytes(snapshot, input.deadlineAt);
+        }
+        catch (err) {
+            noteFailure(err, 'unreadable');
+        }
+        if (alone?.found)
+            return { state: 'yes', evidence: 'transcript' };
+        if (alone?.headerBroken)
+            note('header_unreadable', 'the first line of the rollout is damaged, so whether it is a fork cannot be told');
+        else if (alone && alone.forks.length > 0)
+            note('parent_not_found', 'the parent rollout of this forked thread cannot be looked for without the transcript\'s path');
+        return settled();
+    }
     const stats = [];
     if (snapshot === undefined) {
         let mainStat;
@@ -571,7 +602,7 @@ export function decidePrivacy(input) {
     }
     let files;
     try {
-        files = sessionTranscriptFiles(transcriptPath);
+        files = sessionTranscriptFiles(transcriptPath, input.deadlineAt);
     }
     catch (err) {
         noteFailure(err, 'unreadable');
@@ -587,11 +618,6 @@ export function decidePrivacy(input) {
     }
     const total = stats.reduce((sum, s) => sum + s.stat.size, snapshot?.length ?? 0);
     if (total > PRIVATE_CHECK_MAX_BYTES) {
-        for (const { file, stat } of stats) {
-            const key = `${file}\0${stat.size}\0${stat.mtimeMs}\0${stat.ctimeMs}\0${stat.ino}`;
-            if (remembered.get(key)?.found)
-                return { state: 'yes', evidence: file === transcriptPath ? 'transcript' : 'subagent' };
-        }
         note('too_large', 'the session\'s transcripts are too large to check');
         return settled();
     }

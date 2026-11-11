@@ -265,12 +265,28 @@ export function buildSessionInsights(activity: SessionActivity, ctx: InsightCont
 export interface ChatSessionCaptureResult {
   outcome: 'wrote' | 'skipped';
   reason?: string;
+  /** An unchecked session: the fixed error sentence for the caller to record. */
+  error?: string;
   written: string[];
   toolCallCount: number;
   filesEdited: number;
   errorsEncountered: number;
   unrecognizedTools: string[];
   toolResultsNonJson: number;
+}
+
+/**
+ * Why a chat host's capture (`memesh hermes capture-session` and `capture-turn`) must not run, or null when it may.
+ * The one decider, over the chat list and this session's marker (the provider has already looked at its own).
+ * Unchecked fails closed, as in the hooks (privacyForHook): nothing is saved, and `error` is the fixed sentence the
+ * caller records. Without a transcript the only check that can fail is reading the private-sessions folder.
+ */
+export function chatPrivacySkip(sessionId: string, messages?: unknown): { reason: string; error?: string } | null {
+  const privacy = decidePrivacy({ sessionId, messages, memeshDir: getMemeshDirFromDbPath(), deadlineAt: Date.now() + 1000 });
+  if (privacy.state === 'no') return null;
+  return privacy.state === 'yes'
+    ? { reason: SKIP_REASONS.privateSession }
+    : { reason: SKIP_REASONS.privateSessionUnchecked, error: SKIP_REASONS.privateCheckMarkerUnreadable };
 }
 
 /**
@@ -291,10 +307,8 @@ export function captureChatSession(input: {
 }): ChatSessionCaptureResult {
   // The agent called private_session in this conversation (this also covers a
   // restart or a resumed session, whose message list still holds the call).
-  // The one decider, over the chat list (the provider has already looked at its marker before it ran this).
-  if (decidePrivacy({ messages: input.messages, memeshDir: getMemeshDirFromDbPath(), deadlineAt: Date.now() + 1000 }).state === 'yes') {
-    return { outcome: 'skipped', reason: SKIP_REASONS.privateSession, written: [], toolCallCount: 0, filesEdited: 0, errorsEncountered: 0, unrecognizedTools: [], toolResultsNonJson: 0 };
-  }
+  const skip = chatPrivacySkip(input.sessionId, input.messages);
+  if (skip) return { outcome: 'skipped', ...skip, written: [], toolCallCount: 0, filesEdited: 0, errorsEncountered: 0, unrecognizedTools: [], toolResultsNonJson: 0 };
   const activity = activityFromChatMessages(input.messages);
   const counts = {
     toolCallCount: activity.toolCallCount,

@@ -33,7 +33,7 @@ process.stdin.on('end', () => {
     if (privacy.state !== 'no') {
       try { unlinkSync(join(dir, `${data.session_id}.json`)); }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
-      record('skipped', privacy.state === 'yes' ? SKIP_REASONS.privateSession : SKIP_REASONS.privateSessionUnchecked); return;
+      record('skipped', privacy.skipReason); return;
     }
     const workspace = realpathSync(data.cwd);
     const plan = data.tool_input?.plan;

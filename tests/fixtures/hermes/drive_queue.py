@@ -194,11 +194,25 @@ out["session_end_captures"] = session_end
 
 # Records go under the test's own folder from here on (resume_legacy below records one), so it is removed with it.
 import os
+import stat
 import tempfile
 os.environ["MEMESH_DIR"] = tempfile.mkdtemp(prefix="memesh-marker-outcomes-", dir=hermes_home)
+outcomes_file = os.path.join(os.environ["MEMESH_DIR"], "hook-outcomes.jsonl")
+
+
+def outcome_lines():
+    return open(outcomes_file).read().splitlines() if os.path.exists(outcomes_file) else []
+
+
+def recorded_since(count):
+    """The records written after the first `count`, so each scenario answers for itself."""
+    return outcome_lines()[count:]
+
+
 # A branched or compressed session inherits the flag in memory; a /resume of an
 # old session and a /reset do not.
 inherit = {}
+inherit_records = {}
 for label, kwargs in (
     ("resume_legacy", {"parent_session_id": "src"}),            # no reason: the stricter branch
     ("branch", {"reason": "branch"}),
@@ -211,20 +225,19 @@ for label, kwargs in (
     ps.initialize("src", hermes_home=hermes_home, agent_context="primary")
     ps._run_capture = lambda args, payload, timeout, seen_switch=seen_switch: seen_switch.append(args[-1])
     ps.handle_tool_call("memesh_private_session", {})
+    before = len(outcome_lines())
     ps.on_session_switch("next-" + label, **kwargs)
     ps.sync_turn("u", "We decided on option A.")
     ps.on_session_end([{"role": "user", "content": "x"}])
     ps.shutdown()
     inherit[label] = len(seen_switch)
+    inherit_records[label] = recorded_since(before)
 out["private_after_switch"] = inherit
+out["private_after_switch_records"] = inherit_records
 
 # Hermes ends the session and starts a NEW provider instance with the same id at
 # /compress, /resume, /branch and /new, so the private mark has to survive on
 # disk (a marker file under the Hermes home) and not only in memory.
-import os
-import stat
-import tempfile
-
 history10 = history_plain * 5 + history_call * 5   # ten messages, tool calls included
 history6 = [{"role": "user", "content": f"after the summary {i}"} for i in range(6)]  # nothing about the call
 
@@ -323,18 +336,6 @@ j.shutdown()
 marker["compressed_child_captures"] = len(sw_seen_a)
 marker["resumed_target_captures"] = len(sw_seen_b)
 
-outcomes_file = os.path.join(os.environ["MEMESH_DIR"], "hook-outcomes.jsonl")
-
-
-def outcome_lines():
-    return open(outcomes_file).read().splitlines() if os.path.exists(outcomes_file) else []
-
-
-def recorded_since(count):
-    """The records written after the first `count`, so each scenario answers for itself."""
-    return outcome_lines()[count:]
-
-
 # 5. The marker cannot be written (its folder is read-only; reading it works): the reply says so, saving still
 # stops in this process, and an error is recorded. Memory alone keeps the session private here.
 wf_home = home_for("writefail")
@@ -388,6 +389,7 @@ def wk_capture(args, payload, timeout):
 wk = mod.MemeshProvider()
 wk.initialize("wk-session", hermes_home=wk_home, agent_context="primary")
 wk._run_capture = wk_capture
+before = len(outcome_lines())
 wk.sync_turn("turn-one", "a")
 first_started.wait(10)
 wk.sync_turn("turn-two", "b")            # waits behind the first
@@ -397,6 +399,40 @@ gate.set()
 wk._turn_queue.join()
 wk.shutdown()
 marker["queued_turn_after_disk_mark"] = wk_seen
+marker["queued_turn_after_disk_mark_records"] = recorded_since(before)
+
+# 7b. A turn already waiting in the queue when the marker folder becomes unreadable: the worker saves nothing and
+# records why (it fails closed, like sync_turn).
+wu_home = home_for("worker-unreadable")
+wu_dir = os.path.join(wu_home, "memesh-private-sessions")
+os.makedirs(wu_dir, exist_ok=True)
+wu_seen = []
+gate = threading.Event()
+first_started = threading.Event()
+
+
+def wu_capture(args, payload, timeout):
+    wu_seen.append(payload["user"])
+    first_started.set()
+    gate.wait(10)
+
+
+wu = mod.MemeshProvider()
+wu.initialize("wu-session", hermes_home=wu_home, agent_context="primary")
+wu._run_capture = wu_capture
+wu.sync_turn("turn-one", "a")
+first_started.wait(10)
+wu.sync_turn("turn-two", "b")
+os.chmod(wu_dir, 0)
+before = len(outcome_lines())
+try:
+    gate.set()
+    wu._turn_queue.join()
+finally:
+    os.chmod(wu_dir, 0o700)
+wu.shutdown()
+marker["queued_turn_unreadable_captures"] = wu_seen
+marker["queued_turn_unreadable_records"] = recorded_since(before)
 
 # 8. The history of a session that is ending shows the call: the marker is written, so the NEXT instance of that
 # session does not save either (compression-only history, no tool call in it).
@@ -472,11 +508,26 @@ na.shutdown()
 marker["no_reason_switch_captures"] = nr_seen_same
 marker["no_reason_switch_records"] = recorded_since(before)
 marker["no_reason_switch_marker"] = os.path.lexists(mod._marker_path(nr_home, "nr-child"))
+before = len(outcome_lines())
 nb = fresh("nr-child", nr_home, nr_seen_next)
 nb.sync_turn("u", "We decided on option O2.", messages=history6)
 nb.on_session_end(history6)
 nb.shutdown()
 marker["no_reason_switch_next_instance_captures"] = nr_seen_next
+marker["no_reason_switch_next_instance_records"] = recorded_since(before)
+# 12b. The same switch from an ordinary session saves as usual, before and after a restart.
+no_home = home_for("noreason-ordinary")
+no_seen = []
+oa = fresh("no-parent", no_home, no_seen)
+oa.on_session_switch("no-child", parent_session_id="no-parent")
+oa.sync_turn("u", "We decided on option O3.", messages=history6)
+oa._drain_turns_before_exit()
+oa.shutdown()
+ob = fresh("no-child", no_home, no_seen)
+ob.sync_turn("u", "We decided on option O4.", messages=history6)
+ob._drain_turns_before_exit()
+ob.shutdown()
+marker["no_reason_ordinary_captures"] = no_seen
 
 # 13. A relative MEMESH_DB_PATH: the record is written beside it, not lost.
 rel_dir = tempfile.mkdtemp(prefix="relative-db-", dir=hermes_home)
@@ -513,6 +564,7 @@ before = len(outcome_lines())
 ei = fresh("", ei_home, ei_seen)
 ei.sync_turn("u", "We decided on option E.", messages=history6)
 ei.on_session_end(history6)
+marker["unchecked_compress_text"] = ei.on_pre_compress(history6)
 ei.shutdown()
 marker["empty_id_captures"] = ei_seen
 marker["empty_id_records"] = recorded_since(before)
@@ -579,17 +631,175 @@ psk.shutdown()
 marker["private_skip_captures"] = ps_seen
 marker["private_skip_records"] = recorded_since(before)
 
-# 19. A marker no capture touched for 30 days is removed when an instance starts; a fresh one stays.
-pm_home = home_for("prune")
+# 19. A marker is never removed for its age: a session marked private 31 days ago and resumed with a history that
+# no longer shows the call (another instance started first) still saves nothing.
+pm_home = home_for("old-marker")
 pm_dir = os.path.join(pm_home, "memesh-private-sessions")
 os.makedirs(pm_dir, exist_ok=True)
-for name, age in (("old-session", 31 * 24 * 3600), ("new-session", 60)):
-    path_ = os.path.join(pm_dir, name)
-    open(path_, "w").write(name)
-    t = time.time() - age
-    os.utime(path_, (t, t))
+pm_path = os.path.join(pm_dir, "old-session")
+open(pm_path, "w").write("old-session")
+t = time.time() - 31 * 24 * 3600
+os.utime(pm_path, (t, t))
 fresh("pm-other", pm_home, []).shutdown()
-marker["prune_left"] = sorted(os.listdir(pm_dir))
+pm_seen = []
+pm = fresh("old-session", pm_home, pm_seen)
+pm.sync_turn("u", "We decided on option P.", messages=history6)
+pm.on_session_end(history6)
+pm.shutdown()
+marker["old_marker_captures"] = pm_seen
+marker["old_marker_left"] = sorted(os.listdir(pm_dir))
+
+# 21. Many switches in one instance, none of them private: every session saves (no depth limit, no cycle trap):
+# seven compressions in a row, a branch back to the session it came from, and a session that is its own parent.
+ch_home = home_for("chain")
+ch_seen = []
+before = len(outcome_lines())
+ch = fresh("ch-0", ch_home, ch_seen)
+ch._run_capture = lambda args, payload, timeout: ch_seen.append(args[3])
+for i in range(1, 8):
+    ch.on_session_switch(f"ch-{i}", parent_session_id=f"ch-{i - 1}", reason="compression")
+    ch.sync_turn("u", f"We decided on chain {i}.", messages=history6)
+    ch._drain_turns_before_exit()
+ch.on_session_switch("ch-6", parent_session_id="ch-7", reason="branch")    # ch-6 <-> ch-7 is now a cycle
+ch.sync_turn("u", "We decided on the cycle.", messages=history6)
+ch._drain_turns_before_exit()
+ch.on_session_switch("ch-7", parent_session_id="ch-7", reason="rewind", rewound=True)
+ch.sync_turn("u", "We decided on the rewind.", messages=history6)
+ch._drain_turns_before_exit()
+ch.shutdown()
+marker["chain_captures"] = ch_seen
+marker["chain_errors"] = [line for line in recorded_since(before) if '"error"' in line]
+
+# 22. A parent private only on disk, its marker folder unreadable at the switch and readable again by the child's
+# first turn: the child is still found private through its parent, and gets its own marker.
+di_home = home_for("deferred-inherit")
+di_parent = fresh("di-parent", di_home, [])
+di_parent.handle_tool_call("memesh_private_session", {})
+di_parent.shutdown()
+di_seen = []
+di = fresh("di-other", di_home, di_seen)
+di_dir = os.path.join(di_home, "memesh-private-sessions")
+os.chmod(di_dir, 0)
+try:
+    di.on_session_switch("di-child", parent_session_id="di-parent", reason="compression")
+finally:
+    os.chmod(di_dir, 0o700)
+di.sync_turn("u", "We decided on option Q.", messages=history6)
+di._drain_turns_before_exit()
+di.shutdown()
+marker["deferred_inherit_captures"] = di_seen
+marker["deferred_inherit_child_marker"] = os.path.lexists(mod._marker_path(di_home, "di-child"))
+
+# 23. The same, but the child's first capture is in a NEW instance (Hermes restarted after the switch): while the
+# parent's marker still cannot be read nothing is saved and an error says why; once it can, the child is private.
+# An ordinary parent switched the same way saves as usual in the new instance.
+ni_home = home_for("deferred-new-instance")
+ni_parent = fresh("ni-parent", ni_home, [])
+ni_parent.handle_tool_call("memesh_private_session", {})
+ni_parent.shutdown()
+ni_dir = os.path.join(ni_home, "memesh-private-sessions")
+os.chmod(ni_dir, 0)
+try:
+    ni_a = fresh("ni-other", ni_home, [])
+    ni_a.on_session_switch("ni-child", parent_session_id="ni-parent", reason="compression")
+    ni_a.shutdown()
+    ni_p = fresh("ni-plain", ni_home, [])
+    ni_p.on_session_switch("ni-plain-child", parent_session_id="ni-plain", reason="compression")
+    ni_p.shutdown()
+    ni_seen_locked = []
+    before = len(outcome_lines())
+    ni_b = fresh("ni-child", ni_home, ni_seen_locked)
+    ni_b.sync_turn("u", "We decided on option R1.", messages=history6)
+    ni_b._drain_turns_before_exit()
+    ni_b.shutdown()
+    marker["new_instance_parent_unreadable_records"] = recorded_since(before)
+finally:
+    os.chmod(ni_dir, 0o700)
+ni_seen = []
+ni_c = fresh("ni-child", ni_home, ni_seen)
+ni_c.sync_turn("u", "We decided on option R2.", messages=history6)
+ni_c.on_session_end(history6)
+ni_c.shutdown()
+ni_plain_seen = []
+ni_d = fresh("ni-plain-child", ni_home, ni_plain_seen)
+ni_d.sync_turn("u", "We decided on option R3.", messages=history6)
+ni_d._drain_turns_before_exit()
+ni_d.shutdown()
+marker["new_instance_parent_unreadable_captures"] = ni_seen_locked
+marker["new_instance_parent_readable_captures"] = ni_seen
+marker["new_instance_child_marker"] = os.path.lexists(mod._marker_path(ni_home, "ni-child"))
+marker["new_instance_plain_child_captures"] = ni_plain_seen
+# 23b. The folder of recorded parents cannot be read: nothing is saved and an error says why (it fails closed).
+np_dir = os.path.join(ni_home, "memesh-session-parents")
+np_seen = []
+os.makedirs(np_dir, exist_ok=True)  # so a provider that never wrote it fails the assertion, not the driver
+os.chmod(np_dir, 0)
+try:
+    before = len(outcome_lines())
+    np_e = fresh("ni-plain-child", ni_home, np_seen)
+    np_e.sync_turn("u", "We decided on option R4.", messages=history6)
+    np_e._drain_turns_before_exit()
+    np_e.shutdown()
+    marker["parents_unreadable_records"] = recorded_since(before)
+finally:
+    os.chmod(np_dir, 0o700)
+marker["parents_unreadable_captures"] = np_seen
+
+# 24. `memesh hermes capture-session` and `capture-turn` answer that they could not check the session: the provider
+# records the error they name, for a turn and for the session end alike (a stand-in CLI that prints that answer).
+uq_home = home_for("cli-unchecked")
+uq_bin = os.path.join(uq_home, "memesh-unchecked")
+with open(uq_bin, "w") as f:
+    f.write("#!/bin/sh\ncat >/dev/null\necho '" + json.dumps({
+        "outcome": "skipped",
+        "reason": "the session could not be checked for a private-session call, so nothing is saved",
+        "error": "the private-sessions folder beside the database cannot be read, so every session is treated as private and nothing is saved until it can be",
+    }) + "'\n")
+os.chmod(uq_bin, 0o755)
+saved_bin = mod._resolve_memesh_bin
+mod._resolve_memesh_bin = lambda: uq_bin
+try:
+    uq = mod.MemeshProvider()
+    uq.initialize("uq-session", hermes_home=uq_home, agent_context="primary")
+    before = len(outcome_lines())
+    uq.sync_turn("u", "We decided on option T.", messages=history6)
+    uq._drain_turns_before_exit()
+    uq.on_session_end(history6)
+    uq.shutdown()
+    marker["cli_unchecked_records"] = recorded_since(before)
+finally:
+    mod._resolve_memesh_bin = saved_bin
+
+# 25. A parents file is replaced whole or not at all: a write that fails half way leaves the previous version readable
+# and no stray file beside it.
+tw_home = home_for("torn-write")
+tw = fresh("tw-parent", tw_home, [])
+tw.on_session_switch("tw-child", parent_session_id="tw-parent", reason="compression")
+real_write = os.write
+
+
+def half_write(fd, data):
+    real_write(fd, data[: len(data) // 2])
+    raise OSError("no space left")
+
+
+tw_records = []
+real_record = mod._record_outcome
+mod._record_outcome = lambda outcome, reason: tw_records.append(f"{outcome}:{reason}")  # the record file is not torn too
+os.write = half_write
+try:
+    tw._add_parents("tw-child", ["tw-other"], guess=False)
+finally:
+    os.write = real_write
+    mod._record_outcome = real_record
+marker["torn_write_records"] = tw_records
+tw.shutdown()
+tw_dir = os.path.join(tw_home, "memesh-session-parents")
+try:
+    marker["torn_write_parents"] = json.load(open(os.path.join(tw_dir, "tw-child")))
+except (OSError, ValueError) as exc:
+    marker["torn_write_parents"] = f"unreadable: {type(exc).__name__}"
+marker["torn_write_files"] = sorted(os.listdir(tw_dir))
 
 # 20. The case table both deciders run (tests/fixtures/private-state-cases.json), through _privacy.
 cases = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "private-state-cases.json")))
@@ -599,6 +809,9 @@ for i, case in enumerate(c for c in cases if c.get("kind") != "record-dir"):
     if case["marker"] == "file":
         os.makedirs(os.path.join(ct_home, "memesh-private-sessions"), exist_ok=True)
         open(mod._marker_path(ct_home, case["sessionId"]), "w").write(case["sessionId"])
+        if case.get("markerAgeDays"):
+            t = time.time() - case["markerAgeDays"] * 24 * 3600
+            os.utime(mod._marker_path(ct_home, case["sessionId"]), (t, t))
     if case["marker"] == "folder-is-file":
         open(os.path.join(ct_home, "memesh-private-sessions"), "w").write("x")
     cp = mod.MemeshProvider()

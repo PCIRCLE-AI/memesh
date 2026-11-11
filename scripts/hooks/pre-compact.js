@@ -12,7 +12,10 @@ import { forEachTranscriptLine } from './_generated/private-session.js';
 const READ_TIMEOUT = Object.assign(new Error('the transcript could not be read within the hook\'s time'), { code: 'ETIMEOUT' });
 
 
-// There is no in-process timeout guard, and its absence is deliberate.
+// There is no in-process timer, and its absence is deliberate: the bounds are
+// the transcript read's own deadline (HOOK_BUDGET_MS.preCompact.read) and the
+// database lock wait after it, which together stay a second under the host's
+// limit so the outcome record is written.
 //
 // This file used to arm `setTimeout(() => process.exit(0), 10_000).unref()`.
 // It could not fire. Everything after `stdin`'s `end` event is one
@@ -76,7 +79,7 @@ process.stdin.on('end', () => {
     const privacy = privacyForHook(data, 'pre-compact', { budgetMs: HOOK_BUDGET_MS.preCompact.decide });
     if (privacy.state !== 'no') {
       // `unchecked` already recorded its error: this run is a skip that says so, never "private".
-      record('skipped', privacy.state === 'yes' ? SKIP_REASONS.privateSession : SKIP_REASONS.privateSessionUnchecked);
+      record('skipped', privacy.skipReason);
       process.exit(0);
     }
     // Claude Code's PreCompact payload names this field `trigger` ('manual' |
@@ -95,6 +98,8 @@ process.stdin.on('end', () => {
     // tool-call count is then unknown, and is not written as 0.
     let transcriptUnread = false;
     let readTimedOut = false;
+    // Lines over 64 MiB are not read (a Codex `compacted` record can be that long): counted, and said with the count.
+    let longLines = 0;
 
     if (transcriptPath && !existsSync(transcriptPath)) {
       transcriptUnread = true;
@@ -138,6 +143,7 @@ process.stdin.on('end', () => {
             // Skip malformed lines — benign, per-line, deliberately not traced.
           }
         });
+        longLines = read.longLines;
         if (read.timedOut) throw READ_TIMEOUT;
       } catch (err) {
         readTimedOut = err === READ_TIMEOUT;
@@ -163,7 +169,8 @@ process.stdin.on('end', () => {
     // out, not written as 0, which would be a wrong fact stored as a memory.
     const obsLines = [
       `Compaction reason: ${reason}`,
-      transcriptUnread ? 'Tool calls: not recorded (the transcript could not be read)' : `Tool calls: ${toolCallCount}`,
+      transcriptUnread ? 'Tool calls: not recorded (the transcript could not be read)'
+        : `Tool calls: ${toolCallCount}${longLines > 0 ? ` (${longLines} line(s) over 64 MiB were not read and may hold more)` : ''}`,
     ];
 
     // No free-form human text exists for a pre-compact save (unlike a commit
