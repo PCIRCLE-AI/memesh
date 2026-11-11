@@ -180,7 +180,7 @@ result reports only that recipient's unfetched deliveries and tells it to
 
 The messaging path keeps durable store-and-forward compatibility. Claude Channel receives the bounded full envelope. Ordinary Claude inbox and Codex CLI receive a short notice naming the message; the agent fetches the body from the inbox. An exact Claude inbox send is accepted only when a matching newly appended native receive record is observed; lack of confirmation does not prove the notice was not delivered. An oversized full envelope
 returns `native_message_too_large`; other unavailable or rejected exact sessions
-return `recipient_unavailable` while scoped recovery data remains durable.
+return `recipient_unavailable` while the message stays in the inbox until its one day is up.
 Principal targets retain asynchronous store-and-forward semantics.
 The JSON-encoded durable payload is limited to 65,536 UTF-8 bytes (64 KiB).
 Native delivery separately limits the complete envelope, including routing
@@ -709,46 +709,121 @@ from the inbox. An oversized full envelope returns
 `native_message_too_large`. A stopped, missing, busy beyond its queue limit,
 disconnected, or unsupported session returns `recipient_unavailable` and is
 not awakened, resumed, or replaced; durable state remains available for audit
-and recovery, subject to exact-session and activation-checkpoint rules.
+and recovery, subject to exact-session and activation-checkpoint rules and to
+the one-day limit on a message (see "Bounded storage and audit retention").
 
 ## Bounded storage and audit retention
 
-Message payload growth is observable and owner-controlled. MeMesh never deletes
-unresolved, unacknowledged, retryable, or offline-pending messages to satisfy a
-limit. Inspect logical payload bytes, protected rows, SQLite reusable pages,
-and main/WAL file sizes with an explicit policy cutoff:
+**A message is kept for one day.** Read or unread, a message is deleted one day
+after it was sent, together with its delivery, receipts, acknowledgements and
+workflow records. MeMesh does this by itself while its router, MCP server or
+`memesh serve` is running; there is no command to run and no setting to change.
+A message past its day is already invisible to `poll`, `fetch`, receipts and
+the unread count in your session briefing, even before it has been deleted from
+disk.
+
+- **The content stays one more day, in a local archive.** Before a message is
+  deleted, MeMesh copies it, and every record deleted with it, into
+  `backups/agent-messages-expired.db` next to your database (owner-only
+  permissions; a database file other than `knowledge-graph.db`, say `work.db`,
+  has its own `backups/agent-messages-expired-work.db`, so two databases in one
+  folder never share an archive). A copy is removed from the archive one day after it was made, so
+  the content of a message exists for about two days in all: one day as a
+  message and one day in the archive. If the archive cannot be written or its
+  copy does not match, nothing is deleted and `memesh doctor` says why; the
+  same goes for an archive path that is a symlink to the database itself or to
+  nothing, or a file there that is not a database (MeMesh leaves such a file as
+  it is). A
+  database that cannot be written, or that is locked right now, is left alone and
+  reported the same way.
+- **A message nobody answered tells its sender.** When the recipient recorded no
+  intake, acknowledgement or disposition for a message and sent no reply to it,
+  the sender receives one message from `memesh` that lists what expired (id,
+  recipient, when it was sent and when it expired; up to 20, with the number
+  left out). One run writes one such message per sender and project, however
+  many of its messages expire. Read it like any other message: `poll` your own
+  recipient id, then `fetch`. A message the recipient did act on or reply to
+  expires silently. These notices expire after a day too, and an unread notice
+  does not produce another.
+- **The first run after an upgrade** begins deleting the messages older than a
+  day, including ones nobody ever read, and sends these notices for them. One run
+  deletes at most 20,000 messages and the next follows five minutes later, until
+  none is left. A message with a delivery in progress in the last ten minutes
+  waits for the next run.
+- **Reading, or recording a receipt for, an expired message** returns
+  `message_expired` with the id and the time it expired, instead of "not
+  available". Only the message's sender and its recipient are told; anyone else
+  gets the ordinary "not available". A reply from its sender or recipient that
+  sets `reply_to` to an expired id is refused the same way, and nothing is stored,
+  for as long as MeMesh remembers the id (30 days); send it again without
+  `reply_to` and say what it answers. A reply from anyone else, to an id MeMesh
+  has no record of, or after those 30 days, is stored as it always was. Retrying a reply that
+  was stored while its parent still existed returns that reply. MeMesh remembers
+  an expired id, who sent it and to whom, and when it was sent (no content) for
+  30 days so it can say this.
+- **Resending with the same `idempotency_key` after a message expired** sends a
+  new message, even in the minutes before the old one is deleted from disk.
+- **To get a deleted message back,** while it is still in the archive (a day
+  after it was deleted), run this in a shell. It puts the messages that are in
+  the archive back into the inbox for another day and changes nothing that is
+  there now; running it twice does no harm. You do not need to stop MeMesh. If
+  you keep your database elsewhere it follows `MEMESH_DB_PATH`, or `MEMESH_DIR`.
+
+  ```bash
+  DB="${MEMESH_DB_PATH:-${MEMESH_DIR:-$HOME/.memesh}/knowledge-graph.db}"
+  case "$(basename "$DB")" in
+    knowledge-graph.db) ARCHIVE="$(dirname "$DB")/backups/agent-messages-expired.db" ;;
+    *) ARCHIVE="$(dirname "$DB")/backups/agent-messages-expired-$(basename "$DB")" ;;
+  esac
+  ls -l "$DB" "$ARCHIVE"
+  sqlite3 "$DB" <<SQL
+  ATTACH '$ARCHIVE' AS archive;
+  BEGIN;
+  INSERT OR IGNORE INTO agent_messages (message_id, project, sender, sender_host, recipient, content_type, correlation_id, reply_to_message_id, privacy, payload_json, payload_sha256, payload_original_bytes, payload_tombstoned_at, provenance_json, created_at)
+    SELECT message_id, project, sender, sender_host, recipient, content_type, correlation_id, reply_to_message_id, privacy, payload_json, payload_sha256, payload_original_bytes, payload_tombstoned_at, provenance_json, CURRENT_TIMESTAMP FROM archive.agent_messages;
+  INSERT OR IGNORE INTO agent_message_deliveries (delivery_id, message_id, project, recipient, target_kind, intended_session, created_at)
+    SELECT delivery_id, message_id, project, recipient, target_kind, intended_session, CURRENT_TIMESTAMP FROM archive.agent_message_deliveries;
+  INSERT OR IGNORE INTO agent_message_events (event_id, message_id, delivery_id, project, recipient, event_kind, created_at)
+    SELECT event_id, message_id, delivery_id, project, recipient, event_kind, CURRENT_TIMESTAMP FROM archive.agent_message_events;
+  DELETE FROM agent_message_expiries WHERE message_id IN (SELECT message_id FROM archive.agent_messages);
+  COMMIT;
+  SQL
+  ```
+
+  To bring back only some of them, add the same `WHERE` (for example
+  `WHERE recipient = 'bob'`) to the first `SELECT`, and the matching
+  `WHERE message_id IN (SELECT message_id FROM archive.agent_messages WHERE recipient = 'bob')`
+  to the other three. To only read them, open the archive on its own:
+  `sqlite3 -readonly "$ARCHIVE" "SELECT message_id, sender, recipient, created_at, payload_json FROM agent_messages"`.
+  A restored message comes back as a new, unread message with a fresh day (its
+  receipts and acknowledgements are not restored), and is deleted and archived
+  again a day later.
+- **Old session records go too.** Session presence records and ended session
+  connections older than a day are cleared in the same run (nothing reads them
+  once a session has ended). A session that is still connected is never touched.
+  Your `poll` cursors keep working after the events they pointed at are gone.
+
+`memesh doctor` shows when the last run happened, what it deleted, and warns if
+it is failing or messages are piling up. Inspect storage with:
 
 ```bash
-memesh message storage report --cutoff 2026-08-01T00:00:00Z
+memesh message storage report
 ```
 
-Preview one bounded batch of old terminal payloads; nothing changes without
-`--apply`:
-
-```bash
-memesh message storage prune --cutoff 2026-08-01T00:00:00Z --batch-size 100
-memesh message storage prune --cutoff 2026-08-01T00:00:00Z --batch-size 100 --apply
-```
-
-Applied pruning replaces only payload content whose every delivery has a
-terminal workflow disposition (`completed`, `cancelled` or `rejected`) older than the
-cutoff, with or without an ACK, with a hash-bound tombstone. A message the agent
-only took in (`intake`) is not cleaned up until a terminal disposition is recorded. Message identity, routing, receipts, ACK, workflow, presence, and
-retention audit facts remain queryable. Freed SQLite pages become reusable;
-the main database file is a high-watermark and is not promised to shrink.
-Full `VACUUM` is never run by a hook or this bounded command.
+It reports message counts, how many are past their day and waiting to be
+deleted, reusable SQLite pages, main/WAL file sizes, and the last run. Freed
+SQLite pages become reusable; the main database file is a high-watermark and is
+not promised to shrink. Full `VACUUM` is never run by a hook or by this cleanup.
 
 An owner may set `MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES` to a non-negative
 integer. This is a hard **logical payload** budget, not a whole SQLite file or
 disk quota. The canonical send transaction checks it before inserting any
 message effect; an over-quota send returns `storage_quota_exceeded` and leaves
 no partial message, delivery, event, idempotency, dispatch, or receipt row.
-Metadata, indexes, append-only audit facts, reusable pages, and WAL bytes still
-consume disk and remain visible in the report; keep separate filesystem
-headroom and monitoring. Heartbeats refresh the connection lease in place;
-they do not append one audit row every interval. Connected, disconnected, and
-superseded transitions remain auditable. There is deliberately no default
-quota or automatic retention policy.
+Metadata, indexes, reusable pages, and WAL bytes still consume disk and remain
+visible in the report; keep separate filesystem headroom and monitoring.
+Heartbeats refresh the connection lease in place; they do not append one audit
+row every interval. There is deliberately no default quota.
 
 ## Local and Cloud boundary
 
@@ -767,7 +842,7 @@ reply, or a stopped-session wake-up.
 - Not universal host support or stopped-session resume. This document only
   describes the explicitly configured ordinary Codex path and the separate
   managed Codex/Claude paths above.
-- Not topic, broadcast, lease/claim, or TTL routing. The current delivery target is one exact recipient.
+- Not topic, broadcast, or lease/claim routing, and no per-message lifetime: every message is kept one day, read or not, then deleted (see "Bounded storage and audit retention"). The current delivery target is one exact recipient.
 - Not arbitrary external-user access. Cross-machine delivery reaches only computers whose owners joined your team by invite; a local MeMesh instance is not a public collaboration service.
 - Not permission to execute payload content. The receiving host must apply its own policy and required human approval.
 

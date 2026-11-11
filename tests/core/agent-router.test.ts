@@ -120,6 +120,7 @@ class RouterHostClient {
     adapterKind?: string;
     model?: string | null;
     workSummary?: string | null;
+    hops?: number;
   }): Promise<RouterHostClient> {
     const socket = net.createConnection(input.socketPath);
     await new Promise<void>((resolve, reject) => {
@@ -140,7 +141,7 @@ class RouterHostClient {
       ...(input.model === undefined ? {} : { model: input.model }),
       ...(input.workSummary === undefined ? {} : { work_summary: input.workSummary }),
       auth_token: input.token,
-      hops: 0,
+      hops: input.hops ?? 0,
     });
     await vi.waitFor(() => {
       const response = client.responses.find(frame => frame.request_id === requestId);
@@ -953,6 +954,88 @@ describe.runIf(process.platform !== 'win32').sequential('AgentRouter real SQLite
       }));
       expect(db.prepare('SELECT COUNT(*) AS n FROM agent_session_instances').get()).toEqual({ n: 0 });
     } finally { socket.destroy(); }
+  });
+
+  it('does not push a delivery whose message is past its one-day lifetime', async () => {
+    const { db, socketPath, token } = setup();
+    await startClaudeChannelRouter(db, socketPath, token);
+    // Register the principal first, so both messages come after its activation checkpoint.
+    await RouterHostClient.connect({
+      socketPath, token, project: 'project-a', principal: 'principal-a', session: 'session-0', adapterKind: 'claude-channel',
+    });
+    const stale = sendAgentMessage(db, {
+      project: 'project-a', sender: 'sender-a', recipient: 'principal-a',
+      idempotency_key: 'stale-pending', payload: { text: 'stale' }, content_type: 'application/json',
+    });
+    const fresh = sendAgentMessage(db, {
+      project: 'project-a', sender: 'sender-a', recipient: 'principal-a',
+      idempotency_key: 'fresh-pending', payload: { text: 'fresh' }, content_type: 'application/json',
+    });
+    for (const table of ['agent_messages', 'agent_message_deliveries', 'agent_message_events']) {
+      db.prepare(`UPDATE ${table} SET created_at = datetime('now', '-2 days') WHERE message_id = ?`).run(stale.message_id);
+    }
+    const late = await RouterHostClient.connect({
+      socketPath, token, project: 'project-a', principal: 'principal-a', session: 'session-1', adapterKind: 'claude-channel',
+    });
+    await vi.waitFor(() => expect(late.deliveries.map(d => d.delivery_id)).toContain(fresh.delivery_id));
+    expect(late.deliveries.map(d => d.delivery_id)).not.toContain(stale.delivery_id);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM agent_host_accepts WHERE delivery_id = ?').get(stale.delivery_id))
+      .toEqual({ count: 0 });
+  });
+
+  it('skips only the one delivery that ran out its day while earlier ones were being pushed', async () => {
+    const { db, socketPath, token } = setup();
+    await startClaudeChannelRouter(db, socketPath, token);
+    await RouterHostClient.connect({
+      socketPath, token, project: 'project-a', principal: 'principal-a', session: 'session-0', adapterKind: 'claude-channel',
+    });
+    const [first, second, third] = ['first', 'second', 'third'].map((key) => sendAgentMessage(db, {
+      project: 'project-a', sender: 'sender-a', recipient: 'principal-a',
+      idempotency_key: key, payload: { text: key }, content_type: 'application/json',
+    }));
+    // All three are alive when the drain selects them. While the first is being
+    // pushed, the second reaches 24 hours.
+    const late = await RouterHostClient.connect({
+      socketPath, token, project: 'project-a', principal: 'principal-a', session: 'session-1', adapterKind: 'claude-channel',
+      onDelivery: (frame, client) => {
+        if (frame.delivery_id === first.delivery_id) {
+          for (const table of ['agent_messages', 'agent_message_deliveries', 'agent_message_events']) {
+            db.prepare(`UPDATE ${table} SET created_at = datetime('now', '-2 days') WHERE message_id = ?`).run(second.message_id);
+          }
+        }
+        client.accept(frame);
+      },
+    });
+    await vi.waitFor(() => expect(late.deliveries.map(d => d.delivery_id)).toContain(third.delivery_id));
+    const pushed = late.deliveries.map(d => d.delivery_id);
+    expect(pushed).toContain(first.delivery_id);
+    expect(pushed).not.toContain(second.delivery_id);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM agent_host_accepts WHERE delivery_id = ?').get(second.delivery_id))
+      .toEqual({ count: 0 });
+    // It was never even attempted: no dispatch attempt is recorded for a message that is gone.
+    expect(db.prepare('SELECT COUNT(*) AS count FROM agent_dispatch_attempts WHERE delivery_id = ?').get(second.delivery_id))
+      .toEqual({ count: 0 });
+  });
+
+  it('writes down a failure to push a new connection its pending messages instead of dropping it', async () => {
+    const { db, socketPath, token } = setup();
+    await startRouter(db, socketPath, token, { max_hops: 1 }, [{
+      kind: 'claude-channel',
+      authenticate: (registration: AgentHostRegistration) => registration.auth_token === token,
+    }]);
+    const written: string[] = [];
+    const realWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array) => { written.push(String(chunk)); return true; }) as typeof process.stderr.write;
+    try {
+      // Registered at the hop limit, the drain that follows would be one hop too many.
+      await RouterHostClient.connect({
+        socketPath, token, project: 'project-a', principal: 'principal-a', session: 'session-hop', adapterKind: 'claude-channel', hops: 1,
+      });
+      await vi.waitFor(() => expect(written.join('')).toContain('could not push pending messages to session session-hop'));
+    } finally {
+      process.stderr.write = realWrite;
+    }
+    expect(written.join('')).toContain('Router hop limit exceeded');
   });
 
   it('never reroutes or later replays an exact-session delivery and drains principal pending after router restart', async () => {

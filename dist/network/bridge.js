@@ -1188,38 +1188,24 @@ function appendTestFrameLog(file, bytes) {
 }
 
 // dist/core/agent-router.js
-import { randomUUID as randomUUID3 } from "node:crypto";
+import { randomUUID as randomUUID2 } from "node:crypto";
 import fs9 from "node:fs";
 import net2 from "node:net";
 import path9 from "node:path";
 
 // dist/core/agent-messaging.js
-import { createHash as createHash4, randomBytes as randomBytes4, randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash3, randomBytes as randomBytes4, randomUUID } from "node:crypto";
 
 // dist/core/agent-message-storage.js
-import { createHash as createHash3, randomUUID } from "node:crypto";
 import fs8 from "node:fs";
 
-// dist/core/time-utils.js
-function parseSqliteUtcMs(sqliteTimestamp) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/.exec(sqliteTimestamp ?? "");
-  if (!m)
-    return null;
-  const then = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
-  if (!Number.isFinite(then))
-    return null;
-  const d = new Date(then);
-  if (d.getUTCFullYear() !== +m[1] || d.getUTCMonth() !== +m[2] - 1 || d.getUTCDate() !== +m[3] || d.getUTCHours() !== +m[4] || d.getUTCMinutes() !== +m[5] || d.getUTCSeconds() !== +m[6])
-    return null;
-  return then;
-}
-function sqliteUtcToIso(sqliteTimestamp) {
-  const ms = parseSqliteUtcMs(sqliteTimestamp);
-  return ms === null ? sqliteTimestamp : new Date(ms).toISOString().replace(".000Z", "Z");
+// dist/core/agent-message-ttl.js
+var AGENT_MESSAGE_TTL_MS = 24 * 60 * 60 * 1e3;
+function agentMessageExpiryCutoff(nowMs = Date.now()) {
+  return new Date(nowMs - AGENT_MESSAGE_TTL_MS).toISOString().slice(0, 19).replace("T", " ");
 }
 
 // dist/core/agent-message-storage.js
-var TERMINAL_WORKFLOW_STATES = /* @__PURE__ */ new Set(["completed", "cancelled", "rejected"]);
 var AgentMessageStorageError = class extends Error {
   code;
   constructor(code, message) {
@@ -1264,7 +1250,6 @@ function normalizeNonNegativeInteger(label, value) {
   }
   return value;
 }
-var AGENT_MESSAGE_TERMINAL_WORKFLOW_STATES = [...TERMINAL_WORKFLOW_STATES];
 
 // dist/core/work-topology.js
 var LESSON_TYPES = /* @__PURE__ */ new Set(["lesson_learned", "lesson", "mistake"]);
@@ -1315,6 +1300,24 @@ function sessionAliasChain(db, session) {
 }
 function errorMessage2(err) {
   return err && typeof err === "object" && "message" in err ? String(err.message) : "";
+}
+
+// dist/core/time-utils.js
+function parseSqliteUtcMs(sqliteTimestamp) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/.exec(sqliteTimestamp ?? "");
+  if (!m)
+    return null;
+  const then = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+  if (!Number.isFinite(then))
+    return null;
+  const d = new Date(then);
+  if (d.getUTCFullYear() !== +m[1] || d.getUTCMonth() !== +m[2] - 1 || d.getUTCDate() !== +m[3] || d.getUTCHours() !== +m[4] || d.getUTCMinutes() !== +m[5] || d.getUTCSeconds() !== +m[6])
+    return null;
+  return then;
+}
+function sqliteUtcToIso(sqliteTimestamp) {
+  const ms = parseSqliteUtcMs(sqliteTimestamp);
+  return ms === null ? sqliteTimestamp : new Date(ms).toISOString().replace(".000Z", "Z");
 }
 
 // dist/core/agent-scope-id.js
@@ -1375,6 +1378,16 @@ var AGENT_NATIVE_MESSAGE_MAX_BYTES = 16 * 1024;
 var AgentMessagingError = class extends Error {
 };
 var AgentIdempotencyConflictError = class extends AgentMessagingError {
+};
+var AgentMessageAccessError = class extends AgentMessagingError {
+};
+var AgentMessageExpiredError = class extends AgentMessageAccessError {
+  code = "message_expired";
+  constructor(messageId, createdAtIso, use) {
+    const sentMs = Date.parse(createdAtIso);
+    const expiredAt = Number.isNaN(sentMs) ? "an unknown time (its creation time cannot be read)" : new Date(sentMs + AGENT_MESSAGE_TTL_MS).toISOString();
+    super(use === "reply" ? `message_expired: message ${messageId} (sent ${createdAtIso}) expired at ${expiredAt}; MeMesh keeps a message for one day and then deletes it, so it cannot be replied to. Send the reply without reply_to and say what it answers.` : `message_expired: message ${messageId} (sent ${createdAtIso}) expired at ${expiredAt}; MeMesh keeps a message for one day and then deletes it. Ask the sender to send it again.`);
+  }
 };
 var AgentConversationLoopError = class extends AgentMessagingError {
   code = "conversation_loop_suspected";
@@ -1500,9 +1513,9 @@ function sendAgentMessage(db, input, options = {}) {
     payload: normalized.payload,
     provenance: requestProvenance
   });
-  const messageId = randomUUID2();
-  const deliveryId = randomUUID2();
-  const eventId = randomUUID2();
+  const messageId = randomUUID();
+  const deliveryId = randomUUID();
+  const eventId = randomUUID();
   const payloadJson = stableStringify(normalized.payload);
   let reused = false;
   const tx = db.transaction(() => {
@@ -1514,8 +1527,19 @@ function sendAgentMessage(db, input, options = {}) {
       reused = true;
       return existing;
     }
-    if (options.fallback_of_message_id === void 0)
+    db.prepare(`
+      DELETE FROM agent_message_idempotency
+      WHERE project = ? AND sender = ? AND idempotency_key = ?
+        AND message_id IN (SELECT message_id FROM agent_messages WHERE created_at < ?)
+    `).run(normalized.project, normalized.sender, normalized.idempotency_key, agentMessageExpiryCutoff());
+    if (normalized.reply_to !== null) {
+      const expired = expiredMessageErrorFor(db, normalized.project, normalized.sender, normalized.reply_to, "reply");
+      if (expired)
+        throw expired;
+    }
+    if (options.fallback_of_message_id === void 0 && options.skip_conversation_loop_limit !== true) {
       enforceConversationLoopLimit(db, normalized);
+    }
     if (options.storage_quota_bytes !== void 0) {
       enforceAgentMessageStorageQuota(db, {
         quotaBytes: options.storage_quota_bytes,
@@ -1631,9 +1655,10 @@ function lookupExistingMessage(db, project, sender, idempotencyKey) {
     JOIN agent_message_deliveries d ON d.message_id = m.message_id
     JOIN agent_message_events e ON e.message_id = m.message_id
     WHERE i.project = ? AND i.sender = ? AND i.idempotency_key = ?
+      AND m.created_at >= ?
     ORDER BY e.event_sequence ASC
     LIMIT 1
-  `).get(project, sender, idempotencyKey);
+  `).get(project, sender, idempotencyKey, agentMessageExpiryCutoff());
 }
 function loadSentMessage(db, project, recipient, messageId) {
   return db.prepare(`
@@ -1660,6 +1685,14 @@ function loadSentMessage(db, project, recipient, messageId) {
     ORDER BY e.event_sequence ASC
     LIMIT 1
   `).get(project, project, recipient, messageId);
+}
+function expiredMessageErrorFor(db, project, caller, messageId, use) {
+  const gone = db.prepare("SELECT created_at, sender, recipient FROM agent_message_expiries WHERE project = ? AND message_id = ?").get(project, messageId) ?? db.prepare("SELECT created_at, sender, recipient FROM agent_messages WHERE project = ? AND message_id = ? AND created_at < ?").get(project, messageId, agentMessageExpiryCutoff());
+  if (!gone)
+    return null;
+  const who = canonicalAgentScopeId(caller);
+  const isParty = [gone.sender, gone.recipient].some((party) => party !== null && canonicalAgentScopeId(party) === who);
+  return isParty ? new AgentMessageExpiredError(messageId, sqliteUtcToIso(gone.created_at), use) : null;
 }
 function finishSentMessage(row, options) {
   const sent = rowToSentAgentMessage(row);
@@ -1730,7 +1763,7 @@ function parseJsonObjectOrValue(json) {
   return parsed;
 }
 function hashCanonical(value) {
-  return createHash4("sha256").update(stableStringify(value)).digest("hex");
+  return createHash3("sha256").update(stableStringify(value)).digest("hex");
 }
 function stableStringify(value) {
   if (value === null)
@@ -1840,7 +1873,7 @@ function createAgentRouterNotifier(socketPath) {
       await sendAgentRouterRequest(validatedPath, {
         version: AGENT_ROUTER_PROTOCOL_VERSION,
         type: "notify",
-        request_id: randomUUID3(),
+        request_id: randomUUID2(),
         project: hint.project,
         delivery_id: hint.delivery_id,
         hops: 0
@@ -1982,10 +2015,10 @@ function isPlainObject2(value) {
 }
 
 // dist/network/courier.js
-import { createHash as createHash6 } from "node:crypto";
+import { createHash as createHash5 } from "node:crypto";
 
 // dist/network/address.js
-import { createHash as createHash5 } from "node:crypto";
+import { createHash as createHash4 } from "node:crypto";
 var TARGET = /^[^/@\s]{1,200}$/;
 function parseNetworkAddress(value) {
   const at = value.lastIndexOf("@");
@@ -2006,7 +2039,7 @@ function formatNetworkAddress(person, target, machine) {
   return `${person}/${target}@${machine}`;
 }
 function projectHash(networkId, project) {
-  return createHash5("sha256").update(`${networkId}:${project}`).digest("hex");
+  return createHash4("sha256").update(`${networkId}:${project}`).digest("hex");
 }
 function isLocalSenderName(value) {
   return TARGET.test(value);
@@ -2362,7 +2395,7 @@ function peerRoute(db, machineId) {
   }
 }
 function frameLabel(frame) {
-  return frame.kind === "message" ? `message ${createHash6("sha256").update(String(frame.origin_message_id)).digest("hex").slice(0, 12)}` : frame.kind;
+  return frame.kind === "message" ? `message ${createHash5("sha256").update(String(frame.origin_message_id)).digest("hex").slice(0, 12)}` : frame.kind;
 }
 
 // dist/network/bridge-serve.js

@@ -1,10 +1,5 @@
-import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
-import { parseSqliteUtcMs } from './time-utils.js';
-const SQLITE_FORM = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
-const TERMINAL_WORKFLOW_STATES = new Set(['completed', 'cancelled', 'rejected']);
-const DEFAULT_BATCH_SIZE = 100;
-const MAX_BATCH_SIZE = 1_000;
+import { agentMessageExpiryCutoff } from './agent-message-ttl.js';
 export class AgentMessageStorageError extends Error {
     code;
     constructor(code, message) {
@@ -26,8 +21,7 @@ export class AgentMessageStorageQuotaExceededError extends AgentMessageStorageEr
     }
 }
 export function getAgentMessageStorageReport(db, options) {
-    const cutoff = normalizeAgentMessageCutoff(options.cutoff);
-    const states = readMessageStates(db, cutoff);
+    const states = readMessageStates(db, agentMessageExpiryCutoff(options.nowMs));
     const lifecycle = db.prepare(`
     SELECT
       (SELECT COUNT(*) FROM agent_message_deliveries) AS delivery_count,
@@ -67,8 +61,7 @@ export function getAgentMessageStorageReport(db, options) {
         tombstoned_message_count: states.tombstoned_message_count,
         protected_unresolved_message_count: states.protected_unresolved_message_count,
         terminal_retained_message_count: states.terminal_retained_message_count,
-        terminal_prunable_message_count: states.terminal_prunable_message_count,
-        terminal_prunable_payload_bytes: states.terminal_prunable_payload_bytes,
+        expired_pending_message_count: states.expired_pending_message_count,
         reconciled_message_count: states.reconciled_message_count,
         page_count: pageCount,
         page_size: pageSize,
@@ -78,35 +71,6 @@ export function getAgentMessageStorageReport(db, options) {
         database_file_bytes: safeFileSize(options.databasePath),
         wal_file_bytes: options.databasePath ? safeFileSize(`${options.databasePath}-wal`) : null,
     };
-}
-export function pruneTerminalAgentMessagePayloads(db, options) {
-    const cutoff = normalizeAgentMessageCutoff(options.cutoff);
-    const batchSize = normalizeBatchSize(options.batchSize);
-    const dryRun = options.dryRun === undefined ? true : options.dryRun;
-    const actor = normalizeActor(options.actor);
-    if (dryRun) {
-        const candidates = selectPrunableMessages(db, cutoff, batchSize).map(toCandidate);
-        return resultForCandidates(true, candidates);
-    }
-    return db.transaction(() => {
-        const selected = selectPrunableMessages(db, cutoff, batchSize);
-        const candidates = selected.map(toCandidate);
-        for (let index = 0; index < selected.length; index++) {
-            const candidate = candidates[index];
-            options.fault?.beforeTombstone?.(candidate);
-            const tombstone = stableTombstone(candidate.payload_sha256, candidate.payload_bytes);
-            const result = db.prepare(`
-        UPDATE agent_messages
-        SET payload_json = ?, payload_sha256 = ?, payload_original_bytes = ?, payload_tombstoned_at = CURRENT_TIMESTAMP
-        WHERE message_id = ? AND payload_tombstoned_at IS NULL
-      `).run(tombstone, candidate.payload_sha256, candidate.payload_bytes, candidate.message_id);
-            if (result.changes !== 1) {
-                throw new AgentMessageStorageError('retention_concurrent_change', 'Agent message retention candidate changed during pruning.');
-            }
-            insertRetentionFact(db, candidate, actor, tombstone);
-        }
-        return resultForCandidates(false, candidates);
-    }).immediate();
 }
 export function enforceAgentMessageStorageQuota(db, input) {
     const quotaBytes = normalizeNonNegativeInteger('quotaBytes', input.quotaBytes);
@@ -126,7 +90,7 @@ export function agentMessagePayloadStorageBytes(payloadJson) {
     }
     return Buffer.byteLength(payloadJson, 'utf8');
 }
-function readMessageStates(db, cutoff) {
+function readMessageStates(db, expiryCutoff) {
     return db.prepare(`
     WITH workflow_candidates AS (
       SELECT delivery_id, workflow_state, created_at
@@ -149,8 +113,7 @@ function readMessageStates(db, cutoff) {
       SELECT delivery_id,
         CASE WHEN SUM(CASE
           WHEN workflow_state IN ('completed', 'cancelled', 'rejected') THEN 0 ELSE 1
-        END) = 0 THEN 1 ELSE 0 END AS is_terminal,
-        MAX(created_at) AS created_at
+        END) = 0 THEN 1 ELSE 0 END AS is_terminal
       FROM ranked_workflow
       WHERE time_rank = 1
       GROUP BY delivery_id
@@ -171,9 +134,7 @@ function readMessageStates(db, cutoff) {
       SELECT d.message_id,
         COUNT(*) AS delivery_count,
         SUM(CASE WHEN acknowledged_deliveries.delivery_id IS NOT NULL THEN 1 ELSE 0 END) AS acknowledged_count,
-        SUM(CASE WHEN lw.is_terminal = 1 THEN 1 ELSE 0 END) AS terminal_count,
-        SUM(CASE WHEN lw.is_terminal = 1
-                      AND julianday(lw.created_at) < julianday(?) THEN 1 ELSE 0 END) AS old_terminal_count
+        SUM(CASE WHEN lw.is_terminal = 1 THEN 1 ELSE 0 END) AS terminal_count
       FROM agent_message_deliveries d
       LEFT JOIN acknowledged_deliveries ON acknowledged_deliveries.delivery_id = d.delivery_id
       LEFT JOIN latest_workflow lw ON lw.delivery_id = d.delivery_id
@@ -183,10 +144,7 @@ function readMessageStates(db, cutoff) {
         COALESCE(m.payload_original_bytes, length(CAST(m.payload_json AS BLOB))) AS original_payload_bytes,
         CASE
           WHEN m.payload_tombstoned_at IS NOT NULL THEN 'tombstoned'
-          WHEN COALESCE(ds.delivery_count, 0) > 0
-               AND ds.acknowledged_count = ds.delivery_count
-               AND ds.terminal_count = ds.delivery_count
-               AND ds.old_terminal_count = ds.delivery_count THEN 'prunable'
+          WHEN m.created_at < ? THEN 'expired'
           WHEN COALESCE(ds.delivery_count, 0) > 0
                AND ds.acknowledged_count = ds.delivery_count
                AND ds.terminal_count = ds.delivery_count THEN 'terminal_retained'
@@ -202,144 +160,10 @@ function readMessageStates(db, cutoff) {
       COALESCE(SUM(storage_state = 'tombstoned'), 0) AS tombstoned_message_count,
       COALESCE(SUM(storage_state = 'protected'), 0) AS protected_unresolved_message_count,
       COALESCE(SUM(storage_state = 'terminal_retained'), 0) AS terminal_retained_message_count,
-      COALESCE(SUM(storage_state = 'prunable'), 0) AS terminal_prunable_message_count,
-      COALESCE(SUM(CASE WHEN storage_state = 'prunable' THEN payload_bytes ELSE 0 END), 0) AS terminal_prunable_payload_bytes,
-      COALESCE(SUM(storage_state IN ('tombstoned', 'protected', 'terminal_retained', 'prunable')), 0) AS reconciled_message_count
+      COALESCE(SUM(storage_state = 'expired'), 0) AS expired_pending_message_count,
+      COALESCE(SUM(storage_state IN ('tombstoned', 'expired', 'protected', 'terminal_retained')), 0) AS reconciled_message_count
     FROM message_states
-  `).get(cutoff);
-}
-function selectPrunableMessages(db, cutoff, batchSize) {
-    return db.prepare(`
-    WITH workflow_candidates AS (
-      SELECT delivery_id, workflow_state, created_at
-      FROM agent_workflow_facts
-      UNION ALL
-      SELECT d.delivery_id, json_extract(r.detail_json, '$.disposition') AS workflow_state,
-        r.created_at
-      FROM agent_message_receipts r
-      JOIN agent_message_deliveries d
-        ON d.message_id = r.message_id AND d.project = r.project AND d.recipient = r.recipient
-      WHERE r.receipt_kind = 'disposition'
-    ), ranked_workflow AS (
-      SELECT delivery_id, workflow_state, created_at,
-        DENSE_RANK() OVER (
-          PARTITION BY delivery_id
-          ORDER BY julianday(created_at) DESC
-        ) AS time_rank
-      FROM workflow_candidates
-    ), latest_workflow AS (
-      SELECT delivery_id,
-        CASE WHEN SUM(CASE
-          WHEN workflow_state IN ('completed', 'cancelled', 'rejected') THEN 0 ELSE 1
-        END) = 0 THEN 1 ELSE 0 END AS is_terminal,
-        MAX(created_at) AS created_at
-      FROM ranked_workflow
-      WHERE time_rank = 1
-      GROUP BY delivery_id
-    ), acknowledged_deliveries AS (
-      SELECT delivery_id
-      FROM agent_ack_facts
-      UNION
-      SELECT d.delivery_id
-      FROM agent_message_receipts r
-      JOIN agent_message_deliveries d
-        ON d.message_id = r.message_id AND d.project = r.project AND d.recipient = r.recipient
-      WHERE r.receipt_kind = 'ack'
-      UNION
-      SELECT delivery_id
-      FROM latest_workflow
-      WHERE is_terminal = 1
-    ), delivery_states AS (
-      SELECT d.message_id,
-        COUNT(*) AS delivery_count,
-        SUM(CASE WHEN acknowledged_deliveries.delivery_id IS NOT NULL THEN 1 ELSE 0 END) AS acknowledged_count,
-        SUM(CASE WHEN lw.is_terminal = 1
-                      AND julianday(lw.created_at) < julianday(?) THEN 1 ELSE 0 END) AS old_terminal_count
-      FROM agent_message_deliveries d
-      LEFT JOIN acknowledged_deliveries ON acknowledged_deliveries.delivery_id = d.delivery_id
-      LEFT JOIN latest_workflow lw ON lw.delivery_id = d.delivery_id
-      GROUP BY d.message_id
-    )
-    SELECT m.message_id, m.payload_json, length(CAST(m.payload_json AS BLOB)) AS payload_bytes
-    FROM agent_messages m
-    JOIN delivery_states ds ON ds.message_id = m.message_id
-    WHERE m.payload_tombstoned_at IS NULL
-      AND ds.delivery_count > 0
-      AND ds.acknowledged_count = ds.delivery_count
-      AND ds.old_terminal_count = ds.delivery_count
-    ORDER BY m.created_at ASC, m.message_id ASC
-    LIMIT ?
-  `).all(cutoff, batchSize);
-}
-function toCandidate(row) {
-    return {
-        message_id: row.message_id,
-        payload_bytes: row.payload_bytes,
-        payload_sha256: createHash('sha256').update(row.payload_json, 'utf8').digest('hex'),
-    };
-}
-function resultForCandidates(dryRun, candidates) {
-    return {
-        dry_run: dryRun,
-        candidate_count: candidates.length,
-        tombstoned_count: dryRun ? 0 : candidates.length,
-        reclaimed_payload_bytes: reclaimedPayloadBytes(candidates),
-        candidates,
-    };
-}
-function reclaimedPayloadBytes(candidates) {
-    const netPayloadBytes = candidates.reduce((total, candidate) => {
-        const tombstone = stableTombstone(candidate.payload_sha256, candidate.payload_bytes);
-        return total + candidate.payload_bytes - Buffer.byteLength(tombstone, 'utf8');
-    }, 0);
-    return Math.max(0, netPayloadBytes);
-}
-function insertRetentionFact(db, candidate, actor, tombstone) {
-    const idempotencyKey = `payload-tombstone:${candidate.message_id}:${candidate.payload_sha256}`;
-    const detailJson = JSON.stringify({
-        algorithm: 'sha256',
-        original_payload_bytes: candidate.payload_bytes,
-        payload_sha256: candidate.payload_sha256,
-        tombstone_payload_bytes: Buffer.byteLength(tombstone, 'utf8'),
-    });
-    const requestHash = createHash('sha256').update(detailJson, 'utf8').digest('hex');
-    db.prepare(`
-    INSERT INTO agent_retention_facts (
-      retention_fact_id, message_id, actor, retention_state, idempotency_key, request_hash, detail_json
-    ) VALUES (?, ?, ?, 'payload_tombstoned', ?, ?, ?)
-  `).run(randomUUID(), candidate.message_id, actor, idempotencyKey, requestHash, detailJson);
-}
-function stableTombstone(payloadHash, originalPayloadBytes) {
-    return JSON.stringify({
-        _agent_message_tombstone_v1: {
-            algorithm: 'sha256',
-            original_payload_bytes: originalPayloadBytes,
-            payload_sha256: payloadHash,
-        },
-    });
-}
-export function normalizeAgentMessageCutoff(value) {
-    const sqliteMs = typeof value === 'string' && SQLITE_FORM.test(value) ? parseSqliteUtcMs(value) : null;
-    const date = value instanceof Date ? value : new Date(sqliteMs ?? value);
-    if (Number.isNaN(date.getTime())) {
-        throw new AgentMessageStorageError('invalid_retention_cutoff', 'Agent message retention cutoff must be a valid date.');
-    }
-    return date.toISOString();
-}
-function normalizeBatchSize(value) {
-    if (value === undefined)
-        return DEFAULT_BATCH_SIZE;
-    if (!Number.isInteger(value) || value < 1 || value > MAX_BATCH_SIZE) {
-        throw new AgentMessageStorageError('invalid_retention_batch_size', `Agent message retention batch size must be between 1 and ${MAX_BATCH_SIZE}.`);
-    }
-    return value;
-}
-function normalizeActor(value) {
-    const actor = (value ?? 'agent-message-retention-v1').trim();
-    if (actor.length === 0 || actor.length > 200) {
-        throw new AgentMessageStorageError('invalid_retention_actor', 'Agent message retention actor must be 1 to 200 characters.');
-    }
-    return actor;
+  `).get(expiryCutoff);
 }
 function normalizeNonNegativeInteger(label, value) {
     if (!Number.isSafeInteger(value) || value < 0) {
@@ -366,5 +190,4 @@ function safeFileSize(filePath) {
         return null;
     }
 }
-export const AGENT_MESSAGE_TERMINAL_WORKFLOW_STATES = [...TERMINAL_WORKFLOW_STATES];
 //# sourceMappingURL=agent-message-storage.js.map

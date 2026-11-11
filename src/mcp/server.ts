@@ -9,7 +9,8 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { fileURLToPath } from 'url';
-import { openDatabase, closeDatabase } from '../db.js';
+import { startAgentMessageExpiryScheduler } from '../core/agent-message-expiry.js';
+import { openDatabase, closeDatabase, getDatabase, isDatabaseOpen } from '../db.js';
 import { handleTool, TOOL_DEFINITIONS } from './tools.js';
 import { configureVersionSource, normalizeClientHost } from '../transports/mcp/handlers.js';
 import { resolveMcpProject } from '../transports/mcp/project-context.js';
@@ -127,6 +128,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
 });
 
 // Start
+// Agent messages are kept one day (core/agent-message-expiry.ts). This server
+// is a long-lived process with the database open, so it runs the pass too.
+let stopExpiry: () => void = () => undefined;
+
 async function main() {
   // The agent that started this server is a running host: the updater waits
   // for it to exit before it replaces any file (this covers hosts with no hooks).
@@ -138,6 +143,7 @@ async function main() {
     logAutoUpdateLine(getMemeshDirFromDbPath(), `auto-update: could not register this MCP host (${err instanceof Error ? err.message : String(err)}); the updater may not wait for it`);
   }
   openDatabase();
+  stopExpiry = startAgentMessageExpiryScheduler(() => (isDatabaseOpen() ? getDatabase() : null), { trigger: 'mcp-server' });
   const transport = new StdioServerTransport();
   await server.connect(transport);
   // A host that wires only this server runs no SessionStart hook, so nothing else would start the updater there. It is the same
@@ -154,6 +160,7 @@ async function main() {
 async function shutdown() {
   if (closing) return;
   closing = true;
+  stopExpiry();
   await presence?.close();
   try { closeDatabase(); } catch { /* best effort */ }
   process.exit(0);

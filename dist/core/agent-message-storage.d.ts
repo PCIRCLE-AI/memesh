@@ -1,7 +1,7 @@
 import type { MemeshDatabase } from '../storage/sqlite.js';
 export interface AgentMessageStorageReportOptions {
-    cutoff: Date | string;
     databasePath?: string;
+    nowMs?: number;
 }
 export interface AgentMessageStorageReport {
     message_count: number;
@@ -23,8 +23,7 @@ export interface AgentMessageStorageReport {
     tombstoned_message_count: number;
     protected_unresolved_message_count: number;
     terminal_retained_message_count: number;
-    terminal_prunable_message_count: number;
-    terminal_prunable_payload_bytes: number;
+    expired_pending_message_count: number;
     reconciled_message_count: number;
     page_count: number;
     page_size: number;
@@ -33,26 +32,6 @@ export interface AgentMessageStorageReport {
     reusable_freelist_bytes: number;
     database_file_bytes: number | null;
     wal_file_bytes: number | null;
-}
-export interface AgentMessageRetentionOptions extends AgentMessageStorageReportOptions {
-    batchSize?: number;
-    dryRun?: boolean;
-    actor?: string;
-    fault?: {
-        beforeTombstone?(candidate: AgentMessageRetentionCandidate): void;
-    };
-}
-export interface AgentMessageRetentionCandidate {
-    message_id: string;
-    payload_bytes: number;
-    payload_sha256: string;
-}
-export interface AgentMessageRetentionResult {
-    dry_run: boolean;
-    candidate_count: number;
-    tombstoned_count: number;
-    reclaimed_payload_bytes: number;
-    candidates: AgentMessageRetentionCandidate[];
 }
 export interface AgentMessageStorageQuotaInput {
     quotaBytes: number;
@@ -69,9 +48,6 @@ export declare class AgentMessageStorageQuotaExceededError extends AgentMessageS
     constructor(quotaBytes: number, usedBytes: number, requestedBytes: number);
 }
 export declare function getAgentMessageStorageReport(db: MemeshDatabase, options: AgentMessageStorageReportOptions): AgentMessageStorageReport;
-export declare function pruneTerminalAgentMessagePayloads(db: MemeshDatabase, options: AgentMessageRetentionOptions): AgentMessageRetentionResult;
 export declare function enforceAgentMessageStorageQuota(db: MemeshDatabase, input: AgentMessageStorageQuotaInput): void;
 export declare function agentMessagePayloadStorageBytes(payloadJson: string): number;
-export declare function normalizeAgentMessageCutoff(value: Date | string): string;
-export declare const AGENT_MESSAGE_TERMINAL_WORKFLOW_STATES: readonly string[];
 //# sourceMappingURL=agent-message-storage.d.ts.map

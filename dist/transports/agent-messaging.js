@@ -1,6 +1,6 @@
 import { canonicalAgentScopeId } from '../core/agent-scope-id.js';
 import { createHash, randomUUID } from 'node:crypto';
-import { AgentIntendedSessionUnsupportedError, AgentMessageAccessError, AgentMessagingError, AgentNativeMessageTooLargeError, fetchAgentMessage, pollAgentEvents, assertCallerMayUseDelivery, principalsOfSession, readAgentMessageReceipts, recordAgentReceipt, resolveAgentSessionHandle, sendAgentMessage, waitForAgentEvents, HANDLED_RECEIPT_KINDS_SQL, } from '../core/agent-messaging.js';
+import { AgentIntendedSessionUnsupportedError, AgentMessageAccessError, AgentMessagingError, AgentNativeMessageTooLargeError, expiredMessageErrorFor, fetchAgentMessage, pollAgentEvents, assertCallerMayUseDelivery, principalsOfSession, readAgentMessageReceipts, recordAgentReceipt, resolveAgentSessionHandle, sendAgentMessage, waitForAgentEvents, HANDLED_RECEIPT_KINDS_SQL, } from '../core/agent-messaging.js';
 import { MessageSchema } from './schemas.js';
 import { AGENT_ROUTER_PROTOCOL_VERSION, AgentRouterError, createAgentRouterNotifier, sendAgentRouterRequest, } from '../core/agent-router.js';
 import { getAgentRouterSocketPath } from '../core/paths.js';
@@ -192,6 +192,9 @@ function resolveCanonicalDelivery(db, project, recipient, messageId) {
     WHERE project = ? AND recipient = ? AND message_id = ?
   `).get(project, recipient, messageId);
     if (!delivery) {
+        const expired = expiredMessageErrorFor(db, project, recipient, messageId, 'read');
+        if (expired)
+            throw expired;
         throw new AgentMessageAccessError(`Agent message ${messageId} is not available to recipient ${recipient} in project ${project}.`);
     }
     return delivery;

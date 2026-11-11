@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import { createHash } from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -42,9 +42,8 @@ import { executeAgentMessageAction } from '../agent-messaging.js';
 import { hostSessionFromEnv } from '../../core/host-session.js';
 import {
   getAgentMessageStorageReport,
-  normalizeAgentMessageCutoff,
-  pruneTerminalAgentMessagePayloads,
 } from '../../core/agent-message-storage.js';
+import { lastAgentMessageExpiryRun, latestAgentMessageExpiryArchive } from '../../core/agent-message-expiry.js';
 import {
   assertSecureLocalHostRuntimeSupported,
   ensureRouterTokenFile,
@@ -1496,49 +1495,44 @@ messageCmd
     action: 'status', project: opts.project, recipient: opts.recipient, message_id: opts.messageId,
   }));
 
+/** What `message storage prune` and `report --cutoff` now say: they used to bound storage by hand. */
+const REMOVED_RETENTION_CONTROL = '`memesh message storage prune` and `report --cutoff` were removed: MeMesh now keeps a message for one day and deletes it by itself, so there is nothing to run. '
+  + '`memesh message storage report` shows what is stored and where the archive of deleted messages is.';
+
 const messageStorageCmd = messageCmd
   .command('storage')
-  .description('Inspect or bound durable agent-message payload storage without deleting lifecycle audit facts');
+  .description('Inspect durable agent-message storage. Messages are kept one day, then deleted by MeMesh itself');
 
 messageStorageCmd
   .command('report')
-  .description('Report logical payload, unresolved protection, reusable pages, and SQLite/WAL size')
-  .requiredOption('--cutoff <iso-time>', 'Terminal workflows strictly older than this ISO timestamp are prunable')
+  .description('Report stored messages, what is waiting to expire, reusable pages, SQLite/WAL size, the last expiry pass and where the archive of deleted messages is')
+  .addOption(new Option('--cutoff <iso-time>').hideHelp())
   .action(async (opts) => {
+    if (opts.cutoff !== undefined) {
+      console.error(REMOVED_RETENTION_CONTROL);
+      process.exit(1);
+    }
     await withDatabase(() => {
-      const report = getAgentMessageStorageReport(getDatabase(), {
-        cutoff: opts.cutoff,
-        databasePath: getDbPath(),
-      });
+      const report = getAgentMessageStorageReport(getDatabase(), { databasePath: getDbPath() });
       console.log(JSON.stringify({
         policy: {
-          cutoff: normalizeAgentMessageCutoff(opts.cutoff),
+          retention: 'one day from creation, then deleted',
           quota_bytes: process.env.MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES ?? null,
-          automatic_pruning: false,
         },
+        last_expiry_pass: lastAgentMessageExpiryRun(getDatabase()),
+        last_expiry_archive: latestAgentMessageExpiryArchive(getDatabase()),
         ...report,
       }));
     });
   });
 
 messageStorageCmd
-  .command('prune')
-  .description('Dry-run one bounded terminal-payload tombstone batch; --apply performs it')
-  .requiredOption('--cutoff <iso-time>', 'Terminal workflows strictly older than this ISO timestamp are eligible')
-  .option('--batch-size <n>', 'Maximum payloads in this transaction, 1-1000', wholeNumber('--batch-size'), 100)
-  .option('--apply', 'Write hash-bound tombstones; without this flag nothing is changed')
-  .option('--actor <id>', 'Bounded audit actor', 'local-owner-cli')
-  .action(async (opts) => {
-    await withDatabase(() => {
-      const result = pruneTerminalAgentMessagePayloads(getDatabase(), {
-        cutoff: opts.cutoff,
-        databasePath: getDbPath(),
-        batchSize: opts.batchSize,
-        dryRun: !opts.apply,
-        actor: opts.actor,
-      });
-      console.log(JSON.stringify(result));
-    });
+  .command('prune', { hidden: true })
+  .allowUnknownOption()
+  .allowExcessArguments()
+  .action(() => {
+    console.error(REMOVED_RETENTION_CONTROL);
+    process.exit(1);
   });
 
 // --- local agent hosts ---
@@ -2318,7 +2312,7 @@ program
     try {
       // autoUpdateCheck: a user-launched serve is online by definition, so it
       // fills the npm update cache itself instead of nagging the user to.
-      startServer(opts.host, opts.port, { allowRemote: opts.allowRemote, autoUpdateCheck: true });
+      startServer(opts.host, opts.port, { allowRemote: opts.allowRemote, autoUpdateCheck: true, agentMessageExpiry: true });
       // A machine whose only MeMesh client is a long-running server (a Hermes host, say) runs no
       // Claude or Codex hook, so nothing else would ever start the updater there. The server is
       // not registered as a running host: replacing files under it is safe (it keeps running the

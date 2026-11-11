@@ -1,11 +1,9 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   AgentMessageStorageQuotaExceededError,
   enforceAgentMessageStorageQuota,
   getAgentMessageStorageReport,
-  normalizeAgentMessageCutoff,
-  pruneTerminalAgentMessagePayloads,
 } from '../../src/core/agent-message-storage.js';
 import {
   recordAgentAckFact,
@@ -19,9 +17,7 @@ import { getDatabase } from '../../src/db.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
 
 const dbHandle = useTestDatabase('memesh-agent-message-storage-');
-const CUTOFF = '2025-01-01T00:00:00.000Z';
 const OLD = '2020-01-01 00:00:00';
-const RECENT = '2026-01-01 00:00:00';
 
 afterEach(() => {
   expect(dbHandle.dbPath.endsWith('test.db')).toBe(true);
@@ -128,40 +124,44 @@ function count(table: string): number {
   return (getDatabase().prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count;
 }
 
-describe('bounded agent message storage', () => {
+function ageMessage(messageId: string): void {
+  getDatabase().prepare("UPDATE agent_messages SET created_at = datetime('now', '-2 days') WHERE message_id = ?").run(messageId);
+  getDatabase().prepare("UPDATE agent_message_deliveries SET created_at = datetime('now', '-2 days') WHERE message_id = ?").run(messageId);
+}
+
+describe('agent message storage report', () => {
   it('reconciles mixed lifecycle states without changing stored messages, receipts, or acknowledgements', () => {
-    const prunable = send({ body: 'terminal-old' });
-    const terminalRetained = send({ body: 'terminal-recent' });
+    const terminal = send({ body: 'terminal' });
     const deferred = send({ body: 'offline-pending' });
     const ackOnly = send({ body: 'ack-only' });
-    ack(prunable);
-    workflow(prunable, 'completed');
-    ack(terminalRetained);
-    workflow(terminalRetained, 'completed', RECENT);
+    const expired = send({ body: 'past-its-day' });
+    ack(terminal);
+    workflow(terminal, 'completed');
     workflow(deferred, 'deferred');
     ack(ackOnly, 'ack-only');
+    ageMessage(expired.message_id);
 
     const before = getDatabase().prepare(`
       SELECT message_id, payload_json, payload_tombstoned_at FROM agent_messages ORDER BY message_id
     `).all();
     const receiptsBefore = count('agent_message_receipts');
-    const report = getAgentMessageStorageReport(getDatabase(), { cutoff: CUTOFF, databasePath: dbHandle.dbPath });
+    const report = getAgentMessageStorageReport(getDatabase(), { databasePath: dbHandle.dbPath });
 
     expect(report).toMatchObject({
       message_count: 4,
       protected_unresolved_message_count: 2,
       terminal_retained_message_count: 1,
-      terminal_prunable_message_count: 1,
+      expired_pending_message_count: 1,
       reconciled_message_count: 4,
       receipt_count: 0,
-      ack_fact_count: 3,
+      ack_fact_count: 2,
       cursor_count: 0,
       principal_count: 1,
-      session_instance_count: 3,
-      session_connection_count: 3,
+      session_instance_count: 2,
+      session_connection_count: 2,
       presence_fact_count: 0,
-      dispatch_attempt_count: 3,
-      host_accept_count: 3,
+      dispatch_attempt_count: 2,
+      host_accept_count: 2,
     });
     expect(report.payload_bytes).toBeGreaterThan(0);
     expect(report.page_count).toBeGreaterThan(0);
@@ -171,30 +171,24 @@ describe('bounded agent message storage', () => {
       SELECT message_id, payload_json, payload_tombstoned_at FROM agent_messages ORDER BY message_id
     `).all()).toEqual(before);
     expect(count('agent_message_receipts')).toBe(receiptsBefore);
-
-    const dryRun = pruneTerminalAgentMessagePayloads(getDatabase(), { cutoff: CUTOFF, dryRun: true });
-    expect(dryRun).toMatchObject({ dry_run: true, candidate_count: 1, tombstoned_count: 0 });
-    expect(dryRun.candidates[0].message_id).toBe(prunable.message_id);
-    expect(storedPayload(prunable.message_id)).toContain('terminal-old');
-    expect(storedPayload(deferred.message_id)).toContain('offline-pending');
-    expect(storedPayload(ackOnly.message_id)).toContain('ack-only');
-
-    expect(pruneTerminalAgentMessagePayloads(getDatabase(), {
-      cutoff: CUTOFF, dryRun: false, batchSize: 4,
-    })).toMatchObject({ candidate_count: 1, tombstoned_count: 1 });
-    expect(storedPayload(prunable.message_id)).toContain('_agent_message_tombstone_v1');
-    expect(storedPayload(terminalRetained.message_id)).toContain('terminal-recent');
-    expect(storedPayload(deferred.message_id)).toContain('offline-pending');
-    expect(storedPayload(ackOnly.message_id)).toContain('ack-only');
   });
 
-  it('prunes a message whose every delivery has an old terminal disposition, with or without an ACK, and keeps one with only an ACK', () => {
+  it('does not count a message past its day as unresolved, whatever its state', () => {
+    const unresolved = send({ body: 'never answered' });
+    expect(getAgentMessageStorageReport(getDatabase(), {})).toMatchObject({
+      protected_unresolved_message_count: 1, expired_pending_message_count: 0,
+    });
+    ageMessage(unresolved.message_id);
+    expect(getAgentMessageStorageReport(getDatabase(), {})).toMatchObject({
+      protected_unresolved_message_count: 0, expired_pending_message_count: 1,
+    });
+  });
+
+  it('retains ACK-without-terminal as unresolved; a terminal disposition on every delivery is terminal, with or without an ACK', () => {
     const completedWithoutAck = send({ body: 'completed-without-ack' });
     workflow(completedWithoutAck, 'completed');
-
     const ackWithoutTerminal = send({ body: 'ack-without-terminal' });
     ack(ackWithoutTerminal);
-
     const allDeliveriesReady = send({ body: 'all-deliveries-ready' });
     const secondDelivery = additionalDelivery(allDeliveriesReady, 'recipient-two');
     ack(allDeliveriesReady);
@@ -202,43 +196,19 @@ describe('bounded agent message storage', () => {
     ack(secondDelivery);
     workflow(secondDelivery, 'completed');
 
-    const report = getAgentMessageStorageReport(getDatabase(), { cutoff: CUTOFF });
-    expect(report).toMatchObject({
+    expect(getAgentMessageStorageReport(getDatabase(), {})).toMatchObject({
       message_count: 3,
       protected_unresolved_message_count: 1,
-      terminal_prunable_message_count: 2,
+      terminal_retained_message_count: 2,
     });
-
-    const result = pruneTerminalAgentMessagePayloads(getDatabase(), {
-      cutoff: CUTOFF,
-      dryRun: false,
-      batchSize: 3,
-    });
-    expect(result.candidates.map((candidate) => candidate.message_id).sort()).toEqual([completedWithoutAck.message_id, allDeliveriesReady.message_id].sort());
-    expect(storedPayload(completedWithoutAck.message_id)).toContain('_agent_message_tombstone_v1');
-    expect(storedPayload(ackWithoutTerminal.message_id)).toContain('ack-without-terminal');
-    expect(storedPayload(allDeliveriesReady.message_id)).toContain('_agent_message_tombstone_v1');
   });
 
-  it('prunes a message the agent only took in (intake) and completed, and keeps one it took in but never finished', () => {
-    const record = (message: SentAgentMessage, kind: 'intake' | 'disposition', key: string) => recordAgentReceipt(getDatabase(), {
-      project: message.project, recipient: message.recipient, message_id: message.message_id, actor: message.recipient, idempotency_key: key,
-      receipt_kind: kind, ...(kind === 'intake' ? { intake_state: 'ingested' as const } : { disposition: 'completed' as const }),
-    } as Parameters<typeof recordAgentReceipt>[1]);
-    const finished = send({ body: 'intake-then-completed' });
-    record(finished, 'intake', 'finished-intake'); record(finished, 'disposition', 'finished-done');
-    const unfinished = send({ body: 'intake-only' });
-    record(unfinished, 'intake', 'unfinished-intake');
-    getDatabase().prepare('UPDATE agent_message_receipts SET created_at = ?').run(OLD);
-    expect(getAgentMessageStorageReport(getDatabase(), { cutoff: CUTOFF })).toMatchObject({ protected_unresolved_message_count: 1, terminal_prunable_message_count: 1 });
-    expect(pruneTerminalAgentMessagePayloads(getDatabase(), { cutoff: CUTOFF, dryRun: false }).candidates.map((candidate) => candidate.message_id)).toEqual([finished.message_id]);
-    expect(storedPayload(unfinished.message_id)).toContain('intake-only');
-  });
-
-  it('tells a recipient who fetches a message whose content was removed so in words, and keeps the machine-readable marker', () => {
+  it('tells a recipient who fetches a message whose content an earlier version removed so in words, and keeps the machine-readable marker', () => {
     const message = send({ body: 'will be removed' });
-    ack(message); workflow(message, 'completed');
-    pruneTerminalAgentMessagePayloads(getDatabase(), { cutoff: CUTOFF, dryRun: false });
+    // Earlier versions replaced the content of finished messages with a marker; this version deletes whole messages
+    // after a day, but a database written by an earlier version can still hold such a row.
+    const marker = JSON.stringify({ _agent_message_tombstone_v1: { algorithm: 'sha256', original_payload_bytes: 31, payload_sha256: 'a'.repeat(64) } });
+    getDatabase().prepare('UPDATE agent_messages SET payload_json = ?, payload_tombstoned_at = CURRENT_TIMESTAMP WHERE message_id = ?').run(marker, message.message_id);
     const fetched = fetchAgentMessage(getDatabase(), { project: message.project, recipient: message.recipient, message_id: message.message_id });
     expect(fetched.note).toMatch(/past its retention period.*content was deleted/i);
     expect(JSON.stringify(fetched.payload)).toContain('_agent_message_tombstone_v1');
@@ -246,199 +216,42 @@ describe('bounded agent message storage', () => {
     expect(fetchAgentMessage(getDatabase(), { project: kept.project, recipient: kept.recipient, message_id: kept.message_id })).not.toHaveProperty('note');
   });
 
-  it('treats explicit inbox ACK and disposition receipts as one eligible audited delivery without requiring host push', () => {
+  it('treats explicit inbox ACK and disposition receipts as one terminal delivery without requiring host push', () => {
     const inboxOnly = send({ body: 'fetched through MCP without host adapter' });
-    recordAgentReceipt(getDatabase(), {
-      project: inboxOnly.project,
-      recipient: inboxOnly.recipient,
-      message_id: inboxOnly.message_id,
-      receipt_kind: 'ack',
-      actor: inboxOnly.recipient,
-      idempotency_key: 'inbox-only-ack',
-    });
-    recordAgentReceipt(getDatabase(), {
-      project: inboxOnly.project,
-      recipient: inboxOnly.recipient,
-      message_id: inboxOnly.message_id,
-      receipt_kind: 'disposition',
-      disposition: 'completed',
-      actor: inboxOnly.recipient,
-      idempotency_key: 'inbox-only-disposition',
-    });
-    getDatabase().prepare(`
-      UPDATE agent_message_receipts SET created_at = ? WHERE message_id = ?
-    `).run(OLD, inboxOnly.message_id);
-
-    expect(getAgentMessageStorageReport(getDatabase(), { cutoff: CUTOFF })).toMatchObject({
+    for (const [kind, extra] of [['ack', {}], ['disposition', { disposition: 'completed' as const }]] as const) {
+      recordAgentReceipt(getDatabase(), {
+        project: inboxOnly.project, recipient: inboxOnly.recipient, message_id: inboxOnly.message_id,
+        receipt_kind: kind, actor: inboxOnly.recipient, idempotency_key: `inbox-only-${kind}`, ...extra,
+      } as Parameters<typeof recordAgentReceipt>[1]);
+    }
+    expect(getAgentMessageStorageReport(getDatabase(), {})).toMatchObject({
       protected_unresolved_message_count: 0,
-      terminal_prunable_message_count: 1,
+      terminal_retained_message_count: 1,
       receipt_count: 2,
       ack_fact_count: 0,
       workflow_fact_count: 0,
     });
-    expect(pruneTerminalAgentMessagePayloads(getDatabase(), {
-      cutoff: CUTOFF,
-      dryRun: false,
-    })).toMatchObject({ candidate_count: 1, tombstoned_count: 1 });
-    expect(storedPayload(inboxOnly.message_id)).toContain('_agent_message_tombstone_v1');
   });
 
-  it('protects a delivery when same-timestamp workflow sources disagree about terminal state', () => {
-    const conflicted = send({ body: 'must survive an ambiguous latest timestamp' });
+  it('keeps a delivery unresolved when same-timestamp workflow sources disagree about terminal state', () => {
+    const conflicted = send({ body: 'ambiguous latest timestamp' });
     ack(conflicted);
     workflow(conflicted, 'completed', OLD);
     recordAgentReceipt(getDatabase(), {
-      project: conflicted.project,
-      recipient: conflicted.recipient,
-      message_id: conflicted.message_id,
-      receipt_kind: 'disposition',
-      disposition: 'deferred',
-      actor: conflicted.recipient,
+      project: conflicted.project, recipient: conflicted.recipient, message_id: conflicted.message_id,
+      receipt_kind: 'disposition', disposition: 'deferred', actor: conflicted.recipient,
       idempotency_key: 'same-timestamp-deferred',
     });
-    getDatabase().prepare(`
-      UPDATE agent_message_receipts SET created_at = ? WHERE message_id = ?
-    `).run(OLD, conflicted.message_id);
-
-    expect(getAgentMessageStorageReport(getDatabase(), { cutoff: CUTOFF })).toMatchObject({
-      protected_unresolved_message_count: 1,
-      terminal_prunable_message_count: 0,
-    });
-    expect(pruneTerminalAgentMessagePayloads(getDatabase(), {
-      cutoff: CUTOFF,
-      dryRun: false,
-    })).toMatchObject({ candidate_count: 0, tombstoned_count: 0 });
-    expect(storedPayload(conflicted.message_id)).toContain('must survive');
-  });
-
-  it('tombstones only terminal old payloads in bounded batches, preserves audit, and continues idempotently', () => {
-    const messages = [send({ body: 'one' }), send({ body: 'two' }), send({ body: 'three' })];
-    messages.forEach((message) => {
-      ack(message);
-      workflow(message, 'completed');
-    });
-    const originals = new Map(messages.map((message) => [message.message_id, storedPayload(message.message_id)]));
-
-    for (let index = 0; index < messages.length; index++) {
-      const result = pruneTerminalAgentMessagePayloads(getDatabase(), { cutoff: CUTOFF, dryRun: false, batchSize: 1 });
-      expect(result).toMatchObject({ dry_run: false, candidate_count: 1, tombstoned_count: 1 });
-    }
-    expect(pruneTerminalAgentMessagePayloads(getDatabase(), {
-      cutoff: CUTOFF, dryRun: false, batchSize: 1,
-    })).toMatchObject({ candidate_count: 0, tombstoned_count: 0 });
-
-    for (const message of messages) {
-      const original = originals.get(message.message_id)!;
-      const row = getDatabase().prepare(`
-        SELECT payload_json, payload_sha256, payload_original_bytes, payload_tombstoned_at
-        FROM agent_messages WHERE message_id = ?
-      `).get(message.message_id) as {
-        payload_json: string; payload_sha256: string; payload_original_bytes: number; payload_tombstoned_at: string;
-      };
-      expect(row.payload_json).not.toBe(original);
-      expect(row.payload_json).toContain('_agent_message_tombstone_v1');
-      expect(row.payload_sha256).toBe(createHash('sha256').update(original, 'utf8').digest('hex'));
-      expect(row.payload_original_bytes).toBe(Buffer.byteLength(original, 'utf8'));
-      expect(row.payload_tombstoned_at).toBeTruthy();
-    }
-    expect(count('agent_retention_facts')).toBe(3);
-    expect(getAgentMessageStorageReport(getDatabase(), { cutoff: CUTOFF })).toMatchObject({
-      tombstoned_message_count: 3,
-      terminal_prunable_message_count: 0,
-      reconciled_message_count: 3,
-    });
-  });
-
-  it('reports nonnegative net logical payload bytes reclaimed with dry-run/apply parity and report readback', () => {
-    const small = send({ body: 'x' });
-    const large = send({ body: 'x'.repeat(4 * 1024) });
-    const originals = new Map([
-      [small.message_id, storedPayload(small.message_id)],
-      [large.message_id, storedPayload(large.message_id)],
-    ]);
-    ack(small);
-    workflow(small, 'completed');
-    ack(large);
-    workflow(large, 'completed');
-
-    const dryRun = pruneTerminalAgentMessagePayloads(getDatabase(), {
-      cutoff: CUTOFF,
-      dryRun: true,
-      batchSize: 2,
-    });
-    expect(dryRun).toMatchObject({ dry_run: true, candidate_count: 2, tombstoned_count: 0 });
-
-    const applied = pruneTerminalAgentMessagePayloads(getDatabase(), {
-      cutoff: CUTOFF,
-      dryRun: false,
-      batchSize: 2,
-    });
-    expect(applied).toMatchObject({ dry_run: false, candidate_count: 2, tombstoned_count: 2 });
-    expect(applied.reclaimed_payload_bytes).toBe(dryRun.reclaimed_payload_bytes);
-
-    const netBytesByMessage = [small, large].map((message) => {
-      const original = originals.get(message.message_id)!;
-      const tombstone = storedPayload(message.message_id);
-      return Buffer.byteLength(original, 'utf8') - Buffer.byteLength(tombstone, 'utf8');
-    });
-    expect(netBytesByMessage[0]).toBeLessThan(0);
-    expect(netBytesByMessage[1]).toBeGreaterThan(0);
-    expect(applied.reclaimed_payload_bytes).toBeLessThan(
-      applied.candidates.reduce((total, candidate) => total + candidate.payload_bytes, 0),
-    );
-
-    const report = getAgentMessageStorageReport(getDatabase(), { cutoff: CUTOFF });
-    const expectedPayloadBytes = [small, large].reduce(
-      (total, message) => total + Buffer.byteLength(storedPayload(message.message_id), 'utf8'),
-      0,
-    );
-    const expectedOriginalPayloadBytes = [...originals.values()].reduce(
-      (total, payload) => total + Buffer.byteLength(payload, 'utf8'),
-      0,
-    );
-    const expectedReclaimedBytes = Math.max(0, expectedOriginalPayloadBytes - expectedPayloadBytes);
-    expect(applied.reclaimed_payload_bytes).toBe(expectedReclaimedBytes);
-    expect(report).toMatchObject({
-      tombstoned_message_count: 2,
-      payload_bytes: expectedPayloadBytes,
-      original_payload_bytes: expectedOriginalPayloadBytes,
-    });
-    expect(report.original_payload_bytes - report.payload_bytes).toBe(expectedReclaimedBytes);
-  });
-
-  it('rolls the whole bounded batch back when its fault seam trips', () => {
-    const first = send({ body: 'first' });
-    const second = send({ body: 'second' });
-    ack(first);
-    workflow(first, 'completed');
-    ack(second);
-    workflow(second, 'completed');
-    const firstPayload = storedPayload(first.message_id);
-    let calls = 0;
-
-    expect(() => pruneTerminalAgentMessagePayloads(getDatabase(), {
-      cutoff: CUTOFF,
-      dryRun: false,
-      batchSize: 2,
-      fault: {
-        beforeTombstone: () => {
-          calls++;
-          if (calls === 2) throw new Error('retention fault seam');
-        },
-      },
-    })).toThrow('retention fault seam');
-
-    expect(storedPayload(first.message_id)).toBe(firstPayload);
-    expect(getAgentMessageStorageReport(getDatabase(), { cutoff: CUTOFF })).toMatchObject({
-      tombstoned_message_count: 0,
-      terminal_prunable_message_count: 2,
-      retention_fact_count: 0,
+    getDatabase().prepare('UPDATE agent_message_receipts SET created_at = ? WHERE message_id = ?')
+      .run(OLD, conflicted.message_id);
+    expect(getAgentMessageStorageReport(getDatabase(), {})).toMatchObject({
+      protected_unresolved_message_count: 1, terminal_retained_message_count: 0,
     });
   });
 
   it('rejects an over-quota send budget atomically before later message effects', () => {
     const existing = send({ body: 'existing' });
-    const used = getAgentMessageStorageReport(getDatabase(), { cutoff: CUTOFF }).payload_bytes;
+    const used = getAgentMessageStorageReport(getDatabase(), {}).payload_bytes;
     const before = {
       messages: count('agent_messages'), deliveries: count('agent_message_deliveries'),
       events: count('agent_message_events'), idempotency: count('agent_message_idempotency'),
@@ -468,59 +281,5 @@ describe('bounded agent message storage', () => {
     expect(count('agent_message_deliveries')).toBe(before.deliveries);
     expect(count('agent_message_events')).toBe(before.events);
     expect(count('agent_message_idempotency')).toBe(before.idempotency);
-  });
-
-  it('uses a deterministic small capacity fixture to show batch continuation and reusable-page accounting', () => {
-    const messageCount = 24;
-    const payload = { body: 'x'.repeat(8 * 1024) };
-    const messages = Array.from({ length: messageCount }, () => send(payload));
-    messages.forEach((message) => {
-      ack(message);
-      workflow(message, 'completed');
-    });
-    const before = getAgentMessageStorageReport(getDatabase(), { cutoff: CUTOFF });
-
-    let processed = 0;
-    while (true) {
-      const result = pruneTerminalAgentMessagePayloads(getDatabase(), {
-        cutoff: CUTOFF, dryRun: false, batchSize: 3,
-      });
-      processed += result.tombstoned_count;
-      if (result.tombstoned_count === 0) break;
-    }
-    const after = getAgentMessageStorageReport(getDatabase(), { cutoff: CUTOFF });
-
-    expect(processed).toBe(messageCount);
-    expect(after).toMatchObject({ tombstoned_message_count: messageCount, terminal_prunable_message_count: 0 });
-    expect(after.payload_bytes).toBeLessThan(before.payload_bytes / 10);
-    expect(after.allocated_database_bytes).toBeGreaterThanOrEqual(before.allocated_database_bytes);
-    expect(after.reusable_freelist_bytes).toBeGreaterThanOrEqual(0);
-  });
-});
-
-// #403: SQLite's own form is UTC. `new Date('2026-01-01 12:00:00')` reads it as
-// local time, so at UTC+8 a noon cutoff became 04:00 UTC and a fact from 06:00
-// UTC counted as newer than it.
-describe('#403 a cutoff in SQLite form is UTC', () => {
-  it('counts the same messages as the ISO cutoff under a non-UTC TZ', () => {
-    const previousTz = process.env.TZ;
-    process.env.TZ = 'Asia/Taipei';
-    try {
-      const message = send();
-      ack(message);
-      workflow(message, 'completed', '2026-01-01 06:00:00');
-      const sqliteForm = getAgentMessageStorageReport(getDatabase(), { cutoff: '2026-01-01 12:00:00' });
-      const isoForm = getAgentMessageStorageReport(getDatabase(), { cutoff: '2026-01-01T12:00:00Z' });
-      expect(isoForm.terminal_prunable_message_count).toBe(1);
-      expect(sqliteForm.terminal_prunable_message_count).toBe(1);
-      // ISO with a T and no zone is still read by `new Date()` as before, as
-      // local time: 12:00 at UTC+8 is 04:00 UTC, older than the 06:00 UTC fact.
-      const isoNoZone = getAgentMessageStorageReport(getDatabase(), { cutoff: '2026-01-01T12:00:00' });
-      expect(isoNoZone.terminal_prunable_message_count).toBe(0);
-      expect(normalizeAgentMessageCutoff('2026-01-01 12:00:00')).toBe('2026-01-01T12:00:00.000Z');
-      expect(normalizeAgentMessageCutoff('2026-01-01T12:00:00')).toBe(new Date('2026-01-01T12:00:00').toISOString());
-    } finally {
-      if (previousTz === undefined) delete process.env.TZ; else process.env.TZ = previousTz;
-    }
   });
 });

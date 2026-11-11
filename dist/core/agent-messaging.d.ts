@@ -60,6 +60,7 @@ export interface SendAgentMessageOptions {
     notifier?: AgentMessagePostCommitNotifier;
     storage_quota_bytes?: number;
     fallback_of_message_id?: string;
+    skip_conversation_loop_limit?: boolean;
 }
 export declare const HANDLED_RECEIPT_KINDS_SQL = "('intake', 'ack', 'disposition')";
 export interface PollAgentEventsInput {
@@ -221,6 +222,10 @@ export declare class AgentIdempotencyConflictError extends AgentMessagingError {
 }
 export declare class AgentMessageAccessError extends AgentMessagingError {
 }
+export declare class AgentMessageExpiredError extends AgentMessageAccessError {
+    readonly code = "message_expired";
+    constructor(messageId: string, createdAtIso: string, use: 'read' | 'reply');
+}
 export declare class AgentConversationLoopError extends AgentMessagingError {
     readonly code = "conversation_loop_suspected";
     constructor();
@@ -259,6 +264,7 @@ export declare function readAgentMessageReceipts(db: MemeshDatabase, input: Read
 export declare function recordAgentAckFact(db: MemeshDatabase, input: RecordAgentAckFactInput): AgentAckFact;
 export declare function recordAgentWorkflowFact(db: MemeshDatabase, input: RecordAgentWorkflowFactInput): AgentWorkflowFact;
 export declare function recordAgentRetentionFact(db: MemeshDatabase, input: RecordAgentRetentionFactInput): AgentRetentionFact;
+export declare function expiredMessageErrorFor(db: MemeshDatabase, project: string, caller: string, messageId: string, use: 'read' | 'reply'): AgentMessageExpiredError | null;
 export declare function principalsOfSession(db: MemeshDatabase, project: string, session: string): string[];
 export declare function assertCallerMayUseDelivery(db: MemeshDatabase, delivery: {
     project: string;

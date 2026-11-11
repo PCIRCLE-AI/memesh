@@ -337,56 +337,53 @@ describe('CLI durable-message ingress', () => {
     }
   });
 
-  // #403: the policy the report prints is the cutoff it applied. A cutoff in
-  // SQLite's form is UTC; printing it through `new Date()` showed it eight
-  // hours off at UTC+8.
-  it('#403 report prints the cutoff it applied, for a cutoff in SQLite form under a non-UTC TZ', () => {
+  it('reports storage and the one-day rule, and has no prune command', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-message-'));
     try {
-      const report = spawnSync(process.execPath, cliArgs(
-        'message', 'storage', 'report', '--cutoff', '2026-08-27 00:00:00',
-      ), {
-        encoding: 'utf8',
-        env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false', TZ: 'Asia/Taipei' },
-      });
-      expect(report.status, report.stderr).toBe(0);
-      expect(JSON.parse(report.stdout).policy.cutoff).toBe('2026-08-27T00:00:00.000Z');
-    } finally {
-      fs.rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  it('reports storage and keeps prune dry-run non-mutating by default', () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-message-'));
-    const cutoff = '2026-08-27T00:00:00.000Z';
-    try {
-      const report = spawnSync(process.execPath, cliArgs(
-        'message', 'storage', 'report', '--cutoff', cutoff,
-      ), {
+      const report = spawnSync(process.execPath, cliArgs('message', 'storage', 'report'), {
         encoding: 'utf8',
         env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' },
       });
       expect(report.status, report.stderr).toBe(0);
       expect(JSON.parse(report.stdout)).toMatchObject({
-        policy: { cutoff, quota_bytes: null, automatic_pruning: false },
+        policy: { retention: 'one day from creation, then deleted', quota_bytes: null },
+        last_expiry_pass: null,
+        last_expiry_archive: null,
         message_count: 0,
         protected_unresolved_message_count: 0,
+        expired_pending_message_count: 0,
       });
 
-      const dryRun = spawnSync(process.execPath, cliArgs(
-        'message', 'storage', 'prune', '--cutoff', cutoff, '--batch-size', '1',
-      ), {
+      const prune = spawnSync(process.execPath, cliArgs('message', 'storage', 'prune'), {
         encoding: 'utf8',
         env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' },
       });
-      expect(dryRun.status, dryRun.stderr).toBe(0);
-      expect(JSON.parse(dryRun.stdout)).toEqual({
-        dry_run: true,
-        candidate_count: 0,
-        tombstoned_count: 0,
-        reclaimed_payload_bytes: 0,
-        candidates: [],
+      expect(prune.status).toBe(1);
+      expect(prune.stderr).toContain('`memesh message storage prune` and `report --cutoff` were removed');
+      expect(prune.stderr).toContain('keeps a message for one day and deletes it by itself');
+      expect(prune.stderr).toContain('`memesh message storage report`');
+
+      const cutoff = spawnSync(process.execPath, cliArgs('message', 'storage', 'report', '--cutoff', '2026-01-01T00:00:00Z'), {
+        encoding: 'utf8',
+        env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' },
       });
+      expect(cutoff.status).toBe(1);
+      expect(cutoff.stderr).toContain('were removed');
+
+      // Once a cleanup has archived something, the report says where the archive is.
+      const dbFile = path.join(home, '.memesh', 'knowledge-graph.db');
+      const handle = new DatabaseSync(dbFile);
+      handle.prepare(`
+        INSERT INTO agent_message_expiry_runs (started_at_ms, finished_at_ms, trigger_source, outcome, expired_message_count, backup_path)
+        VALUES (1, 2, 'router', 'deleted', 1, '/somewhere/backups/agent-messages-expired.db')
+      `).run();
+      handle.close();
+      const again = spawnSync(process.execPath, cliArgs('message', 'storage', 'report'), {
+        encoding: 'utf8',
+        env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' },
+      });
+      expect(again.status, again.stderr).toBe(0);
+      expect(JSON.parse(again.stdout).last_expiry_archive).toBe('/somewhere/backups/agent-messages-expired.db');
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }

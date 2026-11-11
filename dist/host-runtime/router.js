@@ -2,8 +2,9 @@
 import { timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { closeDatabase, openDatabase } from '../db.js';
+import { closeDatabase, getDatabase, isDatabaseOpen, openDatabase } from '../db.js';
 import { assertNodeSupported } from '../storage/sqlite.js';
+import { startAgentMessageExpiryScheduler } from '../core/agent-message-expiry.js';
 import { AgentRouter, AgentRouterError, AGENT_ROUTER_SOCKET_PATH_MAX_BYTES } from '../core/agent-router.js';
 import { createCodexCliQueueAdapter } from '../host-adapters/codex-cli-queue.js';
 import { getAgentRouterSocketPath, getMemeshDirFromDbPath } from '../core/paths.js';
@@ -73,13 +74,16 @@ try {
 catch (error) {
     reportFailure(error);
 }
+let stopExpiry = () => undefined;
 async function shutdown() {
+    stopExpiry();
     await router.stop();
     closeDatabase();
 }
 process.once('SIGINT', () => { void shutdown().finally(() => process.exit(0)); });
 process.once('SIGTERM', () => { void shutdown().finally(() => process.exit(0)); });
 router.start().then(() => {
+    stopExpiry = startAgentMessageExpiryScheduler(() => (isDatabaseOpen() ? getDatabase() : null), { trigger: 'router' });
     const { idleMs, checkMs } = routerIdleSettings(process.env);
     watchRouterIdle({
         db: database,

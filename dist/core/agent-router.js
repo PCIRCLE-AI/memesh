@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { fetchAgentMessage, HANDLED_RECEIPT_KINDS_SQL, agentHostKind, agentSessionHandle, } from './agent-messaging.js';
+import { agentMessageExpiryCutoff } from './agent-message-ttl.js';
 import { compareSemVerPrecedence, parseSemVer } from './semver.js';
 import { sessionIdRejection } from './agent-scope-id.js';
 export const AGENT_ROUTER_PROTOCOL_VERSION = 2;
@@ -273,7 +274,7 @@ export class AgentRouter {
             model: null,
             work_summary: registration.work_summary ?? null,
         });
-        setImmediate(() => { void this.drainConnection(connection, request.hops + 1).catch(() => undefined); });
+        setImmediate(() => { void this.drainConnection(connection, request.hops + 1).catch((error) => reportDrainFailure(connection, error)); });
         if (this.onHostConnected) {
             const onHostConnected = this.onHostConnected;
             setImmediate(() => {
@@ -591,6 +592,7 @@ export class AgentRouter {
         )
         AND (e.event_sequence > ? OR (e.event_sequence = ? AND d.delivery_id > ?))
         AND d.target_kind = 'principal' AND d.recipient = ? AND e.event_sequence > ?
+        AND d.created_at >= ?
       ORDER BY e.event_sequence ASC, d.delivery_id ASC
       LIMIT ?
     `);
@@ -598,12 +600,19 @@ export class AgentRouter {
         let cursorSequence = 0;
         let cursorDeliveryId = '';
         for (;;) {
-            const rows = selectBatch.all(connection.project, upperBound, cursorSequence, cursorSequence, cursorDeliveryId, connection.principal_id, checkpoint.activation_event_sequence, this.limits.drain_limit);
+            const rows = selectBatch.all(connection.project, upperBound, cursorSequence, cursorSequence, cursorDeliveryId, connection.principal_id, checkpoint.activation_event_sequence, agentMessageExpiryCutoff(), this.limits.drain_limit);
             if (rows.length === 0)
                 break;
             for (const row of rows) {
-                if (await this.dispatchDelivery(row.delivery_id, connection.project, hops, connection))
-                    drained += 1;
+                try {
+                    if (await this.dispatchDelivery(row.delivery_id, connection.project, hops, connection))
+                        drained += 1;
+                }
+                catch (error) {
+                    if (error instanceof AgentRouterError && error.code === 'delivery_not_found')
+                        continue;
+                    throw error;
+                }
             }
             const last = rows.at(-1);
             cursorSequence = last.event_sequence;
@@ -738,10 +747,10 @@ export class AgentRouter {
       SELECT d.delivery_id, d.message_id, d.project, d.recipient, d.target_kind, d.intended_session, e.event_sequence
       FROM agent_message_deliveries d
       JOIN agent_message_events e ON e.delivery_id = d.delivery_id
-      WHERE d.delivery_id = ? AND d.project = ?
-    `).get(validateField('delivery_id', deliveryId), validateField('project', project));
+      WHERE d.delivery_id = ? AND d.project = ? AND d.created_at >= ?
+    `).get(validateField('delivery_id', deliveryId), validateField('project', project), agentMessageExpiryCutoff());
         if (!row)
-            throw new AgentRouterError('delivery_not_found', 'The delivery does not exist in this project.');
+            throw new AgentRouterError('delivery_not_found', 'The delivery does not exist in this project, or its message is past its one-day lifetime.');
         parseTargetKind(row.target_kind);
         return row;
     }
@@ -1386,5 +1395,11 @@ function toRouterError(error) {
     if (error instanceof AgentRouterError)
         return error;
     return new AgentRouterError('internal_error', 'The router could not process the request.');
+}
+function reportDrainFailure(connection, error) {
+    try {
+        process.stderr.write(`MeMesh router: could not push pending messages to session ${connection.session_instance_id} (${error instanceof Error ? error.message : String(error)})\n`);
+    }
+    catch { }
 }
 //# sourceMappingURL=agent-router.js.map

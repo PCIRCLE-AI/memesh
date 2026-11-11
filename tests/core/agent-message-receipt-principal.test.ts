@@ -15,7 +15,7 @@
 import { describe, it, expect } from 'vitest';
 import { getDatabase } from '../../src/db.js';
 import { AgentMessageAccessError, readAgentMessageReceipts, sendAgentMessage } from '../../src/core/agent-messaging.js';
-import { pruneTerminalAgentMessagePayloads } from '../../src/core/agent-message-storage.js';
+import { getAgentMessageStorageReport } from '../../src/core/agent-message-storage.js';
 import { executeAgentMessageAction } from '../../src/transports/agent-messaging.js';
 import { hostSessionFromEnv } from '../../src/core/host-session.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
@@ -165,7 +165,8 @@ describe('actions on a message and the caller session\'s principal', () => {
     await expect(call(baseInput(subject, 'ack', 'k-ack'), sb2.toUpperCase())).rejects.toThrow(/intended_for_other_session/);
     await expect(call(baseInput(subject, 'disposition', 'k-done'), sb2.toUpperCase())).rejects.toThrow(/intended_for_other_session/);
     getDatabase().prepare("UPDATE agent_message_receipts SET created_at = '2020-01-01 00:00:00'").run();
-    expect(pruneTerminalAgentMessagePayloads(getDatabase(), { cutoff: '2999-01-01T00:00:00Z', dryRun: false }).candidate_count).toBe(0);
+    // Neither refused call finished the message: it is still unresolved, not terminal.
+    expect(getAgentMessageStorageReport(getDatabase(), {})).toMatchObject({ terminal_retained_message_count: 0, protected_unresolved_message_count: 1 });
     expect(await call(baseInput(subject, 'fetch', 'x'), sb)).toMatchObject({ payload: { text: 'review is done' } });
   });
 

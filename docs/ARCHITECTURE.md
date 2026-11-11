@@ -81,6 +81,8 @@ MeMesh separates concerns into two layers:
 - `native-memory-editor.ts` — edits an existing project memory through `remember`, preserves history without increasing confidence, refuses stale edits, and reads back stored text. MCP form elicitation supplies terminal forms; the Claude Desktop Mod prepares a revision and submits its pane inputs to the same operation, with no separate writer, database or web server.
 - `agent-messaging.ts` — transactional exact-recipient messages, opaque cursors, bounded waits, payload fetch, a 64 KiB JSON-encoded durable payload cap, and independent receipt facts
 - `agent-router.ts` — owner-private local routing from a durable message event to an eligible active host adapter, plus a bounded project-scoped directory of live registrations; native delivery is bounded by a 16 KiB cap on the untrusted full envelope, including routing metadata and payload; the Claude Code channel carries that envelope, the Codex CLI queue only a notice naming the message. Ordinary Claude MCP sessions use `host-runtime/claude-inbox.ts` to register presence and send a notice through the native inbox when available. Exact-session acceptance requires a matching new transcript receive record; it does not mean the model has read or accepted the message. A Channel connection for the same session takes precedence.
+- `agent-message-ttl.ts` — the one-day message lifetime and the cutoff every reader shares. A leaf, mirrored into `scripts/hooks/_generated/` so the hooks' unread count agrees with it
+- `agent-message-expiry.ts` — deletes messages one day after creation, read or not, and tells the sender of an unread one. Started on a timer by the router daemon, `memesh serve` and the MCP server; copies what it deletes into an archive file (kept one more day) before deleting it; records every run (including ones that find nothing) in `agent_message_expiry_runs`, which `memesh doctor` reads
 - `session-activity.ts` — formats bounded session summaries from available repository, host status, title and current task data. Claude task state comes from native transcript plan records; Codex plan state comes from its native `update_plan` hook. Hosts include the summary in heartbeats only when the router advertises the feature.
 - `config.ts` — owner-local configuration reads and partial updates for the retained non-model settings
 - `paths.ts` — centralised filesystem path resolution (HOME-first override; shared with hooks via a build-generated copy in `scripts/hooks/_generated/`)
@@ -315,6 +317,34 @@ message send (MCP / HTTP / CLI)
      (64 KiB JSON-encoded durable payload; 16 KiB complete native envelope)
   -> exact-session send returns only after native host acceptance
 ```
+
+### Expire a message (automatic)
+
+```
+router daemon / MCP server / `memesh serve` timer (5 min; first run 1 s after start)
+  -> skip if the last finished run is younger than the interval (a run left "started" by a dead process, or dated in the future, does not count)
+  -> any message older than one day, or any archive row older than a day, or old presence rows?  no -> record "nothing_expired", stop
+  -> write probe, without waiting on another process's lock: a locked database records "database_busy" (the row is
+     retried between event-loop turns until the lock goes), an unwritable one "read_only"; both stop
+  -> take the one-row lease in the database; held by a live process -> record "skipped_concurrent", stop
+  -> close any run left "started" as "interrupted"; write this run as "started"
+  -> remove archive rows archived more than a day ago (by the time kept in the archive, never by file name), 100
+     messages per transaction with an event-loop turn between; first, so a batch that cannot be archived does not
+     also stop the archive from shrinking
+  -> per batch of 100: copy the rows (message, delivery, events, idempotency key, receipts, retention facts, attempts,
+     host accepts, acks, workflow facts) by column name into backups/agent-messages-expired.db, replacing an older
+     copy and starting its extra day again, and commit; check the archive holds them with the same content (an
+     archive path that is the database itself, a dangling symlink or not a database is refused); then, in one
+     transaction on the main database: renew the lease, remember the ids in agent_message_expiries (an unread one
+     with its notice still owed), DELETE FROM agent_messages (foreign keys cascade), save the run's counts; give
+     the event loop a turn
+  -> write one notice per (project, sender) for every remembered id that still owes one, this run's and any a
+     stopped run left, and mark those ids; a notice is never changed once written
+  -> delete old presence facts and ended connections not pinned by a remaining attempt
+  -> finish the run's row
+```
+
+Readers do not wait for the run: `poll`, `fetch`, receipts, the unread count and the router's drain all filter on the same cutoff, so a message past its day is gone to them before it is gone from disk. Cursor rows are kept: a cursor is a sequence number, and sequence numbers are never reused. Session instances and principals are kept too: they are one small row per session and answer "is this recipient known".
 
 Implementation anchors: `src/core/agent-messaging.ts`, `src/core/agent-router.ts`,
 `src/transports/agent-messaging.ts`, `src/host-adapters/`, `src/host-runtime/`, and

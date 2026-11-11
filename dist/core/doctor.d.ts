@@ -51,7 +51,6 @@ interface DoctorOptions {
     fetchImpl?: typeof fetch;
     agentMessageStoragePolicy?: {
         storage_quota_bytes?: number;
-        retention_cutoff?: Date | string;
     };
     nativeBindingProbeImpl?: (packageRoot: string) => {
         ok: true;

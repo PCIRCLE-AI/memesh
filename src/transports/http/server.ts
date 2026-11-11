@@ -10,6 +10,7 @@ import {
   closeDatabase,
   getDatabase,
   failureMessage,
+  isDatabaseOpen,
 } from '../../db.js';
 import {
   remember,
@@ -28,6 +29,7 @@ import {
 } from '../../core/config.js';
 import { SESSION_LIMIT_MIN, SESSION_LIMIT_MAX } from '../../core/session-limit.js';
 import { AGENT_SCOPE_ID_MAX_LENGTH } from '../../core/agent-scope-id.js';
+import { startAgentMessageExpiryScheduler } from '../../core/agent-message-expiry.js';
 import { BRIEFING_LEVELS } from '../../core/briefing-level.js';
 import { isDoctorFixPermissionError, removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
 import { computePatterns } from '../../core/patterns.js';
@@ -1233,6 +1235,13 @@ export function startServer(
      * developer's real ~/.memesh) on every build.
      */
     autoUpdateCheck?: boolean;
+    /**
+     * Opt-IN to the one-day agent-message expiry (core/agent-message-expiry.ts),
+     * the same scheduler the router and the MCP server run. Set by the CLI
+     * `serve` command and the standalone `memesh-http` entry, so a server that
+     * is the only MeMesh process running still deletes what is a day old.
+     */
+    agentMessageExpiry?: boolean;
     /** Test seams for the background update-cache fill. */
     updateCheckImpl?: typeof checkForUpdate;
     lastUpdateCheckImpl?: typeof getLastUpdateCheck;
@@ -1377,6 +1386,13 @@ export function startServer(
   // back via `req.socket.server` so the requirement is per-listener,
   // not process-global.
   serverAuthRequired.set(server, isRemote);
+  if (opts?.agentMessageExpiry === true) {
+    const stopExpiry = startAgentMessageExpiryScheduler(
+      () => (isDatabaseOpen() ? getDatabase() : null),
+      { trigger: 'http-serve' },
+    );
+    server.on('close', stopExpiry);
+  }
   return server;
 }
 
@@ -1393,7 +1409,7 @@ const isMain = process.env.MEMESH_CLI_SERVE !== '1'
 if (isMain || process.argv[1]?.endsWith('memesh-http')) {
   let server: ReturnType<typeof startServer>;
   try {
-    server = startServer();
+    server = startServer(undefined, undefined, { agentMessageExpiry: true });
   } catch (err) {
     // Same treatment as the CLI `serve` path: the refusal message is
     // actionable on its own and does not need a stack trace wrapped round it.

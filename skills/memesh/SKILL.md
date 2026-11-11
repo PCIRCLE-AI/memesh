@@ -174,7 +174,7 @@ same repository share one discovery and native-routing scope: each host derives
 its `project` from its own working directory, so no `--project` value has to
 match.
 
-Durable audit does not mean unbounded silent growth. Owners can inspect it with `memesh message storage report --cutoff <ISO timestamp>`, preview bounded terminal-payload tombstones with `memesh message storage prune --cutoff <ISO timestamp>`, and explicitly add `--apply`. Never prune unresolved/offline-pending work. `MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES` is an optional owner policy; there is no default quota or automatic pruning.
+A message is kept for one day, read or unread, then MeMesh deletes it (while its router, MCP server or `memesh serve` is running); its content stays in a local archive for one more day. If its recipient recorded no intake, acknowledgement or disposition and sent no reply, the sender gets one message from `memesh` listing what expired: `poll` your own recipient id and `fetch` it. Fetching or acknowledging an expired id returns `message_expired` for 30 days (after that, "not available"), and a reply to it from its sender or recipient is refused the same way and not stored; to answer such a message, send your reply without `reply_to` and say what it answers. After 30 days, or from anyone else, a reply with that `reply_to` is stored as usual. `memesh message storage report` and `memesh doctor` show the last cleanup and where the archive is. `MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES` is an optional owner policy; there is no default quota.
 
 ## What's Already Automatic (Plugin Hooks)
 
