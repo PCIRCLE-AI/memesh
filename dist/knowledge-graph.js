@@ -8,6 +8,7 @@ import { ftsIndexIsCurrent } from './storage/schema.js';
 import { addTags, appendObservations, insertOrGetEntity, reindexEntityFts, runEntityWrite } from './storage/entity-write.js';
 import { canonicalEntityType } from './core/work-topology.js';
 import { noProjectTag, projectScopeFilter } from './core/project-scope.js';
+import { releaseCompressedRecord } from './core/compression-ledger.js';
 import { KNOWN_ERROR_PATTERNS, MIN_NAME_PROJECT_LENGTH, PROJECT_TAG_PREFIX } from './core/project-attribution.js';
 import { NOT_A_PROJECT_MEMORY } from './core/projects.js';
 import { addsNewText, besideRefusal, clearPartsOfKey, metadataRefusal, redactTextValues, redactTitleAndObservations, redactVersionText, textsIn } from './core/paths.js';
@@ -126,6 +127,9 @@ function dropUbiquitousTerms(db, terms) {
         return terms;
     }
 }
+export function isMetadataObject(value) {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+}
 export class KnowledgeGraph {
     db;
     constructor(db) {
@@ -207,7 +211,7 @@ export class KnowledgeGraph {
             if (metaRow?.metadata) {
                 try {
                     const parsed = JSON.parse(metaRow.metadata);
-                    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+                    if (!isMetadataObject(parsed))
                         throw new Error('metadata is not an object');
                     metadata = parsed;
                 }
@@ -236,6 +240,7 @@ export class KnowledgeGraph {
         }
         const wasArchived = !isNewEntity && row.status === 'archived';
         if (wasArchived) {
+            releaseCompressedRecord(this.db, entityId);
             this.db
                 .prepare("UPDATE entities SET status = 'active' WHERE name = ?")
                 .run(name);

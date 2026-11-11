@@ -392,7 +392,9 @@ program
 // once a day per installed version, from the same resolver the hooks use —
 // so turning updates off (`updateCheck` false) also silences the CLI.
 // stderr, never stdout: commands that print JSON stay parseable. Commands
-// that ARE about updates or setup speak for themselves and are skipped.
+// that ARE about updates or setup speak for themselves and are skipped, and so
+// is `agent setup`: a script reads its `--json`, and it promises to write only
+// the host config and the router token, not a background update check's files.
 const UPDATE_NOTICE_SILENT_COMMANDS = new Set([
   'status', 'update', 'doctor', 'config', 'upgrade-plugin', 'serve', 'setup', 'install-hooks', 'uninstall-hooks',
   // Called by the Hermes plugin, not typed by a person: nobody reads its stderr.
@@ -406,6 +408,7 @@ function topLevelCommandName(command: Command): string {
 }
 program.hook('preAction', (_thisCommand, actionCommand) => {
   if (UPDATE_NOTICE_SILENT_COMMANDS.has(topLevelCommandName(actionCommand))) return;
+  if (actionCommand.name() === 'setup' && actionCommand.parent?.name() === 'agent') return;
   const line = updateNoticeForEntryPoint({ currentVersion: pkg.version, entryPoint: 'cli' });
   if (line) process.stderr.write(`${line}\n`);
 });
@@ -775,7 +778,7 @@ program
 // --- forget ---
 program
   .command('forget')
-  .description('Archive an entity or remove an observation (soft-delete, recoverable)')
+  .description('Archive an entity (reversible) or permanently remove one observation')
   .requiredOption('--name <name>', 'Entity name')
   .option('--observation <text>', 'Remove specific observation only', nonEmpty('--observation'))
   .option('--json', 'Output as JSON')
@@ -1658,8 +1661,17 @@ agentCmd
       mode: host === 'codex-session'
         ? 'ordinary-session-native-queue'
         : host === 'claude' ? 'session-owned-channel' : 'memesh-managed-session',
-      session_identity: host === 'codex-session' ? 'codex-thread-id-at-session-start' : 'generated-per-process',
-      ordinary_sessions: host === 'codex-session' ? 'automatic-thread-scoped-with-workspace-override' : 'presence-only/inbound-unavailable',
+      session_identity: host === 'codex-session'
+        ? 'codex-thread-id-at-session-start'
+        : host === 'claude' ? 'claude-code-session-id-or-generated-outside-claude-code' : 'generated-per-process',
+      ordinary_sessions: host === 'codex-session'
+        ? 'automatic-thread-scoped-with-workspace-override'
+        : host === 'claude'
+          ? 'automatic-presence-with-native-notice-when-inbox-socket-available'
+          : host === 'codex'
+            ? 'automatic-thread-scoped-via-codex-plugin'
+            // Gemini: src/mcp/server.ts registers presence only for Claude Code clients.
+            : 'none/inbound-unavailable',
       registration_command: registrationCommand,
       launch_command: launchCommand,
       next_command: registrationCommand ?? launchCommand ?? 'Restart Codex in the configured workspace to apply the identity override',

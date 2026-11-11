@@ -120,9 +120,9 @@ hosts should share memories. Not installed yet? Follow
    acknowledge and does not end the reminder. Under Claude Code, a separate
    Stop hook additionally BLOCKS the turn from ending — once per message id
    with no intake receipt yet that this session has not already been blocked
-   for — asking you to poll, fetch and record intake before finishing; it does
-   not run under Codex (#468). Every Claude Code session in a project shares
-   one principal; a message sent with `intended_session` is meant for one of
+   for — asking you to poll, fetch and record intake before finishing. Under Codex it
+   only records a skip and never blocks (#468). Every Claude Code session in a
+   project shares one principal; a message sent with `intended_session` is meant for one of
    them, so only that session is reminded or blocked by it, and `intake` or
    `disposition` from any other session returns `intended_for_other_session`
    — leave such a message for its session (#497).
@@ -140,7 +140,7 @@ hosts should share memories. Not installed yet? Follow
 | `learn` | Record a structured lesson: error, root cause, fix, prevention |
 | `task_state` | Read or update where the work stands: goal / next / blocked / done |
 | `briefing` | The assembled work topology — an eligible exact-project handoff precedes ranked memories at every level, after optional repository facts; `minimal` then shows this project's decisions, lessons, knowledge and recent activity plus memories with no project and a few preferences of other projects, closing with the recent index (titles of the 30 most recently written memories in scope) at every level, `standard` adds fresh task state, and `full` adds other projects and global memory; exact `project` + `recipient` can surface only that recipient's unfetched deliveries |
-| `user_patterns` | Analyze work schedule, tool preferences, and focus areas from memory |
+| `user_patterns` | Analyze work schedule, focus areas, and commit workflow from memory |
 | `improvement` | Propose an evidence-linked product improvement or read its status; only a human may accept/reject it |
 | `message` | Discover live agents, then exchange exact-recipient untrusted messages: durable JSON payload max 64 KiB; complete native envelope max 16 KiB with distinct `native_message_too_large` and `recipient_unavailable` errors; delivery reads/acceptance never imply ACK or disposition; a message is kept one day, then deleted |
 | `private_session` | When the user asks not to remember or save this session (any words, any language): call it first, then write nothing to memory. Automatic saving stops for the session (commit records and the list of edited file paths are still saved); earlier memories stay until `forget` |

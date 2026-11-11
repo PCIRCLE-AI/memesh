@@ -459,7 +459,8 @@ const messageRecipient = agentScopeId('recipient');
 // `sender` is provenance, not routing: it keys no inbox, and
 // `agent_message_idempotency` is keyed (project, sender, idempotency_key), so
 // canonicalising it would mutate replay-protection keys for no delivery
-// benefit. Left exactly as it was.
+// benefit. It is only trimmed (nonBlankBounded), never NFC-normalised or
+// refused for looking like a path.
 const messageSender = nonBlankBounded(AGENT_SCOPE_ID_MAX_LENGTH);
 const messageId = nonBlankBounded(255);
 const messageCursor = nonBlankBounded(160);

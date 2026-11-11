@@ -517,7 +517,7 @@ export declare const TOOL_DEFINITIONS: readonly [{
     };
 }, {
     readonly name: "user_patterns";
-    readonly description: "Analyze user work patterns from existing memory. Returns: work schedule (peak hours/days), tool preferences, focus areas, workflow metrics (session duration, commits/session), knowledge strengths, and learning areas. Use it when the task needs context about how the user works, such as their schedule or tool preferences; it is not part of loading a session.";
+    readonly description: "Analyze user work patterns from existing memory. Returns: work schedule (peak hours/days), focus areas, workflow metrics (commits per session, total sessions and commits), knowledge strengths, and learning areas. Use it when the task needs context about how the user works, such as their schedule or focus areas; it is not part of loading a session.";
     readonly inputSchema: {
         readonly type: "object";
         readonly properties: {
@@ -607,7 +607,7 @@ export declare const TOOL_DEFINITIONS: readonly [{
             };
             readonly sender: {
                 readonly type: "string";
-                readonly description: "Required for send. Stable local sender/agent identifier; provenance only, and stored exactly as given.";
+                readonly description: "Required for send. Stable local sender/agent identifier; provenance only, trimmed of surrounding whitespace but otherwise stored as given.";
             };
             readonly recipient: {
                 readonly type: "string";

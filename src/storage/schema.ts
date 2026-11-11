@@ -794,6 +794,14 @@ export function retryWhileLocked<T>(step: () => T, deadlineMs: number, where: st
 /** How long a failed migration waits before trying again. */
 export const MIGRATION_RETRY_BACKOFF_MS = 24 * 60 * 60 * 1000;
 
+/** Did migration `key` fail less than {@link MIGRATION_RETRY_BACKOFF_MS} ago? Then {@link runOnceMigration} will not run it yet. */
+export function migrationRetryPending(db: MemeshDatabase, key: string): boolean {
+  const lastAttempt = (db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(`${key}_last_attempt`) as
+    | { value: string }
+    | undefined)?.value;
+  return !!lastAttempt && Date.now() - parseInt(lastAttempt, 10) < MIGRATION_RETRY_BACKOFF_MS;
+}
+
 /**
  * Run a versioned migration at most once, atomically, with a retry backoff.
  *
@@ -847,10 +855,7 @@ export function runOnceMigration(
   const stored = readMarker(key);
   if (stored && parseInt(stored, 10) >= version) return false;
 
-  const lastAttempt = readMarker(attemptKey);
-  if (lastAttempt && Date.now() - parseInt(lastAttempt, 10) < MIGRATION_RETRY_BACKOFF_MS) {
-    return false;
-  }
+  if (migrationRetryPending(db, key)) return false;
 
   try {
     db.transaction(() => {

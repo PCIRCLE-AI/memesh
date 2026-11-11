@@ -12,7 +12,8 @@
 import { describe, it, expect } from 'vitest';
 import { getDatabase } from '../../src/db.js';
 import { sendAgentMessage, recordAgentReceipt } from '../../src/core/agent-messaging.js';
-import { unreadDeliveryCount, unreadMessageRefsFor, unreadInboxLines, unreadInboxLinesFor } from '../../src/core/agent-message-inbox.js';
+import { unreadDeliveryCount, unreadMessageRefsFor, unreadInboxLines, unreadInboxLinesFor, inboxUnreadableLine } from '../../src/core/agent-message-inbox.js';
+import { assembleBriefing } from '../../src/core/briefing.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
 import { registerAgentSession, sendSessionTargetedMessage } from '../helpers/agent-session-fixture.js';
 
@@ -343,5 +344,54 @@ describe('a delivery past its one-day lifetime is not waiting for anyone', () =>
     expect(unreadInboxLinesFor(getDatabase(), 'claude-principal')).toEqual([]);
     sendAged('-23 hours | -30 minutes');
     expect(unreadInboxLinesFor(getDatabase(), 'claude-principal').join('\n')).toContain('1 message');
+  });
+});
+
+describe('an inbox that cannot be read is not an empty inbox', () => {
+  useTestDatabase('memesh-inbox-unreadable-');
+
+  const send = () => sendAgentMessage(getDatabase(), { project: 'proj-u', sender: 'sender', recipient: 'reader', idempotency_key: 'u-1', content_type: 'application/json', payload: { text: 'hello' } });
+
+  it('counts a waiting delivery, then refuses to answer once the receipts it checks are unreadable', () => {
+    send();
+    expect(unreadDeliveryCount(getDatabase(), 'proj-u', 'reader')).toBe(1);
+    getDatabase().exec('DROP TABLE agent_message_receipts');
+    expect(() => unreadDeliveryCount(getDatabase(), 'proj-u', 'reader')).toThrow(/agent_message_receipts/);
+  });
+
+  it('still reads a graph from before messaging as zero', () => {
+    getDatabase().exec('DROP TABLE agent_message_receipts');
+    getDatabase().exec('DROP TABLE agent_message_deliveries');
+    expect(unreadDeliveryCount(getDatabase(), 'proj-u', 'reader')).toBe(0);
+  });
+
+  it('makes briefing say the inbox could not be read, never that nothing is waiting', () => {
+    send();
+    getDatabase().exec('DROP TABLE agent_message_receipts');
+    const text = assembleBriefing('proj-u', 'reader').text;
+    // Says what failed, not just that something did.
+    expect(text).toContain('could not be read: "no such table: agent_message_receipts"');
+    // The old silence printed nothing at all; the quiet-inbox and typo lines
+    // must not appear either, since neither is true.
+    expect(text).not.toMatch(/No messages waiting|never been seen/);
+  });
+});
+
+describe('inboxUnreadableLine', () => {
+  it('squashes a multi-line reason to one line and caps it at 200 characters', () => {
+    const line = inboxUnreadableLine('proj-u', 'reader', `first line\n\n  second\tline ${'x'.repeat(400)}`);
+    expect(line).not.toMatch(/\n/);
+    expect(line).toContain('could not be read: "first line second line x');
+    const quoted = /could not be read: (".*") — that is not/.exec(line)![1];
+    expect(JSON.parse(quoted)).toHaveLength(200);
+    expect(line).toContain('run memesh doctor');
+  });
+
+  it('quotes a reason with quotes and backslashes as JSON, so it reads back exactly', () => {
+    const reason = 'say "hi"\\ there';
+    const line = inboxUnreadableLine('proj-u', 'reader', reason);
+    const quoted = /could not be read: (".*") — that is not/.exec(line)![1];
+    expect(JSON.parse(quoted)).toBe(reason);
+    expect(quoted).toContain('\\"');
   });
 });

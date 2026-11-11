@@ -277,15 +277,18 @@ describe('a decision line that must be cut keeps the condition, not the title', 
     const line = topologyLine(entity({ title: TITLE, why }), 160);
     expect(line).toContain(`Why: ${why} [mem:7]`);
     expect(line).toMatch(/^- \[decision\] Use exponential backoff.*… — Why: /);
-    expect(line.length).toBeLessThanOrEqual(160 + '- [decision] '.length + 1);
+    // The ellipsis counts against the budget: never one character over.
+    expect(line.length).toBeLessThanOrEqual(160 + '- [decision] '.length);
   });
 
   it('stops clipping the title at its floor and clips the reason after that', () => {
     const why = `the vendor bans bursts ${'and punishes every retry storm '.repeat(8)}; revisit if the vendor changes its limits`;
     const line = topologyLine(entity({ title: TITLE, why, unconfirmedDays: 41 }), 160);
     const [head] = line.replace('- [decision] ', '').split(' — Why: ');
-    expect(head.length).toBeGreaterThanOrEqual(40);
-    expect(head.length).toBeLessThanOrEqual(41);
+    // Clipped at its 40-character floor, ellipsis included, on a word boundary.
+    expect(head.length).toBeGreaterThanOrEqual(30);
+    expect(head.length).toBeLessThanOrEqual(40);
+    expect(head.endsWith('…')).toBe(true);
     expect(line).toContain(' — Why: the vendor bans bursts');
     expect(line).toMatch(/… \(unconfirmed 41 days: re-check before relying\) \[mem:7\]$/);
   });

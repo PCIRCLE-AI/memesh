@@ -1058,7 +1058,7 @@ describe('CLI durable-message ingress', () => {
       };
       expect(result).toMatchObject({
         session_identity: 'generated-per-process',
-        ordinary_sessions: 'presence-only/inbound-unavailable',
+        ordinary_sessions: 'automatic-thread-scoped-via-codex-plugin',
         registration_command: null,
         launch_command: expect.stringContaining('memesh-host-codex'),
       });
@@ -1196,6 +1196,51 @@ describe('CLI durable-message ingress', () => {
     }
   });
 
+  it.skipIf(process.platform === 'win32')('says an ordinary Gemini session registers nothing, since only Claude Code clients do', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-agent-'));
+    try {
+      const setup = spawnSync(process.execPath, cliArgs(
+        'agent', 'setup', 'gemini', '--project', 'test', '--principal', 'gem', '--workspace', home, '--json',
+      ), { encoding: 'utf8', env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' } });
+      expect(setup.status, setup.stderr).toBe(0);
+      const result = JSON.parse(setup.stdout) as { session_identity: string; ordinary_sessions: string };
+      expect(result.session_identity).toBe('generated-per-process');
+      expect(result.ordinary_sessions).toBe('none/inbound-unavailable');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  // `agent setup` is read by scripts (`--json`) and promises to write only the
+  // host config and the router token: no background update check, so no
+  // update-check or refresh marker appears next to them.
+  it.skipIf(process.platform === 'win32')('leaves only the host config and the router token behind', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-agent-'));
+    try {
+      const dataDir = path.join(home, '.memesh');
+      // The built CLI, not the source loader the other tests use: the update
+      // check only starts from the bundled layout.
+      const builtCli = path.join(__dirname, '..', 'dist', 'transports', 'cli', 'cli.js');
+      const setup = spawnSync(process.execPath, [builtCli, 'agent', 'setup', 'claude', '--principal', 'claude-a', '--json'], {
+        encoding: 'utf8',
+        // A set MEMESH_UPDATE_CHECK_PATH (the suite sets one) would move the cache
+        // elsewhere and hide the marker this test looks for.
+        env: Object.fromEntries(Object.entries({
+          ...process.env, HOME: home, MEMESH_DIR: dataDir, MEMESH_DB_PATH: path.join(dataDir, 'knowledge-graph.db'), MEMESH_AUTO_CAPTURE: 'false',
+          MEMESH_UPDATE_CHECK_PATH: undefined,
+        }).filter(([, v]) => v !== undefined)),
+      });
+      expect(setup.status, setup.stderr).toBe(0);
+      // Starting the background update check writes its `last-fresh-refresh.*.lock`
+      // marker before the child is spawned, so a check that was started has
+      // already left that file by the time the command exits: no waiting.
+      expect(fs.readdirSync(dataDir).sort()).toEqual(['agent-router.token', 'hosts']);
+      expect(fs.readdirSync(path.join(dataDir, 'hosts'))).toEqual(['claude.json']);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it.skipIf(process.platform === 'win32')('prints both Claude one-time registration and the required development-channel launch', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-agent-'));
     try {
@@ -1207,10 +1252,16 @@ describe('CLI durable-message ingress', () => {
       });
       expect(setup.status, setup.stderr).toBe(0);
       const result = JSON.parse(setup.stdout) as {
+        session_identity: string;
+        ordinary_sessions: string;
         registration_command: string;
         launch_command: string;
         next_command: string;
       };
+      // The channel host registers under the Claude Code session it runs in,
+      // and ordinary Claude MCP sessions register and get notices without it.
+      expect(result.session_identity).toBe('claude-code-session-id-or-generated-outside-claude-code');
+      expect(result.ordinary_sessions).toBe('automatic-presence-with-native-notice-when-inbox-socket-available');
       expect(result.registration_command).toContain('claude mcp add --transport stdio --scope user memesh-channel');
       expect(result.next_command).toBe(result.registration_command);
       expect(result.launch_command).toBe('claude --dangerously-load-development-channels server:memesh-channel');

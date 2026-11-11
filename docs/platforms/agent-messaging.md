@@ -232,7 +232,7 @@ left a session with no way to learn a message was waiting at all.
 
 **Recipient fallback.** When `MEMESH_RECIPIENT` is unset (not merely empty) and
 this hook run is Claude Code, SessionStart and the prompt hook read
-`principal_id` — never `auth_token`, and never `project` (below) — from the
+`principal_id` — never `token_file` (the router token's path), and never `project` (below) — from the
 owner-private `hosts/claude.json` the [Claude channel runner](#claude-channel-runner)
 setup below writes, and use it as the recipient whenever the file is present
 and valid. If that file is absent, they use the local `claude-code` principal;
@@ -241,11 +241,12 @@ or an invalid `principal_id`, remain quiet rather than choosing a different
 identity. This makes basic reminders independent of the optional Channel.
 Both paths use the same message IDs and intake receipts: a Channel acceptance
 alone does not stop reminders, while recorded intake does. Codex
-loads the same `hooks/hooks.json` and never uses this fallback: it has its own
+runs the same hook scripts (its own copy of the hook list in `.codex-plugin/plugin.json`, with the same Stop and SessionStart entries) and never uses this fallback: it has its own
 automatic thread-scoped registration and would otherwise silently adopt
 Claude's principal in a shared project.
 
-`hosts/claude.json` may still carry a `project` field from an older setup
+`hosts/claude.json` may carry a `project` field — from an older setup, or from
+`memesh agent setup claude --project`, which still records one for reference
 (#474 changed what the Claude channel host itself does with one — see the
 setup section below); this fallback ignores it, the same as the channel host
 does. `principal_id` is one stable identity for every Claude Code session on
@@ -257,13 +258,14 @@ reminder's own project line tell you which.
 **Stop gate.** A separate Claude Code Stop hook, registered after
 `session-summary.js`, resolves the recipient the same way (declared or
 fallback) and blocks the stop — `{"decision":"block","reason":"..."}`, printing
-the same waiting-message lines the prompt hook shows (including a
-live-session-targeted match, #490 above) plus one instruction line — once per
-message id that has no intake receipt yet and that this session has not
-already been blocked for. Whether a `host_accept` row exists is irrelevant to
+the same waiting-message text the prompt hook shows (including a
+live-session-targeted match, #490 above) followed by one instruction sentence,
+`Poll, fetch and record intake for each before you stop.` — once per
+(project, message id) pair that has no intake receipt yet and that this session
+has not already been blocked for. Whether a `host_accept` row exists is irrelevant to
 this: `host_accept` is not proof of delivery (see above), so a message a
 stopped or disconnected exact session never actually received still blocks the
-stop just as readily as one that was pushed. This hook never runs under Codex.
+stop just as readily as one that was pushed. Under Codex the hook still starts, but it records a skip (`this Stop is not running under Claude Code`) and never blocks.
 
 The per-session record of which ids it has already blocked for lives beside
 the database, keyed by `session_id`, next to the existing Stop-side
@@ -301,8 +303,7 @@ nothing — a false warning is worse than a missed one.
 
 ## One-time owner-private local-host setup
 
-**Two tiers, easy to conflate.** `memesh agent setup <host>` (below) only
-writes a local config file — it registers nothing by itself, and for `claude`
+**Two tiers, easy to conflate.** `memesh agent setup <host>` (below) only writes local files — the host config, plus the router token if it does not exist yet — and registers nothing by itself, and for `claude`
 and the managed `codex` runner it must be followed by actually starting that
 host (`memesh-host-claude` via [Claude channel runner](#claude-channel-runner),
 `memesh-host-codex` via
@@ -349,9 +350,7 @@ therefore normal when no session is open. A router you start yourself with
 The socket path — `MEMESH_ROUTER_SOCKET` if set, otherwise derived from your
 MeMesh database location — must fit in the 103-byte limit a Unix domain
 socket allows. A long `HOME` or `MEMESH_DIR` can push the default path over
-that limit; `memesh-router` then refuses to start, and `memesh doctor` names
-the path and its byte count. Set `MEMESH_ROUTER_SOCKET` to a shorter absolute
-path, or move `HOME`/`MEMESH_DIR` somewhere shorter, to fix it.
+that limit; `memesh-router` then refuses to start and prints the path and its byte count; `MEMESH_DOCTOR_PROBE_MESSAGE_ROUTER=1 memesh doctor` reports the same as a FAIL (plain `memesh doctor` leaves that row as an opt-in INFO). Move `HOME`/`MEMESH_DIR` somewhere shorter to fix it. `MEMESH_ROUTER_SOCKET` changes only the path that `memesh-router`, `memesh doctor`, senders and ordinary Claude MCP sessions use. It does not reach ordinary Codex plugin sessions: they use the default path, and there is no config of theirs to edit unless you create `hosts/codex-session.json` with `memesh agent setup codex-session` — which also replaces their principal, and which writes the default path as its `router_socket`, so that file would need the override too. Configs written by `memesh agent setup` for the managed hosts keep the default path in `router_socket` and need the same edit. The folder that holds the socket must be owner-private; with `MEMESH_DB_PATH` set, the default socket sits in that database's folder.
 
 If you start it yourself and want it to stay, set `MEMESH_ROUTER_IDLE_MS=0` and leave that process running. In a second terminal,
 verify only the installed adapter imports and the live router socket separately:
@@ -395,8 +394,7 @@ the old code:
 - A router newer than the host is used as is.
 
 Create one reusable owner-private config for each managed local host and
-principal. The stable principal is the logical recipient. Managed processes
-generate a fresh exact session identity. Ordinary Codex plugin sessions instead
+principal. The stable principal is the logical recipient. The managed Codex runner generates a fresh exact session identity per process; the Claude channel host registers under the Claude Code session it runs in (`CLAUDE_CODE_SESSION_ID`) and generates one only outside Claude Code. Ordinary Codex plugin sessions instead
 register automatically from the Codex thread identity supplied at SessionStart,
 using a distinct thread-scoped principal; no thread ID is copied by hand.
 
@@ -473,14 +471,12 @@ after its record shows its process is gone and the socket is still the one it
 bound. A start while another start for the same session is still under way,
 or with a socket in the way that no record accounts for, is refused with one
 `companion_busy` line, and the file is left alone: nothing can prove such a
-socket unused. A record left by a MeMesh from before #518 does not block a
-start; its socket used another name and is left in place.
+socket unused. A record left by a MeMesh from before #518 does not block a start once its process has exited (its socket used another name and is left in place); if that process is still running but does not answer, the start is refused with `companion_busy`, naming the process to check and the record to delete.
 The companion has no terminal of its own, so a reason it could not stop
 cleanly is appended to the owner-private `codex-companion.log` in the MeMesh
 data directory, and so is what a start or `SessionEnd` did with the record of
 a companion that had exited (its socket removed, or left in place and why).
-When a start fails, the reason is printed after `session registration failed.`
-and recorded in that log as well.
+When a start fails, the reason is printed after `session registration failed.`; when the failure happened inside the companion, it is also recorded in that log.
 
 For a registered session, MeMesh invokes `codex queue` with a short notice, never
 the message body: the project, recipient, target kind, message id and delivery
@@ -535,8 +531,7 @@ actor `memesh-router` in `message receipts`:
 receipts and, for each Codex thread, looks at the newest one. It reports a
 WARN naming every thread whose newest receipt says `no_daemon`: a message
 queued there is still waiting for a prompt, so send that thread one (and
-avoid `--no-daemon` next time). Otherwise, including when no release ran in
-the window, it reports PASS.
+avoid `--no-daemon` next time). Otherwise, including when no release ran in the window, the row is informational (`[INFO]`) and never fails; if the receipts cannot be read it is a WARN. A database from before the message tables existed shows no such row.
 
 The checks live in the router process; a router restart drops the ones still
 pending.
@@ -564,7 +559,7 @@ process arguments.
 
 ### Claude channel runner
 
-When `memesh doctor` is running from a Claude Code plugin cache, its default
+When `memesh doctor` runs from a Claude Code plugin cache, or from an npm-global install that finds one, its default
 `Claude Channel registration` row inspects only the user-scoped
 `mcpServers.memesh-channel` entry in Claude's canonical user config and the
 owner-private config file named by its `--config` argument. Missing
@@ -575,7 +570,7 @@ also a warning. `CONFIGURED` means only that the declaration and target are
 coherent; it does not verify development-channel admission or that an agent
 surfaced the notification.
 
-Run the printed `registration_command` once to add `memesh-channel` as a
+Run the command `memesh agent setup claude` printed (`Register once:`, or `registration_command` with `--json`) once to add `memesh-channel` as a
 user-scoped stdio MCP server. Claude owns that process for the session:
 
 ```bash
@@ -595,8 +590,8 @@ claude --dangerously-load-development-channels server:memesh-channel
 Without that flag Claude may initialize the ordinary MCP transport while
 silently dropping channel events; a MeMesh `host_accept` then proves only that
 the bounded message was written to stdio, not that Claude surfaced it. With the
-channel admitted, initialization creates and registers the exact MeMesh
-session automatically; EOF, MCP close, or normal signals unregister it.
+channel admitted, initialization registers the exact MeMesh session
+(under the Claude Code session id) automatically; EOF, MCP close, or normal signals unregister it.
 
 ### Experimental ACP runner (not release-gated)
 
@@ -644,11 +639,11 @@ TMPDIR=/private/tmp npm run qa:live-journey -- --host claude --out .qa/claude-re
 
 `--core-only` needs no host login and checks memory round trip, SessionStart briefing, quiet-commit capture, Stop capture, and packed upgrade against disposable state. It does not establish Codex or Claude delivery. The host modes require an interactive, authenticated owner environment and write private reports under gitignored `.qa/`. Keep `TMPDIR=/private/tmp` on macOS so the temporary router socket path fits the platform limit. Create the disposable `CODEX_HOME` outside an OS temporary directory: Codex CLI may refuse to start there.
 
-The disposable `CODEX_HOME` contains a real logged-in credential after `codex login`. When the run ends, including after failure, verify its path is the directory just created and remove that directory; do not leave it in your home folder or delete your normal `~/.codex`. The check's MeMesh data directory is temporary and removed on exit unless `--keep` is requested. It does not clean the disposable Codex login for you.
+The disposable `CODEX_HOME` contains a real logged-in credential after `codex login`. When the run ends, including after failure, verify its path is the directory just created and remove that directory; do not leave it in your home folder or delete your normal `~/.codex`. The check's MeMesh data directory is temporary and removed on exit, unless `--keep` is requested or the runner keeps it for safety because a host session was still connected (it then prints `Kept working directory:`). It does not clean the disposable Codex login for you.
 
 The Codex mode installs the candidate plugin into that disposable home and exercises one real CLI thread through SessionStart, native delivery, resume, and stopped-session fallback. A passing report needs model-visible readback, not only queue acceptance. The Codex queue carries only a notice, so the proof turn must fetch the body through the MeMesh `message` tool, record intake, and quote a sentinel that exists only in that body; the runner approves that one tool (`mcp_servers.memesh.tools.message.approval_mode = "approve"`) in the disposable `CODEX_HOME`, runs the MeMesh server from a rewritten `config.toml` entry with the journey's `MEMESH_DIR` and `MEMESH_DB_PATH` passed explicitly (so the plugin's own `cwd` and Codex's approval prompts are not exercised), requires an intake receipt written by the thread itself, and rejects any command in the turn other than reading the installed skill file, any tool other than the message tool (the one tolerated exception is the plugin's own failing `work_package prepare` probe), and any message action beyond receipts, fetch and intake for that one message. It also requires the fetch result to contain the sentinel and the thread's rollout to hold the queued notice without it. The Claude mode is interactive: inspect `/mcp` and `/hooks` before confirming isolation, since `--setting-sources ""` does not guarantee installed MeMesh hooks are absent. Stop if you cannot identify an extra MeMesh integration: it could write to your real database. Follow the runner's trusted prompt and wait for the model's intake; a reminder after delivery or transport acceptance alone is not equivalent. Claude print mode (`claude -p`) is not supported by this check.
 
-For a stopped or disconnected exact session, `recipient_unavailable` must be paired with a healthy router discovery and a durable fetch: that error can also mean the sender could not reach the router. Neither case restarts a host or proves the workflow completed. Review the JSON report's `limitations` and visible evidence before relying on either host result.
+For a stopped or disconnected exact session, `recipient_unavailable` must be paired with a healthy router discovery and a durable fetch: together they show the router answered and refused for that session, and that the message is still stored. A sender that cannot reach the router gets `router_unreachable` instead. Neither case restarts a host or proves the workflow completed. Review the JSON report's `limitations` and visible evidence before relying on either host result.
 
 ## Scope identifiers
 
@@ -674,16 +669,14 @@ MeMesh does not treat any prefix as a namespace, so `claude-code:reviewer` and
 `reviewer` are two different recipients.
 
 The same rule covers every surface that reads or writes that key, not only the
-`message` tool: `briefing` counts unfetched deliveries for one exact
-(`project`, `recipient`), and `memesh agent setup --principal` writes the
+`message` tool: `briefing` counts deliveries with no recorded intake for one exact (`project`, `recipient`), and `memesh agent setup --principal` writes the
 principal half of the identity a host will register under (the project half
 is derived automatically — see the setup section above, #474). A path-shaped
 value is refused there too, at the moment the config is written, rather than
 surfacing later as an error about some other agent's send.
 
 `sender` is not covered by any of this. It is provenance rather than routing —
-it keys no inbox, and it keys the send idempotency record — so it is stored
-exactly as given, and the transport-bound provenance remains the field to trust.
+it keys no inbox, and it keys the send idempotency record — so it is trimmed but not otherwise rewritten — no NFC canonicalisation and no path refusal — and the transport-bound provenance remains the field to trust.
 
 Rows written before this rule are preserved byte-for-byte. MeMesh reports
 path-shaped historical scope through its read-only memory invariant rather than
@@ -702,10 +695,7 @@ memesh kg rename-project --from <old> --to <new> --apply  # backs up first
 A **principal** is the stable logical recipient. A **session** is one live host connection for that principal. A **generation** changes when that session is replaced. A host that stalled past its lease (a laptop that slept, for example) is not replaced but expired: the router answers one of its requests (a heartbeat, for example) with `stale_generation`, and the host registers again under a new generation, waiting longer each time the router keeps doing so. The replaced host is told so, and stops: it can no longer receive. `memesh-host-claude`, `memesh-host-codex` and `memesh-host-acp` print `replaced by a newer connection for this session; stopping.` on stderr, close and exit 0; the Codex session companion writes that line to `codex-companion.log` in the data directory and exits. A close that fails, or a failure that came first, still exits 1. Stopping the replaced host leaves the newer connection registered. An exact-session target never reroutes. A principal target can deliver only to an eligible active session after its activation checkpoint; it does not replay historical inbox contents into a first session.
 
 Persistence, dispatch attempt, host acceptance, intake, acknowledgement,
-workflow disposition, retention, and presence are independent state axes. An
-active configured exact Claude session receives a bounded full message without
-polling or an inbox fetch; a Codex session receives a notice and reads the body
-from the inbox. An oversized full envelope returns
+workflow disposition, retention, and presence are independent state axes. An active exact Claude Channel session receives a bounded full message without polling or an inbox fetch; a Claude inbox or Codex session receives a notice and reads the body from the inbox. An oversized full envelope returns
 `native_message_too_large`. A stopped, missing, busy beyond its queue limit,
 disconnected, or unsupported session returns `recipient_unavailable` and is
 not awakened, resumed, or replaced; durable state remains available for audit
@@ -829,7 +819,7 @@ not promised to shrink. Full `VACUUM` is never run by a hook or by this cleanup.
 An owner may set `MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES` to a non-negative
 integer. This is a hard **logical payload** budget, not a whole SQLite file or
 disk quota. The canonical send transaction checks it before inserting any
-message effect; an over-quota send returns `storage_quota_exceeded` and leaves
+message effect; an over-quota send fails with "Agent message storage quota exceeded." (error code `storage_quota_exceeded` in the library; HTTP reports `errorCode: "operation.failed"`) and leaves
 no partial message, delivery, event, idempotency, dispatch, or receipt row.
 Metadata, indexes, reusable pages, and WAL bytes still consume disk and remain
 visible in the report; keep separate filesystem headroom and monitoring.

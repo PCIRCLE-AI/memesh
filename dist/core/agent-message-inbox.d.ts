@@ -11,6 +11,7 @@ interface InboxListDb {
 }
 export declare function sessionAliasChain(db: InboxDb, session: string): Set<string>;
 export declare function unreadDeliveryCount(db: InboxDb, project: string, recipient?: string, session?: string): number;
+export declare function inboxUnreadableLine(project: string, recipient: string, reason: string): string;
 export declare function recipientEverSeen(db: InboxDb, project: string, recipient: string): boolean | undefined;
 export declare function recipientEverSeenAnywhere(db: InboxDb, recipient: string, onError?: (err: unknown) => void): boolean | undefined;
 export declare function unknownRecipientHint(recipient: string): string;

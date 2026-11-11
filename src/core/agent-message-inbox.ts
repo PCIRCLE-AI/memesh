@@ -173,8 +173,9 @@ export function sessionAliasChain(db: InboxDb, session: string): Set<string> {
 /**
  * Deliveries addressed to recipients in `project` that have no intake receipt,
  * narrowed to `session` as {@link intendedSessionFilter} describes. 0 when the
- * message tables are absent (pre-4.8.0 graph) or on any query error — a
- * briefing must never fail because the inbox could not be counted.
+ * deliveries table is absent (pre-4.8.0 graph). Throws when the inbox exists
+ * but cannot be read: that is not an empty inbox, and the briefing, which must
+ * not fail because of it, says so instead of reporting nothing waiting.
  */
 export function unreadDeliveryCount(db: InboxDb, project: string, recipient?: string, session?: string): number {
   if (!recipient) return 0;
@@ -197,10 +198,18 @@ export function unreadDeliveryCount(db: InboxDb, project: string, recipient?: st
     ).get(project, recipient, ...intended.params, agentMessageExpiryCutoff()) as { n?: number } | undefined;
     const n = row?.n;
     return typeof n === 'number' && n > 0 ? n : 0;
-  } catch {
-    // Table missing (older schema) or unreadable: not a wakeup, not an error.
-    return 0;
+  } catch (err) {
+    // Only "no deliveries table at all" is a graph that never messaged: zero.
+    if (isMissingDeliveriesTableError(err)) return 0;
+    throw err;
   }
+}
+
+/** The briefing line for an inbox that exists but could not be read. */
+export function inboxUnreadableLine(project: string, recipient: string, reason: string): string {
+  // One line, bounded, JSON-quoted: the reason is an error string that ends up in model-facing text.
+  const shown = JSON.stringify(reason.replace(/\s+/g, ' ').trim().slice(0, 200));
+  return `The inbox for ${JSON.stringify(recipient)} in project ${jsonStringLiteral(project)} could not be read: ${shown} — that is not the same as no messages waiting; run memesh doctor.`;
 }
 
 /**

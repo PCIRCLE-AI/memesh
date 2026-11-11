@@ -13,7 +13,8 @@ import { AUTO_UPDATE_REASONS, currentPolicy, describeLockHolder, inspectAutoUpda
 import { getCurrentInstallChannel, getInstallChannelSupport, detectPluginHost, pluginHostConfigRoot, versionedPluginCacheRoots, PLUGIN_REFRESH_COMMANDS, } from './install-channel.js';
 import { readInstallRecordState } from './install-id.js';
 import { isWritable, ownerWriteCommand, runOrSay, shellQuote } from './file-mode.js';
-import { diagnoseDatabaseFailure } from './database-diagnosis.js';
+import { unreadDeliveryCount } from './agent-message-inbox.js';
+import { damagedDatabaseFix, diagnoseDatabaseFailure, isDamagedDatabaseError } from './database-diagnosis.js';
 import { withoutFinalPeriod } from './sentence.js';
 import { AutoArchiveRecordUnreadable, readLastAutoArchiveRun } from './lifecycle.js';
 import { citationRulePath, citationRuleState } from './citation-rule.js';
@@ -123,6 +124,8 @@ function openDatabaseForDoctor(dbPath, opts = {}) {
     return openDatabase(target, { ...opts, readOnly: true });
 }
 function isSchemaBehind(err) {
+    if (typeof err?.fix === 'string')
+        return false;
     return /no such (table|column)/i.test(err instanceof Error ? err.message : String(err));
 }
 function schemaBehindNote(databasePath = getDbPath()) {
@@ -157,6 +160,21 @@ function queryFailedFix(err) {
         return 'Another process has the database locked; wait for it to finish, or stop it, then retry.';
     }
     return 'The error is quoted above. Check that ~/.memesh is readable and that the disk is not full.';
+}
+function quickIntegrityVerdict(db) {
+    let row;
+    try {
+        row = db.prepare('PRAGMA quick_check(1)').get();
+    }
+    catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (!isDamagedDatabaseError(message))
+            throw err;
+        return message.replace(/\s+/g, ' ').slice(0, 200);
+    }
+    if (typeof row?.quick_check !== 'string')
+        return 'quick_check returned no verdict';
+    return row.quick_check.replace(/\s+/g, ' ').slice(0, 200);
 }
 function knownTranscriptPath(file) {
     if (typeof file !== 'string' || file === '')
@@ -1873,7 +1891,9 @@ async function inspectMessageRouterStatus(enabled, probe, lastIdleExit) {
         case 'missing':
             return createCheck('message-router-status', 'Live message router / host registration', 'warn', `No Local router socket exists at ${result.socket_path}. No active host is registered through this router, and MeMesh will not wake a stopped or missing session.${lastIdleExit ? ` The router last ended itself for idleness at ${lastIdleExit}.` : ' No idle exit of the router is recorded, so if a session was open a moment ago the router may have stopped for another reason.'}`, 'The router ends itself after 10 minutes (MEMESH_ROUTER_IDLE_MS) with no host connected and nothing being delivered, so a missing socket is normal while no session is open; a host session or a message send starts it again. To check it now, start a session or the owner-configured router with `memesh-router`, then run this opt-in probe again.', { code: 'message-router.socket-missing', params: { path: result.socket_path } });
         case 'path-too-long':
-            return createCheck('message-router-status', 'Live message router / host registration', 'fail', `The router socket path is ${result.detail} — over the ${AGENT_ROUTER_SOCKET_PATH_MAX_BYTES}-byte limit a Unix domain socket allows, so \`memesh-router\` cannot create it at ${result.socket_path}. Starting the router again fails the same way.`, 'Set MEMESH_ROUTER_SOCKET to a shorter absolute path, or move HOME / MEMESH_DIR somewhere with a shorter path, then start `memesh-router` again.', { code: 'message-router.socket-path-too-long', params: { path: result.socket_path, bytes: result.detail ?? 'unknown' } });
+            return createCheck('message-router-status', 'Live message router / host registration', 'fail', `The router socket path is ${result.detail} — over the ${AGENT_ROUTER_SOCKET_PATH_MAX_BYTES}-byte limit a Unix domain socket allows, so \`memesh-router\` cannot create it at ${result.socket_path}. Starting the router again fails the same way.`, process.env.MEMESH_ROUTER_SOCKET !== undefined
+                ? 'Set MEMESH_ROUTER_SOCKET to a shorter absolute path in a folder only you can access (owner-private), then start `memesh-router` again. It reaches `memesh-router`, `memesh doctor`, senders and ordinary Claude MCP sessions. Host configs written by `memesh agent setup` (`hosts/codex-session.json` included) keep the default path, and ordinary Codex sessions use the default path, so shorten HOME / MEMESH_DIR instead if they must reach this router.'
+                : 'Move HOME / MEMESH_DIR somewhere with a shorter path, then start `memesh-router` again. With MEMESH_DB_PATH set, the default socket sits in that database\'s folder, so move the database; the socket\'s folder must be owner-private. Setting MEMESH_ROUTER_SOCKET alone is not enough: it does not reach host configs written by `memesh agent setup` (`hosts/codex-session.json` included) or ordinary Codex sessions, which use the default path.', { code: 'message-router.socket-path-too-long', params: { path: result.socket_path, bytes: result.detail ?? 'unknown' } });
         case 'insecure':
             return createCheck('message-router-status', 'Live message router / host registration', 'fail', `Router socket at ${result.socket_path} is not an owner-private Unix socket.`, 'Stop the router, remove the unsafe socket, and restart `memesh-router` under the owning user.', { code: 'message-router.socket-insecure', params: { path: result.socket_path } });
         case 'unreachable':
@@ -1905,6 +1925,21 @@ export async function runDoctor(options) {
     let lastRouterIdleExit;
     try {
         const db = openDatabaseImpl(databasePath);
+        const integrity = quickIntegrityVerdict(db);
+        if (integrity !== 'ok') {
+            throw Object.assign(new Error(`Database at ${databasePath} opened, but SQLite's quick integrity check failed: ${integrity}`), {
+                fix: damagedDatabaseFix(databasePath),
+            });
+        }
+        try {
+            unreadDeliveryCount(db, '', 'memesh-doctor');
+        }
+        catch (err) {
+            const reason = (err instanceof Error ? err.message : String(err)).replace(/\s+/g, ' ').slice(0, 200);
+            throw Object.assign(new Error(`Database at ${databasePath} opened, but its message inbox cannot be read: ${reason}`), {
+                fix: 'This memesh cannot read the message tables, and briefing says the same. If a newer memesh version also uses this database, update this one to match it; otherwise the tables were changed outside memesh: restore a backup you trust, or report the error quoted above.',
+            });
+        }
         try {
             lastRouterIdleExit = readRouterIdleExit(db);
         }

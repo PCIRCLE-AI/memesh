@@ -9,8 +9,9 @@
 // message id not yet blocked for in this session, and asks the model to
 // poll, fetch and record intake before finishing.
 //
-// Claude-Code-only: Codex loads the same hooks.json and already has its own
-// native queue wakeup, so this is a no-op skip under Codex, never a block.
+// Claude-Code-only: Codex runs the same hook script (listed in
+// .codex-plugin/plugin.json) and already has its own native queue wakeup, so
+// this is a no-op skip under Codex, never a block.
 
 import { existsSync, readFileSync, renameSync, writeSync } from 'fs';
 import { join } from 'path';

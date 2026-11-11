@@ -3,6 +3,7 @@ import express from 'express';
 import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
 import { randomBytes, timingSafeEqual } from 'crypto';
+import { isIP } from 'net';
 import { openDatabase, closeDatabase, getDatabase, failureMessage, isDatabaseOpen, } from '../../db.js';
 import { remember, recallWithConflicts, forget, exportMemories, importMemories, learn, shownEntity, } from '../../core/operations.js';
 import { KnowledgeGraph } from '../../knowledge-graph.js';
@@ -20,14 +21,14 @@ import { computeProjects } from '../../core/projects.js';
 import { getTaskState } from '../../core/task-state-store.js';
 import { readBriefingIndex } from '../../core/briefing.js';
 import { INDEX_STALE_DAYS } from '../../core/briefing-index.js';
-import { RememberSchema as RememberBody, RecallSchema as RecallBody, ForgetSchema as ForgetBody, ExportSchema as ExportBody, ImportSchema as ImportBody, HttpLearnSchema as LearnBody, WhySchema as WhyBody, MessageSchema as MessageBody, } from '../schemas.js';
+import { RememberSchema as RememberBody, RecallSchema as RecallBody, ForgetSchema as ForgetBody, ExportSchema as ExportBody, ImportSchema as ImportBody, HttpLearnSchema as LearnBody, WhySchema as WhyBody, MessageSchema as MessageBody, UserPatternsSchema, } from '../schemas.js';
 import { executeAgentMessageAction } from '../agent-messaging.js';
 import { startRouterIfDown } from '../../host-runtime/router-client.js';
 import { checkForUpdate, getLastUpdateCheck, getUpdateCheck } from '../../core/version-check.js';
 import { getCurrentInstallChannel, getInstallChannelSupport } from '../../core/install-channel.js';
 import { getDbPath, getMemeshDirFromDbPath, redactTextValues, redactUserPaths } from '../../core/paths.js';
 import { removeGroupAndOtherAccess } from '../../core/file-mode.js';
-import { diagnoseDatabaseFailure } from '../../core/database-diagnosis.js';
+import { databaseOpenFailureReport } from '../../core/database-diagnosis.js';
 import { isUnsupportedNode } from '../../storage/sqlite.js';
 import { RETIRED_ROUTES } from './retired-routes.js';
 import fs from 'fs';
@@ -60,13 +61,14 @@ const serverAuthRequired = new WeakMap();
 function memeshDir() {
     return getMemeshDirFromDbPath();
 }
-function loadOrCreateRemoteToken() {
+export function loadOrCreateRemoteToken() {
     const fromEnv = process.env.MEMESH_REMOTE_TOKEN;
+    const tokenPath = path.join(memeshDir(), 'remote-token');
     if (fromEnv && fromEnv.length >= 16) {
-        return { token: Buffer.from(fromEnv, 'utf8'), freshlyCreated: false };
+        return { token: Buffer.from(fromEnv, 'utf8'), freshlyCreated: false, source: 'env', envIgnored: false, tokenPath };
     }
+    const envIgnored = fromEnv !== undefined && fromEnv !== '';
     const dir = memeshDir();
-    const tokenPath = path.join(dir, 'remote-token');
     fs.mkdirSync(dir, { recursive: true });
     removeGroupAndOtherAccess(dir);
     const generated = randomBytes(32).toString('hex');
@@ -82,7 +84,7 @@ function loadOrCreateRemoteToken() {
             fs.chmodSync(tokenPath, 0o600);
         }
         catch { }
-        return { token: Buffer.from(generated, 'utf8'), freshlyCreated: true };
+        return { token: Buffer.from(generated, 'utf8'), freshlyCreated: true, source: 'file', envIgnored, tokenPath };
     }
     catch (err) {
         if (err?.code !== 'EEXIST')
@@ -93,7 +95,20 @@ function loadOrCreateRemoteToken() {
         throw new Error(`Existing ${tokenPath} is too short (<16 chars). Delete it and restart memesh-http to regenerate.`);
     }
     removeGroupAndOtherAccess(tokenPath);
-    return { token: Buffer.from(value, 'utf8'), freshlyCreated: false };
+    return { token: Buffer.from(value, 'utf8'), freshlyCreated: false, source: 'file', envIgnored, tokenPath };
+}
+export function remoteTokenStartupNotice(load) {
+    if (load.freshlyCreated) {
+        return (`\nMeMesh HTTP: bearer token generated for remote access.\n` +
+            (load.envIgnored ? `  MEMESH_REMOTE_TOKEN is shorter than 16 characters and was ignored.\n` : '') +
+            `  Token file: ${load.tokenPath} (mode 600)\n` +
+            `  Use header: Authorization: Bearer <token>\n` +
+            `  Rotate by deleting ${load.tokenPath} and restarting.\n` +
+            `  Override: set MEMESH_REMOTE_TOKEN (at least 16 characters).\n\n`);
+    }
+    return (`MeMesh HTTP: remote bind requires Authorization: Bearer <token>. ` +
+        `Token loaded from ${load.source === 'env' ? 'MEMESH_REMOTE_TOKEN' : load.tokenPath}.\n` +
+        (load.envIgnored ? `  MEMESH_REMOTE_TOKEN is shorter than 16 characters and was ignored.\n` : ''));
 }
 function constantTimeEquals(a, b) {
     const max = Math.max(a.length, b.length);
@@ -535,7 +550,21 @@ app.post('/v1/demo/reset', (_req, res) => handleGet(res, async () => {
     return seedDemo(getDatabase(), { reset: true });
 }));
 app.get('/v1/projects', (_req, res) => handleGet(res, () => computeProjects(getDatabase())));
-app.get('/v1/patterns', (_req, res) => handleGet(res, () => computePatterns(getDatabase())));
+const PatternsQuerySchema = z.object({
+    categories: z.union([z.string(), z.array(z.string())]).optional()
+        .transform((v) => (v === undefined ? undefined : (Array.isArray(v) ? v : [v]).flatMap((s) => s.split(',')).map((s) => s.trim()).filter(Boolean)))
+        .pipe(UserPatternsSchema.shape.categories),
+});
+app.get('/v1/patterns', (req, res) => {
+    if (Object.keys(req.query).some((key) => key.startsWith('categories['))) {
+        res.status(400).json({ success: false, errorCode: 'validation.bad-param', error: 'categories: use ?categories=a,b or repeat ?categories=a&categories=b' });
+        return;
+    }
+    const query = parseQuery(PatternsQuerySchema, req, res);
+    if (!query)
+        return;
+    handleGet(res, () => computePatterns(getDatabase(), query.categories));
+});
 const DreamProposalsQuerySchema = z.object({
     status: z.enum(['pending', 'applied', 'rejected', 'all']).default('pending'),
 });
@@ -656,13 +685,26 @@ const ALLOW_REMOTE_BY_ENV = /^(1|true|yes)$/i.test(process.env.MEMESH_HTTP_ALLOW
 function normalizeHost(host) {
     return host.trim().toLowerCase().replace(/^\[(.*)\]$/, '$1');
 }
-function isLoopbackHost(host) {
+export function isLoopbackHost(host) {
     const normalized = normalizeHost(host);
-    return normalized === 'localhost'
-        || normalized === '::1'
-        || normalized === '127.0.0.1'
-        || normalized.startsWith('127.')
-        || normalized.startsWith('::ffff:127.');
+    if (normalized === 'localhost')
+        return true;
+    const family = isIP(normalized);
+    if (family === 4)
+        return normalized.startsWith('127.');
+    if (family !== 6)
+        return false;
+    let canonical;
+    try {
+        canonical = new URL(`http://[${normalized}]/`).hostname.replace(/^\[|\]$/g, '');
+    }
+    catch {
+        return false;
+    }
+    if (canonical === '::1')
+        return true;
+    const mapped = /^::ffff:([0-9a-f]{1,4}):[0-9a-f]{1,4}$/.exec(canonical);
+    return mapped !== null && (parseInt(mapped[1], 16) >> 8) === 127;
 }
 app.use((req, res) => {
     res.status(404).json({
@@ -683,21 +725,9 @@ export function startServer(host = HOST, port = PORT, opts) {
             'and no bearer token is generated. Add --host <address> to bind somewhere reachable.\n');
     }
     if (isRemote) {
-        const { token, freshlyCreated } = loadOrCreateRemoteToken();
-        remoteToken = token;
-        if (freshlyCreated) {
-            const dir = memeshDir();
-            const tokenPath = path.join(dir, 'remote-token');
-            process.stderr.write(`\nMeMesh HTTP: bearer token generated for remote access.\n` +
-                `  Token file: ${tokenPath} (mode 600)\n` +
-                `  Use header: Authorization: Bearer <token>\n` +
-                `  Rotate by deleting ${tokenPath} and restarting.\n` +
-                `  Override: set MEMESH_REMOTE_TOKEN.\n\n`);
-        }
-        else {
-            process.stderr.write(`MeMesh HTTP: remote bind requires Authorization: Bearer <token>. ` +
-                `Token loaded from ${process.env.MEMESH_REMOTE_TOKEN ? 'MEMESH_REMOTE_TOKEN' : path.join(memeshDir(), 'remote-token')}.\n`);
-        }
+        const loaded = loadOrCreateRemoteToken();
+        remoteToken = loaded.token;
+        process.stderr.write(remoteTokenStartupNotice(loaded));
     }
     try {
         openDatabase();
@@ -708,14 +738,7 @@ export function startServer(host = HOST, port = PORT, opts) {
         if (isUnsupportedNode(err))
             throw err;
         const message = err instanceof Error ? err.message : String(err);
-        const dbPath = getDbPath();
-        console.error('\n❌ MeMesh startup failed: database cannot be opened\n');
-        console.error(`   Database path: ${dbPath}`);
-        console.error(`   Error: ${message}\n`);
-        const { diagnosis, fix } = diagnoseDatabaseFailure(err, dbPath);
-        if (diagnosis !== message)
-            console.error(`   Diagnosis: ${diagnosis}`);
-        console.error(`Fix: ${fix}\n`);
+        console.error(databaseOpenFailureReport(err, getDbPath()));
         throw new Error(`Database initialization failed: ${message}`, { cause: err });
     }
     const injectedUpdateSeam = Boolean(opts?.updateCheckImpl || opts?.lastUpdateCheckImpl);

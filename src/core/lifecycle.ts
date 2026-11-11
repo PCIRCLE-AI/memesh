@@ -1,7 +1,11 @@
 import type { MemeshDatabase } from '../storage/sqlite.js';
-import { KnowledgeGraph } from '../knowledge-graph.js';
+import { KnowledgeGraph, isMetadataObject } from '../knowledge-graph.js';
 import { dropEntityFromIndexes } from '../storage/entity-index.js';
 import { AUTO_CAPTURE_TAG } from './types.js';
+import { isTransientDbError, migrationRetryPending, runOnceMigration } from '../storage/schema.js';
+import { COMPRESSION_WEEK_FORMAT, writeUnmarkedCompressedCounts, type UnmarkedWeeks } from './compression-ledger.js';
+import fs from 'node:fs';
+import path from 'node:path';
 
 const DECAY_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const STALE_THRESHOLD_DAYS = 30;
@@ -133,7 +137,7 @@ export function compressWeeklyNoise(db: MemeshDatabase): { compressed: number; w
   const noiseTypeValues = Array.from(NOISE_TYPES);
 
   const weekGroups = db.prepare(`
-    SELECT strftime('%Y-W%W', created_at) as week,
+    SELECT strftime('${COMPRESSION_WEEK_FORMAT}', created_at) as week,
            COUNT(*) as count
     FROM entities
     WHERE type IN (${noiseTypePlaceholders})
@@ -164,7 +168,7 @@ export function compressWeeklyNoise(db: MemeshDatabase): { compressed: number; w
         FROM entities e
         WHERE e.type IN (${noiseTypePlaceholders})
           AND e.status = 'active'
-          AND strftime('%Y-W%W', e.created_at) = ?
+          AND strftime('${COMPRESSION_WEEK_FORMAT}', e.created_at) = ?
           AND e.created_at < datetime(?)
       `).all(...noiseTypeValues, week, cutoff) as Array<{ id: number; name: string; type: string }>;
 
@@ -227,10 +231,25 @@ export function compressWeeklyNoise(db: MemeshDatabase): { compressed: number; w
       //
       // Per entity rather than one set-UPDATE: a contentless FTS5 delete has to
       // repeat that row's own indexed text, so there is no set form of it.
-      const archiveOne = db.prepare("UPDATE entities SET status = 'archived' WHERE id = ?");
+      //
+      // Each archived row also gets `metadata.compacted_into` = the weekly
+      // summary's id — the same marker the dreamer leaves — so "archived by
+      // compression" can be told apart from "archived by forget". Metadata
+      // that is not an object (other than JSON null) is never rewritten here,
+      // where no backup exists: the row is archived as it is, unmarked.
+      const summaryId = (db.prepare('SELECT id FROM entities WHERE name = ?').get(summaryName) as { id: number }).id;
+      const readMeta = db.prepare('SELECT metadata FROM entities WHERE id = ?');
+      const archiveOne = db.prepare("UPDATE entities SET status = 'archived', metadata = ? WHERE id = ?");
+      const archiveAsIs = db.prepare("UPDATE entities SET status = 'archived' WHERE id = ?");
       for (const e of entities) {
         dropEntityFromIndexes(db, e.id, e.name);
-        archiveOne.run(e.id);
+        const meta = markableMetadata((readMeta.get(e.id) as { metadata: string | null }).metadata);
+        if (!meta) {
+          archiveAsIs.run(e.id);
+          continue;
+        }
+        meta.compacted_into = summaryId;
+        archiveOne.run(JSON.stringify(meta), e.id);
       }
       return entities.length;
     });
@@ -375,6 +394,252 @@ export function readLastAutoArchiveRun(db: { prepare(sql: string): { get(): unkn
     throw new AutoArchiveRecordUnreadable('missing "at" or "archived"');
   }
   return parsed;
+}
+
+
+const COMPRESSION_MARKER_KEY = 'compression_marker_backfill';
+
+/** Metadata a compression marker may be added to: an object, or `{}` for none (SQL NULL or JSON null); undefined for anything else. */
+function markableMetadata(raw: string | null): Record<string, unknown> | undefined {
+  if (!raw) return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed === null) return {};
+    return isMetadataObject(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** `weekly-summary` observations end with "(5 session-summary, 134 commit)": the count compression archived, per type. */
+function declaredCompressedCounts(observations: string[]): Map<string, number> {
+  const declared = new Map<string, number>();
+  for (const content of observations) {
+    const breakdown = /\(([^()]*)\)\s*$/.exec(content);
+    if (!breakdown) continue;
+    for (const [, n, type] of breakdown[1].matchAll(/(\d+) ([\w-]+)/g)) {
+      declared.set(type, (declared.get(type) ?? 0) + Number(n));
+    }
+  }
+  return declared;
+}
+
+/**
+ * Rows that earlier versions archived by compression carry no
+ * `metadata.compacted_into`, and a forgotten row does not either. Nothing on
+ * the row tells them apart (archiving records no time), but the weekly summary
+ * recorded how many rows of each type it archived. For one (week, type) that
+ * number is matched against what the archived rows can account for:
+ * - rows already marked for this summary (a newer compression appended to it,
+ *   say from a hook that never runs the backfill) are subtracted from it;
+ * - an active row created before the summary's last compression minus
+ *   NOISE_AGE_DAYS was active and old enough when that compression ran, so it
+ *   was archived then and has been remembered again since: it is added to the
+ *   unmarked archived rows. A newer active row (a tail too young to compress)
+ *   is not.
+ * When the two agree, every unmarked archived row of the group was archived by
+ * compression and gets the marker (unless its metadata is not an object, which
+ * is not rewritten); a row forgotten before compression makes them disagree.
+ * Any other group is left alone. How many compressed rows stay unmarked, per
+ * week and type (in a group left alone: declared, minus marked, minus
+ * remembered again), is returned in `unmarkedCounts`. Idempotent: marked rows
+ * are never candidates again.
+ *
+ * @returns rows marked, archived rows in groups left alone, and per week and type the compressed rows those groups still hold
+ */
+export function markCompressedRows(db: MemeshDatabase, opts: { dryRun?: boolean } = {}): {
+  marked: number;
+  unresolved: number;
+  unmarkedCounts: UnmarkedWeeks;
+} {
+  const types = Array.from(NOISE_TYPES);
+  const placeholders = types.map(() => '?').join(',');
+  const summaries = db.prepare("SELECT id, name FROM entities WHERE type = 'weekly-summary' AND name LIKE 'weekly-summary-%'")
+    .all() as Array<{ id: number; name: string }>;
+  const observationsOf = db.prepare('SELECT content, created_at FROM observations WHERE entity_id = ?');
+  const candidatesOf = db.prepare(`
+    SELECT id, type, metadata FROM entities
+    WHERE status = 'archived' AND type IN (${placeholders})
+      AND strftime('${COMPRESSION_WEEK_FORMAT}', created_at) = ?
+      AND json_type(CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, '$.compacted_into') IS NULL
+  `);
+  // Archived rows already marked, per summary id and type, in one pass over the
+  // table. A marked row that is active again is counted below, as remembered.
+  const alreadyMarkedBySummary = new Map<number, Map<string, number>>();
+  for (const r of db.prepare(`
+    SELECT json_extract(CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, '$.compacted_into') AS summary, type, COUNT(*) AS n
+    FROM entities WHERE status = 'archived' AND type IN (${placeholders}) AND summary IS NOT NULL
+    GROUP BY summary, type
+  `).all(...types) as Array<{ summary: number; type: string; n: number }>) {
+    let byType = alreadyMarkedBySummary.get(r.summary);
+    if (!byType) { byType = new Map(); alreadyMarkedBySummary.set(r.summary, byType); }
+    byType.set(r.type, r.n);
+  }
+  const cutoffBefore = db.prepare(`SELECT datetime(?, '-${NOISE_AGE_DAYS} days') AS t`);
+  const rememberedAgain = db.prepare(`
+    SELECT type, COUNT(*) AS n FROM entities
+    WHERE status = 'active' AND type IN (${placeholders})
+      AND strftime('${COMPRESSION_WEEK_FORMAT}', created_at) = ?
+      AND created_at < datetime(?)
+    GROUP BY type
+  `);
+  const write = db.prepare('UPDATE entities SET metadata = ? WHERE id = ?');
+  const countsOf = (rows: unknown) => new Map((rows as Array<{ type: string; n: number }>).map((r) => [r.type, r.n]));
+  let marked = 0;
+  let unresolved = 0;
+  const unmarkedCounts: UnmarkedWeeks = {};
+  for (const summary of summaries) {
+    const week = summary.name.slice('weekly-summary-'.length);
+    const observations = observationsOf.all(summary.id) as Array<{ content: string; created_at: string }>;
+    const declared = declaredCompressedCounts(observations.map((o) => o.content));
+    const lastCompression = observations
+      .filter((o) => declaredCompressedCounts([o.content]).size > 0)
+      .map((o) => o.created_at).sort().at(-1);
+    // Rows created before this were old enough for that compression to take.
+    const before = lastCompression ? (cutoffBefore.get(lastCompression) as { t: string | null }).t : null;
+    const alreadyMarked = alreadyMarkedBySummary.get(summary.id) ?? new Map<string, number>();
+    const remembered = before ? countsOf(rememberedAgain.all(...types, week, before)) : new Map<string, number>();
+    // Every declared type is a group, even one with no unmarked row left.
+    const byType = new Map<string, Array<{ id: number; metadata: string | null }>>([...declared.keys()].map((t) => [t, []]));
+    for (const row of candidatesOf.all(...types, week) as Array<{ id: number; type: string; metadata: string | null }>) {
+      let group = byType.get(row.type);
+      if (!group) { group = []; byType.set(row.type, group); }
+      group.push(row);
+    }
+    for (const [type, rows] of byType) {
+      const expected = (declared.get(type) ?? 0) - (alreadyMarked.get(type) ?? 0);
+      const active = remembered.get(type) ?? 0;
+      const keepCount = (n: number) => {
+        if (before && n > 0) (unmarkedCounts[week] ??= { before, counts: {} }).counts[type] = n;
+      };
+      if (rows.length + active !== expected) {
+        unresolved += rows.length;
+        keepCount(expected - active);
+        continue;
+      }
+      // Proven compressed, but metadata that is not an object is not rewritten:
+      // such a row stays unmarked and is counted in its week's number instead.
+      let unmarkable = 0;
+      for (const row of rows) {
+        const meta = markableMetadata(row.metadata);
+        if (!meta) { unmarkable++; continue; }
+        marked++;
+        if (opts.dryRun) continue;
+        meta.compacted_into = summary.id;
+        write.run(JSON.stringify(meta), row.id);
+      }
+      keepCount(unmarkable);
+    }
+  }
+  return { marked, unresolved, unmarkedCounts };
+}
+
+const BACKFILL_LEASE_KEY = `${COMPRESSION_MARKER_KEY}_lease`;
+/** Longer than a backup plus backfill of a large database; a killed holder's claim lapses after this. */
+const BACKFILL_LEASE_MS = 10 * 60 * 1000;
+const BACKUP_PREFIX = 'before-compression-marker-';
+
+/**
+ * One process at a time: take the claim if nobody holds an unexpired one.
+ * Without waiting for the write lock: a peer holding it would otherwise stall
+ * this start for the whole busy timeout and then fail it, for work that can
+ * just as well run on the next start.
+ */
+function acquireBackfillLease(db: MemeshDatabase): string | undefined {
+  const { timeout } = db.prepare('PRAGMA busy_timeout').get() as { timeout: number };
+  db.pragma('busy_timeout = 0');
+  try {
+    return db.transaction(() => {
+      const row = db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(BACKFILL_LEASE_KEY) as { value: string } | undefined;
+      const expires = row ? Number(row.value.split(':')[1]) : 0;
+      if (row && Number.isFinite(expires) && expires > Date.now()) return undefined;
+      const token = `${process.pid}:${Date.now() + BACKFILL_LEASE_MS}`;
+      db.prepare('INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)').run(BACKFILL_LEASE_KEY, token);
+      return token;
+    }).immediate();
+  } finally {
+    db.pragma(`busy_timeout = ${timeout}`);
+  }
+}
+
+/**
+ * Once per database: mark what `markCompressedRows` can prove, after copying the
+ * whole database to `<dir>/backups` (VACUUM INTO, which also captures the WAL).
+ * The caller decides who may run it (see `openDatabase`: not a hook). Only one
+ * process works at a time, through a lease in `memesh_metadata`; one killed
+ * midway leaves nothing but a `.tmp` copy, which the next run deletes. The
+ * backup gets its final name only when complete. No copy, no change: a failed
+ * backup leaves the migration pending for the next start. A marking that did
+ * not happen removes the copy made for it (the database is unchanged), and a
+ * failed one waits out `runOnceMigration`'s retry delay before anything, the
+ * backup included, is tried again.
+ */
+export function backfillCompressionMarkers(db: MemeshDatabase): void {
+  const readKey = (key: string) => (db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(key) as { value: string } | undefined)?.value;
+  if (readKey(COMPRESSION_MARKER_KEY)) return;
+  if (migrationRetryPending(db, COMPRESSION_MARKER_KEY)) {
+    process.stderr.write('MeMesh: compressed-record marker backfill is waiting out the 24h retry delay after its last failure; nothing was backed up or changed.\n');
+    return;
+  }
+  let lease: string | undefined;
+  try {
+    lease = acquireBackfillLease(db);
+  } catch (err) {
+    if (!isTransientDbError(err)) throw err;
+    process.stderr.write(`MeMesh: compressed-record marker backfill deferred (${err instanceof Error ? err.message : String(err)}). Another process holds the database; it will run on the next start.\n`);
+    return;
+  }
+  if (!lease) {
+    process.stderr.write('MeMesh: compressed-record marker backfill skipped: another process is running it.\n');
+    return;
+  }
+  try {
+    // Look first: with nothing to mark there is nothing to back up.
+    const plan = markCompressedRows(db, { dryRun: true });
+    let backupPath: string | undefined;
+    if (plan.marked > 0) {
+      const file = (db.prepare('PRAGMA database_list').all() as Array<{ name: string; file: string }>).find((d) => d.name === 'main')?.file;
+      try {
+        if (!file) throw new Error('the database has no file to back up');
+        const backupDir = path.join(path.dirname(file), 'backups');
+        fs.mkdirSync(backupDir, { recursive: true, mode: 0o700 });
+        for (const leftover of fs.readdirSync(backupDir)) {
+          if (leftover.startsWith(BACKUP_PREFIX) && leftover.endsWith('.tmp')) fs.rmSync(path.join(backupDir, leftover), { force: true });
+        }
+        const finalPath = path.join(backupDir, `${BACKUP_PREFIX}${new Date().toISOString().replace(/[:.]/g, '-')}.db`);
+        const partial = `${finalPath}.tmp`;
+        db.prepare('VACUUM INTO ?').run(partial);
+        fs.renameSync(partial, finalPath);
+        backupPath = finalPath;
+        process.stderr.write(`MeMesh: backed up the database to ${backupPath} before marking records that compression archived.\n`);
+      } catch (err) {
+        process.stderr.write(`MeMesh: compressed-record marker backfill skipped, no backup could be made (${err instanceof Error ? err.message : String(err)}); it will retry on the next start.\n`);
+        return;
+      }
+    }
+    const done = runOnceMigration(db, {
+      key: COMPRESSION_MARKER_KEY,
+      version: 1,
+      describe: 'compressed-record marker backfill',
+      migrate: () => {
+        const { marked, unresolved, unmarkedCounts } = markCompressedRows(db);
+        writeUnmarkedCompressedCounts(db, unmarkedCounts);
+        // A database with nothing archived (every fresh install) has nothing to report.
+        if (marked + unresolved > 0) {
+          process.stderr.write(`MeMesh: marked ${marked} archived record${marked === 1 ? '' : 's'} as archived by compression; ${unresolved} more could not be told apart from forgotten ones and were left unmarked.\n`);
+        }
+      },
+    });
+    // Not done (deferred for a lock, or failed and rolled back): the database
+    // is as it was, so this copy guards nothing, and every retry would add one.
+    if (!done && backupPath && !readKey(COMPRESSION_MARKER_KEY)) {
+      fs.rmSync(backupPath, { force: true });
+      process.stderr.write(`MeMesh: removed ${backupPath}: the marking did not happen, so the database is unchanged; the next attempt makes a new copy.\n`);
+    }
+  } finally {
+    // Only our own claim: one that lapsed and was taken over belongs to its new holder.
+    db.prepare('DELETE FROM memesh_metadata WHERE key = ? AND value = ?').run(BACKFILL_LEASE_KEY, lease);
+  }
 }
 
 // Export preserved/noise type sets for testing

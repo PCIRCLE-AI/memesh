@@ -7,6 +7,7 @@ export declare function openDatabase(dbPath?: string, opts?: {
 }): MemeshDatabase;
 export declare function openInitialisedDatabase(resolvedPath: string, opts?: {
     busyTimeoutMs?: number;
+    maintenance?: boolean;
 }, mode?: {
     immutableFile?: string;
     readOnly?: boolean;

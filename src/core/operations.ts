@@ -735,7 +735,8 @@ export function learn(args: LearnInput): LearnResult {
 
 /**
  * Archive an entity (soft-delete) or remove a specific observation.
- * Never permanently deletes data.
+ * An archived entity is kept and can be recalled with `include_archived`;
+ * removing one observation deletes that observation row for good.
  */
 export function forget(args: ForgetInput): ForgetResult {
   const db = getDatabase();

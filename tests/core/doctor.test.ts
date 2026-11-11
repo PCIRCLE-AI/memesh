@@ -4,6 +4,7 @@ import path from 'path';
 import { createHash } from 'crypto';
 import { execFileSync, spawnSync } from 'child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { damagedDatabaseFix, diagnoseDatabaseFailure } from '../../src/core/database-diagnosis.js';
 import { formatDoctorReport, hoursSince, runDoctor as runDoctorImpl, hostFixState, withHostFix } from '../../src/core/doctor.js';
 import { manifestScope } from '../../src/core/manifest-scope.js';
 import { PLUGIN_REFRESH_COMMANDS } from '../../src/core/install-channel.js';
@@ -300,6 +301,12 @@ function makeDatabase(
      *  is none, which reads as "no auto-capture in the last fortnight" and
      *  moves no verdict — what every test predating that row assumes. */
     typeTrends?: Array<{ type: string; last7: number; prev7: number }>;
+    /** What PRAGMA quick_check(1) answers. Default `ok`: a healthy file. */
+    quickCheck?: string;
+    /** quick_check itself raises this error message. */
+    quickCheckThrows?: string;
+    /** quick_check answers with no row at all. */
+    quickCheckNoVerdict?: boolean;
   } = {},
 ) {
   const sqliteTs = (hoursAgo: number) =>
@@ -313,7 +320,17 @@ function makeDatabase(
   const trackingSinceHours = opts.trackingSinceHours === undefined ? 720 : opts.trackingSinceHours;
   return {
     prepare(sql: string) {
+      if (sql.includes('quick_check')) {
+        return {
+          get: () => {
+            if (opts.quickCheckThrows !== undefined) throw new Error(opts.quickCheckThrows);
+            return opts.quickCheckNoVerdict ? undefined : { quick_check: opts.quickCheck ?? 'ok' };
+          },
+        };
+      }
       if (sql.includes('sqlite_master')) return { get: () => ({ present: 1 }) };
+      // The inbox read probe asks whether deliveries carry intended_session.
+      if (sql.includes('pragma_table_info')) return { get: () => undefined };
       if (sql.includes('fts_vocab')) {
         return { get: () => ({ c: opts.unsegmentedCount ?? 0 }) };
       }
@@ -3722,10 +3739,10 @@ describe('database failure diagnostics (F15)', () => {
       const dbCheck = result.checks.find(c => c.id === 'database');
       expect(dbCheck!.status).toBe('fail');
       expect(dbCheck!.fix).toBeTruthy();
-      // Corrupted non-empty file path produces the "backup and reset" fix.
-      // Pattern accepts the three concrete recovery shapes the F15 paths
-      // produce: backup+rename, rm+recreate, or chmod fix.
-      expect(dbCheck!.fix).toMatch(/mv.*backup|rm.*recall|chmod/);
+      // A non-empty file that fails with SQLITE_CORRUPT is damaged, not unusable:
+      // the advice is to copy it first, then salvage, never to move it aside.
+      expect(dbCheck!.fix).toMatch(/cp .*\.damaged/);
+      expect(dbCheck!.fix).not.toMatch(/mv .*\.backup/);
     } finally {
       if (previousEnv === undefined) delete process.env.MEMESH_DB_PATH;
       else process.env.MEMESH_DB_PATH = previousEnv;
@@ -5457,6 +5474,36 @@ describe('doctor rows that had no assertion', () => {
       expect(check.summary).not.toContain('No idle exit of the router is recorded');
     });
 
+    it('does not send an owner whose default path is too long to an override that cannot fix it', async () => {
+      const packageRoot = createPackageRoot();
+      tempRoots.push(packageRoot);
+      isolateMemeshDir();
+      const previousSocket = process.env.MEMESH_ROUTER_SOCKET;
+      const previousDir = process.env.MEMESH_DIR;
+      delete process.env.MEMESH_ROUTER_SOCKET;
+      process.env.MEMESH_DIR = `/tmp/${'x'.repeat(150)}`;
+      try {
+        const check = row(await runDoctorImpl(options(packageRoot, {
+          probeMessageRouterStatus: true,
+        })), 'message-router-status');
+        expect(check.status).toBe('fail');
+        expect(check.code).toBe('message-router.socket-path-too-long');
+        expect(check.fix).toMatch(/^Move HOME/);
+        expect(check.fix).not.toMatch(/^Set MEMESH_ROUTER_SOCKET/);
+        // Where the default socket sits, and the one condition on its folder.
+        expect(check.fix).toContain('MEMESH_DB_PATH');
+        expect(check.fix).toMatch(/owner-private/);
+        // It must also say what the variable does NOT reach, so it cannot be
+        // mistaken for the cure.
+        expect(check.fix).toMatch(/ordinary Codex sessions(?:,? which)? use the default path/);
+      } finally {
+        if (previousSocket === undefined) delete process.env.MEMESH_ROUTER_SOCKET;
+        else process.env.MEMESH_ROUTER_SOCKET = previousSocket;
+        if (previousDir === undefined) delete process.env.MEMESH_DIR;
+        else process.env.MEMESH_DIR = previousDir;
+      }
+    });
+
     // #404 — a socket path over the 103-byte limit also has no file on disk,
     // so the plain lstat-based probe reported it identically to "missing" and
     // sent the owner to restart a router that fails on the exact same path.
@@ -5482,10 +5529,147 @@ describe('doctor rows that had no assertion', () => {
         expect(check.summary).toContain('103-byte limit');
         expect(check.fix).toContain('MEMESH_ROUTER_SOCKET');
         expect(check.fix).toMatch(/HOME|MEMESH_DIR/);
+        // The variable reaches the router, doctor, senders and ordinary Claude
+        // sessions only; the advice must not promise more than that.
+        expect(check.fix).toMatch(/^Set MEMESH_ROUTER_SOCKET to a shorter absolute path/);
+        expect(check.fix).toMatch(/owner-private/);
+        expect(check.fix).toContain('It reaches `memesh-router`, `memesh doctor`, senders and ordinary Claude MCP sessions.');
+        // The one config an ordinary Codex session can have is named as an exception.
+        expect(check.fix).toContain('hosts/codex-session.json');
+        expect(check.fix).toMatch(/ordinary Codex sessions(?:,? which)? use the default path/);
+        expect(check.fix).not.toMatch(/^Move HOME/);
       } finally {
         if (previousSocket === undefined) delete process.env.MEMESH_ROUTER_SOCKET;
         else process.env.MEMESH_ROUTER_SOCKET = previousSocket;
       }
+    });
+  });
+
+  describe('database integrity', () => {
+    it('fails the database row when quick_check finds damage, with restore advice rather than "start fresh"', async () => {
+      const packageRoot = createPackageRoot();
+      tempRoots.push(packageRoot);
+      isolateMemeshDir();
+      const report = await runDoctorImpl(options(packageRoot, {
+        openDatabaseImpl: () => makeDatabase(5, { quickCheck: '*** in database main *** Tree 19 page 19: btreeInitPage() returns error code 11' }) as never,
+      }));
+      const check = row(report, 'database');
+      expect(check.status).toBe('fail');
+      expect(check.code).toBe('database.broken');
+      expect(check.summary).toContain('quick integrity check failed');
+      expect(check.summary).toContain('btreeInitPage() returns error code 11');
+      // No backups folder in a plain install: never point at one.
+      expect(check.fix).toMatch(/^Stop every memesh process, then copy the damaged file/);
+      expect(check.fix).toContain('.damaged');
+      expect(check.fix).toMatch(/\.recover \| sqlite3 /);
+      expect(check.fix).not.toMatch(/backups/);
+      expect(check.fix).not.toMatch(/mv .*\.backup/);
+      expect(report.checks.filter((c) => c.id === 'database')).toHaveLength(1);
+    });
+
+    it('offers the restore only when backups holds a complete copy, names it, and warns that it overwrites', async () => {
+      const packageRoot = createPackageRoot();
+      tempRoots.push(packageRoot);
+      const dir = isolateMemeshDir();
+      fs.mkdirSync(path.join(dir, 'backups'), { recursive: true });
+      const damaged = () => runDoctorImpl(options(packageRoot, {
+        openDatabaseImpl: () => makeDatabase(5, { quickCheck: '*** in database main *** Tree 19 page 19: btreeInitPage() returns error code 11' }) as never,
+      }));
+      // An empty folder (a backup that failed half way leaves one) offers nothing.
+      expect(row(await damaged(), 'database').fix).not.toMatch(/backup instead/);
+      const backup = path.join(dir, 'backups', 'before-compression-marker-x.db');
+      fs.writeFileSync(backup, 'SQLite format 3\0');
+      const check = row(await damaged(), 'database');
+      expect(check.fix).toContain(backup);
+      expect(check.fix).not.toContain('.restore');
+      expect(check.fix).toMatch(/overwrites the file, which is why the copy comes first/);
+    });
+
+    it('collapses a multi-line quick_check verdict to one bounded line', async () => {
+      const packageRoot = createPackageRoot();
+      tempRoots.push(packageRoot);
+      isolateMemeshDir();
+      const report = await runDoctorImpl(options(packageRoot, {
+        openDatabaseImpl: () => makeDatabase(5, { quickCheck: `*** in database main ***\nTree 3 page 3:\n  bad ${'x'.repeat(400)}` }) as never,
+      }));
+      const summary = row(report, 'database').summary;
+      expect(summary).toContain('*** in database main *** Tree 3 page 3: bad');
+      expect(summary).not.toContain('\n');
+      const verdict = summary.slice(summary.indexOf('check failed: ') + 'check failed: '.length);
+      expect(verdict.length).toBeLessThanOrEqual(200);
+    });
+
+    it('reports a lock during quick_check as a lock, not as damage', async () => {
+      const packageRoot = createPackageRoot();
+      tempRoots.push(packageRoot);
+      isolateMemeshDir();
+      const report = await runDoctorImpl(options(packageRoot, {
+        openDatabaseImpl: () => makeDatabase(5, { quickCheckThrows: 'database is locked' }) as never,
+      }));
+      const check = row(report, 'database');
+      expect(check.status).toBe('fail');
+      expect(check.summary).not.toContain('integrity check failed');
+      expect(check.fix).toMatch(/^Wait for the other memesh process/);
+      expect(check.fix).not.toMatch(/copy the damaged file/);
+    });
+
+    it('fails closed when quick_check itself raises an error', async () => {
+      const packageRoot = createPackageRoot();
+      tempRoots.push(packageRoot);
+      isolateMemeshDir();
+      const report = await runDoctorImpl(options(packageRoot, {
+        openDatabaseImpl: () => makeDatabase(5, { quickCheckThrows: 'database disk image\n  is malformed' }) as never,
+      }));
+      const check = row(report, 'database');
+      expect(check.status).toBe('fail');
+      expect(check.summary).toContain('quick integrity check failed: database disk image is malformed');
+    });
+
+    it('fails closed when quick_check answers with no verdict', async () => {
+      const packageRoot = createPackageRoot();
+      tempRoots.push(packageRoot);
+      isolateMemeshDir();
+      const report = await runDoctorImpl(options(packageRoot, {
+        openDatabaseImpl: () => makeDatabase(5, { quickCheckNoVerdict: true }) as never,
+      }));
+      const check = row(report, 'database');
+      expect(check.status).toBe('fail');
+      expect(check.summary).toContain('quick integrity check failed: quick_check returned no verdict');
+    });
+
+    it('gives a file that fails to open as "malformed" the same copy-first advice, not "mv … .backup"', () => {
+      const { fix } = diagnoseDatabaseFailure(
+        new Error('database disk image is malformed'),
+        '/data/knowledge-graph.db',
+        () => true,
+        (() => ({ mode: 0o100644, size: 4096 })) as never,
+      );
+      expect(fix).toMatch(/^Stop every memesh process, then copy the damaged file/);
+      expect(fix).not.toMatch(/mv .*\.backup/);
+    });
+
+    it('copies the -wal/-shm journal with the damaged file, and removes the stale one before anything is put back', () => {
+      // Recent writes live only in <db>-wal until SQLite folds them in: a copy
+      // without it loses them, and a file moved in beside the old journal gets
+      // that journal replayed onto it and breaks.
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-fix-text-'));
+      tempRoots.push(dir);
+      const db = path.join(dir, 'knowledge-graph.db');
+      const fix = damagedDatabaseFix(db);
+      expect(fix).toContain(`cp '${db}-wal' '${db}.damaged-wal'`);
+      expect(fix).toContain(`cp '${db}-shm' '${db}.damaged-shm'`);
+      expect(fix).toContain(`rm -f '${db}-wal' '${db}-shm' && mv '${db}.recovered.db' '${db}'`);
+      expect(fix).toContain('memesh reindex --fts');
+    });
+
+    it('names a held lock as a lock even when the error carries a repair of its own', () => {
+      const { fix } = diagnoseDatabaseFailure(
+        Object.assign(new Error('database is locked'), { fix: 'Stop every memesh process, then copy the damaged file' }),
+        '/data/knowledge-graph.db',
+        () => true,
+        (() => ({ mode: 0o100644, size: 4096 })) as never,
+      );
+      expect(fix).toMatch(/^Wait for the other memesh process/);
     });
   });
 

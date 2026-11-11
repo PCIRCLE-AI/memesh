@@ -48,8 +48,8 @@
     },
     {
       "path": "scripts/hooks/_generated/agent-message-inbox.js",
-      "sha256": "069d51c167b0e3fc6a34a6ac5cc7e5d23b793714f74e5cf2d44ef81bd24f40e5",
-      "bytes": 11587
+      "sha256": "4f193897725965cbfe748c238761b78a33d7aca715d0e5f5184e0aa388dadea2",
+      "bytes": 12010
     },
     {
       "path": "scripts/hooks/_generated/agent-message-ttl.js",
@@ -168,8 +168,8 @@
     },
     {
       "path": "scripts/hooks/_generated/schema.js",
-      "sha256": "961714663b77447b5b3e92628cea19783ac6b073bfd16d0aa9178e9b88d02f4b",
-      "bytes": 31315
+      "sha256": "baaf68e9ce1b9f57487f7f74db68c63c38cd7b66aad871fc1cd2a509d976d294",
+      "bytes": 31476
     },
     {
       "path": "scripts/hooks/_generated/scoring.js",
@@ -218,8 +218,8 @@
     },
     {
       "path": "scripts/hooks/_generated/work-topology.js",
-      "sha256": "1e83e7d0e69784eb65a23a52501f2aca5d99d85657b839cd26de409069aeb2ef",
-      "bytes": 15572
+      "sha256": "10493dea6ffac0ac38fccec214a988d6e9870fbad4a03dd97b482d677b88b4bc",
+      "bytes": 15576
     },
     {
       "path": "scripts/hooks/_hook-budgets.js",
@@ -238,8 +238,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "7f161a1950bc5bdec4008e26c32b345994765409f899c20f96e126cab5f28c09",
-      "bytes": 123679
+      "sha256": "2980a97eb6b9b60b6fbbf2a2a5772122110b0613008e938efcd4f43b5a6a2ef2",
+      "bytes": 124298
     },
     {
       "path": "scripts/hooks/_stop-handoff.js",
@@ -308,8 +308,8 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "538cd0272d2b7a93a864e6a8246ea3d40440f6b18eb791b4ecf6bb8a17f5cee6",
-      "bytes": 107780
+      "sha256": "055bb7e21d0bf93443448c537864e0f9160a9b9a1165a030c6c3a56645772060",
+      "bytes": 107991
     },
     {
       "path": "scripts/hooks/session-summary.js",
@@ -318,8 +318,8 @@
     },
     {
       "path": "scripts/hooks/stop-message-gate.js",
-      "sha256": "d92a386e2dcc16ec337bbc53eec3691a074f78505ac7377435a1985bd451a128",
-      "bytes": 8346
+      "sha256": "32884538f46745717c168e66610069c1956167a168a10f45c111e3bf8fa57a43",
+      "bytes": 8387
     },
     {
       "path": "scripts/hooks/user-prompt-intent.js",
@@ -333,8 +333,8 @@
     },
     {
       "path": "skills/memesh/SKILL.md",
-      "sha256": "2c593275a4073275676bb9506a411fd31b2774b627570e97c477af28eebe32cf",
-      "bytes": 34412
+      "sha256": "81e5a5b5f2934169671875d5b13500a28d2f91780b04004a6db9e1b60c5be34d",
+      "bytes": 34643
     }
   ]
 }

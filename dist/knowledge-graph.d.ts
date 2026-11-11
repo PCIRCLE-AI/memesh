@@ -11,6 +11,7 @@ export interface RelationView {
     namespace?: string;
     includeArchived?: boolean;
 }
+export declare function isMetadataObject(value: unknown): value is Record<string, unknown>;
 export declare class KnowledgeGraph {
     private db;
     constructor(db: MemeshDatabase);

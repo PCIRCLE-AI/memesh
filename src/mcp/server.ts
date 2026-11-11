@@ -11,6 +11,7 @@ import {
 import { fileURLToPath } from 'url';
 import { startAgentMessageExpiryScheduler } from '../core/agent-message-expiry.js';
 import { openDatabase, closeDatabase, getDatabase, isDatabaseOpen } from '../db.js';
+import { databaseOpenFailureReport } from '../core/database-diagnosis.js';
 import { handleTool, TOOL_DEFINITIONS } from './tools.js';
 import { configureVersionSource, normalizeClientHost } from '../transports/mcp/handlers.js';
 import { resolveMcpProject } from '../transports/mcp/project-context.js';
@@ -18,7 +19,7 @@ import { startClaudeInboxPresence } from '../host-runtime/claude-inbox.js';
 import type { RouterHostConnection } from '../host-runtime/router-client.js';
 import { accountMemeshDir, dispatchAutoUpdate, logAutoUpdateLine, registerLiveHost } from '../core/auto-update.js';
 import { findPackageRoot } from '../core/package-root.js';
-import { getMemeshDirFromDbPath } from '../core/paths.js';
+import { getDbPath, getMemeshDirFromDbPath } from '../core/paths.js';
 
 // This file sits at the same depth (2 levels below the package root) both as
 // TS source (src/mcp/server.ts) and inside the bundled dist/mcp/server.js
@@ -142,7 +143,13 @@ async function main() {
     // Not fatal for the server, but the updater cannot see this host and may replace files under it: say so.
     logAutoUpdateLine(getMemeshDirFromDbPath(), `auto-update: could not register this MCP host (${err instanceof Error ? err.message : String(err)}); the updater may not wait for it`);
   }
-  openDatabase();
+  try {
+    openDatabase();
+  } catch (err) {
+    // stderr only: stdout is the MCP protocol channel.
+    console.error(databaseOpenFailureReport(err, getDbPath()));
+    throw err;
+  }
   stopExpiry = startAgentMessageExpiryScheduler(() => (isDatabaseOpen() ? getDatabase() : null), { trigger: 'mcp-server' });
   const transport = new StdioServerTransport();
   await server.connect(transport);

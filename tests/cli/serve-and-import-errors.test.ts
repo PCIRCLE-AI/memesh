@@ -131,6 +131,39 @@ describe('serve: refusing a remote bind is not a crash (C13)', () => {
   });
 });
 
+// A non-loopback bind is what takes the remote-token path. Bind to this
+// machine's own LAN address, not 0.0.0.0, so the listener (up for a few
+// seconds, behind a bearer token) is on one interface only. A machine with no
+// such address (offline, no network interface) skips the test, saying why.
+const lan = Object.values(os.networkInterfaces()).flat().find((i) => i && i.family === 'IPv4' && !i.internal)?.address;
+
+describe('serve: a MEMESH_REMOTE_TOKEN that is too short is reported, not obeyed in silence', () => {
+  it.skipIf(!lan)('says at startup (skipped without a non-loopback IPv4 interface) that the variable was ignored and which token file is in use', async () => {
+    const { spawn } = await import('child_process');
+    const memeshDir = path.join(home, '.memesh');
+    fs.mkdirSync(memeshDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(memeshDir, 'remote-token'), `${'e'.repeat(64)}\n`, { mode: 0o600 });
+    const child = spawn('node', [CLI_PATH, 'serve', '--host', lan!, '--allow-remote', '--port', '0'], {
+      env: { ...process.env, HOME: home, USERPROFILE: home, MEMESH_REMOTE_TOKEN: 'short' },
+    });
+    let stderr = '';
+    let stdout = '';
+    child.stderr.on('data', (d) => { stderr += String(d); });
+    await new Promise<void>((resolve) => {
+      const done = () => resolve();
+      child.stdout.on('data', (d) => { stdout += String(d); done(); });
+      setTimeout(done, 6000);
+    });
+    child.kill('SIGTERM');
+    await new Promise((resolve) => child.on('exit', resolve));
+
+    expect(stderr, `stderr was:\n${stderr}`).toMatch(/MEMESH_REMOTE_TOKEN is shorter than 16 characters and was ignored/);
+    expect(stderr).toContain(path.join(memeshDir, 'remote-token'));
+    expect(stderr).not.toMatch(/Token loaded from MEMESH_REMOTE_TOKEN/);
+    expect(stderr + stdout, 'the token itself must never reach startup output').not.toContain('e'.repeat(64));
+  });
+});
+
 describe('serve --help: the token sentence is conditional (C10)', () => {
   it('says the token applies to a non-loopback bind, not to the flag', () => {
     const help = runCli(['serve', '--help']).stdout;

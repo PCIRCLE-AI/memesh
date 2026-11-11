@@ -18,7 +18,7 @@ const TRANSCRIPT_PACKAGE_MAX_TURNS = 100;
 const DREAMER_PRIVACY_CHECK_MS = 1500;
 const TRANSCRIPT_PACKAGE_SOURCE_BYTES = 48 * 1024;
 const WORK_PACKAGE_MAX_BYTES = 64 * 1024;
-const COMPACTABLE_TYPES = new Set([
+export const COMPACTABLE_TYPES = new Set([
     'commit',
     'session_keypoint',
     'session-insight',

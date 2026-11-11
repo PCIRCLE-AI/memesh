@@ -19,7 +19,8 @@ import {
 } from './install-channel.js';
 import { readInstallRecordState } from './install-id.js';
 import { isWritable, ownerWriteCommand, runOrSay, shellQuote } from './file-mode.js';
-import { diagnoseDatabaseFailure } from './database-diagnosis.js';
+import { unreadDeliveryCount } from './agent-message-inbox.js';
+import { damagedDatabaseFix, diagnoseDatabaseFailure, isDamagedDatabaseError } from './database-diagnosis.js';
 import { withoutFinalPeriod } from './sentence.js';
 import { AutoArchiveRecordUnreadable, readLastAutoArchiveRun } from './lifecycle.js';
 import { citationRulePath, citationRuleState, type CitationRuleScope } from './citation-rule.js';
@@ -392,6 +393,9 @@ function openDatabaseForDoctor(dbPath?: string, opts: { busyTimeoutMs?: number }
 
 /** Read-only, a database whose schema is older than this version cannot be read by every check: it is behind, not broken. */
 function isSchemaBehind(err: unknown): boolean {
+  // An error that carries its own fix was raised on purpose by a check that already read the damage (the inbox's
+  // missing column, a failed integrity check): that is broken, not behind, and keeps its own advice.
+  if (typeof (err as { fix?: unknown } | null)?.fix === 'string') return false;
   return /no such (table|column)/i.test(err instanceof Error ? err.message : String(err));
 }
 /**
@@ -429,6 +433,25 @@ function queryFailedFix(err: unknown): string {
     return 'Another process has the database locked; wait for it to finish, or stop it, then retry.';
   }
   return 'The error is quoted above. Check that ~/.memesh is readable and that the disk is not full.';
+}
+
+/**
+ * `ok`, or one line naming what SQLite's quick_check found (or the damage it
+ * hit while looking). Any other error it raises — a held lock, an I/O error —
+ * says nothing about the pages and is thrown as it is, for
+ * `diagnoseDatabaseFailure` to name.
+ */
+function quickIntegrityVerdict(db: DatabaseLike): string {
+  let row: { quick_check?: unknown } | undefined;
+  try {
+    row = db.prepare('PRAGMA quick_check(1)').get() as { quick_check?: unknown } | undefined;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (!isDamagedDatabaseError(message)) throw err;
+    return message.replace(/\s+/g, ' ').slice(0, 200);
+  }
+  if (typeof row?.quick_check !== 'string') return 'quick_check returned no verdict';
+  return row.quick_check.replace(/\s+/g, ' ').slice(0, 200);
 }
 
 /** Where a transcript a hold record names may be, for doctor to read it: the Claude Code and Codex session folders. Anything else is not read. */
@@ -3798,7 +3821,9 @@ async function inspectMessageRouterStatus(
         'Live message router / host registration',
         'fail',
         `The router socket path is ${result.detail} — over the ${AGENT_ROUTER_SOCKET_PATH_MAX_BYTES}-byte limit a Unix domain socket allows, so \`memesh-router\` cannot create it at ${result.socket_path}. Starting the router again fails the same way.`,
-        'Set MEMESH_ROUTER_SOCKET to a shorter absolute path, or move HOME / MEMESH_DIR somewhere with a shorter path, then start `memesh-router` again.',
+        process.env.MEMESH_ROUTER_SOCKET !== undefined
+          ? 'Set MEMESH_ROUTER_SOCKET to a shorter absolute path in a folder only you can access (owner-private), then start `memesh-router` again. It reaches `memesh-router`, `memesh doctor`, senders and ordinary Claude MCP sessions. Host configs written by `memesh agent setup` (`hosts/codex-session.json` included) keep the default path, and ordinary Codex sessions use the default path, so shorten HOME / MEMESH_DIR instead if they must reach this router.'
+          : 'Move HOME / MEMESH_DIR somewhere with a shorter path, then start `memesh-router` again. With MEMESH_DB_PATH set, the default socket sits in that database\'s folder, so move the database; the socket\'s folder must be owner-private. Setting MEMESH_ROUTER_SOCKET alone is not enough: it does not reach host configs written by `memesh agent setup` (`hosts/codex-session.json` included) or ordinary Codex sessions, which use the default path.',
         { code: 'message-router.socket-path-too-long', params: { path: result.socket_path, bytes: result.detail ?? 'unknown' } },
       );
     case 'insecure':
@@ -3906,6 +3931,36 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   let lastRouterIdleExit: string | undefined;
   try {
     const db = openDatabaseImpl(databasePath) as unknown as DatabaseLike;
+    // A file can open and count its entities while another table's pages are
+    // damaged; briefing, recall and the message inbox then fail on those pages
+    // and tell the user to run doctor. quick_check(1) stops at the first
+    // problem; it still reads the whole file on a healthy database (about 0.2 s
+    // for 470 MB measured) and names the damage on a broken one. Anything but
+    // "ok" goes through the catch below as one `database` row, with the
+    // advice that fits damage (not "start fresh").
+    const integrity = quickIntegrityVerdict(db);
+    if (integrity !== 'ok') {
+      throw Object.assign(
+        new Error(`Database at ${databasePath} opened, but SQLite's quick integrity check failed: ${integrity}`),
+        {
+          fix: damagedDatabaseFix(databasePath),
+        },
+      );
+    }
+    // The pages can be intact while a table lacks a column this version reads
+    // (changed outside memesh, or by a newer version): briefing then says the
+    // inbox cannot be read and sends the reader here, so run its query.
+    try {
+      unreadDeliveryCount(db as unknown as MemeshDatabase, '', 'memesh-doctor');
+    } catch (err) {
+      const reason = (err instanceof Error ? err.message : String(err)).replace(/\s+/g, ' ').slice(0, 200);
+      throw Object.assign(
+        new Error(`Database at ${databasePath} opened, but its message inbox cannot be read: ${reason}`),
+        {
+          fix: 'This memesh cannot read the message tables, and briefing says the same. If a newer memesh version also uses this database, update this one to match it; otherwise the tables were changed outside memesh: restore a backup you trust, or report the error quoted above.',
+        },
+      );
+    }
     // Only wording in the router row: when it cannot be read the row says no idle exit is recorded.
     try { lastRouterIdleExit = readRouterIdleExit(db as unknown as MemeshDatabase); } catch { lastRouterIdleExit = undefined; }
     const count =

@@ -1,7 +1,7 @@
 import { BUSY_TIMEOUT_MS, MemeshDatabase } from './storage/sqlite.js';
 import path from 'path';
 import fs from 'fs';
-import { runAutoDecay } from './core/lifecycle.js';
+import { backfillCompressionMarkers, runAutoDecay } from './core/lifecycle.js';
 import { computeSignalScore } from './core/signal-scorer.js';
 import { getDbPath } from './core/paths.js';
 import { belongsToAnotherUser, databaseFiles, guardDatabaseFiles, holdsBytes, immutableAddress, isWritable, ownerWriteCommand, removeGroupAndOtherAccess, shellQuote } from './core/file-mode.js';
@@ -77,7 +77,7 @@ export function openDatabase(dbPath, opts = {}) {
         }
         return db;
     }
-    db = openInitialisedDatabase(resolvedPath, opts, { readOnly: opts.readOnly });
+    db = openInitialisedDatabase(resolvedPath, { ...opts, maintenance: opts.busyTimeoutMs === undefined }, { readOnly: opts.readOnly });
     const writeBack = opts.readOnly ? undefined : ownerWriteCommand(resolvedPath);
     if (writeBack) {
         try {
@@ -99,7 +99,7 @@ export function openInitialisedDatabase(resolvedPath, opts = {}, mode = {}) {
             opening.pragma(`busy_timeout = ${opts.busyTimeoutMs}`);
             giveUpIfWriteLocked(opening);
         }
-        retryWhileLocked(() => initialiseDatabase(opening), opts.busyTimeoutMs ?? BUSY_TIMEOUT_MS, `${resolvedPath} (data folder ${path.dirname(resolvedPath)})`);
+        retryWhileLocked(() => initialiseDatabase(opening, { maintenance: opts.maintenance === true }), opts.busyTimeoutMs ?? BUSY_TIMEOUT_MS, `${resolvedPath} (data folder ${path.dirname(resolvedPath)})`);
     }
     catch (err) {
         try {
@@ -125,7 +125,7 @@ function isReadonlyDbError(err) {
     const msg = err instanceof Error ? err.message : String(err);
     return /readonly database|SQLITE_READONLY/i.test(msg);
 }
-function initialiseDatabase(db) {
+function initialiseDatabase(db, opts) {
     try {
         db.pragma('journal_mode = WAL');
     }
@@ -135,7 +135,7 @@ function initialiseDatabase(db) {
     }
     db.pragma('foreign_keys = ON');
     try {
-        migrateToCurrentSchema(db);
+        migrateToCurrentSchema(db, opts);
     }
     catch (err) {
         if (!isReadonlyDbError(err))
@@ -148,7 +148,7 @@ function initialiseDatabase(db) {
     }
     return db;
 }
-function migrateToCurrentSchema(db) {
+function migrateToCurrentSchema(db, opts) {
     createSchema(db);
     db.exec(FTS_SQL);
     ensureTagsUniqueIndex(db);
@@ -176,6 +176,8 @@ function migrateToCurrentSchema(db) {
     repairFusedLessonShellHistory(db);
     ensureDreamProposalsTable(db);
     dropArchivedIndexRows(db);
+    if (opts.maintenance)
+        backfillCompressionMarkers(db);
 }
 export function reindexFts() {
     const database = getDatabase();

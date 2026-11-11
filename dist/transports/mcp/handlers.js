@@ -321,7 +321,7 @@ export const TOOL_DEFINITIONS = [
     },
     {
         name: 'user_patterns',
-        description: 'Analyze user work patterns from existing memory. Returns: work schedule (peak hours/days), tool preferences, focus areas, workflow metrics (session duration, commits/session), knowledge strengths, and learning areas. Use it when the task needs context about how the user works, such as their schedule or tool preferences; it is not part of loading a session.',
+        description: 'Analyze user work patterns from existing memory. Returns: work schedule (peak hours/days), focus areas, workflow metrics (commits per session, total sessions and commits), knowledge strengths, and learning areas. Use it when the task needs context about how the user works, such as their schedule or focus areas; it is not part of loading a session.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -385,7 +385,7 @@ export const TOOL_DEFINITIONS = [
                     description: 'Message lifecycle or live-directory action. Each action validates only its documented fields and rejects unknown fields.',
                 },
                 project: { type: 'string', description: 'Local project scope shared by sender and recipient. A stable identifier, never a filesystem path; compared exactly, after Unicode NFC normalisation.' },
-                sender: { type: 'string', description: 'Required for send. Stable local sender/agent identifier; provenance only, and stored exactly as given.' },
+                sender: { type: 'string', description: 'Required for send. Stable local sender/agent identifier; provenance only, trimmed of surrounding whitespace but otherwise stored as given.' },
                 recipient: { type: 'string', description: 'Required except discover and send with recipient_handle. Stable target identifier, never a filesystem path; compared exactly after Unicode NFC normalisation.' },
                 recipient_handle: { type: 'string', description: 'Send only: a discovered project-scoped session handle, mutually exclusive with recipient. Offline registered sessions can also be addressed.' },
                 target_kind: {
@@ -738,9 +738,9 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
                 lines.push(`Total sessions: ${data.workflow.totalSessions} | Total commits: ${data.workflow.totalCommits}`);
             }
             if (allCategories || cats.includes('strengths')) {
-                lines.push('', '### Strengths (high confidence areas)');
+                lines.push('', '### Strengths (types with 2+ memories, by average confidence)');
                 if (data.strengths.length > 0) {
-                    lines.push('- ' + data.strengths.map(s => `${s.type} (${s.avgConfidence})`).join(', '));
+                    lines.push('- ' + data.strengths.map(s => `${s.type} (avg confidence ${s.avgConfidence})`).join(', '));
                 }
                 else {
                     lines.push('No strength data yet.');

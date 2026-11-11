@@ -4,7 +4,7 @@ import { readConfig } from './config.js';
 import { resolveSessionLimit } from './session-limit.js';
 import { readRepoState, repoStateLines } from './repo-state.js';
 import { getTaskState, TaskStateUnreadableError } from './task-state-store.js';
-import { recipientEverSeen, unreadDeliveryCount, unreadInboxLines } from './agent-message-inbox.js';
+import { inboxUnreadableLine, recipientEverSeen, unreadDeliveryCount, unreadInboxLines } from './agent-message-inbox.js';
 import { hostSessionFromEnv } from './host-session.js';
 import { canonicalAgentScopeId } from './agent-scope-id.js';
 import { briefingTaskStateLines } from './task-state.js';
@@ -51,8 +51,15 @@ export function assembleBriefing(project, recipient, projectIds) {
         taskLines = [`task state for ${jsonStringLiteral(projectLabel(projectName))}: ${err.message}`];
     }
     const inboxRecipient = recipient === undefined ? undefined : canonicalAgentScopeId(recipient);
-    const unreadCount = unreadDeliveryCount(db, canonicalAgentScopeId(projectName), inboxRecipient, hostSessionFromEnv());
-    const everSeen = inboxRecipient !== undefined && unreadCount === 0
+    let unreadCount = 0;
+    let inboxUnreadable;
+    try {
+        unreadCount = unreadDeliveryCount(db, canonicalAgentScopeId(projectName), inboxRecipient, hostSessionFromEnv());
+    }
+    catch (err) {
+        inboxUnreadable = err instanceof Error ? err.message : 'unknown error';
+    }
+    const everSeen = inboxRecipient !== undefined && unreadCount === 0 && inboxUnreadable === undefined
         ? recipientEverSeen(db, canonicalAgentScopeId(projectName), inboxRecipient)
         : undefined;
     const pools = selectBriefingPools(db, projectName, {
@@ -65,7 +72,9 @@ export function assembleBriefing(project, recipient, projectIds) {
     const stateLines = [
         ...handoff,
         ...taskLines,
-        ...unreadInboxLines(unreadCount, canonicalAgentScopeId(projectName), inboxRecipient, everSeen),
+        ...(inboxUnreadable !== undefined && inboxRecipient
+            ? [inboxUnreadableLine(canonicalAgentScopeId(projectName), inboxRecipient, inboxUnreadable)]
+            : unreadInboxLines(unreadCount, canonicalAgentScopeId(projectName), inboxRecipient, everSeen)),
     ];
     const snippets = readSnippets(db, [...pools.lessons, ...pools.project, ...pools.noProject, ...pools.shared, ...pools.global, ...pools.recent].map((row) => row.id));
     const toEntities = (pool) => pool.map((row) => toTopologyEntity(row, snippets));

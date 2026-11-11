@@ -1,4 +1,5 @@
 import type { MemeshDatabase } from '../storage/sqlite.js';
+import { type UnmarkedWeeks } from './compression-ledger.js';
 export declare function runAutoDecay(db: MemeshDatabase): {
     decayed: number;
 };
@@ -33,5 +34,13 @@ export declare function readLastAutoArchiveRun(db: {
         get(): unknown;
     };
 }): AutoArchiveRun | null;
+export declare function markCompressedRows(db: MemeshDatabase, opts?: {
+    dryRun?: boolean;
+}): {
+    marked: number;
+    unresolved: number;
+    unmarkedCounts: UnmarkedWeeks;
+};
+export declare function backfillCompressionMarkers(db: MemeshDatabase): void;
 export { PRESERVED_TYPES, NOISE_TYPES };
 //# sourceMappingURL=lifecycle.d.ts.map
