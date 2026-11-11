@@ -157,7 +157,7 @@ function compareIndexCandidates(a: IndexCandidate, b: IndexCandidate): number {
  * the same fence. `entities.metadata` carries no `CHECK(json_valid(...))`,
  * so an import or a hand edit reaches it.
  */
-function candidateIsAutoInjectable(metadata: unknown): boolean {
+export function candidateIsAutoInjectable(metadata: unknown): boolean {
   if (metadata == null) return true;
   if (typeof metadata === 'string') {
     let parsed: unknown;
@@ -204,25 +204,6 @@ function indexLine(candidate: IndexCandidate, now: number): string {
     },
     INDEX_LINE_MAX_CHARS,
   );
-}
-
-/**
- * The room, in characters, an injected index needs for the lines that are
- * always shown however little space is left: the heading, the worst-case
- * "N more" and "N older" lines, and the cost footer (or the empty-state line).
- * A caller that shares one budget with the index keeps this much back before
- * filling the rest, so the index can always say what it left out.
- */
-export function injectedIndexReserve(projectName: string): number {
-  const worst = [
-    indexHeading(projectName),
-    moreLine(INDEX_CANDIDATE_CAP, true),
-    olderLine(INDEX_CANDIDATE_CAP, true),
-    footerLine(INDEX_MAX_LINES, INDEX_MAX_BYTES, INDEX_MAX_BYTES),
-  ];
-  const empty = [indexHeading(projectName), indexEmptyLine(projectName), footerLine(0, INDEX_MAX_BYTES, INDEX_MAX_BYTES)];
-  const len = (lines: string[]) => lines.reduce((n, l) => n + l.length, 0) + lines.length - 1;
-  return Math.max(len(worst), len(empty));
 }
 
 function indexHeading(projectName: string): string {
@@ -303,18 +284,12 @@ export function buildBriefingIndex(
   candidates: readonly IndexCandidate[],
   projectName: string,
   now: number,
-  options: { truncated?: boolean; maxChars?: number } = {},
+  options: { truncated?: boolean } = {},
 ): BriefingIndex {
   const truncated = options.truncated === true;
-  // `maxChars` is the room an injected block has left for the index, in
-  // UTF-16 units of the lines joined by '\n'. The standalone index passes
-  // none and keeps exactly its line/byte caps.
-  const charAllowance = typeof options.maxChars === 'number' ? options.maxChars : Infinity;
   const cutoff = now - INDEX_STALE_DAYS * DAY_MS;
-  const eligible = candidates
-    .filter((c) => isIndexableType(c.type) && candidateIsAutoInjectable(c.metadata))
-    .slice()
-    .sort(compareIndexCandidates);
+  const listable = candidates.filter((c) => isIndexableType(c.type) && candidateIsAutoInjectable(c.metadata));
+  const eligible = [...listable].sort(compareIndexCandidates);
   const current: IndexCandidate[] = [];
   let older = 0;
   for (const c of eligible) {
@@ -338,24 +313,18 @@ export function buildBriefingIndex(
     footerLine(INDEX_MAX_LINES, INDEX_MAX_BYTES, INDEX_MAX_BYTES),
   ]);
   const budget = INDEX_MAX_BYTES - reserve - sectionBytes([heading]);
-  // The same reservation in characters: the trailers that make a cut visible
-  // are charged before any line is admitted, so they always fit.
-  const charBudget = charAllowance - injectedIndexReserve(projectName);
 
   const rendered: string[] = [];
   const ids: number[] = [];
   let used = 0;
-  let usedChars = 0;
   for (const c of current) {
     if (rendered.length >= INDEX_MAX_LINES) break;
     const line = indexLine(c, now);
     const cost = byteLength(line) + 1;
     if (used + cost > budget) break;
-    if (usedChars + line.length + 1 > charBudget) break;
     rendered.push(line);
     ids.push(c.id);
     used += cost;
-    usedChars += line.length + 1;
   }
 
   const more = current.length - rendered.length;

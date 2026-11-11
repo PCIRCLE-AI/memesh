@@ -542,6 +542,11 @@ async function main() {
         hook_event_name: 'UserPromptSubmit', prompt: 'hello',
       })),
     },
+    'scripts/hooks/prompt-recall.js': {
+      run: (abs, env) => assertHookStarts(abs, env, 'UserPromptSubmit', hookPayload({
+        hook_event_name: 'UserPromptSubmit', prompt: 'hello',
+      })),
+    },
   };
 
   try {

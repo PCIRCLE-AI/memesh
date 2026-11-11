@@ -224,7 +224,7 @@ export function buildTopologyLines(entities, projectName, budget) {
         lines.pop();
     return lines;
 }
-export function assembleTopologyBlock(stateLines, pools, projectName, budget = DEFAULT_TOPOLOGY_BUDGET, { reserve = 0 } = {}) {
+export function assembleTopologyBlock(stateLines, pools, projectName, budget = DEFAULT_TOPOLOGY_BUDGET) {
     const seen = new Set();
     const candidates = [];
     const globalCandidates = [];
@@ -242,7 +242,7 @@ export function assembleTopologyBlock(stateLines, pools, projectName, budget = D
         }
     }
     const lines = boundStateLines(stateLines);
-    const room = () => budget.maxChars - reserve - joinedLength(lines) - (lines.length > 0 ? 2 : 0);
+    const room = () => budget.maxChars - joinedLength(lines) - (lines.length > 0 ? 2 : 0);
     const topologyLines = room() > 0
         ? buildTopologyLines(candidates, projectName, { ...budget, maxChars: room() })
         : [];
@@ -320,7 +320,9 @@ export function hasBriefingContent(lines) {
 }
 export function buildReferenceContext(memoryLines) {
     const safeLines = memoryLines.map((line) => stripControlChars(String(line ?? '')
-        .replace(/[\s\u0085\u001c-\u001e]+/g, ' ')).trim());
+        .replace(/[\s\u0085\u001c-\u001e]+/g, ' '))
+        .replace(/</g, '&lt;')
+        .trim());
     let longestRun = 0;
     for (const line of safeLines) {
         for (const run of line.match(/`+/g) ?? []) {
@@ -345,6 +347,6 @@ export function jsonStringLiteral(value) {
     return JSON.stringify(String(value)).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
 }
 export function stripControlChars(s) {
-    return s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]+/g, ' ');
+    return s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u061c\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]+/g, ' ');
 }
 //# sourceMappingURL=work-topology.js.map

@@ -53,6 +53,7 @@ export interface SearchOptions {
     countAsAccess?: boolean;
 }
 export interface RememberInput {
+    reasonOptional?: boolean;
     name?: string;
     type?: string;
     note?: string;

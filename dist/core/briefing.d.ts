@@ -12,5 +12,5 @@ export interface BriefingResult {
     empty: boolean;
 }
 export declare function readBriefingIndex(db: MemeshDatabase, projectName: string, now?: number): BriefingIndex;
-export declare function assembleBriefing(project?: string, recipient?: string): BriefingResult;
+export declare function assembleBriefing(project?: string, recipient?: string, cwd?: string | null): BriefingResult;
 //# sourceMappingURL=briefing.d.ts.map

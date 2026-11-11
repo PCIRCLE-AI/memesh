@@ -50,10 +50,10 @@ const BIND_WORKSPACE = 'Start the MCP server with MEMESH_PROJECT_ROOT set to the
  * back to this server's working directory, which is the plugin's, not the user's.
  * `action` is what the caller can do about a refusal, in this tool's own terms.
  */
-function projectFor(explicit: string | undefined, context: McpRequestContext, action: string): { project: string } | { result: ToolResult } {
+function projectFor(explicit: string | undefined, context: McpRequestContext, action: string): { project: string; directory?: string } | { result: ToolResult } {
   if (explicit !== undefined) return { project: explicit };
   const binding = context.projectBinding ?? UNBOUND;
-  if ('project' in binding) return { project: binding.project };
+  if ('project' in binding) return { project: binding.project, directory: binding.directory };
   return { result: fail(`${binding.error}: ${binding.reason} ${action}`) };
 }
 
@@ -388,7 +388,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'briefing',
     description:
-      'The work topology for a project, assembled and ready to use — assembled under the same rules as Claude Code’s session-start memory block (at `full`, the SessionStart hook additionally appends a work-package notice; that notice is a host-agent instruction, not memory, and is never part of this tool’s output). An eligible exact-project handoff precedes ranked memories at every level, after optional repository facts: fresh through 72 hours, marked stale through 14 days, omitted when older, undatable, or implausibly future-dated. Imported or archived handoffs are not auto-injected. Recent project decisions take priority over routine activity; up to five project lessons are selected separately. The handoff, displayed task state, ranked and global memories, and injected index share a 4000-character memory-block limit. How much else is assembled follows the `briefing` setting: `minimal` (the default) includes this project’s decisions and direction, lessons, known facts and recent activity, plus up to five memories that belong to no project, no fresh task state (a stale or unknown-age one still collapses to a one-line flag at every level) and no index, and may be empty; `standard` adds a fresh goal / next / blocked / done and closes with a capped index of durable memories; `full` additionally includes other projects and global memory. Whatever the level, the result’s `index` field carries the standalone index, which can show more than the index inside a crowded briefing. Call it at the start of a session only when the host has not already injected this block (the MeMesh SessionStart hook does under Claude Code, and under the Codex plugin once Codex runs its hooks; it runs again after context compaction), or when the user asks what is remembered; use recall for specific questions. Content is wrapped as untrusted background data.',
+      'The work topology for a project, assembled and ready to use — assembled under the same rules as Claude Code’s session-start memory block (at `full`, the SessionStart hook additionally appends a work-package notice; that notice is a host-agent instruction, not memory, and is never part of this tool’s output). An eligible exact-project handoff precedes ranked memories at every level, after optional repository facts: fresh through 72 hours, marked stale through 14 days, omitted when older, undatable, or implausibly future-dated. Imported or archived handoffs are not auto-injected. Recent project decisions take priority over routine activity; up to five project lessons are selected separately. The handoff, displayed task state, ranked and global memories share a 4000-character memory-block limit. At every level the block closes with the recent index: the titles of the 30 memories most recently written in this project or with no project (never another project’s, global or not), each `- title [mem:id]`, leaving out one a newer decision on the same topic in the list replaces or whose title says it is waiting; nothing is put in its place. How much else is assembled follows the `briefing` setting: `minimal` (the default) includes this project’s decisions and direction, lessons, known facts and recent activity, plus up to five memories that belong to no project, and no fresh task state (a stale or unknown-age one still collapses to a one-line flag at every level), and may be empty; `standard` adds a fresh goal / next / blocked / done; `full` additionally includes other projects and global memory. Whatever the level, the result’s `index` field carries the standalone catalog of durable memories (`memesh briefing --index`). Call it at the start of a session only when the host has not already injected this block (the MeMesh SessionStart hook does under Claude Code, and under the Codex plugin once Codex runs its hooks; it runs again after context compaction), or when the user asks what is remembered; use recall for specific questions. Content is wrapped as untrusted background data.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -931,7 +931,7 @@ async function handleToolInner(
       if (!r.ok) return r.result;
       const bound = projectFor(r.data.project, requestContext, 'Pass project explicitly.');
       if ('result' in bound) return bound.result;
-      return ok(assembleBriefing(bound.project, r.data.recipient));
+      return ok(assembleBriefing(bound.project, r.data.recipient, bound.directory ?? null));
     }
     if (name === 'user_patterns') {
       const r = parseOrFail(UserPatternsSchema, args);

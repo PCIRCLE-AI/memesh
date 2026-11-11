@@ -5,6 +5,7 @@ export declare const NOTE_FILE_MAX_BYTES: number;
 export declare const NOTE_DIR_MAX_FILES = 500;
 export interface NoteIngestOptions {
     dir: string;
+    trusted: boolean;
     project?: string;
     maxFiles?: number;
     maxBytes?: number;

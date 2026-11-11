@@ -314,7 +314,7 @@ function rememberInTransaction(
   // file, an import, an accepted dream proposal) is never refused here — a
   // memory must not be dropped for a missing field; its line in the briefing
   // says "(no reason recorded)" instead.
-  if (DECISION_TYPES.has(entityType) && (!existing || args.replace) && args.trustOverride !== 'untrusted'
+  if (DECISION_TYPES.has(entityType) && (!existing || args.replace) && args.trustOverride !== 'untrusted' && args.reasonOptional !== true
     && !(args.observations ?? []).some((o) => o.startsWith(WHY_PREFIX))) {
     throw new Error(
       `MeMesh did not store this ${entityType}: ${/^[aeiou]/i.test(entityType) ? 'an' : 'a'} ${entityType} needs \`why\` — the reason for it and what would make it `
@@ -415,7 +415,16 @@ function rememberInTransaction(
       } catch { stampLocalMetadata = false; }
     }
   }
-  if (stampLocalMetadata) kg.updateEntityMetadata(args.name, (current) => buildLocalMetadata(
+  // A memory that is not trusted (an import, a note from a folder nobody vouched
+  // for) stays that way when a call that did not decide trust writes to it. The
+  // stamp below would otherwise make it `trusted` with a local provenance, and an
+  // import would walk into every session by being added to. Only a caller that
+  // says `trustOverride: 'trusted'` (`--trust`, the person's own memory folder)
+  // changes that, and the row is left exactly as it was. That includes a
+  // `replace`: an agent that read an injected note and is told to "tidy" it with
+  // `replace` must not turn it into a trusted memory. A new name is the
+  // caller's own memory; there is no other way to trust an existing one.
+  if (stampLocalMetadata) kg.updateEntityMetadata(args.name, (current) => (args.trustOverride === undefined && (current as EntityMetadata).trust === 'untrusted' ? current : buildLocalMetadata(
     current as EntityMetadata,
     {
       trust: args.trustOverride,
@@ -431,7 +440,7 @@ function rememberInTransaction(
         ...(args.provenanceOverride ?? {}),
       },
     }
-  ));
+  )));
   if (replacedVersion) {
     // The new version is a new history entry and is redacted like any other
     // caller text; the entries the row already held are kept as stored

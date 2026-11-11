@@ -95,19 +95,20 @@
       "id": 3,
       "name": "pre-compact-s1",
       "type": "session-summary",
-      "title": null,
+      "title": "crane compaction",
       "status": "active",
       "namespace": "personal",
       "confidence": 1,
       "metadata": {
-        "provenance": {}
+        "provenance": {},
+        "title_source": "heuristic"
       }
     },
     {
       "id": 5,
       "name": "session-s2-files",
       "type": "session-insight",
-      "title": "Files",
+      "title": "session-s2-files",
       "status": "active",
       "namespace": "personal",
       "confidence": 1,
@@ -122,12 +123,13 @@
       "id": 8,
       "name": "session-s3-files",
       "type": "session-insight",
-      "title": null,
+      "title": "marten a",
       "status": "active",
       "namespace": "personal",
       "confidence": 1,
       "metadata": {
         "provenance": {},
+        "title_source": "heuristic",
         "forgotten_observation_hashes": [
           "fc0ef49bee25245ba71ce3dec95c4543acaba25c51a51d92ac1dcc0c12c58571"
         ]
@@ -137,12 +139,13 @@
       "id": 10,
       "name": "session-s4-files",
       "type": "session-insight",
-      "title": null,
+      "title": "vole kept",
       "status": "archived",
       "namespace": "personal",
       "confidence": 1,
       "metadata": {
-        "provenance": {}
+        "provenance": {},
+        "title_source": "heuristic"
       }
     },
     {
@@ -174,12 +177,13 @@
       "id": 15,
       "name": "untitled-commit",
       "type": "commit",
-      "title": null,
+      "title": "shrike",
       "status": "active",
       "namespace": "personal",
       "confidence": 1,
       "metadata": {
-        "provenance": {}
+        "provenance": {},
+        "title_source": "heuristic"
       }
     }
   ],

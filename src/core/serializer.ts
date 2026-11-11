@@ -43,6 +43,10 @@ export const IMPORTABLE_METADATA_KEYS: ReadonlySet<string> = new Set([
   // a machine-generated title from a user-provided one for DISPLAY only —
   // grepped for a conditional read (`title_source ===`) and found none.
   'title_source',
+  // The automatic archiver's mark on a row it archived (lifecycle.ts): when and
+  // by which rule, for display and recovery only. Nothing reads it back to
+  // decide anything; the row's `status` is what gates.
+  'auto_archive',
   // Dreamer bookkeeping, `dream accept` -> `createEntity` (dreamer.ts
   // ~611-628): a digest's own provenance (where it came from, when, and
   // under what cluster). None of these six are read back anywhere outside

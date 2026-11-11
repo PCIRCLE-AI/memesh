@@ -52,7 +52,7 @@ describe('R-C: a note held while its session could not be checked is looked at a
     const folder = path.join(fixture.tmpDir, 'a-folder.jsonl');
     fs.mkdirSync(folder, { recursive: true });
     holdOutNoteFiles({ dir, sessionId: 'sess-1', paths: [path.join(dir, 'secret.md')], ...tentative('unreadable', folder) });
-    const run = ingestNoteDirectory({ dir });
+    const run = ingestNoteDirectory({ trusted: false, dir });
     expect(run.created).toEqual([]);
     expect((run.held?.unchecked ?? 0) + run.more + run.pendingPrivate, 'the caller is told to look again').toBeGreaterThan(0);
   });
@@ -75,14 +75,14 @@ describe('R-D: re-deciding a held session costs a stat, not a scan', () => {
     const main = sparse(path.join(fixture.tmpDir, 't', 'main.jsonl'), Math.floor(1.9 * 1024 ** 3));
     sparse(path.join(fixture.tmpDir, 't', 'main', 'subagents', 'agent-a.jsonl'), Math.floor(1.1 * 1024 ** 3));
     holdOutNoteFiles({ dir, sessionId: 'sess-big', paths: [path.join(dir, 'secret.md')], ...tentative('too_large', main) });
-    expect(readsOf(main, () => { ingestNoteDirectory({ dir }); ingestNoteDirectory({ dir }); })).toBe(0);
+    expect(readsOf(main, () => { ingestNoteDirectory({ trusted: false, dir }); ingestNoteDirectory({ trusted: false, dir }); })).toBe(0);
   }, 120_000);
 
   it('P1b: the same for a transcript alone over PRIVATE_CHECK_MAX_BYTES (Q6_09)', () => {
     const dir = dirWith({ 'secret.md': note('note_secret2', 'held while unknown') });
     const big = sparse(path.join(fixture.tmpDir, 't2', 'big.jsonl'), PRIVATE_CHECK_MAX_BYTES + 64 * 1024 ** 2);
     holdOutNoteFiles({ dir, sessionId: 'sess-big2', paths: [path.join(dir, 'secret.md')], ...tentative('too_large', big) });
-    expect(readsOf(big, () => ingestNoteDirectory({ dir }))).toBe(0);
+    expect(readsOf(big, () => ingestNoteDirectory({ trusted: false, dir }))).toBe(0);
   }, 120_000);
 
   it('P1c: ten such sessions held for one folder cost nothing to an import of an unrelated folder (Q6_09, Q6_06 F3)', () => {
@@ -96,7 +96,7 @@ describe('R-D: re-deciding a held session costs a stat, not a scan', () => {
     fs.writeFileSync(path.join(unrelated, 'mine.md'), note('note_mine', 'ordinary'));
     let r: ReturnType<typeof ingestNoteDirectory> | undefined;
     const t0 = Date.now();
-    expect(readsOf(main, () => { r = ingestNoteDirectory({ dir: unrelated }); })).toBe(0);
+    expect(readsOf(main, () => { r = ingestNoteDirectory({ trusted: false, dir: unrelated }); })).toBe(0);
     expect(Date.now() - t0, 'ten times faster than the 10.2 s measured on 2fbe559d8').toBeLessThan(1020);
     expect(r?.created).toEqual(['note_mine']);
   }, 300_000);
@@ -106,7 +106,7 @@ describe('R-E: the outcome says how many notes are held', () => {
   it('counts every held note and names it in the summary (Q6_09, Q6_08 Nit)', () => {
     const dir = dirWith({ 'secret.md': note('note_counted', 'Body.') });
     holdOutNoteFiles({ dir, sessionId: 'sess-c', paths: [path.join(dir, 'secret.md')] });
-    const run = ingestNoteDirectory({ dir });
+    const run = ingestNoteDirectory({ trusted: false, dir });
     expect(run.held?.private).toBe(1);
     expect(summarizeNoteIngest(run)).toContain('1 held out by a private session');
   });
@@ -118,7 +118,7 @@ describe('R-F: a private session waits imports in every notes folder of its proj
     const other = dirWith({});
     markPrivateSession({ sessionId: 'sess-p', dirs: [own], dir: own, now: Date.now() - 1000 } as Parameters<typeof markPrivateSession>[0]);
     fs.writeFileSync(path.join(other, 'leak.md'), note('note_leak', 'PRIVATEBODY written by the private session'));
-    const run = ingestNoteDirectory({ dir: other });
+    const run = ingestNoteDirectory({ trusted: false, dir: other });
     expect(names()).not.toContain('note_leak');
     expect(run.pendingPrivate).toBe(1);
   });
@@ -134,7 +134,7 @@ describe('R-G: every write of a hold record holds the one lock and applies only 
     // Another hook of the session records a firm hold meanwhile.
     holdOutNoteFiles({ dir, sessionId: 'sess-r', paths: [path.join(dir, 'b.md')] });
     expect(ni.settleTentativeHolds('sess-r', 'no', { expectRev: before.rev })).toBe(false);
-    ingestNoteDirectory({ dir, deadlineAt: Date.now() - 1 }); // no time to decide again: nothing released
+    ingestNoteDirectory({ trusted: false, dir, deadlineAt: Date.now() - 1 }); // no time to decide again: nothing released
     expect(names()).not.toContain('note_b');
   });
 
@@ -174,9 +174,9 @@ describe('R-J: a write that fails is never reported as a damaged marker, and nev
     fs.mkdirSync(holdsDir(), { recursive: true });
     fs.chmodSync(holdsDir(), 0o500);
     let code: string | undefined;
-    try { ingestNoteDirectory({ dir, now: Date.now() + PRIVATE_WINDOW_MS + 60_000 }); } catch (err) { code = (err as { code?: string }).code; } finally { fs.chmodSync(holdsDir(), 0o700); }
+    try { ingestNoteDirectory({ trusted: false, dir, now: Date.now() + PRIVATE_WINDOW_MS + 60_000 }); } catch (err) { code = (err as { code?: string }).code; } finally { fs.chmodSync(holdsDir(), 0o700); }
     expect(code).toBe(ni.NOTE_HOLDS_UNWRITABLE);
-    ingestNoteDirectory({ dir, now: Date.now() + PRIVATE_WINDOW_MS + 60_000 });
+    ingestNoteDirectory({ trusted: false, dir, now: Date.now() + PRIVATE_WINDOW_MS + 60_000 });
     expect(names()).not.toContain('note_fz_secret');
     expect(SKIP_REASONS.noteMarkersUnreadable).not.toContain('ends the wait');
     expect(SKIP_REASONS.noteHoldsUnwritable).not.toMatch(/delet/);
@@ -204,7 +204,7 @@ describe('R-M: a held note that could not be read keeps its folder waiting', () 
     fs.chmodSync(file, 0o000);
     try { expect(holdOutNoteFiles({ dir, sessionId: 'sess-1', paths: [file] })).toBe(1); } finally { fs.chmodSync(file, 0o644); }
     fs.renameSync(file, path.join(dir, 'renamed.md'));
-    expect(ingestNoteDirectory({ dir }).created).toEqual([]);
+    expect(ingestNoteDirectory({ trusted: false, dir }).created).toEqual([]);
     expect(names()).not.toContain('note_unread_secret');
   });
 
@@ -215,10 +215,10 @@ describe('R-M: a held note that could not be read keeps its folder waiting', () 
     try {
       holdOutNoteFiles({ dir, sessionId: 'sess-2', paths: [file] });
       fs.writeFileSync(path.join(dir, 'later.md'), note('note_later2', 'L.'));
-      expect(ingestNoteDirectory({ dir }).pendingPrivate).toBeGreaterThan(0);
+      expect(ingestNoteDirectory({ trusted: false, dir }).pendingPrivate).toBeGreaterThan(0);
       expect(names()).not.toContain('note_later2');
     } finally { fs.chmodSync(file, 0o644); }
-    ingestNoteDirectory({ dir });
+    ingestNoteDirectory({ trusted: false, dir });
     expect(names()).toContain('note_later2');
     expect(names()).not.toContain('note_unread2');
   });
@@ -233,7 +233,7 @@ describe('Q6_08 gaps', () => {
     const old = new Date(Date.now() - 3 * 24 * 3600 * 1000);
     fs.utimesSync(file, old, old);
     expect(holdOutNoteFiles({ dir, sessionId: 'sess-1', paths: [], sinceMs: since })).toBe(1);
-    expect(ingestNoteDirectory({ dir }).created).toEqual([]);
+    expect(ingestNoteDirectory({ trusted: false, dir }).created).toEqual([]);
   });
 
   it('N5: a note named with another letter case than on disk is held by its content', () => {
@@ -241,7 +241,7 @@ describe('Q6_08 gaps', () => {
     const named = path.join(dir, 'A.md');
     if (!fs.existsSync(named)) return; // a case-sensitive disk has no such file to name
     expect(holdOutNoteFiles({ dir, sessionId: 'sess-1', paths: [named] })).toBe(1);
-    expect(ingestNoteDirectory({ dir }).created).toEqual([]);
+    expect(ingestNoteDirectory({ trusted: false, dir }).created).toEqual([]);
   });
 
   it('N6: a tentative part with no start time is a damaged record', () => {
@@ -249,7 +249,7 @@ describe('Q6_08 gaps', () => {
     fs.mkdirSync(holdsDir(), { recursive: true });
     fs.writeFileSync(path.join(holdsDir(), 'sess-bad.json'), JSON.stringify({ v: 2, rev: 1, session: 's', firm: {}, tentative: { reason: 'r', updatedAt: 1, holdsAt: 1, projectsRoot: '', dirs: {} } }));
     let code: string | undefined;
-    try { ingestNoteDirectory({ dir }); } catch (err) { code = (err as { code?: string }).code; }
+    try { ingestNoteDirectory({ trusted: false, dir }); } catch (err) { code = (err as { code?: string }).code; }
     expect(code).toBe(ni.NOTE_HOLDS_UNREADABLE);
   });
 
@@ -271,7 +271,7 @@ describe('surviving mutants of Q6_05 and Q6_09', () => {
     markPrivateSession({ sessionId: 'early', dirs: [dir], now: now - 60_000 });
     markPrivateSession({ sessionId: 'late', dirs: [dir], now: now + 60_000 });
     fs.writeFileSync(path.join(dir, 'between.md'), note('note_between', 'B.'));
-    expect(ingestNoteDirectory({ dir }).pendingPrivate).toBe(1);
+    expect(ingestNoteDirectory({ trusted: false, dir }).pendingPrivate).toBe(1);
     expect(names()).not.toContain('note_between');
   });
 
@@ -280,7 +280,7 @@ describe('surviving mutants of Q6_05 and Q6_09', () => {
     fs.mkdirSync(path.dirname(markersDir()), { recursive: true });
     fs.writeFileSync(markersDir(), 'a file');
     let code: string | undefined;
-    try { ingestNoteDirectory({ dir }); } catch (err) { code = (err as { code?: string }).code; } finally { fs.rmSync(markersDir(), { force: true }); }
+    try { ingestNoteDirectory({ trusted: false, dir }); } catch (err) { code = (err as { code?: string }).code; } finally { fs.rmSync(markersDir(), { force: true }); }
     expect(code).toBe(ni.NOTE_MARKERS_DIR_UNREADABLE);
     expect(names()).not.toContain('note_md');
   });
@@ -293,7 +293,7 @@ describe('surviving mutants of Q6_05 and Q6_09', () => {
     fs.mkdirSync(markersDir(), { recursive: true });
     fs.writeFileSync(path.join(markersDir(), 'bad.json'), JSON.stringify(body));
     let code: string | undefined;
-    try { ingestNoteDirectory({ dir }); } catch (err) { code = (err as { code?: string }).code; }
+    try { ingestNoteDirectory({ trusted: false, dir }); } catch (err) { code = (err as { code?: string }).code; }
     expect(code).toBe(ni.NOTE_MARKERS_UNREADABLE);
   });
 
@@ -303,7 +303,7 @@ describe('surviving mutants of Q6_05 and Q6_09', () => {
     fs.mkdirSync(holdsDir(), { recursive: true });
     fs.writeFileSync(path.join(holdsDir(), 'sess-h.json'), '{ damaged');
     let code: string | undefined;
-    try { ingestNoteDirectory({ dir, now: Date.now() + PRIVATE_WINDOW_MS + 60_000 }); } catch (err) { code = (err as { code?: string }).code; }
+    try { ingestNoteDirectory({ trusted: false, dir, now: Date.now() + PRIVATE_WINDOW_MS + 60_000 }); } catch (err) { code = (err as { code?: string }).code; }
     expect(code).toBe(ni.NOTE_HOLDS_UNREADABLE);
   });
 
@@ -314,8 +314,8 @@ describe('surviving mutants of Q6_05 and Q6_09', () => {
     const between = path.join(dir, 'between.md');
     fs.writeFileSync(between, note('note_ren', 'R.'));
     ni.renewPrivateSession('sess-ren', Date.now() + 5_000);
-    expect(ingestNoteDirectory({ dir }).pendingPrivate, 'waits: changed after holdsAt (= startedAt)').toBe(1);
-    expect(ingestNoteDirectory({ dir, now: Date.now() + PRIVATE_WINDOW_MS + 60_000 }).created).toEqual([]);
+    expect(ingestNoteDirectory({ trusted: false, dir }).pendingPrivate, 'waits: changed after holdsAt (= startedAt)').toBe(1);
+    expect(ingestNoteDirectory({ trusted: false, dir, now: Date.now() + PRIVATE_WINDOW_MS + 60_000 }).created).toEqual([]);
     expect(names()).not.toContain('note_ren');
     void at;
   });
@@ -326,7 +326,7 @@ describe('surviving mutants of Q6_05 and Q6_09', () => {
     fs.writeFileSync(file, note('note_edge', 'E.'));
     const st = fs.statSync(file);
     markPrivateSession({ sessionId: 'sess-edge', dirs: [dir], now: Math.max(st.mtimeMs, st.ctimeMs) });
-    expect(ingestNoteDirectory({ dir }).pendingPrivate).toBe(1);
+    expect(ingestNoteDirectory({ trusted: false, dir }).pendingPrivate).toBe(1);
   });
 
   it.skipIf(process.platform === 'win32')('marker and hold files are 0600 and their folders 0700', () => {
@@ -347,7 +347,7 @@ describe('surviving mutants of Q6_05 and Q6_09', () => {
     fs.mkdirSync(holdsDir(), { recursive: true });
     fs.writeFileSync(path.join(holdsDir(), 's.json'), JSON.stringify({ v: 2, rev: 1, session: 's', transcript: 7, firm: {} }));
     let code: string | undefined;
-    try { ingestNoteDirectory({ dir }); } catch (err) { code = (err as { code?: string }).code; }
+    try { ingestNoteDirectory({ trusted: false, dir }); } catch (err) { code = (err as { code?: string }).code; }
     expect(code).toBe(ni.NOTE_HOLDS_UNREADABLE);
   });
 
@@ -364,7 +364,7 @@ describe('surviving mutants of Q6_05 and Q6_09', () => {
       if (!renewed && String(p) === file && new Error().stack?.includes('readAllMarkers')) { renewed = true; spy.mockRestore(); ni.renewPrivateSession('sess-rf', later - 1000); }
       return out;
     }) as typeof fs.readFileSync);
-    try { ingestNoteDirectory({ dir, now: later }); } finally { spy.mockRestore(); }
+    try { ingestNoteDirectory({ trusted: false, dir, now: later }); } finally { spy.mockRestore(); }
     const marker = JSON.parse(fs.readFileSync(file, 'utf8'));
     expect(marker.finalizedAt).toBeUndefined();
     expect(marker.updatedAt).toBe(later - 1000);
@@ -386,7 +386,7 @@ describe('S3 follow-up: held notes, the per-run cap, and a private session that 
     const dir = dirWith({ 'a1.md': note('n_a1', 'S1'), 'a2.md': note('n_a2', 'S2'), 'a3.md': note('n_a3', 'S3') });
     holdOutNoteFiles({ dir, sessionId: 'S', paths: ['a1.md', 'a2.md', 'a3.md'].map((f) => path.join(dir, f)) });
     fs.writeFileSync(path.join(dir, 'z.md'), note('n_z', 'ordinary'));
-    const run = ingestNoteDirectory({ dir, maxFiles: 2 });
+    const run = ingestNoteDirectory({ trusted: false, dir, maxFiles: 2 });
     expect(run.created).toEqual(['n_z']);
     expect(run.held.private).toBe(3);
     expect(run.more).toBe(0);
@@ -405,10 +405,10 @@ describe('S3 follow-up: held notes, the per-run cap, and a private session that 
       try { fn(); } finally { spy.mockRestore(); }
       return count;
     };
-    expect(reads(() => expect(ingestNoteDirectory({ dir }).held.unchecked).toBe(1)), 'read once, to know it is held').toBe(1);
-    expect(reads(() => expect(ingestNoteDirectory({ dir }).held.unchecked).toBe(1)), 'the fingerprint: not read again').toBe(0);
+    expect(reads(() => expect(ingestNoteDirectory({ trusted: false, dir }).held.unchecked).toBe(1)), 'read once, to know it is held').toBe(1);
+    expect(reads(() => expect(ingestNoteDirectory({ trusted: false, dir }).held.unchecked).toBe(1)), 'the fingerprint: not read again').toBe(0);
     expect(ni.settleTentativeHolds('S2', 'no')).toBe(true);
-    expect(reads(() => ingestNoteDirectory({ dir })), 'released: read like any other file').toBe(1);
+    expect(reads(() => ingestNoteDirectory({ trusted: false, dir })), 'released: read like any other file').toBe(1);
     expect(names()).toContain('n_held');
   });
 
@@ -419,7 +419,7 @@ describe('S3 follow-up: held notes, the per-run cap, and a private session that 
     ni.endPrivateSession('P');
     expect(ni.renewPrivateSession('P'), 'the marker is still there to renew').toBe(true);
     fs.writeFileSync(path.join(dir, 'after.md'), note('after_resume', 'PRIVATE after resume'));
-    const run = ingestNoteDirectory({ dir }); // another session's import, before the private session's next Stop
+    const run = ingestNoteDirectory({ trusted: false, dir }); // another session's import, before the private session's next Stop
     expect(run.pendingPrivate, 'the notes changed since its holds wait').toBeGreaterThan(0);
     expect(names()).not.toContain('after_resume');
     expect(names()).not.toContain('n_early');
@@ -430,12 +430,12 @@ describe('S3 follow-up: held notes, the per-run cap, and a private session that 
     const t0 = Date.now() - 60_000;
     markPrivateSession({ sessionId: 'F', dirs: [dir], now: t0 });
     const later = Date.now() + PRIVATE_WINDOW_MS + 60_000;
-    ingestNoteDirectory({ dir, now: later }); // idle for the window: finalized
+    ingestNoteDirectory({ trusted: false, dir, now: later }); // idle for the window: finalized
     expect(JSON.parse(fs.readFileSync(path.join(markersDir(), 'F.json'), 'utf8')).finalizedAt).toBe(later);
     expect(ni.renewPrivateSession('F', later)).toBe(true); // its user writes a prompt again
     expect(JSON.parse(fs.readFileSync(path.join(markersDir(), 'F.json'), 'utf8')).finalizedAt, 'renewing makes it live again').toBeUndefined();
     fs.writeFileSync(path.join(dir, 'late.md'), note('n_late', 'PRIVATE written after the renewal'));
-    ingestNoteDirectory({ dir, now: later + PRIVATE_WINDOW_MS + 60_000 }); // idle again: finalized again, from its start to its last sign of life
+    ingestNoteDirectory({ trusted: false, dir, now: later + PRIVATE_WINDOW_MS + 60_000 }); // idle again: finalized again, from its start to its last sign of life
     expect(names()).not.toContain('n_late');
   });
 
@@ -446,9 +446,9 @@ describe('S3 follow-up: held notes, the per-run cap, and a private session that 
     const t0 = Date.now() + 1000; // its last sign of life, after the note
     markPrivateSession({ sessionId: 'W', dirs: [dir], now: t0 });
     const marker = () => JSON.parse(fs.readFileSync(path.join(markersDir(), 'W.json'), 'utf8'));
-    expect(ingestNoteDirectory({ dir, now: t0 + 5 * 3600_000 }).pendingPrivate, 'five hours: still live').toBe(1);
+    expect(ingestNoteDirectory({ trusted: false, dir, now: t0 + 5 * 3600_000 }).pendingPrivate, 'five hours: still live').toBe(1);
     expect(marker().finalizedAt).toBeUndefined();
-    ingestNoteDirectory({ dir, now: t0 + 7 * 3600_000 });
+    ingestNoteDirectory({ trusted: false, dir, now: t0 + 7 * 3600_000 });
     expect(marker().finalizedAt, 'seven hours: gone').toBe(t0 + 7 * 3600_000);
     expect(names()).not.toContain('n_w');
   });

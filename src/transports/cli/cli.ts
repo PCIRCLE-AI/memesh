@@ -924,7 +924,7 @@ program
   .option('--notes <dir>', 'Ingest every frontmatter note file (*.md with name/description/metadata.type) under <dir>: one memory per file, tagged source:note-file; a changed file replaces its memory, a vanished one is tagged source:note-file:missing. Read-only on the directory.')
   .option('--project <name>', 'With --notes: the project tag for ingested memories (default: the current directory\'s project)')
   .option('--json', 'With --notes: output the ingestion result as JSON')
-  .option('--trust', 'For restoring your OWN backup only: also mark every imported memory trusted, so it is injected into new sessions like your own. Behind a confirmation (or --yes). Not for a file you did not produce yourself.')
+  .option('--trust', 'For restoring your OWN backup (or, with --notes, a folder of notes you wrote): also mark every imported memory trusted, so it is injected into new sessions like your own. Behind a confirmation (or --yes). Not for anything you did not produce yourself.')
   .option('--yes', 'With --trust: skip the confirmation prompt')
   .action(async (file, opts, cmd: Command) => {
     if (opts.notes !== undefined) {
@@ -935,16 +935,42 @@ program
       // Both flags mean something for a JSON bundle and nothing here; taking
       // them silently would let a user believe notes went into "team", or
       // were merged some other way.
-      const ignored = ['namespace', 'merge', 'restoreArchived', 'trust', 'yes'].filter((k) => cmd.getOptionValueSource(k) === 'cli');
+      const ignored = ['namespace', 'merge', 'restoreArchived'].filter((k) => cmd.getOptionValueSource(k) === 'cli');
       if (ignored.length > 0) {
         console.error(`Error: --notes does not take ${ignored.map((k) => `--${k.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`).join(' or ')}. Note files always go to the personal namespace and a changed file replaces its memory.`);
         process.exit(1);
       }
+      if (opts.yes && !opts.trust) {
+        console.error('Error: --yes only applies with --trust.');
+        process.exit(1);
+      }
       const notesProject = requireProjectFlag(opts.project);
+      // Notes from a folder are untrusted (recall works, nothing is injected
+      // unasked) unless the person says the folder is their own.
+      if (opts.trust && !opts.yes) {
+        if (!process.stdin.isTTY) {
+          console.error(`Not a terminal and --yes not given — nothing was changed. Re-run with: memesh import --notes ${shellQuoteIfNeeded(String(opts.notes))} --trust --yes`);
+          process.exit(1);
+        }
+        const { createInterface } = await import('node:readline/promises');
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        let answer = '';
+        try {
+          answer = (await rl.question(`Trust the notes in ${opts.notes}? Their memories will be injected into new sessions like your own. Only do this for a folder you wrote yourself. [y/N] `)).trim().toLowerCase();
+        } catch (err) {
+          if (!isPromptAbort(err)) throw err;
+        } finally {
+          rl.close();
+        }
+        if (answer !== 'y' && answer !== 'yes') {
+          console.log('Not trusted — nothing was written.');
+          process.exit(1);
+        }
+      }
       await withDatabase(() => {
         let result;
         try {
-          result = ingestNoteDirectory({ dir: String(opts.notes), project: notesProject ?? getProjectName() });
+          result = ingestNoteDirectory({ dir: String(opts.notes), project: notesProject ?? getProjectName(), trusted: opts.trust === true });
         } catch (err) {
           const code = (err as NodeJS.ErrnoException)?.code;
           console.error(code === 'ENOENT'
@@ -966,6 +992,7 @@ program
         }
         if (allRefused) console.error(`Error: every note file found was refused; nothing was imported.`);
         console.log(`Notes: ${summarizeNoteIngest(result)} (${result.discovered} note files found)`);
+        if (!opts.trust && (result.created.length + result.replaced.length) > 0) console.log('  stored as untrusted — recall works, auto-injection does not. Add --trust for a folder you wrote yourself.');
         for (const s of result.skipped) console.error(`  skipped ${s.path}: ${s.reason}`);
         if (result.markedMissing.length) console.log(`  file gone, memory kept and tagged source:note-file:missing: ${result.markedMissing.join(', ')}`);
         if (result.more) console.log(`  ${result.more} more file(s) past the per-run cap — run the command again to continue`);
@@ -2033,7 +2060,7 @@ configCmd
     for (const { key, value } of rows) console.log(`  ${key}: ${value}`);
   });
 
-const ALLOWED_KEYS = new Set(['autoUpdate', 'sessionLimit', 'autoCapture', 'updateCheck', 'briefing']);
+const ALLOWED_KEYS = new Set(['autoUpdate', 'sessionLimit', 'autoCapture', 'updateCheck', 'promptRecall', 'briefing']);
 
 /**
  * `set`, `unset` and `get` refuse a key `ALLOWED_KEYS` does not list, in the
@@ -2051,6 +2078,7 @@ const KEY_VALIDATORS: Record<string, (value: string) => string | null> = {
   autoCapture: (v) => ['true', 'false', '1', '0'].includes(v) ? null : 'must be one of: true, false, 1, 0',
   // Turns the background version check off (false) or back on (true).
   updateCheck: (v) => ['true', 'false', '1', '0'].includes(v) ? null : 'must be one of: true, false, 1, 0',
+  promptRecall: (v) => ['true', 'false', '1', '0'].includes(v) ? null : 'must be one of: true, false, 1, 0',
   // #360 — reject here so a typo'd level is a loud CLI error, not a value
   // that only surfaces later as a traced-and-defaulted "invalid" reason.
   briefing: (v) => (BRIEFING_LEVELS as readonly string[]).includes(v)
@@ -2157,6 +2185,7 @@ configCmd
   .command('set')
   .description(`Set an ordinary config value: autoCapture (true|false), sessionLimit (a whole number, ${SESSION_LIMIT_MIN}-${SESSION_LIMIT_MAX}), `
     + 'autoUpdate (off|patch|minor|major — the largest version bump MeMesh may install by itself; major when unset in the default ~/.memesh outside CI and containers, where it is off unless set; off stops all automatic updates, wherever it is set: config set autoUpdate off also writes the account config), updateCheck (true|false), '
+    + 'promptRecall (true|false — whether a prompt is searched for memories to show beside it), '
     + 'briefing (minimal|standard|full — controls what a session start gets; MEMESH_BRIEFING env var overrides this)')
   .argument('<key>', 'Config key — see `memesh config list` for valid keys')
   .argument('<value>', 'Config value — see this command\'s description for each key\'s valid values')
@@ -2181,7 +2210,7 @@ configCmd
       // #431 — enforces the documented range, matching the HTTP write path.
       coerced = wholeNumber('sessionLimit', SESSION_LIMIT_MIN, SESSION_LIMIT_MAX)(value);
     }
-    if (key === 'autoCapture' || key === 'updateCheck') {
+    if (key === 'autoCapture' || key === 'updateCheck' || key === 'promptRecall') {
       coerced = value === 'true' || value === '1';
     }
     updateConfig({ [key]: coerced } as never);

@@ -149,7 +149,7 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
         throw new Error(`\`replace\` on "${args.name}": there is no memory named "${args.name}" to inherit a type from, `
             + 'so this call would create one with no type — pass `type` to create it.');
     }
-    if (DECISION_TYPES.has(entityType) && (!existing || args.replace) && args.trustOverride !== 'untrusted'
+    if (DECISION_TYPES.has(entityType) && (!existing || args.replace) && args.trustOverride !== 'untrusted' && args.reasonOptional !== true
         && !(args.observations ?? []).some((o) => o.startsWith(WHY_PREFIX))) {
         throw new Error(`MeMesh did not store this ${entityType}: ${/^[aeiou]/i.test(entityType) ? 'an' : 'a'} ${entityType} needs \`why\` — the reason for it and what would make it `
             + 'stop holding (for example: "Postgres is too heavy to deploy for one user; revisit if we add a hosted tier"). '
@@ -209,13 +209,13 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
         }
     }
     if (stampLocalMetadata)
-        kg.updateEntityMetadata(args.name, (current) => buildLocalMetadata(current, {
+        kg.updateEntityMetadata(args.name, (current) => (args.trustOverride === undefined && current.trust === 'untrusted' ? current : buildLocalMetadata(current, {
             trust: args.trustOverride,
             provenance: {
                 ...(args.sourceHost && !existing ? { source_host: args.sourceHost } : {}),
                 ...(args.provenanceOverride ?? {}),
             },
-        }));
+        })));
     if (replacedVersion) {
         const version = redactVersionText(replacedVersion);
         kg.updateEntityMetadata(args.name, (current) => {

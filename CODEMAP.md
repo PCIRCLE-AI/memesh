@@ -115,6 +115,7 @@ docs/                # ARCHITECTURE.md, api/API_REFERENCE.md
 | `post-commit.js` | PostToolUse Bash | git commit tracking |
 | `decision-nudge.js` | PostToolUse ExitPlanMode/AskUserQuestion | remind Claude to `remember` a decision just made, once per tool per session |
 | `user-prompt-intent.js` | UserPromptSubmit | detect "remember" intent |
+| `prompt-recall.js` | UserPromptSubmit | inject up to two strongly matching stored memories (title and `[mem:id]`) beside the prompt, out-of-date ones dropped |
 
 `scripts/hooks/_shared.js`, `_claude-channel.js`, `_clear-alias.js`, `_codex-rollout.js`, `_stop-notes.js`, `_stop-handoff.js`,
 `_private-session.js`, `_session-written-notes.js` and `_hook-budgets.js` (the read budget of each private-session hook, counted from the start of its process) are helpers, not hook commands. `_shared.js` resolves Claude's configured recipient or default `claude-code`; inbox queries suppress message IDs with intake receipts. Channel push is optional. `scripts/hooks/auto-update-runner.mjs` is started in the background by the SessionStart hook (and by `memesh serve`) unless

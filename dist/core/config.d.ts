@@ -4,6 +4,7 @@ export interface MeMeshConfig {
     sessionLimit?: number;
     autoUpdate?: 'off' | 'patch' | 'minor' | 'major';
     updateCheck?: boolean;
+    promptRecall?: boolean;
     setupCompleted?: boolean;
     briefing?: unknown;
 }

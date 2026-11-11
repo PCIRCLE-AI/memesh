@@ -29,7 +29,7 @@ export function resolveMcpProject(launchRoot, rootUris) {
             reason: 'The client advertises workspace roots but did not return them.',
         };
     }
-    const fromRoots = new Set();
+    const fromRoots = new Map();
     for (const uri of rootUris) {
         const directory = rootDirectory(uri);
         if (!directory) {
@@ -38,7 +38,9 @@ export function resolveMcpProject(launchRoot, rootUris) {
                 reason: `A workspace root from the client is not an existing local directory: ${JSON.stringify(uri)}.`,
             };
         }
-        fromRoots.add(getProjectName(directory));
+        const project = getProjectName(directory);
+        if (!fromRoots.has(project))
+            fromRoots.set(project, directory);
     }
     if (launchRoot !== undefined) {
         const directory = path.isAbsolute(launchRoot) ? existingDirectory(launchRoot) : null;
@@ -49,16 +51,18 @@ export function resolveMcpProject(launchRoot, rootUris) {
             };
         }
         const project = getProjectName(directory);
-        if ([...fromRoots].some(other => other !== project)) {
+        if ([...fromRoots.keys()].some(other => other !== project)) {
             return {
                 error: 'workspace_ambiguous',
                 reason: 'MEMESH_PROJECT_ROOT and the client\'s workspace root name different projects.',
             };
         }
-        return { project };
+        return { project, directory };
     }
-    if (fromRoots.size === 1)
-        return { project: [...fromRoots][0] };
+    if (fromRoots.size === 1) {
+        const [[project, directory]] = [...fromRoots];
+        return { project, directory };
+    }
     if (fromRoots.size > 1) {
         return {
             error: 'workspace_ambiguous',

@@ -62,9 +62,9 @@ export function resolveBriefingLevel(envValue, configValue) {
     return { level: DEFAULT_BRIEFING_LEVEL, invalid: null };
 }
 const POLICIES = {
-    minimal: { global: false, foreign: false, taskState: false, index: false, workPackageNotice: false },
-    standard: { global: false, foreign: false, taskState: true, index: true, workPackageNotice: false },
-    full: { global: true, foreign: true, taskState: true, index: true, workPackageNotice: true },
+    minimal: { global: false, foreign: false, taskState: false, workPackageNotice: false },
+    standard: { global: false, foreign: false, taskState: true, workPackageNotice: false },
+    full: { global: true, foreign: true, taskState: true, workPackageNotice: true },
 };
 export function briefingLevelPolicy(level) {
     return POLICIES[level];

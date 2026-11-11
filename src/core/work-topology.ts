@@ -519,9 +519,9 @@ export interface TopologyPool {
  * keeps its no-imports charter. It leads the block and is charged first.
  *
  * Everything inside the fence shares ONE budget (`budget.maxChars`, measured
- * as the lines joined by '\n'): the state lines, the project/foreign sections,
- * the global section, and `reserve` — the room the caller keeps back for the
- * durable-memory index it appends after this block. Global rules used to have
+ * as the lines joined by '\n'): the state lines, the project/foreign sections
+ * and the global section. The recent index the caller appends after this
+ * block is outside it (recent-index.ts). Global rules used to have
  * a separate additive allowance (#242); they now take what the project leaves,
  * still capped at their old size, so no category can push the total past the
  * budget.
@@ -536,7 +536,6 @@ export function assembleTopologyBlock(
   pools: readonly TopologyPool[],
   projectName: string,
   budget: TopologyBudget = DEFAULT_TOPOLOGY_BUDGET,
-  { reserve = 0 }: { reserve?: number } = {},
 ): string[] {
   const seen = new Set<string>();
   const candidates: TopologyEntity[] = [];
@@ -554,12 +553,11 @@ export function assembleTopologyBlock(
   }
 
   // ONE budget for everything the caller will put inside the fence: these
-  // state lines, the project/foreign sections, the global section and
-  // `reserve` (what the caller keeps back for the index that follows).
+  // state lines, the project/foreign sections and the global section.
   // Measured the way the payload is measured — lines joined by '\n' — so the
   // arithmetic here and the length of the final block cannot disagree.
   const lines = boundStateLines(stateLines);
-  const room = () => budget.maxChars - reserve - joinedLength(lines) - (lines.length > 0 ? 2 : 0);
+  const room = () => budget.maxChars - joinedLength(lines) - (lines.length > 0 ? 2 : 0);
   const topologyLines = room() > 0
     ? buildTopologyLines(candidates, projectName, { ...budget, maxChars: room() })
     : [];
@@ -715,7 +713,8 @@ export function hasBriefingContent(lines: readonly string[]): boolean {
  *      four. They are collapsed explicitly.
  *   2. The fence is one backtick longer than the longest backtick run in the
  *      content, so a line that IS a fence is too short to close ours.
- *   3. Other control characters go through `stripControlChars` (below) — see its own doc comment (#374).
+ *   3. `<` is written `&lt;`, so no memory carries a tag.
+ *   4. Other control characters go through `stripControlChars` (below) — see its own doc comment (#374).
  *
  * Pinned by `tests/hooks/reference-context-fence.test.ts`, which fails if
  * any of the three is removed.
@@ -730,7 +729,12 @@ export function buildReferenceContext(memoryLines: ReadonlyArray<string | null |
       String(line ?? '')
         // eslint-disable-next-line no-control-regex
         .replace(/[\s\u0085\u001c-\u001e]+/g, ' ')
-    ).trim()
+    )
+      // A memory cannot spell a tag (a closing system-reminder, an intent
+      // marker) that the reader of this block would take as its own. `<`
+      // is shown as `&lt;`: readable, and nothing in a memory is a tag.
+      .replace(/</g, '&lt;')
+      .trim()
   );
 
   let longestRun = 0;
@@ -801,7 +805,8 @@ export function jsonStringLiteral(value: string): string {
  * Remove control characters a terminal or renderer acts on but never
  * displays: C0 controls other than \t \n \r, DEL, the C1 range
  * (U+0080-U+009F), and the bidi override/isolate characters
- * (U+202A-U+202E, U+2066-U+2069) — replacing each maximal run with ONE
+ * (U+202A-U+202E, U+2066-U+2069), the direction and zero-width marks
+ * (U+061C, U+200B, U+200E, U+200F, U+2060-U+2064, U+FEFF) — replacing each maximal run with ONE
  * space, never nothing.
  *
  * \t, \n and \r are deliberately left alone: both current callers already
@@ -827,5 +832,5 @@ export function jsonStringLiteral(value: string): string {
  */
 export function stripControlChars(s: string): string {
   // eslint-disable-next-line no-control-regex
-  return s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]+/g, ' ');
+  return s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u061c\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]+/g, ' ');
 }

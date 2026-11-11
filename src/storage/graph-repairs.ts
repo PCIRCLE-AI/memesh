@@ -755,3 +755,53 @@ export function removeJunkFileTags(db: MemeshDatabase): number {
   });
   return removed;
 }
+
+const OWN_NOTE_TRUST_KEY = 'own_note_folder_trust_v1';
+
+/**
+ * Note memories read from the person's own memory folders were stored
+ * untrusted, which kept every one of them out of what a session is shown.
+ * Trust is now decided per folder, so the rows already stored are set right:
+ * a row carrying `source:note-file` whose recorded `note_dir_id` is one of
+ * `ownDirIds` becomes trusted. Nothing else is touched — not a note from any
+ * other folder, not an import, not a row whose folder is gone or whose
+ * provenance names no folder. Only rows still marked untrusted are changed, so
+ * a second pass changes none.
+ *
+ * @returns the number of rows set trusted
+ */
+export function trustOwnNoteFolderMemories(conn: MemeshDatabase, ownDirIds: ReadonlySet<string>): number {
+  if (ownDirIds.size === 0) return 0;
+  const rows = conn
+    .prepare(`SELECT e.id, e.metadata FROM entities e
+      WHERE json_valid(e.metadata)
+        AND json_extract(e.metadata, '$.trust') = 'untrusted'
+        AND json_extract(e.metadata, '$.provenance.source') = 'note-file'
+        AND EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = 'source:note-file')`)
+    .all() as unknown as Array<{ id: number; metadata: string }>;
+  const set = conn.prepare("UPDATE entities SET metadata = json_set(metadata, '$.trust', 'trusted') WHERE id = ?");
+  let changed = 0;
+  for (const row of rows) {
+    let dirId: unknown;
+    try { dirId = (JSON.parse(row.metadata) as { provenance?: { note_dir_id?: unknown } }).provenance?.note_dir_id; } catch { continue; }
+    if (typeof dirId !== 'string' || !ownDirIds.has(dirId)) continue;
+    set.run(row.id);
+    changed += 1;
+  }
+  return changed;
+}
+
+/** `trustOwnNoteFolderMemories`, once per database, at open. */
+export function repairOwnNoteFolderTrust(db: MemeshDatabase, ownDirIds: ReadonlySet<string>): number {
+  let changed = -1;
+  runOnceMigration(db, {
+    key: OWN_NOTE_TRUST_KEY,
+    version: 1,
+    describe: 'own note folder trust',
+    migrate: (conn) => {
+      changed = trustOwnNoteFolderMemories(conn, ownDirIds);
+      if (changed > 0) note(`${changed} note memor${changed === 1 ? 'y' : 'ies'} from your own memory folders are now trusted, so sessions can be shown them.`);
+    },
+  });
+  return changed;
+}

@@ -4,7 +4,7 @@ import { randomBytes } from 'crypto';
 import { memeshDir } from './paths.js';
 import { removeGroupAndOtherAccess } from './file-mode.js';
 export { SESSION_LIMIT_MIN, SESSION_LIMIT_MAX, isSessionLimitInRange } from './session-limit.js';
-const CONFIG_KEYS = ['autoCapture', 'sessionLimit', 'autoUpdate', 'updateCheck', 'setupCompleted', 'briefing'];
+const CONFIG_KEYS = ['autoCapture', 'sessionLimit', 'autoUpdate', 'updateCheck', 'promptRecall', 'setupCompleted', 'briefing'];
 export const RETIRED_CONFIG_KEYS = [
     'llm',
     'llmFallbacks',
@@ -64,6 +64,8 @@ function selectConfig(raw) {
     }
     if (typeof raw.updateCheck === 'boolean')
         config.updateCheck = raw.updateCheck;
+    if (typeof raw.promptRecall === 'boolean')
+        config.promptRecall = raw.promptRecall;
     if (typeof raw.setupCompleted === 'boolean')
         config.setupCompleted = raw.setupCompleted;
     if (raw.briefing !== undefined)

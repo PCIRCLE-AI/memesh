@@ -556,19 +556,20 @@ describe('briefing-level', () => {
   });
 
   describe('briefingLevelPolicy', () => {
-    it('minimal: no global, no foreign, no task state, no index, no work-package notice', () => {
+    // The recent index is not a level choice: it is shown at every level.
+    it('minimal: no global, no foreign, no task state, no work-package notice', () => {
       expect(briefingLevelPolicy('minimal')).toEqual({
-        global: false, foreign: false, taskState: false, index: false, workPackageNotice: false,
+        global: false, foreign: false, taskState: false, workPackageNotice: false,
       });
     });
-    it('standard: task state + index, still no global/foreign/notice', () => {
+    it('standard: task state, still no global/foreign/notice', () => {
       expect(briefingLevelPolicy('standard')).toEqual({
-        global: false, foreign: false, taskState: true, index: true, workPackageNotice: false,
+        global: false, foreign: false, taskState: true, workPackageNotice: false,
       });
     });
     it('full: everything', () => {
       expect(briefingLevelPolicy('full')).toEqual({
-        global: true, foreign: true, taskState: true, index: true, workPackageNotice: true,
+        global: true, foreign: true, taskState: true, workPackageNotice: true,
       });
     });
   });

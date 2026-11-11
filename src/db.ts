@@ -6,7 +6,8 @@ import { computeSignalScore } from './core/signal-scorer.js';
 import { getDbPath } from './core/paths.js';
 import { belongsToAnotherUser, databaseFiles, guardDatabaseFiles, holdsBytes, immutableAddress, isWritable, ownerWriteCommand, removeGroupAndOtherAccess, shellQuote } from './core/file-mode.js';
 import { insertFtsRow, joinIndexedObservations, removeFromFts } from './storage/fts-index.js';
-import { canonicalizeLessonTypes, dedupeObservations, dropArchivedIndexRows, removeJunkFileTags, repairFusedLessonShellHistory, retractZeroEditClaims, splitFusedLessons } from './storage/graph-repairs.js';
+import { canonicalizeLessonTypes, dedupeObservations, dropArchivedIndexRows, removeJunkFileTags, repairFusedLessonShellHistory, repairOwnNoteFolderTrust, retractZeroEditClaims, splitFusedLessons } from './storage/graph-repairs.js';
+import { ownMemoryDirIds } from './core/note-dirs.js';
 import {
   SCHEMA_SQL,
   FTS_SQL,
@@ -356,6 +357,11 @@ function migrateToCurrentSchema(db: MemeshDatabase): void {
   // A1: release the auto-injection block on memories a human already
   // accepted via `dream accept`. Same marker + fill-only discipline.
   backfillAcceptedProposalTrust(db);
+
+  // Notes read from the person's own memory folders were stored untrusted;
+  // those folders are the person's own, so release them. Other folders and
+  // imports stay as they were.
+  repairOwnNoteFolderTrust(db, ownMemoryDirIds());
 
   // Repair what 4.8.1 hooks wrote wrongly (#240 duplicate session
   // observations, #241 lessons fused into one `-other` bucket). The fixes in

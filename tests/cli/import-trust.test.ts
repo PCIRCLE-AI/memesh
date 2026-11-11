@@ -292,12 +292,13 @@ describe('memesh import --trust (#407)', () => {
     expect(recallEntities(home, MEMORY_NAME)).toHaveLength(0);
   });
 
-  it('--trust with --notes is refused, using the existing notes-refusal list', () => {
+  it('--trust with --notes is not refused as a flag mix: with no terminal and no --yes it writes nothing and names the command to re-run', () => {
     const notesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-trust-notes-'));
     try {
       const r = runCli(['import', '--notes', notesDir, '--trust'], home);
       expect(r.exitCode).toBe(1);
-      expect(r.stderr).toContain('--notes does not take --trust');
+      expect(r.stderr).toContain('Not a terminal and --yes not given');
+      expect(r.stderr).not.toContain('--notes does not take --trust');
     } finally {
       fs.rmSync(notesDir, { recursive: true, force: true });
     }

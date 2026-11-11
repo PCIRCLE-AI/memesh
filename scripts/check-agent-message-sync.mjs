@@ -291,7 +291,7 @@ requireText('.codex-plugin/mcp.json', [
 requireText('.claude-plugin/marketplace.json', ['"name": "pcircle-memesh"', '"version"']);
 requireText('hooks/hooks.json', [
   'session-start.js', 'session-summary.js', 'pre-compact.js',
-  'user-prompt-intent.js', 'pre-edit-recall.js', 'guard-check.js', 'post-commit.js',
+  'user-prompt-intent.js', 'prompt-recall.js', 'pre-edit-recall.js', 'guard-check.js', 'post-commit.js',
   'codex-session.js', 'startup|resume', 'SessionEnd',
 ]);
 requireText('llms-install.md', [

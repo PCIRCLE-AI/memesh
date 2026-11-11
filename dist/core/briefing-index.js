@@ -27,7 +27,7 @@ function compareIndexCandidates(a, b) {
         return bv - av;
     return b.id - a.id;
 }
-function candidateIsAutoInjectable(metadata) {
+export function candidateIsAutoInjectable(metadata) {
     if (metadata == null)
         return true;
     if (typeof metadata === 'string') {
@@ -63,17 +63,6 @@ function indexLine(candidate, now) {
         ...(decision ? { why, unconfirmedDays: unconfirmedDaysSince([candidate.lastAccessedAt, candidate.recency], now) } : {}),
     }, INDEX_LINE_MAX_CHARS);
 }
-export function injectedIndexReserve(projectName) {
-    const worst = [
-        indexHeading(projectName),
-        moreLine(INDEX_CANDIDATE_CAP, true),
-        olderLine(INDEX_CANDIDATE_CAP, true),
-        footerLine(INDEX_MAX_LINES, INDEX_MAX_BYTES, INDEX_MAX_BYTES),
-    ];
-    const empty = [indexHeading(projectName), indexEmptyLine(projectName), footerLine(0, INDEX_MAX_BYTES, INDEX_MAX_BYTES)];
-    const len = (lines) => lines.reduce((n, l) => n + l.length, 0) + lines.length - 1;
-    return Math.max(len(worst), len(empty));
-}
 function indexHeading(projectName) {
     return `Index of durable memories for ${jsonStringLiteral(projectLabel(projectName))} (newest first):`;
 }
@@ -104,12 +93,9 @@ function closeWithFooter(lines, shown) {
 }
 export function buildBriefingIndex(candidates, projectName, now, options = {}) {
     const truncated = options.truncated === true;
-    const charAllowance = typeof options.maxChars === 'number' ? options.maxChars : Infinity;
     const cutoff = now - INDEX_STALE_DAYS * DAY_MS;
-    const eligible = candidates
-        .filter((c) => isIndexableType(c.type) && candidateIsAutoInjectable(c.metadata))
-        .slice()
-        .sort(compareIndexCandidates);
+    const listable = candidates.filter((c) => isIndexableType(c.type) && candidateIsAutoInjectable(c.metadata));
+    const eligible = [...listable].sort(compareIndexCandidates);
     const current = [];
     let older = 0;
     for (const c of eligible) {
@@ -130,11 +116,9 @@ export function buildBriefingIndex(candidates, projectName, now, options = {}) {
         footerLine(INDEX_MAX_LINES, INDEX_MAX_BYTES, INDEX_MAX_BYTES),
     ]);
     const budget = INDEX_MAX_BYTES - reserve - sectionBytes([heading]);
-    const charBudget = charAllowance - injectedIndexReserve(projectName);
     const rendered = [];
     const ids = [];
     let used = 0;
-    let usedChars = 0;
     for (const c of current) {
         if (rendered.length >= INDEX_MAX_LINES)
             break;
@@ -142,12 +126,9 @@ export function buildBriefingIndex(candidates, projectName, now, options = {}) {
         const cost = byteLength(line) + 1;
         if (used + cost > budget)
             break;
-        if (usedChars + line.length + 1 > charBudget)
-            break;
         rendered.push(line);
         ids.push(c.id);
         used += cost;
-        usedChars += line.length + 1;
     }
     const more = current.length - rendered.length;
     const above = [heading, ...rendered];

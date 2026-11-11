@@ -201,9 +201,9 @@ describe('the project line', () => {
     db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(eid, `project:${mirrorProjectName(dir)}`);
     db.close();
     const out = runHook({ cwd: dir }, { MEMESH_BRIEFING: 'standard' });
-    const line = out.context.split('\n').find((l) => l.startsWith('Index of durable memories for '));
+    const line = out.context.split('\n').find((l) => l.startsWith('Recently written memories for '));
     expect(line, out.context).toBeDefined();
-    const m = line!.match(new RegExp(`^Index of durable memories for (${LITERAL}): could not be read this session — run \`memesh doctor\`\\.$`));
+    const m = line!.match(new RegExp(`^Recently written memories for (${LITERAL}): could not be read this session — run \`memesh doctor\`\\.$`));
     expect(m, line).not.toBeNull();
     expect(JSON.parse(m![1])).toBe(projectLabel(mirrorProjectName(dir)));
   });
@@ -221,7 +221,7 @@ describe('the project line', () => {
     for (const [prefix, suffix] of [
       ['Decisions and direction for ', ':'],
       ['Lessons from ', ' — do not repeat these:'],
-      ['Index of durable memories for ', ' (newest first):'],
+      ['Recently written memories in ', ' (newest first; recall a [mem:id] to read one):'],
     ]) {
       const hits = out.context.split('\n').filter((l) => l.startsWith(prefix));
       expect(hits, `${prefix}… in\n${out.context}`).toHaveLength(1);

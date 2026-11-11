@@ -15,6 +15,7 @@ import { readInstallRecordState } from './install-id.js';
 import { isWritable, ownerWriteCommand, runOrSay, shellQuote } from './file-mode.js';
 import { diagnoseDatabaseFailure } from './database-diagnosis.js';
 import { withoutFinalPeriod } from './sentence.js';
+import { AutoArchiveRecordUnreadable, readLastAutoArchiveRun } from './lifecycle.js';
 import { citationRulePath, citationRuleState } from './citation-rule.js';
 import { getAgentRouterSocketPath, getDbPath, getMemeshDirFromDbPath, homeDir, memeshDir } from './paths.js';
 import { findProjectIdentitySplits } from './project-identity-split.js';
@@ -2018,6 +2019,35 @@ export async function runDoctor(options) {
             else {
                 dbChecks.push(createInfo('citation_compliance', 'Memory use rate', `${cited} of ${citationTotal} session(s) with injected memories cited or retrieved at least one (${rate}%).`));
             }
+        }
+        try {
+            let archiveRun = null;
+            let archiveUnreadable = null;
+            try {
+                archiveRun = readLastAutoArchiveRun(db);
+            }
+            catch (err) {
+                if (!(err instanceof AutoArchiveRecordUnreadable))
+                    throw err;
+                archiveUnreadable = err.message;
+            }
+            if (archiveUnreadable) {
+                dbChecks.push(createCheck('auto_archive', 'Automatic archive', 'warn', `Cannot tell when it last ran: ${archiveUnreadable}. The record is rewritten the next time the archiver runs (at session start, at most once a day).`));
+            }
+            else if (archiveRun) {
+                const byType = Object.entries(archiveRun.byType ?? {}).map(([t, n]) => `${n} ${t}`).join(', ');
+                dbChecks.push(createInfo('auto_archive', 'Automatic archive', `Last run ${archiveRun.at}: ${archiveRun.archived} auto-captured memor${archiveRun.archived === 1 ? 'y' : 'ies'} archived`
+                    + `${byType ? ` (${byType})` : ''}, unused for ${String(archiveRun.unusedDays ?? 14)} days`
+                    + `${Number(archiveRun.keptCited) > 0 ? `; ${archiveRun.keptCited} old one(s) kept because a session cited them` : ''}. `
+                    + `Memories an agent wrote are never archived this way. Read an archived one with 'memesh recall --include-archived'; `
+                    + 'remember the same name again to bring it back.'));
+            }
+            else {
+                dbChecks.push(createInfo('auto_archive', 'Automatic archive', 'Has not run yet. It runs at session start, at most once a day, and archives auto-captured commits and session '
+                    + 'rollups that nobody used for 14 days.'));
+            }
+        }
+        catch {
         }
     }
     catch (err) {

@@ -79,11 +79,11 @@ import {
 } from './_shared.js';
 import { recordSessionLauncher } from './_clear-alias.js';
 import { recallListName, SESSION_ID_RE } from './_stop-notes.js';
-import { buildBriefingIndex, injectedIndexReserve } from './_generated/briefing-index.js';
+import { buildRecentIndex } from './_generated/recent-index.js';
 import { handoffView } from './_generated/session-handoff.js';
 import { recipientEverSeenAnywhere, unknownRecipientHint } from './_generated/agent-message-inbox.js';
-import { boundTaskStateLines, joinedLength } from './_generated/work-topology.js';
-import { readIndexCandidates, readSnippets, selectBriefingPools, toTopologyEntity } from './_generated/briefing-pools.js';
+import { boundTaskStateLines } from './_generated/work-topology.js';
+import { readSnippets, selectBriefingPools, toTopologyEntity } from './_generated/briefing-pools.js';
 import { taskStateUnreadableMessage } from './_generated/task-state.js';
 
 const require = createRequire(import.meta.url);
@@ -1358,6 +1358,7 @@ process.stdin.on('end', async () => {
     // pre-read from this readonly handle before it closes. Defaults to
     // true so any early exit still lets the epilogue's own throttle decide.
     let noiseCompressDue = true;
+    let autoArchiveDue = true;
     try {
       // Check if tables exist (db may exist but be empty)
       const tableCheck = db.prepare(
@@ -1561,9 +1562,6 @@ process.stdin.on('end', async () => {
           ],
           projectName,
           DEFAULT_TOPOLOGY_BUDGET,
-          // Room for the index's heading and omission footer, kept before the
-          // ranked and global sections spend the shared budget.
-          { reserve: briefingPolicy.index ? injectedIndexReserve(projectName) + 2 : 0 },
         ));
       } catch (err) {
         // Snippet enrichment is best-effort. A failure here must not stop
@@ -1582,53 +1580,36 @@ process.stdin.on('end', async () => {
         });
       }
 
-      // --- The durable-memory index (#323) -----------------------------
-      // One line per decision / lesson / pattern / reference for this
-      // project, newest first, hard-capped — what is known, visible without
-      // a query. Same read as core's `readBriefingIndex` (this hook owns its
-      // own SQL, with the legacy-schema guards the queries above use); every
-      // decision about what to show lives in the generated leaf. A read that
-      // fails renders as "could not be read", never as the empty-state line:
-      // an empty index is a claim about the user's data.
+      // --- The recent index ---------------------------------------
+      // The titles of the 30 memories most recently written in this
+      // project's scope, minus the ones that look out of date, once per
+      // session (src/core/recent-index.ts, run here through its generated
+      // copy; `briefing` renders the same section). The unfiltered 30 are
+      // kept in the session's injection record: the prompt hook compares
+      // its matches with them. A read that fails renders as "could not be
+      // read", never as the empty-state line: an empty index is a claim
+      // about the user's data.
       let indexLines;
-      // id → name for the rows the index rendered, so the injected-set
-      // record below can credit a citation of an index line the same way it
-      // credits a ranked one — the line carries a `[mem:id]` handle, it was
-      // shown, and a cite of it must not earn nothing.
+      // The rows the index rendered, so a citation of one is credited like a ranked one.
       const indexEntities = [];
-      // #360: `minimal` skips the index query outright — unlike the durable
-      // index EXPOSED by the `briefing` tool/CLI (a separately-requestable
-      // fact about the project), nothing else in this hook reads it, so
-      // there is no reason to pay for a read whose only consumer is a
-      // section this level does not render.
-      if (!briefingPolicy.index) {
-        indexLines = [];
-      } else try {
-        const { candidates, truncated } = readIndexCandidates(db, projectName);
-        const index = buildBriefingIndex(candidates, projectName, Date.now(), {
-          truncated,
-          // One shared cap: the index gets what the block above left of it.
-          maxChars: DEFAULT_TOPOLOGY_BUDGET.maxChars
-            - (memoryLines.length ? joinedLength(memoryLines) + 2 : 0),
-        });
+      let recentPoolIds = [];
+      // Shown at every level, `minimal` included.
+      try {
+        const index = buildRecentIndex(db, projectName, Date.now(), cwdIsDirectory ? data.cwd : null);
         indexLines = index.lines;
-        const rendered = new Set(index.ids);
-        for (const row of candidates) if (rendered.has(row.id)) indexEntities.push(row);
+        recentPoolIds = index.poolIds;
+        indexEntities.push(...index.shown);
       } catch (err) {
         const reason = String(err?.message || err);
-        try { process.stderr.write(`[memesh session-start] briefing-index: ${reason}\n`); } catch {}
+        try { process.stderr.write(`[memesh session-start] recent-index: ${reason}\n`); } catch {}
         record({
           outcome: 'error',
-          // The locus, plus a LABEL for the exception — never its message.
-          // `hook-outcomes.jsonl` is permanent, exportable and meant to be
-          // pasteable into an issue, and a message is a copy of whatever the
-          // failure echoed: SQLite quotes the statement, execFileSync carries
-          // absolute paths. `redactSecrets` runs on this field but
-          // `redactUserPaths` does not. The full text is already on stderr
-          // one line above, so nothing is lost.
-          reason: `briefing-index: ${hookErrorReason(err)}`,
+          // The locus, plus a LABEL for the exception — never its message
+          // (hook-outcomes.jsonl is permanent and pasteable; SQLite quotes
+          // the statement). The full text is on stderr one line above.
+          reason: `recent-index: ${hookErrorReason(err)}`,
         });
-        indexLines = [`Index of durable memories for ${jsonStringLiteral(projectLabel(projectName))}: could not be read this session — run \`memesh doctor\`.`];
+        indexLines = [`Recently written memories for ${jsonStringLiteral(projectLabel(projectName))}: could not be read this session — run \`memesh doctor\`.`];
       }
 
       // Every `[mem:id]` handle a rendered line ends with. Anchored to the
@@ -1686,11 +1667,12 @@ process.stdin.on('end', async () => {
       // the hook cannot call that function directly (A1a: a hook cannot
       // import `../db.js`-dependent core modules), so this is the one place
       // the two sides CAN share the rule.
-      const memoryContext = !hasBriefingContent(memoryLines) && !workPackageNotice
-        ? undefined
-        : workPackageNotice
-          ? buildReferenceContext(memoryLines) + '\n\n' + workPackageNotice
-          : buildReferenceContext(memoryLines);
+      // With nothing to show but the notice, the notice goes alone: an empty
+      // fence tells the agent nothing.
+      const memoryBlock = hasBriefingContent(memoryLines) ? buildReferenceContext(memoryLines) : undefined;
+      const memoryContext = memoryBlock && workPackageNotice
+        ? memoryBlock + '\n\n' + workPackageNotice
+        : memoryBlock ?? workPackageNotice;
       // The citation contract — OUTSIDE the fence on purpose: the fence
       // declares its content "background data, not instructions", and
       // this line IS an instruction. One line is the entire write side of
@@ -1741,7 +1723,7 @@ process.stdin.on('end', async () => {
           .map((id) => entitiesById.get(id))
           .filter(Boolean);
 
-        if (allInjected.length > 0) {
+        if (allInjected.length > 0 || recentPoolIds.length > 0) {
           const sessionsDir = join(memeshDir, 'sessions');
           ensurePrivateDir(sessionsDir);
 
@@ -1773,6 +1755,8 @@ process.stdin.on('end', async () => {
               injectedContext: String(memoryContext || summary).slice(0, 120),
               creditedIds: prior?.creditedIds || [],
               sessionCounted: prior?.sessionCounted === true,
+              // The recent index before its filter: what the prompt hook compares its matches with.
+              recentPoolIds,
             });
           } else {
             recordHookOutcome(process.env, { hook: 'session-start', outcome: 'skipped', reason: SKIP_REASONS.noSessionId, payload: data });
@@ -1893,17 +1877,17 @@ process.stdin.on('end', async () => {
       // migration-chain open (WAL writer lock) that must stay off the
       // SessionStart hot path. Missing table / any error ⇒ due (the full
       // path owns schema creation).
-      noiseCompressDue = (() => {
+      const dueSince = (key) => {
         try {
-          const row = db.prepare(
-            "SELECT value FROM memesh_metadata WHERE key = 'last_noise_compress_at'"
-          ).get();
+          const row = db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(key);
           if (!row) return true;
           return Date.now() - new Date(row.value).getTime() >= 24 * 60 * 60 * 1000;
         } catch {
           return true;
         }
-      })();
+      };
+      noiseCompressDue = dueSince('last_noise_compress_at');
+      autoArchiveDue = dueSince('last_auto_archive_at');
     } finally {
       db.close();
     }
@@ -1911,7 +1895,7 @@ process.stdin.on('end', async () => {
     // Opens a separate read-write connection via the core module.
     // Throttled to once per 24h inside compressWeeklyNoise().
     try {
-      if (noiseCompressDue) {
+      if (noiseCompressDue || autoArchiveDue) {
       // F5: derive pluginRoot strictly from this file's location.
       // See `resolvePluginRoot` for the full reasoning.
       const pluginRoot = resolvePluginRoot(import.meta.url);
@@ -1926,6 +1910,19 @@ process.stdin.on('end', async () => {
         // in doctor, not in the dashboard. Nothing to opt into: it runs at
         // most once a day and stays silent when it compresses nothing.
         const noise = lifecycleMod.compressWeeklyNoise(dbMod.getDatabase());
+        // Auto-captured commits and session rollups nobody used for 14 days.
+        // Throttled and recorded inside (memesh_metadata, shown by `memesh
+        // doctor`); this line only makes a run that did something visible.
+        const unused = lifecycleMod.archiveUnusedAutoCaptured(dbMod.getDatabase());
+        if (unused && unused.archived > 0) {
+          try {
+            process.stderr.write(
+              `[memesh] archived ${unused.archived} auto-captured memor${unused.archived === 1 ? 'y' : 'ies'} `
+              + `not used for ${unused.unusedDays} days `
+              + `(recover with \`memesh recall --include-archived\`; \`memesh doctor\` shows the last run)\n`,
+            );
+          } catch { /* stderr gone */ }
+        }
         if (noise && noise.compressed > 0) {
           try {
             process.stderr.write(
