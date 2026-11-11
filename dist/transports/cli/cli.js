@@ -38641,6 +38641,21 @@ function networkReceiptFact(db2, deliveryId) {
     created_at: deliveredAt ?? (/* @__PURE__ */ new Date()).toISOString()
   };
 }
+function networkDeliveryOf(db2, delivery) {
+  const fact = networkReceiptFact(db2, delivery.delivery_id);
+  const network = fact?.network;
+  try {
+    const address = parseNetworkAddress(delivery.recipient);
+    if (network)
+      return { state: network.state, code: network.last_error_code, machine: address?.machine ?? "the other machine" };
+    const local = db2.prepare("SELECT 1 FROM agent_network_outbox WHERE delivery_id = ? AND state = 'local'").get(delivery.delivery_id);
+    if (local || !address || !resolveNetworkRecipient(db2, delivery.recipient))
+      return null;
+    return { state: "pending", code: null, machine: address.machine };
+  } catch {
+    return null;
+  }
+}
 function remoteDiscoverCards(db2, project, now = Date.now()) {
   const joined = joinedNetwork(db2);
   if (joined === null)
@@ -38883,6 +38898,19 @@ function acceptedNote(adapterKind) {
   }
   return "The host accepted the notice; whether the agent has seen it is not recorded here.";
 }
+function networkStatusOf(state) {
+  if (state === "delivered")
+    return "delivered_to_machine";
+  return state === "pending" ? "handed_to_network" : "not_delivered";
+}
+function networkNote(network) {
+  if (network.state === "delivered")
+    return `Delivered to machine ${network.machine}; the agent there has not recorded intake, an ack or a disposition yet.`;
+  if (network.state === "pending") {
+    return `Handed to the cross-machine transport for machine ${network.machine}; not yet confirmed delivered${network.code ? `, last attempt failed with ${network.code}` : ""}. It is retried for up to one day.`;
+  }
+  return `Not delivered to machine ${network.machine}: ${network.state}${network.code ? ` (code ${network.code})` : ""}.`;
+}
 function queuedNote(failure2, adapterKind) {
   const claude = adapterKind === void 0 || adapterKind.startsWith("claude-");
   const later = claude ? "the message appears at the session's next prompt or turn end" : "the message waits in the inbox until the recipient reads it";
@@ -38927,7 +38955,8 @@ function readMessageStatus(db2, input2, callerSession) {
       LIMIT 1
     `).get(delivery.project, delivery.recipient, delivery.message_id) !== void 0;
     const hostAccept = readHostAccept(db2, delivery.delivery_id);
-    const status = replied ? "replied" : handled ? "handed_to_agent" : hostAccept ? "accepted" : "queued";
+    const network = hostAccept ? null : networkDeliveryOf(db2, delivery);
+    const status = replied ? "replied" : handled ? "handed_to_agent" : hostAccept ? "accepted" : network ? networkStatusOf(network.state) : "queued";
     const latestFailure = status === "queued" ? readLatestDispatchFailure(db2, delivery.delivery_id) : void 0;
     const failure2 = latestFailure?.failure_code;
     const lastHost = latestFailure?.adapter_kind ?? void 0;
@@ -38938,6 +38967,8 @@ function readMessageStatus(db2, input2, callerSession) {
       note2 = "The agent recorded intake, an ack or a disposition for this message; no reply is linked to it yet.";
     else if (status === "accepted")
       note2 = acceptedNote(hostAccept?.adapter_kind);
+    else if (network)
+      note2 = networkNote(network);
     else {
       note2 = queuedNote(failure2, lastHost);
       if (failure2 === void 0 && delivery.target_kind === "principal") {
@@ -76329,7 +76360,7 @@ messageCmd.command("receipts").description("Read receipt facts for one message r
   recipient: opts.recipient,
   message_id: opts.messageId
 }));
-messageCmd.command("status").description("Show where one message stands: queued, accepted, handed to the agent or replied").requiredOption("--project <name>", "Project scope").requiredOption("--recipient <id>", "Stable recipient agent/host ID").requiredOption("--message-id <id>", "Message ID").action((opts) => runCliMessage({
+messageCmd.command("status").description("Show where one message stands: queued, accepted, handed to the agent, replied, or for another computer, its network delivery").requiredOption("--project <name>", "Project scope").requiredOption("--recipient <id>", "Stable recipient agent/host ID").requiredOption("--message-id <id>", "Message ID").action((opts) => runCliMessage({
   action: "status",
   project: opts.project,
   recipient: opts.recipient,

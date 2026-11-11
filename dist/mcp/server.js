@@ -39938,6 +39938,21 @@ function networkReceiptFact(db2, deliveryId) {
     created_at: deliveredAt ?? (/* @__PURE__ */ new Date()).toISOString()
   };
 }
+function networkDeliveryOf(db2, delivery) {
+  const fact = networkReceiptFact(db2, delivery.delivery_id);
+  const network = fact?.network;
+  try {
+    const address = parseNetworkAddress(delivery.recipient);
+    if (network)
+      return { state: network.state, code: network.last_error_code, machine: address?.machine ?? "the other machine" };
+    const local = db2.prepare("SELECT 1 FROM agent_network_outbox WHERE delivery_id = ? AND state = 'local'").get(delivery.delivery_id);
+    if (local || !address || !resolveNetworkRecipient(db2, delivery.recipient))
+      return null;
+    return { state: "pending", code: null, machine: address.machine };
+  } catch {
+    return null;
+  }
+}
 function remoteDiscoverCards(db2, project, now = Date.now()) {
   const joined = joinedNetwork(db2);
   if (joined === null)
@@ -40180,6 +40195,19 @@ function acceptedNote(adapterKind) {
   }
   return "The host accepted the notice; whether the agent has seen it is not recorded here.";
 }
+function networkStatusOf(state) {
+  if (state === "delivered")
+    return "delivered_to_machine";
+  return state === "pending" ? "handed_to_network" : "not_delivered";
+}
+function networkNote(network) {
+  if (network.state === "delivered")
+    return `Delivered to machine ${network.machine}; the agent there has not recorded intake, an ack or a disposition yet.`;
+  if (network.state === "pending") {
+    return `Handed to the cross-machine transport for machine ${network.machine}; not yet confirmed delivered${network.code ? `, last attempt failed with ${network.code}` : ""}. It is retried for up to one day.`;
+  }
+  return `Not delivered to machine ${network.machine}: ${network.state}${network.code ? ` (code ${network.code})` : ""}.`;
+}
 function queuedNote(failure2, adapterKind) {
   const claude = adapterKind === void 0 || adapterKind.startsWith("claude-");
   const later = claude ? "the message appears at the session's next prompt or turn end" : "the message waits in the inbox until the recipient reads it";
@@ -40224,7 +40252,8 @@ function readMessageStatus(db2, input2, callerSession) {
       LIMIT 1
     `).get(delivery.project, delivery.recipient, delivery.message_id) !== void 0;
     const hostAccept = readHostAccept(db2, delivery.delivery_id);
-    const status = replied ? "replied" : handled ? "handed_to_agent" : hostAccept ? "accepted" : "queued";
+    const network = hostAccept ? null : networkDeliveryOf(db2, delivery);
+    const status = replied ? "replied" : handled ? "handed_to_agent" : hostAccept ? "accepted" : network ? networkStatusOf(network.state) : "queued";
     const latestFailure = status === "queued" ? readLatestDispatchFailure(db2, delivery.delivery_id) : void 0;
     const failure2 = latestFailure?.failure_code;
     const lastHost = latestFailure?.adapter_kind ?? void 0;
@@ -40235,6 +40264,8 @@ function readMessageStatus(db2, input2, callerSession) {
       note2 = "The agent recorded intake, an ack or a disposition for this message; no reply is linked to it yet.";
     else if (status === "accepted")
       note2 = acceptedNote(hostAccept?.adapter_kind);
+    else if (network)
+      note2 = networkNote(network);
     else {
       note2 = queuedNote(failure2, lastHost);
       if (failure2 === void 0 && delivery.target_kind === "principal") {
@@ -42096,7 +42127,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "message",
-    description: `Use this to contact or discover another agent on the same MeMesh instance, or on another computer in this machine's team. discover is a bounded, project-scoped live-directory read of active leases and returns only the router result; it performs no send, fetch, ACK, replay, or receipt work. An empty discover result does not predict whether a principal-target send/fetch will work: those use a separate durable store-and-forward path to a named recipient that does not require the router or any live registration (an exact target_kind=session send still does, and still needs the router). send durably stores one untrusted JSON-encoded payload of at most ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes (64 KiB) idempotently. Native delivery has a separate ${AGENT_NATIVE_MESSAGE_MAX_BYTES}-byte (16 KiB) cap for the complete envelope, including routing metadata and payload. For target_kind=session, success requires the exact active native host to accept the message: Claude Channel receives the full envelope; Claude inbox and the Codex CLI queue receive only a notice, after which the agent checks receipts and fetches the body. An oversized envelope returns native_message_too_large; an unreachable local router returns router_unreachable; an unavailable or rejected exact session returns recipient_unavailable. Both sender-side failures preserve scoped recovery data. Principal targets retain durable store-and-forward behavior even when native delivery is unavailable. Every session of one principal shares its inbox: a principal send with intended_session is meant for that one session, which alone is reminded of it and alone may record intake or a disposition (any other caller, including one with no session id, gets intended_for_other_session). A session send with fallback_to_principal that the session refuses (recipient_unavailable) is sent to its principal with intended_session set to that session instead. For a full native envelope, poll/fetch remain compatibility and recovery reads; after a notice, fetch is the required read of the body. intake, ack, disposition, and activation are separate explicit facts; an agent only needs to record intake, while ack and disposition are optional. A host accept means the host took the notice: for the Claude Code inbox it was seen in the conversation (a notice Claude Code holds back is not an accept, and the message waits in the inbox until the session's next prompt or turn end); for the Claude Code Channel it was handed over and queued, and MeMesh cannot see whether it was shown; for Codex it was queued for the thread. It never means the agent read it. status reads where one message stands from what MeMesh recorded and from any intake, ack, disposition or reply the agent made: queued, accepted, handed_to_agent (intake, ack or disposition recorded) or replied. Native acceptance, polling, fetching, and discovery never imply agent acknowledgement or workflow completion. In receipts, the host_accept fact's delivery_state.target_session "not_live" only means that session had no live registration when read; it is not a permanent end. A MeMesh send cannot wake or resume an offline session (an exact-session send to it returns recipient_unavailable). Resume that session in its own host, which may not succeed at once, and read receipts again; or decide to send to the principal instead, knowing the original session may still take the first message if it comes back. MeMesh does neither automatically. After this computer joined a team (memesh network), a principal send to person/handle@machine, a member named in the team's signed roster, is stored here and forwarded to that machine through the relay or directly, retried for up to one day; its receipts add a network fact (state, attempts, last error code, path), and discover also lists other members' live agents with remote: true. Only the message crosses machines; memory never does. A message is kept for one day from creation, read or unread, then deleted (its content stays in a local archive for one more day); if its recipient recorded no intake, ack or disposition and sent no reply, its sender gets a message from memesh saying so, and fetching, acknowledging or replying to an expired id returns message_expired.`,
+    description: `Use this to contact or discover another agent on the same MeMesh instance, or on another computer in this machine's team. discover is a bounded, project-scoped live-directory read of active leases and returns only the router result; it performs no send, fetch, ACK, replay, or receipt work. An empty discover result does not predict whether a principal-target send/fetch will work: those use a separate durable store-and-forward path to a named recipient that does not require the router or any live registration (an exact target_kind=session send still does, and still needs the router). send durably stores one untrusted JSON-encoded payload of at most ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes (64 KiB) idempotently. Native delivery has a separate ${AGENT_NATIVE_MESSAGE_MAX_BYTES}-byte (16 KiB) cap for the complete envelope, including routing metadata and payload. For target_kind=session, success requires the exact active native host to accept the message: Claude Channel receives the full envelope; Claude inbox and the Codex CLI queue receive only a notice, after which the agent checks receipts and fetches the body. An oversized envelope returns native_message_too_large; an unreachable local router returns router_unreachable; an unavailable or rejected exact session returns recipient_unavailable. Both sender-side failures preserve scoped recovery data. Principal targets retain durable store-and-forward behavior even when native delivery is unavailable. Every session of one principal shares its inbox: a principal send with intended_session is meant for that one session, which alone is reminded of it and alone may record intake or a disposition (any other caller, including one with no session id, gets intended_for_other_session). A session send with fallback_to_principal that the session refuses (recipient_unavailable) is sent to its principal with intended_session set to that session instead. For a full native envelope, poll/fetch remain compatibility and recovery reads; after a notice, fetch is the required read of the body. intake, ack, disposition, and activation are separate explicit facts; an agent only needs to record intake, while ack and disposition are optional. A host accept means the host took the notice: for the Claude Code inbox it was seen in the conversation (a notice Claude Code holds back is not an accept, and the message waits in the inbox until the session's next prompt or turn end); for the Claude Code Channel it was handed over and queued, and MeMesh cannot see whether it was shown; for Codex it was queued for the thread. It never means the agent read it. status reads where one message stands from what MeMesh recorded and from any intake, ack, disposition or reply the agent made: queued, accepted, handed_to_agent (intake, ack or disposition recorded) or replied; for a person/handle@machine recipient on another computer it reports the network delivery instead: handed_to_network (not yet confirmed delivered), delivered_to_machine or not_delivered. Native acceptance, polling, fetching, and discovery never imply agent acknowledgement or workflow completion. In receipts, the host_accept fact's delivery_state.target_session "not_live" only means that session had no live registration when read; it is not a permanent end. A MeMesh send cannot wake or resume an offline session (an exact-session send to it returns recipient_unavailable). Resume that session in its own host, which may not succeed at once, and read receipts again; or decide to send to the principal instead, knowing the original session may still take the first message if it comes back. MeMesh does neither automatically. After this computer joined a team (memesh network), a principal send to person/handle@machine, a member named in the team's signed roster, is stored here and forwarded to that machine through the relay or directly, retried for up to one day; its receipts add a network fact (state, attempts, last error code, path), and discover also lists other members' live agents with remote: true. Only the message crosses machines; memory never does. A message is kept for one day from creation, read or unread, then deleted (its content stays in a local archive for one more day); if its recipient recorded no intake, ack or disposition and sent no reply, its sender gets a message from memesh saying so, and fetching, acknowledging or replying to an expired id returns message_expired.`,
     inputSchema: {
       type: "object",
       properties: {

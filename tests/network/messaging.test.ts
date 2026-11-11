@@ -347,6 +347,63 @@ describe('receipts', () => {
   });
 });
 
+describe('status of a message to another machine', () => {
+  const status = (messageId: unknown) => executeAgentMessageAction(db, {
+    action: 'status', project: PROJECT, recipient: 'ben/bob@beta', message_id: messageId as string,
+  }, context) as Promise<Record<string, unknown>>;
+
+  it('before any delivery fact: handed to the network and not confirmed, never local queued', async () => {
+    join();
+    const sent = await send('ben/bob@beta', 'st-none');
+    const result = await status(sent.message_id);
+    expect(result.status).toBe('handed_to_network');
+    expect(String(result.note)).toMatch(/not yet confirmed delivered/);
+    expect(String(result.note)).not.toMatch(/inbox/);
+  });
+
+  it('still pending in the outbox after a failed attempt: same status, with the last error code', async () => {
+    const joined = join();
+    const sent = await send('ben/bob@beta', 'st-pending');
+    enqueueOutgoing(db, joined, Date.now());
+    const [entry] = dueOutgoingFor(db, peer.machineId, Date.now());
+    recordAttempt(db, entry, { failure: 'unreachable' }, Date.now());
+    const result = await status(sent.message_id);
+    expect(result.status).toBe('handed_to_network');
+    expect(String(result.note)).toMatch(/unreachable/);
+  });
+
+  it('delivered to the other machine', async () => {
+    const joined = join();
+    const sent = await send('ben/bob@beta', 'st-delivered');
+    enqueueOutgoing(db, joined, Date.now());
+    const [entry] = dueOutgoingFor(db, peer.machineId, Date.now());
+    recordAttempt(db, entry, { ack: { result: 'accepted' }, path: 'direct' }, Date.now());
+    const result = await status(sent.message_id);
+    expect(result.status).toBe('delivered_to_machine');
+    expect(String(result.note)).toMatch(/beta/);
+  });
+
+  it('refused or expired: said plainly, with the code', async () => {
+    const joined = join();
+    const sent = await send('ben/bob@beta', 'st-refused');
+    enqueueOutgoing(db, joined, Date.now());
+    const [entry] = dueOutgoingFor(db, peer.machineId, Date.now());
+    recordAttempt(db, entry, { ack: { result: 'rejected', code: 'project_unknown' } }, Date.now());
+    const result = await status(sent.message_id);
+    expect(result.status).toBe('not_delivered');
+    expect(String(result.note)).toMatch(/project_unknown/);
+  });
+
+  it('a local recipient is untouched: still queued', async () => {
+    join();
+    const sent = await send('alice-local', 'st-local');
+    const result = await executeAgentMessageAction(db, {
+      action: 'status', project: PROJECT, recipient: 'alice-local', message_id: sent.message_id as string,
+    }, context) as Record<string, unknown>;
+    expect(result.status).toBe('queued');
+  });
+});
+
 describe('the router starting the bridge', () => {
   it('a machine that never joined: one stat of the network folder, and nothing starts', () => {
     const start = vi.fn(async () => ({ pid: 1, started: true }));

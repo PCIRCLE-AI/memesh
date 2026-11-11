@@ -288,8 +288,8 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "5f893c2daadf312efa7f641d03c837ac96df387e4e9f8d8ba7fb93f02e015a26",
-      "bytes": 106914
+      "sha256": "5844c12cf707173ef81c94f75d96ef8dd1d37ad59479524ba15ee9f9927da6f1",
+      "bytes": 107336
     },
     {
       "path": "scripts/hooks/session-summary.js",
@@ -313,8 +313,8 @@
     },
     {
       "path": "skills/memesh/SKILL.md",
-      "sha256": "7be883d41aa82236613b9fd693a2312c5283b94d876209037d605f250e108a68",
-      "bytes": 33504
+      "sha256": "9fb551b36e8d2c8d9decfc8e953e5970f24d87882908f7cde3cf3f736f364abe",
+      "bytes": 33608
     }
   ]
 }

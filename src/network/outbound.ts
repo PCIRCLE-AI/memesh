@@ -103,6 +103,25 @@ export function networkReceiptFact(db: MemeshDatabase, deliveryId: string): Agen
 }
 
 /**
+ * Where a delivery stands on the network, from the same fact `receipts` shows. `null` for a local recipient.
+ * With no outbox row yet, a recipient on another machine is already handed to the network (the courier
+ * writes its row on its next pass); a row marked `local` is a message that stays on this machine.
+ */
+export function networkDeliveryOf(db: MemeshDatabase, delivery: { delivery_id: string; recipient: string }): { state: string; code: string | null; machine: string } | null {
+  const fact = networkReceiptFact(db, delivery.delivery_id);
+  const network = fact?.network as { state: string; last_error_code: string | null } | undefined;
+  try {
+    const address = parseNetworkAddress(delivery.recipient);
+    if (network) return { state: network.state, code: network.last_error_code, machine: address?.machine ?? 'the other machine' };
+    const local = db.prepare("SELECT 1 FROM agent_network_outbox WHERE delivery_id = ? AND state = 'local'").get(delivery.delivery_id);
+    if (local || !address || !resolveNetworkRecipient(db, delivery.recipient)) return null;
+    return { state: 'pending', code: null, machine: address.machine };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Live agents on other machines in this project, as discover cards. Only for a
  * project this machine has: presence carries a hash, and the hash of this project
  * is the only one asked for. No work summary or title ever crosses.

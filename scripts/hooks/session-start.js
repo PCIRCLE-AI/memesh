@@ -716,6 +716,7 @@ function skipNote(reason) {
   try { _autoUpdateMod?.logAutoUpdateLine(memeshDir, `auto-update: ${reason}`); } catch { /* nowhere to write it */ }
 }
 
+let nodeTooOld = false;
 let __postBannerRan = false;
 async function runPostBannerUpdateTasks() {
   if (__postBannerRan) return;
@@ -730,6 +731,12 @@ async function runPostBannerUpdateTasks() {
     try { _autoUpdateMod?.logAutoUpdateLine(memeshDir, `auto-update: could not register this session's host (${err?.message ?? err}); the updater may not wait for it`); } catch { /* nowhere to write it */ }
   }
   try {
+    // On a Node below the floor the database can never be opened, so there is nothing to update from here.
+    if (nodeTooOld) {
+      updateCheckNotStarted('this Node is older than the minimum MeMesh supports');
+      skipNote('this Node is older than the minimum MeMesh supports, so neither the update check nor the updater starts in this session');
+      return;
+    }
     // A first-use session has no database yet. Starting the detached
     // `memesh status` refresh in that state makes status create/migrate the
     // database while the next SessionStart may already be opening it
@@ -1275,6 +1282,7 @@ process.stdin.on('end', async () => {
     // can never be created, so "memories will be created as you work" is false.
     const nodeProblem = hookNodeProblem('session-start');
     if (nodeProblem) {
+      nodeTooOld = true;
       output(
         withChannelFlagWarning(withRecipientRejectionWarning(withAddressLine(withCaptureWarning(`MeMesh: ${nodeProblem}`)))),
         recipientRejectionLine ?? addressLine ?? null,

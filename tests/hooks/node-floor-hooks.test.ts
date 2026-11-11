@@ -44,13 +44,10 @@ function runHook(script: string, payload: object, home: string, extraEnv: Record
   return { stdout: r.stdout, stderr: r.stderr, exitCode: r.status, outcomes };
 }
 
-function expectNodeTooOld(r: ReturnType<typeof runHook>, hook: string) {
+function expectNodeTooOld(r: ReturnType<typeof runHook>, hook: string, then: Array<[string, string]> = []) {
   expect(r.exitCode, r.stderr).toBe(0);
-  // session-start's closing update tasks leave their own `notified` line when they do not start (for example "no
-  // database yet"); it is true and separate from the Node problem this asserts.
-  const mine = r.outcomes.filter((o) => o.hook === hook
-    && !(o.outcome === 'notified' && /^update (check not started|warning withheld):/.test(o.reason)));
-  expect(mine.map((o) => [o.outcome, o.reason]), JSON.stringify(r.outcomes)).toEqual([['error', 'uncaught NODE_TOO_OLD']]);
+  const mine = r.outcomes.filter((o) => o.hook === hook);
+  expect(mine.map((o) => [o.outcome, o.reason]), JSON.stringify(r.outcomes)).toEqual([['error', 'uncaught NODE_TOO_OLD'], ...then]);
 }
 
 const common = { session_id: 'nf-sess-1' };
@@ -59,7 +56,11 @@ describe.each([false, true])('Feature: hooks on a Node below the floor (database
   it('session-start tells the user to upgrade, and says nothing false', () => {
     const home = freshHome(`ss-${withDb}`, withDb);
     const r = runHook('session-start.js', { ...common, hook_event_name: 'SessionStart', cwd: home, source: 'startup' }, home);
-    expectNodeTooOld(r, 'session-start');
+    // The closing update tasks do not start on this Node, and say so in both places: the outcomes file and auto-update.log.
+    expectNodeTooOld(r, 'session-start', [['notified', 'update check not started: this Node is older than the minimum MeMesh supports']]);
+    const log = path.join(home, '.memesh', 'auto-update.log');
+    expect(fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : '').toContain('this Node is older than the minimum MeMesh supports, so neither the update check nor the updater starts');
+    expect(fs.existsSync(path.join(home, '.memesh', 'auto-update-attempt'))).toBe(false);
     expect(r.stdout).toContain(SENTENCE);
     expect(r.stdout).not.toContain('no database yet');
     expect(r.stdout).not.toContain('everything else works');

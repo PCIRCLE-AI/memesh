@@ -79,6 +79,8 @@ are not part of a published npm release yet.
 
 ### Fixed
 
+- `message` `status` for a message sent to another computer (`person/handle@machine`) no longer says "queued" after the other computer has received it. It now reports `handed_to_network` (handed to the cross-machine transport, not yet confirmed delivered), `delivered_to_machine` or `not_delivered`, from the same delivery record `receipts` shows.
+- On a Node older than the supported minimum, the session-start hook no longer starts the automatic updater or the update check. It prints the upgrade message as before and writes the reason (the Node version) to `auto-update.log` and to `memesh doctor`'s hook record.
 - `memesh setup` follows `CLAUDE_CONFIG_DIR`. It used to look only in `~/.claude`: with no such folder it found no host and did nothing (exit 0); with one, it wrote the hooks into the relocated folder and then reported them as not wired (exit 1). `memesh setup --yes` now works there, and `memesh setup --check` changes the same way: a relocated Claude Code that has no hooks yet reports as unwired (exit 1) instead of "not found" (exit 0). The plan names the settings file it will really write.
 - `memesh install-hooks` leaves `settings.json` exactly as it was when it cannot write its marker file under `~/.memesh`, instead of reporting a failure with the hooks already written.
 - MeMesh no longer treats a Traditional Chinese statement or question such as 「這條已經記下來了」, 「我先記下來」 or 「有記下來嗎」 as a request to save something, and no longer reads messages from other sessions, system notices or pasted blocks as if you had asked it to remember. Requests such as 「記下來」, 「請把這點記下來」 and 「存到記憶」 still work; 「存到記憶體」 (RAM) is no longer mistaken for one.

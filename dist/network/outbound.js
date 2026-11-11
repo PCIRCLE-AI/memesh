@@ -71,6 +71,22 @@ export function networkReceiptFact(db, deliveryId) {
         created_at: deliveredAt ?? new Date().toISOString(),
     };
 }
+export function networkDeliveryOf(db, delivery) {
+    const fact = networkReceiptFact(db, delivery.delivery_id);
+    const network = fact?.network;
+    try {
+        const address = parseNetworkAddress(delivery.recipient);
+        if (network)
+            return { state: network.state, code: network.last_error_code, machine: address?.machine ?? 'the other machine' };
+        const local = db.prepare("SELECT 1 FROM agent_network_outbox WHERE delivery_id = ? AND state = 'local'").get(delivery.delivery_id);
+        if (local || !address || !resolveNetworkRecipient(db, delivery.recipient))
+            return null;
+        return { state: 'pending', code: null, machine: address.machine };
+    }
+    catch {
+        return null;
+    }
+}
 export function remoteDiscoverCards(db, project, now = Date.now()) {
     const joined = joinedNetwork(db);
     if (joined === null)

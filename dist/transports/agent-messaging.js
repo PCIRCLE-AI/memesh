@@ -7,7 +7,7 @@ import { getAgentRouterSocketPath } from '../core/paths.js';
 import { sessionAliasChain } from '../core/agent-message-inbox.js';
 import { jsonStringLiteral } from '../core/work-topology.js';
 import { sqliteUtcToIso } from '../core/time-utils.js';
-import { networkReceiptFact, remoteDiscoverCards, resolveNetworkRecipient } from '../network/outbound.js';
+import { networkDeliveryOf, networkReceiptFact, remoteDiscoverCards, resolveNetworkRecipient } from '../network/outbound.js';
 export class AgentRecipientUnavailableError extends AgentMessagingError {
     code = 'recipient_unavailable';
     constructor(detail) {
@@ -243,6 +243,19 @@ function acceptedNote(adapterKind) {
     }
     return 'The host accepted the notice; whether the agent has seen it is not recorded here.';
 }
+function networkStatusOf(state) {
+    if (state === 'delivered')
+        return 'delivered_to_machine';
+    return state === 'pending' ? 'handed_to_network' : 'not_delivered';
+}
+function networkNote(network) {
+    if (network.state === 'delivered')
+        return `Delivered to machine ${network.machine}; the agent there has not recorded intake, an ack or a disposition yet.`;
+    if (network.state === 'pending') {
+        return `Handed to the cross-machine transport for machine ${network.machine}; not yet confirmed delivered${network.code ? `, last attempt failed with ${network.code}` : ''}. It is retried for up to one day.`;
+    }
+    return `Not delivered to machine ${network.machine}: ${network.state}${network.code ? ` (code ${network.code})` : ''}.`;
+}
 function queuedNote(failure, adapterKind) {
     const claude = adapterKind === undefined || adapterKind.startsWith('claude-');
     const later = claude ? 'the message appears at the session\'s next prompt or turn end' : 'the message waits in the inbox until the recipient reads it';
@@ -291,7 +304,9 @@ function readMessageStatus(db, input, callerSession) {
       LIMIT 1
     `).get(delivery.project, delivery.recipient, delivery.message_id) !== undefined;
         const hostAccept = readHostAccept(db, delivery.delivery_id);
-        const status = replied ? 'replied' : handled ? 'handed_to_agent' : hostAccept ? 'accepted' : 'queued';
+        const network = hostAccept ? null : networkDeliveryOf(db, delivery);
+        const status = replied ? 'replied' : handled ? 'handed_to_agent' : hostAccept ? 'accepted'
+            : network ? networkStatusOf(network.state) : 'queued';
         const latestFailure = status === 'queued' ? readLatestDispatchFailure(db, delivery.delivery_id) : undefined;
         const failure = latestFailure?.failure_code;
         const lastHost = latestFailure?.adapter_kind ?? undefined;
@@ -302,6 +317,8 @@ function readMessageStatus(db, input, callerSession) {
             note = 'The agent recorded intake, an ack or a disposition for this message; no reply is linked to it yet.';
         else if (status === 'accepted')
             note = acceptedNote(hostAccept?.adapter_kind);
+        else if (network)
+            note = networkNote(network);
         else {
             note = queuedNote(failure, lastHost);
             if (failure === undefined && delivery.target_kind === 'principal') {

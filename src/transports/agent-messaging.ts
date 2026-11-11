@@ -38,7 +38,7 @@ import { getAgentRouterSocketPath } from '../core/paths.js';
 import { sessionAliasChain } from '../core/agent-message-inbox.js';
 import { jsonStringLiteral } from '../core/work-topology.js';
 import { sqliteUtcToIso } from '../core/time-utils.js';
-import { networkReceiptFact, remoteDiscoverCards, resolveNetworkRecipient } from '../network/outbound.js';
+import { networkDeliveryOf, networkReceiptFact, remoteDiscoverCards, resolveNetworkRecipient } from '../network/outbound.js';
 
 export type AgentMessageActionInput = z.infer<typeof MessageSchema>;
 
@@ -412,7 +412,7 @@ function recordPublicWorkflow(
   });
 }
 
-type MessageStatus = 'queued' | 'accepted' | 'handed_to_agent' | 'replied';
+type MessageStatus = 'queued' | 'accepted' | 'handed_to_agent' | 'replied' | 'handed_to_network' | 'delivered_to_machine' | 'not_delivered';
 
 /**
  * What a host accept means depends on the host. Only the Claude Code inbox reads the notice back from
@@ -429,6 +429,19 @@ function acceptedNote(adapterKind: string | undefined): string {
     return 'The notice was queued for the recipient\'s Codex thread; MeMesh does not see it shown there, and the agent has not recorded intake, an ack or a disposition yet.';
   }
   return 'The host accepted the notice; whether the agent has seen it is not recorded here.';
+}
+
+function networkStatusOf(state: string): MessageStatus {
+  if (state === 'delivered') return 'delivered_to_machine';
+  return state === 'pending' ? 'handed_to_network' : 'not_delivered';
+}
+
+function networkNote(network: { state: string; code: string | null; machine: string }): string {
+  if (network.state === 'delivered') return `Delivered to machine ${network.machine}; the agent there has not recorded intake, an ack or a disposition yet.`;
+  if (network.state === 'pending') {
+    return `Handed to the cross-machine transport for machine ${network.machine}; not yet confirmed delivered${network.code ? `, last attempt failed with ${network.code}` : ''}. It is retried for up to one day.`;
+  }
+  return `Not delivered to machine ${network.machine}: ${network.state}${network.code ? ` (code ${network.code})` : ''}.`;
 }
 
 /** Why a message is still queued, from the failure of its last delivery attempt, without turning a missing record into "it was not shown". */
@@ -498,7 +511,10 @@ function readMessageStatus(
       LIMIT 1
     `).get(delivery.project, delivery.recipient, delivery.message_id) !== undefined;
     const hostAccept = readHostAccept(db, delivery.delivery_id);
-    const status: MessageStatus = replied ? 'replied' : handled ? 'handed_to_agent' : hostAccept ? 'accepted' : 'queued';
+    // A recipient on another machine has no host accept here; the network's delivery fact stands in for it.
+    const network = hostAccept ? null : networkDeliveryOf(db, delivery);
+    const status: MessageStatus = replied ? 'replied' : handled ? 'handed_to_agent' : hostAccept ? 'accepted'
+      : network ? networkStatusOf(network.state) : 'queued';
     const latestFailure = status === 'queued' ? readLatestDispatchFailure(db, delivery.delivery_id) : undefined;
     const failure = latestFailure?.failure_code;
     const lastHost = latestFailure?.adapter_kind ?? undefined;
@@ -506,6 +522,7 @@ function readMessageStatus(
     if (status === 'replied') note = 'A reply addressed back to the sender and linked to this message exists.';
     else if (status === 'handed_to_agent') note = 'The agent recorded intake, an ack or a disposition for this message; no reply is linked to it yet.';
     else if (status === 'accepted') note = acceptedNote(hostAccept?.adapter_kind);
+    else if (network) note = networkNote(network);
     else {
       note = queuedNote(failure, lastHost);
       if (failure === undefined && delivery.target_kind === 'principal') {

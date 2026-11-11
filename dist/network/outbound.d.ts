@@ -18,6 +18,14 @@ export interface NetworkRecipient {
 }
 export declare function resolveNetworkRecipient(db: MemeshDatabase, recipient: string): NetworkRecipient | null;
 export declare function networkReceiptFact(db: MemeshDatabase, deliveryId: string): AgentJsonObject | null;
+export declare function networkDeliveryOf(db: MemeshDatabase, delivery: {
+    delivery_id: string;
+    recipient: string;
+}): {
+    state: string;
+    code: string | null;
+    machine: string;
+} | null;
 export declare function remoteDiscoverCards(db: MemeshDatabase, project: string, now?: number): AgentJsonObject[];
 export {};
 //# sourceMappingURL=outbound.d.ts.map

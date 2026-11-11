@@ -1487,7 +1487,7 @@ messageCmd
 
 messageCmd
   .command('status')
-  .description('Show where one message stands: queued, accepted, handed to the agent or replied')
+  .description('Show where one message stands: queued, accepted, handed to the agent, replied, or for another computer, its network delivery')
   .requiredOption('--project <name>', 'Project scope')
   .requiredOption('--recipient <id>', 'Stable recipient agent/host ID')
   .requiredOption('--message-id <id>', 'Message ID')
