@@ -396,10 +396,14 @@ export interface ImportResult {
   skipped: number;
   appended: number;
   /** Archived local entities the bundle named and the import left archived
-   *  and untouched (`append` / `overwrite` without `restore_archived`).
-   *  `skip` never counts here: it leaves every existing entity alone and
-   *  reports it in `skipped`. */
+   *  and untouched (any strategy, without `restore_archived`). */
   kept_archived: number;
+  /** Archived local entities made active again by `restore_archived`. Under
+   *  `append` / `overwrite` they are also counted in `appended` / `imported`. */
+  restored: number;
+  /** Of `imported`, how many were stamped trusted (CLI `--trust` or a
+   *  verified own backup). */
+  trusted: number;
   errors: string[];
   /**
    * Relations whose target is in neither the bundle nor the graph, as

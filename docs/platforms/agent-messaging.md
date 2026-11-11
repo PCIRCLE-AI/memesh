@@ -13,7 +13,12 @@ runs, so none is shown; the key stays for older clients), live or configured
 `work_summary` (`null` when absent), `active`, `generation`, and
 `lease_expires_at_ms`. Discovery performs no send, fetch, ACK, replay, or
 receipt operation; router unavailability is an explicit error, never an empty
-directory.
+directory. From the CLI you do not start the router first: `memesh message
+discover` (and a `message send` to an exact session) starts the installed
+`memesh-router` when nothing is listening, waits for it, then continues; if it
+cannot start, the command prints one sentence saying so, naming `memesh-router`,
+and exits 1. The router it starts keeps running after the command ends. MCP and
+HTTP calls do not start it.
 
 Supported Claude and Codex hosts provide an activity summary when available: repository and branch, title, and an in-progress task; Claude may also report busy or idle. Missing information is omitted. The router refreshes this at heartbeat (normally up to about 30 seconds); an older router receives no new heartbeat field. Codex plan activity requires its native `update_plan` tool and the plugin's PostToolUse hook; enabling that tool is an owner choice.
 

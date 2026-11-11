@@ -1264,15 +1264,14 @@ describe('import and archived memories (#363)', () => {
     expect(hit.observations).toContain('bundle text');
   });
 
-  it('refuses restore_archived with `skip` with an error result carrying the core message', async () => {
+  it('restore_archived with `skip` reactivates the entity and replaces nothing', async () => {
     await seedArchived('mcp-import-skip-restore');
     const result = await handleTool('import', {
       data: bundleFor('mcp-import-skip-restore'), merge_strategy: 'skip', restore_archived: true,
     });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('restore_archived (--restore-archived) only applies with merge strategy "append" or "overwrite"');
+    expect(result.isError).toBeFalsy();
     const hit = await archivedHit('mcp-import-skip-restore');
-    expect(hit.archived).toBe(true);
+    expect(hit.archived).toBeUndefined();
     expect(hit.observations).toEqual(['original text']);
   });
 

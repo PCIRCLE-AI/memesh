@@ -12,6 +12,8 @@ const DEFAULT_RETRY_JITTER = 0.2;
 const DEFAULT_INITIAL_ATTEMPTS = 6;
 const DEFAULT_REGISTRATION_TIMEOUT_MS = 5_000;
 const MIN_RETRY_MS = 10;
+const ROUTER_START_TIMEOUT_MS = 8_000;
+const ROUTER_START_EXIT_GRACE_MS = 1_000;
 class RouterTransportError extends Error {
 }
 class ActiveRouterHostConnection {
@@ -488,20 +490,67 @@ function normalizeResilience(options = {}) {
         random: options.random ?? Math.random,
     };
 }
+function packagedRouterEntrypoint() {
+    const candidates = ['./router.js', '../host-runtime/router.js', '../../host-runtime/router.js']
+        .map((relative) => fileURLToPath(new URL(relative, import.meta.url)));
+    return candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[0];
+}
+function spawnPackagedRouter() {
+    const entrypoint = packagedRouterEntrypoint();
+    return spawn(process.execPath, [entrypoint], { detached: true, shell: false, stdio: 'ignore' });
+}
 function startPackagedRouter() {
-    const entrypoint = fileURLToPath(new URL('./router.js', import.meta.url));
     return new Promise((resolve, reject) => {
-        const child = spawn(process.execPath, [entrypoint], {
-            detached: true,
-            shell: false,
-            stdio: 'ignore',
-        });
+        const child = spawnPackagedRouter();
         child.once('spawn', () => {
             child.unref();
             resolve();
         });
         child.once('error', reject);
     });
+}
+async function routerAcceptsConnections(socketPath) {
+    const socket = net.createConnection(socketPath);
+    try {
+        await waitForSocketConnect(socket);
+        return true;
+    }
+    catch {
+        return false;
+    }
+    finally {
+        socket.destroy();
+    }
+}
+export async function startRouterIfDown(socketPath, error) {
+    if (!isRouterUnavailable(error))
+        return false;
+    await startRouterAndWait(socketPath);
+    return true;
+}
+async function startRouterAndWait(socketPath) {
+    const child = spawnPackagedRouter();
+    let spawnError;
+    let exited;
+    child.once('error', (error) => { spawnError = error; });
+    child.once('exit', (code) => { exited = { at: Date.now(), code }; });
+    const deadline = Date.now() + ROUTER_START_TIMEOUT_MS;
+    for (;;) {
+        if (await routerAcceptsConnections(socketPath)) {
+            child.unref();
+            return;
+        }
+        if (spawnError)
+            throw spawnError;
+        if (exited && Date.now() - exited.at > ROUTER_START_EXIT_GRACE_MS) {
+            throw new Error(`the router stopped right after starting (exit code ${exited.code ?? 'none'})`);
+        }
+        if (Date.now() > deadline) {
+            child.kill();
+            throw new Error(`the router did not start within ${ROUTER_START_TIMEOUT_MS / 1000} seconds`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+    }
 }
 function isDelivery(value, connectionId, generation, identity) {
     const envelope = value.envelope;

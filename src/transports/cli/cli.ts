@@ -15,7 +15,7 @@ import { readConfig, updateConfig } from '../../core/config.js';
 import { SESSION_LIMIT_MIN, SESSION_LIMIT_MAX, resolveSessionLimit } from '../../core/session-limit.js';
 import { updateNoticeForEntryPoint } from '../../core/update-entrypoint.js';
 import { removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
-import { getAgentRouterSocketPath, getDbPath, getProjectName, homeDir, redactSecrets, redactUserPaths } from '../../core/paths.js';
+import { getAgentRouterSocketPath, getDbPath, getMemeshDirFromDbPath, getProjectName, homeDir, redactSecrets, redactUserPaths } from '../../core/paths.js';
 import { agentScopeIdRejection, canonicalAgentScopeId, projectScopeRejection } from '../../core/agent-scope-id.js';
 import { NAMESPACES } from '../../core/types.js';
 import { deriveNote, splitObservations, NOTE_DEFAULT_TYPE, NOTE_MAX_OBSERVATIONS } from '../../core/note-derive.js';
@@ -45,7 +45,10 @@ import {
 import {
   assertSecureLocalHostRuntimeSupported,
   ensureRouterTokenFile,
+  exportSigningKey,
 } from '../../host-runtime/config.js';
+import { signExport, verifyExport } from '../../core/export-signature.js';
+import { startRouterIfDown } from '../../host-runtime/router-client.js';
 import { pluginHostConfigRoot, versionedPluginCacheRoots } from '../../core/install-channel.js';
 import { shellQuote } from '../../core/file-mode.js';
 import { ZodError } from 'zod';
@@ -374,6 +377,8 @@ program
   .option('--tags <tags...>', 'Tags (space-separated)')
   .option('--replace', 'Rewrite the memory named by --name instead of appending; its previous version is kept in metadata.replaced_history')
   .option('--namespace <namespace>', 'Namespace: personal, team, or global. On a NEW memory this places it (default personal); on one that already exists it MOVES it out of the scope it is in — omit the flag to leave it alone.')
+  .option('--project <name>', 'Project to file the memory under (default: the current directory’s project, the same default as learn)')
+  .option('--no-project', 'Store the memory with no project')
   // The two relation types that DO something. MCP and HTTP callers could state
   // them through `relations`; the CLI had no way to state any relation at all,
   // so `contradicts` — the thing every recall checks for — was unreachable from
@@ -493,6 +498,11 @@ program
       }
     }
 
+    const explicitProject = requireProjectFlag(typeof opts.project === 'string' ? opts.project : undefined);
+    const tagNamesProject = opts.tags?.some((tag: string) => tag.startsWith('project:') && tag.slice('project:'.length).trim() !== '') === true;
+    const projectDeclaration: string | null | undefined = opts.project === false
+      ? null
+      : explicitProject ?? (tagNamesProject ? undefined : getProjectName());
     await withDatabase(async () => {
       let result;
       try {
@@ -500,6 +510,11 @@ program
           name: opts.name,
           type: opts.type,
           tags: opts.tags,
+          // The project this write declares: `--no-project` (false) is none,
+          // `--project` is that one, and with neither it is this directory's
+          // project (what learn defaults to) unless a `project:` tag already
+          // names one — the tag decides then, as it does for MCP.
+          ...(projectDeclaration === undefined ? {} : { project: projectDeclaration }),
           // #511: this directory's project, resolved only when a project tag needs it.
           ...(opts.tags?.some((tag: string) => tag.startsWith('project:')) ? { currentProject: getProjectName() } : {}),
           namespace: opts.namespace,
@@ -522,6 +537,9 @@ program
         console.log(JSON.stringify(result));
       } else {
         console.log(`✅ Stored "${result.name}" (${result.observations} observations, ${result.tags} tags)`);
+        if (typeof projectDeclaration === 'string' && opts.project === undefined) {
+          console.log(`   filed under project ${projectDeclaration}; use --no-project to store it without one`);
+        }
         if (result.retagged) console.log(`   tag ${result.retagged.from} names this project; stored as ${result.retagged.to}`);
         // The derived shape, so a wrong title is fixable in one more call.
         if (result.derived) {
@@ -798,7 +816,16 @@ program
         namespace: opts.namespace,
         limit: opts.limit,
       });
-      const json = JSON.stringify(result, null, 2);
+      // Signed with a secret that stays in this folder, so `import` here can
+      // tell this file from one that came from elsewhere. Without a usable
+      // secret the file is still a valid backup; it just imports as untrusted.
+      let signed: Record<string, unknown> = result as unknown as Record<string, unknown>;
+      try {
+        signed = { ...signed, signature: signExport(signed, exportSigningKey(getMemeshDirFromDbPath(), { create: true })) };
+      } catch (err) {
+        process.stderr.write(`Note: this file is not signed (${err instanceof Error ? err.message : String(err)}), so importing it here marks every memory untrusted.\n`);
+      }
+      const json = JSON.stringify(signed, null, 2);
       if (opts.out) {
         // Check the parent directory first. "ENOENT surfaces through commander
         // with the path in the message" was the intent; what reached the user
@@ -837,7 +864,7 @@ program
   .argument('[file]', 'Path to JSON export file')
   .option('--namespace <ns>', 'Override namespace for all imported entities')
   .option('--merge <strategy>', 'Merge strategy: skip | overwrite | append', 'skip')
-  .option('--restore-archived', 'Requires --merge append or overwrite (an error with skip, the default): bring back a local memory you archived (forgot) when the file names it. Without this it stays archived and untouched.')
+  .option('--restore-archived', 'Bring back a local memory you archived (forgot) when the file names it; without this it stays archived. With the default --merge skip it only makes the memory active again and replaces nothing.')
   .option('--notes <dir>', 'Ingest every frontmatter note file (*.md with name/description/metadata.type) under <dir>: one memory per file, tagged source:note-file; a changed file replaces its memory, a vanished one is tagged source:note-file:missing. Read-only on the directory.')
   .option('--project <name>', 'With --notes: the project tag for ingested memories (default: the current directory\'s project)')
   .option('--json', 'With --notes: output the ingestion result as JSON')
@@ -943,6 +970,14 @@ program
         process.exit(1);
       }
 
+      // A file this folder signed and nobody changed is the user's own backup.
+      let signature: ReturnType<typeof verifyExport> = 'absent';
+      try {
+        signature = verifyExport(data, exportSigningKey(getMemeshDirFromDbPath(), { create: false }));
+      } catch {
+        // No secret in this folder (or an unsupported platform): nothing can verify, so the file stays untrusted.
+      }
+
       // `--trust` is for restoring your OWN backup, so it is confirmed before
       // anything is written — after every check above that can fail (file,
       // JSON, --merge, --namespace) has already passed.
@@ -990,7 +1025,7 @@ program
           namespace: opts.namespace,
           merge_strategy: opts.merge as MergeStrategy,
           restore_archived: opts.restoreArchived === true,
-        }, { trust: opts.trust === true });
+        }, { trust: opts.trust === true, ownBackup: signature === 'valid' });
       } catch (err) {
         // importMemories refuses a bundle it cannot read, and says why in one
         // sentence. Uncaught, that sentence arrived on top of a ten-frame Node
@@ -1006,6 +1041,10 @@ program
       // had happened from the output.
       const overwriteNote = result.overwritten > 0 ? ` (${result.overwritten} overwritten)` : '';
       console.log(`Imported: ${result.imported}${overwriteNote}, Skipped: ${result.skipped}, Appended: ${result.appended}`);
+      if (result.skipped > 0) {
+        console.log(`Skipped: ${memories(result.skipped)} already here, left as they are.`);
+      }
+      const untrusted = result.imported - result.trusted;
       if (opts.trust) {
         // Everything else about this run (skipped, kept archived, appended)
         // is already on the lines above — this adds only what THOSE lines
@@ -1015,11 +1054,16 @@ program
         if (result.appended > 0) line += ` ${memories(result.appended)} appended kept their own trust.`;
         console.log(line);
       } else {
+        if (signature === 'valid' && result.imported > 0) {
+          console.log(`Verified: this file was exported from this MeMesh folder and has not been changed, so memories that were trusted when exported are trusted again. Trusted: ${result.trusted}.`);
+        } else if (signature === 'invalid') {
+          console.log('This file\'s signature does not match this MeMesh folder: it came from elsewhere or was changed, so it is treated as an outside file.');
+        }
         // A plain `append` demotes an existing TRUSTED local memory to
         // untrusted too (unrelated to `--trust`, true since before #407) —
         // split so that clause never gets folded into "imported".
-        if (result.imported > 0) {
-          let line = `${memories(result.imported)} imported as untrusted — recall works, auto-injection does not.`;
+        if (untrusted > 0) {
+          let line = `${memories(untrusted)} imported as untrusted — recall works, auto-injection does not.`;
           // `--merge overwrite` REPLACES an existing entity's observations —
           // safe only for a row this run just created or overwrote from
           // nothing, where the file's content and the local content are
@@ -1028,7 +1072,9 @@ program
           // had. Suggesting the same command for those would offer to
           // destroy data it never touched, in the name of trusting it.
           const wouldAlsoReplace = result.skipped + result.appended;
-          if (wouldAlsoReplace === 0) {
+          if (signature === 'valid') {
+            line += ' They were untrusted when exported, so they stay that way.';
+          } else if (wouldAlsoReplace === 0) {
             line += ` If this file is your own backup, run: memesh import ${shellQuoteIfNeeded(file)}${describeImportFlags(cmd, opts, 'overwrite')} --trust`;
           } else {
             line += ` (--trust --merge overwrite not suggested: it would also replace ${memories(wouldAlsoReplace)} already here.)`;
@@ -1039,10 +1085,16 @@ program
           console.log(`Marked untrusted because this file added text to them: ${memories(result.appended)} you already had.`);
         }
       }
+      if (result.restored > 0) {
+        console.log(`Restored: ${memories(result.restored)} you archived (forgot), active again.`);
+      }
       // Said on stdout, with the way back: the entities are unchanged, so
       // nothing else in the output would tell the user the file named them.
+      // Only this memory is brought back; nothing already here is replaced.
       if (result.kept_archived > 0) {
-        console.log(`Kept archived: ${result.kept_archived} (you archived these; the file names them, so they were left untouched). Add --restore-archived to bring them back.`);
+        const merge = cmd.getOptionValueSource('merge') === 'cli' ? ` --merge ${opts.merge}` : '';
+        const namespace = cmd.getOptionValueSource('namespace') === 'cli' ? ` --namespace ${opts.namespace}` : '';
+        console.log(`Kept archived: ${memories(result.kept_archived)} you archived (forgot), left alone. To restore, run: memesh import ${shellQuoteIfNeeded(file)}${merge}${namespace} --restore-archived`);
       }
       // Named, not merely counted, and on stderr — a relation the restore
       // could not rebuild is information the user lost, and the only way to
@@ -1172,7 +1224,7 @@ async function runCliMessage(input: unknown): Promise<void> {
         transport: 'cli',
         sourceHost: 'cli',
         hostSession: hostSessionFromEnv(),
-      });
+      }, { startRouterIfDown });
       console.log(JSON.stringify(result));
     } catch (error) {
       console.error(`Error: ${cliErrorText(error)}`);

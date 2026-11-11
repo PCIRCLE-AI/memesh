@@ -586,7 +586,8 @@ Export memories to a portable JSON bundle. Use for personal backup, migrating be
 |---|---|---|
 | `created_at` | always | restored for entities the import CREATES when `parseSqliteUtcMs` can read it, through CLI, MCP and HTTP alike; an absent or unreadable timestamp uses the import time. Existing entities keep their local creation time. |
 | `status` | present only for archived entities | `archived` archives an entity the import CREATES, through CLI, MCP and HTTP alike. Absent means active; an existing entity keeps its local state unless `restore_archived` explicitly restores it. |
-| `metadata` | present when the entity has any | CLI, MCP and HTTP pass it to the same core filter. Filtered by an ALLOW-list: only a purely descriptive key (display/provenance) is ever taken from the bundle. `trust` and `provenance` are always rebuilt by the import, never read from the bundle. Every behaviour-changing key is refused by default — `guard` (installs a Bash-command warning), `demo` (`demo --reset` HARD-DELETES every entity carrying it, #361), `task_state` (injected verbatim into SessionStart/`memesh briefing` context — a bundle must not be able to put text in front of the agent), `evidence_for` (a `dream accept` idempotency gate — refused and rebuilt by the real `dream accept` path instead), `consolidation_depth`, `compacted_into`, `proposal_id`, `session_id` — for an entity you already have AND for one the import creates, no exception. Four keys get a narrow FRESH-entity-only, VALIDATED exception: `forgotten_observation_hashes` (64-hex SHA-256, de-duplicated, capped at 1000, or the whole list is dropped), `pin` (only the literal boolean `true`; anything else is refused), `signal_score` (only a finite number with `0 <= x <= 1` — `computeSignalScore`'s own documented range; anything else is dropped and the entity gets its own content-derived score), and `replaced_history` (only an array of at most 50 entries shaped exactly like `--replace`'s own history entries — `replaced_at`/`title`/`observations`/`tags`, optional `truncated` (a boolean), no other key, the WHOLE array's own serialized JSON at most 256 KiB — a budget over the entire array together, not per entry — or the whole list is dropped). An EXISTING entity's own value for any of these four always wins regardless of what the bundle says, same as every other authority key. |
+| `metadata` | present when the entity has any | CLI, MCP and HTTP pass it to the same core filter. Filtered by an ALLOW-list: only a purely descriptive key (display/provenance) is ever taken from the bundle. `trust` and `provenance` are always rebuilt by the import, never read from the bundle (the CLI's verified own backup, below, is the only case where the exported trust decides whether a row is trusted). Every behaviour-changing key is refused by default — `guard` (installs a Bash-command warning), `demo` (`demo --reset` HARD-DELETES every entity carrying it, #361), `task_state` (injected verbatim into SessionStart/`memesh briefing` context — a bundle must not be able to put text in front of the agent), `evidence_for` (a `dream accept` idempotency gate — refused and rebuilt by the real `dream accept` path instead), `consolidation_depth`, `compacted_into`, `proposal_id`, `session_id` — for an entity you already have AND for one the import creates, no exception. Four keys get a narrow FRESH-entity-only, VALIDATED exception: `forgotten_observation_hashes` (64-hex SHA-256, de-duplicated, capped at 1000, or the whole list is dropped), `pin` (only the literal boolean `true`; anything else is refused), `signal_score` (only a finite number with `0 <= x <= 1` — `computeSignalScore`'s own documented range; anything else is dropped and the entity gets its own content-derived score), and `replaced_history` (only an array of at most 50 entries shaped exactly like `--replace`'s own history entries — `replaced_at`/`title`/`observations`/`tags`, optional `truncated` (a boolean), no other key, the WHOLE array's own serialized JSON at most 256 KiB — a budget over the entire array together, not per entry — or the whole list is dropped). An EXISTING entity's own value for any of these four always wins regardless of what the bundle says, same as every other authority key. |
+| `signature` | CLI `memesh export` only, when the folder has a usable secret (`{"alg": "hmac-sha256", "mac": …}`, an HMAC of every other field) | read only by CLI `memesh import`, which trusts the file's memories when it verifies against this folder's secret (see `memesh import` below). MCP and HTTP imports ignore it and never trust a bundle. |
 | `relations` | always | created in a SECOND pass, after every entity in the bundle exists. A relation that still cannot be created points outside the bundle, and is named in `skipped_relations` rather than dropped — reported, but not an error, because every narrowed bundle has them. |
 
 Bundles written by earlier versions (`3.0.0`) import unchanged — every added field is optional. When present, `created_at` and `status` must be strings, and `metadata` must be an object; malformed values are refused before that entry is written. Import still rebuilds trust and provenance rather than trusting the bundle.
@@ -619,7 +620,7 @@ Imported entities are marked with import provenance and treated as untrusted for
 | `data` | object | Yes | The JSON bundle produced by `export`. A bundle that names one memory more than once is refused and nothing is imported. |
 | `merge_strategy` | string | Yes | Merge strategy for conflicts: `"skip"`, `"overwrite"`, or `"append"` |
 | `namespace` | string | No | Force imported entities into this namespace, ignoring the namespace stored in the bundle. With `overwrite` or `append` it also **moves** entities that already exist, in bulk, out of the scope they are in — `metadata.previous_namespace` records where each came from. With `skip` it does not: see the table below. Must be `personal`, `team` or `global`; anything else is refused outright. |
-| `restore_archived` | boolean | No | Default `false`. With `overwrite` or `append`, a local entity that is archived (forgotten) and named by the bundle is left untouched and counted in `kept_archived`. `true` brings it back to active and merges or overwrites it like any other, and **requires** `merge_strategy` `append` or `overwrite`: with `skip` (which touches no existing entity) the call is refused with an error and nothing is imported. Must be a boolean; a string such as `"yes"` is refused. |
+| `restore_archived` | boolean | No | Default `false`. A local entity that is archived (forgotten) and named by the bundle is left untouched and counted in `kept_archived`, under every strategy. `true` brings it back to active: with `skip` that is all it does (its stored text and trust stay, nothing else is replaced); with `append` or `overwrite` the bundle's text is also appended or written, like any other entity. Must be a boolean; a string such as `"yes"` is refused. |
 
 **Merge Strategies**:
 
@@ -638,14 +639,16 @@ skip existing entities does not get to relocate them as a side effect.
 the dreamer archives the sources it digests. An import does not undo either: an
 existing entity that is archived stays archived and completely untouched when
 the bundle names it — no observations added or replaced, no tag, title,
-namespace or metadata change, nothing reactivated — under `append` and
-`overwrite` alike, and the response counts it in `kept_archived`. Pass
-`restore_archived: true` (CLI: `--restore-archived`) to bring such memories back
-and merge or overwrite them as the strategy says; it requires `append` or
-`overwrite`. `skip` already leaves every existing entity alone, so an archived
-one is counted in `skipped` there, and `restore_archived` together with `skip`
-is refused rather than silently ignored. This is specific to import: `remember`
-still reactivates an archived memory that is stated again.
+namespace or metadata change, nothing reactivated — under `skip`, `append` and
+`overwrite` alike, and the response counts it in `kept_archived` (not in
+`skipped`). Pass `restore_archived: true` (CLI: `--restore-archived`) to bring such
+memories back. With `skip` (the default) that only makes the memory active again:
+its stored text and trust stay as they are and no other existing memory is
+touched, so restoring never replaces anything newer than the backup. With
+`append` or `overwrite` the bundle's text is also merged or written, as the
+strategy says. The response counts the memories brought back in `restored`.
+This is specific to import: `remember` still reactivates an archived memory
+that is stated again.
 
 A bundle entry that is left untouched this way contributes none of its own
 relations, as with `skip`; a relation from another entry in the bundle *to* it
@@ -1743,6 +1746,13 @@ you reclassify a memory. `--type` is still required when `--name` is used
 without `--replace`, and on a `--replace` whose name does not exist yet,
 where there is no stored type to keep.
 
+**Project.** Like `memesh learn`, `memesh remember` files the memory under the
+current directory's project. `--project <name>` names another one, and
+`--no-project` stores the memory with no project. A `project:` tag in `--tags`
+decides by itself, as it does over MCP. The output says which project it used.
+Writing to a memory that already belongs to a different project is refused, the
+same rule MCP applies.
+
 ```bash
 memesh remember "Use PKCE for the public client"            # derived name, type note
 memesh remember --name auth-choice --obs "PKCE, not implicit" --replace   # keeps type
@@ -1759,20 +1769,39 @@ memesh import <file> [--merge skip|overwrite|append] [--namespace <ns>] [--resto
 |------|---------|
 | `--merge <strategy>` | `skip` (default), `overwrite` or `append` — see `import` under Tools |
 | `--namespace <ns>` | Force imported entities into this namespace |
-| `--restore-archived` | Requires `--merge append` or `--merge overwrite` (an error with `skip`, the default): bring back a local memory you archived (forgot) when the file names it. Without it, that memory stays archived and untouched |
+| `--restore-archived` | Bring back a local memory you archived (forgot) when the file names it. Works with every `--merge`; with the default `skip` it only makes the memory active again and replaces nothing. Without it, that memory stays archived and untouched |
 | `--trust` | For restoring your OWN backup only — never for a file someone else gave you. Also marks every imported memory trusted, so it is injected into new sessions the way your own memories are. Behind a confirmation prompt (`[y/N]`) unless `--yes` is given; any other answer writes nothing (same convention as `memesh setup`). Refused together with `--notes`. On `append`, an entity that already existed keeps its own trust either way with `--trust` — without it, `append` marks it untrusted as it always has |
 | `--yes` | Skip the `--trust` confirmation prompt. Refused without `--trust`. Without a terminal and without `--yes`, `--trust` is refused (exit 1, nothing written) |
 
-The summary line is unchanged. When the file named archived memories that were
-left alone, a second line follows — `Kept archived: N (…)` — with the flag that
-brings them back. `--restore-archived` is refused together with `--notes`, and with `--merge skip`.
+**Your own backup.** `memesh export` signs the file with a secret that stays in
+the MeMesh folder it was exported from (`export` creates `agent-router.token` there
+if the folder has none; the signing key is derived from it, never the token itself)
+and writes the signature into the file. `memesh import` checks it: when the file was
+exported from this folder and has not changed by a single byte, every memory that was
+trusted when exported is trusted again, with no flag and no prompt; a memory that was
+untrusted when exported stays untrusted. A file with no signature, a changed file, and
+a file signed by another folder's secret are treated exactly as before: imported as
+untrusted (recall works, auto-injection does not), and the output says which of the
+three it saw. If `export` cannot sign (for example on Windows, where the secure host
+runtime is unavailable) it says so on stderr and the file imports as untrusted.
+This applies to the CLI only; MCP and HTTP imports never trust a bundle.
 
-Without `--trust`, a plain import names how many rows it imported as
+**What the output says.** After the `Imported: …, Skipped: …, Appended: …` line, one
+line per class that happened: `Skipped: N memories already here, left as they are`;
+`Verified: …` with the trusted count, or a notice that the signature did not match;
+`N memories imported as untrusted` with, for an unsigned file, the exact `--trust`
+command to run if it is your own backup; `Restored: N …` for memories brought back from
+the archive; and `Kept archived: N …` followed by the exact command that brings them back
+(`memesh import <file> --restore-archived`, with your own `--merge` and `--namespace`).
+`--restore-archived` is refused together with `--notes`.
+
+Without `--trust` and without a verified signature, a plain import names how many rows it imported as
 untrusted and, separately, how many existing memories it appended text to
 (also now untrusted). It suggests `memesh import <file> --merge overwrite
 --trust` only when nothing else was skipped or appended, since that would
 replace their local content too. With `--trust`, the summary adds only what
 a plain import wouldn't already show: how many appended rows kept their own trust.
+`--trust` still trusts every row, including those that were untrusted when exported.
 
 ### memesh import --notes — note-file directories
 
@@ -1917,7 +1946,7 @@ If the first silent-hook finding is `handoff-capture` repeatedly skipping an
 archived handoff, Doctor explains that reinstalling hooks will not revive it.
 When the inspected outcome window identifies exactly one complete,
 shell-safe handoff name, it offers a `memesh remember --name … --type
-session-handoff --obs restart` command; otherwise it directs you to find the
+session-handoff --obs restart --project …` command (the project the handoff's name carries); otherwise it directs you to find the
 exact archived name with `memesh recall session-handoff --include-archived`
 before restoring it. Doctor inspects a bounded recent outcome window, so a
 missing warning does not prove every project's handoff is current.

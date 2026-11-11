@@ -590,16 +590,14 @@ describe('HTTP Transport: POST /v1/import and archived memories (#363)', () => {
     expect(observationsOf('http-import-restored')).toContain('bundle text');
   });
 
-  it('refuses restore_archived with `skip`, as it does an unknown strategy: 400 with the core message', async () => {
+  it('restore_archived with `skip` reactivates the entity and replaces nothing', async () => {
     await seedArchived('http-import-skip-restore');
     const res = await req('POST', '/v1/import', {
       data: bundleFor('http-import-skip-restore'), merge_strategy: 'skip', restore_archived: true,
     });
-    expect(res.status).toBe(400);
-    expect(res.body.success).toBe(false);
-    expect(res.body.errorCode).toBe('operation.failed');
-    expect(res.body.error).toContain('restore_archived (--restore-archived) only applies with merge strategy "append" or "overwrite"');
-    expect(statusOf('http-import-skip-restore')).toBe('archived');
+    expect(res.status).toBe(200);
+    expect(res.body.data.restored).toBe(1);
+    expect(statusOf('http-import-skip-restore')).toBe('active');
     expect(observationsOf('http-import-skip-restore')).toEqual(['original text']);
   });
 

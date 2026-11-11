@@ -23,6 +23,8 @@ Persistent memory for AI agents. Load the saved project context at session start
 
 All examples below use CLI. MCP tools accept the same parameters as JSON objects.
 
+The CLI's `remember` and `learn` file a memory under the current directory's project (`--project <id>` names another; `remember --no-project` stores one with none).
+
 Over MCP, `remember`, `learn` and `recall` also take `project`: a project id, or `false` for a memory that belongs to no project. Omitted, the call uses the project the session is bound to (the client's workspace root, or `MEMESH_PROJECT_ROOT`); a call that needs a project and finds none is refused with `workspace_unavailable`.
 
 ## All 12 MCP tools
@@ -319,7 +321,7 @@ human review. Do not hand-compress memories yourself.
 ```bash
 memesh export --tag "project:myapp" > memories.json
 memesh import memories.json --merge skip     # skip | overwrite | append
-# append/overwrite leave a memory you archived (forgot) alone; --merge append|overwrite --restore-archived brings it back
+# a memory you archived (forgot) stays archived; add --restore-archived to bring it back (with skip it replaces nothing)
 memesh status                                # version, install channel, update state
 memesh reindex --fts                         # rebuild the local keyword index
 ```

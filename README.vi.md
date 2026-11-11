@@ -94,6 +94,11 @@ Các bản dựng từ mã nguồn chưa phát hành bổ sung `/memesh-memories
 | `user_patterns` | Tổng hợp thói quen làm việc. |
 | `improvement` | Đề xuất cải tiến để người dùng duyệt. |
 
+**Ghi chú dòng lệnh.**
+- `memesh remember` lưu bộ nhớ vào dự án của thư mục hiện tại (giống `memesh learn`); `--project <tên>` chọn dự án khác, `--no-project` lưu mà không thuộc dự án nào.
+- `memesh export -o backup.json` ký bản sao lưu bằng một khóa chỉ nằm trong thư mục MeMesh của bạn. `memesh import backup.json` chỉ tin cậy lại khi tệp không bị sửa và đến từ thư mục này; mọi tệp khác được nhập ở trạng thái không tin cậy (tìm được, không tự động chèn) và kết quả nói rõ điều đó. Bộ nhớ bạn đã quên (forget) vẫn giữ nguyên trạng thái lưu trữ: kết quả in ra đúng một lệnh để khôi phục (`--restore-archived`).
+- `memesh message discover` tự khởi động bộ định tuyến tin nhắn cục bộ nếu nó chưa chạy.
+
 ---
 
 Các plugin có **10 hook**. Tính năng nhắc khi người dùng muốn ghi nhớ điều gì đó hỗ trợ 5 ngôn ngữ. Bạn có thể sửa bộ nhớ qua MeMesh Mod trên Claude Code/Claude Desktop Code và trong MCP/biểu mẫu tích hợp sẵn trên Codex. Không có Web Dashboard độc lập.

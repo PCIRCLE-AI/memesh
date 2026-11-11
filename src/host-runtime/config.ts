@@ -1,5 +1,6 @@
-import { randomBytes } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
+import path from 'node:path';
 import { normalizeAgentRouterSocketPath } from '../core/paths.js';
 import { HOST_CONFIG_MAX_BYTES as MAX_HOST_CONFIG_FILE_BYTES } from '../core/agent-scope-id.js';
 
@@ -47,6 +48,18 @@ export function ensureRouterTokenFile(tokenFile: string): string {
     if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
   }
   return readTokenFile(tokenFile);
+}
+
+/**
+ * The key that signs `memesh export` files, derived from this folder's own
+ * router token (owner-private, never exported) so the token itself is never
+ * used as a signing key. Throws when the folder has no usable token, or on a
+ * platform without the secure host runtime; `create` makes the token if absent.
+ */
+export function exportSigningKey(dataDir: string, options: { create: boolean }): Buffer {
+  const tokenFile = path.join(dataDir, 'agent-router.token');
+  const token = options.create ? ensureRouterTokenFile(tokenFile) : readTokenFile(tokenFile);
+  return createHmac('sha256', token).update('memesh-export-signature-v1').digest();
 }
 
 export function requiredString(value: unknown, field: string): string {

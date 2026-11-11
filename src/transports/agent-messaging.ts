@@ -51,6 +51,12 @@ export interface AgentMessageTransportContext {
 
 export interface AgentMessageTransportDependencies {
   sendRouterRequest?: typeof sendAgentRouterRequest;
+  /**
+   * Set by transports that may start the router themselves (the CLI). Given the
+   * failed request's error: false when it is not a "nothing is listening" error,
+   * true once a router is up, rejects with the reason it could not be started.
+   */
+  startRouterIfDown?: (socketPath: string, error: unknown) => Promise<boolean>;
 }
 
 export class AgentRecipientUnavailableError extends AgentMessagingError {
@@ -61,22 +67,18 @@ export class AgentRecipientUnavailableError extends AgentMessagingError {
   }
 }
 
+/**
+ * The one sentence every router-needing command ends in when the router is not
+ * running. `startFailure` is set when the command tried to start it and could not.
+ */
 export class AgentRouterUnavailableError extends AgentMessagingError {
   readonly code = 'router_unreachable';
 
-  constructor() {
-    super('router_unreachable: the sender could not reach the local agent router; the durable message is preserved. Start the router and retry.');
-  }
-}
-
-export class AgentDiscoveryUnavailableError extends AgentMessagingError {
-  readonly code = 'router_unreachable';
-
-  constructor() {
-    super('router_unreachable: could not reach the local agent router to discover live hosts. '
-      + 'Start it with `memesh-router` (or your host\'s managed launch step, e.g. `memesh-host-codex`), '
-      + 'or skip discovery — `send`/`fetch` to a principal (a stable recipient, not an exact session) work without the router; '
-      + 'an exact `target_kind: "session"` send still needs it.');
+  constructor(options: { startFailure?: string; messageSaved?: boolean } = {}) {
+    super((options.startFailure === undefined
+      ? 'router_unreachable: the MeMesh message router is not running. Start it with `memesh-router` (leave it running), then retry.'
+      : `router_unreachable: the MeMesh message router is not running and could not be started (${options.startFailure}). Run \`memesh-router\` in a terminal to see why, then retry.`)
+      + (options.messageSaved ? ' The durable message is preserved.' : ''));
   }
 }
 
@@ -188,6 +190,36 @@ function publicSentMessage(sent: SentAgentMessage, adapter?: string) {
   return { ...message, delivery_note };
 }
 
+/**
+ * One router request. When the transport can start the router (the CLI) and
+ * nothing listens on its socket, start it once and retry; a protocol error or
+ * a timeout from a router that IS there is never retried.
+ */
+async function requestRouter(
+  request: AgentRouterNotifyRequest | AgentRouterDiscoverRequest,
+  dependencies: AgentMessageTransportDependencies,
+  timeoutMs?: number,
+  messageSaved = false,
+): Promise<AgentJsonObject> {
+  const send = dependencies.sendRouterRequest ?? sendAgentRouterRequest;
+  const socketPath = routerSocketPath();
+  try {
+    return await send(socketPath, request, timeoutMs);
+  } catch (error) {
+    let started: boolean;
+    try {
+      started = await dependencies.startRouterIfDown?.(socketPath, error) ?? false;
+    } catch (startError) {
+      throw new AgentRouterUnavailableError({
+        startFailure: startError instanceof Error ? startError.message : String(startError),
+        messageSaved,
+      });
+    }
+    if (!started) throw error;
+    return send(socketPath, request, timeoutMs);
+  }
+}
+
 async function requireExactSessionNativeAcceptance(
   db: MemeshDatabase,
   sent: { delivery_id: string; project: string },
@@ -205,11 +237,7 @@ async function requireExactSessionNativeAcceptance(
     hops: 0,
   };
   try {
-    const result = await (dependencies.sendRouterRequest ?? sendAgentRouterRequest)(
-      routerSocketPath(),
-      request,
-      EXACT_SESSION_NATIVE_TIMEOUT_MS,
-    );
+    const result = await requestRouter(request, dependencies, EXACT_SESSION_NATIVE_TIMEOUT_MS, true);
     if (result.delivered !== true) {
       const accepted = readHostAccept(db, sent.delivery_id);
       if (accepted) return nativeAcceptance(accepted);
@@ -222,6 +250,7 @@ async function requireExactSessionNativeAcceptance(
     if (
       error instanceof AgentRecipientUnavailableError
       || error instanceof AgentNativeMessageTooLargeError
+      || error instanceof AgentRouterUnavailableError
     ) throw error;
     if (error instanceof AgentRouterError) {
       // Preserve protocol/identity errors: they indicate a broken or skewed
@@ -229,7 +258,7 @@ async function requireExactSessionNativeAcceptance(
       // only router errors that should use the sender-side reachability code.
       if (!['timeout', 'connection_closed'].includes(error.code)) throw error;
     }
-    throw new AgentRouterUnavailableError();
+    throw new AgentRouterUnavailableError({ messageSaved: true });
   }
 
   const accepted = readHostAccept(db, sent.delivery_id);
@@ -715,15 +744,13 @@ export async function executeAgentMessageAction(
       // translates them for `send`; a protocol/identity error (a broken or
       // skewed router, not an unreachable one) still passes through unchanged.
       try {
-        return await (dependencies.sendRouterRequest ?? sendAgentRouterRequest)(
-          routerSocketPath(),
-          request,
-        );
+        return await requestRouter(request, dependencies);
       } catch (error) {
-        if (error instanceof AgentRouterError && !['timeout', 'connection_closed'].includes(error.code)) {
+        if (error instanceof AgentRouterUnavailableError
+          || (error instanceof AgentRouterError && !['timeout', 'connection_closed'].includes(error.code))) {
           throw error;
         }
-        throw new AgentDiscoveryUnavailableError();
+        throw new AgentRouterUnavailableError();
       }
     }
     case 'fetch':

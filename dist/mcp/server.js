@@ -3229,8 +3229,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path15) {
-      let input2 = path15;
+    function removeDotSegments(path16) {
+      let input2 = path16;
       const output2 = [];
       let nextSlash = -1;
       let len = 0;
@@ -3482,8 +3482,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path15, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path15 && path15 !== "/" ? path15 : void 0;
+        const [path16, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path16 && path16 !== "/" ? path16 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -6917,7 +6917,7 @@ var require_dist = __commonJS({
 
 // dist/mcp/server.js
 import fs19 from "fs";
-import path14 from "path";
+import path15 from "path";
 
 // node_modules/zod/v4/core/index.js
 var core_exports2 = {};
@@ -7473,10 +7473,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path15) {
-  if (!path15)
+function getElementAtPath(obj, path16) {
+  if (!path16)
     return obj;
-  return path15.reduce((acc, key) => acc?.[key], obj);
+  return path16.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -7816,11 +7816,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path15, issues) {
+function prefixIssues(path16, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path15);
+    iss.path.unshift(path16);
     return iss;
   });
 }
@@ -8282,16 +8282,16 @@ function flattenError(error62, mapper = (issue2) => issue2.message) {
 }
 function formatError(error62, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error63, path15 = []) => {
+  const processError = (error63, path16 = []) => {
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path15, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path16, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path15, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path16, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path15, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path16, ...issue2.path]);
       } else {
-        const fullpath = [...path15, ...issue2.path];
+        const fullpath = [...path16, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -8330,17 +8330,17 @@ function formatError(error62, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error62, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error63, path15 = []) => {
+  const processError = (error63, path16 = []) => {
     var _a3;
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path15, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path16, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path15, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path16, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path15, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path16, ...issue2.path]);
       } else {
-        const fullpath = [...path15, ...issue2.path];
+        const fullpath = [...path16, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -8379,8 +8379,8 @@ function treeifyError(error62, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path15 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path15) {
+  const path16 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path16) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -25999,13 +25999,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path15 = ref.slice(1).split("/").filter(Boolean);
-  if (path15.length === 0) {
+  const path16 = ref.slice(1).split("/").filter(Boolean);
+  if (path16.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path15[0] === defsKey) {
-    const key = path15[1] === void 0 ? void 0 : decodeJSONPointerSegment(path15[1]);
+  if (path16[0] === defsKey) {
+    const key = path16[1] === void 0 ? void 0 : decodeJSONPointerSegment(path16[1]);
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -30022,8 +30022,8 @@ var { DatabaseSync } = loadNodeSqlite();
 var BUSY_TIMEOUT_MS = 3e4;
 var MemeshDatabase = class extends DatabaseSync {
   #depth = 0;
-  constructor(path15, options = {}) {
-    super(path15, options);
+  constructor(path16, options = {}) {
+    super(path16, options);
     this.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
   }
   pragma(statement) {
@@ -32748,8 +32748,8 @@ function isPathShapedFileName(name) {
   return true;
 }
 var SCRATCH_PREFIXES = ["/dev/", "/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/"];
-function isScratchPath(path15) {
-  return SCRATCH_PREFIXES.some((prefix) => path15.startsWith(prefix));
+function isScratchPath(path16) {
+  return SCRATCH_PREFIXES.some((prefix) => path16.startsWith(prefix));
 }
 function bashEditedPaths(cmd) {
   if (typeof cmd !== "string")
@@ -34010,14 +34010,12 @@ function storedContentOf(db2, name) {
 }
 function importMemories(args, options) {
   const trust = options?.trust === true;
+  const ownBackup = options?.ownBackup === true;
   if (!MERGE_STRATEGIES.includes(args.merge_strategy)) {
     throw new Error(`Unknown merge strategy "${args.merge_strategy}". Use one of: ${MERGE_STRATEGIES.join(", ")}. Nothing was imported \u2014 refusing rather than guessing, because the wrong guess overwrites existing memories.`);
   }
   if (args.restore_archived !== void 0 && typeof args.restore_archived !== "boolean") {
     throw new Error('restore_archived must be the boolean true or false. Nothing was imported \u2014 refusing rather than guessing, because "yes" brings back memories the user forgot.');
-  }
-  if (args.restore_archived === true && args.merge_strategy === "skip") {
-    throw new Error('restore_archived (--restore-archived) only applies with merge strategy "append" or "overwrite"; "skip" leaves every existing entity untouched, so there is nothing to restore. Nothing was imported.');
   }
   if (args.namespace !== void 0 && !NAMESPACES.includes(args.namespace)) {
     throw new Error(`Unknown namespace "${args.namespace}". Use one of: ${NAMESPACES.join(", ")}. Nothing was imported \u2014 an unrecognised namespace would move existing memories somewhere nothing queries.`);
@@ -34046,6 +34044,8 @@ function importMemories(args, options) {
   let skipped = 0;
   let appended = 0;
   let keptArchived = 0;
+  let restored = 0;
+  let trusted = 0;
   const errors = [];
   const skippedRelations = [];
   const setCreatedAt = db2.prepare("UPDATE entities SET created_at = ? WHERE name = ?");
@@ -34069,13 +34069,14 @@ function importMemories(args, options) {
           to: rel.to,
           type: rel.type
         }));
+        const rowTrust = trust || ownBackup && entity.metadata?.trust !== "untrusted";
         const importedMetadata = buildImportedMetadata(existing?.metadata, {
           bundled: entity.metadata,
           exportedAt: args.data.exported_at,
           importVersion: args.data.version,
           mergeStrategy: args.merge_strategy,
           isNewEntity: !existing,
-          trust,
+          trust: rowTrust,
           onHistoryDropped: () => errors.push(`${entity.name}: imported without its replaced_history, which no longer fits its size limits once credentials in it are redacted`)
         });
         if (existing) {
@@ -34084,10 +34085,14 @@ function importMemories(args, options) {
         }
         let replacedVersion;
         if (existing) {
-          if (args.merge_strategy === "skip")
-            return { kind: "skipped" };
           if (existing.archived && args.restore_archived !== true)
             return { kind: "keptArchived" };
+          if (args.merge_strategy === "skip") {
+            if (!existing.archived)
+              return { kind: "skipped" };
+            kg.createEntity(entity.name, existing.type, { trustOverride: "untrusted" });
+            return { kind: "restored" };
+          }
           if (args.merge_strategy === "append") {
             const existingText = new Set(existing.observations);
             const newObservations = observations.map(storedText).filter((o) => !existingText.has(o));
@@ -34103,7 +34108,7 @@ function importMemories(args, options) {
               trustOverride: "untrusted"
             });
             kg.updateEntityMetadata(entity.name, (current) => ({ ...current, ...importedMetadata }));
-            return { kind: "appended", relations };
+            return { kind: "appended", relations, restored: existing.archived === true };
           }
           replacedVersion = {
             replaced_at: (/* @__PURE__ */ new Date()).toISOString(),
@@ -34145,6 +34150,8 @@ function importMemories(args, options) {
         return {
           kind: "imported",
           overwritten: Boolean(existing),
+          restored: existing?.archived === true,
+          trusted: rowTrust,
           relations
         };
       }).immediate();
@@ -34152,14 +34159,22 @@ function importMemories(args, options) {
         skipped++;
       else if (outcome.kind === "keptArchived")
         keptArchived++;
+      else if (outcome.kind === "restored")
+        restored++;
       else if (outcome.kind === "appended") {
         pendingRelations.push(...outcome.relations);
         appended++;
+        if (outcome.restored)
+          restored++;
       } else {
         pendingRelations.push(...outcome.relations);
         imported++;
         if (outcome.overwritten)
           overwritten++;
+        if (outcome.restored)
+          restored++;
+        if (outcome.trusted)
+          trusted++;
       }
     } catch (err) {
       errors.push(`${entity.name}: ${err instanceof Error ? err.message : String(err)}`);
@@ -34176,7 +34191,7 @@ function importMemories(args, options) {
       errors.push(`${rel.from} -${rel.type}-> ${rel.to}: relation not restored (${err instanceof Error ? err.message : String(err)})`);
     }
   }
-  return { imported, overwritten, skipped, appended, kept_archived: keptArchived, errors, skipped_relations: skippedRelations };
+  return { imported, overwritten, skipped, appended, kept_archived: keptArchived, restored, trusted, errors, skipped_relations: skippedRelations };
 }
 
 // dist/core/operations.js
@@ -38052,14 +38067,8 @@ var AgentRecipientUnavailableError = class extends AgentMessagingError {
 };
 var AgentRouterUnavailableError = class extends AgentMessagingError {
   code = "router_unreachable";
-  constructor() {
-    super("router_unreachable: the sender could not reach the local agent router; the durable message is preserved. Start the router and retry.");
-  }
-};
-var AgentDiscoveryUnavailableError = class extends AgentMessagingError {
-  code = "router_unreachable";
-  constructor() {
-    super('router_unreachable: could not reach the local agent router to discover live hosts. Start it with `memesh-router` (or your host\'s managed launch step, e.g. `memesh-host-codex`), or skip discovery \u2014 `send`/`fetch` to a principal (a stable recipient, not an exact session) work without the router; an exact `target_kind: "session"` send still needs it.');
+  constructor(options = {}) {
+    super((options.startFailure === void 0 ? "router_unreachable: the MeMesh message router is not running. Start it with `memesh-router` (leave it running), then retry." : `router_unreachable: the MeMesh message router is not running and could not be started (${options.startFailure}). Run \`memesh-router\` in a terminal to see why, then retry.`) + (options.messageSaved ? " The durable message is preserved." : ""));
   }
 };
 var AGENT_MESSAGE_STORAGE_QUOTA_ENV = "MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES";
@@ -38102,6 +38111,26 @@ function publicSentMessage(sent, adapter) {
   const delivery_note = reused ? "Reused the previous message_id; no new message was created. An unconfirmed notification may be sent again." : adapter ? `${adapter} accepted the notification. This does not mean the model has read or accepted it.` : `Stored in ${sent.recipient}'s inbox. This does not mean the recipient has read or accepted it.`;
   return { ...message, delivery_note };
 }
+async function requestRouter(request, dependencies, timeoutMs, messageSaved = false) {
+  const send = dependencies.sendRouterRequest ?? sendAgentRouterRequest;
+  const socketPath = routerSocketPath();
+  try {
+    return await send(socketPath, request, timeoutMs);
+  } catch (error62) {
+    let started;
+    try {
+      started = await dependencies.startRouterIfDown?.(socketPath, error62) ?? false;
+    } catch (startError) {
+      throw new AgentRouterUnavailableError({
+        startFailure: startError instanceof Error ? startError.message : String(startError),
+        messageSaved
+      });
+    }
+    if (!started)
+      throw error62;
+    return send(socketPath, request, timeoutMs);
+  }
+}
 async function requireExactSessionNativeAcceptance(db2, sent, dependencies) {
   const existing = readHostAccept(db2, sent.delivery_id);
   if (existing)
@@ -38115,7 +38144,7 @@ async function requireExactSessionNativeAcceptance(db2, sent, dependencies) {
     hops: 0
   };
   try {
-    const result = await (dependencies.sendRouterRequest ?? sendAgentRouterRequest)(routerSocketPath(), request, EXACT_SESSION_NATIVE_TIMEOUT_MS);
+    const result = await requestRouter(request, dependencies, EXACT_SESSION_NATIVE_TIMEOUT_MS, true);
     if (result.delivered !== true) {
       const accepted2 = readHostAccept(db2, sent.delivery_id);
       if (accepted2)
@@ -38126,13 +38155,13 @@ async function requireExactSessionNativeAcceptance(db2, sent, dependencies) {
       throw new AgentRecipientUnavailableError();
     }
   } catch (error62) {
-    if (error62 instanceof AgentRecipientUnavailableError || error62 instanceof AgentNativeMessageTooLargeError)
+    if (error62 instanceof AgentRecipientUnavailableError || error62 instanceof AgentNativeMessageTooLargeError || error62 instanceof AgentRouterUnavailableError)
       throw error62;
     if (error62 instanceof AgentRouterError) {
       if (!["timeout", "connection_closed"].includes(error62.code))
         throw error62;
     }
-    throw new AgentRouterUnavailableError();
+    throw new AgentRouterUnavailableError({ messageSaved: true });
   }
   const accepted = readHostAccept(db2, sent.delivery_id);
   if (!accepted)
@@ -38495,12 +38524,12 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
         hops: 0
       };
       try {
-        return await (dependencies.sendRouterRequest ?? sendAgentRouterRequest)(routerSocketPath(), request);
+        return await requestRouter(request, dependencies);
       } catch (error62) {
-        if (error62 instanceof AgentRouterError && !["timeout", "connection_closed"].includes(error62.code)) {
+        if (error62 instanceof AgentRouterUnavailableError || error62 instanceof AgentRouterError && !["timeout", "connection_closed"].includes(error62.code)) {
           throw error62;
         }
-        throw new AgentDiscoveryUnavailableError();
+        throw new AgentRouterUnavailableError();
       }
     }
     case "fetch":
@@ -39284,7 +39313,7 @@ var TOOL_DEFINITIONS = [
         },
         restore_archived: {
           type: "boolean",
-          description: "Optional, default false. With append or overwrite, a local entity that is archived (forgotten) is left untouched and counted in kept_archived. Set true to bring it back to active and merge or overwrite it like any other; it requires merge_strategy append or overwrite (an error with skip). Only set it when the user asked for archived memories to return."
+          description: "Optional, default false. A local entity that is archived (forgotten) is left untouched and counted in kept_archived. Set true to bring it back to active: with skip that is all it does (nothing else is replaced); with append or overwrite it is also merged or overwritten like any other. Only set it when the user asked for archived memories to return."
         }
       },
       required: ["data", "merge_strategy"],
@@ -39463,8 +39492,8 @@ function fail(message) {
   return { content: [{ type: "text", text: message }], isError: true };
 }
 function formatIssue(issue2) {
-  const path15 = issue2.path.join(".");
-  return path15 ? `${path15}: ${issue2.message}` : issue2.message;
+  const path16 = issue2.path.join(".");
+  return path16 ? `${path16}: ${issue2.message}` : issue2.message;
 }
 function stripNullProps(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value))
@@ -39866,15 +39895,16 @@ function resolveMcpProject(launchRoot, rootUris) {
 }
 
 // dist/host-runtime/claude-inbox.js
-import path13 from "node:path";
+import path14 from "node:path";
 import { spawn as spawn3 } from "node:child_process";
 import { fileURLToPath as fileURLToPath5 } from "node:url";
 import fs18 from "node:fs";
 import net3 from "node:net";
 
 // dist/host-runtime/config.js
-import { randomBytes as randomBytes2 } from "node:crypto";
+import { createHmac, randomBytes as randomBytes2 } from "node:crypto";
 import fs14 from "node:fs";
+import path11 from "node:path";
 var MAX_ROUTER_TOKEN_FILE_BYTES = 8 * 1024;
 var SECURE_LOCAL_HOST_RUNTIME_UNSUPPORTED = "The secure local host runtime is not supported on Windows.";
 function assertSecureLocalHostRuntimeSupported() {
@@ -40424,14 +40454,17 @@ function normalizeResilience(options = {}) {
     random: options.random ?? Math.random
   };
 }
+function packagedRouterEntrypoint() {
+  const candidates = ["./router.js", "../host-runtime/router.js", "../../host-runtime/router.js"].map((relative) => fileURLToPath4(new URL(relative, import.meta.url)));
+  return candidates.find((candidate) => fs15.existsSync(candidate)) ?? candidates[0];
+}
+function spawnPackagedRouter() {
+  const entrypoint = packagedRouterEntrypoint();
+  return spawn2(process.execPath, [entrypoint], { detached: true, shell: false, stdio: "ignore" });
+}
 function startPackagedRouter() {
-  const entrypoint = fileURLToPath4(new URL("./router.js", import.meta.url));
   return new Promise((resolve, reject) => {
-    const child = spawn2(process.execPath, [entrypoint], {
-      detached: true,
-      shell: false,
-      stdio: "ignore"
-    });
+    const child = spawnPackagedRouter();
     child.once("spawn", () => {
       child.unref();
       resolve();
@@ -40500,12 +40533,12 @@ function isRecord(value) {
 
 // dist/core/session-activity.js
 import fs17 from "node:fs";
-import path12 from "node:path";
+import path13 from "node:path";
 import { execFileSync as execFileSync3 } from "node:child_process";
 
 // dist/host-runtime/claude-transcript.js
 import fs16 from "node:fs";
-import path11 from "node:path";
+import path12 from "node:path";
 var MAX_BYTES = 1024 * 1024;
 var ClaudeTranscriptReader = class {
   projectsDir;
@@ -40528,7 +40561,7 @@ var ClaudeTranscriptReader = class {
       for (const entry of fs16.readdirSync(this.projectsDir, { withFileTypes: true })) {
         if (!entry.isDirectory() || this.projectSlug !== void 0 && entry.name !== this.projectSlug)
           continue;
-        const candidate = path11.join(this.projectsDir, entry.name, `${session}.jsonl`);
+        const candidate = path12.join(this.projectsDir, entry.name, `${session}.jsonl`);
         try {
           if (fs16.lstatSync(candidate).isFile())
             return candidate;
@@ -40545,7 +40578,7 @@ var ClaudeTranscriptReader = class {
       return void 0;
     let fd;
     try {
-      if (!fs16.lstatSync(path11.dirname(file2)).isDirectory())
+      if (!fs16.lstatSync(path12.dirname(file2)).isDirectory())
         return void 0;
       fd = fs16.openSync(file2, fs16.constants.O_RDONLY | (fs16.constants.O_NOFOLLOW ?? 0) | (fs16.constants.O_NONBLOCK ?? 0));
       const stat = fs16.fstatSync(fd);
@@ -40567,7 +40600,7 @@ var ClaudeTranscriptReader = class {
       return void 0;
     let fd;
     try {
-      if (!fs16.lstatSync(path11.dirname(mark.file)).isDirectory())
+      if (!fs16.lstatSync(path12.dirname(mark.file)).isDirectory())
         return void 0;
       fd = fs16.openSync(mark.file, fs16.constants.O_RDONLY | (fs16.constants.O_NOFOLLOW ?? 0) | (fs16.constants.O_NONBLOCK ?? 0));
       const stat = fs16.fstatSync(fd);
@@ -40615,7 +40648,7 @@ var ClaudeTranscriptReader = class {
       return void 0;
     let fd;
     try {
-      if (!fs16.lstatSync(path11.dirname(this.file)).isDirectory())
+      if (!fs16.lstatSync(path12.dirname(this.file)).isDirectory())
         return void 0;
       fd = fs16.openSync(this.file, fs16.constants.O_RDONLY | (fs16.constants.O_NOFOLLOW ?? 0) | (fs16.constants.O_NONBLOCK ?? 0));
       const stat = fs16.fstatSync(fd);
@@ -40747,18 +40780,18 @@ function formatSessionActivity(fields) {
 function repoLabel(workspace) {
   try {
     const value = execFileSync3("git", ["rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD"], { cwd: workspace, encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim().split("\n");
-    return value.length === 2 && value[0] && value[1] ? `${path12.basename(value[0])}@${value[1]}` : void 0;
+    return value.length === 2 && value[0] && value[1] ? `${path13.basename(value[0])}@${value[1]}` : void 0;
   } catch {
     return void 0;
   }
 }
-function createClaudeActivity(pid, workspace, claudeDir = process.env.CLAUDE_CONFIG_DIR || path12.join(homeDir(), ".claude")) {
+function createClaudeActivity(pid, workspace, claudeDir = process.env.CLAUDE_CONFIG_DIR || path13.join(homeDir(), ".claude")) {
   let slug;
   let reader;
   return () => {
     let registry2;
     try {
-      const value = JSON.parse(readTail(path12.join(claudeDir, "sessions", `${pid}.json`), 18) ?? "");
+      const value = JSON.parse(readTail(path13.join(claudeDir, "sessions", `${pid}.json`), 18) ?? "");
       if (value && typeof value === "object" && !Array.isArray(value))
         registry2 = value;
     } catch {
@@ -40778,7 +40811,7 @@ function createClaudeActivity(pid, workspace, claudeDir = process.env.CLAUDE_CON
       const currentSlug = projectTranscriptSlug(registry2.cwd);
       if (currentSlug !== slug) {
         slug = currentSlug;
-        reader = new ClaudeTranscriptReader(path12.join(claudeDir, "projects"), slug);
+        reader = new ClaudeTranscriptReader(path13.join(claudeDir, "projects"), slug);
       }
     }
     const task = typeof registry2?.sessionId === "string" ? reader?.currentTask(registry2.sessionId) : void 0;
@@ -40795,8 +40828,8 @@ function messageNotice(envelope, deliveryId) {
 
 // dist/host-runtime/claude-inbox.js
 function readRegistrySession(workspace) {
-  const root = process.env.CLAUDE_CONFIG_DIR || path13.join(homeDir(), ".claude");
-  const file2 = path13.join(root, "sessions", `${process.ppid}.json`);
+  const root = process.env.CLAUDE_CONFIG_DIR || path14.join(homeDir(), ".claude");
+  const file2 = path14.join(root, "sessions", `${process.ppid}.json`);
   let fd;
   try {
     fd = fs18.openSync(file2, fs18.constants.O_RDONLY | (fs18.constants.O_NOFOLLOW ?? 0) | (fs18.constants.O_NONBLOCK ?? 0));
@@ -40925,7 +40958,7 @@ async function startClaudeInboxPresence(rootUris) {
     return void 0;
   const dataDir = getMemeshDirFromDbPath();
   requirePrivateWritableDirectory(dataDir, "the local router keeps its lifecycle state there");
-  const token = ensureRouterTokenFile(path13.join(dataDir, "agent-router.token"));
+  const token = ensureRouterTokenFile(path14.join(dataDir, "agent-router.token"));
   let workspace = process.env.MEMESH_PROJECT_ROOT ?? process.env.CLAUDE_PROJECT_DIR;
   if (!workspace && rootUris?.length === 1) {
     try {
@@ -40946,7 +40979,7 @@ async function startClaudeInboxPresence(rootUris) {
     deliver: createClaudeInboxDeliver({
       socketPath: process.env.CLAUDE_CODE_MESSAGING_TOKEN ? process.env.CLAUDE_CODE_MESSAGING_SOCKET : void 0,
       sessionId: session,
-      reader: () => new ClaudeTranscriptReader(path13.join(process.env.CLAUDE_CONFIG_DIR || path13.join(homeDir(), ".claude"), "projects"), projectTranscriptSlug(workspace ? readRegistrySession(workspace)?.cwd ?? workspace : "")),
+      reader: () => new ClaudeTranscriptReader(path14.join(process.env.CLAUDE_CONFIG_DIR || path14.join(homeDir(), ".claude"), "projects"), projectTranscriptSlug(workspace ? readRegistrySession(workspace)?.cwd ?? workspace : "")),
       currentSession: () => workspace ? readRegistrySession(workspace)?.sessionId : void 0
     }),
     resilience: {
@@ -40967,7 +41000,7 @@ async function startClaudeInboxPresence(rootUris) {
 }
 
 // dist/mcp/server.js
-var packageJsonPath2 = path14.resolve(path14.dirname(fileURLToPath6(import.meta.url)), "../../package.json");
+var packageJsonPath2 = path15.resolve(path15.dirname(fileURLToPath6(import.meta.url)), "../../package.json");
 var packageVersion2 = JSON.parse(fs19.readFileSync(packageJsonPath2, "utf8")).version ?? "0.0.0";
 configureVersionSource(packageVersion2, packageJsonPath2);
 var server = new Server({ name: "memesh", version: packageVersion2 }, { capabilities: { tools: {} } });

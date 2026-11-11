@@ -6,7 +6,15 @@ are not part of a published npm release yet.
 
 ## [Unreleased]
 
+### Changed
+
+- `memesh remember` now files a memory under the current directory's project, the same default `memesh learn` and the MCP tools use. Before, it stored the memory with no project unless you tagged one. `--project <name>` names another project and `--no-project` stores one with none. Writing to a memory that belongs to a different project is now refused, as it is over MCP.
+- `memesh import --restore-archived` now works with the default `--merge skip`: it makes the forgotten memory active again and replaces nothing else. A forgotten memory the file names is reported as `Kept archived` under every merge strategy, with the exact command that brings it back, instead of being counted as `skipped`. The import result gains `restored` and `trusted` counts.
+- `memesh export` signs its file with a secret that stays in the MeMesh folder, and `memesh import` trusts the memories of an unchanged file exported from the same folder. A memory that was untrusted when exported stays untrusted. Any other file (unsigned, changed, or from another folder) is imported as untrusted, as before, and the output says which. MCP and HTTP imports are unchanged.
+
 ### Fixed
+
+- `memesh message discover` and an exact-session `memesh message send` start the message router when it is not running, instead of failing with `router_unreachable`. If it cannot start, one sentence says so and names `memesh-router`; every router-needing message command ends in that same sentence.
 
 - Codex sessions now produce session insights like Claude sessions do, built from Codex's own record of each command and file change: tool calls, files changed, commands run and failed commands. A failure that Codex printed but did not record as a command is reported too, by a best-effort match that can occasionally miss a failure or count one twice. Previously every Codex session was skipped as too little activity. Files written under the temporary folders (`/tmp`, `/private/tmp`, `/var/folders`) are not remembered as edited files: not those Codex changes with its patch tool, and not shell writes in Codex or Claude sessions. A session insight lists at most 30 edited file names and counts the rest.
 

@@ -94,6 +94,11 @@ Claude Code 的收件提醒不需設定 Channel：沒有自訂身分時，hooks 
 | `user_patterns` | 整理工作習慣。 |
 | `improvement` | 提出改善建議，交由使用者審核。 |
 
+**命令列補充。**
+- `memesh remember` 會把記憶歸到目前資料夾的專案（和 `memesh learn` 相同）；`--project <名稱>` 指定其他專案，`--no-project` 存成不屬於任何專案。
+- `memesh export -o backup.json` 會用只留在 MeMesh 資料夾裡的密鑰替備份簽章。`memesh import backup.json` 只在檔案沒被改過、且來自這個資料夾時才恢復信任；其他檔案一律以不受信任匯入（可搜尋、不會自動注入），輸出會說明。你忘記（forget）的記憶仍保持封存：輸出會印出一行能復原的指令（`--restore-archived`）。
+- `memesh message discover` 在本機訊息路由沒在跑時，會自動替你啟動。
+
 ---
 
 插件共有 10 個 hook 指令。「記住這件事」提醒支援 5 種語言。
