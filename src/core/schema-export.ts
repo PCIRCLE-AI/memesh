@@ -142,7 +142,7 @@ export function exportOpenAITools(): object[] {
             },
             restore_archived: {
               type: 'boolean',
-              description: 'Optional, default false. With append or overwrite, an archived (forgotten) local entity is left untouched and counted in kept_archived; true brings it back to active and merges or overwrites it, and requires append or overwrite (an error with skip).',
+              description: 'Optional, default false. An archived (forgotten) local entity is left untouched and counted in kept_archived; true brings it back to active: with skip that is all it does, with append or overwrite it is also merged or overwritten.',
             },
           },
           required: ['data', 'merge_strategy'],

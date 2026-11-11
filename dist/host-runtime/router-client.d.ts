@@ -39,5 +39,6 @@ export interface ConnectRouterHostInput {
     resilience?: RouterClientResilienceOptions;
 }
 export declare function connectRouterHost(input: ConnectRouterHostInput): Promise<RouterHostConnection>;
+export declare function startRouterIfDown(socketPath: string, error: unknown): Promise<boolean>;
 export declare function routerOutdatedDetail(error: unknown): string;
 //# sourceMappingURL=router-client.d.ts.map

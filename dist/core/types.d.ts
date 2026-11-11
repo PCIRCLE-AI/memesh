@@ -162,6 +162,8 @@ export interface ImportResult {
     skipped: number;
     appended: number;
     kept_archived: number;
+    restored: number;
+    trusted: number;
     errors: string[];
     skipped_relations: string[];
 }

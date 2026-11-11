@@ -12,6 +12,7 @@ export interface AgentMessageTransportContext {
 }
 export interface AgentMessageTransportDependencies {
     sendRouterRequest?: typeof sendAgentRouterRequest;
+    startRouterIfDown?: (socketPath: string, error: unknown) => Promise<boolean>;
 }
 export declare class AgentRecipientUnavailableError extends AgentMessagingError {
     readonly code = "recipient_unavailable";
@@ -19,11 +20,10 @@ export declare class AgentRecipientUnavailableError extends AgentMessagingError 
 }
 export declare class AgentRouterUnavailableError extends AgentMessagingError {
     readonly code = "router_unreachable";
-    constructor();
-}
-export declare class AgentDiscoveryUnavailableError extends AgentMessagingError {
-    readonly code = "router_unreachable";
-    constructor();
+    constructor(options?: {
+        startFailure?: string;
+        messageSaved?: boolean;
+    });
 }
 export declare function executeAgentMessageAction(db: MemeshDatabase, rawInput: unknown, context: AgentMessageTransportContext, dependencies?: AgentMessageTransportDependencies): Promise<unknown>;
 //# sourceMappingURL=agent-messaging.d.ts.map

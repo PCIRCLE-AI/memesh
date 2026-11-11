@@ -229,6 +229,7 @@ function storedContentOf(db, name) {
 }
 export function importMemories(args, options) {
     const trust = options?.trust === true;
+    const ownBackup = options?.ownBackup === true;
     if (!MERGE_STRATEGIES.includes(args.merge_strategy)) {
         throw new Error(`Unknown merge strategy "${args.merge_strategy}". Use one of: ${MERGE_STRATEGIES.join(', ')}. ` +
             'Nothing was imported — refusing rather than guessing, because the wrong guess overwrites existing memories.');
@@ -236,10 +237,6 @@ export function importMemories(args, options) {
     if (args.restore_archived !== undefined && typeof args.restore_archived !== 'boolean') {
         throw new Error('restore_archived must be the boolean true or false. ' +
             'Nothing was imported — refusing rather than guessing, because "yes" brings back memories the user forgot.');
-    }
-    if (args.restore_archived === true && args.merge_strategy === 'skip') {
-        throw new Error('restore_archived (--restore-archived) only applies with merge strategy "append" or "overwrite"; ' +
-            '"skip" leaves every existing entity untouched, so there is nothing to restore. Nothing was imported.');
     }
     if (args.namespace !== undefined && !NAMESPACES.includes(args.namespace)) {
         throw new Error(`Unknown namespace "${args.namespace}". Use one of: ${NAMESPACES.join(', ')}. ` +
@@ -271,6 +268,8 @@ export function importMemories(args, options) {
     let skipped = 0;
     let appended = 0;
     let keptArchived = 0;
+    let restored = 0;
+    let trusted = 0;
     const errors = [];
     const skippedRelations = [];
     const setCreatedAt = db.prepare('UPDATE entities SET created_at = ? WHERE name = ?');
@@ -294,13 +293,15 @@ export function importMemories(args, options) {
                     to: rel.to,
                     type: rel.type,
                 }));
+                const rowTrust = trust
+                    || (ownBackup && entity.metadata?.trust !== 'untrusted');
                 const importedMetadata = buildImportedMetadata(existing?.metadata, {
                     bundled: entity.metadata,
                     exportedAt: args.data.exported_at,
                     importVersion: args.data.version,
                     mergeStrategy: args.merge_strategy,
                     isNewEntity: !existing,
-                    trust,
+                    trust: rowTrust,
                     onHistoryDropped: () => errors.push(`${entity.name}: imported without its replaced_history, which no longer fits its size limits once credentials in it are redacted`),
                 });
                 if (existing) {
@@ -309,10 +310,14 @@ export function importMemories(args, options) {
                 }
                 let replacedVersion;
                 if (existing) {
-                    if (args.merge_strategy === 'skip')
-                        return { kind: 'skipped' };
                     if (existing.archived && args.restore_archived !== true)
                         return { kind: 'keptArchived' };
+                    if (args.merge_strategy === 'skip') {
+                        if (!existing.archived)
+                            return { kind: 'skipped' };
+                        kg.createEntity(entity.name, existing.type, { trustOverride: 'untrusted' });
+                        return { kind: 'restored' };
+                    }
                     if (args.merge_strategy === 'append') {
                         const existingText = new Set(existing.observations);
                         const newObservations = observations.map(storedText).filter((o) => !existingText.has(o));
@@ -333,7 +338,7 @@ export function importMemories(args, options) {
                             trustOverride: 'untrusted',
                         });
                         kg.updateEntityMetadata(entity.name, (current) => ({ ...current, ...importedMetadata }));
-                        return { kind: 'appended', relations };
+                        return { kind: 'appended', relations, restored: existing.archived === true };
                     }
                     replacedVersion = {
                         replaced_at: new Date().toISOString(),
@@ -379,6 +384,8 @@ export function importMemories(args, options) {
                 return {
                     kind: 'imported',
                     overwritten: Boolean(existing),
+                    restored: existing?.archived === true,
+                    trusted: rowTrust,
                     relations,
                 };
             }).immediate();
@@ -386,15 +393,23 @@ export function importMemories(args, options) {
                 skipped++;
             else if (outcome.kind === 'keptArchived')
                 keptArchived++;
+            else if (outcome.kind === 'restored')
+                restored++;
             else if (outcome.kind === 'appended') {
                 pendingRelations.push(...outcome.relations);
                 appended++;
+                if (outcome.restored)
+                    restored++;
             }
             else {
                 pendingRelations.push(...outcome.relations);
                 imported++;
                 if (outcome.overwritten)
                     overwritten++;
+                if (outcome.restored)
+                    restored++;
+                if (outcome.trusted)
+                    trusted++;
             }
         }
         catch (err) {
@@ -414,6 +429,6 @@ export function importMemories(args, options) {
                 + `(${err instanceof Error ? err.message : String(err)})`);
         }
     }
-    return { imported, overwritten, skipped, appended, kept_archived: keptArchived, errors, skipped_relations: skippedRelations };
+    return { imported, overwritten, skipped, appended, kept_archived: keptArchived, restored, trusted, errors, skipped_relations: skippedRelations };
 }
 //# sourceMappingURL=serializer.js.map

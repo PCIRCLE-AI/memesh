@@ -97,6 +97,11 @@ Unreleased source builds add `/memesh-memories` in Claude Code to view and edit 
 | `improvement` | Propose an improvement for human review. |
 | `private_session` | Stop automatic saving for this session when you say "don't remember this conversation". |
 
+**Command-line notes.**
+- `memesh remember` files a memory under the current folder's project, like `memesh learn`; `--project <name>` picks another project and `--no-project` stores one with none.
+- `memesh export -o backup.json` signs the backup with a secret that stays in your MeMesh folder. `memesh import backup.json` trusts it again only if it is unchanged and came from this folder; any other file imports as untrusted (searchable, never auto-injected) and the output says so. A memory you forgot stays forgotten: the output prints the one command that brings it back (`--restore-archived`).
+- `memesh message discover` starts the local message router for you if it is not running.
+
 ---
 
 Plugins ship **12 hooks**. The intent reminder recognizes "remember this"

@@ -148,7 +148,9 @@ When the user asks you not to remember or save this session or conversation, cal
   `learn` with no `project` goes to the project the session is bound to, and
   is refused when none is bound. Pass `project: "<id>"` to name it, or
   `project: false` for a memory that belongs to no project (a preference, a
-  general lesson). `recall` searches the bound project (or `project`), memories
+  general lesson). The CLI works the same way: `memesh remember` files the
+  memory under the current directory's project, `--project <id>` names another
+  and `--no-project` stores one with none. `recall` searches the bound project (or `project`), memories
   with no project and global ones, and says which in `scope`. When you tag by hand (the CLI, or another
   project), use `project:<id>`, where `<id>` is the `project` field of the
   `briefing` result (CLI: `memesh briefing --json`). The first line of the

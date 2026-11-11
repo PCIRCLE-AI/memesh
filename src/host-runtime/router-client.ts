@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -20,6 +20,8 @@ const DEFAULT_RETRY_JITTER = 0.2;
 const DEFAULT_INITIAL_ATTEMPTS = 6;
 const DEFAULT_REGISTRATION_TIMEOUT_MS = 5_000;
 const MIN_RETRY_MS = 10;
+const ROUTER_START_TIMEOUT_MS = 8_000;
+const ROUTER_START_EXIT_GRACE_MS = 1_000;
 
 export interface RouterHostIdentity {
   project: string;
@@ -596,20 +598,87 @@ function normalizeResilience(options: RouterClientResilienceOptions = {}): Norma
   };
 }
 
+/**
+ * dist/host-runtime/router.js, found from wherever this code runs: next to this
+ * file, or from a bundle one (dist/mcp) or two (dist/transports/cli) levels away.
+ */
+function packagedRouterEntrypoint(): string {
+  const candidates = ['./router.js', '../host-runtime/router.js', '../../host-runtime/router.js']
+    .map((relative) => fileURLToPath(new URL(relative, import.meta.url)));
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[0];
+}
+
+function spawnPackagedRouter(): ChildProcess {
+  const entrypoint = packagedRouterEntrypoint();
+  return spawn(process.execPath, [entrypoint], { detached: true, shell: false, stdio: 'ignore' });
+}
+
 function startPackagedRouter(): Promise<void> {
-  const entrypoint = fileURLToPath(new URL('./router.js', import.meta.url));
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [entrypoint], {
-      detached: true,
-      shell: false,
-      stdio: 'ignore',
-    });
+    const child = spawnPackagedRouter();
     child.once('spawn', () => {
       child.unref();
       resolve();
     });
     child.once('error', reject);
   });
+}
+
+async function routerAcceptsConnections(socketPath: string): Promise<boolean> {
+  const socket = net.createConnection(socketPath);
+  try {
+    await waitForSocketConnect(socket);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    socket.destroy();
+  }
+}
+
+/**
+ * For a request that failed with `error`: when that means nothing is listening
+ * on the router socket (missing or stale socket file), start the installed
+ * router and wait for it, and say so by returning true. False: `error` is
+ * something else and the caller keeps it. Throws the reason it could not start.
+ */
+export async function startRouterIfDown(socketPath: string, error: unknown): Promise<boolean> {
+  if (!isRouterUnavailable(error)) return false;
+  await startRouterAndWait(socketPath);
+  return true;
+}
+
+/**
+ * Start the installed router (detached, so it outlives this process) and wait
+ * until its socket accepts connections. The router's own startup lock makes a
+ * second concurrent start harmless: it exits and the first one serves both.
+ * Throws a one-line reason when the router stops right after starting or does
+ * not come up in time.
+ */
+async function startRouterAndWait(socketPath: string): Promise<void> {
+  const child = spawnPackagedRouter();
+  let spawnError: Error | undefined;
+  let exited: { at: number; code: number | null } | undefined;
+  child.once('error', (error) => { spawnError = error; });
+  child.once('exit', (code) => { exited = { at: Date.now(), code }; });
+  const deadline = Date.now() + ROUTER_START_TIMEOUT_MS;
+  for (;;) {
+    if (await routerAcceptsConnections(socketPath)) {
+      child.unref();
+      return;
+    }
+    if (spawnError) throw spawnError;
+    // A router that lost the startup race exits while the winner comes up, so
+    // an early exit is only a failure if the socket is still dead after a grace.
+    if (exited && Date.now() - exited.at > ROUTER_START_EXIT_GRACE_MS) {
+      throw new Error(`the router stopped right after starting (exit code ${exited.code ?? 'none'})`);
+    }
+    if (Date.now() > deadline) {
+      child.kill();
+      throw new Error(`the router did not start within ${ROUTER_START_TIMEOUT_MS / 1000} seconds`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
 }
 
 function isDelivery(

@@ -652,10 +652,12 @@ export function exportMemories(args: ExportInput): ExportResult {
  *   - 'append': add observations to existing entities
  *   - 'overwrite': clear existing data, then re-populate
  *
- * An existing entity that is ARCHIVED is left untouched by 'append' and
- * 'overwrite' and counted in `kept_archived`, unless `restore_archived` is set:
- * forgetting outranks importing, and the count tells the user it happened.
- * `restore_archived` with 'skip' is refused: 'skip' would ignore it.
+ * An existing entity that is ARCHIVED is left untouched by every strategy and
+ * counted in `kept_archived`, unless `restore_archived` is set: forgetting
+ * outranks importing, and the count tells the user it happened. With
+ * `restore_archived`, 'skip' only makes it active again (its stored text is
+ * kept, so nothing newer is replaced); 'append' and 'overwrite' also apply
+ * the bundle's text.
  *
  * An unrecognised strategy is REFUSED, not defaulted. This used to be two
  * `if`s and a fall-through, so any other string — a typo like `sikp`, or
@@ -758,9 +760,15 @@ function storedContentOf(db: ReturnType<typeof getDatabase>, name: string): Omit
  * `POST /v1/import`, which both call this with exactly one argument, cannot
  * reach it. Only the CLI's `--trust` (a restore-your-own-backup path,
  * confirmed before it writes anything) passes `{ trust: true }`.
+ *
+ * `options.ownBackup` is the same kind of argument: the CLI sets it only after
+ * the file's signature verified against this folder's own secret. It trusts a
+ * row exactly as the exporter had it — a row that was untrusted when exported
+ * stays untrusted — where `trust` trusts every row.
  */
-export function importMemories(args: ImportInput, options?: { trust?: boolean }): ImportResult {
+export function importMemories(args: ImportInput, options?: { trust?: boolean; ownBackup?: boolean }): ImportResult {
   const trust = options?.trust === true;
+  const ownBackup = options?.ownBackup === true;
   if (!(MERGE_STRATEGIES as readonly string[]).includes(args.merge_strategy)) {
     throw new Error(
       `Unknown merge strategy "${args.merge_strategy}". Use one of: ${MERGE_STRATEGIES.join(', ')}. ` +
@@ -775,17 +783,6 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean })
     throw new Error(
       'restore_archived must be the boolean true or false. ' +
       'Nothing was imported — refusing rather than guessing, because "yes" brings back memories the user forgot.'
-    );
-  }
-
-  // `skip` leaves every existing entity alone, an archived one included, so
-  // `restore_archived` would change nothing. Refused instead of accepted and
-  // ignored: a caller who asked for archived memories back must not read a
-  // successful import as having brought them back.
-  if (args.restore_archived === true && args.merge_strategy === 'skip') {
-    throw new Error(
-      'restore_archived (--restore-archived) only applies with merge strategy "append" or "overwrite"; ' +
-      '"skip" leaves every existing entity untouched, so there is nothing to restore. Nothing was imported.'
     );
   }
 
@@ -855,6 +852,10 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean })
   let appended = 0;
   /** Archived local entities left untouched (see `restore_archived`). */
   let keptArchived = 0;
+  /** Archived local entities made active again by `restore_archived`. */
+  let restored = 0;
+  /** Of `imported`, how many were stamped trusted. */
+  let trusted = 0;
   const errors: string[] = [];
   /** Relations whose target is not in the bundle and not already stored. */
   const skippedRelations: string[] = [];
@@ -920,13 +921,17 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean })
           to: rel.to,
           type: rel.type,
         }));
+        // `ownBackup` keeps the exporter's own verdict per row: only a row
+        // that was not untrusted when exported becomes trusted.
+        const rowTrust = trust
+          || (ownBackup && (entity as { metadata?: { trust?: unknown } }).metadata?.trust !== 'untrusted');
         const importedMetadata = buildImportedMetadata(existing?.metadata as EntityMetadata | undefined, {
           bundled: (entity as { metadata?: Record<string, unknown> }).metadata,
           exportedAt: args.data.exported_at,
           importVersion: args.data.version,
           mergeStrategy: args.merge_strategy,
           isNewEntity: !existing,
-          trust,
+          trust: rowTrust,
           onHistoryDropped: () => errors.push(
             `${entity.name}: imported without its replaced_history, which no longer fits its size limits once credentials in it are redacted`,
           ),
@@ -940,13 +945,19 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean })
 
         let replacedVersion: ReplacedVersion | undefined;
         if (existing) {
-          if (args.merge_strategy === 'skip') return { kind: 'skipped' } as const;
           // A forgotten memory outranks a bundle naming it: without
-          // `restore_archived` it is left exactly as it is. Returning here,
-          // like the `skip` line above, queues none of the bundle entry's own
-          // relations; a relation from another bundle entry TO it is still
-          // created by the second pass, which finds the row by name.
+          // `restore_archived` it is left exactly as it is. Returning here
+          // queues none of the bundle entry's own relations; a relation from
+          // another bundle entry TO it is still created by the second pass,
+          // which finds the row by name.
           if (existing.archived && args.restore_archived !== true) return { kind: 'keptArchived' } as const;
+          if (args.merge_strategy === 'skip') {
+            if (!existing.archived) return { kind: 'skipped' } as const;
+            // `skip` replaces nothing: reactivating is all it does, the stored
+            // text and trust stay as they are.
+            kg.createEntity(entity.name, existing.type, { trustOverride: 'untrusted' });
+            return { kind: 'restored' } as const;
+          }
           if (args.merge_strategy === 'append') {
             // Exact-text dedupe against what the entity already has.
             // `createEntity` INSERTs every observation it is handed with no
@@ -996,7 +1007,7 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean })
             // matters most: it moves entities in bulk, so a user cannot possibly
             // remember where each one came from.
             kg.updateEntityMetadata(entity.name, (current) => ({ ...current, ...importedMetadata }));
-            return { kind: 'appended', relations } as const;
+            return { kind: 'appended', relations, restored: existing.archived === true } as const;
           }
           // overwrite: file what is there into `replaced_history` (same shape
           // `remember` with `replace: true` writes), clear it, then
@@ -1088,6 +1099,8 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean })
         return {
           kind: 'imported',
           overwritten: Boolean(existing),
+          restored: existing?.archived === true,
+          trusted: rowTrust,
           // Relations are DEFERRED to a second pass. Return them only after
           // this transaction commits; queuing them in the transaction body
           // would leave JS state behind after SQLite rolls back.
@@ -1097,14 +1110,18 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean })
 
       if (outcome.kind === 'skipped') skipped++;
       else if (outcome.kind === 'keptArchived') keptArchived++;
+      else if (outcome.kind === 'restored') restored++;
       else if (outcome.kind === 'appended') {
         pendingRelations.push(...outcome.relations);
         appended++;
+        if (outcome.restored) restored++;
       }
       else {
         pendingRelations.push(...outcome.relations);
         imported++;
         if (outcome.overwritten) overwritten++;
+        if (outcome.restored) restored++;
+        if (outcome.trusted) trusted++;
       }
     } catch (err) {
       errors.push(`${entity.name}: ${err instanceof Error ? err.message : String(err)}`);
@@ -1139,5 +1156,5 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean })
     }
   }
 
-  return { imported, overwritten, skipped, appended, kept_archived: keptArchived, errors, skipped_relations: skippedRelations };
+  return { imported, overwritten, skipped, appended, kept_archived: keptArchived, restored, trusted, errors, skipped_relations: skippedRelations };
 }

@@ -1,5 +1,6 @@
-import { randomBytes } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
+import path from 'node:path';
 import { normalizeAgentRouterSocketPath } from '../core/paths.js';
 import { HOST_CONFIG_MAX_BYTES as MAX_HOST_CONFIG_FILE_BYTES } from '../core/agent-scope-id.js';
 const MAX_ROUTER_TOKEN_FILE_BYTES = 8 * 1024;
@@ -36,6 +37,11 @@ export function ensureRouterTokenFile(tokenFile) {
             throw error;
     }
     return readTokenFile(tokenFile);
+}
+export function exportSigningKey(dataDir, options) {
+    const tokenFile = path.join(dataDir, 'agent-router.token');
+    const token = options.create ? ensureRouterTokenFile(tokenFile) : readTokenFile(tokenFile);
+    return createHmac('sha256', token).update('memesh-export-signature-v1').digest();
 }
 export function requiredString(value, field) {
     if (typeof value !== 'string' || value.length === 0 || Buffer.byteLength(value) > 4096) {

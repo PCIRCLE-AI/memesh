@@ -1684,7 +1684,8 @@ function archivedHandoffCheck(title: string, runs: number, name: string | null):
   const summary = `handoff-capture: ${runs} runs, 0 writes — the session handoff was archived with \`forget\`, so it is not updated any more.`;
   if (name) {
     return createCheck('capture-liveness', title, 'warn', summary,
-      `To turn it back on, run \`memesh remember --name ${name} --type session-handoff --obs restart\`; the next Stop replaces it.`,
+      // The handoff is filed under the project its name carries; `remember` refuses a write that names another one.
+      `To turn it back on, run \`memesh remember --name ${name} --type session-handoff --obs restart --project ${name.slice(name.indexOf(':') + 1)}\`; the next Stop replaces it.`,
       { code: 'capture-liveness.handoff-archived', params: { runs, name } });
   }
   return createCheck('capture-liveness', title, 'warn', summary,

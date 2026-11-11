@@ -15,17 +15,11 @@ export class AgentRecipientUnavailableError extends AgentMessagingError {
 }
 export class AgentRouterUnavailableError extends AgentMessagingError {
     code = 'router_unreachable';
-    constructor() {
-        super('router_unreachable: the sender could not reach the local agent router; the durable message is preserved. Start the router and retry.');
-    }
-}
-export class AgentDiscoveryUnavailableError extends AgentMessagingError {
-    code = 'router_unreachable';
-    constructor() {
-        super('router_unreachable: could not reach the local agent router to discover live hosts. '
-            + 'Start it with `memesh-router` (or your host\'s managed launch step, e.g. `memesh-host-codex`), '
-            + 'or skip discovery — `send`/`fetch` to a principal (a stable recipient, not an exact session) work without the router; '
-            + 'an exact `target_kind: "session"` send still needs it.');
+    constructor(options = {}) {
+        super((options.startFailure === undefined
+            ? 'router_unreachable: the MeMesh message router is not running. Start it with `memesh-router` (leave it running), then retry.'
+            : `router_unreachable: the MeMesh message router is not running and could not be started (${options.startFailure}). Run \`memesh-router\` in a terminal to see why, then retry.`)
+            + (options.messageSaved ? ' The durable message is preserved.' : ''));
     }
 }
 const AGENT_MESSAGE_STORAGE_QUOTA_ENV = 'MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES';
@@ -73,6 +67,28 @@ function publicSentMessage(sent, adapter) {
             : `Stored in ${sent.recipient}'s inbox. This does not mean the recipient has read or accepted it.`;
     return { ...message, delivery_note };
 }
+async function requestRouter(request, dependencies, timeoutMs, messageSaved = false) {
+    const send = dependencies.sendRouterRequest ?? sendAgentRouterRequest;
+    const socketPath = routerSocketPath();
+    try {
+        return await send(socketPath, request, timeoutMs);
+    }
+    catch (error) {
+        let started;
+        try {
+            started = await dependencies.startRouterIfDown?.(socketPath, error) ?? false;
+        }
+        catch (startError) {
+            throw new AgentRouterUnavailableError({
+                startFailure: startError instanceof Error ? startError.message : String(startError),
+                messageSaved,
+            });
+        }
+        if (!started)
+            throw error;
+        return send(socketPath, request, timeoutMs);
+    }
+}
 async function requireExactSessionNativeAcceptance(db, sent, dependencies) {
     const existing = readHostAccept(db, sent.delivery_id);
     if (existing)
@@ -86,7 +102,7 @@ async function requireExactSessionNativeAcceptance(db, sent, dependencies) {
         hops: 0,
     };
     try {
-        const result = await (dependencies.sendRouterRequest ?? sendAgentRouterRequest)(routerSocketPath(), request, EXACT_SESSION_NATIVE_TIMEOUT_MS);
+        const result = await requestRouter(request, dependencies, EXACT_SESSION_NATIVE_TIMEOUT_MS, true);
         if (result.delivered !== true) {
             const accepted = readHostAccept(db, sent.delivery_id);
             if (accepted)
@@ -99,13 +115,14 @@ async function requireExactSessionNativeAcceptance(db, sent, dependencies) {
     }
     catch (error) {
         if (error instanceof AgentRecipientUnavailableError
-            || error instanceof AgentNativeMessageTooLargeError)
+            || error instanceof AgentNativeMessageTooLargeError
+            || error instanceof AgentRouterUnavailableError)
             throw error;
         if (error instanceof AgentRouterError) {
             if (!['timeout', 'connection_closed'].includes(error.code))
                 throw error;
         }
-        throw new AgentRouterUnavailableError();
+        throw new AgentRouterUnavailableError({ messageSaved: true });
     }
     const accepted = readHostAccept(db, sent.delivery_id);
     if (!accepted)
@@ -494,13 +511,14 @@ export async function executeAgentMessageAction(db, rawInput, context, dependenc
             };
             let local;
             try {
-                local = await (dependencies.sendRouterRequest ?? sendAgentRouterRequest)(routerSocketPath(), request);
+                local = await requestRouter(request, dependencies);
             }
             catch (error) {
-                if (error instanceof AgentRouterError && !['timeout', 'connection_closed'].includes(error.code)) {
+                if (error instanceof AgentRouterUnavailableError
+                    || (error instanceof AgentRouterError && !['timeout', 'connection_closed'].includes(error.code))) {
                     throw error;
                 }
-                throw new AgentDiscoveryUnavailableError();
+                throw new AgentRouterUnavailableError();
             }
             try {
                 const remote = remoteDiscoverCards(db, input.project);

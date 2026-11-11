@@ -214,7 +214,8 @@ describe('CLI durable-message ingress', () => {
       ), {
         encoding: 'utf8',
         input: 'exact session only',
-        env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' },
+        // The CLI starts a missing router; a socket in a directory that does not exist is one it cannot start.
+        env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false', MEMESH_ROUTER_SOCKET: '/nonexistent-memesh-dir/r.sock' },
       });
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain('router_unreachable');

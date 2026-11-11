@@ -423,7 +423,7 @@ export declare const TOOL_DEFINITIONS: readonly [{
             };
             readonly restore_archived: {
                 readonly type: "boolean";
-                readonly description: "Optional, default false. With append or overwrite, a local entity that is archived (forgotten) is left untouched and counted in kept_archived. Set true to bring it back to active and merge or overwrite it like any other; it requires merge_strategy append or overwrite (an error with skip). Only set it when the user asked for archived memories to return.";
+                readonly description: "Optional, default false. A local entity that is archived (forgotten) is left untouched and counted in kept_archived. Set true to bring it back to active: with skip that is all it does (nothing else is replaced); with append or overwrite it is also merged or overwritten like any other. Only set it when the user asked for archived memories to return.";
             };
         };
         readonly required: readonly ["data", "merge_strategy"];

@@ -95,22 +95,23 @@ describe('memesh import and archived memories', () => {
     expect(alpha().observations).toContain('REPLACEMENT');
   }, 60_000);
 
-  it('--restore-archived with the default (skip) merge exits 1 with the core message and changes nothing', () => {
-    // The default `--merge` is `skip`, and `skip` leaves every existing entity
-    // alone: the flag on its own would do nothing and still report success.
-    const r = runCli(['import', bundle, '--restore-archived'], home);
+  it.each([[[]], [['--merge', 'skip']]])('the default (skip) merge leaves it archived and says so (%j)', (extra) => {
+    const r = runCli(['import', bundle, ...extra], home);
 
-    expect(r.exitCode).toBe(1);
-    expect(r.stderr).toContain('Error: restore_archived (--restore-archived) only applies with merge strategy "append" or "overwrite"');
-    expect(r.stdout).not.toContain('Imported:');
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain('Kept archived: 1');
+    expect(r.stdout).not.toContain('Skipped: 1 memory');
     expect(alpha().archived).toBe(true);
-    expect(alpha().observations).toEqual(['ORIGINAL']);
   }, 60_000);
 
-  it('--merge skip --restore-archived is refused the same way', () => {
-    const r = runCli(['import', bundle, '--merge', 'skip', '--restore-archived'], home);
-    expect(r.exitCode).toBe(1);
-    expect(r.stderr).toContain('"append" or "overwrite"');
+  it.each([[[]], [['--merge', 'skip']]])('--restore-archived with skip makes it active and replaces nothing (%j)', (extra) => {
+    const r = runCli(['import', bundle, '--restore-archived', ...extra], home);
+
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain('Restored: 1');
+    expect(r.stdout).not.toContain('Kept archived');
+    expect(alpha().archived).toBeUndefined();
+    expect(alpha().observations).toEqual(['ORIGINAL']);
   }, 60_000);
 
   it('a bundle that names no archived memory prints no "Kept archived" line', () => {

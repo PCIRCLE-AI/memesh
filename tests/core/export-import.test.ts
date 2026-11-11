@@ -573,14 +573,14 @@ describe('#359 round 4: import metadata is an ALLOW-list, not a deny-list', () =
       },
     );
 
-    it('`skip` still counts an archived entity as `skipped`, not as kept_archived', () => {
+    it('`skip` counts an archived entity as kept_archived, not as skipped, and leaves it untouched', () => {
       const before = seedArchived('archived-under-skip');
       const result = importMemories({
         data: bundleOf([{ name: 'archived-under-skip', observations: ['bundle text'] }]),
         merge_strategy: 'skip',
       });
-      expect(result.skipped).toBe(1);
-      expect(result.kept_archived).toBe(0);
+      expect(result.skipped).toBe(0);
+      expect(result.kept_archived).toBe(1);
       expect(getEntity('archived-under-skip')).toEqual(before);
     });
 
@@ -608,18 +608,25 @@ describe('#359 round 4: import metadata is an ALLOW-list, not a deny-list', () =
       expect(getEntity('brand-new').observations).toEqual(['bundle text']);
     });
 
-    it('restore_archived with `skip` is refused, and nothing is written', () => {
-      const before = seedArchived('archived-refused-under-skip');
-      const bundle = bundleOf([
-        { name: 'archived-refused-under-skip', observations: ['bundle text'] },
-        { name: 'refused-fresh', observations: ['bundle text'] },
-      ]);
+    it('restore_archived with `skip` only makes the memory active: its text stays, active entities and fresh ones behave as under skip', () => {
+      const before = seedArchived('archived-restored-under-skip');
+      remember({ name: 'active-under-skip', type: 'note', observations: ['original text'] });
+      const result = importMemories({
+        data: bundleOf([
+          { name: 'archived-restored-under-skip', observations: ['bundle text'] },
+          { name: 'active-under-skip', observations: ['bundle text'] },
+          { name: 'restored-fresh', observations: ['bundle text'] },
+        ]),
+        merge_strategy: 'skip',
+        restore_archived: true,
+      });
 
-      expect(() => importMemories({ data: bundle, merge_strategy: 'skip', restore_archived: true }))
-        .toThrow(/restore_archived.*"append" or "overwrite"/);
-
-      expect(getEntity('archived-refused-under-skip')).toEqual(before);
-      expect(new KnowledgeGraph(getDatabase()).getEntity('refused-fresh'), 'the refused import still wrote an entity').toBeNull();
+      expect(result).toMatchObject({ restored: 1, skipped: 1, imported: 1, kept_archived: 0, errors: [] });
+      const after = getEntity('archived-restored-under-skip');
+      expect(after.archived).toBeUndefined();
+      expect(after.observations).toEqual(before.observations);
+      expect(after.metadata).toEqual(before.metadata);
+      expect(getEntity('active-under-skip').observations).toEqual(['original text']);
     });
 
     it.each(['skip', 'append', 'overwrite'] as const)(

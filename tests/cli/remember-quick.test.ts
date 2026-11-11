@@ -312,12 +312,12 @@ describe('memesh remember CLI: quick-capture form', () => {
     const r = runCli(['remember', '--name=r4', '--obs=new line', '--replace'], { HOME: tmpHome });
     expect(r.exitCode, `stderr: ${r.stderr}`).toBe(0);
     expect(r.stdout).toContain('replaced: the previous version is kept in metadata.replaced_history');
-    // The version is cut to fit: its observation stays, the tag that alone exceeds the cap goes.
+    // The version is cut to fit: its observation and its project tag stay, the tag that alone exceeds the cap goes.
     const read = new MemeshDatabase(path.join(tmpHome, '.memesh', 'knowledge-graph.db'));
     const meta = JSON.parse((read.prepare("SELECT metadata FROM entities WHERE name = 'r4'").get() as { metadata: string }).metadata);
     read.close();
     expect(meta.replaced_history).toHaveLength(1);
-    expect(meta.replaced_history[0]).toMatchObject({ observations: ['old line'], tags: [], truncated: true });
+    expect(meta.replaced_history[0]).toMatchObject({ observations: ['old line'], tags: [expect.stringMatching(/^project:/)], truncated: true });
     // A normal replace still says it is kept.
     const again = runCli(['remember', '--name=r5', '--type=note', '--obs=old line'], { HOME: tmpHome });
     expect(again.exitCode).toBe(0);
