@@ -1,12 +1,10 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import path from 'path';
-import { getDatabase } from '../../src/db.js';
+import { closeDatabase, getDatabase, openDatabase } from '../../src/db.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import { ingestNoteDirectory } from '../../src/core/note-ingest.js';
-import { noteDirId, ownMemoryDirIds } from '../../src/core/note-dirs.js';
 import { isAutoInjectable } from '../../src/core/work-topology.js';
-import { trustOwnNoteFolderMemories, repairOwnNoteFolderTrust } from '../../src/storage/graph-repairs.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
 
 const fixture = useTestDatabase('memesh-note-trust-');
@@ -66,72 +64,28 @@ describe('Feature: trust of note memories is decided by the caller, per folder',
   });
 });
 
-describe('Feature: the person\'s own memory folders are found by the id their notes record', () => {
-  it('lists each existing <claude home>/projects/*/memory folder, and nothing else', () => {
-    const claudeHome = path.join(fixture.tmpDir, 'claude-home');
-    fs.mkdirSync(path.join(claudeHome, 'projects', 'one', 'memory'), { recursive: true });
-    fs.mkdirSync(path.join(claudeHome, 'projects', 'two', 'memory'), { recursive: true });
-    fs.mkdirSync(path.join(claudeHome, 'projects', 'three'), { recursive: true });
-    fs.mkdirSync(path.join(fixture.tmpDir, 'elsewhere'), { recursive: true });
-    const ids = ownMemoryDirIds({ CLAUDE_CONFIG_DIR: claudeHome });
-    expect(ids).toEqual(new Set([
-      noteDirId(fs.realpathSync(path.join(claudeHome, 'projects', 'one', 'memory'))),
-      noteDirId(fs.realpathSync(path.join(claudeHome, 'projects', 'two', 'memory'))),
-    ]));
-    expect(ids.has(noteDirId(fs.realpathSync(path.join(fixture.tmpDir, 'elsewhere'))))).toBe(false);
-  });
-});
-
-describe('Feature: notes already stored from the person\'s own folders become trusted, once, and nothing else changes', () => {
-  function seed() {
+describe('Feature: opening the database changes no note\'s trust', () => {
+  it('an untrusted note of a folder that looks like the person\'s own stays untrusted across opens, with no copy made and no marker written', () => {
+    // The shape the removed open-time repair used to act on: a note memory whose recorded folder is a
+    // `<claude home>/projects/<project>/memory` folder that exists, stored untrusted.
     const claudeHome = path.join(fixture.tmpDir, 'claude-home');
     const own = path.join(claudeHome, 'projects', 'proj', 'memory');
     fs.mkdirSync(own, { recursive: true });
     fs.writeFileSync(path.join(own, 'a.md'), note('own_old', 'feedback', 'From my own folder.'));
-    const other = folder('downloads-notes', { 'b.md': note('other_old', 'feedback', 'From some other folder.') });
+    fs.writeFileSync(path.join(own, 'd.md'), note('own_decision', 'decision', 'Use tabs.'));
+    vi.stubEnv('CLAUDE_CONFIG_DIR', claudeHome);
+    expect(fs.readdirSync(own)).toHaveLength(2);
     ingestNoteDirectory({ dir: own, project: 'p', trusted: false });
-    ingestNoteDirectory({ dir: other, project: 'p', trusted: false });
-    // An import: untrusted, from a bundle, not a note file.
-    kg().createEntity('imported_one', 'feedback', { observations: ['from a bundle'], metadata: { trust: 'untrusted', provenance: { source: 'import' } }, trustOverride: 'untrusted' });
-    // A note whose provenance names no folder.
-    kg().createEntity('no_folder', 'feedback', { observations: ['odd'], tags: ['source:note-file'], metadata: { trust: 'untrusted', provenance: { source: 'note-file' } }, trustOverride: 'untrusted' });
-    // An import that carries an own-folder id (a bundle that copied a note's
-    // provenance fields): its source is `import`, so it is not a note.
-    const ownId = noteDirId(fs.realpathSync(own));
-    kg().createEntity('imported_with_dir', 'feedback', { observations: ['bundle'], tags: ['source:note-file'], metadata: { trust: 'untrusted', provenance: { source: 'import', note_dir_id: ownId } }, trustOverride: 'untrusted' });
-    return { claudeHome };
-  }
-  const trustOf = (name: string) => metaOf(name).trust;
+    expect(['own_old', 'own_decision'].map((n) => metaOf(n).trust)).toEqual(['untrusted', 'untrusted']);
+    // A database that has never opened under this rule: no marker of any open-time pass.
+    getDatabase().prepare("DELETE FROM memesh_metadata WHERE key LIKE 'own_note_folder_trust%'").run();
 
-  it('trusts the own-folder note only; other folders, imports and rows with no folder stay untrusted', () => {
-    const { claudeHome } = seed();
-    const ids = ownMemoryDirIds({ CLAUDE_CONFIG_DIR: claudeHome });
-    expect(ids.size).toBe(1);
-    expect(['own_old', 'other_old', 'imported_one', 'no_folder', 'imported_with_dir'].map(trustOf)).toEqual(['untrusted', 'untrusted', 'untrusted', 'untrusted', 'untrusted']);
-
-    expect(trustOwnNoteFolderMemories(getDatabase(), ids)).toBe(1);
-    expect(['own_old', 'other_old', 'imported_one', 'no_folder', 'imported_with_dir'].map(trustOf)).toEqual(['trusted', 'untrusted', 'untrusted', 'untrusted', 'untrusted']);
-    // Provenance is intact.
-    expect(metaOf('own_old').provenance?.source).toBe('note-file');
-  });
-
-  it('is idempotent: a second pass changes no row', () => {
-    const { claudeHome } = seed();
-    const ids = ownMemoryDirIds({ CLAUDE_CONFIG_DIR: claudeHome });
-    const snapshot = () => JSON.stringify(getDatabase().prepare('SELECT id, metadata FROM entities ORDER BY id').all());
-    expect(trustOwnNoteFolderMemories(getDatabase(), ids)).toBe(1);
-    const afterFirst = snapshot();
-    expect(trustOwnNoteFolderMemories(getDatabase(), ids)).toBe(0);
-    expect(snapshot()).toBe(afterFirst);
-  });
-
-  it('with no own folder on this machine it changes nothing, and the open-time pass runs once', () => {
-    seed();
-    expect(trustOwnNoteFolderMemories(getDatabase(), new Set())).toBe(0);
-    expect(trustOf('own_old')).toBe('untrusted');
-    getDatabase().prepare("DELETE FROM memesh_metadata WHERE key LIKE 'own_note_folder_trust_v1%'").run();
-    const { claudeHome } = { claudeHome: path.join(fixture.tmpDir, 'claude-home') };
-    expect(repairOwnNoteFolderTrust(getDatabase(), ownMemoryDirIds({ CLAUDE_CONFIG_DIR: claudeHome }))).toBe(1);
-    expect(repairOwnNoteFolderTrust(getDatabase(), ownMemoryDirIds({ CLAUDE_CONFIG_DIR: claudeHome }))).toBe(-1);
+    for (let i = 0; i < 2; i++) {
+      closeDatabase();
+      openDatabase(fixture.dbPath);
+      expect(['own_old', 'own_decision'].map((n) => metaOf(n).trust)).toEqual(['untrusted', 'untrusted']);
+    }
+    expect(getDatabase().prepare("SELECT COUNT(*) AS n FROM memesh_metadata WHERE key LIKE 'own_note_folder_trust%' OR key LIKE 'note_trust_lifted%'").get()).toEqual({ n: 0 });
+    expect(fs.existsSync(path.join(path.dirname(fixture.dbPath), 'backups'))).toBe(false);
   });
 });

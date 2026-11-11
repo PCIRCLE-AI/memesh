@@ -18,6 +18,4 @@ export declare function dropArchivedIndexRows(db: MemeshDatabase): {
 export declare function repairFusedLessonShellHistory(db: MemeshDatabase): number;
 export declare function canonicalizeLessonTypes(db: MemeshDatabase): number;
 export declare function removeJunkFileTags(db: MemeshDatabase): number;
-export declare function trustOwnNoteFolderMemories(conn: MemeshDatabase, ownDirIds: ReadonlySet<string>): number;
-export declare function repairOwnNoteFolderTrust(db: MemeshDatabase, ownDirIds: ReadonlySet<string>): number;
 //# sourceMappingURL=graph-repairs.d.ts.map

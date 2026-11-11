@@ -11,6 +11,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { openDatabase, closeDatabase, getDatabase } from '../../src/db.js';
 import { ingestNoteDirectory } from '../../src/core/note-ingest.js';
+import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import { runNoteIngestion, runStopNotes } from '../../scripts/hooks/_stop-notes.js';
 import { spawnSync } from 'node:child_process';
 import { getProjectName } from '../../src/core/paths.js';
@@ -71,6 +72,36 @@ describe('the Stop hook\'s note ingestion', () => {
     // Read and marked: the next Stop finds nothing changed.
     const second = await runNoteIngestion({ memoryDir: folder, project: 'proj-b', metaUrl, deadlineAt: Date.now() + 30_000 });
     expect(second.reason).toBe(SKIP_REASONS.noNoteChanged);
+  });
+
+  it('the next Stop makes only the own folder\'s old notes trusted: other folders, imports and rows with no folder stay untrusted', async () => {
+    const other = path.join(root, 'downloads-notes');
+    fs.mkdirSync(other);
+    fs.writeFileSync(path.join(other, 'b.md'), '---\nname: other-old\ndescription: From some other folder\nmetadata:\n  type: feedback\n---\nFrom some other folder.\n');
+    ingestNoteDirectory({ trusted: false, dir: folder, project: 'proj-b' });
+    ingestNoteDirectory({ trusted: false, dir: other, project: 'proj-b' });
+    const kg = new KnowledgeGraph(getDatabase());
+    kg.createEntity('imported-one', 'feedback', { observations: ['from a bundle'], metadata: { trust: 'untrusted', provenance: { source: 'import' } }, trustOverride: 'untrusted' });
+    kg.createEntity('no-folder', 'feedback', { observations: ['odd'], tags: ['source:note-file'], metadata: { trust: 'untrusted', provenance: { source: 'note-file' } }, trustOverride: 'untrusted' });
+    // Opening the database again lifts nothing: only a Stop that reads the own folder does.
+    closeDatabase();
+    openDatabase(dbPath);
+    expect(['feedback-a', 'other-old', 'imported-one', 'no-folder'].map(trust)).toEqual(['untrusted', 'untrusted', 'untrusted', 'untrusted']);
+    const key = createHash('sha256').update(folder).digest('hex').slice(0, 16);
+    fs.writeFileSync(path.join(root, 'note-ingest-state.json'), JSON.stringify({ [key]: { at: Date.now() + 60_000, more: false } }));
+    closeDatabase();
+
+    const run = await runNoteIngestion({ memoryDir: folder, project: 'proj-b', metaUrl, deadlineAt: Date.now() + 30_000 });
+    openDatabase(dbPath);
+    expect(run.reason).toMatch(/1 made trusted \(copy of the database: knowledge-graph-before-note-trust-/);
+    expect(['feedback-a', 'other-old', 'imported-one', 'no-folder'].map(trust)).toEqual(['trusted', 'untrusted', 'untrusted', 'untrusted']);
+    // The copy and the record of what changed exist, and the record names the one row.
+    const backups = fs.readdirSync(path.join(root, 'backups'));
+    const copy = backups.find((n) => n.endsWith('.db'));
+    expect(copy, 'a copy of the database').toBeDefined();
+    const record = JSON.parse(fs.readFileSync(path.join(root, 'backups', `${copy}.json`), 'utf8')) as { count: number; names: string[] };
+    expect(record.count).toBe(1);
+    expect(record.names).toEqual(['feedback-a']);
   });
 
   it('with no copy the Stop records an error, changes nothing, and reads the folder again next time', async () => {

@@ -6,8 +6,7 @@ import { computeSignalScore } from './core/signal-scorer.js';
 import { getDbPath } from './core/paths.js';
 import { belongsToAnotherUser, databaseFiles, guardDatabaseFiles, holdsBytes, immutableAddress, isWritable, ownerWriteCommand, removeGroupAndOtherAccess, shellQuote } from './core/file-mode.js';
 import { insertFtsRow, joinIndexedObservations, removeFromFts } from './storage/fts-index.js';
-import { canonicalizeLessonTypes, dedupeObservations, dropArchivedIndexRows, removeJunkFileTags, repairFusedLessonShellHistory, repairOwnNoteFolderTrust, retractZeroEditClaims, splitFusedLessons } from './storage/graph-repairs.js';
-import { ownMemoryDirIds } from './core/note-dirs.js';
+import { canonicalizeLessonTypes, dedupeObservations, dropArchivedIndexRows, removeJunkFileTags, repairFusedLessonShellHistory, retractZeroEditClaims, splitFusedLessons } from './storage/graph-repairs.js';
 import { createSchema, FTS_SQL, safeAlter, migrateEntitiesSchema, ensureTagsUniqueIndex, ensureHookRunsSince, ensureFtsSegmentation, ftsIndexIsCurrent, rebuildFtsIndex, runOnceMigration, isTransientDbError, retryWhileLocked, FTS_SEGMENTATION_VERSION, } from './storage/schema.js';
 export { runOnceMigration, FTS_SEGMENTATION_VERSION };
 import { truncateTitle, isBoilerplateObservation } from './core/title.js';
@@ -167,7 +166,6 @@ function migrateToCurrentSchema(db, opts) {
         catch { }
     }
     backfillAcceptedProposalTrust(db);
-    repairOwnNoteFolderTrust(db, ownMemoryDirIds());
     dedupeObservations(db);
     retractZeroEditClaims(db);
     removeJunkFileTags(db);
