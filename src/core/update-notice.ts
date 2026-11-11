@@ -27,10 +27,6 @@ export const UP_TO_DATE_REFRESH_MS = 60 * 60 * 1000;
 export const UPGRADE_AVAILABLE_REFRESH_MS = 12 * 60 * 60 * 1000;
 /** A successful answer older than this no longer proves anything. */
 export const ANSWER_VALID_MS = 24 * 60 * 60 * 1000;
-/** "Not now" — first 24 h, second 48 h, third and later 7 days. */
-export const SNOOZE_LEVEL_MS = [24 * 60 * 60 * 1000, 48 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000] as const;
-
-const SNOOZE_FILE = 'update-snooze.json';
 const JUST_UPGRADED_FILE = 'just-upgraded.json';
 
 /** The shape `update-check.<version>.json` is written in (see version-check.ts). */
@@ -47,15 +43,8 @@ export type UpdateNotice =
   | { kind: 'DISABLED'; currentVersion: string }
   | { kind: 'JUST_UPGRADED'; currentVersion: string; from: string; to: string }
   | { kind: 'CHECK_FAILED'; currentVersion: string; reason: string; /** false = no check has ever run for this version */ attempted: boolean }
-  | { kind: 'SNOOZED'; currentVersion: string; latestVersion: string; until: string; level: number }
   | { kind: 'UPGRADE_AVAILABLE'; currentVersion: string; latestVersion: string }
   | { kind: 'UP_TO_DATE'; currentVersion: string; latestVersion: string };
-
-export interface SnoozeState {
-  target: string;
-  level: number;
-  since: string;
-}
 
 export interface JustUpgradedMarker {
   from: string;
@@ -72,7 +61,7 @@ export interface JustUpgradedMarker {
  * This is the mirror case of `JUST_UPGRADED` above: that kind tells a FRESH
  * process (started after an upgrade) that it landed; this tells a STILL
  * RUNNING, pre-upgrade process that it did not. Deliberately stateless — no
- * marker, no cache, no snooze: a cheap re-read of one small file is enough,
+ * marker, no cache: a cheap re-read of one small file is enough,
  * and every caller decides its own throttling.
  */
 export function staleRunningProcessNotice(runningVersion: string, packageJsonPath: string | URL): string | null {
@@ -129,45 +118,8 @@ function readJson(file: string): Record<string, unknown> | null {
 function writePrivateJson(file: string, value: unknown): void {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   fs.writeFileSync(file, JSON.stringify(value, null, 2), { mode: 0o600 });
-  // `mode` applies only on create; an existing file (the snooze is rewritten
-  // on every decline) keeps whatever mode it had.
+  // `mode` applies only on create; an existing file keeps whatever mode it had.
   try { fs.chmodSync(file, 0o600); } catch { /* non-POSIX */ }
-}
-
-export function readSnooze(dir: string): SnoozeState | null {
-  const raw = readJson(path.join(dir, SNOOZE_FILE));
-  if (!raw) return null;
-  const { target, level, since } = raw;
-  if (typeof target !== 'string' || !target) return null;
-  if (typeof level !== 'number' || !Number.isInteger(level) || level < 1) return null;
-  if (parseIso(since) === null) return null;
-  return { target, level, since: since as string };
-}
-
-/**
- * Record "Not now" for `target`. The level climbs on every repeat for the
- * same target and resets to 1 when a newer target appears, so a user who
- * keeps declining one release is asked less often, but a new release is
- * offered promptly.
- */
-export function writeSnooze(dir: string, target: string, now: Date = new Date()): SnoozeState {
-  const previous = readSnooze(dir);
-  const level = previous && previous.target === target
-    ? Math.min(previous.level + 1, SNOOZE_LEVEL_MS.length)
-    : 1;
-  const state: SnoozeState = { target, level, since: now.toISOString() };
-  writePrivateJson(path.join(dir, SNOOZE_FILE), state);
-  return state;
-}
-
-export function clearSnooze(dir: string): void {
-  try { fs.unlinkSync(path.join(dir, SNOOZE_FILE)); } catch { /* absent is the goal */ }
-}
-
-export function snoozeExpiresAt(state: SnoozeState): number {
-  const since = parseIso(state.since) ?? 0;
-  const duration = SNOOZE_LEVEL_MS[Math.min(state.level, SNOOZE_LEVEL_MS.length) - 1];
-  return since + duration;
 }
 
 export function readJustUpgradedMarker(dir: string): JustUpgradedMarker | null {
@@ -259,7 +211,7 @@ export function shouldRefreshUpdateCache(
 }
 
 export interface ResolveUpdateNoticeInput {
-  /** `~/.memesh` (or the isolated MEMESH_DIR) — where snooze and marker files live. */
+  /** `~/.memesh` (or the isolated MEMESH_DIR) — where the receipt marker lives. */
   dir: string;
   currentVersion: string;
   cache: UpdateCheckCacheLike | null | undefined;
@@ -270,7 +222,7 @@ export interface ResolveUpdateNoticeInput {
 
 /**
  * One answer for "what should this entry point say about updates?".
- * Precedence: DISABLED > JUST_UPGRADED > CHECK_FAILED > SNOOZED > UPGRADE_AVAILABLE > UP_TO_DATE.
+ * Precedence: DISABLED > JUST_UPGRADED > CHECK_FAILED > UPGRADE_AVAILABLE > UP_TO_DATE.
  * CHECK_FAILED sits above UP_TO_DATE deliberately: an unknown status must
  * never be rendered as current.
  */
@@ -312,12 +264,5 @@ export function resolveUpdateNotice(input: ResolveUpdateNoticeInput): UpdateNoti
     return { kind: 'UP_TO_DATE', currentVersion, latestVersion };
   }
 
-  const snooze = readSnooze(dir);
-  if (snooze && snooze.target === latestVersion) {
-    const until = snoozeExpiresAt(snooze);
-    if (now.getTime() < until) {
-      return { kind: 'SNOOZED', currentVersion, latestVersion, until: new Date(until).toISOString(), level: snooze.level };
-    }
-  }
   return { kind: 'UPGRADE_AVAILABLE', currentVersion, latestVersion };
 }

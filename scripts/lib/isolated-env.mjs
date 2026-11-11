@@ -26,6 +26,20 @@
  * Secret stripping is defensive test isolation; the product does not read or
  * manage these credentials.
  */
+// A file: URL, which is what `--import` takes (no path is derived from a URL's `pathname`: that breaks on Windows and on encoded characters).
+const ACCOUNT_HOME_PRELOAD = new URL('./account-home-preload.mjs', import.meta.url).href;
+
+/**
+ * NODE_OPTIONS that makes every node process started under it answer `os.userInfo().homedir` with HOME (see
+ * account-home-preload.mjs). Isolating HOME alone does not isolate the account: a child that asks the system for the
+ * account's home would read the maintainer's real files.
+ */
+export function withAccountHomePreload(env) {
+  const existing = env.NODE_OPTIONS ?? '';
+  if (existing.includes(ACCOUNT_HOME_PRELOAD)) return env;
+  return { ...env, NODE_OPTIONS: `${existing} --import=${ACCOUNT_HOME_PRELOAD}`.trim() };
+}
+
 export function buildIsolatedRuntimeEnv(baseEnv, { runtimeHome, memeshDir, dbPath }) {
   const isolatedEnv = {
     ...baseEnv,
@@ -40,7 +54,7 @@ export function buildIsolatedRuntimeEnv(baseEnv, { runtimeHome, memeshDir, dbPat
   // The briefing level decides what a session is told and the default is what
   // the tests and smokes assume, so an ambient MEMESH_BRIEFING must not move it.
   delete isolatedEnv.MEMESH_BRIEFING;
-  return isolatedEnv;
+  return withAccountHomePreload(isolatedEnv);
 }
 
 /**
@@ -78,7 +92,7 @@ export function buildIsolatedSuiteEnv(baseEnv, { runtimeHome }) {
   }
   isolatedEnv.HOME = runtimeHome;
   isolatedEnv.USERPROFILE = runtimeHome;
-  return envWithNpmCache(path.join(runtimeHome, 'npm-cache'), isolatedEnv);
+  return withAccountHomePreload(envWithNpmCache(path.join(runtimeHome, 'npm-cache'), isolatedEnv));
 }
 
 /**

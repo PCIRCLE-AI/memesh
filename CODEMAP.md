@@ -80,7 +80,7 @@ docs/                # ARCHITECTURE.md, api/API_REFERENCE.md
 - Config read/write → `src/core/config.ts`
 - Path resolution (explicit `MEMESH_DIR` / `MEMESH_DB_PATH` overrides, then HOME defaults) → `src/core/paths.ts`
 - `memesh doctor` health check + real probes → `src/core/doctor.ts`; bundled MCP diagnostic child → `src/transports/cli/doctor-message-probe.ts`
-- What every entry point says about updates (snooze, just-upgraded receipt, failed check) → `src/core/update-notice.ts`; the MCP first-call and CLI stderr notice → `src/core/update-entrypoint.ts`
+- What every entry point says about updates (just-upgraded receipt, failed check) → `src/core/update-notice.ts`; the MCP first-call and CLI stderr notice → `src/core/update-entrypoint.ts`
   (build-generated as `scripts/hooks/_generated/update-notice.js` for the SessionStart / UserPromptSubmit / Stop hooks)
 - npm version check / self-update → `src/core/version-check.ts`, `src/core/updater.ts`, `src/core/install-channel.ts`, `src/core/install-hooks.ts`
 
@@ -103,22 +103,22 @@ docs/                # ARCHITECTURE.md, api/API_REFERENCE.md
 ### Hook commands (`hooks/hooks.json`)
 | Command | Fires on | Does |
 |---|---|---|
-| `session-start.js` | SessionStart | inject project memories, inbox reminders and messaging address, banner, lesson warnings, update notice / consent prompt (does not spawn the auto-update) |
+| `session-start.js` | SessionStart | inject project memories, inbox reminders and messaging address, banner, lesson warnings, update notice (starts the background auto-update unless the setting is off) |
 | `pre-edit-recall.js` | PreToolUse Edit/Write | inject file-relevant memories; also evaluates accepted lesson guards on the content being written |
 | `guard-check.js` | PreToolUse Bash | enforce accepted lesson guards before risky repeats |
 | `src/host-runtime/codex-session.ts` | SessionStart / SessionEnd | launch, supersede, and retire the detached exact-thread companion; apply a matching optional identity override |
-| `session-summary.js` | Stop | deterministic session capture; handoff capture (`_stop-handoff`), note ingest + remember nudge (`_stop-notes`), spawns the consented auto-update |
+| `session-summary.js` | Stop | deterministic session capture; handoff capture (`_stop-handoff`), note ingest + remember nudge (`_stop-notes`) |
 | `private-session-mark.js` | PostToolUse `private_session` | mark the session private for the note importer at once (notes changed since wait for the session's holds) and hold out the notes its transcript has named so far; writes no memory |
 | `session-end-notes.js` | SessionEnd | in a private session (or one that cannot be checked), hold out the note files it named or changed since the call, after its last Stop too, and end its wait; in one that is not private, release what was held while it could not be checked; writes no memory |
 | `stop-message-gate.js` | Stop | Claude-Code-only: block the stop once per waiting agent-message id (#468) |
 | `pre-compact.js` | PreCompact | end-of-context save |
 | `post-commit.js` | PostToolUse Bash | git commit tracking |
 | `decision-nudge.js` | PostToolUse ExitPlanMode/AskUserQuestion | remind Claude to `remember` a decision just made, once per tool per session |
-| `user-prompt-intent.js` | UserPromptSubmit | detect "remember" intent; also records the update-consent answer |
+| `user-prompt-intent.js` | UserPromptSubmit | detect "remember" intent |
 
 `scripts/hooks/_shared.js`, `_claude-channel.js`, `_clear-alias.js`, `_codex-rollout.js`, `_stop-notes.js`, `_stop-handoff.js`,
-`_private-session.js`, `_session-written-notes.js` and `_hook-budgets.js` (the read budget of each private-session hook, counted from the start of its process) are helpers, not hook commands. `_shared.js` resolves Claude's configured recipient or default `claude-code`; inbox queries suppress message IDs with intake receipts. Channel push is optional. `scripts/hooks/auto-update-runner.mjs` is spawned by the Stop hook
-(`session-summary.js` → `_shared.js` `spawnAutoUpdate`) once consent is approved; it is not registered in the manifest.
+`_private-session.js`, `_session-written-notes.js` and `_hook-budgets.js` (the read budget of each private-session hook, counted from the start of its process) are helpers, not hook commands. `_shared.js` resolves Claude's configured recipient or default `claude-code`; inbox queries suppress message IDs with intake receipts. Channel push is optional. `scripts/hooks/auto-update-runner.mjs` is started in the background by the SessionStart hook (and by `memesh serve`) unless
+automatic updates are off, and by `memesh update` when asked by hand; there is no consent step. It is not registered in the manifest.
 
 ---
 

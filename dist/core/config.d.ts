@@ -21,6 +21,7 @@ export declare class ConfigUnreadableError extends Error {
     constructor(p: string);
 }
 export declare function updateConfig(partial: Partial<MeMeshConfig>): MeMeshConfig;
+export declare function updateConfigInDir(dir: string, partial: Partial<MeMeshConfig>): MeMeshConfig;
 export declare function getConfigDir(): string;
 export declare function getConfigPath(): string;
 //# sourceMappingURL=config.d.ts.map

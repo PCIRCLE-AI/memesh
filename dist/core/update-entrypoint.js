@@ -3,15 +3,39 @@ import path from 'path';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { memeshDir } from './paths.js';
+import { bumpKind, currentPolicy, policyPermits } from './auto-update.js';
+import { findPackageRoot } from './package-root.js';
+import { getCurrentInstallChannel, getInstallChannelSupport } from './install-channel.js';
 import { getLastUpdateCheck } from './version-check.js';
 import { claimJustUpgradedMarker, resolveUpdateNotice, shouldRefreshUpdateCache } from './update-notice.js';
 export const RECENT_HOOK_NOTICE_MS = 10 * 60 * 1000;
 export const CLI_NOTICE_THROTTLE_MS = 24 * 60 * 60 * 1000;
 export const FRESH_CHECK_THROTTLE_MS = 5 * 60 * 1000;
-export function formatUpdateNoticeLine(notice) {
+export function formatUpdateNoticeLine(notice, mode = { updates: 'on', door: 'cli' }) {
     switch (notice.kind) {
-        case 'UPGRADE_AVAILABLE':
-            return `[memesh update] ${notice.latestVersion} is available (you are on ${notice.currentVersion}). Run \`memesh update\`, or reply “Not now” / “Never ask again” in a hooked session.`;
+        case 'UPGRADE_AVAILABLE': {
+            const head = `[memesh update] ${notice.latestVersion} is available (you are on ${notice.currentVersion}).`;
+            if (mode.updates === 'off') {
+                if (mode.door === 'mcp')
+                    return `${head} Automatic updates are off, so it is not being installed. Do not update on your own.`;
+                if (mode.unsupported)
+                    return `${head} Automatic updates are off, and MeMesh cannot install it for this install method: ${mode.unsupported}`;
+                return `${head} Automatic updates are off, so it is not being installed; \`memesh update\` installs it when you choose to.`;
+            }
+            if (mode.updates === 'held') {
+                if (mode.door === 'mcp')
+                    return `${head} The setting autoUpdate: ${mode.setting} does not install this release by itself, so it is not being installed. Do not update on your own.`;
+                return `${head} The setting autoUpdate: ${mode.setting} does not install this release by itself; \`memesh update\` installs it when you choose to.`;
+            }
+            if (mode.updates === 'unsupported') {
+                if (mode.door === 'mcp')
+                    return `${head} MeMesh cannot install it for this install method. Do not update on your own; tell the person.`;
+                return `${head} MeMesh cannot install it for this install method: ${mode.guidance}`;
+            }
+            if (mode.door === 'mcp')
+                return `${head} Automatic updates are on: it is installed by itself after the running sessions end. No action is needed.`;
+            return `${head} Run \`memesh update\` to install it now.`;
+        }
         case 'JUST_UPGRADED':
             return `[memesh update] Upgraded ${notice.from} → ${notice.to}. Processes started before the upgrade keep running ${notice.from} until they restart.`;
         case 'CHECK_FAILED':
@@ -199,6 +223,33 @@ class ProcessMemo {
                 this.set.delete(entry);
     }
 }
+function upgradeNoticeMode(input, latestVersion) {
+    let policy;
+    try {
+        policy = currentPolicy().policy;
+    }
+    catch {
+        policy = 'off';
+    }
+    let support = input.installSupport;
+    if (support === undefined) {
+        try {
+            const packageRoot = findPackageRoot(import.meta.url);
+            support = getInstallChannelSupport(getCurrentInstallChannel({ packageRoot }), packageRoot);
+        }
+        catch {
+            support = null;
+        }
+    }
+    const cannot = support && !support.canSelfUpdate ? support.guidance : undefined;
+    if (policy === 'off')
+        return { updates: 'off', door: input.entryPoint, ...(cannot ? { unsupported: cannot } : {}) };
+    if (cannot)
+        return { updates: 'unsupported', guidance: cannot, door: input.entryPoint };
+    if (latestVersion && !policyPermits(policy, bumpKind(input.currentVersion, latestVersion)))
+        return { updates: 'held', door: input.entryPoint, setting: policy };
+    return { updates: 'on', door: input.entryPoint };
+}
 export function updateNoticeForEntryPoint(input) {
     try {
         const now = input.now ?? new Date();
@@ -218,7 +269,7 @@ export function updateNoticeForEntryPoint(input) {
             return null;
         }
         memo?.decide();
-        if (notice.kind === 'DISABLED' || notice.kind === 'SNOOZED' || notice.kind === 'UP_TO_DATE')
+        if (notice.kind === 'DISABLED' || notice.kind === 'UP_TO_DATE')
             return null;
         if (input.entryPoint === 'mcp'
             && recentHookNoticeExists(dir, notice.currentVersion, notice.kind === 'UPGRADE_AVAILABLE' ? notice.latestVersion : null, now)) {
@@ -232,7 +283,7 @@ export function updateNoticeForEntryPoint(input) {
                 return null;
             return formatUpdateNoticeLine({ ...notice, from: claimed.from, to: claimed.to });
         }
-        return formatUpdateNoticeLine(notice);
+        return formatUpdateNoticeLine(notice, upgradeNoticeMode(input, notice.kind === 'UPGRADE_AVAILABLE' ? notice.latestVersion : null));
     }
     catch {
         return null;

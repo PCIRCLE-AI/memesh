@@ -90,8 +90,9 @@ export function checkReleasePreconditions({
   // Claude Code keys its plugin cache by version. A machine that auto-updates
   // from the marketplace between the commit that bumped package.json and the
   // tag gets a cache named `<version>/` built from that earlier tree. That is
-  // recoverable: `memesh doctor` warns about the plugin cache on such a
-  // machine (code `plugin-cache.stale` in --json) with the refresh command for its host. So
+  // recoverable: the plugin is installed from the commit the release names (not from the
+  // marketplace branch), and `memesh update --reinstall` puts it back; `memesh doctor` warns
+  // (code `plugin-cache.stale` in --json) when the cache and Claude Code's record disagree. So
   // the gate no longer forces a new version. Documentation that moved after
   // the bump is only noted; any other shipped file needs the owner's explicit
   // `--accept-moved-after-bump`; a list that cannot be computed always blocks.

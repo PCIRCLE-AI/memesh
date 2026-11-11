@@ -1,20 +1,28 @@
 #!/usr/bin/env bash
-# upgrade-plugin.sh — one-liner upgrade for the Claude Code plugin install.
+# upgrade-plugin.sh — puts a verified release of the Claude Code plugin in place.
 #
-# Use:
-#   bash scripts/upgrade-plugin.sh
+# Not a command to run by hand to "update": `memesh update` is (it checks the release's source and backs up your
+# database first, then runs this with the release's commit pinned). Run on its own, without a pin, this only PUTS
+# BACK the commit the plugin registry already records (a repair); it does not move to a newer one.
+#
+# Use (what `memesh update` runs):
+#   MEMESH_UPGRADE_PIN_COMMIT=<40-hex release commit> MEMESH_UPGRADE_EXPECT_VERSION=<version> bash scripts/upgrade-plugin.sh
 #
 # What it does:
-#   1. Fast-forwards the marketplace cache under
+#   1. Fetches the marketplace cache under
 #      ${CLAUDE_CONFIG_DIR:-~/.claude}/plugins/marketplaces/pcircle-memesh
-#      against origin.
+#      from origin and checks that the pinned commit is part of its history (nothing is moved yet).
 #   2. Reads the new version from .claude-plugin/marketplace.json at the exact
-#      marketplace commit that will be installed.
+#      marketplace commit that will be installed, and checks it against the release; only then is the
+#      checkout fast-forwarded to that commit (and a checkout that cannot be is left alone: the install
+#      uses the commit's own files).
 #   3. Stages a new install cache under the same Claude config root at
 #      plugins/cache/pcircle-memesh/memesh/<new-version>/,
 #      from `git archive` of the exact recorded commit (never the marketplace
 #      checkout's working tree, which can hold uncommitted or tampered files).
-#   4. Installs runtime deps inside that cache (npm install --omit=dev).
+#   4. Installs runtime deps inside that cache with `npm ci --omit=dev --ignore-scripts`: the lockfile of that commit decides every version
+#      (a missing or out-of-date lock stops the update, rather than resolving newer versions), and nobody is watching a background update,
+#      so no dependency may run its own install script.
 #   5. Patches plugins/installed_plugins.json under that config root to point at the
 #      new version + path, rolling the cache swap back if the write fails,
 #      the registry changed underneath it, or a signal interrupts the swap.
@@ -29,6 +37,9 @@
 #   up a new release — even for security advisories.
 
 set -uo pipefail
+
+# An environment that points git somewhere else (a hook of another repository, a worktree) would make every `git -C` below read the wrong repository.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX GIT_NAMESPACE
 
 # A path as one word of a command printed for the owner to paste. Single quotes
 # switch off every expansion, so a directory name holding $(...) or a backtick
@@ -187,67 +198,77 @@ if ! mkdir "$LOCK_DIR" 2>/dev/null; then
 fi
 LOCK_HELD=1
 
-# ─── 1. Refresh marketplace cache ─────────────────────────────────────────
-echo "==> Fetching latest from marketplace origin..."
+# ─── 1. The marketplace checkout ──────────────────────────────────────────
+# This script has two jobs, and only one of them may move to another release.
+#
+#   * With MEMESH_UPGRADE_PIN_COMMIT (the automatic updater and `memesh update`, after they checked the release's
+#     provenance): fetch, check that the pinned commit is part of the marketplace history, and only then fast-forward
+#     the checkout to THAT commit (never to whatever origin's branch holds now).
+#   * Without it (`memesh upgrade-plugin`, the repair buttons of doctor): this puts back the commit the install
+#     already records, and nothing else. The checkout is not fetched and not moved: a release nobody verified must not
+#     be installed because it happens to be the newest thing on main. To change version, use `memesh update`.
+if [ -n "${MEMESH_UPGRADE_PIN_COMMIT:-}" ]; then
+# The form of the pin is checked before anything is asked of the network.
+MARKETPLACE_SHA="$MEMESH_UPGRADE_PIN_COMMIT"
+if ! [[ "$MARKETPLACE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "ERROR: MEMESH_UPGRADE_PIN_COMMIT is not a full 40-hex commit: $MARKETPLACE_SHA" >&2
+  exit 1
+fi
+# The release is fetched from, and its commit is checked against, the checkout's origin: that origin has to BE the official
+# repository (the raw configured address; git's url.<base>.insteadOf rewrites only what a fetch then asks, not this value).
+ORIGIN_URL="$(git -C "$MARKETPLACE_DIR" config --get remote.origin.url 2>/dev/null)" || ORIGIN_URL=""
+case "$ORIGIN_URL" in
+  https://github.com/PCIRCLE-AI/memesh.git|https://github.com/PCIRCLE-AI/memesh|git@github.com:PCIRCLE-AI/memesh.git|git@github.com:PCIRCLE-AI/memesh) ;;
+  # The repository was called memesh-llm-memory before it was renamed (GitHub redirects the old name), and installs made then keep it.
+  https://github.com/PCIRCLE-AI/memesh-llm-memory.git|https://github.com/PCIRCLE-AI/memesh-llm-memory|git@github.com:PCIRCLE-AI/memesh-llm-memory.git|git@github.com:PCIRCLE-AI/memesh-llm-memory) ;;
+  *)
+    echo "ERROR: the marketplace checkout's origin is ${ORIGIN_URL:-not set}, not the official repository (https://github.com/PCIRCLE-AI/memesh.git), so a release pinned from it cannot be trusted. The marketplace checkout was not changed." >&2
+    exit 1
+    ;;
+esac
+echo "==> Fetching the pinned release from marketplace origin..."
 (
   cd "$MARKETPLACE_DIR" || exit 1
   CURRENT_BRANCH="$(git symbolic-ref --quiet --short HEAD 2>/dev/null)" || {
     echo "ERROR: marketplace cache is on a detached HEAD — refusing to guess which branch to update." >&2
     exit 1
   }
-  git fetch --quiet origin "refs/heads/$CURRENT_BRANCH:refs/remotes/origin/$CURRENT_BRANCH" || {
-    echo "ERROR: git fetch failed in $MARKETPLACE_DIR" >&2
-    exit 1
-  }
-  MERGE_ERROR="$(git merge --ff-only "origin/$CURRENT_BRANCH" --quiet 2>&1)" || {
-    AHEAD_COUNT="$(git rev-list --count "origin/$CURRENT_BRANCH..HEAD" 2>/dev/null || echo unknown)"
-    if [[ "$AHEAD_COUNT" =~ ^[0-9]+$ ]] && [ "$AHEAD_COUNT" -gt 0 ]; then
-      echo "ERROR: marketplace cache has $AHEAD_COUNT local commit(s), so it cannot fast-forward." >&2
-      echo "       Reconcile those commits with origin/$CURRENT_BRANCH, then retry." >&2
-    else
-      echo "ERROR: marketplace fast-forward failed; the checkout may be dirty or its history may not match origin/$CURRENT_BRANCH." >&2
-      [ -n "$MERGE_ERROR" ] && echo "       $MERGE_ERROR" >&2
-      echo "       Inspect it without discarding work: git -C $(shq "$MARKETPLACE_DIR") status --short" >&2
-    fi
+  FETCH_ERROR="$(git fetch --quiet origin "refs/heads/$CURRENT_BRANCH:refs/remotes/origin/$CURRENT_BRANCH" 2>&1)" || {
+    echo "ERROR: git fetch failed in $MARKETPLACE_DIR: $FETCH_ERROR" >&2
     exit 1
   }
 ) || exit 1
 
-# ─── 2. Bind the exact marketplace commit and read its version ────────────
-MARKETPLACE_SHA="$(git -C "$MARKETPLACE_DIR" rev-parse HEAD 2>/dev/null)" || {
-  echo "ERROR: could not read the marketplace checkout's commit ($MARKETPLACE_DIR)" >&2
+# ─── 1b. Check the pin BEFORE anything in the checkout moves ──────────────
+# A pin that is refused must leave the marketplace checkout exactly where it was.
+PIN_BRANCH="$(git -C "$MARKETPLACE_DIR" symbolic-ref --quiet --short HEAD 2>/dev/null)" || PIN_BRANCH=""
+if [ -z "$PIN_BRANCH" ] \
+  || ! git -C "$MARKETPLACE_DIR" cat-file -e "$MARKETPLACE_SHA^{commit}" 2>/dev/null \
+  || ! git -C "$MARKETPLACE_DIR" merge-base --is-ancestor "$MARKETPLACE_SHA" "origin/$PIN_BRANCH" 2>/dev/null; then
+  echo "ERROR: the release's commit $MARKETPLACE_SHA is not part of the marketplace history — refusing to install something that is not that release. The marketplace checkout was not changed." >&2
+  exit 1
+fi
+# What is archived and recorded is a commit, even if the pin named an annotated tag's object.
+MARKETPLACE_SHA="$(git -C "$MARKETPLACE_DIR" rev-parse "$MARKETPLACE_SHA^{commit}" 2>/dev/null)" || {
+  echo "ERROR: could not resolve the release's commit $MEMESH_UPGRADE_PIN_COMMIT in the marketplace checkout." >&2
   exit 1
 }
+echo "==> Release commit: $MARKETPLACE_SHA"
+else
+  # Repair: the commit to put back comes from the registry (below); the checkout stays where it is.
+  MARKETPLACE_SHA="$(git -C "$MARKETPLACE_DIR" rev-parse HEAD 2>/dev/null)" || {
+    echo "ERROR: could not read the marketplace checkout's commit ($MARKETPLACE_DIR)" >&2
+    exit 1
+  }
+fi
+
+# ─── 2. Bind the exact marketplace commit and read its version ────────────
+# MARKETPLACE_SHA is the commit that is archived below: the release's pinned commit (checked in 1b), or, for a repair,
+# the commit the registry records (chosen further down). It is never "whatever the branch holds now".
 if ! [[ "$MARKETPLACE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
   echo "ERROR: marketplace HEAD is not a full 40-hex commit: $MARKETPLACE_SHA" >&2
   exit 1
 fi
-
-# Read from the same immutable commit that section 3 archives. A dirty tracked
-# marketplace.json must never redirect committed bytes into a different
-# version directory or produce a version/commit pair that never coexisted.
-NEW_VERSION="$(
-  git -C "$MARKETPLACE_DIR" show "$MARKETPLACE_SHA:.claude-plugin/marketplace.json" |
-  node -e "
-  const fs = require('fs');
-  const j = JSON.parse(fs.readFileSync(0, 'utf8'));
-  const e = (j.plugins || []).find(x => x && x.name === 'memesh');
-  if (!e || typeof e.version !== 'string') { process.exit(2); }
-  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(e.version);
-  const prerelease = match && match[4] ? match[4].split('.') : [];
-  if (!match || prerelease.some(x => /^\d+$/.test(x) && x.length > 1 && x.startsWith('0'))) {
-    console.error('ERROR: marketplace.json reported an unsafe version string: ' + e.version);
-    process.exit(3);
-  }
-  process.stdout.write(e.version);
-  "
-)" || {
-  echo "ERROR: could not read memesh version from marketplace.json at commit $MARKETPLACE_SHA" >&2
-  exit 1
-}
-
-echo "==> Target version: $NEW_VERSION"
-NEW_INSTALL_PATH="$CACHE_ROOT/$NEW_VERSION"
 
 # Which registry entry is THIS install? Claude Code keeps one entry per scope
 # (user / project / local); reading entries[0] on a machine with two of them
@@ -258,7 +279,8 @@ NEW_INSTALL_PATH="$CACHE_ROOT/$NEW_VERSION"
 # capture its index/version/sha and the complete registry digest in this ONE
 # read. The index is used later only after the registry's exact bytes still
 # match this digest, so a concurrent reorder cannot redirect the write.
-ENTRY_SNAPSHOT="$(INSTALL_REGISTRY="$INSTALL_REGISTRY" CACHE_ROOT="$CACHE_ROOT" NEW_VERSION="$NEW_VERSION" node -e "
+read_entry_snapshot() {
+  INSTALL_REGISTRY="$INSTALL_REGISTRY" CACHE_ROOT="$CACHE_ROOT" NEW_VERSION="$1" node -e "
   const fs = require('fs'), path = require('path'), crypto = require('crypto');
   const registryPath = process.env.INSTALL_REGISTRY;
   let before, fd;
@@ -356,12 +378,86 @@ ENTRY_SNAPSHOT="$(INSTALL_REGISTRY="$INSTALL_REGISTRY" CACHE_ROOT="$CACHE_ROOT" 
       recordedBasename = base;
     }
   }
-  process.stdout.write(['selected', index, version, sha, registrySha256, installPathState, String(opened.dev), String(opened.ino), recordedBasename].join('\\t'));
-")" || {
+  process.stdout.write(['selected', index, version, sha, registrySha256, installPathState, String(opened.dev), String(opened.ino), recordedBasename || '-'].join('\\t'));
+"
+}
+
+# Without a pin this is a repair: it puts back the commit the registry says is installed, so that the files are those
+# of a release that was installed through the verified path, whatever the checkout now holds. A registry that does
+# not say which commit that is gives nothing verified to restore: refuse.
+RECORDED_VERSION=""
+if [ -z "${MEMESH_UPGRADE_PIN_COMMIT:-}" ]; then
+  RECORDED_SNAPSHOT="$(read_entry_snapshot 0.0.0)" || {
+    echo "ERROR: could not read the installed memesh entries from $INSTALL_REGISTRY" >&2
+    exit 1
+  }
+  IFS=$'\t' read -r RECORDED_STATE _ RECORDED_VERSION RECORDED_SHA _ <<< "$RECORDED_SNAPSHOT"
+  if [ "$RECORDED_STATE" != "selected" ]; then
+    # identity-changed, unreadable, malformed, none, ambiguous...: the registry does not say which install this is, so which commit is
+    # recorded for it is not known either. Going on would archive the checkout's current commit, which nobody verified.
+    echo "ERROR: the plugin registry does not say which commit is installed ($RECORDED_STATE), so there is nothing verified to put back." >&2
+    echo "       To update to the newest verified release: memesh update" >&2
+    exit 1
+  fi
+  if ! [[ "$RECORDED_SHA" =~ ^[0-9a-f]{40}$ ]] || ! git -C "$MARKETPLACE_DIR" cat-file -e "$RECORDED_SHA^{commit}" 2>/dev/null; then
+    echo "ERROR: this plugin install does not record a commit that is available in the marketplace checkout, so there is nothing verified to put back." >&2
+    echo "       To update to the newest verified release: memesh update" >&2
+    exit 1
+  fi
+  MARKETPLACE_SHA="$RECORDED_SHA"
+fi
+
+# Read from the same immutable commit that section 3 archives. A dirty tracked
+# marketplace.json must never redirect committed bytes into a different
+# version directory or produce a version/commit pair that never coexisted.
+NEW_VERSION="$(
+  git -C "$MARKETPLACE_DIR" show "$MARKETPLACE_SHA:.claude-plugin/marketplace.json" |
+  node -e "
+  const fs = require('fs');
+  const j = JSON.parse(fs.readFileSync(0, 'utf8'));
+  const e = (j.plugins || []).find(x => x && x.name === 'memesh');
+  if (!e || typeof e.version !== 'string') { process.exit(2); }
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(e.version);
+  const prerelease = match && match[4] ? match[4].split('.') : [];
+  if (!match || prerelease.some(x => /^\d+$/.test(x) && x.length > 1 && x.startsWith('0'))) {
+    console.error('ERROR: marketplace.json reported an unsafe version string: ' + e.version);
+    process.exit(3);
+  }
+  process.stdout.write(e.version);
+  "
+)" || {
+  echo "ERROR: could not read memesh version from marketplace.json at commit $MARKETPLACE_SHA" >&2
+  exit 1
+}
+
+if [ -n "${MEMESH_UPGRADE_EXPECT_VERSION:-}" ] && [ "$NEW_VERSION" != "$MEMESH_UPGRADE_EXPECT_VERSION" ]; then
+  echo "ERROR: the marketplace commit holds version $NEW_VERSION, but the release being installed is $MEMESH_UPGRADE_EXPECT_VERSION." >&2
+  exit 1
+fi
+
+if [ -z "${MEMESH_UPGRADE_PIN_COMMIT:-}" ] && [ -n "$RECORDED_VERSION" ] && [ "$RECORDED_VERSION" != "unknown" ] && [ "$NEW_VERSION" != "$RECORDED_VERSION" ]; then
+  echo "ERROR: the commit this install records holds version $NEW_VERSION but the registry says $RECORDED_VERSION — refusing to guess. To update to the newest verified release: memesh update" >&2
+  exit 1
+fi
+
+# Everything that can refuse has refused. Only now is the marketplace checkout moved to the release (so that it and the install agree
+# for Claude Code and for `memesh doctor`). The install itself is the commit's own files (git archive, below), so a checkout that cannot be
+# fast-forwarded (edited tracked files, local commits) is left alone, with a warning, and does not stop it.
+if [ -n "${MEMESH_UPGRADE_PIN_COMMIT:-}" ]; then
+  FF_ERROR="$(git -C "$MARKETPLACE_DIR" merge --ff-only "$MARKETPLACE_SHA" --quiet 2>&1)" || {
+    echo "WARNING: the marketplace checkout was not moved to the release ($FF_ERROR); it stays where it is. The install uses the release's own files." >&2
+  }
+fi
+
+echo "==> Target version: $NEW_VERSION"
+NEW_INSTALL_PATH="$CACHE_ROOT/$NEW_VERSION"
+
+ENTRY_SNAPSHOT="$(read_entry_snapshot "$NEW_VERSION")" || {
   echo "ERROR: could not read the installed memesh entries from $INSTALL_REGISTRY" >&2
   exit 1
 }
 IFS=$'\t' read -r ENTRY_STATE ENTRY_INDEX CURRENT_VERSION INSTALLED_SHA ORIGINAL_REGISTRY_SHA256 INSTALL_PATH_STATE ORIGINAL_REGISTRY_DEV ORIGINAL_REGISTRY_INO RECORDED_INSTALL_BASENAME <<< "$ENTRY_SNAPSHOT"
+[ "$RECORDED_INSTALL_BASENAME" = "-" ] && RECORDED_INSTALL_BASENAME=""
 case "$ENTRY_STATE" in
   identity-changed)
     echo "ERROR: installed_plugins.json changed file identity while this upgrade was reading it — refusing to continue." >&2
@@ -515,11 +611,15 @@ fi
 
 # ─── 4. Install runtime deps in the staging copy ──────────────────────────
 echo "==> Installing runtime deps (this may take a minute)..."
-(
-  cd "$STAGE_PATH" || exit 1
-  npm install --omit=dev --no-audit --no-fund --silent
-) || {
-  echo "ERROR: npm install failed in the staging copy — the live cache at $NEW_INSTALL_PATH was not touched" >&2
+# `npm ci`, not `npm install`: the lockfile of the commit decides every version, and a lock that is missing or does not match package.json stops the
+# update. `npm install` would resolve the newest versions the registry has that day, and rewrite the lock.
+if [ ! -f "$STAGE_PATH/package-lock.json" ] && [ ! -f "$STAGE_PATH/npm-shrinkwrap.json" ]; then
+  echo "ERROR: this release carries no package-lock.json, so its runtime dependencies cannot be pinned — the live cache at $NEW_INSTALL_PATH was not touched" >&2
+  exit 1
+fi
+NPM_OUTPUT="$(cd "$STAGE_PATH" && npm ci --omit=dev --ignore-scripts --no-audit --no-fund 2>&1)" || {
+  echo "ERROR: npm ci failed in the staging copy — the live cache at $NEW_INSTALL_PATH was not touched" >&2
+  printf '%s\n' "$NPM_OUTPUT" | head -n 12 >&2
   exit 1
 }
 

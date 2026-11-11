@@ -1,6 +1,5 @@
-import { appendFileSync, closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync, writeSync } from 'fs';
+import { appendFileSync, closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, unlinkSync, writeFileSync, writeSync } from 'fs';
 import { createHash, randomBytes } from 'crypto';
-import { spawn } from 'child_process';
 import { MemeshDatabase } from './_generated/sqlite.js';
 import { databaseFiles, guardDatabaseFiles, hasPagesWaiting, immutableAddress, isWritable, ownerWriteCommand, removeGroupAndOtherAccess } from './_generated/file-mode.js';
 import { dirname, join } from 'path';
@@ -70,9 +69,6 @@ export {
 export {
   resolveUpdateNotice,
   shouldRefreshUpdateCache,
-  readSnooze,
-  writeSnooze,
-  clearSnooze,
   readJustUpgradedMarker,
   writeJustUpgradedMarker,
   clearJustUpgradedMarker,
@@ -335,7 +331,7 @@ export function readHookConfigResult(_env = process.env) {
 
 /**
  * The plain, backward-compatible reader every existing caller in this file
- * uses (`isAutoCaptureEnabled`, `resolveSessionLimit`, `resolveAutoUpdatePolicy`,
+ * uses (`isAutoCaptureEnabled`, `resolveSessionLimit`,
  * `resolveBriefingLevel`, `isUpdateCheckEnabled`) — returns an empty object
  * on missing/unreadable/malformed file; callers
  * must always be defensive about which fields are set. `readHookConfigResult()`
@@ -464,39 +460,6 @@ export const AUTO_CAPTURE_TAG = 'source:auto-capture';
  * etc.), which this exclusion must NOT touch.
  */
 export const SESSION_SNAPSHOT_TYPES = new Set(['session-insight', 'session-summary', SESSION_HANDOFF_TYPE]);
-
-const VALID_AUTO_UPDATE_POLICIES = new Set(['off', 'patch', 'minor', 'major']);
-
-/**
- * Resolve the auto-update policy.
- * Precedence: env > config > default('off').
- *
- * The session-start hook uses this to decide whether to kick off a
- * background `npm install -g @pcircle/memesh@<latest>` when an update
- * is available. Default is 'off' so a fresh install never silently
- * upgrades the user's global binary; opting in is a deliberate
- * config write or env export.
- *
- * @param {NodeJS.ProcessEnv} [env=process.env]
- * @returns {'off' | 'patch' | 'minor' | 'major'}
- */
-export function resolveAutoUpdatePolicy(env = process.env) {
-  const envVal = env.MEMESH_AUTO_UPDATE;
-  if (envVal !== undefined) {
-    if (typeof envVal !== 'string') return 'off';
-    const lowered = envVal.toLowerCase();
-    if (VALID_AUTO_UPDATE_POLICIES.has(lowered)) return lowered;
-    // An explicit but malformed higher-priority value must not uncover a
-    // permissive config value and authorise an unattended global mutation.
-    return 'off';
-  }
-  const cfg = readHookConfig(env);
-  if (typeof cfg.autoUpdate === 'string') {
-    const lowered = cfg.autoUpdate.toLowerCase();
-    if (VALID_AUTO_UPDATE_POLICIES.has(lowered)) return lowered;
-  }
-  return 'off';
-}
 
 // The schema and its migration toolkit come from src/storage/schema.ts via
 // the generated copy — the SAME bytes core's openDatabase executes. The
@@ -2283,34 +2246,6 @@ export function readUpdateCheckCache(installedVersion) {
   return readUpdateCheckCacheState(installedVersion).cache;
 }
 
-const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)(?:[-+].+)?$/;
-
-export function classifyBumpHook(from, to) {
-  const a = SEMVER_RE.exec((from || '').trim());
-  const b = SEMVER_RE.exec((to || '').trim());
-  if (!a || !b) return null;
-  const ai = a.slice(1, 4).map(Number);
-  const bi = b.slice(1, 4).map(Number);
-  if (bi[0] > ai[0]) return 'major';
-  if (bi[0] < ai[0]) return null;
-  if (bi[1] > ai[1]) return 'minor';
-  if (bi[1] < ai[1]) return null;
-  if (bi[2] > ai[2]) return 'patch';
-  return null;
-}
-
-const POLICY_RANK = { off: 0, patch: 1, minor: 2, major: 3 };
-const BUMP_RANK = { patch: 1, minor: 2, major: 3 };
-const AUTO_UPDATE_CACHE_FRESHNESS_MS = 24 * 60 * 60 * 1000;
-
-function autoUpdateConsentPath(sessionId, currentVersion, latestVersion, channel = 'unknown') {
-  if (typeof sessionId !== 'string' || sessionId.length === 0 || sessionId === 'unknown') return null;
-  const key = createHash('sha256')
-    .update(`${sessionId}\0${currentVersion}\0${latestVersion}\0${channel}`)
-    .digest('hex');
-  return join(memeshDir(), 'update-consent', `${key}.json`);
-}
-
 function updatePromptClaimPath(sessionId, currentVersion, latestVersion) {
   if (typeof sessionId !== 'string' || sessionId.length === 0 || sessionId === 'unknown') return null;
   const key = createHash('sha256')
@@ -2378,23 +2313,6 @@ export function finalizeUpdatePromptClaim(sessionId, currentVersion, latestVersi
   }
 }
 
-/**
- * The owner answered this session's notice. After this, further words in the
- * same session ("no" to an unrelated question, a stray "never") are not
- * decisions about updates. Returns false when there was no claim to mark.
- */
-export function markUpdatePromptAnswered(sessionId, currentVersion, latestVersion, decision) {
-  const path = updatePromptClaimPath(sessionId, currentVersion, latestVersion);
-  if (!path || !existsSync(path)) return false;
-  try {
-    const value = JSON.parse(readFileSync(path, 'utf8'));
-    writePrivateJson(path, { ...value, decision: 'answered', answer: decision, answeredAt: new Date().toISOString() });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 export function readUpdatePromptClaim(sessionId, currentVersion, latestVersion) {
   const path = updatePromptClaimPath(sessionId, currentVersion, latestVersion);
   if (!path || !existsSync(path)) return null;
@@ -2406,129 +2324,14 @@ export function readUpdatePromptClaim(sessionId, currentVersion, latestVersion) 
   }
 }
 
-export function readAutoUpdateConsent(sessionId, currentVersion, latestVersion, channel = 'unknown') {
-  const path = autoUpdateConsentPath(sessionId, currentVersion, latestVersion, channel);
-  if (!path || !existsSync(path)) return null;
-  try {
-    const value = JSON.parse(readFileSync(path, 'utf8'));
-    return value && typeof value === 'object' ? value : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * @param {string} sessionId
- * @param {string} currentVersion
- * @param {string} latestVersion
- * @param {string|null} [channel=null]
- */
-export function findAutoUpdateConsent(sessionId, currentVersion, latestVersion, channel = null) {
-  if (typeof sessionId !== 'string' || !sessionId || sessionId === 'unknown') return null;
-  try {
-    const dir = join(memeshDir(), 'update-consent');
-    for (const file of readdirSync(dir)) {
-      if (!file.endsWith('.json')) continue;
-      try {
-        const value = JSON.parse(readFileSync(join(dir, file), 'utf8'));
-        if (value?.sessionId === sessionId
-          && value?.currentVersion === currentVersion
-          && value?.latestVersion === latestVersion
-          && (channel === null || value?.channel === channel)) return value;
-      } catch { /* ignore one corrupt marker */ }
-    }
-  } catch { /* missing/unreadable consent dir */ }
-  return null;
-}
-
-export function writeAutoUpdateConsent(sessionId, currentVersion, latestVersion, channel, decision) {
-  const path = autoUpdateConsentPath(sessionId, currentVersion, latestVersion, channel);
-  if (!path || !['pending', 'approved', 'declined'].includes(decision)) return false;
-  try {
-    ensurePrivateDir(join(memeshDir(), 'update-consent'));
-    writePrivateJson(path, {
-      sessionId,
-      currentVersion,
-      latestVersion,
-      channel,
-      decision,
-      recordedAt: new Date().toISOString(),
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Owner's answer to the first-use update notice.
- *   'approved' — install (npm-global only; other channels have no in-session installer)
- *   'declined' — "Not now": snooze this target (24h, then 48h, then 7d)
- *   'never'    — "Never ask again": config.updateCheck = false
- */
-export function parseAutoUpdateConsent(prompt) {
-  if (typeof prompt !== 'string') return null;
-  const value = prompt.trim().toLowerCase().replace(/[.!?。！？]+$/u, '');
-  // "never" alone is NOT enough: it is an ordinary English word, and this
-  // hook sees every prompt in a session that was shown the notice. The
-  // phrases below are the ones the Settings hint tells users to type, in
-  // each of the 11 dashboard locales.
-  if (/^(?:never ask(?: me)?(?: again)?|don'?t ask(?: me)?(?: again)?|stop asking|不要再問|別再問|不再提醒|不要再问|今後は確認しない|다시 묻지 않기|não voltar a perguntar|ne plus demander|nicht mehr fragen|không hỏi lại|no volver a preguntar|ไม่ต้องถามอีก)$/.test(value)) return 'never';
-  if (/^(?:yes|y|upgrade|update|install(?: it)?|go ahead|是|好|升級|更新|安裝)$/.test(value)) return 'approved';
-  if (/^(?:no|n|not now|later|不要|不用|稍後|暫時不要|稍后|後で|나중에|agora não|pas maintenant|jetzt nicht|để sau|ahora no|ไว้ก่อน)$/.test(value)) return 'declined';
-  return null;
-}
-
 /** `config.updateCheck` — false means the owner said never ask again. */
 export function isUpdateCheckEnabled(env = process.env) {
   return readHookConfig(env).updateCheck !== false;
 }
 
-export function decideAutoUpdateHook(currentVersion, cache, policy) {
-  if (!cache || cache.currentVersion !== currentVersion) return { run: false };
-  const latest = cache.latestVersion;
-  if (typeof latest !== 'string' || !latest) return { run: false };
-  const bump = classifyBumpHook(currentVersion, latest);
-  if (!bump) return { run: false };
-
-  const lastSuccessAt = cache.lastSuccessfulCheckAt;
-  const lastSuccessMs = typeof lastSuccessAt === 'string' ? Date.parse(lastSuccessAt) : NaN;
-  const cacheAgeMs = Number.isFinite(lastSuccessMs) ? Date.now() - lastSuccessMs : Infinity;
-  if (cacheAgeMs > AUTO_UPDATE_CACHE_FRESHNESS_MS) {
-    return { run: false, reason: 'stale-cache' };
-  }
-
-  const policyAllows = (POLICY_RANK[policy] ?? 0) >= BUMP_RANK[bump];
-  if (policyAllows) return { run: true, latest, bump, deprecationOverride: false };
-
-  // The deprecation override does NOT apply when the policy is `off`.
-  //
-  // Look at what the override could ever do: it fires only for a `patch`
-  // bump, and any policy above `off` already permits a patch. So its ONLY
-  // effect was to defeat `off` — the one setting whose whole meaning is
-  // "never install anything without me asking".
-  //
-  // And its trigger is `currentVersionDeprecation`, a string the PUBLISHER
-  // writes into the npm registry. Anyone able to publish the package could
-  // therefore make every user who had turned auto-update OFF run a detached
-  // `npm install -g`, unattended, from a Stop hook. That is not a security
-  // override; it is a remote switch on a user's explicit refusal.
-  //
-  // A deprecated version still gets said out loud: `memesh doctor` escalates
-  // the update-status row to FAIL for it (there is a test named for that),
-  // and the session banner reports it. The user decides.
-  const deprecated = typeof cache.currentVersionDeprecation === 'string'
-    && cache.currentVersionDeprecation.length > 0;
-  if (deprecated && bump === 'patch' && policy !== 'off') {
-    return { run: true, latest, bump, deprecationOverride: true };
-  }
-
-  return { run: false };
-}
-
 export function logAutoUpdate(line) {
   try {
-    const dir = memeshDir();
+    const dir = getMemeshDirFromDbPath();
     ensurePrivateDir(dir);
     const path = join(dir, 'auto-update.log');
     appendFileSync(path, `[${new Date().toISOString()}] ${line}\n`);
@@ -2540,93 +2343,26 @@ export function logAutoUpdate(line) {
 }
 
 /**
- * Dispatch the detached updater runner after proving that this is an
- * npm-global install and that its durable outcome log is writable. The runner
- * owns the single-flight lock and emits the only terminal SUCCESS/FAILED line.
+ * Start the detached updater runner (the work is dispatchAutoUpdate in
+ * dist/core/auto-update.js, which `memesh serve` uses too). The hook decides
+ * nothing: policy, channel, source check, backup and the wait are all in the
+ * runner's entry.
  *
- * @param {string} version - Target version to install
- * @param {object|null} installChannelMod - Preloaded dist/core/install-channel.js module
- * @returns {Promise<{ state: 'dispatched'|'channel'|'failed' }>}
+ * @param {object|null} autoUpdateMod - preloaded dist/core/auto-update.js
+ * @returns {Promise<{ state: 'dispatched'|'throttled'|'failed' }>}
  */
-export async function spawnAutoUpdate(version, installChannelMod) {
-  let fd = -1;
+export async function dispatchAutoUpdate(autoUpdateMod) {
+  if (!autoUpdateMod) {
+    const line = 'auto-update FAILED: dist/core/auto-update.js is missing, so no update was attempted';
+    if (!logAutoUpdate(line)) {
+      try { process.stderr.write(`[memesh] ${line}\n`); } catch { /* stderr unavailable */ }
+    }
+    return { state: 'failed' };
+  }
   try {
-    const pluginRoot = resolvePluginRoot(import.meta.url);
-    let channel = 'unknown';
-    if (installChannelMod) {
-      try {
-        channel = installChannelMod.getCurrentInstallChannel({ packageRoot: pluginRoot });
-      } catch { /* best-effort */ }
-    }
-    if (channel !== 'npm-global') {
-      const line = `auto-update SKIPPED: install channel '${channel}' does not support self-update via npm install -g`;
-      if (!logAutoUpdate(line)) {
-        try { process.stderr.write(`[memesh] ${line}\n`); } catch { /* stderr unavailable */ }
-      }
-      return { state: 'channel' };
-    }
-
-    const dir = memeshDir();
-    ensurePrivateDir(dir);
-    const logPath = join(dir, 'auto-update.log');
-    const lockPath = join(dir, 'auto-update.lock');
-    const runnerPath = join(pluginRoot, 'scripts', 'hooks', 'auto-update-runner.mjs');
-    if (!existsSync(runnerPath)) {
-      const line = `auto-update FAILED: runner missing at ${runnerPath}`;
-      if (!logAutoUpdate(line)) {
-        try { process.stderr.write(`[memesh] ${line}\n`); } catch { /* stderr unavailable */ }
-      }
-      return { state: 'failed' };
-    }
-
-    try {
-      fd = openSync(logPath, 'a', 0o600);
-      removeGroupAndOtherAccess(logPath);
-    } catch (err) {
-      try {
-        process.stderr.write(
-          `[memesh] auto-update FAILED: durable log unavailable at ${logPath} (${err?.message ?? err})\n`,
-        );
-      } catch { /* stderr unavailable */ }
-      return { state: 'failed' };
-    }
-
-    const child = spawn(
-      process.execPath,
-      [runnerPath, version, lockPath],
-      { detached: true, stdio: ['ignore', fd, fd], env: process.env, windowsHide: true },
-    );
-
-    return await new Promise((resolve) => {
-      let settled = false;
-      const finish = (state, line) => {
-        if (settled) return;
-        settled = true;
-        if (fd >= 0) {
-          try { closeSync(fd); } catch { /* already closed */ }
-          fd = -1;
-        }
-        if (!logAutoUpdate(line)) {
-          try { process.stderr.write(`[memesh] ${line}\n`); } catch { /* stderr unavailable */ }
-        }
-        resolve({ state });
-      };
-      child.once('spawn', () => {
-        child.unref();
-        finish(
-          'dispatched',
-          `auto-update DISPATCHED: target=${version} worker_pid=${child.pid ?? 'unknown'} lock=${lockPath}`,
-        );
-      });
-      child.once('error', (err) => {
-        finish('failed', `auto-update FAILED: target=${version} stage=dispatch error=${err?.message ?? err}`);
-      });
-    });
+    return await autoUpdateMod.dispatchAutoUpdate(resolvePluginRoot(import.meta.url));
   } catch (err) {
-    if (fd >= 0) {
-      try { closeSync(fd); } catch { /* already closed */ }
-    }
-    const line = `auto-update FAILED: target=${version} stage=dispatch error=${err?.message ?? err}`;
+    const line = `auto-update FAILED: stage=dispatch error=${err?.message ?? err}`;
     if (!logAutoUpdate(line)) {
       try { process.stderr.write(`[memesh] ${line}\n`); } catch { /* stderr unavailable */ }
     }

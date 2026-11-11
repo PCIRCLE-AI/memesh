@@ -9,6 +9,10 @@ We support the latest published MeMesh release. Older releases should be assumed
 | Latest published release | Yes |
 | Older releases | No |
 
+## What automatic updates trust
+
+Automatic updates install a release only after checking that npm's provenance names this repository's release workflow at that version's tag, that the signing certificate says the same, that the attested commit is part of the `main` branch (asked of GitHub directly), and that the package pins every dependency. That is a check of where a release came from, not of what it contains. Whoever can push to `main` and cause the release workflow to run on a tag can ship a release that passes every one of these checks, and the updater of every install that follows `latest` will install it. The protection against that is who may push to `main` and create release tags in this repository, not something the updater can verify. Turn automatic updates off (`memesh config set autoUpdate off`) if you want to read a release before it runs.
+
 ## Reporting a Vulnerability
 
 Do not post vulnerability details in public GitHub issues.

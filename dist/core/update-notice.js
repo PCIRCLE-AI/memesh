@@ -5,8 +5,6 @@ import { normalizeRegistryVersion } from './semver.js';
 export const UP_TO_DATE_REFRESH_MS = 60 * 60 * 1000;
 export const UPGRADE_AVAILABLE_REFRESH_MS = 12 * 60 * 60 * 1000;
 export const ANSWER_VALID_MS = 24 * 60 * 60 * 1000;
-export const SNOOZE_LEVEL_MS = [24 * 60 * 60 * 1000, 48 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000];
-const SNOOZE_FILE = 'update-snooze.json';
 const JUST_UPGRADED_FILE = 'just-upgraded.json';
 export function staleRunningProcessNotice(runningVersion, packageJsonPath) {
     let onDisk;
@@ -66,39 +64,6 @@ function writePrivateJson(file, value) {
         fs.chmodSync(file, 0o600);
     }
     catch { }
-}
-export function readSnooze(dir) {
-    const raw = readJson(path.join(dir, SNOOZE_FILE));
-    if (!raw)
-        return null;
-    const { target, level, since } = raw;
-    if (typeof target !== 'string' || !target)
-        return null;
-    if (typeof level !== 'number' || !Number.isInteger(level) || level < 1)
-        return null;
-    if (parseIso(since) === null)
-        return null;
-    return { target, level, since: since };
-}
-export function writeSnooze(dir, target, now = new Date()) {
-    const previous = readSnooze(dir);
-    const level = previous && previous.target === target
-        ? Math.min(previous.level + 1, SNOOZE_LEVEL_MS.length)
-        : 1;
-    const state = { target, level, since: now.toISOString() };
-    writePrivateJson(path.join(dir, SNOOZE_FILE), state);
-    return state;
-}
-export function clearSnooze(dir) {
-    try {
-        fs.unlinkSync(path.join(dir, SNOOZE_FILE));
-    }
-    catch { }
-}
-export function snoozeExpiresAt(state) {
-    const since = parseIso(state.since) ?? 0;
-    const duration = SNOOZE_LEVEL_MS[Math.min(state.level, SNOOZE_LEVEL_MS.length) - 1];
-    return since + duration;
 }
 export function readJustUpgradedMarker(dir) {
     const raw = readJson(path.join(dir, JUST_UPGRADED_FILE));
@@ -198,13 +163,6 @@ export function resolveUpdateNotice(input) {
     const latestVersion = normalizeRegistryVersion(cache.latestVersion);
     if (!isStrictlyOlder(currentVersion, latestVersion)) {
         return { kind: 'UP_TO_DATE', currentVersion, latestVersion };
-    }
-    const snooze = readSnooze(dir);
-    if (snooze && snooze.target === latestVersion) {
-        const until = snoozeExpiresAt(snooze);
-        if (now.getTime() < until) {
-            return { kind: 'SNOOZED', currentVersion, latestVersion, until: new Date(until).toISOString(), level: snooze.level };
-        }
     }
     return { kind: 'UPGRADE_AVAILABLE', currentVersion, latestVersion };
 }

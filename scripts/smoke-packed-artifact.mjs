@@ -130,6 +130,9 @@ const requiredFiles = [
   'skills/memesh-review/SKILL.md',
   // The public README links this exact lifecycle and support contract.
   'docs/platforms/agent-messaging.md',
+  // The Hermes memory provider that `memesh hermes install` and the updater copy out of the package.
+  'extensions/hermes-memesh/__init__.py',
+  'extensions/hermes-memesh/plugin.yaml',
 ];
 
 for (const relativePath of requiredFiles) {

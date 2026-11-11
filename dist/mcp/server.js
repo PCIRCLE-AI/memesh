@@ -3229,8 +3229,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path21) {
-      let input2 = path21;
+    function removeDotSegments(path24) {
+      let input2 = path24;
       const output2 = [];
       let nextSlash = -1;
       let len = 0;
@@ -3482,8 +3482,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path21, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path21 && path21 !== "/" ? path21 : void 0;
+        const [path24, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path24 && path24 !== "/" ? path24 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -6902,12 +6902,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f;
     };
-    function addFormats(ajv, list, fs23, exportName) {
+    function addFormats(ajv, list, fs26, exportName) {
       var _a3;
       var _b;
       (_a3 = (_b = ajv.opts.code).formats) !== null && _a3 !== void 0 ? _a3 : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs23[f]);
+        ajv.addFormat(f, fs26[f]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -6916,8 +6916,8 @@ var require_dist = __commonJS({
 });
 
 // dist/mcp/server.js
-import fs22 from "fs";
-import path20 from "path";
+import fs25 from "fs";
+import path23 from "path";
 
 // node_modules/zod/v4/core/index.js
 var core_exports2 = {};
@@ -7473,10 +7473,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path21) {
-  if (!path21)
+function getElementAtPath(obj, path24) {
+  if (!path24)
     return obj;
-  return path21.reduce((acc, key) => acc?.[key], obj);
+  return path24.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -7816,11 +7816,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path21, issues) {
+function prefixIssues(path24, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path21);
+    iss.path.unshift(path24);
     return iss;
   });
 }
@@ -8282,16 +8282,16 @@ function flattenError(error62, mapper = (issue2) => issue2.message) {
 }
 function formatError(error62, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error63, path21 = []) => {
+  const processError = (error63, path24 = []) => {
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path21, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path24, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path21, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path24, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path21, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path24, ...issue2.path]);
       } else {
-        const fullpath = [...path21, ...issue2.path];
+        const fullpath = [...path24, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -8330,17 +8330,17 @@ function formatError(error62, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error62, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error63, path21 = []) => {
+  const processError = (error63, path24 = []) => {
     var _a3;
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path21, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path24, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path21, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path24, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path21, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path24, ...issue2.path]);
       } else {
-        const fullpath = [...path21, ...issue2.path];
+        const fullpath = [...path24, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -8379,8 +8379,8 @@ function treeifyError(error62, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path21 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path21) {
+  const path24 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path24) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -23633,21 +23633,21 @@ function visit(schema, fnOrHandlers) {
     const h = fnOrHandlers[node2._zod.def.type];
     return h ? h(node2, rewritten) : node2;
   };
-  const cache = /* @__PURE__ */ new Map();
+  const cache2 = /* @__PURE__ */ new Map();
   function run(s) {
-    const cached2 = cache.get(s);
+    const cached2 = cache2.get(s);
     if (cached2 === RESOLVING) {
       return new $ZodLazy({
         type: "lazy",
-        getter: () => cache.get(s)
+        getter: () => cache2.get(s)
       });
     }
     if (cached2 !== void 0)
       return cached2;
-    cache.set(s, RESOLVING);
+    cache2.set(s, RESOLVING);
     const inner = mapInner(s);
     const mapped = fn(inner, inner !== s);
-    cache.set(s, mapped);
+    cache2.set(s, mapped);
     return mapped;
   }
   function mapInner(s) {
@@ -25999,13 +25999,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path21 = ref.slice(1).split("/").filter(Boolean);
-  if (path21.length === 0) {
+  const path24 = ref.slice(1).split("/").filter(Boolean);
+  if (path24.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path21[0] === defsKey) {
-    const key = path21[1] === void 0 ? void 0 : decodeJSONPointerSegment(path21[1]);
+  if (path24[0] === defsKey) {
+    const key = path24[1] === void 0 ? void 0 : decodeJSONPointerSegment(path24[1]);
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -29996,7 +29996,7 @@ var StdioServerTransport = class {
 };
 
 // dist/mcp/server.js
-import { fileURLToPath as fileURLToPath6 } from "url";
+import { fileURLToPath as fileURLToPath7 } from "url";
 
 // dist/storage/sqlite.js
 import { createRequire } from "node:module";
@@ -30022,8 +30022,8 @@ var { DatabaseSync } = loadNodeSqlite();
 var BUSY_TIMEOUT_MS = 3e4;
 var MemeshDatabase = class extends DatabaseSync {
   #depth = 0;
-  constructor(path21, options = {}) {
-    super(path21, options);
+  constructor(path24, options = {}) {
+    super(path24, options);
     this.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
   }
   pragma(statement) {
@@ -32844,8 +32844,8 @@ function isPathShapedFileName(name) {
   return true;
 }
 var SCRATCH_PREFIXES = ["/dev/", "/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/"];
-function isScratchPath(path21) {
-  return SCRATCH_PREFIXES.some((prefix) => path21.startsWith(prefix));
+function isScratchPath(path24) {
+  return SCRATCH_PREFIXES.some((prefix) => path24.startsWith(prefix));
 }
 function bashEditedPaths(cmd) {
   if (typeof cmd !== "string")
@@ -33623,8 +33623,8 @@ function getDatabase() {
 }
 
 // dist/transports/mcp/handlers.js
-import fs15 from "node:fs";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
+import fs18 from "node:fs";
+import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // dist/core/native-memory-editor.js
 import { createHash as createHash5 } from "node:crypto";
@@ -36770,9 +36770,9 @@ function agentScopeIdRejection(field, value) {
   return `${field} must be a stable identifier, not a filesystem path (received ${JSON.stringify(canonicalAgentScopeId(value))}). Use the name on its own, for example ${JSON.stringify(example)}.`;
 }
 function sessionIdRejection(field, value) {
-  const path21 = agentScopeIdRejection(field, value);
-  if (path21)
-    return path21;
+  const path24 = agentScopeIdRejection(field, value);
+  if (path24)
+    return path24;
   if (/[\u0080-\uffff]/.test(value)) {
     return `${field} must contain only ASCII characters: a session id is the UUID or thread id its host gives it (received ${JSON.stringify(canonicalAgentScopeId(value))}).`;
   }
@@ -39083,11 +39083,11 @@ function resolveNetworkRecipient(db2, recipient) {
   if (member.person !== address.person) {
     throw new NetworkRecipientError(`Machine ${JSON.stringify(address.machine)} belongs to ${JSON.stringify(member.person)} in this network, not ${JSON.stringify(address.person)}. Use ${formatNetworkAddress(member.person, address.target, address.machine)}.`);
   }
-  const path21 = joined.config.relay_url === RELAY_OFF ? "directly" : "through the relay or directly";
+  const path24 = joined.config.relay_url === RELAY_OFF ? "directly" : "through the relay or directly";
   return {
     address,
     member,
-    note: `This goes to machine ${address.machine} ${path21}; while that machine is offline it is retried for up to one day.`
+    note: `This goes to machine ${address.machine} ${path24}; while that machine is offline it is retried for up to one day.`
   };
 }
 function networkReceiptFact(db2, deliveryId) {
@@ -39795,14 +39795,756 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
 }
 
 // dist/core/update-entrypoint.js
-import fs14 from "fs";
-import path14 from "path";
-import { spawn } from "child_process";
-import { fileURLToPath } from "url";
+import fs17 from "fs";
+import path17 from "path";
+import { spawn as spawn2 } from "child_process";
+import { fileURLToPath as fileURLToPath2 } from "url";
 
-// dist/core/version-check.js
+// dist/core/auto-update.js
+import { spawn, spawnSync } from "child_process";
+import fs14 from "fs";
+import os2 from "os";
+import path14 from "path";
+import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
+
+// dist/core/install-channel.js
 import fs12 from "fs";
 import path12 from "path";
+import { execFileSync as execFileSync3 } from "child_process";
+function isSubpath(parent, child) {
+  const relative = path12.relative(parent, child);
+  return relative === "" || !relative.startsWith("..") && !path12.isAbsolute(relative);
+}
+function getRootBeforeNodeModules(packageRoot) {
+  const marker = `${path12.sep}node_modules${path12.sep}`;
+  const index = packageRoot.indexOf(marker);
+  if (index === -1)
+    return null;
+  return packageRoot.slice(0, index);
+}
+var PLUGIN_REFRESH_COMMANDS = {
+  "claude-code": "memesh update --reinstall",
+  codex: "memesh update --reinstall"
+};
+var PLUGIN_HOST_DIRS = [
+  ["claude-code", ".claude", "CLAUDE_CONFIG_DIR"],
+  ["codex", ".codex", "CODEX_HOME"]
+];
+function detectPluginHost(packageRoot, options = {}) {
+  const { env = process.env } = options;
+  const normalized = path12.resolve(packageRoot);
+  for (const [host, dir, envVar] of PLUGIN_HOST_DIRS) {
+    const segment = `${path12.sep}${dir}${path12.sep}plugins${path12.sep}cache${path12.sep}`;
+    if (normalized.includes(segment))
+      return host;
+    const relocated = env[envVar];
+    if (relocated) {
+      const cacheRoot = path12.join(path12.resolve(relocated), "plugins", "cache");
+      if (isSubpath(cacheRoot, normalized))
+        return host;
+    }
+  }
+  return null;
+}
+function isPluginMarketplacePath(packageRoot) {
+  return detectPluginHost(packageRoot) !== null;
+}
+function derivedGlobalNpmRoot(execPath) {
+  const prefix = path12.dirname(path12.dirname(execPath));
+  return process.platform === "win32" ? path12.join(prefix, "node_modules") : path12.join(prefix, "lib", "node_modules");
+}
+function getGlobalNpmRoot(options = {}) {
+  const { execFileSyncImpl = execFileSync3, execPathImpl = process.execPath } = options;
+  try {
+    const spawned = execFileSyncImpl("npm", ["root", "-g"], { encoding: "utf8" }).trim();
+    if (spawned)
+      return spawned;
+  } catch {
+  }
+  return derivedGlobalNpmRoot(execPathImpl);
+}
+function detectInstallChannel(options) {
+  const { packageRoot, globalNpmRoot, existsSyncImpl = fs12.existsSync } = options;
+  const normalizedPackageRoot = path12.resolve(packageRoot);
+  if (isPluginMarketplacePath(normalizedPackageRoot)) {
+    return "plugin-marketplace";
+  }
+  if (existsSyncImpl(path12.join(normalizedPackageRoot, ".git"))) {
+    return "source-checkout";
+  }
+  const resolvedGlobalNpmRoot = typeof globalNpmRoot === "function" ? globalNpmRoot() : globalNpmRoot;
+  if (resolvedGlobalNpmRoot && isSubpath(path12.resolve(resolvedGlobalNpmRoot), normalizedPackageRoot)) {
+    return "npm-global";
+  }
+  const rootBeforeNodeModules = getRootBeforeNodeModules(normalizedPackageRoot);
+  if (rootBeforeNodeModules && existsSyncImpl(path12.join(rootBeforeNodeModules, "package.json"))) {
+    return "npm-local";
+  }
+  return "unknown";
+}
+var channelCache = /* @__PURE__ */ new Map();
+function getCurrentInstallChannel(options) {
+  const { packageRoot, existsSyncImpl, execFileSyncImpl } = options;
+  const canCache = !existsSyncImpl && !execFileSyncImpl;
+  if (canCache) {
+    const cached2 = channelCache.get(packageRoot);
+    if (cached2 !== void 0)
+      return cached2;
+  }
+  const channel = detectInstallChannel({
+    packageRoot,
+    globalNpmRoot: () => getGlobalNpmRoot({ execFileSyncImpl }),
+    existsSyncImpl
+  });
+  if (canCache)
+    channelCache.set(packageRoot, channel);
+  return channel;
+}
+function getInstallChannelSupport(channel, packageRoot) {
+  switch (channel) {
+    case "npm-global":
+      return {
+        channel,
+        label: "npm global",
+        canSelfUpdate: true,
+        recommendedCommand: "memesh update",
+        guidance: "This installation can be updated directly from MeMesh."
+      };
+    case "npm-local":
+      return {
+        channel,
+        label: "project-local package install",
+        canSelfUpdate: false,
+        recommendedCommand: null,
+        guidance: "Update this installation from the project package manager that installed MeMesh."
+      };
+    case "source-checkout":
+      return {
+        channel,
+        label: "source checkout",
+        canSelfUpdate: false,
+        recommendedCommand: null,
+        guidance: "Update this source checkout from its repository and rebuild it."
+      };
+    case "plugin-marketplace": {
+      if (detectPluginHost(packageRoot) === "codex") {
+        return {
+          channel,
+          label: "Codex CLI plugin marketplace",
+          canSelfUpdate: true,
+          recommendedCommand: "memesh update",
+          guidance: `Run \`memesh update\`: it checks the release's source, backs up the database and updates the Codex plugin to that release (automatic updates do the same by default; \`memesh doctor\` shows what they did). To repair damaged plugin files without a new release: \`${PLUGIN_REFRESH_COMMANDS.codex}\` (the same checks, for this version).`
+        };
+      }
+      return {
+        channel,
+        label: "Claude Code plugin marketplace",
+        canSelfUpdate: true,
+        recommendedCommand: "memesh update",
+        guidance: `Run \`memesh update\` (no \`memesh\` command on your PATH? run \`node "${path12.join(packageRoot, "dist", "transports", "cli", "cli.js")}" update\`; \`npx @pcircle/memesh update\` cannot work, because npx runs a throwaway copy that is not this install): it checks the release's source, backs up the database and updates the plugin to that release; automatic updates do the same by default and \`memesh doctor\` shows what they did. To repair damaged plugin files without a new release: \`${PLUGIN_REFRESH_COMMANDS["claude-code"]}\`.`
+      };
+    }
+    default:
+      return {
+        channel: "unknown",
+        label: "unknown",
+        canSelfUpdate: false,
+        recommendedCommand: null,
+        guidance: "Update this installation from the tool or workflow that installed MeMesh."
+      };
+  }
+}
+
+// dist/core/process-identity.js
+import { execFileSync as execFileSync4 } from "child_process";
+var CACHE_TTL_MS = 3e4;
+var cache = /* @__PURE__ */ new Map();
+var START_TAG_PREFIX = "v2:";
+function runRealPsStart(pid, exec = execFileSync4) {
+  return exec("/bin/ps", ["-o", "lstart=", "-p", String(pid)], {
+    encoding: "utf8",
+    timeout: 3e3,
+    stdio: ["ignore", "pipe", "ignore"],
+    env: { ...process.env, TZ: "UTC", LC_ALL: "C" }
+  });
+}
+function processStartTag(pid, read = runRealPsStart, now = Date.now) {
+  if (process.platform === "win32" || !Number.isSafeInteger(pid) || pid <= 0)
+    return null;
+  const hit = cache.get(pid);
+  if (hit && now() - hit.at < CACHE_TTL_MS)
+    return hit.tag;
+  let tag = null;
+  try {
+    const out = read(pid).trim();
+    tag = out === "" ? null : `${START_TAG_PREFIX}${out}`;
+  } catch {
+  }
+  cache.set(pid, { tag, at: now() });
+  return tag;
+}
+
+// dist/core/update-notice.js
+import fs13 from "fs";
+import path13 from "path";
+var UP_TO_DATE_REFRESH_MS = 60 * 60 * 1e3;
+var UPGRADE_AVAILABLE_REFRESH_MS = 12 * 60 * 60 * 1e3;
+var ANSWER_VALID_MS = 24 * 60 * 60 * 1e3;
+var JUST_UPGRADED_FILE = "just-upgraded.json";
+function staleRunningProcessNotice(runningVersion, packageJsonPath3) {
+  let onDisk;
+  try {
+    onDisk = JSON.parse(fs13.readFileSync(packageJsonPath3, "utf8")).version;
+  } catch {
+    return null;
+  }
+  if (typeof onDisk !== "string" || !onDisk || !isStrictlyOlder(runningVersion, onDisk))
+    return null;
+  return `[memesh update] This session started on v${runningVersion}, but v${onDisk} is now installed on disk. Restart this session (or reconnect this MCP server, e.g. Claude Code's /reload-plugins) to use it.`;
+}
+function isStrictlyOlder(a, b) {
+  const parse3 = (v) => {
+    const [main2, ...rest] = String(v).split(/[-+]/);
+    const nums = main2.split(".").map((s) => Number.parseInt(s, 10));
+    return { nums, tail: rest.join("-") };
+  };
+  const pa = parse3(a);
+  const pb = parse3(b);
+  const len = Math.max(pa.nums.length, pb.nums.length);
+  for (let i = 0; i < len; i++) {
+    const ai = Number.isFinite(pa.nums[i]) ? pa.nums[i] : 0;
+    const bi = Number.isFinite(pb.nums[i]) ? pb.nums[i] : 0;
+    if (ai !== bi)
+      return ai < bi;
+  }
+  if (pa.tail && !pb.tail)
+    return true;
+  if (!pa.tail && pb.tail)
+    return false;
+  return pa.tail < pb.tail;
+}
+function parseIso(value) {
+  if (typeof value !== "string")
+    return null;
+  const t = Date.parse(value);
+  return Number.isNaN(t) ? null : t;
+}
+function readJson(file2) {
+  try {
+    if (!fs13.existsSync(file2))
+      return null;
+    const parsed = JSON.parse(fs13.readFileSync(file2, "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+function readJustUpgradedMarker(dir) {
+  const raw = readJson(path13.join(dir, JUST_UPGRADED_FILE));
+  if (!raw)
+    return null;
+  const { from, to, at } = raw;
+  if (typeof from !== "string" || !from || typeof to !== "string" || !to)
+    return null;
+  return { from, to, at: typeof at === "string" ? at : "" };
+}
+function clearJustUpgradedMarker(dir) {
+  try {
+    fs13.unlinkSync(path13.join(dir, JUST_UPGRADED_FILE));
+  } catch {
+  }
+}
+function claimJustUpgradedMarker(dir) {
+  const file2 = path13.join(dir, JUST_UPGRADED_FILE);
+  const taken = `${file2}.claimed-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    fs13.renameSync(file2, taken);
+  } catch {
+    return null;
+  }
+  const raw = readJson(taken);
+  try {
+    fs13.unlinkSync(taken);
+  } catch {
+  }
+  if (!raw)
+    return null;
+  const { from, to, at } = raw;
+  if (typeof from !== "string" || !from || typeof to !== "string" || !to)
+    return null;
+  return { from, to, at: typeof at === "string" ? at : "" };
+}
+function boundedReason(raw) {
+  const oneLine2 = redactUserPaths(raw).replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
+  return oneLine2.length > 160 ? `${oneLine2.slice(0, 157)}...` : oneLine2;
+}
+function answerIsCurrent(currentVersion, cache2, now) {
+  if (!cache2 || cache2.currentVersion !== currentVersion)
+    return false;
+  if (typeof cache2.latestVersion !== "string")
+    return false;
+  const latest = normalizeRegistryVersion(cache2.latestVersion);
+  if (latest === null)
+    return false;
+  if (cache2.checkSucceeded === false && !isStrictlyOlder(currentVersion, latest))
+    return false;
+  const successAt = parseIso(cache2.lastSuccessfulCheckAt);
+  if (successAt === null)
+    return false;
+  return now.getTime() - successAt <= ANSWER_VALID_MS;
+}
+function shouldRefreshUpdateCache(currentVersion, cache2, now = /* @__PURE__ */ new Date()) {
+  if (!answerIsCurrent(currentVersion, cache2, now))
+    return true;
+  const successAt = parseIso(cache2.lastSuccessfulCheckAt);
+  const age = now.getTime() - successAt;
+  const upgrade = isStrictlyOlder(currentVersion, normalizeRegistryVersion(cache2.latestVersion));
+  return age > (upgrade ? UPGRADE_AVAILABLE_REFRESH_MS : UP_TO_DATE_REFRESH_MS);
+}
+function resolveUpdateNotice(input2) {
+  const { dir, currentVersion, cache: cache2 } = input2;
+  const now = input2.now ?? /* @__PURE__ */ new Date();
+  if (input2.updateCheckEnabled === false)
+    return { kind: "DISABLED", currentVersion };
+  const marker = readJustUpgradedMarker(dir);
+  if (marker) {
+    if (marker.to === currentVersion) {
+      return { kind: "JUST_UPGRADED", currentVersion, from: marker.from, to: marker.to };
+    }
+    clearJustUpgradedMarker(dir);
+  }
+  if (!answerIsCurrent(currentVersion, cache2, now)) {
+    let reason = "no update check has completed yet";
+    let attempted = false;
+    if (cache2 && cache2.currentVersion === currentVersion) {
+      attempted = parseIso(cache2.lastSuccessfulCheckAt) !== null || typeof cache2.lastError === "string" && cache2.lastError.length > 0;
+      if (typeof cache2.lastError === "string" && cache2.lastError)
+        reason = boundedReason(cache2.lastError);
+      else if (typeof cache2.latestVersion === "string" && normalizeRegistryVersion(cache2.latestVersion) === null)
+        reason = "registry returned an invalid version";
+      else if (attempted && cache2.checkSucceeded === false)
+        reason = "the last update check failed";
+      else if (parseIso(cache2.lastSuccessfulCheckAt) !== null)
+        reason = "the last successful check is more than a day old";
+    }
+    return { kind: "CHECK_FAILED", currentVersion, reason, attempted };
+  }
+  const latestVersion = normalizeRegistryVersion(cache2.latestVersion);
+  if (!isStrictlyOlder(currentVersion, latestVersion)) {
+    return { kind: "UP_TO_DATE", currentVersion, latestVersion };
+  }
+  return { kind: "UPGRADE_AVAILABLE", currentVersion, latestVersion };
+}
+
+// dist/core/updater.js
+var DEFAULT_READBACK_TIMEOUT_MS = 30 * 1e3;
+function parseSemver(version2) {
+  const m = /^(\d+)\.(\d+)\.(\d+)(?:[-+].+)?$/.exec(version2.trim());
+  if (!m)
+    return null;
+  return {
+    major: Number(m[1]),
+    minor: Number(m[2]),
+    patch: Number(m[3])
+  };
+}
+function classifyBump(from, to) {
+  const a = parseSemver(from);
+  const b = parseSemver(to);
+  if (!a || !b)
+    return null;
+  if (b.major > a.major)
+    return "major";
+  if (b.major < a.major)
+    return null;
+  if (b.minor > a.minor)
+    return "minor";
+  if (b.minor < a.minor)
+    return null;
+  if (b.patch > a.patch)
+    return "patch";
+  return null;
+}
+
+// dist/core/auto-update.js
+var DEFAULT_AUTO_UPDATE_POLICY = "major";
+var LOG_FILE = "auto-update.log";
+var LIVE_HOSTS_DIR = "live-hosts";
+var ATTEMPT_FILE = "auto-update-attempt";
+var DISPATCH_CLAIM = "auto-update-dispatch.claim";
+var DISPATCH_CLAIM_STALE_MS = 6e4;
+var ATTEMPT_INTERVAL_MS = 6 * 60 * 60 * 1e3;
+var LIVE_WAIT_POLL_MS = 15 * 1e3;
+var LIVE_WAIT_MAX_MS = 3 * 24 * 60 * 60 * 1e3;
+function ownerOnly(target) {
+  removeGroupAndOtherAccess(target);
+}
+function ensureOwnerDir(dir) {
+  fs14.mkdirSync(dir, { recursive: true, mode: 448 });
+  ownerOnly(dir);
+}
+var AUTO_UPDATE_REASONS = {
+  policyOff: "policy is off",
+  policyOffUnreadableConfig: "policy is off: a config file could not be read, so an explicit off cannot be ruled out",
+  policyOffInvalidValue: "policy is off: a setting held a value that is not off, patch, minor or major",
+  policyOffUpdateCheck: "policy is off: update checks were turned off (updateCheck=false)",
+  policyOffCi: "no update: this run is inside CI or a container and the setting was not given explicitly",
+  policyOffNoAccountHome: "no update: the account's home directory cannot be determined (no passwd entry) and the setting was not given explicitly",
+  policyOffForeignHome: "no update: this run uses a data directory that is not the account's own ~/.memesh and the setting was not given explicitly",
+  channelUnsupported: "no update: this install channel cannot update itself (source checkout, project-local or unknown)",
+  registryUnreachable: "no update: the npm registry did not answer",
+  upToDate: "already on the newest version for this channel",
+  bumpNotPermitted: "no update: the policy does not permit this kind of version bump",
+  sourceNotVerified: "not installed: the package source could not be verified",
+  tarballMismatch: "not installed: the downloaded package does not match the verified one",
+  dependencyPinFailed: "install ran but its dependencies could not be set to the versions the release pins; the previous version was put back",
+  installNotUndone: "an install ran, its dependencies could not be set to the versions the release pins, AND the previous version could not be put back: run `memesh update --reinstall` to finish it (until then MeMesh may not start)",
+  dependenciesNotFetched: "not installed: the release's pinned dependencies could not be fetched and checked (network, registry or a hash that did not match), so the installed version was not touched",
+  globalDirUnknown: "not installed: the directory npm keeps global packages in could not be found, so a failed install could not be undone",
+  rollbackUnavailable: "not installed: a copy of the installed version could not be made, so a failed install could not be undone",
+  commitNotOnMain: "not installed: the release was not built from a commit on the main branch of the official repository",
+  commitUnconfirmed: "not installed: it could not be confirmed that the release commit is on the main branch of the official repository (GitHub did not answer); a later run tries again",
+  dependenciesNotPinned: "not installed: the package does not pin its dependencies (no complete npm-shrinkwrap.json), so what would be installed could not be checked",
+  codexMarketplaceUnreadable: "not installed: the Codex config.toml could not be read, so it is not known whether the pcircle-memesh marketplace is the official one",
+  codexHomeUnknown: "not installed: the Codex directory this plugin lives in could not be worked out from where it is installed, so the Codex plugin was left alone",
+  codexMarketplaceMissing: "not installed: the Codex marketplace pcircle-memesh is not in config.toml and MeMesh did not remove it, so it was taken as removed on purpose and not added back; `memesh update --reinstall` adds it back (pinned to this release) and installs the plugin",
+  codexMarketplaceForeign: "not installed: the Codex marketplace named pcircle-memesh does not come from the official repository, so it was left alone",
+  codexInstallFailed: "Codex plugin install failed; the marketplace was put back to its unpinned state",
+  codexRestoreFailed: "Codex plugin install failed AND MeMesh could not put the marketplace it had removed back (the pcircle-memesh marketplace is now missing because of this update, not because you removed it): the next run puts it back if config.toml is still as this run left it, or run `codex plugin marketplace add PCIRCLE-AI/memesh` yourself",
+  codexRemoveFailed: "Codex plugin not updated: the marketplace could not be removed, so nothing was changed",
+  codexReadbackFailed: "Codex plugin install ran but did not install the target version",
+  claudeReadbackFailed: "Claude Code plugin install ran but the plugin registry does not record the target commit",
+  backupFailed: "not installed: the database backup failed",
+  waitingForHosts: "waiting: a session is still running; the update is applied after it ends",
+  installedAfterWait: "installed after waiting 3 days: sessions were still running, so they may use the new files before they restart",
+  hostsUnreadable: "running sessions cannot be listed (the live-hosts directory is unreadable or cannot be written to, so sessions could not register), so they are assumed to be running",
+  installFailed: "install failed",
+  tarballChanged: "not installed: the verified tarball changed on disk between the check and the install",
+  readbackFailed: "install ran but the installed version is not the target",
+  lockLost: "not installed: this runner no longer holds the update lock (another update took it over), so it stopped",
+  installed: "installed"
+};
+var POLICY_RANK = { off: 0, patch: 1, minor: 2, major: 3 };
+var BUMP_RANK = { patch: 1, minor: 2, major: 3 };
+function readConfigFile(file2) {
+  let text;
+  try {
+    text = fs14.readFileSync(file2, "utf8");
+  } catch (err) {
+    const code = err.code ?? "UNKNOWN";
+    if (code !== "ENOENT")
+      return { state: "unreadable", why: code };
+    try {
+      fs14.lstatSync(file2);
+      return { state: "unreadable", why: "dangling symlink" };
+    } catch (lerr) {
+      const lcode = lerr.code ?? "UNKNOWN";
+      return lcode === "ENOENT" ? { state: "absent" } : { state: "unreadable", why: lcode };
+    }
+  }
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return { state: "unreadable", why: "not a JSON object" };
+    return { state: "ok", raw: parsed };
+  } catch {
+    return { state: "unreadable", why: "not valid JSON" };
+  }
+}
+function isCi(env) {
+  const truthy = (v) => v !== void 0 && v !== "" && v !== "0" && v.toLowerCase() !== "false";
+  return truthy(env.CI) || ["GITHUB_ACTIONS", "GITLAB_CI", "BUILDKITE", "CIRCLECI", "JENKINS_URL", "TF_BUILD", "TRAVIS", "APPVEYOR", "CODEBUILD_BUILD_ID", "TEAMCITY_VERSION", "DRONE", "BITBUCKET_BUILD_NUMBER", "CIRRUS_CI", "SEMAPHORE", "container"].some((k) => truthy(env[k]));
+}
+function safeAccountHome() {
+  try {
+    const home = os2.userInfo().homedir;
+    return home ? home : null;
+  } catch {
+    return null;
+  }
+}
+function parsePolicy(value) {
+  if (typeof value !== "string")
+    return null;
+  const lowered = value.toLowerCase();
+  return lowered === "off" || lowered === "patch" || lowered === "minor" || lowered === "major" ? lowered : null;
+}
+function samePath(a, b) {
+  const real = (p) => {
+    try {
+      return fs14.realpathSync(p);
+    } catch {
+      return path14.resolve(p);
+    }
+  };
+  return real(a) === real(b);
+}
+function resolveUpdatePolicy(input2) {
+  const off = (reason, source, detail) => ({ policy: "off", source, reason, ...detail ? { detail } : {} });
+  const accountDir = input2.accountHome === null ? null : path14.join(input2.accountHome, ".memesh");
+  const configs = [];
+  const seen = [];
+  const addConfigDir = (dir, source) => {
+    if (seen.some((d) => samePath(d, dir)))
+      return;
+    seen.push(dir);
+    configs.push({ file: path14.join(dir, "config.json"), source });
+  };
+  addConfigDir(input2.activeDir, "config");
+  const extraDirs = Array.isArray(input2.extraConfigDirs) ? input2.extraConfigDirs : [];
+  for (const dir of extraDirs)
+    addConfigDir(dir, "config");
+  if (accountDir !== null)
+    addConfigDir(accountDir, "account-config");
+  const explicit = [];
+  const envValue = input2.env.MEMESH_AUTO_UPDATE;
+  if (envValue !== void 0) {
+    const parsed = parsePolicy(envValue);
+    if (parsed === null)
+      return off(AUTO_UPDATE_REASONS.policyOffInvalidValue, "env");
+    if (parsed === "off")
+      return off(AUTO_UPDATE_REASONS.policyOff, "env");
+    explicit.push({ policy: parsed, source: "env" });
+  }
+  for (const { file: file2, source } of configs) {
+    const read = readConfigFile(file2);
+    if (read.state === "unreadable")
+      return off(AUTO_UPDATE_REASONS.policyOffUnreadableConfig, source, `${file2}: ${read.why}`);
+    if (read.state === "absent")
+      continue;
+    if (read.raw.updateCheck === false)
+      return off(AUTO_UPDATE_REASONS.policyOffUpdateCheck, source);
+    if (read.raw.autoUpdate === void 0)
+      continue;
+    const parsed = parsePolicy(read.raw.autoUpdate);
+    if (parsed === null)
+      return off(AUTO_UPDATE_REASONS.policyOffInvalidValue, source);
+    explicit.push({ policy: parsed, source });
+  }
+  const refused = explicit.find((e) => e.policy === "off");
+  if (refused)
+    return off(AUTO_UPDATE_REASONS.policyOff, refused.source);
+  if (explicit.length > 0)
+    return { policy: explicit[0].policy, source: explicit[0].source, reason: null };
+  if (accountDir === null)
+    return off(AUTO_UPDATE_REASONS.policyOffNoAccountHome, "none");
+  if (isCi(input2.env))
+    return off(AUTO_UPDATE_REASONS.policyOffCi, "none");
+  const ownData = samePath(input2.activeDir, accountDir) && !input2.env.MEMESH_DB_PATH && !input2.env.MEMESH_DIR;
+  if (!ownData)
+    return off(AUTO_UPDATE_REASONS.policyOffForeignHome, "none");
+  return { policy: DEFAULT_AUTO_UPDATE_POLICY, source: "default", reason: null };
+}
+function accountMemeshDir() {
+  const home = safeAccountHome();
+  return home === null ? null : path14.join(home, ".memesh");
+}
+function currentPolicy(env = process.env) {
+  return resolveUpdatePolicy({ env, activeDir: getMemeshDirFromDbPath(), extraConfigDirs: [memeshDir()], accountHome: safeAccountHome() });
+}
+function bumpKind(from, to) {
+  return classifyBump(from, to) ?? "patch";
+}
+function policyPermits(policy, bump) {
+  return POLICY_RANK[policy] >= BUMP_RANK[bump];
+}
+function registerLiveHost(dir, pid = process.ppid, logDir = dir) {
+  if (!Number.isSafeInteger(pid) || pid <= 1) {
+    appendLog(logDir, `auto-update: this host's process id (${pid}) cannot be registered as a running host, so the updater will not wait for it`);
+    return;
+  }
+  const root = path14.join(dir, LIVE_HOSTS_DIR);
+  ensureOwnerDir(root);
+  const hostFile = path14.join(root, `${pid}.json`);
+  fs14.writeFileSync(hostFile, JSON.stringify({ pid, at: (/* @__PURE__ */ new Date()).toISOString(), started: processStartTag(pid) }), { mode: 384 });
+  ownerOnly(hostFile);
+}
+function logAutoUpdateLine(dir, line) {
+  appendLog(dir, line);
+}
+function oneLine(text) {
+  return text.replace(/[\r\n\u2028\u2029]+/g, " ");
+}
+function appendLog(dir, line) {
+  try {
+    ensureOwnerDir(dir);
+    fs14.appendFileSync(path14.join(dir, LOG_FILE), `[${(/* @__PURE__ */ new Date()).toISOString()}] ${oneLine(line)}
+`, { mode: 384 });
+    ownerOnly(path14.join(dir, LOG_FILE));
+  } catch {
+  }
+}
+var PIN_TIMEOUT_MS = 10 * 60 * 1e3;
+function removeRetiredFiles(dir) {
+  for (const name of ["update-snooze.json", "update-consent"]) {
+    try {
+      fs14.rmSync(path14.join(dir, name), { recursive: true, force: true });
+    } catch {
+    }
+  }
+}
+function defaultCanSelfUpdate(root) {
+  const support = getInstallChannelSupport(getCurrentInstallChannel({ packageRoot: root }), root);
+  return { ok: support.canSelfUpdate, label: support.label };
+}
+async function dispatchAutoUpdate(pluginRoot, nowMs = Date.now(), options = {}) {
+  const dir = getMemeshDirFromDbPath();
+  let fd = -1;
+  let claim2 = null;
+  const say = (line) => {
+    try {
+      ensureOwnerDir(dir);
+      fs14.appendFileSync(path14.join(dir, LOG_FILE), `[${(/* @__PURE__ */ new Date()).toISOString()}] ${oneLine(line)}
+`, { mode: 384 });
+      ownerOnly(path14.join(dir, LOG_FILE));
+    } catch {
+      try {
+        process.stderr.write(`[memesh] ${oneLine(line)}
+`);
+      } catch {
+      }
+    }
+  };
+  try {
+    ensureOwnerDir(dir);
+    removeRetiredFiles(dir);
+    const support = (options.canSelfUpdate ?? defaultCanSelfUpdate)(pluginRoot);
+    if (!support.ok) {
+      say(`auto-update: no runner started: ${support.label} cannot update itself`);
+      return { state: "unsupported" };
+    }
+    const claimPath = path14.join(dir, DISPATCH_CLAIM);
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        fs14.mkdirSync(claimPath);
+        claim2 = claimPath;
+        break;
+      } catch (err) {
+        if (err.code !== "EEXIST")
+          throw err;
+        let age = 0;
+        let vanished = false;
+        try {
+          age = Date.now() - fs14.statSync(claimPath).mtimeMs;
+        } catch {
+          vanished = true;
+        }
+        if (attempt === 0 && vanished)
+          continue;
+        if (attempt === 0 && age > DISPATCH_CLAIM_STALE_MS) {
+          say(`auto-update: a dispatch claim ${Math.round(age / 1e3)} seconds old was left behind; taking it over`);
+          fs14.rmSync(claimPath, { recursive: true, force: true });
+          continue;
+        }
+        say("auto-update THROTTLED: another session is deciding whether to start the updater right now");
+        return { state: "throttled" };
+      }
+    }
+    const attemptPath = path14.join(dir, ATTEMPT_FILE);
+    try {
+      const last = Number(fs14.readFileSync(attemptPath, "utf8"));
+      if (Number.isFinite(last) && last > nowMs) {
+        say(`auto-update: the last attempt time is in the future (${new Date(last).toISOString()}); ignoring it`);
+      } else if (Number.isFinite(last) && nowMs - last < ATTEMPT_INTERVAL_MS) {
+        say(`auto-update THROTTLED: the last attempt was ${Math.round((nowMs - last) / 6e4)} minute(s) ago, under the ${ATTEMPT_INTERVAL_MS / 36e5}-hour interval`);
+        return { state: "throttled" };
+      }
+    } catch {
+    }
+    const runnerPath = path14.join(pluginRoot, "scripts", "hooks", "auto-update-runner.mjs");
+    if (!fs14.existsSync(runnerPath)) {
+      say(`auto-update FAILED: runner missing at ${runnerPath}`);
+      return { state: "failed" };
+    }
+    const logPath = path14.join(dir, LOG_FILE);
+    try {
+      fd = fs14.openSync(logPath, "a", 384);
+    } catch (err) {
+      try {
+        process.stderr.write(`[memesh] auto-update FAILED: durable log unavailable at ${logPath} (${err instanceof Error ? err.message : String(err)})
+`);
+      } catch {
+      }
+      return { state: "failed" };
+    }
+    const lockPath = path14.join(dir, "auto-update.lock");
+    const child = (options.spawnImpl ?? spawn)(process.execPath, [runnerPath, lockPath], { detached: true, stdio: ["ignore", fd, fd], env: process.env, windowsHide: true });
+    return await new Promise((resolve) => {
+      let settled = false;
+      const finishWith = (state, line) => {
+        if (settled)
+          return;
+        settled = true;
+        if (fd >= 0) {
+          try {
+            fs14.closeSync(fd);
+          } catch {
+          }
+          fd = -1;
+        }
+        say(line);
+        resolve({ state });
+      };
+      child.once("spawn", () => {
+        child.unref();
+        try {
+          fs14.writeFileSync(attemptPath, String(nowMs), { mode: 384 });
+          ownerOnly(attemptPath);
+        } catch (err) {
+          say(`auto-update: could not record the attempt time (${err instanceof Error ? err.message : String(err)})`);
+        }
+        finishWith("dispatched", `auto-update DISPATCHED: worker_pid=${child.pid ?? "unknown"} lock=${lockPath}`);
+      });
+      child.once("error", (err) => finishWith("failed", `auto-update FAILED: stage=dispatch error=${err.message}`));
+    });
+  } catch (err) {
+    if (fd >= 0) {
+      try {
+        fs14.closeSync(fd);
+      } catch {
+      }
+    }
+    say(`auto-update FAILED: stage=dispatch error=${err instanceof Error ? err.message : String(err)}`);
+    return { state: "failed" };
+  } finally {
+    if (claim2 !== null) {
+      try {
+        fs14.rmSync(claim2, { recursive: true, force: true });
+      } catch (err) {
+        say(`auto-update: could not remove the dispatch claim (${err instanceof Error ? err.message : String(err)}); it is taken over after a minute`);
+      }
+    }
+  }
+}
+var INSTALL_ALREADY_RAN = /* @__PURE__ */ new Set([
+  AUTO_UPDATE_REASONS.installFailed,
+  AUTO_UPDATE_REASONS.readbackFailed,
+  AUTO_UPDATE_REASONS.codexReadbackFailed,
+  AUTO_UPDATE_REASONS.claudeReadbackFailed,
+  AUTO_UPDATE_REASONS.installNotUndone,
+  AUTO_UPDATE_REASONS.codexInstallFailed,
+  AUTO_UPDATE_REASONS.codexRestoreFailed
+]);
+
+// dist/core/package-root.js
+import fs15 from "fs";
+import path15 from "path";
+import { fileURLToPath } from "url";
+function findPackageRoot(moduleUrl) {
+  let dir = path15.dirname(fileURLToPath(moduleUrl));
+  for (; ; ) {
+    if (fs15.existsSync(path15.join(dir, "package.json")))
+      return dir;
+    const up = path15.dirname(dir);
+    if (up === dir)
+      throw new Error(`no package.json above ${fileURLToPath(moduleUrl)}`);
+    dir = up;
+  }
+}
+
+// dist/core/version-check.js
+import fs16 from "fs";
+import path16 from "path";
 var STALE_AFTER_MS = 24 * 60 * 60 * 1e3;
 function isUpdateAvailable(currentVersion, latestVersion) {
   if (latestVersion === null)
@@ -39819,7 +40561,7 @@ function getUpdateCheckPath(updateCheckPath, currentVersion) {
   if (process.env.MEMESH_UPDATE_CHECK_PATH)
     return process.env.MEMESH_UPDATE_CHECK_PATH;
   const versionTag = currentVersion && /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : "unknown";
-  return path12.join(memeshDir(), `update-check.${versionTag}.json`);
+  return path16.join(memeshDir(), `update-check.${versionTag}.json`);
 }
 function parseIsoDate(value) {
   if (!value)
@@ -39895,9 +40637,9 @@ function parseStoredUpdateCheck(raw) {
 function readStoredUpdateCheck(updateCheckPath, currentVersion) {
   try {
     const targetPath = getUpdateCheckPath(updateCheckPath, currentVersion);
-    if (!fs12.existsSync(targetPath))
+    if (!fs16.existsSync(targetPath))
       return null;
-    return parseStoredUpdateCheck(JSON.parse(fs12.readFileSync(targetPath, "utf8")));
+    return parseStoredUpdateCheck(JSON.parse(fs16.readFileSync(targetPath, "utf8")));
   } catch {
     return null;
   }
@@ -39909,193 +40651,35 @@ function getLastUpdateCheck(currentVersion, options = {}) {
   return buildResult(currentVersion, stored, "cache", options.now ?? /* @__PURE__ */ new Date());
 }
 
-// dist/core/update-notice.js
-import fs13 from "fs";
-import path13 from "path";
-var UP_TO_DATE_REFRESH_MS = 60 * 60 * 1e3;
-var UPGRADE_AVAILABLE_REFRESH_MS = 12 * 60 * 60 * 1e3;
-var ANSWER_VALID_MS = 24 * 60 * 60 * 1e3;
-var SNOOZE_LEVEL_MS = [24 * 60 * 60 * 1e3, 48 * 60 * 60 * 1e3, 7 * 24 * 60 * 60 * 1e3];
-var SNOOZE_FILE = "update-snooze.json";
-var JUST_UPGRADED_FILE = "just-upgraded.json";
-function staleRunningProcessNotice(runningVersion, packageJsonPath3) {
-  let onDisk;
-  try {
-    onDisk = JSON.parse(fs13.readFileSync(packageJsonPath3, "utf8")).version;
-  } catch {
-    return null;
-  }
-  if (typeof onDisk !== "string" || !onDisk || !isStrictlyOlder(runningVersion, onDisk))
-    return null;
-  return `[memesh update] This session started on v${runningVersion}, but v${onDisk} is now installed on disk. Restart this session (or reconnect this MCP server, e.g. Claude Code's /reload-plugins) to use it.`;
-}
-function isStrictlyOlder(a, b) {
-  const parse3 = (v) => {
-    const [main2, ...rest] = String(v).split(/[-+]/);
-    const nums = main2.split(".").map((s) => Number.parseInt(s, 10));
-    return { nums, tail: rest.join("-") };
-  };
-  const pa = parse3(a);
-  const pb = parse3(b);
-  const len = Math.max(pa.nums.length, pb.nums.length);
-  for (let i = 0; i < len; i++) {
-    const ai = Number.isFinite(pa.nums[i]) ? pa.nums[i] : 0;
-    const bi = Number.isFinite(pb.nums[i]) ? pb.nums[i] : 0;
-    if (ai !== bi)
-      return ai < bi;
-  }
-  if (pa.tail && !pb.tail)
-    return true;
-  if (!pa.tail && pb.tail)
-    return false;
-  return pa.tail < pb.tail;
-}
-function parseIso(value) {
-  if (typeof value !== "string")
-    return null;
-  const t = Date.parse(value);
-  return Number.isNaN(t) ? null : t;
-}
-function readJson(file2) {
-  try {
-    if (!fs13.existsSync(file2))
-      return null;
-    const parsed = JSON.parse(fs13.readFileSync(file2, "utf8"));
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-function readSnooze(dir) {
-  const raw = readJson(path13.join(dir, SNOOZE_FILE));
-  if (!raw)
-    return null;
-  const { target, level, since } = raw;
-  if (typeof target !== "string" || !target)
-    return null;
-  if (typeof level !== "number" || !Number.isInteger(level) || level < 1)
-    return null;
-  if (parseIso(since) === null)
-    return null;
-  return { target, level, since };
-}
-function snoozeExpiresAt(state) {
-  const since = parseIso(state.since) ?? 0;
-  const duration3 = SNOOZE_LEVEL_MS[Math.min(state.level, SNOOZE_LEVEL_MS.length) - 1];
-  return since + duration3;
-}
-function readJustUpgradedMarker(dir) {
-  const raw = readJson(path13.join(dir, JUST_UPGRADED_FILE));
-  if (!raw)
-    return null;
-  const { from, to, at } = raw;
-  if (typeof from !== "string" || !from || typeof to !== "string" || !to)
-    return null;
-  return { from, to, at: typeof at === "string" ? at : "" };
-}
-function clearJustUpgradedMarker(dir) {
-  try {
-    fs13.unlinkSync(path13.join(dir, JUST_UPGRADED_FILE));
-  } catch {
-  }
-}
-function claimJustUpgradedMarker(dir) {
-  const file2 = path13.join(dir, JUST_UPGRADED_FILE);
-  const taken = `${file2}.claimed-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
-  try {
-    fs13.renameSync(file2, taken);
-  } catch {
-    return null;
-  }
-  const raw = readJson(taken);
-  try {
-    fs13.unlinkSync(taken);
-  } catch {
-  }
-  if (!raw)
-    return null;
-  const { from, to, at } = raw;
-  if (typeof from !== "string" || !from || typeof to !== "string" || !to)
-    return null;
-  return { from, to, at: typeof at === "string" ? at : "" };
-}
-function boundedReason(raw) {
-  const oneLine = redactUserPaths(raw).replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
-  return oneLine.length > 160 ? `${oneLine.slice(0, 157)}...` : oneLine;
-}
-function answerIsCurrent(currentVersion, cache, now) {
-  if (!cache || cache.currentVersion !== currentVersion)
-    return false;
-  if (typeof cache.latestVersion !== "string")
-    return false;
-  const latest = normalizeRegistryVersion(cache.latestVersion);
-  if (latest === null)
-    return false;
-  if (cache.checkSucceeded === false && !isStrictlyOlder(currentVersion, latest))
-    return false;
-  const successAt = parseIso(cache.lastSuccessfulCheckAt);
-  if (successAt === null)
-    return false;
-  return now.getTime() - successAt <= ANSWER_VALID_MS;
-}
-function shouldRefreshUpdateCache(currentVersion, cache, now = /* @__PURE__ */ new Date()) {
-  if (!answerIsCurrent(currentVersion, cache, now))
-    return true;
-  const successAt = parseIso(cache.lastSuccessfulCheckAt);
-  const age = now.getTime() - successAt;
-  const upgrade = isStrictlyOlder(currentVersion, normalizeRegistryVersion(cache.latestVersion));
-  return age > (upgrade ? UPGRADE_AVAILABLE_REFRESH_MS : UP_TO_DATE_REFRESH_MS);
-}
-function resolveUpdateNotice(input2) {
-  const { dir, currentVersion, cache } = input2;
-  const now = input2.now ?? /* @__PURE__ */ new Date();
-  if (input2.updateCheckEnabled === false)
-    return { kind: "DISABLED", currentVersion };
-  const marker = readJustUpgradedMarker(dir);
-  if (marker) {
-    if (marker.to === currentVersion) {
-      return { kind: "JUST_UPGRADED", currentVersion, from: marker.from, to: marker.to };
-    }
-    clearJustUpgradedMarker(dir);
-  }
-  if (!answerIsCurrent(currentVersion, cache, now)) {
-    let reason = "no update check has completed yet";
-    let attempted = false;
-    if (cache && cache.currentVersion === currentVersion) {
-      attempted = parseIso(cache.lastSuccessfulCheckAt) !== null || typeof cache.lastError === "string" && cache.lastError.length > 0;
-      if (typeof cache.lastError === "string" && cache.lastError)
-        reason = boundedReason(cache.lastError);
-      else if (typeof cache.latestVersion === "string" && normalizeRegistryVersion(cache.latestVersion) === null)
-        reason = "registry returned an invalid version";
-      else if (attempted && cache.checkSucceeded === false)
-        reason = "the last update check failed";
-      else if (parseIso(cache.lastSuccessfulCheckAt) !== null)
-        reason = "the last successful check is more than a day old";
-    }
-    return { kind: "CHECK_FAILED", currentVersion, reason, attempted };
-  }
-  const latestVersion = normalizeRegistryVersion(cache.latestVersion);
-  if (!isStrictlyOlder(currentVersion, latestVersion)) {
-    return { kind: "UP_TO_DATE", currentVersion, latestVersion };
-  }
-  const snooze = readSnooze(dir);
-  if (snooze && snooze.target === latestVersion) {
-    const until = snoozeExpiresAt(snooze);
-    if (now.getTime() < until) {
-      return { kind: "SNOOZED", currentVersion, latestVersion, until: new Date(until).toISOString(), level: snooze.level };
-    }
-  }
-  return { kind: "UPGRADE_AVAILABLE", currentVersion, latestVersion };
-}
-
 // dist/core/update-entrypoint.js
 var RECENT_HOOK_NOTICE_MS = 10 * 60 * 1e3;
 var CLI_NOTICE_THROTTLE_MS = 24 * 60 * 60 * 1e3;
 var FRESH_CHECK_THROTTLE_MS = 5 * 60 * 1e3;
-function formatUpdateNoticeLine(notice) {
+function formatUpdateNoticeLine(notice, mode = { updates: "on", door: "cli" }) {
   switch (notice.kind) {
-    case "UPGRADE_AVAILABLE":
-      return `[memesh update] ${notice.latestVersion} is available (you are on ${notice.currentVersion}). Run \`memesh update\`, or reply \u201CNot now\u201D / \u201CNever ask again\u201D in a hooked session.`;
+    case "UPGRADE_AVAILABLE": {
+      const head = `[memesh update] ${notice.latestVersion} is available (you are on ${notice.currentVersion}).`;
+      if (mode.updates === "off") {
+        if (mode.door === "mcp")
+          return `${head} Automatic updates are off, so it is not being installed. Do not update on your own.`;
+        if (mode.unsupported)
+          return `${head} Automatic updates are off, and MeMesh cannot install it for this install method: ${mode.unsupported}`;
+        return `${head} Automatic updates are off, so it is not being installed; \`memesh update\` installs it when you choose to.`;
+      }
+      if (mode.updates === "held") {
+        if (mode.door === "mcp")
+          return `${head} The setting autoUpdate: ${mode.setting} does not install this release by itself, so it is not being installed. Do not update on your own.`;
+        return `${head} The setting autoUpdate: ${mode.setting} does not install this release by itself; \`memesh update\` installs it when you choose to.`;
+      }
+      if (mode.updates === "unsupported") {
+        if (mode.door === "mcp")
+          return `${head} MeMesh cannot install it for this install method. Do not update on your own; tell the person.`;
+        return `${head} MeMesh cannot install it for this install method: ${mode.guidance}`;
+      }
+      if (mode.door === "mcp")
+        return `${head} Automatic updates are on: it is installed by itself after the running sessions end. No action is needed.`;
+      return `${head} Run \`memesh update\` to install it now.`;
+    }
     case "JUST_UPGRADED":
       return `[memesh update] Upgraded ${notice.from} \u2192 ${notice.to}. Processes started before the upgrade keep running ${notice.from} until they restart.`;
     case "CHECK_FAILED":
@@ -40105,31 +40689,31 @@ function formatUpdateNoticeLine(notice) {
   }
 }
 function recentHookNoticeExists(dir, currentVersion, latestVersion, now = /* @__PURE__ */ new Date()) {
-  const claims = path14.join(dir, "update-prompt-claims");
+  const claims = path17.join(dir, "update-prompt-claims");
   let names;
   try {
-    names = fs14.readdirSync(claims);
+    names = fs17.readdirSync(claims);
   } catch {
     return false;
   }
   for (const name of names) {
     if (!name.endsWith(".json"))
       continue;
-    const file2 = path14.join(claims, name);
+    const file2 = path17.join(claims, name);
     let fd = null;
     try {
-      fd = fs14.openSync(file2, "r");
-      const stat = fs14.fstatSync(fd);
+      fd = fs17.openSync(file2, "r");
+      const stat = fs17.fstatSync(fd);
       if (now.getTime() - stat.mtimeMs > RECENT_HOOK_NOTICE_MS)
         continue;
-      const value = JSON.parse(fs14.readFileSync(fd, "utf8"));
+      const value = JSON.parse(fs17.readFileSync(fd, "utf8"));
       if (value.decision === "emitted" && value.currentVersion === currentVersion && (latestVersion === null || value.latestVersion === latestVersion))
         return true;
     } catch {
     } finally {
       if (fd !== null)
         try {
-          fs14.closeSync(fd);
+          fs17.closeSync(fd);
         } catch {
         }
     }
@@ -40138,7 +40722,7 @@ function recentHookNoticeExists(dir, currentVersion, latestVersion, now = /* @__
 }
 function updateCheckEnabledIn(dir) {
   try {
-    const raw = JSON.parse(fs14.readFileSync(path14.join(dir, "config.json"), "utf8"));
+    const raw = JSON.parse(fs17.readFileSync(path17.join(dir, "config.json"), "utf8"));
     return raw.updateCheck !== false;
   } catch {
     return true;
@@ -40146,34 +40730,34 @@ function updateCheckEnabledIn(dir) {
 }
 function cliThrottled(dir, currentVersion, now) {
   const tag = /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : "unknown";
-  const marker = path14.join(dir, `last-cli-update-notice.${tag}.lock`);
+  const marker = path17.join(dir, `last-cli-update-notice.${tag}.lock`);
   let fd = null;
   try {
     try {
-      fd = fs14.openSync(marker, "r+");
+      fd = fs17.openSync(marker, "r+");
     } catch (err) {
       const code = err.code;
       if (code !== "ENOENT") {
         return true;
       }
-      fs14.mkdirSync(dir, { recursive: true, mode: 448 });
+      fs17.mkdirSync(dir, { recursive: true, mode: 448 });
       try {
-        fd = fs14.openSync(marker, "wx", 384);
+        fd = fs17.openSync(marker, "wx", 384);
       } catch (raceErr) {
         if (raceErr.code === "EEXIST")
           return true;
         throw raceErr;
       }
-      fs14.writeSync(fd, String(now.getTime()));
+      fs17.writeSync(fd, String(now.getTime()));
       return false;
     }
-    const stat = fs14.fstatSync(fd);
+    const stat = fs17.fstatSync(fd);
     if (now.getTime() - stat.mtimeMs < CLI_NOTICE_THROTTLE_MS)
       return true;
-    fs14.ftruncateSync(fd, 0);
-    fs14.writeSync(fd, String(now.getTime()), 0);
+    fs17.ftruncateSync(fd, 0);
+    fs17.writeSync(fd, String(now.getTime()), 0);
     try {
-      fs14.fchmodSync(fd, 384);
+      fs17.fchmodSync(fd, 384);
     } catch {
     }
     return false;
@@ -40182,7 +40766,7 @@ function cliThrottled(dir, currentVersion, now) {
   } finally {
     if (fd !== null)
       try {
-        fs14.closeSync(fd);
+        fs17.closeSync(fd);
       } catch {
       }
   }
@@ -40192,8 +40776,8 @@ function spawnCacheRefresh(dir, currentVersion, now) {
   const claim2 = `${process.pid}-${now.getTime()}`;
   const failed = (error62) => {
     try {
-      if (marker && fs14.readFileSync(marker, "utf8") === claim2)
-        fs14.unlinkSync(marker);
+      if (marker && fs17.readFileSync(marker, "utf8") === claim2)
+        fs17.unlinkSync(marker);
     } catch {
     }
     const code = error62?.code;
@@ -40201,32 +40785,32 @@ function spawnCacheRefresh(dir, currentVersion, now) {
     console.error(`[memesh update] Could not start update cache refresh (${reason}). Status remains unknown; a later call can retry.`);
   };
   try {
-    const modulePath = fileURLToPath(import.meta.url);
-    const bundledCli = path14.basename(modulePath) === "cli.js" && path14.basename(path14.dirname(modulePath)) === "cli" && path14.basename(path14.dirname(path14.dirname(modulePath))) === "transports";
+    const modulePath = fileURLToPath2(import.meta.url);
+    const bundledCli = path17.basename(modulePath) === "cli.js" && path17.basename(path17.dirname(modulePath)) === "cli" && path17.basename(path17.dirname(path17.dirname(modulePath))) === "transports";
     const helperUrl = new URL(bundledCli ? "../../core/version-check.js" : "../core/version-check.js", import.meta.url);
-    if (!fs14.existsSync(fileURLToPath(helperUrl)))
+    if (!fs17.existsSync(fileURLToPath2(helperUrl)))
       return false;
     const tag = /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : "unknown";
-    marker = path14.join(dir, `last-fresh-refresh.${tag}.lock`);
+    marker = path17.join(dir, `last-fresh-refresh.${tag}.lock`);
     try {
-      if (now.getTime() - fs14.statSync(marker).mtimeMs < FRESH_CHECK_THROTTLE_MS)
+      if (now.getTime() - fs17.statSync(marker).mtimeMs < FRESH_CHECK_THROTTLE_MS)
         return false;
-      fs14.unlinkSync(marker);
+      fs17.unlinkSync(marker);
     } catch {
     }
-    fs14.mkdirSync(dir, { recursive: true, mode: 448 });
+    fs17.mkdirSync(dir, { recursive: true, mode: 448 });
     try {
-      const fd = fs14.openSync(marker, "wx", 384);
+      const fd = fs17.openSync(marker, "wx", 384);
       try {
-        fs14.writeSync(fd, claim2);
+        fs17.writeSync(fd, claim2);
       } finally {
-        fs14.closeSync(fd);
+        fs17.closeSync(fd);
       }
     } catch {
       return false;
     }
     const refresh = "const { getUpdateCheck } = await import(process.argv[1]); await getUpdateCheck(process.argv[2], { preferFresh: true });";
-    const child = spawn(process.execPath, ["--input-type=module", "--eval", refresh, helperUrl.href, currentVersion], {
+    const child = spawn2(process.execPath, ["--input-type=module", "--eval", refresh, helperUrl.href, currentVersion], {
       detached: true,
       stdio: "ignore",
       env: { ...process.env },
@@ -40279,6 +40863,31 @@ var ProcessMemo = class {
         this.set.delete(entry);
   }
 };
+function upgradeNoticeMode(input2, latestVersion) {
+  let policy;
+  try {
+    policy = currentPolicy().policy;
+  } catch {
+    policy = "off";
+  }
+  let support = input2.installSupport;
+  if (support === void 0) {
+    try {
+      const packageRoot = findPackageRoot(import.meta.url);
+      support = getInstallChannelSupport(getCurrentInstallChannel({ packageRoot }), packageRoot);
+    } catch {
+      support = null;
+    }
+  }
+  const cannot = support && !support.canSelfUpdate ? support.guidance : void 0;
+  if (policy === "off")
+    return { updates: "off", door: input2.entryPoint, ...cannot ? { unsupported: cannot } : {} };
+  if (cannot)
+    return { updates: "unsupported", guidance: cannot, door: input2.entryPoint };
+  if (latestVersion && !policyPermits(policy, bumpKind(input2.currentVersion, latestVersion)))
+    return { updates: "held", door: input2.entryPoint, setting: policy };
+  return { updates: "on", door: input2.entryPoint };
+}
 function updateNoticeForEntryPoint(input2) {
   try {
     const now = input2.now ?? /* @__PURE__ */ new Date();
@@ -40288,17 +40897,17 @@ function updateNoticeForEntryPoint(input2) {
     const dir = input2.dir ?? memeshDir();
     const updateCheckEnabled = input2.updateCheckEnabled ?? updateCheckEnabledIn(dir);
     const tag = /^[0-9A-Za-z.+-]+$/.test(input2.currentVersion) ? input2.currentVersion : "unknown";
-    const cache = getLastUpdateCheck(input2.currentVersion, { now, updateCheckPath: path14.join(dir, `update-check.${tag}.json`) });
-    if (updateCheckEnabled && shouldRefreshUpdateCache(input2.currentVersion, cache, now)) {
+    const cache2 = getLastUpdateCheck(input2.currentVersion, { now, updateCheckPath: path17.join(dir, `update-check.${tag}.json`) });
+    if (updateCheckEnabled && shouldRefreshUpdateCache(input2.currentVersion, cache2, now)) {
       (input2.refresh ?? spawnCacheRefresh)(dir, input2.currentVersion, now);
     }
-    const notice = resolveUpdateNotice({ dir, currentVersion: input2.currentVersion, cache, now, updateCheckEnabled });
+    const notice = resolveUpdateNotice({ dir, currentVersion: input2.currentVersion, cache: cache2, now, updateCheckEnabled });
     if (notice.kind === "CHECK_FAILED" && !notice.attempted) {
       memo2?.retryLater();
       return null;
     }
     memo2?.decide();
-    if (notice.kind === "DISABLED" || notice.kind === "SNOOZED" || notice.kind === "UP_TO_DATE")
+    if (notice.kind === "DISABLED" || notice.kind === "UP_TO_DATE")
       return null;
     if (input2.entryPoint === "mcp" && recentHookNoticeExists(dir, notice.currentVersion, notice.kind === "UPGRADE_AVAILABLE" ? notice.latestVersion : null, now)) {
       return null;
@@ -40311,7 +40920,7 @@ function updateNoticeForEntryPoint(input2) {
         return null;
       return formatUpdateNoticeLine({ ...notice, from: claimed.from, to: claimed.to });
     }
-    return formatUpdateNoticeLine(notice);
+    return formatUpdateNoticeLine(notice, upgradeNoticeMode(input2, notice.kind === "UPGRADE_AVAILABLE" ? notice.latestVersion : null));
   } catch {
     return null;
   }
@@ -40347,8 +40956,8 @@ function resolveTranscriptWorkspace(project, rootUris) {
       const parsed = new URL(uri);
       if (parsed.protocol !== "file:")
         continue;
-      const root = fs15.realpathSync(fileURLToPath2(parsed));
-      if (!fs15.statSync(root).isDirectory() || getProjectName(root) !== project)
+      const root = fs18.realpathSync(fileURLToPath3(parsed));
+      if (!fs18.statSync(root).isDirectory() || getProjectName(root) !== project)
         continue;
       matches.add(root);
     } catch {
@@ -40729,8 +41338,8 @@ function fail(message) {
   return { content: [{ type: "text", text: message }], isError: true };
 }
 function formatIssue(issue2) {
-  const path21 = issue2.path.join(".");
-  return path21 ? `${path21}: ${issue2.message}` : issue2.message;
+  const path24 = issue2.path.join(".");
+  return path24 ? `${path24}: ${issue2.message}` : issue2.message;
 }
 function stripNullProps(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value))
@@ -40769,7 +41378,7 @@ function normalizeClientHost(name) {
 }
 var packageVersion = (() => {
   try {
-    return JSON.parse(fs15.readFileSync(new URL("../../../package.json", import.meta.url), "utf8")).version ?? "0.0.0";
+    return JSON.parse(fs18.readFileSync(new URL("../../../package.json", import.meta.url), "utf8")).version ?? "0.0.0";
   } catch {
     return "0.0.0";
   }
@@ -41066,13 +41675,13 @@ ${paragraph.text}`)
 }
 
 // dist/transports/mcp/project-context.js
-import fs16 from "node:fs";
-import path15 from "node:path";
-import { fileURLToPath as fileURLToPath3 } from "node:url";
+import fs19 from "node:fs";
+import path18 from "node:path";
+import { fileURLToPath as fileURLToPath4 } from "node:url";
 function existingDirectory(candidate) {
   try {
-    const real = fs16.realpathSync(candidate);
-    return fs16.statSync(real).isDirectory() ? real : null;
+    const real = fs19.realpathSync(candidate);
+    return fs19.statSync(real).isDirectory() ? real : null;
   } catch {
     return null;
   }
@@ -41082,7 +41691,7 @@ function rootDirectory(uri) {
     return null;
   try {
     const parsed = new URL(uri);
-    return parsed.protocol === "file:" ? existingDirectory(fileURLToPath3(parsed)) : null;
+    return parsed.protocol === "file:" ? existingDirectory(fileURLToPath4(parsed)) : null;
   } catch {
     return null;
   }
@@ -41106,7 +41715,7 @@ function resolveMcpProject(launchRoot, rootUris) {
     fromRoots.add(getProjectName(directory));
   }
   if (launchRoot !== void 0) {
-    const directory = path15.isAbsolute(launchRoot) ? existingDirectory(launchRoot) : null;
+    const directory = path18.isAbsolute(launchRoot) ? existingDirectory(launchRoot) : null;
     if (!directory) {
       return {
         error: "workspace_unavailable",
@@ -41138,16 +41747,16 @@ function resolveMcpProject(launchRoot, rootUris) {
 }
 
 // dist/host-runtime/claude-inbox.js
-import path19 from "node:path";
-import { spawn as spawn3 } from "node:child_process";
-import { fileURLToPath as fileURLToPath5 } from "node:url";
-import fs21 from "node:fs";
+import path22 from "node:path";
+import { spawn as spawn4 } from "node:child_process";
+import { fileURLToPath as fileURLToPath6 } from "node:url";
+import fs24 from "node:fs";
 import net3 from "node:net";
 
 // dist/host-runtime/config.js
 import { createHmac, randomBytes as randomBytes3 } from "node:crypto";
-import fs17 from "node:fs";
-import path16 from "node:path";
+import fs20 from "node:fs";
+import path19 from "node:path";
 var MAX_ROUTER_TOKEN_FILE_BYTES = 8 * 1024;
 var SECURE_LOCAL_HOST_RUNTIME_UNSUPPORTED = "The secure local host runtime is not supported on Windows.";
 function assertSecureLocalHostRuntimeSupported() {
@@ -41162,7 +41771,7 @@ function readTokenFile(tokenFile) {
 function ensureRouterTokenFile(tokenFile) {
   assertSecureLocalHostRuntimeSupported();
   try {
-    fs17.writeFileSync(tokenFile, `${randomBytes3(32).toString("hex")}
+    fs20.writeFileSync(tokenFile, `${randomBytes3(32).toString("hex")}
 `, { mode: 384, flag: "wx" });
   } catch (error62) {
     if (error62.code !== "EEXIST")
@@ -41178,12 +41787,12 @@ function requiredString(value, field) {
 }
 function readOwnerPrivateFile(file2, label, maxBytes) {
   assertSecureLocalHostRuntimeSupported();
-  if (typeof fs17.constants.O_NOFOLLOW !== "number") {
+  if (typeof fs20.constants.O_NOFOLLOW !== "number") {
     throw new Error(`This platform cannot safely reject a symlink ${label}.`);
   }
-  const descriptor = fs17.openSync(file2, fs17.constants.O_RDONLY | fs17.constants.O_NOFOLLOW | fs17.constants.O_NONBLOCK);
+  const descriptor = fs20.openSync(file2, fs20.constants.O_RDONLY | fs20.constants.O_NOFOLLOW | fs20.constants.O_NONBLOCK);
   try {
-    const stat = fs17.fstatSync(descriptor);
+    const stat = fs20.fstatSync(descriptor);
     if (!stat.isFile())
       throw new Error(`The ${label} must be an owner-private regular file.`);
     assertOwnerPrivate(stat, label);
@@ -41192,7 +41801,7 @@ function readOwnerPrivateFile(file2, label, maxBytes) {
     const content = Buffer.allocUnsafe(maxBytes + 1);
     let bytesRead = 0;
     while (bytesRead < content.length) {
-      const chunkBytes = fs17.readSync(descriptor, content, bytesRead, content.length - bytesRead, null);
+      const chunkBytes = fs20.readSync(descriptor, content, bytesRead, content.length - bytesRead, null);
       if (chunkBytes === 0)
         break;
       bytesRead += chunkBytes;
@@ -41201,7 +41810,7 @@ function readOwnerPrivateFile(file2, label, maxBytes) {
       throw new Error(`The ${label} exceeds its ${maxBytes}-byte limit.`);
     return content.subarray(0, bytesRead).toString("utf8");
   } finally {
-    fs17.closeSync(descriptor);
+    fs20.closeSync(descriptor);
   }
 }
 function assertOwnerPrivate(stat, label) {
@@ -41213,11 +41822,11 @@ function assertOwnerPrivate(stat, label) {
 }
 
 // dist/host-runtime/router-client.js
-import { spawn as spawn2 } from "node:child_process";
+import { spawn as spawn3 } from "node:child_process";
 import { randomUUID as randomUUID5 } from "node:crypto";
-import fs18 from "node:fs";
+import fs21 from "node:fs";
 import net2 from "node:net";
-import { fileURLToPath as fileURLToPath4 } from "node:url";
+import { fileURLToPath as fileURLToPath5 } from "node:url";
 
 // dist/host-runtime/package-version.js
 import { readFileSync } from "node:fs";
@@ -41671,7 +42280,7 @@ function waitForSocketConnect(socket) {
   });
 }
 function assertPrivateRouterSocket(socketPath) {
-  const stat = fs18.lstatSync(socketPath);
+  const stat = fs21.lstatSync(socketPath);
   if (!stat.isSocket() || (stat.mode & 63) !== 0) {
     throw new Error("The router socket must be owner-private.");
   }
@@ -41698,12 +42307,12 @@ function normalizeResilience(options = {}) {
   };
 }
 function packagedRouterEntrypoint() {
-  const candidates = ["./router.js", "../host-runtime/router.js", "../../host-runtime/router.js"].map((relative) => fileURLToPath4(new URL(relative, import.meta.url)));
-  return candidates.find((candidate) => fs18.existsSync(candidate)) ?? candidates[0];
+  const candidates = ["./router.js", "../host-runtime/router.js", "../../host-runtime/router.js"].map((relative) => fileURLToPath5(new URL(relative, import.meta.url)));
+  return candidates.find((candidate) => fs21.existsSync(candidate)) ?? candidates[0];
 }
 function spawnPackagedRouter() {
   const entrypoint = packagedRouterEntrypoint();
-  return spawn2(process.execPath, [entrypoint], { detached: true, shell: false, stdio: "ignore" });
+  return spawn3(process.execPath, [entrypoint], { detached: true, shell: false, stdio: "ignore" });
 }
 function startPackagedRouter() {
   return new Promise((resolve, reject) => {
@@ -41775,13 +42384,13 @@ function isRecord(value) {
 }
 
 // dist/core/session-activity.js
-import fs20 from "node:fs";
-import path18 from "node:path";
-import { execFileSync as execFileSync3 } from "node:child_process";
+import fs23 from "node:fs";
+import path21 from "node:path";
+import { execFileSync as execFileSync5 } from "node:child_process";
 
 // dist/host-runtime/claude-transcript.js
-import fs19 from "node:fs";
-import path17 from "node:path";
+import fs22 from "node:fs";
+import path20 from "node:path";
 var MAX_BYTES = 1024 * 1024;
 var SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
 var ClaudeTranscriptReader = class {
@@ -41805,12 +42414,12 @@ var ClaudeTranscriptReader = class {
     if (!SESSION_ID.test(session))
       return void 0;
     try {
-      for (const entry of fs19.readdirSync(this.projectsDir, { withFileTypes: true })) {
+      for (const entry of fs22.readdirSync(this.projectsDir, { withFileTypes: true })) {
         if (!entry.isDirectory() || this.projectSlug !== void 0 && entry.name !== this.projectSlug)
           continue;
-        const candidate = path17.join(this.projectsDir, entry.name, `${session}.jsonl`);
+        const candidate = path20.join(this.projectsDir, entry.name, `${session}.jsonl`);
         try {
-          if (fs19.lstatSync(candidate).isFile())
+          if (fs22.lstatSync(candidate).isFile())
             return candidate;
         } catch {
         }
@@ -41824,25 +42433,25 @@ var ClaudeTranscriptReader = class {
     if (!file2) {
       if (!this.projectSlug || !SESSION_ID.test(session))
         return void 0;
-      return { session, file: path17.join(this.projectsDir, this.projectSlug, `${session}.jsonl`), offset: 0, pending: Buffer.alloc(0), discardPartial: false };
+      return { session, file: path20.join(this.projectsDir, this.projectSlug, `${session}.jsonl`), offset: 0, pending: Buffer.alloc(0), discardPartial: false };
     }
     let fd;
     try {
-      if (!fs19.lstatSync(path17.dirname(file2)).isDirectory())
+      if (!fs22.lstatSync(path20.dirname(file2)).isDirectory())
         return void 0;
-      fd = fs19.openSync(file2, fs19.constants.O_RDONLY | (fs19.constants.O_NOFOLLOW ?? 0) | (fs19.constants.O_NONBLOCK ?? 0));
-      const stat = fs19.fstatSync(fd);
-      const named = fs19.lstatSync(file2);
+      fd = fs22.openSync(file2, fs22.constants.O_RDONLY | (fs22.constants.O_NOFOLLOW ?? 0) | (fs22.constants.O_NONBLOCK ?? 0));
+      const stat = fs22.fstatSync(fd);
+      const named = fs22.lstatSync(file2);
       if (!stat.isFile() || !named.isFile() || stat.dev !== named.dev || stat.ino !== named.ino || typeof process.getuid === "function" && stat.uid !== process.getuid())
         return void 0;
       const last = Buffer.alloc(1);
-      const discardPartial = stat.size > 0 && fs19.readSync(fd, last, 0, 1, stat.size - 1) === 1 && last[0] !== 10;
+      const discardPartial = stat.size > 0 && fs22.readSync(fd, last, 0, 1, stat.size - 1) === 1 && last[0] !== 10;
       return { session, file: file2, dev: stat.dev, ino: stat.ino, offset: stat.size, pending: Buffer.alloc(0), discardPartial };
     } catch {
       return void 0;
     } finally {
       if (fd !== void 0)
-        fs19.closeSync(fd);
+        fs22.closeSync(fd);
     }
   }
   readNew(session, mark) {
@@ -41853,7 +42462,7 @@ var ClaudeTranscriptReader = class {
       if (mark.ino === void 0) {
         let named2;
         try {
-          named2 = fs19.lstatSync(mark.file);
+          named2 = fs22.lstatSync(mark.file);
         } catch (error62) {
           return error62.code === "ENOENT" ? [] : void 0;
         }
@@ -41862,15 +42471,15 @@ var ClaudeTranscriptReader = class {
         mark.dev = named2.dev;
         mark.ino = named2.ino;
       }
-      if (!fs19.lstatSync(path17.dirname(mark.file)).isDirectory())
+      if (!fs22.lstatSync(path20.dirname(mark.file)).isDirectory())
         return void 0;
-      fd = fs19.openSync(mark.file, fs19.constants.O_RDONLY | (fs19.constants.O_NOFOLLOW ?? 0) | (fs19.constants.O_NONBLOCK ?? 0));
-      const stat = fs19.fstatSync(fd);
-      const named = fs19.lstatSync(mark.file);
+      fd = fs22.openSync(mark.file, fs22.constants.O_RDONLY | (fs22.constants.O_NOFOLLOW ?? 0) | (fs22.constants.O_NONBLOCK ?? 0));
+      const stat = fs22.fstatSync(fd);
+      const named = fs22.lstatSync(mark.file);
       if (!stat.isFile() || !named.isFile() || stat.dev !== mark.dev || stat.ino !== mark.ino || named.dev !== stat.dev || named.ino !== stat.ino || typeof process.getuid === "function" && stat.uid !== process.getuid() || stat.size < mark.offset || stat.size - mark.offset > MAX_BYTES)
         return void 0;
       const buffer = Buffer.alloc(stat.size - mark.offset);
-      const n = fs19.readSync(fd, buffer, 0, buffer.length, mark.offset);
+      const n = fs22.readSync(fd, buffer, 0, buffer.length, mark.offset);
       mark.offset += n;
       let bytes = Buffer.concat([mark.pending, buffer.subarray(0, n)]);
       if (bytes.length > MAX_BYTES)
@@ -41893,7 +42502,7 @@ var ClaudeTranscriptReader = class {
       return void 0;
     } finally {
       if (fd !== void 0)
-        fs19.closeSync(fd);
+        fs22.closeSync(fd);
     }
   }
   currentTask(session) {
@@ -41910,11 +42519,11 @@ var ClaudeTranscriptReader = class {
       return void 0;
     let fd;
     try {
-      if (!fs19.lstatSync(path17.dirname(this.file)).isDirectory())
+      if (!fs22.lstatSync(path20.dirname(this.file)).isDirectory())
         return void 0;
-      fd = fs19.openSync(this.file, fs19.constants.O_RDONLY | (fs19.constants.O_NOFOLLOW ?? 0) | (fs19.constants.O_NONBLOCK ?? 0));
-      const stat = fs19.fstatSync(fd);
-      const named = fs19.lstatSync(this.file);
+      fd = fs22.openSync(this.file, fs22.constants.O_RDONLY | (fs22.constants.O_NOFOLLOW ?? 0) | (fs22.constants.O_NONBLOCK ?? 0));
+      const stat = fs22.fstatSync(fd);
+      const named = fs22.lstatSync(this.file);
       if (!stat.isFile() || !named.isFile() || stat.dev !== named.dev || stat.ino !== named.ino || typeof process.getuid === "function" && stat.uid !== process.getuid())
         return void 0;
       const identity = `${stat.dev}:${stat.ino}`;
@@ -41925,7 +42534,7 @@ var ClaudeTranscriptReader = class {
       }
       const start = this.offset;
       const buffer = Buffer.alloc(stat.size - start);
-      const n = fs19.readSync(fd, buffer, 0, buffer.length, this.offset);
+      const n = fs22.readSync(fd, buffer, 0, buffer.length, this.offset);
       this.offset += n;
       let bytes = Buffer.concat([this.pending, buffer.subarray(0, n)]);
       if (start > 0 && start === stat.size - MAX_BYTES) {
@@ -41951,7 +42560,7 @@ var ClaudeTranscriptReader = class {
       return void 0;
     } finally {
       if (fd !== void 0)
-        fs19.closeSync(fd);
+        fs22.closeSync(fd);
     }
   }
   reset() {
@@ -42016,21 +42625,21 @@ var MAX_REGISTRY_BYTES = 64 * 1024;
 function readTail(file2, forbiddenModeBits = 0, refuseOverBytes = Infinity) {
   let fd;
   try {
-    fd = fs20.openSync(file2, fs20.constants.O_RDONLY | (fs20.constants.O_NOFOLLOW ?? 0) | (fs20.constants.O_NONBLOCK ?? 0));
-    const stat = fs20.fstatSync(fd);
-    const named = fs20.lstatSync(file2);
+    fd = fs23.openSync(file2, fs23.constants.O_RDONLY | (fs23.constants.O_NOFOLLOW ?? 0) | (fs23.constants.O_NONBLOCK ?? 0));
+    const stat = fs23.fstatSync(fd);
+    const named = fs23.lstatSync(file2);
     if (!stat.isFile() || named.dev !== stat.dev || named.ino !== stat.ino || typeof process.getuid === "function" && stat.uid !== process.getuid() || process.platform !== "win32" && (stat.mode & forbiddenModeBits) !== 0 || stat.size > refuseOverBytes)
       return void 0;
     const start = Math.max(0, stat.size - MAX_BYTES2);
     const bytes = Buffer.alloc(stat.size - start);
-    const n = fs20.readSync(fd, bytes, 0, bytes.length, start);
+    const n = fs23.readSync(fd, bytes, 0, bytes.length, start);
     const text = bytes.subarray(0, n).toString("utf8");
     return start ? text.slice(text.indexOf("\n") + 1) : text;
   } catch {
     return void 0;
   } finally {
     if (fd !== void 0)
-      fs20.closeSync(fd);
+      fs23.closeSync(fd);
   }
 }
 function formatSessionActivity(fields) {
@@ -42042,8 +42651,8 @@ function formatSessionActivity(fields) {
 }
 function repoLabel(workspace) {
   try {
-    const value = execFileSync3("git", ["rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD"], { cwd: workspace, encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim().split("\n");
-    return value.length === 2 && value[0] && value[1] ? `${path18.basename(value[0])}@${value[1]}` : void 0;
+    const value = execFileSync5("git", ["rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD"], { cwd: workspace, encoding: "utf8", timeout: 1e3, stdio: ["ignore", "pipe", "ignore"] }).trim().split("\n");
+    return value.length === 2 && value[0] && value[1] ? `${path21.basename(value[0])}@${value[1]}` : void 0;
   } catch {
     return void 0;
   }
@@ -42065,7 +42674,7 @@ function privateSessionCheck(locate, sessionId) {
       transcriptPath,
       memeshDir: memeshDir2,
       deadlineAt: Date.now() + ACTIVITY_CHECK_MS,
-      cacheDir: path18.join(memeshDir2, "private-check-cache")
+      cacheDir: path21.join(memeshDir2, "private-check-cache")
     }) : { state: "unchecked", reason: "unreadable", kind: "transient", detail: "the folder that holds the session's rollout cannot be read" };
     if (state.state === "unchecked" && !warned2) {
       warned2 = true;
@@ -42078,7 +42687,7 @@ function privateSessionCheck(locate, sessionId) {
     return state.state !== "no";
   };
 }
-var defaultClaudeDir = () => process.env.CLAUDE_CONFIG_DIR || path18.join(homeDir(), ".claude");
+var defaultClaudeDir = () => process.env.CLAUDE_CONFIG_DIR || path21.join(homeDir(), ".claude");
 var startByPid = /* @__PURE__ */ new Map();
 var unreadableLogged = /* @__PURE__ */ new Set();
 var unreadableUntil = /* @__PURE__ */ new Map();
@@ -42091,7 +42700,7 @@ function processStart(pid) {
   if (retryAt !== void 0 && Date.now() < retryAt)
     return void 0;
   try {
-    const text = execFileSync3("ps", ["-o", "lstart=", "-p", String(pid)], {
+    const text = execFileSync5("ps", ["-o", "lstart=", "-p", String(pid)], {
       encoding: "utf8",
       timeout: 2e3,
       stdio: ["ignore", "pipe", "ignore"],
@@ -42126,7 +42735,7 @@ function startsMatch(actual, recorded) {
 }
 function readClaudeRegistry(pid, claudeDir = defaultClaudeDir()) {
   try {
-    const value = JSON.parse(readTail(path18.join(claudeDir, "sessions", `${pid}.json`), 18, MAX_REGISTRY_BYTES) ?? "");
+    const value = JSON.parse(readTail(path21.join(claudeDir, "sessions", `${pid}.json`), 18, MAX_REGISTRY_BYTES) ?? "");
     if (!value || typeof value !== "object" || Array.isArray(value) || value.pid !== pid)
       return void 0;
     const { procStart } = value;
@@ -42153,7 +42762,7 @@ function createClaudeActivity(pid, workspace, claudeDir = defaultClaudeDir()) {
       const currentSlug = projectTranscriptSlug(registry2.cwd);
       if (currentSlug !== slug) {
         slug = currentSlug;
-        reader = new ClaudeTranscriptReader(path18.join(claudeDir, "projects"), slug);
+        reader = new ClaudeTranscriptReader(path21.join(claudeDir, "projects"), slug);
       }
     }
     const sessionId = typeof registry2?.sessionId === "string" ? registry2.sessionId : void 0;
@@ -42189,7 +42798,7 @@ function sendNativeNotice(socketPath, content, timeoutMs) {
       return;
     }
     try {
-      const stat = fs21.lstatSync(socketPath);
+      const stat = fs24.lstatSync(socketPath);
       if (!stat.isSocket() || (stat.mode & 63) !== 0 || typeof process.getuid === "function" && stat.uid !== process.getuid())
         throw new Error("Claude native inbox is unavailable.");
     } catch {
@@ -42372,11 +42981,11 @@ async function startClaudeInboxPresence(rootUris) {
     return void 0;
   const dataDir = getMemeshDirFromDbPath();
   requirePrivateWritableDirectory(dataDir, "the local router keeps its lifecycle state there");
-  const token = ensureRouterTokenFile(path19.join(dataDir, "agent-router.token"));
+  const token = ensureRouterTokenFile(path22.join(dataDir, "agent-router.token"));
   let workspace = process.env.MEMESH_PROJECT_ROOT ?? process.env.CLAUDE_PROJECT_DIR;
   if (!workspace && rootUris?.length === 1) {
     try {
-      workspace = fileURLToPath5(rootUris[0]);
+      workspace = fileURLToPath6(rootUris[0]);
     } catch {
     }
   }
@@ -42393,12 +43002,12 @@ async function startClaudeInboxPresence(rootUris) {
     deliver: createClaudeInboxDeliver({
       socketPath: process.env.CLAUDE_CODE_MESSAGING_TOKEN ? process.env.CLAUDE_CODE_MESSAGING_SOCKET : void 0,
       sessionId: session,
-      reader: () => new ClaudeTranscriptReader(path19.join(defaultClaudeDir(), "projects"), projectTranscriptSlug(readRegistrySession()?.cwd ?? workspace ?? "")),
+      reader: () => new ClaudeTranscriptReader(path22.join(defaultClaudeDir(), "projects"), projectTranscriptSlug(readRegistrySession()?.cwd ?? workspace ?? "")),
       currentSession: () => readRegistrySession()?.sessionId
     }),
     resilience: {
       start_router: () => new Promise((resolve, reject) => {
-        const child = spawn3(process.execPath, [fileURLToPath5(new URL("../host-runtime/router.js", import.meta.url))], {
+        const child = spawn4(process.execPath, [fileURLToPath6(new URL("../host-runtime/router.js", import.meta.url))], {
           detached: true,
           shell: false,
           stdio: "ignore"
@@ -42414,8 +43023,8 @@ async function startClaudeInboxPresence(rootUris) {
 }
 
 // dist/mcp/server.js
-var packageJsonPath2 = path20.resolve(path20.dirname(fileURLToPath6(import.meta.url)), "../../package.json");
-var packageVersion2 = JSON.parse(fs22.readFileSync(packageJsonPath2, "utf8")).version ?? "0.0.0";
+var packageJsonPath2 = path23.resolve(path23.dirname(fileURLToPath7(import.meta.url)), "../../package.json");
+var packageVersion2 = JSON.parse(fs25.readFileSync(packageJsonPath2, "utf8")).version ?? "0.0.0";
 configureVersionSource(packageVersion2, packageJsonPath2);
 var server = new Server({ name: "memesh", version: packageVersion2 }, { capabilities: { tools: {} } });
 var presence;
@@ -42476,9 +43085,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   });
 });
 async function main() {
+  try {
+    registerLiveHost(accountMemeshDir() ?? getMemeshDirFromDbPath(), void 0, getMemeshDirFromDbPath());
+  } catch (err) {
+    logAutoUpdateLine(getMemeshDirFromDbPath(), `auto-update: could not register this MCP host (${err instanceof Error ? err.message : String(err)}); the updater may not wait for it`);
+  }
   openDatabase();
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  try {
+    void dispatchAutoUpdate(findPackageRoot(import.meta.url)).catch((err) => {
+      logAutoUpdateLine(getMemeshDirFromDbPath(), `auto-update: the MCP server could not start the updater (${err instanceof Error ? err.message : String(err)})`);
+    });
+  } catch (err) {
+    logAutoUpdateLine(getMemeshDirFromDbPath(), `auto-update: the MCP server could not start the updater (${err instanceof Error ? err.message : String(err)})`);
+  }
 }
 async function shutdown() {
   if (closing)

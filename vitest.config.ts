@@ -40,6 +40,9 @@ export default defineConfig({
     // Environment configuration
     environment: 'node',
 
+    // Make the account's home (os.userInfo, which ignores HOME) follow the isolated HOME.
+    setupFiles: ['tests/setup/isolate-account-home.ts'],
+
     // Coverage. Two things were wrong with this block for its whole life.
     //
     // FIRST, `@vitest/coverage-v8` was never installed, so `vitest --coverage`

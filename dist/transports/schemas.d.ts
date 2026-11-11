@@ -3,8 +3,8 @@ export declare const WorkPackageSchema: z.ZodDiscriminatedUnion<[z.ZodObject<{
     action: z.ZodLiteral<"prepare">;
     project: z.ZodString;
     kind: z.ZodEnum<{
-        transcript: "transcript";
         digest: "digest";
+        transcript: "transcript";
     }>;
 }, z.core.$strict>, z.ZodObject<{
     result: z.ZodObject<{

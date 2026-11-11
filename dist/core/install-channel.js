@@ -15,8 +15,8 @@ function getRootBeforeNodeModules(packageRoot) {
     return packageRoot.slice(0, index);
 }
 export const PLUGIN_REFRESH_COMMANDS = {
-    'claude-code': 'memesh upgrade-plugin',
-    codex: 'codex plugin marketplace upgrade pcircle-memesh && codex plugin add memesh@pcircle-memesh',
+    'claude-code': 'memesh update --reinstall',
+    codex: 'memesh update --reinstall',
 };
 const PLUGIN_HOST_DIRS = [
     ['claude-code', '.claude', 'CLAUDE_CONFIG_DIR'],
@@ -154,17 +154,17 @@ export function getInstallChannelSupport(channel, packageRoot) {
                 return {
                     channel,
                     label: 'Codex CLI plugin marketplace',
-                    canSelfUpdate: false,
-                    recommendedCommand: PLUGIN_REFRESH_COMMANDS.codex,
-                    guidance: `Run \`${PLUGIN_REFRESH_COMMANDS.codex}\` to refresh the snapshot and re-stage the plugin from it (\`add\` replaces an existing same-version cache). The plugin marketplace pins versions, so a new release does not auto-update.`,
+                    canSelfUpdate: true,
+                    recommendedCommand: 'memesh update',
+                    guidance: `Run \`memesh update\`: it checks the release's source, backs up the database and updates the Codex plugin to that release (automatic updates do the same by default; \`memesh doctor\` shows what they did). To repair damaged plugin files without a new release: \`${PLUGIN_REFRESH_COMMANDS.codex}\` (the same checks, for this version).`,
                 };
             }
             return {
                 channel,
                 label: 'Claude Code plugin marketplace',
-                canSelfUpdate: false,
-                recommendedCommand: 'memesh upgrade-plugin',
-                guidance: 'Run `memesh upgrade-plugin` (no npm CLI? `npx @pcircle/memesh upgrade-plugin`), or reinstall the plugin from the Claude Code /plugin UI. The plugin marketplace pins versions, so a new release does not auto-update.',
+                canSelfUpdate: true,
+                recommendedCommand: 'memesh update',
+                guidance: `Run \`memesh update\` (no \`memesh\` command on your PATH? run \`node "${path.join(packageRoot, 'dist', 'transports', 'cli', 'cli.js')}" update\`; \`npx @pcircle/memesh update\` cannot work, because npx runs a throwaway copy that is not this install): it checks the release's source, backs up the database and updates the plugin to that release; automatic updates do the same by default and \`memesh doctor\` shows what they did. To repair damaged plugin files without a new release: \`${PLUGIN_REFRESH_COMMANDS['claude-code']}\`.`,
             };
         }
         default:

@@ -163,3 +163,6 @@ docs/notes/
 /.github/workflows/sdlc-review.yml
 /.verify/
 /.sdlc-run/
+
+# Written only while the package is being packed (scripts/shrinkwrap.mjs); never committed.
+/npm-shrinkwrap.json

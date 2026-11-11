@@ -11,6 +11,7 @@ import {
 } from '../db.js';
 import { getUpdateCheck } from './version-check.js';
 import { classifyBump } from './updater.js';
+import { AUTO_UPDATE_REASONS, currentPolicy, describeLockHolder, inspectAutoUpdateState, readInstalling } from './auto-update.js';
 import {
   getCurrentInstallChannel, getInstallChannelSupport, detectPluginHost,
   pluginHostConfigRoot, versionedPluginCacheRoots, PLUGIN_REFRESH_COMMANDS,
@@ -2522,7 +2523,7 @@ function pluginCacheUnverifiable(host: PluginHost, missing: string): DoctorCheck
     `Plugin cache source record is current (${hostLabel})`,
     'warn',
     `Could not tell whether the plugin cache matches the marketplace: ${missing}. The version alone cannot answer this — two builds can carry the same version.`,
-    `Run \`${command}\` — it re-stages the cache from the marketplace and records the commit, after which this check can answer.`,
+    `Run \`${command}\` — it puts this version back through the same checks an update takes (source check, database backup) and records the commit, after which this check can answer.`,
     { code: 'plugin-cache.unverifiable', params: { host: hostLabel, command } },
     'plugin-cache-refresh',
   );
@@ -2666,6 +2667,8 @@ function inspectPluginCacheCurrency(
 
   let installedSha: string | null;
   let installedMissing: string;
+  // The version Claude Code's own record says it installed (Codex's revision marker carries none).
+  let recordedVersion: string | null = null;
   if (host === 'codex') {
     installedSha = readCodexInstallRevision(packageRoot, readFileSyncImpl);
     installedMissing = 'the plugin cache carries no readable .codex-marketplace-install.json revision';
@@ -2687,6 +2690,7 @@ function inspectPluginCacheCurrency(
     const soleEntry = entries.length === 1 ? entries[0] : undefined;
     const soleEntryHasPath = typeof soleEntry?.installPath === 'string' && soleEntry.installPath.length > 0;
     const entry = matching.length === 1 ? matching[0] : undefined;
+    recordedVersion = typeof entry?.version === 'string' ? entry.version : null;
     installedSha = !registry.malformed
       && typeof entry?.gitCommitSha === 'string'
       && /^[0-9a-f]{40}$/.test(entry.gitCommitSha)
@@ -2730,14 +2734,29 @@ function inspectPluginCacheCurrency(
     );
   }
 
+  const params = { installed: installedSha.slice(0, 8), marketplace: marketplaceSha.slice(0, 8), host: hostLabel, command };
+  // Two different things look alike here. The marketplace branch moves ahead of the last release all the time: the plugin stays on the
+  // release MeMesh verified, which is how it is meant to work, and there is nothing to do. But when the record of what was installed
+  // names another version than the package that is running, the cache and the record disagree: that is damage, and it is repaired.
+  let runningVersion: string | null = null;
+  try { runningVersion = JSON.parse(readFileSyncImpl(path.join(packageRoot, 'package.json'), 'utf8') as string).version ?? null; } catch { /* unreadable: no claim of a mismatch */ }
+  if (recordedVersion !== null && typeof runningVersion === 'string' && recordedVersion !== runningVersion) {
+    return createCheck(
+      'plugin-cache',
+      `Plugin cache source record is current (${hostLabel})`,
+      'warn',
+      `${hostLabel}'s record says version ${recordedVersion} is installed from commit ${installedSha.slice(0, 8)}, but the plugin running here is ${runningVersion}: the cache and the record disagree.`,
+      'Run `memesh update --reinstall`: it puts the verified release back (source check, commit on main, pinned dependencies, read-back) and rewrites the record.',
+      { code: 'plugin-cache.stale', params },
+    );
+  }
   return createCheck(
     'plugin-cache',
     `Plugin cache source record is current (${hostLabel})`,
-    'warn',
-    `The plugin cache records commit ${installedSha.slice(0, 8)}, but the marketplace has moved to ${marketplaceSha.slice(0, 8)} under the same version — ${hostLabel} does not normally refresh a cache whose version did not change, so refresh the cache before relying on the newer marketplace code.`,
-    `Run \`${command}\` to refresh the cache in place, then restart ${hostLabel}.`,
-    { code: 'plugin-cache.stale', params: { installed: installedSha.slice(0, 8), marketplace: marketplaceSha.slice(0, 8), host: hostLabel, command } },
-    'plugin-cache-refresh',
+    'pass',
+    `The plugin cache records commit ${installedSha.slice(0, 8)}; the ${hostLabel} marketplace has since moved to ${marketplaceSha.slice(0, 8)}. The installed plugin stays on the release MeMesh verified: the marketplace branch is ahead of the last release, and its newer code has not been checked. Nothing to do; \`memesh update\` moves to the next release when one is published.`,
+    undefined,
+    { code: 'plugin-cache.behind-marketplace', params },
   );
 }
 
@@ -2898,6 +2917,145 @@ function isFreshInstall(packageRoot: string, statSyncImpl: typeof fs.statSync): 
   } catch {
     return false;
   }
+}
+
+/**
+ * What the automatic updater last did, read from the record it writes for every
+ * attempt (nothing is inferred). A failed attempt is the only warning: skipped
+ * and waiting are the updater doing what its settings say.
+ */
+function inspectAutoUpdate(installSupport?: import('./install-channel.js').InstallChannelSupport): DoctorCheck {
+  const policy = currentPolicy();
+  const cannotSelfUpdate = installSupport !== undefined && !installSupport.canSelfUpdate;
+  const setting = policy.policy === 'off'
+    ? `off (${policy.reason ?? 'policy is off'})`
+    : cannotSelfUpdate
+      ? `on in the settings, but this install (${installSupport.label}) cannot update itself, so nothing is installed. ${installSupport.guidance}`
+      : `on for ${policy.policy === 'major' ? 'every version' : `${policy.policy} versions and below`}; it installs after running sessions end (waiting at most 3 days, after which sessions still open may use the new files before they restart)`;
+  const dataDir = getMemeshDirFromDbPath();
+  const read = inspectAutoUpdateState(dataDir);
+  const installing = readInstalling(dataDir);
+  if (installing && !installing.running) {
+    return createCheck(
+      'auto-update',
+      'Automatic updates',
+      'warn',
+      `Automatic updates are ${setting}. An update from ${installing.marker.from} to ${installing.marker.to} began its install at ${installing.marker.at}, and the process that ran it is gone without recording a result, so the install may be half done.`,
+      `Put this version back through the same checks with \`memesh update --reinstall\` (a database backup was made before the install began: see ${path.join(dataDir, 'backups')}). Details: ${path.join(dataDir, 'auto-update.log')}.`,
+      { code: 'auto-update.interrupted' },
+    );
+  }
+  const holder = describeLockHolder(dataDir);
+  if (holder && !holder.running) {
+    return createCheck(
+      'auto-update',
+      'Automatic updates',
+      'warn',
+      `Automatic updates are ${setting}. The update lock was left behind by a ${holder.label === 'manual' ? 'manual' : 'automatic'} update (pid ${holder.pid}, started ${holder.startedAt}) that is no longer running.`,
+      `Nothing to do: the next update attempt takes the lock over about 2 minutes after its owner is found gone. Details: ${path.join(dataDir, 'auto-update.log')}.`,
+      { code: 'auto-update.lock-orphan' },
+    );
+  }
+  const running = installing?.running ? ` An install to ${installing.marker.to} is running now (since ${installing.marker.at}).` : holder?.running ? ` An update is running now (started ${holder.startedAt}, ${holder.label === 'manual' ? 'by hand' : 'automatic'}).` : '';
+  if (read.kind === 'unreadable') {
+    return createCheck(
+      'auto-update',
+      'Automatic updates',
+      'warn',
+      `Automatic updates are ${setting}. The record of the last attempt cannot be read (${read.detail}), so it is not known whether one ran or failed.`,
+      `Look at ${path.join(dataDir, 'auto-update-state.json')} and ${path.join(dataDir, 'auto-update.log')}; removing the damaged record (a file, or a directory that is in its place) is safe: the next attempt writes a new one.`,
+      { code: 'auto-update.state-unreadable' },
+    );
+  }
+  if (read.kind === 'absent') {
+    return createCheck('auto-update', 'Automatic updates', 'pass', `Automatic updates are ${setting}. No attempt has run yet.${running}`);
+  }
+  const state = read.state;
+  const waitedDays = state.outcome === 'waiting' && state.waitingSince ? Math.floor((Date.now() - Date.parse(state.waitingSince)) / 86_400_000) : null;
+  // Older state files have no `hermes` field and a run with no copy records null: both mean nothing to list.
+  const hermesResults = Array.isArray(state.hermes) ? state.hermes : [];
+  const hermesNotes = hermesResults.map((h) => ` Hermes provider at ${h.path}: ${h.outcome} — ${h.reason}.`).join('');
+  const what = `Last attempt ${state.at}: ${state.outcome} — ${state.reason}${state.to ? ` (${state.from ?? '?'} → ${state.to})` : ''}${waitedDays !== null && waitedDays >= 0 ? `; waiting for ${waitedDays} day(s) of the 3 allowed` : ''}.${hermesNotes}${state.notice ? ` Note: ${state.notice}.` : ''}${running}`;
+  const logPath = path.join(dataDir, 'auto-update.log');
+  const hermesAdvice = `To put the Hermes provider in place by hand: \`memesh hermes install\` (add \`--path <dir>\` for a copy outside the default place; a directory MeMesh did not install is only replaced with \`--force\`, and is saved first). Read ${logPath} for the reason.`;
+  // The wait has a limit (3 days): past it the updater installs anyway. Still waiting means it is not running or cannot finish.
+  if (waitedDays !== null && waitedDays >= 3) {
+    return createCheck(
+      'auto-update',
+      'Automatic updates',
+      'warn',
+      `Automatic updates are ${setting}. ${what}`,
+      `The wait for running sessions is limited to 3 days, so the update should have installed by now: its runner is probably not running. Update now with \`${installSupport?.recommendedCommand ?? 'memesh update'}\` (it does not wait for sessions); read ${logPath} for what the runner said.`,
+      { code: 'auto-update.wait-overdue' },
+    );
+  }
+  if (state.reason === AUTO_UPDATE_REASONS.installedAfterWait) {
+    return createCheck(
+      'auto-update',
+      'Automatic updates',
+      'warn',
+      `Automatic updates are ${setting}. ${what}`,
+      `Restart the sessions that were open during the update so they run the new version together with their hooks.${hermesResults.some((h) => h.outcome === 'failed') ? ` ${hermesAdvice}` : ''}`,
+      { code: 'auto-update.mixed-versions' },
+    );
+  }
+  if (hermesResults.some((h) => h.outcome === 'failed')) {
+    return createCheck(
+      'auto-update',
+      'Automatic updates',
+      'warn',
+      `Automatic updates are ${setting}. ${what}`,
+      hermesAdvice,
+      { code: 'auto-update.hermes-failed' },
+    );
+  }
+  if (state.reason === AUTO_UPDATE_REASONS.codexMarketplaceMissing) {
+    return createCheck(
+      'auto-update',
+      'Automatic updates',
+      'warn',
+      `Automatic updates are ${setting}. ${what}`,
+      'The Codex marketplace pcircle-memesh is not in config.toml, and MeMesh did not remove it, so it is taken as removed on purpose and the Codex plugin is not being updated. If that was on purpose, nothing to do. To get it back, pinned to the verified release: `memesh update --reinstall`.',
+      { code: 'auto-update.codex-marketplace-missing' },
+    );
+  }
+  if (state.reason === AUTO_UPDATE_REASONS.codexRestoreFailed) {
+    return createCheck(
+      'auto-update',
+      'Automatic updates',
+      'warn',
+      `Automatic updates are ${setting}. ${what}`,
+      'An update removed the Codex marketplace pcircle-memesh and then failed before it could put it back: it is missing because of that update, not because you removed it. The next automatic run puts it back while config.toml is unchanged; to do it now: `codex plugin marketplace add PCIRCLE-AI/memesh`, then `memesh update --reinstall`.',
+      { code: 'auto-update.codex-restore-failed' },
+    );
+  }
+  if (state.reason === AUTO_UPDATE_REASONS.dependencyPinFailed) {
+    // The install was undone: the version that was running is still the one that runs, and the next update tries the same release again.
+    return createCheck(
+      'auto-update',
+      'Automatic updates',
+      'warn',
+      `Automatic updates are ${setting}. ${what}`,
+      `The update was undone and ${state.from ?? 'the previous version'} is still what runs: nothing is broken. The next automatic run, or \`memesh update\`, tries again. If it keeps failing, read ${path.join(getMemeshDirFromDbPath(), 'auto-update.log')} for the step that failed (usually the network or the registry).`,
+      { code: 'auto-update.pin-undone' },
+    );
+  }
+  if (state.outcome === 'failed') {
+    const log = path.join(getMemeshDirFromDbPath(), 'auto-update.log');
+    const backup = state.backup ? ` A database backup was made first: ${state.backup}` : '';
+    // A package whose source did not check out must not be installed by other means
+    // either (a bare npm install skips the check); `memesh update` runs the same check.
+    const sourceRejected = state.reason === AUTO_UPDATE_REASONS.sourceNotVerified || state.reason === AUTO_UPDATE_REASONS.tarballMismatch || state.reason === AUTO_UPDATE_REASONS.commitNotOnMain || state.reason === AUTO_UPDATE_REASONS.dependenciesNotPinned;
+    const fix = state.reason === AUTO_UPDATE_REASONS.installNotUndone
+      ? `Run \`memesh update --reinstall\`: it puts this version back through the same checks and finishes the install. Until then MeMesh may not start (its dependencies are missing). Read ${log} for what happened.${backup}`
+      : sourceRejected
+      ? `Do not install this version by other means (${installSupport?.channel === 'npm-global' || installSupport === undefined ? 'a bare npm install' : 'installing it from the marketplace yourself'}): that skips the check of where the package came from. \`memesh update\` runs the same check and will refuse too. Read ${log} for the check that failed; if it keeps failing, report it.${backup}`
+      : installSupport?.recommendedCommand
+        ? `Read ${log} for the step that failed, then update by hand with \`${installSupport.recommendedCommand}\`.${backup}`
+        : `Read ${log} for the step that failed, then update the way you installed MeMesh.${backup}`;
+    return createCheck('auto-update', 'Automatic updates', 'warn', `Automatic updates are ${setting}. ${what}`, fix, { code: 'auto-update.failed' });
+  }
+  return createCheck('auto-update', 'Automatic updates', 'pass', `Automatic updates are ${setting}. ${what}`);
 }
 
 async function inspectUpdateStatus(
@@ -3948,6 +4106,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   checks.push(inspectInstallJourney(packageVersion));
 
   checks.push(await inspectUpdateStatus(packageVersion, getUpdateCheckImpl, installSupport, packageRoot, statSyncImpl));
+  checks.push(inspectAutoUpdate(installSupport));
 
   // Anonymous install ID — surfaced so the user can SEE what's
   // included in feedback issues (transparency). Never sent

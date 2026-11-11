@@ -94,7 +94,7 @@ const CLAUDE_PLUGIN_ROOT = '/Users/alice/.claude/plugins/cache/pcircle-memesh/me
 const CODEX_PLUGIN_ROOT = '/Users/alice/.codex/plugins/cache/pcircle-memesh/memesh/4.7.1';
 
 describe('install channel support', () => {
-  it('only enables self-update for npm global installs', () => {
+  it('enables self-update for npm global and plugin installs, and for nothing else', () => {
     expect(getInstallChannelSupport('npm-global', '/usr/local/lib/node_modules/@pcircle/memesh')).toMatchObject({
       canSelfUpdate: true,
       recommendedCommand: 'memesh update',
@@ -105,14 +105,22 @@ describe('install channel support', () => {
       recommendedCommand: null,
     });
 
+    // "and for nothing else": a channel nobody could identify is not told to update itself either.
+    expect(getInstallChannelSupport('unknown', '/somewhere/else')).toMatchObject({ canSelfUpdate: false, recommendedCommand: null });
+
     expect(getInstallChannelSupport('source-checkout', '/workspace/memesh')).toMatchObject({
       canSelfUpdate: false,
       recommendedCommand: null,
     });
 
+    // A plugin install updates through the same verified `memesh update` as everything else.
     expect(getInstallChannelSupport('plugin-marketplace', CLAUDE_PLUGIN_ROOT)).toMatchObject({
-      canSelfUpdate: false,
-      recommendedCommand: 'memesh upgrade-plugin',
+      canSelfUpdate: true,
+      recommendedCommand: 'memesh update',
+    });
+    expect(getInstallChannelSupport('plugin-marketplace', CODEX_PLUGIN_ROOT)).toMatchObject({
+      canSelfUpdate: true,
+      recommendedCommand: 'memesh update',
     });
   });
 
@@ -126,18 +134,26 @@ describe('install channel support', () => {
     expect(support.recommendedCommand, 'a Codex user was handed the Claude Code upgrade command')
       .not.toBe('memesh upgrade-plugin');
     expect(support.guidance).not.toMatch(/memesh upgrade-plugin/);
-    expect(support.recommendedCommand).toBe('codex plugin marketplace upgrade pcircle-memesh && codex plugin add memesh@pcircle-memesh');
-    expect(support.guidance, 'the guidance never says how to install the refreshed version')
-      .toMatch(/codex plugin add memesh@pcircle-memesh/);
+    expect(support.recommendedCommand).toBe('memesh update');
+    // The repair for damaged plugin files is the verified reinstall, and the text says so (not the host's own unchecked commands).
+    expect(support.guidance).toMatch(/repair damaged plugin files[^]*memesh update --reinstall/);
+    expect(support.guidance).not.toMatch(/marketplace upgrade/);
+    expect(support.guidance, 'still claims a new release does not update by itself').not.toMatch(/does not auto-update/);
     expect(support.label).toMatch(/Codex/);
   });
 
-  it('still prescribes upgrade-plugin to a Claude Code install', () => {
+  it('prescribes memesh update to a Claude Code install, and upgrade-plugin only as the repair', () => {
     // The other half: the Codex branch must not swallow the majority case.
     const support = getInstallChannelSupport('plugin-marketplace', CLAUDE_PLUGIN_ROOT);
 
-    expect(support.recommendedCommand).toBe('memesh upgrade-plugin');
+    expect(support.recommendedCommand).toBe('memesh update');
+    expect(support.guidance).toMatch(/repair damaged plugin files[^]*memesh update --reinstall/);
     expect(support.guidance).not.toMatch(/codex plugin/);
+    // The repair is not the unpinned script, and npx is not offered as a way to run it: npx runs a throwaway copy that cannot know which install to update.
+    expect(support.guidance).not.toMatch(/memesh upgrade-plugin/);
+    expect(support.guidance).toMatch(/cannot work/);
+    expect(support.guidance).toContain(`node "${path.join(CLAUDE_PLUGIN_ROOT, 'dist', 'transports', 'cli', 'cli.js')}" update`);
+    expect(support.guidance, 'still claims a new release does not auto-update').not.toMatch(/does not auto-update/);
   });
 });
 

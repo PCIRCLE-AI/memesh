@@ -11,7 +11,7 @@ import { readConfig, updateConfig, } from '../../core/config.js';
 import { SESSION_LIMIT_MIN, SESSION_LIMIT_MAX } from '../../core/session-limit.js';
 import { AGENT_SCOPE_ID_MAX_LENGTH } from '../../core/agent-scope-id.js';
 import { BRIEFING_LEVELS } from '../../core/briefing-level.js';
-import { isDoctorFixPermissionError, PluginRefreshBudgetError, removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
+import { isDoctorFixPermissionError, removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
 import { computePatterns } from '../../core/patterns.js';
 import { computeAnalytics, computePmAnalytics } from '../../core/analytics.js';
 import { computeStats } from '../../core/stats.js';
@@ -293,9 +293,6 @@ app.post('/v1/doctor/fix', (req, res) => handlePost(DoctorFixBody, req, res, asy
     catch (error) {
         if (error instanceof HttpError)
             throw error;
-        if (error instanceof PluginRefreshBudgetError) {
-            throw new HttpError(500, 'doctor.repair-incomplete', error.message);
-        }
         if (isDoctorFixPermissionError(error)) {
             throw new HttpError(500, 'operation.permission-denied', 'MeMesh cannot modify the local files required for this repair. Start `memesh serve` from your own Terminal, and retry. If it still fails, run `memesh doctor`.');
         }

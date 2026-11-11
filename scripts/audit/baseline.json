@@ -321,10 +321,15 @@
       "reason": "the one emptiness assertion ('is a no-op on an empty cache root', toEqual([])) is the genuinely-expected outcome of sweeping an empty directory -- there is no vacuity risk to guard against, because the setup creates zero entries on purpose and the test is pinning that the sweep does not fabricate a failure or create anything. Every other test in the file pins real content (toEqual(['4.8.4']), file-existence checks) after seeding non-empty fixtures, so the file is not relying on an empty-by-accident setup anywhere.",
       "triaged": "2026-09-05"
     },
-    "C4 scripts/upgrade-plugin.sh:67": {
+    "C4 scripts/upgrade-plugin.sh:78": {
       "class": "SAFE",
-      "reason": "set -uo pipefail at file top (line 31) preserves the left command's verdict; printf cannot meaningfully fail on a literal string, so the `if printf ... | grep -qE ...; then` reads grep's own match result -- the intended verdict, not a swallowed one.",
+      "reason": "set -uo pipefail at the top of the file preserves the left command's verdict; printf cannot meaningfully fail on a literal string, so the `if printf ... | grep -qE ...; then` reads grep's own match result -- the intended verdict, not a swallowed one.",
       "triaged": "2026-09-05"
+    },
+    "C4 scripts/upgrade-plugin.sh:622": {
+      "class": "SAFE",
+      "reason": "The pipe into `head` only shortens npm's own output on the line that is printed AFTER the failure was detected (`npm ci ... || { ... }` has already taken the failure branch and the next line is `exit 1`): the verdict is npm ci's exit status, tested by the `||`, and a test (a lockfile that does not match package.json) reads the failure back.",
+      "triaged": "2026-11-08"
     },
     "C6 tests/core/printed-command-quoting.test.ts": {
       "class": "WIRING-PIN",
@@ -343,7 +348,7 @@
     },
     "C1 tests/update-notice.test.ts": {
       "class": "SAFE",
-      "reason": "Every emptiness assertion is paired in the same test with a positive readback: the stale-marker test asserts UP_TO_DATE first and then that the marker file is gone; the claim test asserts the first claimant received {from,to} before the second gets null and the directory listing is empty; the corrupt-snooze test writes the bad bytes it expects to be rejected; the refresh-policy test asserts true and false on both sides of each TTL.",
+      "reason": "Every emptiness assertion is paired in the same test with a positive readback: the stale-marker test asserts UP_TO_DATE first and then that the marker file is gone; the claim test asserts the first claimant received {from,to} before the second gets null and the directory listing is empty; the refresh-policy test asserts true and false on both sides of each TTL.",
       "triaged": "2026-09-10 #308 update-notice resolver"
     },
     "C1 tests/cli/remember-plain-project-tag.test.ts": {
@@ -516,9 +521,14 @@
       "reason": "KnowledgeGraph.getEntity returns relations: undefined only when its successful SQL relation query has zero rows. This internal known-empty set is used solely for append dedupe; a SQL read failure still throws and is reported by import. Any incoming relation absent from the set prevents addsNothing and is queued only after the entity transaction commits. Relation-only and text-plus-relation imports across CLI/MCP/HTTP, repeated-import no-change, and readonly refusal retain direct source/installed evidence. No malformed bundle, failed read or pending incoming relation is converted into silent success.",
       "triaged": "2026-10-08 (#594 append relation restore): optional internal collection contract at knowledge-graph.ts:868/878; existing empty relation set, not input validation or read-failure suppression.; re-keyed 2026-11-11 976\u2192987 (restore/trust counters and the README command-line notes were added above the unchanged statement)"
     },
-    "C7 README.md:108": {
+    "C6 tests/core/auto-update-surfaces.test.ts": {
+      "class": "WIRING-PIN",
+      "reason": "Two pins read text on purpose: the session-start notice sentence (the hook cannot be driven to print it without a published newer version, and the failure is a promise the updater does not keep) and the release workflow step (a workflow cannot be run here). The server, serve and CLI cases in the same file run the built programs and read what they write.",
+      "triaged": "2026-11-08"
+    },
+    "C7 README.md:110": {
       "classification": "gated",
-      "reason": "Existing check-doc-claims.mjs derives the intent-language count from INTENT_PATTERNS; UI retirement removes the same-line tabs/languages phrase, not the intent hook or its source-backed check. [re-keyed 2026-11-11 100\u2192105 (restore/trust counters and the README command-line notes were added above the unchanged statement)]"
+      "reason": "Existing check-doc-claims.mjs derives the intent-language count from INTENT_PATTERNS; UI retirement removes the same-line tabs/languages phrase, not the intent hook or its source-backed check. [re-keyed 2026-11-11 100\u2192105 (restore/trust counters and the README command-line notes were added above the unchanged statement); re-keyed 2026-11-11 105\u2192110 (first-run and update notes were added above the unchanged statement)]"
     },
     "C5 src/core/recall-agent-view.ts:165": {
       "class": "SAFE-OPTIONAL-OBJECT",

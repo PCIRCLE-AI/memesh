@@ -21,7 +21,11 @@ MeMesh also lets Codex and Claude Code sessions exchange tasks, questions, revie
 2. Run `memesh serve` as a persistent process. A systemd user service is
    recommended for anything beyond local experimentation — `Restart=always`
    so it survives crashes, ordered `After=network.target`.
-3. Activate this provider: set `memory.provider: memesh` in
+3. Install this provider with `memesh hermes install` (it copies the provider
+   into `$HERMES_HOME/plugins/memesh` and records which version it wrote, so
+   MeMesh's automatic updates can keep it current; use `--path` for a
+   different directory).
+4. Activate this provider: set `memory.provider: memesh` in
    `$HERMES_HOME/config.yaml` (or `hermes memory setup` once memesh is
    registered in the provider catalog).
 

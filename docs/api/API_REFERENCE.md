@@ -1217,7 +1217,6 @@ Every `success: false` envelope carries a machine-readable `errorCode` **alongsi
 | `payload.too-large` | 413 | Body exceeds the 1 MB limit (the legacy `code: "PAYLOAD_TOO_LARGE"` field is also kept) |
 | `operation.failed` | 400 | The request was well-formed but the operation itself rejected it |
 | `operation.permission-denied` | 500 | An explicit local repair could not write its required config or plugin files; the response contains fixed, path-free recovery guidance |
-| `doctor.repair-incomplete` | 500 | A repair that runs two commands (the Codex plugin refresh) ran the first and had too little of its 120 s budget left to start the second; the `error` text names what ran and the command to finish by hand |
 | `rate.limited` | 429 | Too many requests in the window (non-loopback only) |
 | `server.internal` | 500/503 | Unexpected server-side failure |
 
@@ -1303,15 +1302,92 @@ reported, not the config reader, and not this route) — `POST /v1/config`
 still rejects anything that is not one of the three known level strings
 outright with `400` (`z.enum`).
 
-`autoUpdate` controls the maximum permitted bump, not unattended consent. On a
-supported npm-global install, the first MeMesh use in a session requests a
-host-mediated consent prompt once; an explicit `Upgrade` records
-session-scoped consent and `Not now` records a decline. The Stop hook
-dispatches only after affirmative consent. Project-local, source-checkout, and
-marketplace installs receive a channel-specific update action instead; they are
-never described as self-updating when the hook cannot safely install them.
-`MEMESH_AUTO_UPDATE` overrides the configured bump limit, but never bypasses
-this consent gate.
+`autoUpdate` is the largest version bump MeMesh may install by itself:
+`off` | `patch` | `minor` | `major`. It is `major` (every version) when
+nothing was set and MeMesh is using the account's own `~/.memesh`. An explicit
+`off` is never overridden: it counts wherever it is written (the environment, the
+active config, or the account's own `~/.memesh/config.json`), a config that cannot
+be read counts as `off`, and a run that uses another HOME or data directory
+without setting it explicitly does not update, and neither does a run inside CI or on a system where the account's home directory cannot be determined (no passwd entry). The config that `memesh config set` writes counts even when it sits in a different directory than the database, and one that cannot be read at all (a directory that cannot be entered, a path through a file, a dangling symlink) counts as off. The setting is read again after any wait, before anything is installed. `updateCheck: false` also stops
+updates. `MEMESH_AUTO_UPDATE` can lower or raise the limit for one run but cannot
+override an `off` set anywhere.
+
+One entry (`runAutoUpdate`) decides for every install channel. A stable install
+follows the `latest` release, never `next`; a trial install follows `next`. Before
+anything is installed the package is downloaded to a throwaway directory and its
+npm provenance is checked (the attested digest must be that of the downloaded tarball, the signing certificate must name this repository's release workflow at that version's tag, and the statement must say it was built by this project's release workflow at that
+version's tag); the commit the provenance names must be part of `main` in the official repository, which the updater asks the host's compare service itself (the attested commit as the base, `refs/heads/main` as the head, so a tag or other ref of that name cannot stand in for the branch; behind a proxy, `HTTPS_PROXY` / `HTTP_PROXY` is used where this Node can read it for `fetch` (24 and newer, 22.21 and newer), and a lookup that fails behind a proxy this Node cannot use says so), because the release workflow's own check of that sits in a file anybody who can push a branch could change (an answer of "not on main", an unknown commit, or no clear answer at all stops the update, and a lookup that did not answer is tried again by a later run); the release must carry an `npm-shrinkwrap.json` that pins every dependency with a full sha512 hash and its own address on the npm registry (`scripts/shrinkwrap.mjs` writes it while the package is packed); the database is backed up first; and the swap waits until every
+running session has ended, so the new version starts with the next session. A
+session that stays open delays it for at most 3 days; after that MeMesh installs
+anyway and records that sessions still open may use the new files before they
+restart (`memesh doctor` warns). An npm-global install first rehearses the pinned install on the verified package in staging (so a network or registry failure stops the update while the installed version is untouched), then keeps a copy of the installed version beside it, runs `npm install -g --ignore-scripts <the verified tarball>` and then `npm ci --omit=dev --ignore-scripts` in the installed package directory, and puts the copy back if any step fails (the record says `dependencyPinFailed` and that the previous version was put back; `installNotUndone` when even that failed, which `memesh doctor` answers with `memesh update --reinstall`). npm does not apply the pins of a tarball it installs globally, so the second step is what makes the installed dependencies the pinned ones; no install script of MeMesh or of any dependency runs (the production tree has none). npm-global installs, the Claude Code plugin and
+the Codex plugin all update this way. `memesh upgrade-plugin` and the pinned plugin update also require the marketplace checkout's `origin` to be this repository (`PCIRCLE-AI/memesh`, or `memesh-llm-memory`, its earlier name, over https or ssh) before anything is fetched. These checks establish where a release came from, not what it contains: anyone who can push to `main` and run the release workflow on a tag ships a release that passes all of them (see `SECURITY.md`, "What automatic updates trust"). The npm-global package and the plugin are updated by separate paths (`npm install -g` of the verified tarball, and the marketplace commit the provenance names), each checked on its own. The Claude Code plugin is pinned to the
+commit named by the provenance (`upgrade-plugin.sh` honours
+`MEMESH_UPGRADE_PIN_COMMIT`). For Codex, MeMesh removes the `pcircle-memesh`
+marketplace, adds it again with `--ref <that commit>` and runs
+`codex plugin add`; your other Codex settings are untouched, and if a step fails
+the marketplace is put back unpinned. If that fails too, the state file says so and
+`auto-update-codex-restore.json` records what to put back and what `config.toml`
+looked like; the next run puts the marketplace back, but only while `config.toml` is
+still as that update left it (otherwise the missing marketplace is the owner's, and
+nothing is restored). A marketplace that is missing and was NOT removed by MeMesh is
+taken as removed on purpose and is not added back by an automatic run; `memesh update
+--reinstall` adds it back, pinned. A Codex marketplace of that name that does
+not come from the official repository is left alone. Because the marketplace
+stays pinned to a commit, `codex plugin marketplace upgrade` keeps that commit and
+the host's own repair commands are not part of MeMesh's repair: to update now run
+`memesh update`, and to repair a damaged plugin cache run `memesh update --reinstall`
+(both below).
+
+What happens to a session that is already running when the files are replaced
+(measured with a throwaway npm prefix: an MCP server of 4.11.4 left running while
+4.12.0 replaced the package): it keeps working and keeps reporting 4.11.4, because
+it loaded one bundled file when it started; its `remember` and `recall` calls
+still succeeded after the swap. Hooks and CLI commands started after the swap run
+the new files against the same database. Not measured: a new version that changes
+the database schema while an old server is still running. The updater only sees
+hosts that registered themselves, so sessions that were already open before the
+first automatic update are invisible to it; the first update may therefore run
+alongside them. `memesh doctor` shows a waiting update and how many of the 3
+days it has used. Each attempt writes
+`auto-update-state.json` and `auto-update.log` beside the database, and
+`memesh doctor` reports the last one. Turn it off with
+`memesh config set autoUpdate off`.
+
+`memesh update` is the same path started by hand, for npm-global and plugin
+installs: the owner asked, so the `autoUpdate` setting and the wait for running
+sessions do not apply (`off` turns off the AUTOMATIC update only: `memesh update`
+still updates, and prints "Automatic updates are still off; this was an update you
+asked for by hand" so nobody reads it as the setting having changed), but the source check, the database backup, the pinned
+install and the read-back all do. It exits 0 when it installed or is already
+current and 1 when it did not install (the line it prints says why), and also 1
+when MeMesh is updated or current but a Hermes provider copy could not be
+refreshed (that failure is printed, not left in the state file). There is no
+second, unchecked install path.
+
+`memesh update --reinstall` is the repair: it puts the version that is installed back
+through the same path (the registry is not asked, the target is this version, the
+same source check, commit-on-`main` check, pinned dependencies, database backup and
+read-back), for npm-global, Claude Code and Codex installs. A release that cannot be
+verified, or that does not pin its dependencies, is refused by it as by an update.
+`memesh doctor --fix` and the dashboard's repair button for a plugin cache start the
+same reinstall in the background (it takes minutes) and say so; the result is in the
+record `memesh doctor` reads. `memesh upgrade-plugin` only puts back the commit the
+plugin registry already records (it does not move to a newer one and does not run
+the source check).
+
+The read-back after a plugin install looks at what is on the machine: Claude Code's
+plugin registry must record the pinned commit (and this version), and the Codex plugin
+directory it reported must exist and carry this version. A failure after an install
+step ran is reported as such (`memesh update` says some files may be new and names
+the database backup and `memesh update --reinstall`); a runner that is killed in the
+middle of an install leaves `auto-update-installing.json`, which `memesh doctor`
+reports as an interrupted update. `memesh doctor` also warns of a wait that ran past
+its 3 days and of an update lock whose owner is gone.
+
+A release published again by hand (`workflow_dispatch`) has provenance whose workflow
+ref is a branch, not `refs/tags/v<version>`, so the updater refuses it: it is never
+installed automatically, and the next release made from a tag is.
 
 ### GET /v1/update-status
 
@@ -2368,9 +2444,53 @@ accept effects:
 
 ### memesh hermes
 
-The write path of the Hermes Agent memory plugin
-(`extensions/hermes-memesh`, see [Hermes Agent](../platforms/hermes-agent.md)).
-Called by the plugin, not typed by a person. Input is one JSON object on
+The Hermes Agent memory plugin (`extensions/hermes-memesh`, see
+[Hermes Agent](../platforms/hermes-agent.md)): `install` puts it in place and
+the two capture commands are its write path.
+
+```bash
+memesh hermes install [--path <dir>] [--force]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--path <dir>` | Where to put the provider. Default `$HERMES_HOME/plugins/memesh` (`HERMES_HOME` defaults to `~/.hermes`); inside a Hermes checkout use `<checkout>/plugins/memory/memesh`. |
+| `--force` | Replace a directory MeMesh did not install, or a copy you edited. The old directory is saved first under `<MeMesh data dir>/backups/hermes-provider-<time>-<id>` and that backup is yours: MeMesh never deletes or rotates it. |
+
+`install` copies the provider out of this MeMesh package and writes
+`.memesh-install.json` into the copy: the version and a hash of every file it
+wrote. That marker is how a copy is known to be MeMesh's own. Without
+`--force`, a directory with no marker or with files changed since the marker was
+written is refused (exit 1) and left as it is. The directory is also recorded in
+`hermes-installs.json` in the MeMesh data directory.
+
+Automatic updates (see `autoUpdate`) refresh every copy that carries a marker —
+the default location and each recorded one — from the package version they just
+verified, taking the provider out of that verified tarball and from nowhere
+else. Only the provider directory is listed and extracted from the tarball (the
+package holds hundreds of other files), from one private copy of the tarball
+that was hashed first. Refreshing MeMesh's own unmodified copy makes no backup:
+every byte of it is in the package it came from. Anything that is not MeMesh's
+own unmodified copy is only ever replaced with `--force`, and is saved first
+(see above). A copy without a marker, or one whose files were edited, is not
+touched, and the attempt says so in `auto-update-state.json` and
+`memesh doctor`. If a refresh is killed between its two renames (power loss,
+out of memory) the old copy is left in a hidden directory beside the target,
+`.memesh-old-<name>-<pid>-<tag>/copy`: the next run puts it back first, and says so;
+leftovers of a process that is gone (pid and start time, so a reused pid does not
+count) are removed, and those of a process that still runs, or of a neighbouring
+copy with a longer name, are left alone. Two refreshes of one copy never run at once:
+the second one skips it (`.memesh-lock-<name>` beside it) and says so. A copy
+MeMesh registered that has disappeared is reported as failed in the state file
+and in `memesh doctor`. A target that is a symbolic link is never written through or over, with or
+without `--force`: it is reported as left alone. Point `--path` at a real directory. No update runs when
+`autoUpdate` is `off`. A copy made
+before this command existed has no marker: run `memesh hermes install --force`
+once to adopt it. The updater finds a copy outside `$HERMES_HOME/plugins/memesh`
+only if `memesh hermes install --path` recorded it. Hermes loads a provider when
+it starts, so a refreshed copy takes effect at the next Hermes start.
+
+The two commands below are called by the plugin, not typed by a person. Input is one JSON object on
 stdin — never on the command line, where every local process can read it —
 and the result is one JSON line on stdout.
 
