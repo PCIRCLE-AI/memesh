@@ -2075,6 +2075,12 @@ quotes the latest reason only when it is one the hooks are known to record
 error". Each hook in `--json` carries `lastErrorAt`, `lastErrorReason` (in that
 same form) and `recentErrors`.
 
+When `hook-outcomes.jsonl` is there but cannot be read (no permission, or a folder
+where the file belongs), the row warns with code
+`capture-liveness.outcome-file-unreadable`, names the file and the reason, and
+gives the command that matches it (`chmod u+r` or moving the folder aside). It
+does not say "no records": records exist, they just cannot be seen.
+
 The figures come from `hook-outcomes.jsonl` beside the database (the directory
 of `MEMESH_DB_PATH`, `~/.memesh` by default): every capture hook appends at least one
 JSON line per run — `hook`, `run` (one id per hook run), `at`, `host`, `outcome` (`wrote` / `notified` /

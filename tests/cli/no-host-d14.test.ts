@@ -51,7 +51,7 @@ function machine(opts: { claudeOnPath?: boolean; codexOnPath?: boolean; geminiOn
     };
     return report.checks.find((c) => c.id === 'hook-wiring')!;
   };
-  return { run, home, cwd, homeListing, wiring };
+  return { run, home, cwd, bin, homeListing, wiring };
 }
 
 describe.skipIf(process.platform === 'win32')('no agent host on the machine (#528 D14)', () => {
@@ -61,8 +61,9 @@ describe.skipIf(process.platform === 'win32')('no agent host on the machine (#52
     const text = `${r.stdout}${r.stderr}`;
     expect(r.status).toBe(1);
     expect(text).toContain('No supported agent host was found');
-    expect(text).toContain('Claude Code: claude on PATH, or');
-    expect(text).toContain('Codex CLI: codex on PATH, or');
+    // The places it really looked in, not only the sentence's start.
+    expect(text).toContain(`Claude Code: claude on PATH, or ${path.join(m.home, '.claude')}`);
+    expect(text).toContain(`Codex CLI: codex on PATH, or ${path.join(m.home, '.codex')}`);
     expect(text).toContain('Gemini CLI: gemini on PATH');
     expect(text).toContain('run `memesh setup` again');
     expect(text).not.toContain('Nothing to do');
@@ -87,6 +88,26 @@ describe.skipIf(process.platform === 'win32')('no agent host on the machine (#52
     expect(text).toContain('hooks NOT wired');
     expect(r.status).toBe(1);
     expect(m.homeListing()).not.toContain('.claude');
+  });
+
+  it('setup and doctor see Claude Code by its folder alone, with no claude command', () => {
+    const m = machine();
+    fs.mkdirSync(path.join(m.home, '.claude'));
+    const r = m.run(['setup', '--check']);
+    expect(r.stderr).not.toContain('No supported agent host');
+    expect(r.stdout).toContain('hooks NOT wired');
+    const row = m.wiring();
+    expect(row).toMatchObject({ code: 'hook-wiring.no-marker', fixId: 'install-hooks' });
+  });
+
+  it('a folder named claude on the PATH is not the claude command', () => {
+    const m = machine();
+    fs.mkdirSync(path.join(m.bin, 'claude'));
+    fs.mkdirSync(path.join(m.bin, 'codex'));
+    const r = m.run(['setup', '--check']);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('No supported agent host was found');
+    expect(m.wiring().code).toBe('hook-wiring.no-host');
   });
 
   it('setup --check sees Codex by its configuration directory alone, and says it cannot probe without the command', () => {

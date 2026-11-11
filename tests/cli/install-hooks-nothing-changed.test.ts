@@ -10,6 +10,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { removeTempDir } from '../helpers/temp-dir.js';
+import { makeMachine, type Machine } from '../helpers/cli-machine.js';
 
 const cli = path.resolve('dist/transports/cli/cli.js');
 let root: string;
@@ -60,5 +61,56 @@ describe('install-hooks: "no file was written" is only said when that is true (#
     const again = installHooks();
     expect(again).toContain('Citation contract created');
     expect(again).not.toContain('Nothing needed to change');
+  });
+});
+
+/** The same promise on the file system itself, through the real CLI: not only what is printed, but every inode and mtime. */
+describe.skipIf(process.platform === 'win32')('install-hooks: what it says matches what is on disk (#528)', () => {
+  const machines: Machine[] = [];
+  afterEach(() => { for (const m of machines.splice(0)) m.cleanup(); });
+  const fresh = () => {
+    const m = makeMachine({ MEMESH_SKIP_POST_INSTALL_JOURNEY: '1' });
+    machines.push(m);
+    return m;
+  };
+
+  it('a re-run that changes nothing leaves every path, inode and mtime as it was, and says so', async () => {
+    const m = fresh();
+    expect(m.run(['install-hooks']).status).toBe(0);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const { result, changed } = m.runAndDiff(['install-hooks']);
+    expect(result.status, result.text).toBe(0);
+    expect(result.stdout).toContain('Nothing needed to change — no file was written.');
+    expect(result.stdout).toContain('Nothing to restart.');
+    expect(changed, changed.join('\n')).toEqual([]);
+  });
+
+  it('--dry-run writes nothing and does not say that nothing needed to change or that nothing needs a restart', () => {
+    const m = fresh();
+    const dry = m.runAndDiff(['install-hooks', '--dry-run']);
+    expect(dry.result.status, dry.result.text).toBe(0);
+    expect(dry.result.stdout).toContain('Would add');
+    expect(dry.result.stdout).not.toContain('Nothing needed to change');
+    expect(dry.result.stdout).not.toContain('Nothing to restart');
+    expect(dry.changed, dry.changed.join('\n')).toEqual([]);
+
+    expect(m.run(['install-hooks']).status).toBe(0);
+    const again = m.runAndDiff(['install-hooks', '--dry-run']);
+    expect(again.result.stdout).not.toContain('Nothing needed to change');
+    expect(again.result.stdout).not.toContain('Nothing to restart');
+    expect(again.changed, again.changed.join('\n')).toEqual([]);
+  });
+
+  it("a rule file that is the user's own is left alone, reported as a warning, and is not a \"file was written\"", () => {
+    const m = fresh();
+    expect(m.run(['install-hooks']).status).toBe(0);
+    const rule = path.join(m.home, '.claude', 'rules', 'memesh-citations.md');
+    fs.writeFileSync(rule, 'my own rules\n');
+    const { result, changed } = m.runAndDiff(['install-hooks']);
+    expect(result.status, result.text).toBe(0);
+    expect(result.stdout).toContain('WARNING: the citation contract was NOT installed');
+    expect(result.stdout).toContain('Nothing needed to change — no file was written.');
+    expect(fs.readFileSync(rule, 'utf8')).toBe('my own rules\n');
+    expect(changed, changed.join('\n')).toEqual([]);
   });
 });

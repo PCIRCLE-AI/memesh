@@ -40,6 +40,20 @@ export function isOnPath(tool: string): boolean {
 }
 
 /**
+ * An agent's configuration folder is here: something exists at that path and it is not a plain file
+ * (a `CLAUDE_CONFIG_DIR` that names a file is nobody's configuration, and writing under it fails).
+ * A path the injected `existsSyncImpl` calls present but that is not on disk is trusted, so tests can fake one.
+ */
+export function folderHere(existsSyncImpl: (p: string) => boolean, dir: string): boolean {
+  if (!existsSyncImpl(dir)) return false;
+  try {
+    return !fs.statSync(dir).isFile();
+  } catch {
+    return true;
+  }
+}
+
+/**
  * Claude Code is present when its config directory exists or its command is on PATH.
  * `configDir` is where Claude Code keeps its configuration; the default is the
  * environment's answer (CLAUDE_CONFIG_DIR, else ~/.claude).
@@ -49,7 +63,7 @@ export function claudeCodePresent(
   onPath: (tool: string) => boolean = isOnPath,
   configDir: string = pluginHostConfigRoot('claude-code'),
 ): boolean {
-  return existsSyncImpl(configDir) || onPath('claude');
+  return folderHere(existsSyncImpl, configDir) || onPath('claude');
 }
 
 /** Codex is present when its config directory exists or its command is on PATH. */
@@ -57,7 +71,7 @@ export function codexPresent(
   existsSyncImpl: (p: string) => boolean = fs.existsSync,
   onPath: (tool: string) => boolean = isOnPath,
 ): boolean {
-  return existsSyncImpl(pluginHostConfigRoot('codex')) || onPath('codex');
+  return folderHere(existsSyncImpl, pluginHostConfigRoot('codex')) || onPath('codex');
 }
 
 /** Gemini CLI has no configuration directory memesh looks at: it is present when its command is on PATH. */

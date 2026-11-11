@@ -27,7 +27,7 @@ vi.mock('../../src/core/host-presence.js', async (importOriginal) => {
  * and the ambient CLAUDE_CONFIG_DIR / CODEX_HOME of whoever runs the suite
  * (inside Codex, CODEX_HOME is set) never leaks into the fixture.
  */
-async function withHosts<T>(hosts: { claude?: boolean; codex?: boolean; gemini?: boolean }, fn: () => Promise<T>): Promise<T> {
+async function withHosts<T>(hosts: { claude?: boolean; codex?: boolean; codexCommand?: boolean; gemini?: boolean }, fn: () => Promise<T>): Promise<T> {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-hosts-'));
   tempRoots.push(base);
   const dirFor = (name: string, here: boolean | undefined) => {
@@ -38,12 +38,13 @@ async function withHosts<T>(hosts: { claude?: boolean; codex?: boolean; gemini?:
   const saved = { claude: process.env.CLAUDE_CONFIG_DIR, codex: process.env.CODEX_HOME };
   process.env.CLAUDE_CONFIG_DIR = dirFor('claude', hosts.claude);
   process.env.CODEX_HOME = dirFor('codex', hosts.codex);
-  presence.codexOnPath = false;
+  presence.codexOnPath = hosts.codexCommand === true;
   presence.claudeOnPath = false;
   presence.geminiOnPath = hosts.gemini === true;
   try {
     return await fn();
   } finally {
+    presence.codexOnPath = false;
     presence.geminiOnPath = false;
     if (saved.claude === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = saved.claude;
     if (saved.codex === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = saved.codex;
@@ -2506,10 +2507,10 @@ describe('doctor', () => {
     const packageRoot = createPackageRoot();
     tempRoots.push(packageRoot);
 
-    const { activity } = await activityCheck({
+    const { activity } = await withHosts({ claude: true }, () => activityCheck({
       ...wiredDoctorArgs(packageRoot, makeDatabase(5, { hookRuns: null, trackingSinceHours: 200 })),
       existsSyncImpl: noMarker,
-    });
+    }));
     expect(activity.status).toBe('warn');
     expect(activity.code).toBe('hook-activity.never-ran-legacy');
     expect(activity.params?.captured).toBe(5);
@@ -2742,15 +2743,25 @@ describe('doctor', () => {
     });
 
     it('Codex only: the "never ran" and the "stopped, unconfirmed" rows both name the Codex refresh command', async () => {
-      const notWired = await activityOn({ codex: true }, neverRan);
+      const notWired = await activityOn({ codex: true, codexCommand: true }, neverRan);
       expect(notWired.wiring.code).toBe('hook-wiring.no-claude-code');
       expect(notWired.activity.code).toBe('hook-activity.not-wired');
       expect(notWired.activity.fix).toContain(PLUGIN_REFRESH_COMMANDS.codex);
+      expect(notWired.activity.fix).toContain('safe to ignore');
       expect(notWired.activity.fix).not.toContain('install-hooks');
-      const stopped = await activityOn({ codex: true }, staleUnconfirmed);
+      const stopped = await activityOn({ codex: true, codexCommand: true }, staleUnconfirmed);
       expect(stopped.activity.code).toBe('hook-activity.stale-unconfirmed');
       expect(stopped.activity.fix).toContain(PLUGIN_REFRESH_COMMANDS.codex);
       expect(stopped.activity.fix).not.toContain('install-hooks');
+    });
+
+    it('Codex whose command is not on PATH: both rows say so, and name no command that would not run', async () => {
+      for (const args of [neverRan, staleUnconfirmed]) {
+        const { activity } = await activityOn({ codex: true }, args);
+        expect(activity.fix).toContain('not on PATH');
+        expect(activity.fix).not.toContain(PLUGIN_REFRESH_COMMANDS.codex);
+        expect(activity.fix).not.toContain('install-hooks');
+      }
     });
 
     it('Gemini only: no install-hooks and no Codex command', async () => {
@@ -3005,7 +3016,7 @@ describe('withHostFix: the one place a row\'s hook fix is chosen (#528)', () => 
   });
 
   it('a rewritten row loses its fixId, so --fix cannot act on it', () => {
-    for (const state of ['no-host', 'codex', 'gemini'] as const) {
+    for (const state of ['no-host', 'codex', 'codex-no-command', 'gemini'] as const) {
       expect(withHostFix(row('warn', advice, 'install-hooks'), state).fixId).toBeUndefined();
     }
   });
@@ -3013,7 +3024,7 @@ describe('withHostFix: the one place a row\'s hook fix is chosen (#528)', () => 
   it('leaves the row alone when Claude Code is here, when the row passes, and when its fix names something else', () => {
     const withAdvice = row('warn', 'Run `memesh install-hooks`.');
     expect(withHostFix(withAdvice, 'claude')).toBe(withAdvice);
-    for (const state of ['no-host', 'codex', 'gemini'] as const) {
+    for (const state of ['no-host', 'codex', 'codex-no-command', 'gemini'] as const) {
       const passing = row('pass', 'Run `memesh install-hooks`.');
       expect(withHostFix(passing, state)).toBe(passing);
       const other = row('warn', 'Run `memesh doctor --json`.');
@@ -3023,12 +3034,31 @@ describe('withHostFix: the one place a row\'s hook fix is chosen (#528)', () => 
     }
   });
 
-  it('the state is read off the hook-wiring row: Gemini-only is told apart from Codex only through whether Codex is here', () => {
-    expect(hostFixState('hook-wiring.no-host', false)).toBe('no-host');
-    expect(hostFixState('hook-wiring.no-claude-code', true)).toBe('codex');
-    expect(hostFixState('hook-wiring.no-claude-code', false)).toBe('gemini');
-    expect(hostFixState('hook-wiring.no-marker', true)).toBe('claude');
-    expect(hostFixState(undefined, false)).toBe('claude');
+  it('the state is decided from which agents are on the machine: Claude Code first, then Codex, then Gemini', () => {
+    const none = { claude: false, codex: false, codexCommand: false, gemini: false };
+    expect(hostFixState(none)).toBe('no-host');
+    expect(hostFixState({ ...none, gemini: true })).toBe('gemini');
+    expect(hostFixState({ ...none, codex: true, codexCommand: true })).toBe('codex');
+    expect(hostFixState({ ...none, codex: true, codexCommand: false })).toBe('codex-no-command');
+    expect(hostFixState({ ...none, codex: true, codexCommand: true, gemini: true })).toBe('codex');
+    expect(hostFixState({ ...none, claude: true })).toBe('claude');
+    expect(hostFixState({ claude: true, codex: true, codexCommand: true, gemini: true })).toBe('claude');
+  });
+
+  it('Codex without its command: the row says the command is not on PATH and gives no command that would not run', () => {
+    const fixed = withHostFix(row('warn', advice), 'codex-no-command');
+    expect(fixed.fix).toContain('not on PATH');
+    expect(fixed.fix).not.toContain(PLUGIN_REFRESH_COMMANDS.codex);
+    expect(fixed.fix).not.toContain('install-hooks');
+  });
+
+  it('the two "no capture hook is wired" rows keep their "expected, safe to ignore" line for Codex, and only those', () => {
+    for (const state of ['codex', 'codex-no-command'] as const) {
+      const notWired = withHostFix({ ...row('warn', advice), code: 'hook-activity.not-wired' }, state);
+      expect(notWired.fix).toContain('safe to ignore');
+      const other = withHostFix({ ...row('warn', advice), code: 'hook-activity.never-ran' }, state);
+      expect(other.fix).not.toContain('safe to ignore');
+    }
   });
 });
 

@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { claudeCodePresent, codexPresent, geminiPresent, isOnPath } from '../../src/core/host-presence.js';
+import { claudeCodePresent, codexPresent, folderHere, geminiPresent, isOnPath } from '../../src/core/host-presence.js';
 
 let root: string;
 let savedPath: string | undefined;
@@ -94,6 +94,14 @@ describe.skipIf(process.platform === 'win32')('isOnPath', () => {
     }
   });
 
+  it('a PATH folder whose name has a space is searched as one folder, not split at the space', () => {
+    const dir = path.join(root, 'folder with spaces');
+    fs.mkdirSync(dir);
+    exe(dir, 'claude');
+    process.env.PATH = [path.join(root, 'missing'), dir].join(path.delimiter);
+    expect(isOnPath('claude')).toBe(true);
+  });
+
   it('an empty or unset PATH finds nothing', () => {
     process.env.PATH = '';
     expect(isOnPath('claude')).toBe(false);
@@ -105,6 +113,48 @@ describe.skipIf(process.platform === 'win32')('isOnPath', () => {
 describe('claudeCodePresent / codexPresent / geminiPresent', () => {
   const none = () => false;
   const only = (tool: string) => (t: string) => t === tool;
+
+  it('a folder named by a file is not an agent folder; one that is missing is not either; a real one is', () => {
+    const file = path.join(root, 'a-file');
+    fs.writeFileSync(file, 'x');
+    const folder = path.join(root, 'a-folder');
+    fs.mkdirSync(folder);
+    expect(folderHere(fs.existsSync, file)).toBe(false);
+    expect(folderHere(fs.existsSync, path.join(root, 'missing'))).toBe(false);
+    expect(folderHere(fs.existsSync, folder)).toBe(true);
+    expect(claudeCodePresent(fs.existsSync, none, file)).toBe(false);
+    expect(claudeCodePresent(fs.existsSync, none, folder)).toBe(true);
+  });
+
+  it('with no arguments they ask the real machine: the folder CLAUDE_CONFIG_DIR / CODEX_HOME names, and the real PATH', () => {
+    const saved = { claude: process.env.CLAUDE_CONFIG_DIR, codex: process.env.CODEX_HOME, path: process.env.PATH };
+    try {
+      const claudeDir = path.join(root, 'claude-dir');
+      const codexDir = path.join(root, 'codex-dir');
+      fs.mkdirSync(claudeDir);
+      fs.mkdirSync(codexDir);
+      process.env.PATH = '';
+      process.env.CLAUDE_CONFIG_DIR = path.join(root, 'no-claude');
+      process.env.CODEX_HOME = path.join(root, 'no-codex');
+      expect([claudeCodePresent(), codexPresent()]).toEqual([false, false]);
+      process.env.CLAUDE_CONFIG_DIR = claudeDir;
+      process.env.CODEX_HOME = codexDir;
+      expect([claudeCodePresent(), codexPresent()]).toEqual([true, true]);
+      process.env.CLAUDE_CONFIG_DIR = path.join(root, 'no-claude');
+      process.env.CODEX_HOME = path.join(root, 'no-codex');
+      if (process.platform !== 'win32') {
+        const dir = bin();
+        exe(dir, 'claude');
+        exe(dir, 'codex');
+        process.env.PATH = dir;
+        expect([claudeCodePresent(), codexPresent()]).toEqual([true, true]);
+      }
+    } finally {
+      for (const [key, value] of [['CLAUDE_CONFIG_DIR', saved.claude], ['CODEX_HOME', saved.codex], ['PATH', saved.path]] as const) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
+    }
+  });
 
   it('Claude Code: the config directory alone, the command alone, or neither', () => {
     expect(claudeCodePresent(() => true, none, '/x/.claude')).toBe(true);

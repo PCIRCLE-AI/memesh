@@ -11,6 +11,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { execFileSync } from 'child_process';
+import { diffSnapshots, snapshotTree } from '../helpers/fs-snapshot.js';
 
 describe('install-hooks', () => {
   let tmpDir: string;
@@ -132,14 +133,16 @@ describe('install-hooks', () => {
   it('writes a backup before modifying an existing settings file', async () => {
     const settingsPath = path.join(process.env.HOME!, '.claude', 'settings.json');
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
-    fs.writeFileSync(settingsPath, JSON.stringify({ existing: 'config' }));
+    const original = JSON.stringify({ existing: 'config' });
+    fs.writeFileSync(settingsPath, original);
 
     const { installHooks } = await freshModule();
     const result = installHooks({ pluginRoot: pluginDir, pluginVersion: '4.1.4', scope: 'user' });
     expect(result.backupPath).not.toBeNull();
     expect(fs.existsSync(result.backupPath!)).toBe(true);
-    const backup = JSON.parse(fs.readFileSync(result.backupPath!, 'utf8'));
-    expect(backup.existing).toBe('config');
+    // The very bytes that were there before the run, not a copy taken after settings.json was rewritten.
+    expect(fs.readFileSync(result.backupPath!, 'utf8')).toBe(original);
+    expect(fs.readFileSync(settingsPath, 'utf8')).not.toBe(original);
   });
 
   it('--dry-run touches no files', async () => {
@@ -181,6 +184,11 @@ describe('install-hooks', () => {
     const markerBefore = fs.readFileSync(first.markerPath, 'utf8');
     const markerMtime = fs.statSync(first.markerPath).mtimeMs;
     const backupsBefore = fs.readdirSync(path.dirname(first.settingsPath)).filter((f) => f.includes('.bak-pre-memesh-')).length;
+    // Same content is not the same file: a rewrite with identical bytes still changes the inode or the mtime.
+    const rulePath = path.join(process.env.HOME!, '.claude', 'rules', 'memesh-citations.md');
+    const identity = () => [first.settingsPath, first.markerPath, rulePath].map((f) => { const st = fs.statSync(f, { bigint: true }); return `${st.ino} ${st.mtimeNs}`; });
+    const identityBefore = identity();
+    const treeBefore = snapshotTree(process.env.HOME!);
 
     await new Promise((resolve) => setTimeout(resolve, 20));
     const second = installHooks({ pluginRoot: pluginDir, pluginVersion: '4.1.4', scope: 'user' });
@@ -194,6 +202,8 @@ describe('install-hooks', () => {
     expect(fs.statSync(first.markerPath).mtimeMs).toBe(markerMtime);
     const backupsAfter = fs.readdirSync(path.dirname(first.settingsPath)).filter((f) => f.includes('.bak-pre-memesh-')).length;
     expect(backupsAfter).toBe(backupsBefore);
+    expect(identity(), 'a file was rewritten with the same bytes').toEqual(identityBefore);
+    expect(diffSnapshots(treeBefore, snapshotTree(process.env.HOME!))).toEqual([]);
   });
 
   it('refreshes the marker, and only the marker, when it describes a different install (#528)', async () => {
@@ -233,6 +243,7 @@ describe('install-hooks', () => {
     expect(() => installHooks({ pluginRoot: pluginDir, pluginVersion: '4.1.4', scope: 'user' })).toThrow(/not valid JSON/);
     const rules = path.join(process.env.HOME!, '.claude', 'rules');
     expect(fs.existsSync(rules) ? fs.readdirSync(rules) : []).toEqual([]);
+    expect(fs.existsSync(path.join(process.env.MEMESH_DIR!, 'install-hooks.json')), 'the marker was written before the refusal').toBe(false);
   });
 
   it('refuses a settings file whose hooks.<event> is not a list, with a sentence, for install and uninstall (#528)', async () => {
@@ -283,6 +294,7 @@ describe('install-hooks', () => {
     const rules = path.join(process.env.HOME!, '.claude', 'rules');
     expect(fs.existsSync(rules) ? fs.readdirSync(rules) : []).toEqual([]);
     expect(fs.readdirSync(path.dirname(settingsPath)).filter((f) => f.includes('.bak-pre-memesh-'))).toEqual([]);
+    expect(fs.existsSync(path.join(process.env.MEMESH_DIR!, 'install-hooks.json')), 'the marker was written before the refusal').toBe(false);
 
     // The rule file above was absent, so the uninstall half proved nothing about it. Put a real one in place
     // (a good install writes it), swap the settings for the bad body, and require the refused uninstall to leave it.
@@ -296,14 +308,14 @@ describe('install-hooks', () => {
   });
 
   it.each([
-    ['is not JSON', 'not json at all'],
-    ['has no "hooks" object', '{}'],
-  ])("memesh's own hooks file that %s is refused in one plain sentence and nothing is written (#528)", async (_label, manifest) => {
+    ['is not JSON', 'not json at all', 'it is not valid JSON'],
+    ['has no "hooks" object', '{}', '"hooks" is not an object'],
+  ])("memesh's own hooks file that %s is refused in one plain sentence and nothing is written (#528)", async (_label, manifest, why) => {
     const manifestPath = path.join(pluginDir, 'hooks', 'hooks.json');
     fs.writeFileSync(manifestPath, manifest);
     const { installHooks } = await freshModule();
     expect(() => installHooks({ pluginRoot: pluginDir, pluginVersion: '4.1.4', scope: 'user' })).toThrow(
-      `memesh's own hooks file at ${manifestPath} is damaged and cannot be read; reinstall memesh and run install-hooks again`,
+      `memesh's own hooks file at ${manifestPath} is damaged (${why}) and cannot be used; nothing was changed; reinstall memesh and run install-hooks again`,
     );
     expect(fs.existsSync(path.join(process.env.HOME!, '.claude'))).toBe(false);
     expect(fs.existsSync(path.join(process.env.MEMESH_DIR!, 'install-hooks.json'))).toBe(false);

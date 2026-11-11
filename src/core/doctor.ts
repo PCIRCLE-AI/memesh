@@ -19,6 +19,7 @@ import {
 } from './install-channel.js';
 import { readInstallRecordState } from './install-id.js';
 import { isWritable, ownerWriteCommand, runOrSay, shellQuote } from './file-mode.js';
+import { whyFailed } from './safe-write.js';
 import { unreadDeliveryCount } from './agent-message-inbox.js';
 import { damagedDatabaseFix, diagnoseDatabaseFailure, isDamagedDatabaseError } from './database-diagnosis.js';
 import { withoutFinalPeriod } from './sentence.js';
@@ -1456,6 +1457,7 @@ function inspectHookWiring(
   existsSyncImpl: typeof fs.existsSync,
   readFileSyncImpl: typeof fs.readFileSync,
   memeshDir: string,
+  hosts: HostsHere,
   installChannel?: InstallChannel,
   installedPluginsPath?: string,
   pluginHost?: PluginHost | null,
@@ -1511,11 +1513,9 @@ function inspectHookWiring(
     // hooks to connect, and telling it to run `memesh install-hooks` would create a
     // Claude directory nobody uses. Gemini is judged the way `memesh setup` judges it:
     // its command is on PATH.
-    const claudeHere = claudeCodePresent(existsSyncImpl, isOnPath);
-    const codexHere = codexPresent(existsSyncImpl, isOnPath);
-    const geminiHere = geminiPresent(isOnPath);
-    if (!claudeHere && (codexHere || geminiHere)) {
-      const hostName = codexHere ? 'Codex' : 'Gemini CLI';
+    const hostState = hostFixState(hosts);
+    if (hostState === 'codex' || hostState === 'codex-no-command' || hostState === 'gemini') {
+      const hostName = hostState === 'gemini' ? 'Gemini CLI' : 'Codex';
       return createCheck(
         'hook-wiring',
         'Hooks wired into Claude Code',
@@ -1528,7 +1528,7 @@ function inspectHookWiring(
     // No agent host at all. Telling this machine to run `install-hooks` would
     // connect memesh to a program that is not installed, and `doctor --fix` used to
     // do exactly that. There is nothing to repair yet, so the row carries no fixId.
-    if (!claudeHere && !codexHere && !geminiHere) {
+    if (hostState === 'no-host') {
       return createCheck(
         'hook-wiring',
         'Hooks wired into Claude Code',
@@ -1959,7 +1959,7 @@ function inspectHookActivity(
       // arm the never-ran FAIL below.
       return createCheck('hook-activity', TITLE, 'warn',
         'No capture hook has ever run — and no capture hook (Stop / PostToolUse / PreCompact) is confirmed wired on this machine, so there is nothing to run.',
-        'If you want automatic capture, run `memesh install-hooks`. If this install is MCP-only (Codex / Gemini), this is expected and safe to ignore.',
+        'If you want automatic capture, run `memesh install-hooks`. If you use memesh only through its MCP server (no hooks), this is expected and safe to ignore.',
         { code: 'hook-activity.not-wired' });
     }
     return createCheck('hook-activity', TITLE, 'fail',
@@ -2055,32 +2055,72 @@ const NO_HOST_NEXT_STEP = 'Install Claude Code or Codex (or Gemini CLI), then ru
 /** What to tell a machine whose agent is Codex: Codex's hooks come from its plugin, not from `memesh install-hooks`. */
 const CODEX_NEXT_STEP = `Refresh the Codex plugin (\`${PLUGIN_REFRESH_COMMANDS.codex}\`), restart Codex, start one session, and re-run \`memesh doctor\`. If you just updated, start a session first — the records begin on the next hook run.`;
 
+/** Codex's folder is here but its command is not on PATH: the refresh command would only print "command not found". */
+const CODEX_NO_COMMAND_NEXT_STEP = "Codex's configuration folder is here but the `codex` command is not on PATH, so the Codex plugin cannot be refreshed from this shell. Put `codex` on PATH, then re-run `memesh doctor` for the refresh command.";
+
+/** For a row that only says "no capture hook is wired": connecting memesh to Codex as an MCP server alone (what `memesh setup` does for Codex) is a normal setup. */
+const CODEX_MCP_ONLY_NOTE = 'If memesh is connected to Codex as an MCP server only (what `memesh setup` does for Codex), this is expected and safe to ignore.';
+
 /** What to tell a machine whose only agent is Gemini CLI: it is an MCP-only host, there is no hook to install. */
 const GEMINI_NEXT_STEP = 'Gemini CLI connects to memesh as an MCP server only, so there are no memesh hooks to install on this machine.';
 
-/**
- * Which agent the machine has, as far as the rows that prescribe a hook fix are
- * concerned. It is read off the hook-wiring row, so the rows cannot disagree with it.
- */
-export type HostFixState = 'claude' | 'no-host' | 'codex' | 'gemini';
+/** The rows that say "no capture hook is wired", where a machine that never wired one is not broken. */
+const NOT_WIRED_CODES: ReadonlySet<string> = new Set(['hook-activity.not-wired', 'capture-liveness.not-wired']);
 
-export function hostFixState(wiringCode: string | undefined, codexHere: boolean): HostFixState {
-  if (wiringCode === 'hook-wiring.no-host') return 'no-host';
-  if (wiringCode === 'hook-wiring.no-claude-code') return codexHere ? 'codex' : 'gemini';
-  return 'claude';
+/** Which agents are on the machine: the answers `memesh setup` gives, asked once per doctor run. */
+export interface HostsHere {
+  /** Claude Code is here, or `memesh install-hooks` has wired it before (its marker file exists): either way `install-hooks` is its fix. */
+  claude: boolean;
+  codex: boolean;
+  /** The `codex` command is on PATH (the folder alone does not make it runnable). */
+  codexCommand: boolean;
+  gemini: boolean;
+}
+
+function detectHostsHere(existsSyncImpl: typeof fs.existsSync, memeshDir: string): HostsHere {
+  return {
+    claude: claudeCodePresent(existsSyncImpl, isOnPath) || existsSyncImpl(path.join(memeshDir, 'install-hooks.json')),
+    codex: codexPresent(existsSyncImpl, isOnPath),
+    codexCommand: isOnPath('codex'),
+    gemini: geminiPresent(isOnPath),
+  };
+}
+
+/**
+ * Which agent the machine has, as far as the rows that prescribe a hook fix are concerned:
+ * Claude Code when it is here (`memesh install-hooks` is for it), else Codex, else Gemini CLI,
+ * else none. Decided from whether the agents are on the machine, not from any row's text.
+ */
+export type HostFixState = 'claude' | 'no-host' | 'codex' | 'codex-no-command' | 'gemini';
+
+export function hostFixState(hosts: HostsHere): HostFixState {
+  if (hosts.claude) return 'claude';
+  if (hosts.codex) return hosts.codexCommand ? 'codex' : 'codex-no-command';
+  return hosts.gemini ? 'gemini' : 'no-host';
+}
+
+function hostFix(state: Exclude<HostFixState, 'claude'>, code: string | undefined): string {
+  if (state === 'no-host') return NO_HOST_NEXT_STEP;
+  if (state === 'gemini') return GEMINI_NEXT_STEP;
+  const step = state === 'codex' ? CODEX_NEXT_STEP : CODEX_NO_COMMAND_NEXT_STEP;
+  return code !== undefined && NOT_WIRED_CODES.has(code) ? `${step} ${CODEX_MCP_ONLY_NOTE}` : step;
 }
 
 /**
  * The ONE place that writes the fix of a row that would otherwise prescribe
  * `memesh install-hooks`. That command writes Claude Code's settings, so on a
  * machine that has no Claude Code it would create a directory nobody uses and
- * contradict the hook-wiring row. Every such row gets the hook-wiring row's
- * answer for this machine instead (and no fixId, so `doctor --fix` cannot act on it).
+ * contradict the hook-wiring row. Every such row gets the answer for this machine
+ * instead (and no fixId, so `doctor --fix` cannot act on it).
+ *
+ * The rows are recognised by their fix naming `install-hooks`: they are built in a dozen
+ * places, and a row that slips through is caught by the machine-by-machine sweep in
+ * tests/core/doctor-capture-liveness.test.ts, which fails when any row on a machine without Claude
+ * Code still names the command.
  */
 export function withHostFix(check: DoctorCheck, state: HostFixState): DoctorCheck {
   if (state === 'claude' || check.status === 'pass' || !check.fix?.includes('install-hooks')) return check;
-  const fix = state === 'no-host' ? NO_HOST_NEXT_STEP : state === 'codex' ? CODEX_NEXT_STEP : GEMINI_NEXT_STEP;
-  return { ...check, fix, fixId: undefined };
+  return { ...check, fix: hostFix(state, check.code), fixId: undefined };
 }
 
 /**
@@ -2097,6 +2137,20 @@ function withRecordedHosts(
   const hostsSeen = [...new Set(result.report.hooks.flatMap((h) => h.hosts))].sort();
   if (hostsSeen.length === 0) return result;
   return { ...result, check: { ...result.check, summary: `${result.check.summary} Hosts recorded: ${hostsSeen.join(', ')}.` } };
+}
+
+/** The hook result file exists but cannot be read: say so, with the reason and the way out that matches it. */
+function outcomeFileUnreadable(file: string, err: unknown): DoctorCheck {
+  const code = (err as NodeJS.ErrnoException).code;
+  const why = whyFailed(err);
+  const fix = code === 'EISDIR'
+    ? `A folder is where that file belongs: move it aside (\`mv ${shellQuote(file)} ${shellQuote(`${file}.broken`)}\`); the next hook run creates the file.`
+    : code === 'EACCES' || code === 'EPERM'
+      ? `Give yourself read access to it (\`chmod u+r ${shellQuote(file)}\`; if another user owns it, move it aside), then re-run \`memesh doctor\`.`
+      : `Look at it with \`ls -l ${shellQuote(file)}\`, fix what stops it being read, then re-run \`memesh doctor\`.`;
+  return createCheck('capture-liveness', 'Capture liveness', 'warn',
+    `The hook result file at ${file} cannot be read (${why}), so whether the hooks save anything cannot be checked. This is not the same as "no records".`,
+    fix, { code: 'capture-liveness.outcome-file-unreadable', params: { path: file, reason: why } });
 }
 
 function inspectCaptureLiveness(
@@ -2119,9 +2173,13 @@ function inspectCaptureLiveness(
   }
 
   let raw: string | null;
+  const outcomePath = path.join(memeshDirImpl(), HOOK_OUTCOMES_FILENAME);
   try {
-    raw = readFileSyncImpl(path.join(memeshDirImpl(), HOOK_OUTCOMES_FILENAME), 'utf8') as string;
-  } catch {
+    raw = readFileSyncImpl(outcomePath, 'utf8') as string;
+  } catch (err) {
+    // A file that is there and cannot be read is a different thing from no file: saying "no records"
+    // would call records nobody can see an absence, and the fix for it is a permission, not an update.
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') return { check: outcomeFileUnreadable(outcomePath, err) };
     // No file yet is the ordinary state right after an upgrade — the hooks
     // create it on their next run. It is NOT evidence of death, and the
     // never-ran branch below refuses to treat it as such.
@@ -2242,7 +2300,7 @@ function inspectCaptureLiveness(
       return {
         check: createCheck('capture-liveness', TITLE, 'warn',
           `The ${hook} hook has never run — but no capture hook (Stop / PostToolUse / PreCompact) is confirmed wired on this machine, so there is nothing that should be running.`,
-          'If you want automatic capture, run `memesh install-hooks`. If this install is MCP-only (Codex / Gemini / Cursor), this is expected and safe to ignore.',
+          'If you want automatic capture, run `memesh install-hooks`. If you use memesh only through its MCP server (no hooks), this is expected and safe to ignore.',
           { code: 'capture-liveness.not-wired', params: { hook } }),
         report: { ...report, status: 'PASS_WITH_CONCERNS' },
       };
@@ -4405,7 +4463,8 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   const pluginHost = detectPluginHost(packageRoot);
   let codexPluginCacheDetected = pluginHost === 'codex';
   let claudePluginCacheDetected = pluginHost === 'claude-code';
-  const wiring = inspectHookWiring(existsSyncImpl, readFileSyncImpl, memeshDir(), install, installedPluginsPathImpl, pluginHost);
+  const hosts = detectHostsHere(existsSyncImpl, memeshDir());
+  const wiring = inspectHookWiring(existsSyncImpl, readFileSyncImpl, memeshDir(), hosts, install, installedPluginsPathImpl, pluginHost);
   const pluginCache = inspectPluginCacheCurrency(install, pluginHost, packageRoot, installedPluginsPathImpl, readFileSyncImpl, existsSyncImpl, marketplaceHeadShaImpl);
   if (pluginCache) checks.push(pluginCache);
   if (install === 'npm-global') {
@@ -4509,11 +4568,11 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   // Every row that would prescribe `memesh install-hooks` is judged by the same
   // host state, in this one pass: a row added later (or one built before the
   // wiring row existed, like the citation rate) cannot keep a second copy.
-  const hostState = hostFixState(wiring.code, codexPresent(existsSyncImpl, isOnPath));
+  const hostState = hostFixState(hosts);
   const finalChecks = checks.map((check) => withHostFix(check, hostState));
 
   return {
-    status: summarizeOverallStatus(finalChecks),
+    status: summarizeOverallStatus(checks),
     checks: finalChecks,
     ...(captureReport ? { capture: captureReport } : {}),
   };

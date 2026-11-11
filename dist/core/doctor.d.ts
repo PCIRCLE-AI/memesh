@@ -81,8 +81,14 @@ export declare class NoDatabaseYetError extends Error {
     constructor(databasePath: string);
 }
 export declare function inspectPrivateNoteHolds(now?: number): DoctorCheck | null;
-export type HostFixState = 'claude' | 'no-host' | 'codex' | 'gemini';
-export declare function hostFixState(wiringCode: string | undefined, codexHere: boolean): HostFixState;
+export interface HostsHere {
+    claude: boolean;
+    codex: boolean;
+    codexCommand: boolean;
+    gemini: boolean;
+}
+export type HostFixState = 'claude' | 'no-host' | 'codex' | 'codex-no-command' | 'gemini';
+export declare function hostFixState(hosts: HostsHere): HostFixState;
 export declare function withHostFix(check: DoctorCheck, state: HostFixState): DoctorCheck;
 export declare function hoursSince(sqliteTimestamp: string): number | null;
 type NativeBindingProbeResult = {

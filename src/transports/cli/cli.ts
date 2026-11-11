@@ -31,7 +31,7 @@ import { captureChatTurn } from '../../core/turn-signal.js';
 import {
   DELEGATION_VERDICTS, DelegationInputError, ENVELOPE_MAX_BYTES, recordDelegation, setDelegationVerdict,
 } from '../../core/delegation.js';
-import { inspectHosts, allWired, noHostMessage, unverifiedHosts, wiredClosing, type SetupSeams, type HostStatus } from '../../core/setup.js';
+import { inspectHosts, setupVerdict, type SetupSeams, type HostStatus } from '../../core/setup.js';
 import { installHooks } from '../../core/install-hooks.js';
 import { formatJourney, refreshExistingJourneyRecord, runInstallJourney, runPostInstallJourney } from '../../core/doctor-journey.js';
 import { getTaskState, setTaskState, TaskStateUnreadableError } from '../../core/task-state-store.js';
@@ -1858,7 +1858,7 @@ program
 program
   .command('setup')
   .description('Detect Claude Code / Codex / Gemini on this machine, wire memesh into each, and verify')
-  .option('--check', 'Only report wiring status per host; change nothing (exit 1 if a present host is unwired)')
+  .option('--check', 'Only report wiring status per host; change nothing. Exit 1 if a present host is unwired, if no host is found, or if nothing could be confirmed wired; exit 0 when everything that can be checked is wired (a host that could not be checked is named, with how to check it)')
   .option('--yes', 'Apply every wiring action without asking')
   .option('--no-journey', 'Do not run the install journey afterwards (same as MEMESH_SKIP_POST_INSTALL_JOURNEY=1)')
   .action(async (opts) => {
@@ -1882,8 +1882,8 @@ program
         return { status: null, stderr: err instanceof Error ? err.message : String(err) };
       }
     };
-    // isOnPath is the module-scope PATH walker upgrade-plugin already uses —
-    // one predicate, no `which`/`where` subprocess per host.
+    // isOnPath is core/host-presence.ts's PATH walker, the one `memesh doctor` and
+    // upgrade-plugin use — one predicate, no `which`/`where` subprocess per host.
     const seams: SetupSeams = { home: () => homeDir(), isOnPath, run: runSeam };
 
     const render = (statuses: HostStatus[]) => {
@@ -1895,32 +1895,30 @@ program
     };
 
     let statuses = inspectHosts(seams);
+    const verdict = setupVerdict(statuses);
 
     // No host at all is not "Everything present is wired": nothing was wired,
     // and exit 0 would tell a script (and the person) that the install worked.
-    const noHost = noHostMessage(statuses);
-    if (noHost) {
+    if (!statuses.some((st) => st.present)) {
       render(statuses);
-      console.error(`\n${noHost}`);
+      console.error(`\n${verdict.closing}`);
       console.log('\nThe install journey was not run, because nothing was set up. Check the core features any time: memesh doctor --journey');
-      process.exit(1);
+      process.exit(verdict.exitCode);
     }
 
     if (opts.check) {
       render(statuses);
-      if (allWired(statuses) && unverifiedHosts(statuses).length > 0) console.log(`\n${wiredClosing(statuses)}`);
-      process.exit(allWired(statuses) ? 0 : 1);
+      if (verdict.closing) console.log(`\n${verdict.closing}`);
+      process.exit(verdict.exitCode);
     }
 
     const pending = statuses.filter((st) => st.present && st.actions.length > 0);
     if (pending.length === 0) {
       render(statuses);
-      console.log(allWired(statuses)
-        ? `\n${wiredClosing(statuses)}`
-        : '\nNothing to wire automatically — see the lines above.');
+      if (verdict.closing) console.log(`\n${verdict.closing}`);
       // A host is present and wired: that is a real install to check.
-      if (allWired(statuses)) await runPostInstallJourney({ packageRoot, version: pkg.version, trigger: 'setup', journeyFlag: opts.journey });
-      process.exit(allWired(statuses) ? 0 : 1);
+      if (verdict.exitCode === 0) await runPostInstallJourney({ packageRoot, version: pkg.version, trigger: 'setup', journeyFlag: opts.journey });
+      process.exit(verdict.exitCode);
     }
 
     render(statuses);
@@ -1954,8 +1952,15 @@ program
           if (answer !== 'y' && answer !== 'yes') { console.log('  skipped'); continue; }
         }
         if (action.kind === 'install-hooks') {
-          console.log(`  ✅ ${wireUserHooks()}`);
-          hooksWritten = true;
+          // A refusal here (an unreadable settings file, a folder it cannot write) must not stop the
+          // other hosts' actions: report it, go on, and exit 1 at the end.
+          try {
+            console.log(`  ✅ ${wireUserHooks()}`);
+            hooksWritten = true;
+          } catch (err) {
+            // Not `failed`: the hooks are still unwired, so the check after the loop is exit 1 by itself.
+            console.error(`  ❌ ${err instanceof Error ? err.message : String(err)}`);
+          }
         } else if (action.cmd) {
           const actionArgs = Array.isArray(action.args) ? action.args : [];
           const r = runSeam(action.cmd, actionArgs);
@@ -1970,10 +1975,12 @@ program
     console.log('\nAfter wiring:');
     statuses = inspectHosts(seams);
     render(statuses);
+    const after = setupVerdict(statuses);
+    if (after.closing) console.log(`\n${after.closing}`);
     // The hooks are in settings.json now; a Claude Code session that is already open does not have them.
     if (hooksWritten) console.log('\nRestart Claude Code (or open a new session) for hooks to take effect.');
-    if (!failed && allWired(statuses)) await runPostInstallJourney({ packageRoot, version: pkg.version, trigger: 'setup', journeyFlag: opts.journey });
-    process.exit(failed || !allWired(statuses) ? 1 : 0);
+    if (!failed && after.exitCode === 0) await runPostInstallJourney({ packageRoot, version: pkg.version, trigger: 'setup', journeyFlag: opts.journey });
+    process.exit(failed ? 1 : after.exitCode);
   });
 
 // --- task ---
@@ -2877,6 +2884,8 @@ program
     // open already removes other users' access, and the owner's own bits are
     // the owner's decision (#520). Destructive database reset
     // branches remain human decisions.
+    // A fix that failed (a ❌ line) is a failed run, even when the report after it is only a warning.
+    let fixFailed = false;
     if (opts.fix) {
       // The dispatch is a Record, not an if-chain, so a fourth fixId added
       // in doctor.ts fails to COMPILE here instead of prompting the user
@@ -2924,6 +2933,7 @@ program
             console.log(`  ✅ ${FIX_ACTIONS[check.fixId!](check)}`);
           } catch (err) {
             console.error(`  ❌ ${err instanceof Error ? err.message : String(err)}`);
+            fixFailed = true;
           }
         }
         rl?.close();
@@ -2971,7 +2981,7 @@ program
       }
     }
 
-    if (result.status === 'FAIL') {
+    if (result.status === 'FAIL' || fixFailed) {
       process.exitCode = 1;
     }
   });

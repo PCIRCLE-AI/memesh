@@ -36,8 +36,9 @@
 import fs from 'fs';
 import path from 'path';
 import { homeDir, memeshDir } from './paths.js';
-import { citationRulePath, removeCitationRule, writeCitationRule, type CitationRuleResult } from './citation-rule.js';
+import { CITATION_RULE_BODY, citationRulePath, citationRuleState, type CitationRuleResult } from './citation-rule.js';
 import { pluginHostConfigRoot } from './install-channel.js';
+import { assertCanDelete, assertCanWrite, assertFolderWritable, Changes, refuse, whyFailed } from './safe-write.js';
 
 type HookCommand = { type: 'command'; command: string; timeout?: number; _memesh?: boolean };
 type HookEntry = { matcher?: string; hooks: HookCommand[] };
@@ -45,12 +46,6 @@ type HooksByEvent = Record<string, HookEntry[]>;
 interface ClaudeSettings {
   hooks?: HooksByEvent;
   [key: string]: unknown;
-}
-
-// Shape of `<memesh>/hooks/hooks.json` — same fields, but commands
-// reference `${CLAUDE_PLUGIN_ROOT}` which we substitute on install.
-interface PluginHooksManifest {
-  hooks: HooksByEvent;
 }
 
 /**
@@ -62,17 +57,10 @@ interface PluginHooksManifest {
  */
 export function settingsHaveMemeshHooks(settingsPath: string): boolean {
   try {
-    const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as ClaudeSettings;
-    for (const entries of Object.values(parsed.hooks ?? {})) {
-      if (!Array.isArray(entries)) continue;
-      for (const entry of entries) {
-        for (const hook of entry.hooks ?? []) {
-          if (hook?._memesh === true) return true;
-        }
-      }
-    }
-  } catch { /* missing or unparseable settings — not wired */ }
-  return false;
+    // readSettings checks the shape of every entry, so the walk below needs no guards of its own.
+    const parsed = readSettings(settingsPath);
+    return Object.values(parsed?.hooks ?? {}).some((entries) => entries.some((entry) => entry.hooks.some((hook) => hook._memesh === true)));
+  } catch { return false; /* missing, unreadable or malformed settings — not wired */ }
 }
 
 export interface InstallOptions {
@@ -181,71 +169,61 @@ function settingsPathFor(scope: 'user' | 'project', cwd: string): string {
   return path.join(pluginHostConfigRoot('claude-code'), 'settings.json');
 }
 
-// settings.json writer. The CodeQL js/file-system-race rule fires here
-// because we read settings.json earlier and now write it back, with a
-// theoretical TOCTOU window. We accept that risk:
-//   1. `memesh install-hooks` is a one-shot CLI command invoked manually
-//      by a single user, not a long-running daemon. There is no
-//      meaningful concurrent writer to race against in normal use.
-//   2. `backupSettings()` runs before this write, so any concurrent
-//      modification by Claude Code itself is recoverable from the
-//      timestamped .bak-pre-memesh-* file we just created.
-//   3. Atomic temp+rename was attempted (5c69a262) but introduced
-//      Windows portability issues with no commensurate real-world
-//      benefit for a once-per-install CLI.
-// codeql[js/file-system-race]: justified — see comment above
-function writeSettingsSync(targetPath: string, data: string): void {
-  fs.writeFileSync(targetPath, data, 'utf8');
-}
-
 const isJsonObject = (v: unknown): v is Record<string, unknown> =>
   v !== null && typeof v === 'object' && !Array.isArray(v);
 
-/** Every refusal reads the same: which file, what is wrong, and that nothing was changed. */
-const refuse = (p: string, what: string): Error =>
-  new Error(`settings file at ${p}${what}; refusing to modify`);
+/** A settings file memesh will not touch because of what is IN it. */
+const settingsRefusal = (p: string, what: string): Error => refuse('settings file', p, what, 'refusing to modify');
 
 /**
- * The merge below reads `{ matcher?, hooks: [{ _memesh? }] }` per event, and a
- * file of any other shape would fail there with a TypeError after the citation
- * rule was already written. Nothing has been written when this throws.
+ * The merge below reads `{ matcher?, hooks: [{ _memesh? }] }` per event, and a file of any other shape
+ * would fail there with a TypeError. Nothing has been written when this throws. `fail` builds the
+ * error, so settings.json and memesh's own manifest are judged by one walk and each says its own name.
  */
-function assertHooksShape(hooks: unknown, p: string): void {
-  if (!isJsonObject(hooks)) throw refuse(p, ': "hooks" is not an object');
+function assertHooksShape(hooks: unknown, fail: (what: string) => Error): void {
+  if (!isJsonObject(hooks)) throw fail('"hooks" is not an object');
   for (const [event, entries] of Object.entries(hooks)) {
-    if (!Array.isArray(entries)) throw refuse(p, `: hooks.${event} is not a list`);
+    if (!Array.isArray(entries)) throw fail(`hooks.${event} is not a list`);
     entries.forEach((entry, i) => {
       const where = `hooks.${event}[${i}]`;
-      if (!isJsonObject(entry)) throw refuse(p, `: ${where} is not an object`);
-      if (!Array.isArray(entry.hooks)) throw refuse(p, `: ${where}.hooks is not a list`);
+      if (!isJsonObject(entry)) throw fail(`${where} is not an object`);
+      if (!Array.isArray(entry.hooks)) throw fail(`${where}.hooks is not a list`);
       entry.hooks.forEach((h: unknown, j: number) => {
-        if (!isJsonObject(h)) throw refuse(p, `: ${where}.hooks[${j}] is not an object`);
+        if (!isJsonObject(h)) throw fail(`${where}.hooks[${j}] is not an object`);
       });
     });
   }
 }
 
-function readSettings(p: string): ClaudeSettings {
-  if (!fs.existsSync(p)) return {};
+/** The parsed settings, or null when there is no such file. A file that is there but cannot be used is refused. */
+function readSettings(p: string): ClaudeSettings | null {
+  if (!fs.existsSync(p)) return null;
+  let text: string;
+  try {
+    text = fs.readFileSync(p, 'utf8');
+  } catch (err) {
+    throw refuse('settings file', p, ` cannot be read (${whyFailed(err)})`);
+  }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
+    parsed = JSON.parse(text);
   } catch {
     // We refuse to overwrite a file we can't parse: the user's existing config
     // matters more than our convenience.
-    throw refuse(p, ' is not valid JSON');
+    throw settingsRefusal(p, ' is not valid JSON');
   }
-  if (!isJsonObject(parsed)) throw refuse(p, ' is not a JSON object');
-  if (parsed.hooks !== undefined) assertHooksShape(parsed.hooks, p);
+  if (!isJsonObject(parsed)) throw settingsRefusal(p, ' is not a JSON object');
+  if (parsed.hooks !== undefined) assertHooksShape(parsed.hooks, (what) => settingsRefusal(p, `: ${what}`));
   return parsed as ClaudeSettings;
 }
 
-function backupSettings(settingsPath: string): string | null {
-  if (!fs.existsSync(settingsPath)) return null;
-  const ts = new Date().toISOString().replace(/[:.]/g, '-');
-  const backup = `${settingsPath}.bak-pre-memesh-${ts}`;
-  fs.copyFileSync(settingsPath, backup);
-  return backup;
+/** The citation rule's state, or a refusal when the file is there and cannot be read. */
+function readRuleState(scope: 'user' | 'project', cwd: string): ReturnType<typeof citationRuleState> {
+  try {
+    return citationRuleState(scope, homeDir(), cwd);
+  } catch (err) {
+    throw refuse('citation rule file', citationRulePath(scope, homeDir(), cwd), ` cannot be read (${whyFailed(err)})`);
+  }
 }
 
 /**
@@ -259,28 +237,34 @@ function loadPluginHooks(pluginRoot: string): HooksByEvent {
   if (!fs.existsSync(manifestPath)) {
     throw new Error(`plugin hooks manifest not found at ${manifestPath}`);
   }
-  const damaged = () => new Error(
-    `memesh's own hooks file at ${manifestPath} is damaged and cannot be read; reinstall memesh and run install-hooks again`,
+  const damaged = (why: string) => refuse(
+    "memesh's own hooks file", manifestPath, ` is damaged (${why}) and cannot be used`,
+    'nothing was changed; reinstall memesh and run install-hooks again',
   );
-  let manifest: PluginHooksManifest;
+  let manifest: unknown;
   try {
-    manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as PluginHooksManifest;
-  } catch {
-    throw damaged();
+    manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  } catch (err) {
+    throw damaged(err instanceof SyntaxError ? 'it is not valid JSON' : whyFailed(err));
   }
-  if (manifest === null || typeof manifest !== 'object' || manifest.hooks === null || typeof manifest.hooks !== 'object') {
-    throw damaged();
-  }
+  if (!isJsonObject(manifest)) throw damaged('it is not a JSON object');
+  assertHooksShape(manifest.hooks, damaged);
+  const declared = manifest.hooks as HooksByEvent;
+  // An empty manifest would read as "memesh retired every hook" and delete the ones already installed.
+  if (Object.values(declared).every((entries) => entries.length === 0)) throw damaged('it declares no hooks');
   const out: HooksByEvent = {};
-  for (const [event, entries] of Object.entries(manifest.hooks)) {
+  for (const [event, entries] of Object.entries(declared)) {
     out[event] = entries.map((entry) => ({
       matcher: entry.matcher,
-      hooks: entry.hooks.map((h) => ({
-        type: h.type,
-        command: h.command.replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, pluginRoot),
-        ...(h.timeout !== undefined ? { timeout: h.timeout } : {}),
-        _memesh: true,
-      })),
+      hooks: entry.hooks.map((h, j) => {
+        if (typeof h.command !== 'string') throw damaged(`hooks.${event}[].hooks[${j}].command is not a string`);
+        return {
+          type: h.type,
+          command: h.command.replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, pluginRoot),
+          ...(h.timeout !== undefined ? { timeout: h.timeout } : {}),
+          _memesh: true,
+        };
+      }),
     }));
   }
   return out;
@@ -310,66 +294,49 @@ function entryAlreadyPresent(existing: HookEntry[], desired: HookEntry): boolean
   });
 }
 
+/** Runs `fn` with a `Changes` log; when it throws, whatever it changed so far is put back before the error goes on. */
+function withRollback<T>(fn: (changes: Changes) => T): T {
+  const changes = new Changes();
+  try {
+    return fn(changes);
+  } catch (err) {
+    changes.rollBack();
+    throw err;
+  }
+}
+
+const BACKUP_SUFFIX = () => `.bak-pre-memesh-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+
+const RULE_ACTION = { missing: 'created', stale: 'updated', current: 'unchanged', 'foreign-file': 'foreign-file' } as const;
+
 /**
- * Installs the hooks. If anything fails after the citation rule file was
- * written, that file goes back to how it was: removed if this run created it
- * (with the folder, if this run created that too), the original bytes if it
- * existed. The failure is reported to the caller, so nothing it names may
- * stay changed. (`settings.json` is restored inside, where it is written.)
+ * Installs the hooks. Every file this run will touch is checked BEFORE the first write (see
+ * safe-write.ts), and the writes go settings → marker → citation rule, so a run that cannot finish
+ * reports it in one sentence with the machine as it was. A failure the checks could not foresee
+ * puts back what the run changed.
  */
 export function installHooks(opts: InstallOptions): InstallResult {
   const cwd = opts.cwd ?? process.cwd();
-  const rulePath = citationRulePath(opts.scope, homeDir(), cwd);
-  const ruleBefore = readBytesOrNull(rulePath);
-  // Folders this run may create: remembered, so a failed run removes only those.
-  const folders = [...new Set([path.dirname(rulePath), path.dirname(path.dirname(rulePath)), path.dirname(settingsPathFor(opts.scope, cwd))])];
-  const folderExisted = new Map(folders.map((folder) => [folder, fs.existsSync(folder)]));
-  try {
-    return installHooksUnguarded(opts, cwd);
-  } catch (err) {
-    if (!opts.dryRun) {
-      // Each step on its own, and none may replace the error being reported.
-      try {
-        const current = readBytesOrNull(rulePath);
-        if (ruleBefore === null) {
-          if (current !== null) fs.rmSync(rulePath, { force: true });
-        } else if (current === null || !current.equals(ruleBefore)) {
-          // Only a rule file this run actually changed is put back.
-          fs.writeFileSync(rulePath, ruleBefore);
-        }
-      } catch { /* the original failure is the one to report */ }
-      // Deepest first; a folder that is not empty (or that was there before) stays.
-      for (const folder of [...folders].sort((a, b) => b.length - a.length)) {
-        if (folderExisted.get(folder)) continue;
-        try { fs.rmdirSync(folder); } catch { /* not empty, or already gone */ }
-      }
-    }
-    throw err;
-  }
+  return withRollback((changes) => installHooksUnguarded(opts, cwd, changes));
 }
 
-/** The file's bytes, or null when it does not exist: read directly, with no check-then-read race. */
-function readBytesOrNull(file: string): Buffer | null {
-  try {
-    return fs.readFileSync(file);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    throw err;
-  }
-}
-
-function installHooksUnguarded(opts: InstallOptions, cwd: string): InstallResult {
+function installHooksUnguarded(opts: InstallOptions, cwd: string, changes: Changes): InstallResult {
   const settingsPath = settingsPathFor(opts.scope, cwd);
+  const markerPath = path.join(memeshDir(), MARKER_FILE);
+  const write = !opts.dryRun;
 
-  // The citation rule is written BEFORE the plugin-runtime check, and on the
-  // plugin path too. Those are different problems with different owners: the
-  // plugin runtime loads `hooks/hooks.json`, so hooks must not be written
-  // twice — but nothing in the plugin runtime writes a rules file, so a
-  // plugin user would never get the citation contract at all. Skipping it
-  // there is how the whole ROI signal stayed at zero for plugin installs.
-  const writeRule = () => (opts.dryRun
-    ? { path: citationRulePath(opts.scope, homeDir(), cwd), action: 'unchanged' as const }
-    : writeCitationRule(opts.scope, homeDir(), cwd));
+  // The citation rule is handled on the plugin path too. Those are different problems with different
+  // owners: the plugin runtime loads `hooks/hooks.json`, so hooks must not be written twice — but
+  // nothing in the plugin runtime writes a rules file, so a plugin user would never get the citation
+  // contract at all. Skipping it there is how the whole ROI signal stayed at zero for plugin installs.
+  const rule = readRuleState(opts.scope, cwd);
+  const ruleWritten = write && (rule.state === 'missing' || rule.state === 'stale');
+  const citationRule: CitationRuleResult = { path: rule.path, action: write ? RULE_ACTION[rule.state] : 'unchanged' };
+  const writeRule = () => {
+    if (!ruleWritten) return;
+    changes.mkdir(path.dirname(rule.path));
+    changes.write(rule.path, CITATION_RULE_BODY);
+  };
 
   // Detect existing Claude Code plugin install BEFORE doing any work.
   // If `/plugin install memesh@pcircle-memesh` already wired the hooks
@@ -381,7 +348,8 @@ function installHooksUnguarded(opts: InstallOptions, cwd: string): InstallResult
   // they want both surfaces.
   const pluginRuntime = detectPluginRuntime(opts.installedPluginsPathImpl);
   if (pluginRuntime && !opts.forceOverPlugin) {
-    const citationRule = writeRule();
+    if (ruleWritten) assertCanWrite(rule.path, 'citation rule file');
+    writeRule();
     return {
       settingsPath,
       backupPath: null,
@@ -390,7 +358,7 @@ function installHooksUnguarded(opts: InstallOptions, cwd: string): InstallResult
       skipped: 0,
       pruned: 0,
       conflicts: [],
-      markerPath: path.join(memeshDir(), MARKER_FILE),
+      markerPath,
       pluginRuntimeDetected: pluginRuntime,
       citationRule,
       settingsWritten: false,
@@ -401,8 +369,7 @@ function installHooksUnguarded(opts: InstallOptions, cwd: string): InstallResult
   const desired = loadPluginHooks(opts.pluginRoot);
   // Read (and validated, down to each entry's shape) BEFORE anything is written:
   // a refusal must leave every file as it was, the citation rule included.
-  const settings = readSettings(settingsPath);
-  const citationRule = writeRule();
+  const settings = readSettings(settingsPath) ?? {};
   const existing = settings.hooks ?? {};
 
   let added = 0;
@@ -475,58 +442,46 @@ function installHooksUnguarded(opts: InstallOptions, cwd: string): InstallResult
     }
   }
 
-  const markerPath = path.join(memeshDir(), MARKER_FILE);
-  let backupPath: string | null = null;
-  let settingsWritten = false;
-  let markerWritten = false;
+  const marker = {
+    version: opts.pluginVersion,
+    plugin_root: opts.pluginRoot,
+    scope: opts.scope,
+    settings_path: settingsPath,
+  };
+  const current = readInstallMarker();
+  const markerCurrent = current !== null
+    && (Object.keys(marker) as Array<keyof typeof marker>).every((key) => current[key] === marker[key]);
 
-  // An install that changes nothing writes nothing: no new settings backup,
-  // no rewrite of settings.json, and no new marker — the marker's mtime is
-  // what doctor's "hooks were just wired" grace period is measured from, so
-  // refreshing it on every run kept extending that grace.
-  if (!opts.dryRun) {
-    // Exactly what is on disk before this run writes it, so a failure below can put it back.
-    let settingsBefore: Buffer | null = null;
-    if (added > 0 || pruned > 0) {
-      backupPath = backupSettings(settingsPath);
-      settingsBefore = readBytesOrNull(settingsPath);
-      settings.hooks = existing;
-      fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
-      writeSettingsSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
-      settingsWritten = true;
-    }
-    const marker = {
-      version: opts.pluginVersion,
-      plugin_root: opts.pluginRoot,
-      scope: opts.scope,
-      settings_path: settingsPath,
-    };
-    const current = readInstallMarker();
-    const markerCurrent = current !== null
-      && (Object.keys(marker) as Array<keyof typeof marker>).every((key) => current[key] === marker[key]);
-    // The marker says "hooks are wired here": write it when settings.json was
-    // changed, or when it is missing or describes a different install.
-    if (settingsWritten || !markerCurrent) {
-      try {
-        // Marker — doctor reads this to confirm hooks are wired AND
-        // know which scope/path so it can verify they still match.
-        fs.mkdirSync(path.dirname(markerPath), { recursive: true });
-        fs.writeFileSync(markerPath, JSON.stringify({ installed_at: new Date().toISOString(), ...marker }, null, 2) + '\n', 'utf8');
-        markerWritten = true;
-      } catch (err) {
-        // The install is reported as failed, so the settings must be as they were.
-        // The backup taken above is left in place on purpose: it is harmless, and
-        // keeping a copy is the safer thing to do after a failure.
-        if (settingsWritten) {
-          try {
-            if (settingsBefore === null) fs.rmSync(settingsPath, { force: true });
-            else fs.writeFileSync(settingsPath, settingsBefore);
-          } catch { /* the original failure is the one to report */ }
-        }
-        throw err;
-      }
-    }
+  // An install that changes nothing writes nothing: no new settings backup, no rewrite of
+  // settings.json, and no new marker — the marker's mtime is what doctor's "hooks were just wired"
+  // grace period is measured from, so refreshing it on every run kept extending that grace. The
+  // marker says "hooks are wired here": it is written when settings.json was changed, or when it is
+  // missing or describes a different install.
+  const settingsNeeded = write && (added > 0 || pruned > 0);
+  const markerNeeded = write && (settingsNeeded || !markerCurrent);
+
+  // Everything this run will write is checked before the first write.
+  if (settingsNeeded) {
+    assertCanWrite(settingsPath, 'settings file');
+    if (fs.existsSync(settingsPath)) assertFolderWritable(path.dirname(settingsPath)); // the backup is a new file beside it
   }
+  if (markerNeeded) assertCanWrite(markerPath, 'install marker file');
+  if (ruleWritten) assertCanWrite(rule.path, 'citation rule file');
+
+  let backupPath: string | null = null;
+  if (settingsNeeded) {
+    if (fs.existsSync(settingsPath)) backupPath = changes.copyNew(settingsPath, BACKUP_SUFFIX());
+    settings.hooks = existing;
+    changes.mkdir(path.dirname(settingsPath));
+    changes.write(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+  }
+  if (markerNeeded) {
+    // Marker — doctor reads this to confirm hooks are wired AND
+    // know which scope/path so it can verify they still match.
+    changes.mkdir(path.dirname(markerPath));
+    changes.write(markerPath, JSON.stringify({ installed_at: new Date().toISOString(), ...marker }, null, 2) + '\n');
+  }
+  writeRule();
 
   return {
     citationRule,
@@ -538,8 +493,8 @@ function installHooksUnguarded(opts: InstallOptions, cwd: string): InstallResult
     pruned,
     conflicts,
     markerPath,
-    settingsWritten,
-    markerWritten,
+    settingsWritten: settingsNeeded,
+    markerWritten: markerNeeded,
   };
 }
 
@@ -549,61 +504,67 @@ export interface UninstallOptions {
   dryRun?: boolean;
 }
 
+/**
+ * Removes memesh's hook entries. Like the install, every file it will touch is checked before the
+ * first change, and the order is settings → marker → citation rule: the rule file is only removed
+ * once the settings have been written back, and a run that cannot finish leaves everything as it was.
+ */
 export function uninstallHooks(opts: UninstallOptions): UninstallResult {
   const cwd = opts.cwd ?? process.cwd();
+  return withRollback((changes) => uninstallHooksUnguarded(opts, cwd, changes));
+}
+
+function uninstallHooksUnguarded(opts: UninstallOptions, cwd: string, changes: Changes): UninstallResult {
   const settingsPath = settingsPathFor(opts.scope, cwd);
+  const markerPath = path.join(memeshDir(), MARKER_FILE);
+  const write = !opts.dryRun;
 
-  // Parse settings FIRST, before anything is deleted.
-  //
-  // `readSettings` throws `refusing to modify` on an unparseable
-  // settings.json, and a refusal has to mean nothing was modified. It did
-  // not: the rule file was removed above this line, so `uninstall-hooks`
-  // printed the refusal, exited 1, and left `.claude/rules/` empty. The
-  // user's remedy for a corrupt settings.json — fix the JSON, re-run — then
-  // ran against a state the failed run had already changed.
-  const settings = fs.existsSync(settingsPath) ? readSettings(settingsPath) : null;
+  // Everything is read BEFORE anything is changed: a refusal has to mean nothing was modified.
+  const settings = readSettings(settingsPath);
+  const rule = readRuleState(opts.scope, cwd);
 
-  // Removed on BOTH exits, including the one where settings.json does not
-  // exist: a plugin install never writes settings.json but does get the rule
-  // file, so returning early without this would leave the contract behind on
-  // exactly the install shape that owns it.
-  const citationRule = opts.dryRun
-    ? { path: citationRulePath(opts.scope, homeDir(), cwd), action: 'absent' as const }
-    : removeCitationRule(opts.scope, homeDir(), cwd);
-
-  if (!settings) {
-    return { settingsPath, backupPath: null, removed: 0, citationRule };
-  }
-
-  const existing = settings.hooks ?? {};
   let removed = 0;
-
-  for (const [event, entries] of Object.entries(existing)) {
-    const before = entries.length;
-    existing[event] = entries.filter((e) => !isMemeshEntry(e));
-    removed += before - existing[event].length;
-    if (existing[event].length === 0) {
-      delete existing[event];
+  if (settings) {
+    const existing = settings.hooks ?? {};
+    for (const [event, entries] of Object.entries(existing)) {
+      const before = entries.length;
+      existing[event] = entries.filter((e) => !isMemeshEntry(e));
+      removed += before - existing[event].length;
+      if (existing[event].length === 0) {
+        delete existing[event];
+      }
+    }
+    if (Object.keys(existing).length === 0) {
+      delete settings.hooks;
+    } else {
+      settings.hooks = existing;
     }
   }
 
-  if (Object.keys(existing).length === 0) {
-    delete settings.hooks;
-  } else {
-    settings.hooks = existing;
+  // The rule file goes on EVERY exit, including the one where settings.json does not exist: a plugin
+  // install never writes settings.json but does get the rule file, so returning early without this
+  // would leave the contract behind on exactly the install shape that owns it.
+  const ruleRemoved = write && (rule.state === 'current' || rule.state === 'stale');
+  const settingsWritten = write && settings !== null && removed > 0;
+  const markerRemoved = settingsWritten && fs.existsSync(markerPath);
+
+  if (settingsWritten) {
+    assertCanWrite(settingsPath, 'settings file');
+    assertFolderWritable(path.dirname(settingsPath)); // the backup is a new file beside it
   }
+  if (markerRemoved) assertCanDelete(markerPath, 'install marker file');
+  if (ruleRemoved) assertCanDelete(rule.path, 'citation rule file');
 
   let backupPath: string | null = null;
-  if (!opts.dryRun && removed > 0) {
-    backupPath = backupSettings(settingsPath);
-    writeSettingsSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
-    const markerPath = path.join(memeshDir(), MARKER_FILE);
-    if (fs.existsSync(markerPath)) {
-      try { fs.unlinkSync(markerPath); } catch { /* best-effort */ }
-    }
+  if (settingsWritten) {
+    backupPath = changes.copyNew(settingsPath, BACKUP_SUFFIX());
+    changes.write(settingsPath, JSON.stringify(settings, null, 2) + '\n');
   }
+  if (markerRemoved) changes.remove(markerPath);
+  if (ruleRemoved) changes.remove(rule.path);
 
-  return { settingsPath, backupPath, removed, citationRule };
+  const action = !write ? 'absent' : ruleRemoved ? 'removed' : rule.state === 'foreign-file' ? 'foreign-file' : 'absent';
+  return { settingsPath, backupPath, removed, citationRule: { path: rule.path, action } };
 }
 
 /**

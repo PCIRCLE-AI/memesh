@@ -20,11 +20,21 @@ export function isOnPath(tool) {
     }
     return false;
 }
+export function folderHere(existsSyncImpl, dir) {
+    if (!existsSyncImpl(dir))
+        return false;
+    try {
+        return !fs.statSync(dir).isFile();
+    }
+    catch {
+        return true;
+    }
+}
 export function claudeCodePresent(existsSyncImpl = fs.existsSync, onPath = isOnPath, configDir = pluginHostConfigRoot('claude-code')) {
-    return existsSyncImpl(configDir) || onPath('claude');
+    return folderHere(existsSyncImpl, configDir) || onPath('claude');
 }
 export function codexPresent(existsSyncImpl = fs.existsSync, onPath = isOnPath) {
-    return existsSyncImpl(pluginHostConfigRoot('codex')) || onPath('codex');
+    return folderHere(existsSyncImpl, pluginHostConfigRoot('codex')) || onPath('codex');
 }
 export function geminiPresent(onPath = isOnPath) {
     return onPath('gemini');

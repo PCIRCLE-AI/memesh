@@ -10,7 +10,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { inspectHosts, allWired, type SetupSeams, type RunResult } from '../../src/core/setup.js';
+import { inspectHosts, setupVerdict, type HostStatus, type SetupSeams, type RunResult } from '../../src/core/setup.js';
 
 let home: string;
 const savedEnv: Record<string, string | undefined> = {};
@@ -125,7 +125,7 @@ describe('inspectHosts', () => {
     // A machine without Codex is not misconfigured — --check must not fail it.
     const statuses = inspectHosts(seams());
     for (const st of statuses) expect(st.present).toBe(false);
-    expect(allWired(statuses)).toBe(true);
+    expect(setupVerdict(statuses).exitCode).toBe(1); // nothing found is not "everything wired"
   });
 
   it('a plugin-managed Claude Code is fully wired, with NO actions', () => {
@@ -238,36 +238,81 @@ describe('inspectHosts', () => {
   });
 });
 
-describe('allWired', () => {
-  it('fails a present host with pending actions, passes an absent one', () => {
-    const statuses = inspectHosts(seams({ isOnPath: (bin) => bin === 'gemini' }));
-    expect(allWired(statuses)).toBe(false); // gemini present, unwired
+describe('setupVerdict: one rule for the closing sentence and the exit code', () => {
+  const host = (over: Partial<HostStatus> & Pick<HostStatus, 'host'>): HostStatus => ({
+    title: { 'claude-code': 'Claude Code', codex: 'Codex CLI', gemini: 'Gemini CLI' }[over.host], present: true, presenceDetail: 'x',
+    wired: true, wiredDetail: 'wired', actions: [], ...over,
+  });
+  const absent = (h: HostStatus['host']) => host({ host: h, present: false, wired: null, wiredDetail: 'not on this machine — nothing to wire' });
+  const claudeWired = host({ host: 'claude-code' });
+  const claudeHooksOnly = host({ host: 'claude-code', wired: null, unchecked: 'claude CLI not on PATH — cannot probe MCP registration' });
+  const claudeUnwired = host({ host: 'claude-code', wired: false, actions: [{ kind: 'install-hooks', label: 'wire' }] });
+  const codexWired = host({ host: 'codex' });
+  const codexUnregistered = host({ host: 'codex', wired: false, actions: [{ kind: 'run', label: 'add', cmd: 'codex', args: [] }] });
+  const codexFolderOnly = host({ host: 'codex', wired: null, unprobed: true, unchecked: 'the codex command is not on PATH — cannot probe MCP registration' });
+  const codexProbeFailed = host({ host: 'codex', wired: null, unprobed: true, unchecked: 'codex mcp get failed to run — could not determine' });
+  const geminiWired = host({ host: 'gemini' });
+
+  // [machine, exit code, words the closing sentence must contain (null = no closing sentence)]
+  const MACHINES: Array<[string, HostStatus[], 0 | 1, string[] | null]> = [
+    ['no host at all', [absent('claude-code'), absent('codex'), absent('gemini')], 1, ['No supported agent host was found', 'Looked for']],
+    ['everything present is wired', [claudeWired, codexWired, absent('gemini')], 0, ['Everything present is wired. Nothing to do.']],
+    ['Claude Code hooks wired, no claude command', [claudeHooksOnly, absent('codex'), absent('gemini')], 0, ['Everything that could be checked is wired.', 'Not checked: Claude Code (claude CLI not on PATH', '`memesh setup --check`']],
+    ['Claude Code not wired', [claudeUnwired, absent('codex'), absent('gemini')], 1, null],
+    ['Codex registered and Claude Code not wired', [claudeUnwired, codexWired, absent('gemini')], 1, null],
+    ['Codex not registered', [absent('claude-code'), codexUnregistered, absent('gemini')], 1, null],
+    ['only a Codex folder, no codex command', [absent('claude-code'), codexFolderOnly, absent('gemini')], 1, ['Nothing to wire automatically — see the lines above.', 'Nothing could be confirmed wired', 'Not checked: Codex CLI (the codex command is not on PATH', '`memesh setup --check`']],
+    ['codex mcp get failed to run', [absent('claude-code'), codexProbeFailed, absent('gemini')], 1, ['Nothing could be confirmed wired', 'codex mcp get failed to run']],
+    ['Claude Code wired, a Codex folder with no command', [claudeWired, codexFolderOnly, absent('gemini')], 0, ['Everything that could be checked is wired.', 'Not checked: Codex CLI']],
+    ['Claude Code hooks only, a Codex folder with no command', [claudeHooksOnly, codexFolderOnly, absent('gemini')], 0, ['Not checked: Claude Code (', ' and Codex CLI (']],
+    ['Claude Code not wired, a Codex folder with no command', [claudeUnwired, codexFolderOnly, absent('gemini')], 1, null],
+    ['Gemini wired, a Codex folder with no command', [absent('claude-code'), codexFolderOnly, geminiWired], 0, ['Not checked: Codex CLI']],
+    ['Gemini wired alone', [absent('claude-code'), absent('codex'), geminiWired], 0, ['Everything present is wired. Nothing to do.']],
+  ];
+
+  it.each(MACHINES)('%s', (_name, statuses, exitCode, closing) => {
+    const verdict = setupVerdict(statuses);
+    expect(verdict.exitCode).toBe(exitCode);
+    if (closing === null) expect(verdict.closing).toBeNull();
+    else for (const words of closing) expect(verdict.closing).toContain(words);
   });
 
-  it('an undeterminable host is NOT wired: "could not look" is not "all good" (#528)', () => {
-    // Present, nothing probeable, nothing to prescribe. --check and setup used to
-    // count this as wired and print "Everything present is wired".
-    const runFails: SetupSeams['run'] = () => ({ status: null, stderr: 'x' } as RunResult);
-    const failedProbe = inspectHosts(seams({ isOnPath: (bin) => bin === 'codex', run: runFails }));
-    expect(byHost(failedProbe)['codex'].actions).toEqual([]);
-    expect(allWired(failedProbe)).toBe(false);
+  it('never calls "could not look" a yes: a machine that only has unchecked hosts does not say Everything present is wired', () => {
+    expect(setupVerdict([absent('claude-code'), codexFolderOnly, absent('gemini')]).closing).not.toContain('Everything present is wired');
+  });
 
-    // Codex's config directory without the codex command: same answer.
+  it('on a real fixture machine: the Codex folder alone is exit 1, and with Claude Code wired beside it exit 0', () => {
     fs.mkdirSync(process.env.CODEX_HOME as string, { recursive: true });
-    const dirOnly = inspectHosts(seams());
-    expect(byHost(dirOnly)['codex'].present).toBe(true);
-    expect(allWired(dirOnly)).toBe(false);
-  });
-
-  it('Claude Code with its hooks wired but no claude command is still wired: the part that can be checked was', () => {
-    // Hooks verified, MCP registration unprobeable, nothing to prescribe. Failing
-    // this machine forever would make `setup --yes` exit 1 right after it succeeded.
+    expect(setupVerdict(inspectHosts(seams())).exitCode).toBe(1);
     fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
     fs.writeFileSync(path.join(home, '.claude', 'settings.json'), JSON.stringify({
       hooks: { Stop: [{ matcher: '*', hooks: [{ type: 'command', command: 'x', _memesh: true }] }] },
     }));
-    const statuses = inspectHosts(seams());
-    expect(byHost(statuses)['claude-code'].wired).toBeNull();
-    expect(allWired(statuses)).toBe(true);
+    const both = inspectHosts(seams({ isOnPath: (b) => b === 'claude', run: () => ({ status: 0, stderr: '' }) }));
+    const verdict = setupVerdict(both);
+    expect(verdict.exitCode).toBe(0);
+    expect(verdict.closing).toContain('Not checked: Codex CLI');
+  });
+
+  it('a Codex whose probe failed to run is unchecked with its reason, not wired', () => {
+    const st = byHost(inspectHosts(seams({ isOnPath: (bin) => bin === 'codex', run: () => ({ status: null, stderr: 'x' } as RunResult) })))['codex'];
+    expect([st.wired, st.unprobed, st.unchecked]).toEqual([null, true, 'codex mcp get failed to run — could not determine']);
+  });
+
+  it('Claude Code with hooks wired and no claude command: unchecked in part, not unprobed (the hooks were verified)', () => {
+    fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.claude', 'settings.json'), JSON.stringify({
+      hooks: { Stop: [{ matcher: '*', hooks: [{ type: 'command', command: 'x', _memesh: true }] }] },
+    }));
+    const st = byHost(inspectHosts(seams()))['claude-code'];
+    expect([st.wired, st.unprobed, st.unchecked]).toEqual([null, undefined, 'claude CLI not on PATH — cannot probe MCP registration']);
+  });
+
+  it('a CLAUDE_CONFIG_DIR that names a file is not a Claude Code folder', () => {
+    const file = path.join(home, 'a-file');
+    fs.writeFileSync(file, 'x');
+    const st = byHost(inspectHosts(seams({ claudeConfigDir: () => file })))['claude-code'];
+    expect(st.present).toBe(false);
+    expect(st.presenceDetail).toBe(`claude on PATH, or ${file}`);
   });
 });

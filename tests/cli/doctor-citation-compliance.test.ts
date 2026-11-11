@@ -205,10 +205,13 @@ describe('doctor: the memory-citation rate is reported, not left to be found', (
     seedCounters('4', '0');
     const codexHome = path.join(home, 'codex-home');
     fs.mkdirSync(codexHome, { recursive: true });
+    const fakeBin = path.join(home, 'fake-bin');
+    fs.mkdirSync(fakeBin);
+    fs.writeFileSync(path.join(fakeBin, 'codex'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
     const codexOnly = {
       CODEX_HOME: codexHome,
       CLAUDE_CONFIG_DIR: path.join(home, 'no-such-claude'),
-      PATH: pathWithout(['claude', 'codex', 'gemini']),
+      PATH: `${fakeBin}${path.delimiter}${pathWithout(['claude', 'codex', 'gemini'])}`,
     };
 
     const checks = doctorChecks(codexOnly);
@@ -217,7 +220,26 @@ describe('doctor: the memory-citation rate is reported, not left to be found', (
     expect(check?.fix).toBeTruthy();
     expect(check?.fix, 'Codex-only machine was told to run install-hooks').not.toContain('install-hooks');
     expect(check?.fix, 'not the Codex answer the other rows give').toContain('Refresh the Codex plugin');
-    expect(check?.fixId).toBeUndefined();
+    // The citation row never carries a fixId, so on its own that proves nothing: the row that does is the
+    // hook-wiring one on a Claude Code machine, and the Codex machine must not get it.
+    const claudeWiring = doctorChecks({ CLAUDE_CONFIG_DIR: claudeHome() }).find((c) => c.id === 'hook-wiring');
+    expect(claudeWiring?.fixId, 'control: a Claude Code machine has a fix to apply').toBe('install-hooks');
+    expect(checks.find((c) => c.id === 'hook-wiring')?.fixId).toBeUndefined();
+  });
+
+  it('a Codex machine whose command is not on PATH is told so, not given a command that would not run', () => {
+    seedDatabase();
+    seedCounters('4', '0');
+    const codexHome = path.join(home, 'codex-home');
+    fs.mkdirSync(codexHome, { recursive: true });
+    const check = doctorChecks({
+      CODEX_HOME: codexHome,
+      CLAUDE_CONFIG_DIR: path.join(home, 'no-such-claude'),
+      PATH: pathWithout(['claude', 'codex', 'gemini']),
+    }).find((c) => c.id === 'citation_compliance');
+    expect(check?.fix).toContain('not on PATH');
+    expect(check?.fix).not.toContain('codex plugin');
+    expect(check?.fix).not.toContain('install-hooks');
   });
 
   it('a Claude Code machine keeps the install-hooks advice on a missing citation contract', () => {

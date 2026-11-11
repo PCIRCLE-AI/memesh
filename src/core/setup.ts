@@ -41,7 +41,7 @@ import fs from 'fs';
 import path from 'path';
 import { detectPluginRuntime, settingsHaveMemeshHooks } from './install-hooks.js';
 import { pluginHostConfigRoot } from './install-channel.js';
-import { claudeCodePresent, codexPresent, geminiPresent } from './host-presence.js';
+import { claudeCodePresent, codexPresent, folderHere, geminiPresent } from './host-presence.js';
 
 export type HostId = 'claude-code' | 'codex' | 'gemini';
 
@@ -84,10 +84,16 @@ export interface HostStatus {
   /** true / false / null = present but could not be determined. */
   wired: boolean | null;
   /**
-   * True when the host is present but nothing about its wiring could be checked
-   * at all (Codex's config directory without the codex command, or a probe that
-   * failed to run). Such a host is not "wired", and is not a failure with an
-   * action to take either: it is a question a person has to answer.
+   * What could not be checked, in plain language (set exactly when `wired` is null): Codex's
+   * config directory without the codex command, a probe that failed to run, or Claude Code's
+   * MCP registration without the claude command. Not a failure with an action to take: a
+   * question a person has to answer.
+   */
+  unchecked?: string;
+  /**
+   * True when the host is present and NOTHING about its wiring could be checked (a subset of
+   * `unchecked`; Claude Code's hooks are still verified when only its MCP registration is not).
+   * Such a host is not "wired", and does not count as confirmed.
    */
   unprobed?: boolean;
   /** What wiredness was decided from, in plain language. */
@@ -109,7 +115,7 @@ function inspectClaudeCode(seams: SetupSeams): HostStatus {
     host: 'claude-code',
     title: 'Claude Code',
     present,
-    presenceDetail: fs.existsSync(claudeDir) ? claudeDir : present ? 'claude on PATH' : `claude on PATH, or ${claudeDir}`,
+    presenceDetail: folderHere(fs.existsSync, claudeDir) ? claudeDir : present ? 'claude on PATH' : `claude on PATH, or ${claudeDir}`,
     wired: null,
     wiredDetail: '',
     actions: [],
@@ -151,6 +157,7 @@ function inspectClaudeCode(seams: SetupSeams): HostStatus {
     mcpDetail = mcpWired ? 'claude mcp get memesh → registered' : 'claude mcp get memesh → not registered';
   } else {
     mcpDetail = 'claude CLI not on PATH — cannot probe MCP registration';
+    if (hooksWired) status.unchecked = mcpDetail;
   }
 
   // Unwired hooks are a definite NO. Wired hooks with an unprobeable MCP
@@ -195,6 +202,7 @@ function inspectCodex(seams: SetupSeams): HostStatus {
   if (!present) return status;
   if (!onPath) {
     status.wiredDetail = 'Codex\'s config directory exists but the codex command is not on PATH — cannot probe MCP registration';
+    status.unchecked = 'the codex command is not on PATH — cannot probe MCP registration';
     status.unprobed = true;
     return status;
   }
@@ -202,6 +210,7 @@ function inspectCodex(seams: SetupSeams): HostStatus {
   const probe = seams.run('codex', ['mcp', 'get', 'memesh']);
   if (probe.status === null) {
     status.wiredDetail = 'codex mcp get failed to run — could not determine';
+    status.unchecked = 'codex mcp get failed to run — could not determine';
     status.unprobed = true;
   } else {
     status.wired = probe.status === 0;
@@ -260,42 +269,38 @@ export function inspectHosts(seams: SetupSeams): HostStatus[] {
   return [inspectClaudeCode(seams), inspectCodex(seams), inspectGemini(seams)];
 }
 
-/**
- * The --check verdict: every host that is PRESENT must be fully wired
- * (no pending actions, not unwired) and must have been checkable. A host that is
- * present but could not be probed at all (`unprobed`) is not "wired": saying so
- * would turn "I did not look" into "all good". Absent hosts are fine — a machine
- * without Codex is not misconfigured. Claude Code with its hooks verified but its
- * MCP registration unprobeable (no `claude` command) still passes: the part that
- * can be checked was checked, and there is nothing to prescribe.
- */
-/**
- * What was found wired as far as it could be looked at, with a part that could not be looked at (`wired === null`: Claude Code's
- * hooks are in place and the `claude` command is not there to ask about the MCP registration). Not a failure, and not "wired" either.
- */
-export function unverifiedHosts(statuses: HostStatus[]): HostStatus[] {
-  return statuses.filter((s) => s.present && s.wired === null && !s.unprobed);
-}
-
-/** The line that closes a run in which nothing is left to wire: it says what was NOT checked, instead of calling an unknown a yes. */
-export function wiredClosing(statuses: HostStatus[]): string {
-  const unverified = unverifiedHosts(statuses);
-  if (unverified.length === 0) return 'Everything present is wired. Nothing to do.';
-  const what = unverified.map((s) => `${s.title} (${s.wiredDetail.split('; ').pop()})`).join(' and ');
-  return `Everything that could be checked is wired. Not checked: ${what}. To check it, put the command on PATH and run \`memesh setup --check\` again.`;
-}
-
-export function allWired(statuses: HostStatus[]): boolean {
-  return statuses.every((s) => !s.present || (s.actions.length === 0 && s.wired !== false && !s.unprobed));
-}
+const CHECK_AGAIN = 'To check it, put the command on PATH and run `memesh setup --check` again.';
 
 /**
- * What `setup` prints when none of the supported agent hosts was found, else null.
- * `setup` has nothing to wire then, and must say so instead of "everything is
- * wired": a machine with no host is not finished, it is one memesh has not touched.
+ * How `setup` ends, and the exit code that goes with it — ONE rule for `--check`, a plain `setup`
+ * and `setup --yes` after it has wired:
+ *
+ *  - no host on the machine, or no host that could be confirmed wired            → exit 1, says why
+ *  - a present host that can be checked and is not wired (or has an action left) → exit 1
+ *  - everything that can be checked is wired                                      → exit 0
+ *
+ * "Could not look" is never turned into "all good": a host that was not checked (Codex's folder
+ * without the codex command, Claude Code's MCP registration without the claude command) is named in
+ * the closing sentence together with how to check it, but it does not fail a machine whose other
+ * parts are wired. Hooks verified plus MCP unprobeable counts as confirmed; nothing verified does not.
  */
-export function noHostMessage(statuses: HostStatus[]): string | null {
-  if (statuses.length === 0 || statuses.some((s) => s.present)) return null;
-  const looked = statuses.map((s) => `  - ${s.title}: ${s.presenceDetail}`).join('\n');
-  return `No supported agent host was found on this machine, so memesh changed nothing and connected to nothing. Looked for:\n${looked}\n\nInstall Claude Code or Codex (or Gemini CLI), then run \`memesh setup\` again.`;
+export function setupVerdict(statuses: HostStatus[]): { exitCode: 0 | 1; closing: string | null } {
+  const present = statuses.filter((s) => s.present);
+  if (present.length === 0) {
+    const looked = statuses.map((s) => `  - ${s.title}: ${s.presenceDetail}`).join('\n');
+    return {
+      exitCode: 1,
+      closing: `No supported agent host was found on this machine, so memesh changed nothing and connected to nothing. Looked for:\n${looked}\n\nInstall Claude Code or Codex (or Gemini CLI), then run \`memesh setup\` again.`,
+    };
+  }
+  // The lines above say what is wrong and the plan says what to do about it. (Every host that has an action to take is `wired === false`.)
+  if (present.some((s) => s.wired === false)) return { exitCode: 1, closing: null };
+
+  const unchecked = present.filter((s) => s.unchecked !== undefined);
+  if (unchecked.length === 0) return { exitCode: 0, closing: 'Everything present is wired. Nothing to do.' };
+  const what = unchecked.map((s) => `${s.title} (${s.unchecked})`).join(' and ');
+  if (present.every((s) => s.unprobed)) {
+    return { exitCode: 1, closing: `Nothing to wire automatically — see the lines above. Nothing could be confirmed wired. Not checked: ${what}. ${CHECK_AGAIN}` };
+  }
+  return { exitCode: 0, closing: `Everything that could be checked is wired. Not checked: ${what}. ${CHECK_AGAIN}` };
 }

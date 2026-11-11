@@ -11,6 +11,13 @@
  * directory drops `node` with it. A directory that holds a tool is therefore replaced
  * by a mirror of itself, made of symlinks to everything in it except the tools. The
  * mirrors live under the OS temp directory; `removePathMirrors` deletes them.
+ *
+ * Three things a mirror has to get right:
+ *  - a relative PATH entry is resolved against the folder `pathWithout` is called from, in the
+ *    result and in every link (a link target is read from the mirror, not from that folder);
+ *  - on a file system that ignores case (macOS, Windows) `Claude` is the tool `claude`;
+ *  - a folder that can be searched but not listed (mode 0o111) cannot be mirrored, and dropping it would
+ *    silently drop everything else in it, so a tool found in one is an error, not a quiet loss.
  */
 import fs from 'fs';
 import os from 'os';
@@ -39,13 +46,17 @@ function ensureMirrorRoot(): string {
   return mirrorRoot;
 }
 
-function mirrorWithout(dir: string, tools: string[]): string {
+const ignoresCase = process.platform === 'darwin' || process.platform === 'win32';
+const isTool = (entry: string, tools: string[]): boolean =>
+  tools.some((tool) => (ignoresCase ? tool.toLowerCase() === entry.toLowerCase() : tool === entry));
+
+function mirrorWithout(dir: string, entries: string[], tools: string[]): string {
   const key = `${dir}\0${tools.join('\0')}`;
   const known = mirrors.get(key);
   if (known) return known;
   const target = fs.mkdtempSync(path.join(ensureMirrorRoot(), 'dir-'));
-  for (const entry of fs.readdirSync(dir)) {
-    if (tools.includes(entry)) continue;
+  for (const entry of entries) {
+    if (isTool(entry, tools)) continue;
     fs.symlinkSync(path.join(dir, entry), path.join(target, entry));
   }
   mirrors.set(key, target);
@@ -55,19 +66,20 @@ function mirrorWithout(dir: string, tools: string[]): string {
 export function pathWithout(tools: string | string[], pathValue: string | undefined = process.env.PATH): string {
   const list = Array.isArray(tools) ? tools : [tools];
   const out: string[] = [];
-  for (const dir of (pathValue ?? '').split(path.delimiter)) {
-    if (!dir) continue;
+  for (const entry of (pathValue ?? '').split(path.delimiter)) {
+    if (!entry) continue;
+    const dir = path.resolve(entry);
     let entries: string[];
     try {
       entries = fs.readdirSync(dir);
     } catch {
-      // A directory that cannot be listed (missing, or searchable only) cannot be mirrored.
-      // Keep it unless it is where a tool is found by name; then it must go.
+      // A folder that cannot be listed (missing, or searchable only) cannot be mirrored.
       const holdsTool = list.some((tool) => { try { fs.accessSync(path.join(dir, tool), fs.constants.X_OK); return true; } catch { return false; } });
-      if (!holdsTool && fs.existsSync(dir)) out.push(dir);
+      if (holdsTool) throw new Error(`pathWithout: ${dir} cannot be listed and holds one of ${list.join(', ')}; it cannot be removed from the PATH without losing everything else in it`);
+      if (fs.existsSync(dir)) out.push(dir);
       continue;
     }
-    out.push(entries.some((entry) => list.includes(entry)) ? mirrorWithout(dir, list) : dir);
+    out.push(entries.some((name) => isTool(name, list)) ? mirrorWithout(dir, entries, list) : dir);
   }
   return out.join(path.delimiter);
 }
