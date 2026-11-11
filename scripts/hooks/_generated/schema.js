@@ -479,6 +479,25 @@ export function isTransientDbError(err) {
     return (/SQLITE_BUSY|SQLITE_LOCKED|SQLITE_PROTOCOL/.test(code) ||
         /database is locked|database table is locked|locking protocol/i.test(msg));
 }
+export function retryWhileLocked(step, deadlineMs, where) {
+    const deadline = Date.now() + deadlineMs;
+    for (let attempt = 0;; attempt++) {
+        try {
+            return step();
+        }
+        catch (err) {
+            if (!isTransientDbError(err))
+                throw err;
+            if (Date.now() >= deadline) {
+                const detail = err instanceof Error ? err.message : String(err);
+                throw Object.assign(new Error(`MeMesh: could not open ${where}: it stayed locked by another process for ${deadlineMs} ms ` +
+                    `(${detail}). Close the other MeMesh processes using that folder and try again.`, { cause: err }), { code: 'MEMESH_DB_LOCKED' });
+            }
+            const backoffMs = Math.min(200, 5 * 2 ** attempt);
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, backoffMs / 2 + Math.random() * (backoffMs / 2));
+        }
+    }
+}
 export const MIGRATION_RETRY_BACKOFF_MS = 24 * 60 * 60 * 1000;
 export function runOnceMigration(db, opts) {
     const { key, version, describe, migrate } = opts;

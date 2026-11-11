@@ -5,6 +5,7 @@ export type SqlInputValue = import('node:sqlite').SQLInputValue;
 export interface OpenOptions {
     readOnly?: boolean;
 }
+export declare const BUSY_TIMEOUT_MS = 30000;
 export interface TransactionFunction<A extends unknown[], R> {
     (...args: A): R;
     immediate(...args: A): R;

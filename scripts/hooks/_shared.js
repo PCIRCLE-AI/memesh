@@ -516,6 +516,7 @@ import {
   ensureTagsUniqueIndex,
   ensureHookRunsSince,
   ensureFtsSegmentation,
+  retryWhileLocked,
 } from './_generated/schema.js';
 
 
@@ -941,6 +942,38 @@ export function openMemeshDb(dbPath, options) {
   return new MemeshDatabase(dbPath, options);
 }
 
+/**
+ * Brings a freshly opened hook handle current. Mirrors initialiseDatabase() in
+ * src/db.ts — keep the two in lockstep. Safe to run again.
+ */
+function bringHookDbCurrent(db, opts) {
+  // VACUUM backups use DELETE mode, and switching a read-only backup to WAL
+  // must not prevent reading it.
+  try {
+    db.pragma('journal_mode = WAL');
+  } catch (err) {
+    if (!/readonly database|SQLITE_READONLY/i.test(err?.message || '')) throw err;
+  }
+  db.pragma('foreign_keys = ON');
+  // Bringing the schema current is a WRITE, and "cannot migrate" must not
+  // mean "cannot open": a database file that is read-only but behind on
+  // schema (a pre-upgrade backup, a permissions accident) dies on the
+  // CREATE TABLE any release adds. If the FILE refuses writes, open it for
+  // what it can still do — reads; capture writes fail individually at
+  // their own guarded call sites. Any other error still throws.
+  try {
+    migrateHookDbToCurrent(db, opts);
+  } catch (err) {
+    if (!/readonly database|SQLITE_READONLY/i.test(err?.message || '')) throw err;
+    try {
+      process.stderr.write(
+        'MeMesh: the database file is read-only, so schema migration was skipped — ' +
+          'opened for reads only. Capture and migrations resume when the file is writable.\n',
+      );
+    } catch { /* stderr gone */ }
+  }
+}
+
 export function openHookDb(env = process.env, opts = {}) {
 
   // Path helpers read process.env directly (no-arg). The `env` parameter
@@ -954,14 +987,6 @@ export function openHookDb(env = process.env, opts = {}) {
 
   removeGroupAndOtherAccess(dbDir);
   const db = openMemeshDb(dbPath);
-  // Mirrors initialiseDatabase(): VACUUM backups use DELETE mode, and
-  // switching a read-only backup to WAL must not prevent reading it.
-  try {
-    db.pragma('journal_mode = WAL');
-  } catch (err) {
-    if (!/readonly database|SQLITE_READONLY/i.test(err?.message || '')) throw err;
-  }
-  db.pragma('foreign_keys = ON');
   // A hook waits for a held write lock for less time than Claude Code will
   // wait for the hook.
   //
@@ -975,28 +1000,24 @@ export function openHookDb(env = process.env, opts = {}) {
   // memesh something to switch off.
   //
   // 2s fits inside every budget with room for the hook's own work. On
-  // contention the capture is skipped quietly, this run's `hook_runs` stamp
-  // is not written, and `memesh doctor` reports the gap honestly.
+  // contention that outlasts it the open throws (code MEMESH_DB_LOCKED), the
+  // hook records an `error` outcome with that reason, this run's `hook_runs`
+  // stamp is not written, and `memesh doctor` reports the gap honestly.
+  //
+  // It is set BEFORE the WAL switch below, not after: the switch used to run
+  // under the constructor's 30s wait and could outlast the hook's own limit.
   db.pragma(`busy_timeout = ${HOOK_BUSY_TIMEOUT_MS}`);
-  // Bringing the schema current is a WRITE, and "cannot migrate" must not
-  // mean "cannot open": a database file that is read-only but behind on
-  // schema (a pre-upgrade backup, a permissions accident) dies on the
-  // CREATE TABLE any release adds. If the FILE refuses writes, open it for
-  // what it can still do — reads; capture writes fail individually at
-  // their own guarded call sites. Any other error still throws. Mirrors
-  // initialiseDatabase() in src/db.ts — keep the two in lockstep.
+  // Several hooks fire in the same second on a data folder that does not exist
+  // yet and collide on the WAL switch (see retryWhileLocked). The bring-current
+  // step is idempotent, so it is repeated inside this hook's own 2s budget; past
+  // it the error carries code MEMESH_DB_LOCKED and the hook records it as its
+  // outcome (hookErrorReason), never a silent skip.
   try {
-    migrateHookDbToCurrent(db, opts);
+    retryWhileLocked(() => bringHookDbCurrent(db, opts), HOOK_BUSY_TIMEOUT_MS, `${dbPath} (data folder ${dbDir})`);
   } catch (err) {
-    if (!/readonly database|SQLITE_READONLY/i.test(err?.message || '')) throw err;
-    try {
-      process.stderr.write(
-        'MeMesh: the database file is read-only, so schema migration was skipped — ' +
-          'opened for reads only. Capture and migrations resume when the file is writable.\n',
-      );
-    } catch { /* stderr gone */ }
+    try { db.close(); } catch { /* already closing down */ }
+    throw err;
   }
-
 
   // No heartbeat here. This helper used to stamp `hook_runs` as soon as the
   // handle was usable, and that stamped-then-crashed hooks into looking

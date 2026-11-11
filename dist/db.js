@@ -1,4 +1,4 @@
-import { MemeshDatabase } from './storage/sqlite.js';
+import { BUSY_TIMEOUT_MS, MemeshDatabase } from './storage/sqlite.js';
 import path from 'path';
 import fs from 'fs';
 import { runAutoDecay } from './core/lifecycle.js';
@@ -7,7 +7,7 @@ import { getDbPath } from './core/paths.js';
 import { belongsToAnotherUser, databaseFiles, guardDatabaseFiles, ownerWriteCommand, removeGroupAndOtherAccess, shellQuote } from './core/file-mode.js';
 import { insertFtsRow, joinIndexedObservations, removeFromFts } from './storage/fts-index.js';
 import { canonicalizeLessonTypes, dedupeObservations, dropArchivedIndexRows, removeJunkFileTags, repairFusedLessonShellHistory, retractZeroEditClaims, splitFusedLessons } from './storage/graph-repairs.js';
-import { SCHEMA_SQL, FTS_SQL, safeAlter, migrateEntitiesSchema, ensureTagsUniqueIndex, ensureHookRunsSince, ensureFtsSegmentation, ftsIndexIsCurrent, rebuildFtsIndex, runOnceMigration, isTransientDbError, FTS_SEGMENTATION_VERSION, } from './storage/schema.js';
+import { SCHEMA_SQL, FTS_SQL, safeAlter, migrateEntitiesSchema, ensureTagsUniqueIndex, ensureHookRunsSince, ensureFtsSegmentation, ftsIndexIsCurrent, rebuildFtsIndex, runOnceMigration, isTransientDbError, retryWhileLocked, FTS_SEGMENTATION_VERSION, } from './storage/schema.js';
 export { runOnceMigration, FTS_SEGMENTATION_VERSION };
 import { truncateTitle, isBoilerplateObservation } from './core/title.js';
 let db = null;
@@ -60,7 +60,7 @@ export function openInitialisedDatabase(resolvedPath, opts = {}) {
             opening.pragma(`busy_timeout = ${opts.busyTimeoutMs}`);
             giveUpIfWriteLocked(opening);
         }
-        initialiseDatabase(opening);
+        retryWhileLocked(() => initialiseDatabase(opening), opts.busyTimeoutMs ?? BUSY_TIMEOUT_MS, `${resolvedPath} (data folder ${path.dirname(resolvedPath)})`);
     }
     catch (err) {
         try {
