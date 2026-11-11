@@ -240,6 +240,13 @@ memesh install-hooks
 memesh doctor
 ```
 
+`install-hooks` and `memesh setup` (when it finds a host) finish by running a
+short journey in a throwaway folder (store a note, search for it, send a message,
+read it back).
+A failure is printed with the reason and the fix, and does not change their
+exit code; run it any time with `memesh doctor --journey`. Skip the automatic
+run with `--no-journey` or `MEMESH_SKIP_POST_INSTALL_JOURNEY=1`.
+
 ## 3. Codex CLI
 
 Install from the Codex plugin marketplace for zero-config MCP tools and the

@@ -1,8 +1,9 @@
 import fs from 'fs';
 import path from 'path';
 import { detectPluginRuntime, settingsHaveMemeshHooks } from './install-hooks.js';
+import { pluginHostConfigRoot } from './install-channel.js';
 function inspectClaudeCode(seams) {
-    const claudeDir = path.join(seams.home(), '.claude');
+    const claudeDir = process.env.CLAUDE_CONFIG_DIR ? pluginHostConfigRoot('claude-code') : path.join(seams.home(), '.claude');
     const present = fs.existsSync(claudeDir);
     const status = {
         host: 'claude-code',
@@ -40,7 +41,7 @@ function inspectClaudeCode(seams) {
     if (!hooksWired) {
         status.actions.push({
             kind: 'install-hooks',
-            label: 'Wire the session hooks into ~/.claude/settings.json (backs the file up first)',
+            label: `Wire the session hooks into ${process.env.CLAUDE_CONFIG_DIR ? settingsPath : '~/.claude/settings.json'} (backs the file up first)`,
         });
     }
     if (mcpWired === false) {

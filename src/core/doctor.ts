@@ -38,6 +38,7 @@ import {
 import { guardFromMetadata } from './guards.js';
 import { getAgentMessageStorageReport } from './agent-message-storage.js';
 import { readHostConfigFile } from '../host-runtime/config.js';
+import { journeyRecordPath, readJourneyRecord } from './doctor-journey.js';
 
 export type DoctorCheckStatus = 'pass' | 'warn' | 'fail';
 export type DoctorOverallStatus = 'PASS' | 'PASS_WITH_CONCERNS' | 'FAIL';
@@ -3025,6 +3026,50 @@ function inspectMessageCapability(
   );
 }
 
+function inspectInstallJourney(packageVersion: string): DoctorCheck {
+  const record = readJourneyRecord();
+  if (record === undefined) {
+    return createInfo(
+      'install-journey',
+      'Install journey',
+      'No install journey recorded yet. It runs after `memesh install-hooks` and `memesh setup`; run it now with `memesh doctor --journey`.',
+    );
+  }
+  if ('unreadable' in record) {
+    return createCheck('install-journey', 'Install journey', 'warn', `The saved journey result could not be read: ${record.unreadable}.`, `Delete ${journeyRecordPath()}, or re-run \`memesh install-hooks\` or \`memesh setup\`, which write a new one.`, { code: 'install-journey.unreadable', params: { detail: record.unreadable } });
+  }
+  const stale = record.version !== packageVersion ? ` This result is from v${record.version}; this is v${packageVersion}.` : '';
+  if (record.ok) {
+    // A pass for another version says nothing about this one: shown as information, not as a green check.
+    if (record.version !== packageVersion) {
+      return createInfo(
+        'install-journey',
+        'Install journey',
+        `The last journey passed on v${record.version} (${record.at}); this is v${packageVersion}. Run \`memesh doctor --journey\` to check this version.`,
+      );
+    }
+    return createCheck('install-journey', 'Install journey', 'pass', `Store, search, send and read back worked at ${record.at} (v${record.version}).`);
+  }
+  if (record.failedStep === 'prepare') {
+    return createCheck(
+      'install-journey',
+      'Install journey',
+      'warn',
+      `The journey could not run at ${record.at}: ${record.reason}. memesh itself was not checked.${stale}`,
+      record.fix ?? 'Run `memesh doctor --journey`.',
+      { code: 'install-journey.not-run', params: { detail: record.reason ?? '' } },
+    );
+  }
+  return createCheck(
+    'install-journey',
+    'Install journey',
+    'warn',
+    `The journey failed at "${record.failedStep}" at ${record.at}: ${record.reason}.${stale}`,
+    record.fix ?? 'Run `memesh doctor --journey`.',
+    { code: 'install-journey.failed', params: { step: record.failedStep ?? 'unknown', detail: record.reason ?? '' } },
+  );
+}
+
 async function defaultMessageRouterStatusProbe(): Promise<MessageRouterStatusProbe> {
   const socketPath = process.env.MEMESH_ROUTER_SOCKET ?? getAgentRouterSocketPath();
   // A path over the limit is why `memesh-router` never created the socket —
@@ -3543,6 +3588,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   checks.push(verifySkillsManifest(packageRoot, existsSyncImpl, readFileSyncImpl, installSupport));
   checks.push(inspectMessageCapability(packageRoot, probeMessageCapability, messageCapabilityProbeImpl));
   checks.push(await inspectMessageRouterStatus(probeMessageRouterStatus, messageRouterStatusProbeImpl));
+  checks.push(inspectInstallJourney(packageVersion));
 
   checks.push(await inspectUpdateStatus(packageVersion, getUpdateCheckImpl, installSupport));
 

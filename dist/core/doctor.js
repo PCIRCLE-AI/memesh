@@ -28,6 +28,7 @@ import { captureLivenessVerdict, parseHookOutcomes, summarizeHookOutcomes, summa
 import { guardFromMetadata } from './guards.js';
 import { getAgentMessageStorageReport } from './agent-message-storage.js';
 import { readHostConfigFile } from '../host-runtime/config.js';
+import { journeyRecordPath, readJourneyRecord } from './doctor-journey.js';
 const EXPECTED_HOOK_TYPES = ['PreToolUse', 'SessionStart', 'PostToolUse', 'Stop', 'PreCompact'];
 const AGENT_MESSAGE_STORAGE_QUOTA_ENV = 'MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES';
 const LOCALE_README_FILES = [
@@ -1382,6 +1383,26 @@ function inspectMessageCapability(packageRoot, enabled, probe) {
         return createCheck('message-capability', 'Message adapter imports', 'pass', 'This installed MCP advertised the nine-action message schema and all bundled host adapters imported successfully. No live router socket, host registration, or host acceptance was verified.');
     return createCheck('message-capability', 'Message adapter imports', 'fail', `Installed message capability probe failed: ${result.message}.`, 'Reinstall or rebuild this package, then retry with MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY=1.', { code: 'message-capability.probe-failed', params: { detail: result.message } });
 }
+function inspectInstallJourney(packageVersion) {
+    const record = readJourneyRecord();
+    if (record === undefined) {
+        return createInfo('install-journey', 'Install journey', 'No install journey recorded yet. It runs after `memesh install-hooks` and `memesh setup`; run it now with `memesh doctor --journey`.');
+    }
+    if ('unreadable' in record) {
+        return createCheck('install-journey', 'Install journey', 'warn', `The saved journey result could not be read: ${record.unreadable}.`, `Delete ${journeyRecordPath()}, or re-run \`memesh install-hooks\` or \`memesh setup\`, which write a new one.`, { code: 'install-journey.unreadable', params: { detail: record.unreadable } });
+    }
+    const stale = record.version !== packageVersion ? ` This result is from v${record.version}; this is v${packageVersion}.` : '';
+    if (record.ok) {
+        if (record.version !== packageVersion) {
+            return createInfo('install-journey', 'Install journey', `The last journey passed on v${record.version} (${record.at}); this is v${packageVersion}. Run \`memesh doctor --journey\` to check this version.`);
+        }
+        return createCheck('install-journey', 'Install journey', 'pass', `Store, search, send and read back worked at ${record.at} (v${record.version}).`);
+    }
+    if (record.failedStep === 'prepare') {
+        return createCheck('install-journey', 'Install journey', 'warn', `The journey could not run at ${record.at}: ${record.reason}. memesh itself was not checked.${stale}`, record.fix ?? 'Run `memesh doctor --journey`.', { code: 'install-journey.not-run', params: { detail: record.reason ?? '' } });
+    }
+    return createCheck('install-journey', 'Install journey', 'warn', `The journey failed at "${record.failedStep}" at ${record.at}: ${record.reason}.${stale}`, record.fix ?? 'Run `memesh doctor --journey`.', { code: 'install-journey.failed', params: { step: record.failedStep ?? 'unknown', detail: record.reason ?? '' } });
+}
 async function defaultMessageRouterStatusProbe() {
     const socketPath = process.env.MEMESH_ROUTER_SOCKET ?? getAgentRouterSocketPath();
     const socketPathBytes = Buffer.byteLength(socketPath);
@@ -1621,6 +1642,7 @@ export async function runDoctor(options) {
     checks.push(verifySkillsManifest(packageRoot, existsSyncImpl, readFileSyncImpl, installSupport));
     checks.push(inspectMessageCapability(packageRoot, probeMessageCapability, messageCapabilityProbeImpl));
     checks.push(await inspectMessageRouterStatus(probeMessageRouterStatus, messageRouterStatusProbeImpl));
+    checks.push(inspectInstallJourney(packageVersion));
     checks.push(await inspectUpdateStatus(packageVersion, getUpdateCheckImpl, installSupport));
     try {
         const record = getInstallRecord();

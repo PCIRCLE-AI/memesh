@@ -40,6 +40,7 @@
 import fs from 'fs';
 import path from 'path';
 import { detectPluginRuntime, settingsHaveMemeshHooks } from './install-hooks.js';
+import { pluginHostConfigRoot } from './install-channel.js';
 
 export type HostId = 'claude-code' | 'codex' | 'gemini';
 
@@ -86,7 +87,8 @@ export interface HostStatus {
 }
 
 function inspectClaudeCode(seams: SetupSeams): HostStatus {
-  const claudeDir = path.join(seams.home(), '.claude');
+  // Where install-hooks writes: CLAUDE_CONFIG_DIR when the user relocated it (the same root the plugin checks use), else ~/.claude of the seam's home.
+  const claudeDir = process.env.CLAUDE_CONFIG_DIR ? pluginHostConfigRoot('claude-code') : path.join(seams.home(), '.claude');
   const present = fs.existsSync(claudeDir);
   const status: HostStatus = {
     host: 'claude-code',
@@ -146,7 +148,8 @@ function inspectClaudeCode(seams: SetupSeams): HostStatus {
   if (!hooksWired) {
     status.actions.push({
       kind: 'install-hooks',
-      label: 'Wire the session hooks into ~/.claude/settings.json (backs the file up first)',
+      // The file that will really be written: the relocated one when CLAUDE_CONFIG_DIR is set.
+      label: `Wire the session hooks into ${process.env.CLAUDE_CONFIG_DIR ? settingsPath : '~/.claude/settings.json'} (backs the file up first)`,
     });
   }
   if (mcpWired === false) {

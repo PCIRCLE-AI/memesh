@@ -65,27 +65,37 @@ export function buildIsolatedRuntimeEnv(baseEnv, { runtimeHome, memeshDir, dbPat
  * so test children cannot inherit owner-controlled secrets by accident.
  */
 export function buildIsolatedSuiteEnv(baseEnv, { runtimeHome }) {
-  const isolatedEnv = {
-    ...baseEnv,
-    HOME: runtimeHome,
-    USERPROFILE: runtimeHome,
-  };
-  delete isolatedEnv.MEMESH_DIR;
-  delete isolatedEnv.MEMESH_DB_PATH;
-  delete isolatedEnv.ANTHROPIC_API_KEY;
-  delete isolatedEnv.OPENAI_API_KEY;
-  delete isolatedEnv.OLLAMA_HOST;
-  delete isolatedEnv.MEMESH_BRIEFING; // see buildIsolatedRuntimeEnv
-  // #497: which messages count as waiting, who may record intake, and which
-  // session the claude channel host registers as follow these. A suite
-  // launched from inside a Claude Code or Codex session must behave as it
-  // does in CI, where they are unset.
-  delete isolatedEnv.CLAUDECODE;
-  delete isolatedEnv.CLAUDE_CODE_SESSION_ID;
-  delete isolatedEnv.CODEX_THREAD_ID;
-  delete isolatedEnv.CODEX_SESSION_ID;
+  // An allow-list, not "everything except what we remembered to delete": the
+  // deletions this function used to carry grew one variable per incident (the
+  // data paths, the session ids, the host config folders...) and still passed
+  // the Claude Code messaging socket and token, the account and organization
+  // ids, and every variable that moves where a program reads or writes.
+  // Names are matched case-insensitively (Windows spells `Path`).
+  const wanted = new Set(SUITE_ENV_ALLOWED.map((name) => name.toUpperCase()));
+  const isolatedEnv = {};
+  for (const [key, value] of Object.entries(baseEnv)) {
+    if (value !== undefined && wanted.has(key.toUpperCase())) isolatedEnv[key] = value;
+  }
+  isolatedEnv.HOME = runtimeHome;
+  isolatedEnv.USERPROFILE = runtimeHome;
   return envWithNpmCache(path.join(runtimeHome, 'npm-cache'), isolatedEnv);
 }
+
+/**
+ * What a test run may inherit: process plumbing and display settings. Nothing
+ * that names a folder or a socket, identifies an account or a session, or holds
+ * a credential. A test that needs one of those sets it itself.
+ */
+const SUITE_ENV_ALLOWED = [
+  'PATH', 'PATHEXT', 'SystemRoot', 'SystemDrive', 'WINDIR', 'ComSpec',
+  'ProgramFiles', 'ProgramFiles(x86)', 'ProgramData', 'ALLUSERSPROFILE',
+  'PROCESSOR_ARCHITECTURE', 'NUMBER_OF_PROCESSORS',
+  'TMPDIR', 'TEMP', 'TMP',
+  'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
+  'TERM', 'COLORTERM', 'NO_COLOR', 'FORCE_COLOR', 'CI',
+  'SHELL', 'USER', 'LOGNAME', 'USERNAME',
+];
+
 import path from 'node:path';
 import { envWithNpmCache } from './npm-bin.mjs';
 /**

@@ -133,6 +133,7 @@ src/
 │   ├── kg-backfill.ts     # Heuristic relation backfill (tag co-occurrence + project clustering)
 │   ├── patterns.ts        # User work patterns computation (shared by MCP + HTTP)
 │   ├── doctor.ts          # `memesh doctor` health check (runtime / install / hooks / DB / capabilities)
+│   ├── doctor-journey.ts  # `memesh doctor --journey`: store/search/send/fetch through the packaged CLI in a throwaway folder
 │   ├── demo.ts            # `memesh demo` 30-entity onboarding seed
 │   ├── memory-tool.ts     # Anthropic memory_20250818 adapter over the knowledge graph
 │   └── version-check.ts   # npm registry version check

@@ -1954,6 +1954,92 @@ When capture has gone quiet, SessionStart adds one line to its banner
 24 hours after an install or upgrade, whichever ends later
 (`capture-liveness-grace.json`). The line disappears once the hook writes again. For a failing hook it reads `memesh: the <hook> hook recorded errors in its recent runs …` and changes once its most recent triggered runs end without an error.
 
+### memesh doctor --journey
+
+```
+memesh doctor --journey [--json]
+```
+
+Runs the install journey once and exits: store a note (`memesh remember`),
+search for it (`memesh recall`), send a message to a local agent
+(`memesh message send`) and read it back (`memesh message fetch`). Each step
+runs this package's own CLI entry (`node <package>/dist/transports/cli/cli.js`,
+not whichever `memesh` comes first on your `PATH`) as its own process, so a
+broken package fails here and not on first use. Given together with `--fix`,
+`--yes` or `--probe-http` it refuses with exit `1` instead of ignoring them.
+
+Everything happens in a throwaway folder that is removed afterwards, also on
+failure and when interrupted: Ctrl-C (`SIGINT`), `SIGTERM`, `SIGHUP` (a closed
+terminal, and the Windows console closing) and `SIGQUIT` stop the running step,
+remove the folder and print `Interrupted: the install journey was stopped and
+its throwaway folder was removed.` `SIGKILL` cannot be caught and leaves the
+folder in the system temp folder.
+
+The step processes get an allow-listed environment. From yours, when set, they
+get `PATH`, `TMPDIR`, `TMP`, `TEMP`, `LANG`, `LC_ALL`, `PATHEXT`, `SystemRoot`
+and `ComSpec`, on every platform (the last three matter on Windows, where
+Node needs `SystemRoot`); a relative temp folder is made absolute first. The
+journey itself sets `HOME` and `USERPROFILE` to the throwaway folder, `MEMESH_DIR`
+and `MEMESH_DB_PATH` inside it, `MEMESH_AUTO_CAPTURE=false`, and on Windows
+`APPDATA` and `LOCALAPPDATA` inside it. No other variable crosses, so nothing in
+your shell can send the journey at your real `~/.memesh`, a running router or a
+host's config.
+
+What it proves, and what it does not: the message steps prove that a message is
+stored in the durable inbox and read back unchanged. They do not prove live
+delivery to a running agent, which needs a running router and a registered
+session; `memesh doctor` reports on the router (`MEMESH_DOCTOR_PROBE_MESSAGE_ROUTER=1`
+probes it), and the journey's own output says so.
+
+Output: one line per step (what was done, what came back, how long it took).
+A failed step also prints `Why:` and `Fix:` and stops the journey. If the temp
+folder cannot be created, the journey says it could not run (step `prepare`) and
+that memesh itself was not checked; that is not reported as a failed step of
+memesh. Exit code `0` when all four steps pass, `1` otherwise.
+
+The whole journey has a 30-second budget. A step still running at that point is
+stopped and counts as a failure (`timed out`). On POSIX its process group and
+every descendant found through parent ids are killed, also one that moved to
+another group; on Windows `taskkill /T /F` (by its full path under `SystemRoot`)
+is run on its process tree, and if that fails the step itself is killed. When
+nothing could stop it, the failure says so and names the process. A process whose
+parent had already exited before then can no longer be linked to the step and is
+left running. A leftover process holding the step's output cannot extend the
+wait: the verdict comes at the budget, or, for a step that exited in time, within
+half a second of its exit and by how it exited. `--json` prints the result object
+(`ok`, `steps[]`, `failedStep`, `timedOut`, `elapsedMs`, `scratchDir`, `cleaned`,
+and `cleanupError` when removal failed) instead of the lines. This mode does not
+run the health report.
+
+The journey also runs by itself after a successful `memesh install-hooks`
+(including when the Claude Code plugin already wires the hooks) and after
+`memesh setup` finds a supported host that is wired, or wires it. It does not run
+after `install-hooks --dry-run` or `setup --check`, and `setup` does not run it
+when no Claude Code, Codex or Gemini is found: it then says that nothing was set
+up and points at `memesh doctor --journey`. After wiring hooks, `setup` says to
+restart Claude Code, as `install-hooks` does. The journey never changes the
+install's exit code. Whether it passes or fails, the result is saved to
+`post-install-journey.json` beside the database, and a failure is also printed
+to stderr. `memesh doctor` shows it as an `Install journey` row: a warning when
+the last run failed or could not run, a pass when it passed on this version,
+information when it passed on another version (a pass for v4.0.0 says nothing
+about this one) or when none has run yet.
+
+Your memory database is never opened. A manual `memesh doctor --journey` always reads
+`post-install-journey.json` in the data folder first, and writes it only when a
+readable, valid record is already there, so a fixed install stops warning. With
+no record, or one it cannot read or that is not a journey record (for example no
+access to the folder), it writes nothing and creates no folder. Only the manual
+run reads the record: an automatic run does not read it, and writes it after
+every run, passed or failed. A record is written to a new private file (mode
+`0600`) and renamed into place, so a symlink at that path is replaced and not
+followed, and a reader never sees half a record. A failure record without its
+step and reason is treated as unreadable.
+
+Turn the automatic run off with `memesh install-hooks --no-journey`,
+`memesh setup --no-journey` or `MEMESH_SKIP_POST_INSTALL_JOURNEY=1` (any value
+other than empty, `0` or `false`).
+
 ### memesh config
 
 Owner-local settings in `~/.memesh/config.json`; `memesh config set --help` names the keys.

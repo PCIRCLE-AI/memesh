@@ -266,8 +266,55 @@ function entryAlreadyPresent(existing: HookEntry[], desired: HookEntry): boolean
   });
 }
 
+/**
+ * Installs the hooks. If anything fails after the citation rule file was
+ * written, that file goes back to how it was: removed if this run created it
+ * (with the folder, if this run created that too), the original bytes if it
+ * existed. The failure is reported to the caller, so nothing it names may
+ * stay changed. (`settings.json` is restored inside, where it is written.)
+ */
 export function installHooks(opts: InstallOptions): InstallResult {
   const cwd = opts.cwd ?? process.cwd();
+  const rulePath = citationRulePath(opts.scope, homeDir(), cwd);
+  const ruleBefore = readBytesOrNull(rulePath);
+  // Folders this run may create: remembered, so a failed run removes only those.
+  const folders = [...new Set([path.dirname(rulePath), path.dirname(path.dirname(rulePath)), path.dirname(settingsPathFor(opts.scope, cwd))])];
+  const folderExisted = new Map(folders.map((folder) => [folder, fs.existsSync(folder)]));
+  try {
+    return installHooksUnguarded(opts, cwd);
+  } catch (err) {
+    if (!opts.dryRun) {
+      // Each step on its own, and none may replace the error being reported.
+      try {
+        const current = readBytesOrNull(rulePath);
+        if (ruleBefore === null) {
+          if (current !== null) fs.rmSync(rulePath, { force: true });
+        } else if (current === null || !current.equals(ruleBefore)) {
+          // Only a rule file this run actually changed is put back.
+          fs.writeFileSync(rulePath, ruleBefore);
+        }
+      } catch { /* the original failure is the one to report */ }
+      // Deepest first; a folder that is not empty (or that was there before) stays.
+      for (const folder of [...folders].sort((a, b) => b.length - a.length)) {
+        if (folderExisted.get(folder)) continue;
+        try { fs.rmdirSync(folder); } catch { /* not empty, or already gone */ }
+      }
+    }
+    throw err;
+  }
+}
+
+/** The file's bytes, or null when it does not exist: read directly, with no check-then-read race. */
+function readBytesOrNull(file: string): Buffer | null {
+  try {
+    return fs.readFileSync(file);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+function installHooksUnguarded(opts: InstallOptions, cwd: string): InstallResult {
   const settingsPath = settingsPathFor(opts.scope, cwd);
 
   // The citation rule is written BEFORE the plugin-runtime check, and on the
@@ -384,27 +431,40 @@ export function installHooks(opts: InstallOptions): InstallResult {
 
   if (!opts.dryRun && (added > 0 || skipped > 0)) {
     backupPath = backupSettings(settingsPath);
+    // Exactly what is on disk now, so a failure below can put it back.
+    const settingsBefore = readBytesOrNull(settingsPath);
     settings.hooks = existing;
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
     writeSettingsSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
-    // Marker — doctor reads this to confirm hooks are wired AND
-    // know which scope/path so it can verify they still match.
-    fs.mkdirSync(path.dirname(markerPath), { recursive: true });
-    fs.writeFileSync(
-      markerPath,
-      JSON.stringify(
-        {
-          installed_at: new Date().toISOString(),
-          version: opts.pluginVersion,
-          plugin_root: opts.pluginRoot,
-          scope: opts.scope,
-          settings_path: settingsPath,
-        },
-        null,
-        2,
-      ) + '\n',
-      'utf8',
-    );
+    try {
+      // Marker — doctor reads this to confirm hooks are wired AND
+      // know which scope/path so it can verify they still match.
+      fs.mkdirSync(path.dirname(markerPath), { recursive: true });
+      fs.writeFileSync(
+        markerPath,
+        JSON.stringify(
+          {
+            installed_at: new Date().toISOString(),
+            version: opts.pluginVersion,
+            plugin_root: opts.pluginRoot,
+            scope: opts.scope,
+            settings_path: settingsPath,
+          },
+          null,
+          2,
+        ) + '\n',
+        'utf8',
+      );
+    } catch (err) {
+      // The install is reported as failed, so the settings must be as they were.
+      // The backup taken above is left in place on purpose: it is harmless, and
+      // keeping a copy is the safer thing to do after a failure.
+      try {
+        if (settingsBefore === null) fs.rmSync(settingsPath, { force: true });
+        else fs.writeFileSync(settingsPath, settingsBefore);
+      } catch { /* the original failure is the one to report */ }
+      throw err;
+    }
   }
 
   return {
