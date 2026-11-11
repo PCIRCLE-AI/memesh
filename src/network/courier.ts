@@ -20,6 +20,7 @@ import {
   type AgentJsonValue,
   type AgentMessagePostCommitNotifier,
 } from '../core/agent-messaging.js';
+import { AGENT_MESSAGE_TTL_MS } from '../core/agent-message-ttl.js';
 import { parseSqliteUtcMs, sqliteUtcToIso } from '../core/time-utils.js';
 import { formatNetworkAddress, isLocalSenderName, parseNetworkAddress, projectHash } from './address.js';
 import {
@@ -29,7 +30,8 @@ import { PRESENCE_TTL_MS } from './outbound.js';
 import type { NetworkConfig } from './store.js';
 import type { Roster, RosterMember } from './types.js';
 
-export const DELIVERY_WINDOW_MS = 24 * 60 * 60_000;
+/** Retries stop when the message itself expires; the expiry pass deletes it (and this row) after that. */
+export const DELIVERY_WINDOW_MS = AGENT_MESSAGE_TTL_MS;
 const BACKOFF_FIRST_MS = 5_000;
 const BACKOFF_MAX_MS = 5 * 60_000;
 export const NOTICE_SENDER = 'memesh-network';

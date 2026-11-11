@@ -29999,10 +29999,10 @@ var StdioServerTransport = class {
 import { fileURLToPath as fileURLToPath7 } from "url";
 
 // dist/core/agent-message-expiry.js
-import fs3 from "node:fs";
-import path from "node:path";
+import fs5 from "node:fs";
+import path4 from "node:path";
 import { randomUUID as randomUUID2 } from "node:crypto";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
 
 // dist/core/file-mode.js
 import fs from "fs";
@@ -31679,6 +31679,461 @@ async function waitForDelay(ms, signal) {
   });
 }
 
+// dist/network/address.js
+import { createHash as createHash2 } from "node:crypto";
+
+// dist/network/identity.js
+import { createPrivateKey, createPublicKey, randomBytes as randomBytes2, sign, verify } from "node:crypto";
+import fs3 from "node:fs";
+import path2 from "node:path";
+
+// dist/network/types.js
+import path from "node:path";
+var RELAY_OFF = "off";
+var NetworkError = class extends Error {
+  code;
+  constructor(code, message) {
+    super(message);
+    this.name = "NetworkError";
+    this.code = code;
+  }
+};
+
+// dist/network/identity.js
+var PKCS8_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
+var SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
+var MACHINE_ID = /^[0-9a-f]{64}$/;
+function isMachineId(value) {
+  return typeof value === "string" && MACHINE_ID.test(value);
+}
+function verifySignature(machineId, message, signature) {
+  if (!isMachineId(machineId) || typeof signature !== "string")
+    return false;
+  try {
+    const publicKey = createPublicKey({
+      key: Buffer.concat([SPKI_PREFIX, Buffer.from(machineId, "hex")]),
+      format: "der",
+      type: "spki"
+    });
+    return verify(null, message, publicKey, Buffer.from(signature, "base64url"));
+  } catch {
+    return false;
+  }
+}
+
+// dist/network/roster.js
+var SIGNATURE_DOMAIN = "memesh-roster-v1\n";
+var MAX_MEMBERS = 256;
+var NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+var NETWORK_ID = /^[0-9a-f]{32}$/;
+var ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+var SIGNED_ROSTER_MAX_BYTES = 128 * 1024;
+function isNetworkId(value) {
+  return typeof value === "string" && NETWORK_ID.test(value);
+}
+function assertValidName(kind, value) {
+  if (typeof value !== "string" || !NAME.test(value)) {
+    throw new NetworkError("invalid_name", `The ${kind} must start with a letter or digit and use only letters, digits, ".", "_" and "-" (at most 64 characters).`);
+  }
+}
+function invalid(detail) {
+  return new NetworkError("roster_invalid", `The team list is not valid: ${detail}.`);
+}
+function parseMember(raw) {
+  const member = raw;
+  if (member === null || typeof member !== "object")
+    throw invalid("a member is not an object");
+  if (!isMachineId(member.machine_id))
+    throw invalid("a member has a bad machine id");
+  try {
+    assertValidName("machine name", member.name);
+    assertValidName("person", member.person);
+  } catch {
+    throw invalid("a member has a bad name or person");
+  }
+  if (typeof member.joined_at !== "string" || !ISO_TIMESTAMP.test(member.joined_at) || !Number.isFinite(Date.parse(member.joined_at))) {
+    throw invalid("a member has a bad joined_at");
+  }
+  return { machine_id: member.machine_id, name: member.name, person: member.person, joined_at: member.joined_at };
+}
+function parseRoster(rosterJson) {
+  let raw;
+  try {
+    raw = JSON.parse(rosterJson);
+  } catch {
+    throw invalid("it is not JSON");
+  }
+  if (raw === null || typeof raw !== "object")
+    throw invalid("it is not an object");
+  if (!isNetworkId(raw.network_id))
+    throw invalid("bad network id");
+  if (!isMachineId(raw.owner_id))
+    throw invalid("bad owner id");
+  if (!Number.isSafeInteger(raw.version) || raw.version < 1)
+    throw invalid("bad version");
+  if (!Array.isArray(raw.members) || raw.members.length > MAX_MEMBERS)
+    throw invalid("bad member list");
+  const members2 = raw.members.map(parseMember);
+  const names = new Set(members2.map((member) => member.name.toLowerCase()));
+  const ids = new Set(members2.map((member) => member.machine_id));
+  if (names.size !== members2.length)
+    throw invalid("two machines share a name");
+  if (ids.size !== members2.length)
+    throw invalid("a machine is listed twice");
+  if (!ids.has(raw.owner_id))
+    throw invalid("the owner is not a member");
+  return {
+    network_id: raw.network_id,
+    owner_id: raw.owner_id,
+    version: raw.version,
+    members: members2
+  };
+}
+function verifyRoster(signed, expectedOwnerId, expectedNetworkId) {
+  if (typeof signed?.roster_json !== "string" || !verifySignature(expectedOwnerId, Buffer.from(SIGNATURE_DOMAIN + signed.roster_json), signed.signature)) {
+    throw new NetworkError("roster_invalid", "The team list is not signed by the network owner.");
+  }
+  const roster = parseRoster(signed.roster_json);
+  if (roster.owner_id !== expectedOwnerId)
+    throw invalid("it names a different owner");
+  if (roster.network_id !== expectedNetworkId)
+    throw invalid("it belongs to a different network");
+  return roster;
+}
+
+// dist/network/address.js
+var TARGET = /^[^/@\s]{1,200}$/;
+function parseNetworkAddress(value) {
+  const at = value.lastIndexOf("@");
+  if (at <= 0)
+    return null;
+  const machine = value.slice(at + 1);
+  const left = value.slice(0, at);
+  const slash = left.indexOf("/");
+  if (slash <= 0)
+    return null;
+  const person = left.slice(0, slash);
+  const target = left.slice(slash + 1);
+  if (!NAME.test(person) || !NAME.test(machine) || !TARGET.test(target))
+    return null;
+  return { person, target, machine };
+}
+function formatNetworkAddress(person, target, machine) {
+  return `${person}/${target}@${machine}`;
+}
+function projectHash(networkId, project) {
+  return createHash2("sha256").update(`${networkId}:${project}`).digest("hex");
+}
+
+// dist/network/store.js
+import fs4 from "node:fs";
+import path3 from "node:path";
+
+// dist/storage/agent-network-schema.js
+var AGENT_NETWORK_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS agent_network_config (
+  id               INTEGER PRIMARY KEY CHECK (id = 1),
+  network_id       TEXT NOT NULL,
+  owner_id         TEXT NOT NULL,
+  machine_id       TEXT NOT NULL,
+  machine_name     TEXT NOT NULL,
+  person           TEXT NOT NULL,
+  relay_url        TEXT NOT NULL,
+  roster_json      TEXT NOT NULL,
+  roster_signature TEXT NOT NULL,
+  created_at_ms    INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS agent_network_invites (
+  hash          TEXT PRIMARY KEY,
+  expires_at_ms INTEGER NOT NULL,
+  used_at       INTEGER
+);
+
+-- One row per delivery addressed to another machine. state: pending, delivered,
+-- rejected, expired; or local when the address names no member and the delivery
+-- stays an ordinary local one.
+CREATE TABLE IF NOT EXISTS agent_network_outbox (
+  delivery_id        TEXT PRIMARY KEY REFERENCES agent_message_deliveries(delivery_id) ON DELETE CASCADE,
+  message_id         TEXT NOT NULL,
+  machine_id         TEXT,
+  state              TEXT NOT NULL,
+  attempts           INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at_ms INTEGER NOT NULL DEFAULT 0,
+  expires_at_ms      INTEGER NOT NULL,
+  last_error_code    TEXT,
+  delivered_at_ms    INTEGER,
+  path               TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_agent_network_outbox_due ON agent_network_outbox(state, next_attempt_at_ms);
+
+-- Who is live on other machines, by project hash only. Expires on its own.
+CREATE TABLE IF NOT EXISTS agent_network_presence (
+  machine_id    TEXT NOT NULL,
+  project_hash  TEXT NOT NULL,
+  principal     TEXT NOT NULL,
+  handle        TEXT NOT NULL,
+  host_kind     TEXT NOT NULL,
+  connected     INTEGER NOT NULL,
+  expires_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (machine_id, project_hash, handle)
+);
+
+-- How to reach another member: learned from the invite link and from its presence.
+CREATE TABLE IF NOT EXISTS agent_network_peers (
+  machine_id  TEXT PRIMARY KEY,
+  relay_url   TEXT,
+  addrs_json  TEXT NOT NULL,
+  seen_at_ms  INTEGER NOT NULL
+);
+`;
+
+// dist/storage/sqlite.js
+import { createRequire } from "node:module";
+function loadNodeSqlite() {
+  const require2 = createRequire(import.meta.url);
+  const original = process.emitWarning;
+  process.emitWarning = function(warning, ...rest) {
+    const text = typeof warning === "string" ? warning : String(warning?.message ?? warning);
+    if (text.includes("SQLite is an experimental feature"))
+      return;
+    return original.call(process, warning, ...rest);
+  };
+  try {
+    return require2("node:sqlite");
+  } catch (err) {
+    return { missing: err instanceof Error ? err.message : String(err) };
+  } finally {
+    process.emitWarning = original;
+  }
+}
+var loadedSqlite = loadNodeSqlite();
+var MissingDatabaseSync = class {
+  constructor() {
+    const detail = "missing" in loadedSqlite ? loadedSqlite.missing : "unknown";
+    throw new UnsupportedNodeError(`memesh needs Node's built-in SQLite, which this runtime (${process.version}) does not provide. Upgrade Node to ${MIN_NODE_SERIES} or newer and run memesh again. (${detail})`);
+  }
+};
+var DatabaseSync = "DatabaseSync" in loadedSqlite ? loadedSqlite.DatabaseSync : MissingDatabaseSync;
+var MIN_NODE_VERSION = "22.16.0";
+var MIN_NODE_SERIES = MIN_NODE_VERSION.split(".").slice(0, 2).join(".");
+var UnsupportedNodeError = class extends Error {
+  code = "NODE_TOO_OLD";
+  constructor(message) {
+    super(message);
+    this.name = "UnsupportedNodeError";
+  }
+};
+function atLeastMinimumNode(version2) {
+  const want = MIN_NODE_VERSION.split(".").map(Number);
+  const have = version2.replace(/^v/, "").split(".").map((part) => Number.parseInt(part, 10));
+  for (let i = 0; i < 3; i++) {
+    const h = have[i];
+    if (!Number.isFinite(h))
+      return false;
+    if (h !== want[i])
+      return h > want[i];
+  }
+  return true;
+}
+function fts5ProbeResult(createFtsTable) {
+  try {
+    createFtsTable();
+    return true;
+  } catch (err) {
+    if (/no such module/i.test(err instanceof Error ? err.message : String(err)))
+      return false;
+    throw err;
+  }
+}
+var ftsProbe;
+function hasFts5() {
+  if (ftsProbe === void 0) {
+    const probe = new DatabaseSync(":memory:");
+    try {
+      ftsProbe = fts5ProbeResult(() => probe.exec("CREATE VIRTUAL TABLE memesh_fts5_probe USING fts5(a)"));
+    } finally {
+      try {
+        probe.close();
+      } catch {
+      }
+    }
+  }
+  return ftsProbe;
+}
+function nodeSupportProblem(version2 = process.versions.node, fts5Available = hasFts5) {
+  const shown = version2.replace(/^v/, "");
+  if (!atLeastMinimumNode(version2)) {
+    return `This Node (v${shown}) lacks the full-text search MeMesh needs; upgrade to Node ${MIN_NODE_SERIES} or newer and run memesh again.`;
+  }
+  if (!fts5Available()) {
+    return `This Node build (v${shown}) lacks the full-text search (FTS5) MeMesh needs; install the official Node ${MIN_NODE_SERIES} or newer from nodejs.org and run memesh again.`;
+  }
+  return null;
+}
+function assertNodeSupported() {
+  const problem = nodeSupportProblem();
+  if (problem)
+    throw new UnsupportedNodeError(problem);
+}
+var BUSY_TIMEOUT_MS = 3e4;
+var MemeshDatabase = class extends DatabaseSync {
+  #depth = 0;
+  constructor(path26, options = {}) {
+    assertNodeSupported();
+    super(path26, options);
+    this.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
+  }
+  pragma(statement) {
+    this.exec(`PRAGMA ${statement}`);
+  }
+  transaction(fn) {
+    const run = (mode, ...args) => {
+      const nested = this.#depth > 0;
+      const savepoint = `memesh_sp_${this.#depth}`;
+      this.exec(nested ? `SAVEPOINT ${savepoint}` : `BEGIN${mode}`);
+      this.#depth++;
+      try {
+        const result = fn(...args);
+        this.exec(nested ? `RELEASE ${savepoint}` : "COMMIT");
+        return result;
+      } catch (err) {
+        try {
+          this.exec(nested ? `ROLLBACK TO ${savepoint}` : "ROLLBACK");
+          if (nested)
+            this.exec(`RELEASE ${savepoint}`);
+        } catch {
+        }
+        throw err;
+      } finally {
+        this.#depth--;
+      }
+    };
+    const callable = ((...args) => run("", ...args));
+    callable.immediate = (...args) => run(" IMMEDIATE", ...args);
+    return callable;
+  }
+};
+
+// dist/network/store.js
+function readConfig(db2) {
+  const row = db2.prepare(`SELECT network_id, owner_id, machine_id, machine_name, person, relay_url, roster_json, roster_signature
+       FROM agent_network_config WHERE id = 1`).get();
+  return row ?? null;
+}
+function signedRosterOf(config2) {
+  return { roster_json: config2.roster_json, signature: config2.roster_signature };
+}
+
+// dist/network/outbound.js
+var PRESENCE_TTL_MS = 3 * 6e4;
+function joinedNetwork(db2) {
+  let config2;
+  try {
+    config2 = readConfig(db2);
+  } catch {
+    return null;
+  }
+  if (!config2)
+    return null;
+  return { config: config2, roster: verifyRoster(signedRosterOf(config2), config2.owner_id, config2.network_id) };
+}
+var NetworkRecipientError = class extends AgentMessagingError {
+};
+function resolveNetworkRecipient(db2, recipient) {
+  const address = parseNetworkAddress(recipient);
+  if (address === null)
+    return null;
+  const joined = joinedNetwork(db2);
+  if (joined === null)
+    return null;
+  const member = joined.roster.members.find((candidate) => candidate.name === address.machine);
+  if (!member)
+    return null;
+  if (member.machine_id === joined.config.machine_id) {
+    throw new NetworkRecipientError(`${recipient} is this machine. Send to ${JSON.stringify(address.target)} directly.`);
+  }
+  if (member.person !== address.person) {
+    throw new NetworkRecipientError(`Machine ${JSON.stringify(address.machine)} belongs to ${JSON.stringify(member.person)} in this network, not ${JSON.stringify(address.person)}. Use ${formatNetworkAddress(member.person, address.target, address.machine)}.`);
+  }
+  const path26 = joined.config.relay_url === RELAY_OFF ? "directly" : "through the relay or directly";
+  return {
+    address,
+    member,
+    note: `This goes to machine ${address.machine} ${path26}; while that machine is offline it is retried for up to one day.`
+  };
+}
+function networkReceiptFact(db2, deliveryId) {
+  let row;
+  try {
+    row = db2.prepare(`
+      SELECT delivery_id, message_id, state, attempts, last_error_code, delivered_at_ms, path
+      FROM agent_network_outbox WHERE delivery_id = ? AND state != 'local'
+    `).get(deliveryId);
+  } catch {
+    return null;
+  }
+  if (!row)
+    return null;
+  const deliveredAt = row.delivered_at_ms === null ? null : new Date(row.delivered_at_ms).toISOString();
+  return {
+    receipt_kind: "network",
+    fact_source: "agent_network_outbox",
+    message_id: row.message_id,
+    delivery_id: row.delivery_id,
+    network: {
+      state: row.state,
+      attempts: row.attempts,
+      last_error_code: row.last_error_code,
+      delivered_at: deliveredAt,
+      path: row.path
+    },
+    created_at: deliveredAt ?? (/* @__PURE__ */ new Date()).toISOString()
+  };
+}
+function networkDeliveryOf(db2, delivery) {
+  const fact = networkReceiptFact(db2, delivery.delivery_id);
+  const network = fact?.network;
+  try {
+    const address = parseNetworkAddress(delivery.recipient);
+    if (network)
+      return { state: network.state, code: network.last_error_code, machine: address?.machine ?? "the other machine" };
+    const local = db2.prepare("SELECT 1 FROM agent_network_outbox WHERE delivery_id = ? AND state = 'local'").get(delivery.delivery_id);
+    if (local || !address || !resolveNetworkRecipient(db2, delivery.recipient))
+      return null;
+    return { state: "pending", code: null, machine: address.machine };
+  } catch {
+    return null;
+  }
+}
+function remoteDiscoverCards(db2, project, now = Date.now()) {
+  const joined = joinedNetwork(db2);
+  if (joined === null)
+    return [];
+  const rows = db2.prepare(`
+    SELECT machine_id, principal, handle, host_kind, connected FROM agent_network_presence
+    WHERE project_hash = ? AND expires_at_ms > ? ORDER BY machine_id, handle
+  `).all(projectHash(joined.config.network_id, project), now);
+  const cards = [];
+  for (const row of rows) {
+    const member = joined.roster.members.find((candidate) => candidate.machine_id === row.machine_id);
+    if (!member || member.machine_id === joined.config.machine_id)
+      continue;
+    cards.push({
+      remote: true,
+      address: formatNetworkAddress(member.person, row.handle, member.name),
+      principal_address: formatNetworkAddress(member.person, row.principal, member.name),
+      machine: member.name,
+      person: member.person,
+      principal_id: row.principal,
+      handle: row.handle,
+      host_kind: row.host_kind,
+      active: row.connected === 1
+    });
+  }
+  return cards;
+}
+
 // dist/core/agent-message-expiry.js
 var AGENT_MESSAGE_EXPIRY_INTERVAL_MS = 5 * 60 * 1e3;
 var AGENT_MESSAGE_EXPIRED_ID_KEEP_MS = 30 * 24 * 60 * 60 * 1e3;
@@ -31726,6 +32181,7 @@ var LIVE_CONNECTIONS_SQL = `
 var ARCHIVED_TABLES = [
   { name: "agent_messages", unique: "message_id", by: "message" },
   { name: "agent_message_deliveries", unique: "delivery_id", by: "message" },
+  { name: "agent_network_outbox", unique: "delivery_id", by: "delivery" },
   { name: "agent_message_events", unique: "event_id", by: "message" },
   { name: "agent_message_idempotency", unique: "message_id", by: "message" },
   { name: "agent_message_receipts", unique: "receipt_id", by: "message" },
@@ -31904,13 +32360,19 @@ function selectBatch(db2, cutoff, inFlightCutoff) {
 function deleteBatch(db2, rows, tally) {
   const remember2 = db2.prepare(`
     INSERT OR REPLACE INTO agent_message_expiries
-      (message_id, project, created_at, expired_at_ms, was_read, notice_message_id, sender, recipient)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      (message_id, project, created_at, expired_at_ms, was_read, notice_message_id, sender, recipient, network_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
+  const delivery = db2.prepare("SELECT delivery_id, recipient FROM agent_message_deliveries WHERE message_id = ? LIMIT 1");
+  const bridgeTold = db2.prepare("SELECT 1 FROM agent_messages WHERE reply_to_message_id = ? AND json_extract(provenance_json, '$.via') = 'network-notice' LIMIT 1");
   const now = Date.now();
   for (const row of rows) {
-    remember2.run(row.message_id, row.project, row.created_at, now, row.was_read !== 0 ? 1 : 0, row.is_notice !== 0 ? NO_NOTICE : null, row.sender, row.recipient);
-    if (row.was_read === 0 && row.is_notice === 0)
+    const owesNotice = row.was_read === 0 && row.is_notice === 0;
+    const sent = owesNotice ? delivery.get(row.message_id) : void 0;
+    const network = sent ? networkDeliveryOf(db2, sent) : null;
+    const told = network !== null && bridgeTold.get(row.message_id) !== void 0;
+    remember2.run(row.message_id, row.project, row.created_at, now, row.was_read !== 0 ? 1 : 0, row.is_notice !== 0 || told ? NO_NOTICE : null, row.sender, row.recipient, network ? JSON.stringify(network) : null);
+    if (owesNotice)
       tally.unread += 1;
     if (Number.isNaN(Date.parse(sqliteUtcToIso(row.created_at))))
       tally.unreadableTimes += 1;
@@ -31923,7 +32385,7 @@ function deleteBatch(db2, rows, tally) {
 }
 function writeOwedNotices(db2, tally) {
   const owed = db2.prepare(`
-    SELECT message_id, project, sender, recipient, created_at FROM agent_message_expiries
+    SELECT message_id, project, sender, recipient, created_at, network_json FROM agent_message_expiries
     WHERE ${NOTICE_OWED_SQL} ORDER BY project, sender, created_at, message_id
   `).all();
   const groups = /* @__PURE__ */ new Map();
@@ -31937,16 +32399,19 @@ function writeOwedNotices(db2, tally) {
   }
   const mark = db2.prepare("UPDATE agent_message_expiries SET notice_message_id = ? WHERE message_id IN (SELECT value FROM json_each(?))");
   for (const group of groups.values()) {
+    const facts = group.map((row) => row.network_json === null ? null : JSON.parse(row.network_json));
     const state = {
       count: group.length,
-      listed: group.slice(0, NOTICE_LIST_MAX).map((row) => {
+      facts,
+      listed: group.slice(0, NOTICE_LIST_MAX).map((row, index) => {
         const createdAt = sqliteUtcToIso(row.created_at);
         const sentMs = Date.parse(createdAt);
         return {
           message_id: row.message_id,
           recipient: row.recipient,
           created_at: createdAt,
-          expired_at: Number.isNaN(sentMs) ? null : new Date(sentMs + AGENT_MESSAGE_TTL_MS).toISOString()
+          expired_at: Number.isNaN(sentMs) ? null : new Date(sentMs + AGENT_MESSAGE_TTL_MS).toISOString(),
+          ...facts[index] ? { network: facts[index] } : {}
         };
       })
     };
@@ -31958,11 +32423,34 @@ function writeOwedNotices(db2, tally) {
     mark.run(noticeId ?? NO_NOTICE, JSON.stringify(group.map((row) => row.message_id)));
   }
 }
+function noticeSummary(state) {
+  const count = state.count;
+  const plural2 = (n) => n === 1 ? "" : "s";
+  const remote = state.facts.filter((fact) => fact !== null);
+  if (remote.length === 0) {
+    return `${count} message${plural2(count)} you sent expired: MeMesh keeps a message for one day, and ${count === 1 ? "its recipient" : "their recipients"} recorded no intake, acknowledgement or disposition and sent no reply. Send it again if it still matters.`;
+  }
+  const parts = [];
+  const local = count - remote.length;
+  if (local > 0)
+    parts.push(`For ${local} sent to a recipient on this machine, the recipient recorded no intake, acknowledgement or disposition and sent no reply.`);
+  const unique = (values) => [...new Set(values.filter((value) => value !== null))];
+  const delivered = remote.filter((fact) => fact.state === "delivered");
+  const undelivered = remote.filter((fact) => fact.state !== "delivered");
+  if (undelivered.length > 0) {
+    const codes = unique(undelivered.map((fact) => fact.code));
+    parts.push(`${undelivered.length} sent to machine ${unique(undelivered.map((fact) => fact.machine)).join(", ")} ${undelivered.length === 1 ? "was" : "were"} not delivered (${codes.length > 0 ? `last error: ${codes.join(", ")}` : "no delivery attempt was recorded"}).`);
+  }
+  if (delivered.length > 0) {
+    parts.push(`${delivered.length} ${delivered.length === 1 ? "was" : "were"} delivered to machine ${unique(delivered.map((fact) => fact.machine)).join(", ")}, but no reply from there was seen on this machine.`);
+  }
+  return `${count} message${plural2(count)} you sent expired: MeMesh keeps a message for one day. ${parts.join(" ")} Send it again if it still matters.`;
+}
 function noticePayload(state) {
   const count = state.count;
   return {
     kind: "message_expired",
-    summary: `${count} message${count === 1 ? "" : "s"} you sent expired: MeMesh keeps a message for one day, and ${count === 1 ? "its recipient" : "their recipients"} recorded no intake, acknowledgement or disposition and sent no reply. Send it again if it still matters.`,
+    summary: noticeSummary(state),
     messages: state.listed,
     ...count > state.listed.length ? { not_listed: count - state.listed.length } : {}
   };
@@ -31997,38 +32485,38 @@ function saveRunProgress(db2, runId, tally, archiveFile) {
 }
 function archiveLocation(db2, options) {
   const databasePath = databaseFile(db2);
-  const directory = options.backupDir ?? (databasePath ? path.join(path.dirname(databasePath), "backups") : null);
+  const directory = options.backupDir ?? (databasePath ? path4.join(path4.dirname(databasePath), "backups") : null);
   if (directory === null)
     return null;
-  const base = path.basename(databasePath);
-  return path.join(directory, base === "" || base === "knowledge-graph.db" ? AGENT_MESSAGE_ARCHIVE_FILE : `agent-messages-expired-${base}`);
+  const base = path4.basename(databasePath);
+  return path4.join(directory, base === "" || base === "knowledge-graph.db" ? AGENT_MESSAGE_ARCHIVE_FILE : `agent-messages-expired-${base}`);
 }
 var SQLITE_HEADER = "SQLite format 3\0";
 function refuseUnsafeArchive(db2, file2) {
   let link;
   try {
-    link = fs3.lstatSync(file2);
+    link = fs5.lstatSync(file2);
   } catch {
     return;
   }
-  const real = link.isSymbolicLink() ? fs3.existsSync(file2) ? fs3.realpathSync(file2) : null : file2;
+  const real = link.isSymbolicLink() ? fs5.existsSync(file2) ? fs5.realpathSync(file2) : null : file2;
   if (real === null)
     throw new Error(`${file2} is a symlink to a file that does not exist; MeMesh does not create the archive through a symlink`);
-  const target = fs3.statSync(real);
+  const target = fs5.statSync(real);
   if (!target.isFile())
     throw new Error(`${file2} is not a plain file`);
   const main2 = databaseFile(db2);
-  const mainStat = main2 === "" ? void 0 : fs3.statSync(main2, { throwIfNoEntry: false });
+  const mainStat = main2 === "" ? void 0 : fs5.statSync(main2, { throwIfNoEntry: false });
   if (mainStat && mainStat.dev === target.dev && mainStat.ino === target.ino) {
     throw new Error(`${file2} is the database itself, so it cannot hold a copy of what is deleted from it`);
   }
   if (target.size > 0) {
     const head = Buffer.alloc(SQLITE_HEADER.length);
-    const fd = fs3.openSync(real, "r");
+    const fd = fs5.openSync(real, "r");
     try {
-      fs3.readSync(fd, head, 0, head.length, 0);
+      fs5.readSync(fd, head, 0, head.length, 0);
     } finally {
-      fs3.closeSync(fd);
+      fs5.closeSync(fd);
     }
     if (head.toString("latin1") !== SQLITE_HEADER)
       throw new Error(`${file2} is not a database (it has no SQLite header), so it is not a MeMesh archive; MeMesh leaves it as it is (move it away)`);
@@ -32042,11 +32530,11 @@ function where(schema, by) {
   return by === "message" ? "message_id IN (SELECT value FROM json_each(?))" : `delivery_id IN (SELECT delivery_id FROM ${schema}.agent_message_deliveries WHERE message_id IN (SELECT value FROM json_each(?)))`;
 }
 function attachArchive(db2, file2) {
-  fs3.mkdirSync(path.dirname(file2), { recursive: true, mode: 448 });
+  fs5.mkdirSync(path4.dirname(file2), { recursive: true, mode: 448 });
   refuseUnsafeArchive(db2, file2);
-  const fresh = !fs3.existsSync(file2);
+  const fresh = !fs5.existsSync(file2);
   if (fresh)
-    fs3.closeSync(fs3.openSync(file2, "a", 384));
+    fs5.closeSync(fs5.openSync(file2, "a", 384));
   removeGroupAndOtherAccess(file2);
   db2.prepare(`ATTACH DATABASE ? AS ${ARCHIVE}`).run(file2);
   try {
@@ -32111,7 +32599,7 @@ function archiveRows(db2, file2, messageIds, batch, options) {
   }
 }
 function archiveHasPurgeableRows(db2, file2, nowMs) {
-  if (!fs3.existsSync(file2))
+  if (!fs5.existsSync(file2))
     return false;
   try {
     refuseUnsafeArchive(db2, file2);
@@ -32133,7 +32621,7 @@ function archiveHasPurgeableRows(db2, file2, nowMs) {
 async function purgeArchive(db2, file2) {
   let purged = 0;
   for (; ; ) {
-    if (!fs3.existsSync(file2))
+    if (!fs5.existsSync(file2))
       return purged;
     attachArchive(db2, file2);
     try {
@@ -32318,139 +32806,12 @@ function reportProblem(message) {
   }
 }
 
-// dist/storage/sqlite.js
-import { createRequire } from "node:module";
-function loadNodeSqlite() {
-  const require2 = createRequire(import.meta.url);
-  const original = process.emitWarning;
-  process.emitWarning = function(warning, ...rest) {
-    const text = typeof warning === "string" ? warning : String(warning?.message ?? warning);
-    if (text.includes("SQLite is an experimental feature"))
-      return;
-    return original.call(process, warning, ...rest);
-  };
-  try {
-    return require2("node:sqlite");
-  } catch (err) {
-    return { missing: err instanceof Error ? err.message : String(err) };
-  } finally {
-    process.emitWarning = original;
-  }
-}
-var loadedSqlite = loadNodeSqlite();
-var MissingDatabaseSync = class {
-  constructor() {
-    const detail = "missing" in loadedSqlite ? loadedSqlite.missing : "unknown";
-    throw new UnsupportedNodeError(`memesh needs Node's built-in SQLite, which this runtime (${process.version}) does not provide. Upgrade Node to ${MIN_NODE_SERIES} or newer and run memesh again. (${detail})`);
-  }
-};
-var DatabaseSync2 = "DatabaseSync" in loadedSqlite ? loadedSqlite.DatabaseSync : MissingDatabaseSync;
-var MIN_NODE_VERSION = "22.16.0";
-var MIN_NODE_SERIES = MIN_NODE_VERSION.split(".").slice(0, 2).join(".");
-var UnsupportedNodeError = class extends Error {
-  code = "NODE_TOO_OLD";
-  constructor(message) {
-    super(message);
-    this.name = "UnsupportedNodeError";
-  }
-};
-function atLeastMinimumNode(version2) {
-  const want = MIN_NODE_VERSION.split(".").map(Number);
-  const have = version2.replace(/^v/, "").split(".").map((part) => Number.parseInt(part, 10));
-  for (let i = 0; i < 3; i++) {
-    const h = have[i];
-    if (!Number.isFinite(h))
-      return false;
-    if (h !== want[i])
-      return h > want[i];
-  }
-  return true;
-}
-function fts5ProbeResult(createFtsTable) {
-  try {
-    createFtsTable();
-    return true;
-  } catch (err) {
-    if (/no such module/i.test(err instanceof Error ? err.message : String(err)))
-      return false;
-    throw err;
-  }
-}
-var ftsProbe;
-function hasFts5() {
-  if (ftsProbe === void 0) {
-    const probe = new DatabaseSync2(":memory:");
-    try {
-      ftsProbe = fts5ProbeResult(() => probe.exec("CREATE VIRTUAL TABLE memesh_fts5_probe USING fts5(a)"));
-    } finally {
-      try {
-        probe.close();
-      } catch {
-      }
-    }
-  }
-  return ftsProbe;
-}
-function nodeSupportProblem(version2 = process.versions.node, fts5Available = hasFts5) {
-  const shown = version2.replace(/^v/, "");
-  if (!atLeastMinimumNode(version2)) {
-    return `This Node (v${shown}) lacks the full-text search MeMesh needs; upgrade to Node ${MIN_NODE_SERIES} or newer and run memesh again.`;
-  }
-  if (!fts5Available()) {
-    return `This Node build (v${shown}) lacks the full-text search (FTS5) MeMesh needs; install the official Node ${MIN_NODE_SERIES} or newer from nodejs.org and run memesh again.`;
-  }
-  return null;
-}
-function assertNodeSupported() {
-  const problem = nodeSupportProblem();
-  if (problem)
-    throw new UnsupportedNodeError(problem);
-}
-var BUSY_TIMEOUT_MS = 3e4;
-var MemeshDatabase = class extends DatabaseSync2 {
-  #depth = 0;
-  constructor(path26, options = {}) {
-    assertNodeSupported();
-    super(path26, options);
-    this.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
-  }
-  pragma(statement) {
-    this.exec(`PRAGMA ${statement}`);
-  }
-  transaction(fn) {
-    const run = (mode, ...args) => {
-      const nested = this.#depth > 0;
-      const savepoint = `memesh_sp_${this.#depth}`;
-      this.exec(nested ? `SAVEPOINT ${savepoint}` : `BEGIN${mode}`);
-      this.#depth++;
-      try {
-        const result = fn(...args);
-        this.exec(nested ? `RELEASE ${savepoint}` : "COMMIT");
-        return result;
-      } catch (err) {
-        try {
-          this.exec(nested ? `ROLLBACK TO ${savepoint}` : "ROLLBACK");
-          if (nested)
-            this.exec(`RELEASE ${savepoint}`);
-        } catch {
-        }
-        throw err;
-      } finally {
-        this.#depth--;
-      }
-    };
-    const callable = ((...args) => run("", ...args));
-    callable.immediate = (...args) => run(" IMMEDIATE", ...args);
-    return callable;
-  }
-};
-
 // dist/db.js
-import path4 from "path";
-import fs6 from "fs";
+import path7 from "path";
+import fs8 from "fs";
 
 // dist/knowledge-graph.js
-import { createHash as createHash3 } from "node:crypto";
+import { createHash as createHash4 } from "node:crypto";
 
 // dist/storage/conflicts.js
 function findConflicts(db2, entityNames) {
@@ -32648,65 +33009,6 @@ function dropEntityFromIndexes(db2, entityId, name) {
   const titleRow = db2.prepare("SELECT title FROM entities WHERE id = ?").get(entityId);
   removeFromFts(db2, entityId, name, indexedObservationText(db2, entityId), titleRow?.title ?? null);
 }
-
-// dist/storage/agent-network-schema.js
-var AGENT_NETWORK_SCHEMA_SQL = `
-CREATE TABLE IF NOT EXISTS agent_network_config (
-  id               INTEGER PRIMARY KEY CHECK (id = 1),
-  network_id       TEXT NOT NULL,
-  owner_id         TEXT NOT NULL,
-  machine_id       TEXT NOT NULL,
-  machine_name     TEXT NOT NULL,
-  person           TEXT NOT NULL,
-  relay_url        TEXT NOT NULL,
-  roster_json      TEXT NOT NULL,
-  roster_signature TEXT NOT NULL,
-  created_at_ms    INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS agent_network_invites (
-  hash          TEXT PRIMARY KEY,
-  expires_at_ms INTEGER NOT NULL,
-  used_at       INTEGER
-);
-
--- One row per delivery addressed to another machine. state: pending, delivered,
--- rejected, expired; or local when the address names no member and the delivery
--- stays an ordinary local one.
-CREATE TABLE IF NOT EXISTS agent_network_outbox (
-  delivery_id        TEXT PRIMARY KEY REFERENCES agent_message_deliveries(delivery_id) ON DELETE CASCADE,
-  message_id         TEXT NOT NULL,
-  machine_id         TEXT,
-  state              TEXT NOT NULL,
-  attempts           INTEGER NOT NULL DEFAULT 0,
-  next_attempt_at_ms INTEGER NOT NULL DEFAULT 0,
-  expires_at_ms      INTEGER NOT NULL,
-  last_error_code    TEXT,
-  delivered_at_ms    INTEGER,
-  path               TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_agent_network_outbox_due ON agent_network_outbox(state, next_attempt_at_ms);
-
--- Who is live on other machines, by project hash only. Expires on its own.
-CREATE TABLE IF NOT EXISTS agent_network_presence (
-  machine_id    TEXT NOT NULL,
-  project_hash  TEXT NOT NULL,
-  principal     TEXT NOT NULL,
-  handle        TEXT NOT NULL,
-  host_kind     TEXT NOT NULL,
-  connected     INTEGER NOT NULL,
-  expires_at_ms INTEGER NOT NULL,
-  PRIMARY KEY (machine_id, project_hash, handle)
-);
-
--- How to reach another member: learned from the invite link and from its presence.
-CREATE TABLE IF NOT EXISTS agent_network_peers (
-  machine_id  TEXT PRIMARY KEY,
-  relay_url   TEXT,
-  addrs_json  TEXT NOT NULL,
-  seen_at_ms  INTEGER NOT NULL
-);
-`;
 
 // dist/storage/schema.js
 var SCHEMA_SQL = `
@@ -32989,7 +33291,8 @@ CREATE TABLE IF NOT EXISTS agent_retention_facts (
 -- the ones that did nothing; agent_message_expiries keeps only the id of a
 -- deleted message (no content) for a bounded time, so a
 -- later read of, or reply to, that id gets a specific answer: its sender and
--- recipient are kept only to decide who may be told that.
+-- recipient are kept only to decide who may be told that, and, for a message
+-- to another machine, where the network left it, for the sender's notice.
 CREATE TABLE IF NOT EXISTS agent_message_expiry_runs (
   run_id                  INTEGER PRIMARY KEY AUTOINCREMENT,
   started_at_ms           INTEGER NOT NULL,
@@ -33021,7 +33324,8 @@ CREATE TABLE IF NOT EXISTS agent_message_expiries (
   was_read                INTEGER NOT NULL,
   notice_message_id       TEXT,
   sender                  TEXT,
-  recipient               TEXT
+  recipient               TEXT,
+  network_json            TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_agent_message_events_recipient_sequence
@@ -33170,7 +33474,7 @@ function migrateEntitiesSchema(db2) {
     messageColumns.add(column);
   };
   const expiryColumns = new Set(db2.prepare("PRAGMA table_info(agent_message_expiries)").all().map((column) => column.name));
-  for (const column of ["sender", "recipient"]) {
+  for (const column of ["sender", "recipient", "network_json"]) {
     if (expiryColumns.size > 0 && !expiryColumns.has(column)) {
       safeAlter(db2, `ALTER TABLE agent_message_expiries ADD COLUMN ${column} TEXT`);
     }
@@ -33386,10 +33690,10 @@ var KNOWN_ERROR_PATTERNS = [
 ];
 
 // dist/core/paths.js
-import fs4 from "fs";
+import fs6 from "fs";
 import os from "os";
-import path2 from "path";
-import { createHash as createHash2 } from "crypto";
+import path5 from "path";
+import { createHash as createHash3 } from "crypto";
 import { execFileSync } from "child_process";
 var AGENT_ROUTER_SOCKET_FILENAME = "agent-router-v2.sock";
 var LEGACY_AGENT_ROUTER_SOCKET_FILENAME = "agent-router.sock";
@@ -33403,20 +33707,20 @@ function homeDir() {
   return os.userInfo().homedir;
 }
 function memeshDir() {
-  return process.env.MEMESH_DIR || path2.join(homeDir(), ".memesh");
+  return process.env.MEMESH_DIR || path5.join(homeDir(), ".memesh");
 }
 function getDbPath() {
-  return process.env.MEMESH_DB_PATH ?? path2.join(memeshDir(), "knowledge-graph.db");
+  return process.env.MEMESH_DB_PATH ?? path5.join(memeshDir(), "knowledge-graph.db");
 }
 function getMemeshDirFromDbPath() {
-  return process.env.MEMESH_DB_PATH ? path2.dirname(process.env.MEMESH_DB_PATH) : memeshDir();
+  return process.env.MEMESH_DB_PATH ? path5.dirname(process.env.MEMESH_DB_PATH) : memeshDir();
 }
 function getAgentRouterSocketPath() {
-  return path2.join(getMemeshDirFromDbPath(), AGENT_ROUTER_SOCKET_FILENAME);
+  return path5.join(getMemeshDirFromDbPath(), AGENT_ROUTER_SOCKET_FILENAME);
 }
 function normalizeAgentRouterSocketPath(socketPath) {
   const dataDir = getMemeshDirFromDbPath();
-  return socketPath === path2.join(dataDir, LEGACY_AGENT_ROUTER_SOCKET_FILENAME) ? getAgentRouterSocketPath() : socketPath;
+  return socketPath === path5.join(dataDir, LEGACY_AGENT_ROUTER_SOCKET_FILENAME) ? getAgentRouterSocketPath() : socketPath;
 }
 function getProjectName(cwdInput) {
   const cwd = cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd();
@@ -33449,28 +33753,28 @@ function remoteProjectIdentity(cwd) {
   const locator = canonicalRemoteLocator(remote);
   if (!locator)
     return null;
-  const label = path2.posix.basename(locator).replace(/\.git$/i, "");
+  const label = path5.posix.basename(locator).replace(/\.git$/i, "");
   return projectIdentity(label, locator);
 }
 function pathProjectIdentity(cwd) {
   const root = tryGit(cwd, ["rev-parse", "--show-toplevel"]);
   const commonDir = root ? tryGit(cwd, ["rev-parse", "--git-common-dir"]) : null;
-  const absoluteCommonDir = commonDir ? path2.resolve(cwd, commonDir) : null;
-  const localPath = absoluteCommonDir && path2.basename(absoluteCommonDir) === ".git" ? path2.dirname(absoluteCommonDir) : root ?? cwd;
+  const absoluteCommonDir = commonDir ? path5.resolve(cwd, commonDir) : null;
+  const localPath = absoluteCommonDir && path5.basename(absoluteCommonDir) === ".git" ? path5.dirname(absoluteCommonDir) : root ?? cwd;
   let real;
   try {
-    real = fs4.realpathSync.native(localPath);
+    real = fs6.realpathSync.native(localPath);
   } catch {
-    real = path2.resolve(localPath);
+    real = path5.resolve(localPath);
   }
-  return projectIdentity(path2.basename(real), real);
+  return projectIdentity(path5.basename(real), real);
 }
 var PROJECT_HASH_HEX_LENGTH = 32;
 var PROJECT_ID_MAX_LENGTH = 200;
 var PROJECT_LABEL_MAX_LENGTH = PROJECT_ID_MAX_LENGTH - PROJECT_HASH_HEX_LENGTH - 1;
 function projectIdentity(label, locator) {
   const readable = label.normalize("NFC").slice(0, PROJECT_LABEL_MAX_LENGTH) || "project";
-  const suffix = createHash2("sha256").update(locator).digest("hex").slice(0, PROJECT_HASH_HEX_LENGTH);
+  const suffix = createHash3("sha256").update(locator).digest("hex").slice(0, PROJECT_HASH_HEX_LENGTH);
   return `${readable}~${suffix}`;
 }
 function tryGit(cwd, args) {
@@ -33490,7 +33794,7 @@ function canonicalRemoteLocator(remote) {
   const value = remote.trim();
   if (!value)
     return null;
-  if (path2.isAbsolute(value) || /^[A-Za-z]:[\\/]/.test(value) || /^\\\\/.test(value))
+  if (path5.isAbsolute(value) || /^[A-Za-z]:[\\/]/.test(value) || /^\\\\/.test(value))
     return null;
   let host;
   let port = "";
@@ -33852,20 +34156,20 @@ function redactUserPaths(text) {
   const home = homeDir();
   const roots = /* @__PURE__ */ new Set();
   const add = (root) => {
-    if (!root || !path2.isAbsolute(root))
+    if (!root || !path5.isAbsolute(root))
       return;
     roots.add(root);
     try {
-      roots.add(fs4.realpathSync(root));
+      roots.add(fs6.realpathSync(root));
     } catch {
     }
   };
   add(home);
   const isInside = (child) => {
-    const rel = path2.relative(home, child);
-    return rel !== "" && !rel.startsWith("..") && !path2.isAbsolute(rel);
+    const rel = path5.relative(home, child);
+    return rel !== "" && !rel.startsWith("..") && !path5.isAbsolute(rel);
   };
-  for (const dir of [memeshDir(), path2.dirname(getDbPath())]) {
+  for (const dir of [memeshDir(), path5.dirname(getDbPath())]) {
     if (dir && !isInside(dir))
       add(dir);
   }
@@ -34311,10 +34615,10 @@ var KnowledgeGraph = class {
             return meta3;
           const hashes = new Set(meta3.forgotten_observation_hashes);
           if ((opts.trustOverride ?? opts.metadata?.trust ?? "trusted") !== "trusted") {
-            observations = observations.filter((obs) => !hashes.has(createHash3("sha256").update(obs).digest("hex")));
+            observations = observations.filter((obs) => !hashes.has(createHash4("sha256").update(obs).digest("hex")));
             return meta3;
           }
-          const restored = new Set(observations.map((obs) => createHash3("sha256").update(obs).digest("hex")));
+          const restored = new Set(observations.map((obs) => createHash4("sha256").update(obs).digest("hex")));
           return { ...meta3, forgotten_observation_hashes: meta3.forgotten_observation_hashes.filter((hash2) => !restored.has(hash2)) };
         });
       }
@@ -34726,7 +35030,7 @@ var KnowledgeGraph = class {
       if (row.type === "session-insight" && /^session-.+-(files|fixes|summary)$/.test(entityName)) {
         const meta3 = this.parseMetadata(row.metadata);
         const hashes = Array.isArray(meta3.forgotten_observation_hashes) ? meta3.forgotten_observation_hashes : [];
-        const hash2 = createHash3("sha256").update(observationContent).digest("hex");
+        const hash2 = createHash4("sha256").update(observationContent).digest("hex");
         this.db.prepare("UPDATE entities SET metadata = ? WHERE id = ?").run(JSON.stringify({ ...meta3, forgotten_observation_hashes: [.../* @__PURE__ */ new Set([...hashes, hash2])] }), row.id);
       }
       if (row.status !== "archived") {
@@ -34796,12 +35100,12 @@ var COMPRESS_INTERVAL_MS = 24 * 60 * 60 * 1e3;
 var AUTO_ARCHIVE_INTERVAL_MS = 24 * 60 * 60 * 1e3;
 
 // dist/core/lesson-slug.js
-import { createHash as createHash4 } from "node:crypto";
+import { createHash as createHash5 } from "node:crypto";
 function lessonSlug(error62) {
   const normalized = error62.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
   const words = normalized.replace(/[^a-z0-9\u4e00-\u9fff]+/g, " ").trim().split(/\s+/).filter((w) => w.length > 1).slice(0, 8);
   const readable = words.join("-") || "unspecified";
-  const digest = createHash4("sha256").update(normalized).digest("hex").slice(0, 8);
+  const digest = createHash5("sha256").update(normalized).digest("hex").slice(0, 8);
   return `${readable.slice(0, 71)}-${digest}`;
 }
 
@@ -35232,28 +35536,28 @@ function repairOwnNoteFolderTrust(db2, ownDirIds) {
 }
 
 // dist/core/note-dirs.js
-import fs5 from "fs";
-import path3 from "path";
-import { createHash as createHash5 } from "crypto";
+import fs7 from "fs";
+import path6 from "path";
+import { createHash as createHash6 } from "crypto";
 function noteDirId(realDir) {
-  return createHash5("sha256").update(realDir).digest("hex").slice(0, 16);
+  return createHash6("sha256").update(realDir).digest("hex").slice(0, 16);
 }
 function ownMemoryDirIds(env = process.env) {
-  const claudeHome = env.CLAUDE_CONFIG_DIR && path3.isAbsolute(env.CLAUDE_CONFIG_DIR) ? env.CLAUDE_CONFIG_DIR : path3.join(homeDir(), ".claude");
-  const projects = path3.join(claudeHome, "projects");
+  const claudeHome = env.CLAUDE_CONFIG_DIR && path6.isAbsolute(env.CLAUDE_CONFIG_DIR) ? env.CLAUDE_CONFIG_DIR : path6.join(homeDir(), ".claude");
+  const projects = path6.join(claudeHome, "projects");
   const ids = /* @__PURE__ */ new Set();
   let names;
   try {
-    names = fs5.readdirSync(projects);
+    names = fs7.readdirSync(projects);
   } catch {
     return ids;
   }
   for (const name of names) {
-    const memory = path3.join(projects, name, "memory");
+    const memory = path6.join(projects, name, "memory");
     try {
-      if (!fs5.lstatSync(memory).isDirectory())
+      if (!fs7.lstatSync(memory).isDirectory())
         continue;
-      ids.add(noteDirId(fs5.realpathSync(memory)));
+      ids.add(noteDirId(fs7.realpathSync(memory)));
     } catch {
     }
   }
@@ -35284,7 +35588,7 @@ var db = null;
 var readOnlyFolder = null;
 var retiredHandles = [];
 function folderWriteFix(dir) {
-  const notYours = belongsToAnotherUser(fs6.statSync(dir));
+  const notYours = belongsToAnotherUser(fs8.statSync(dir));
   return { notYours, fix: notYours ? "Point MEMESH_DB_PATH at a database you own, in a folder you own." : `chmod u+w ${shellQuote(dir)}` };
 }
 function openDatabase(dbPath, opts = {}) {
@@ -35295,35 +35599,35 @@ function openDatabase(dbPath, opts = {}) {
     db = openInitialisedDatabase(resolvedPath, opts);
     return db;
   }
-  const dir = path4.dirname(resolvedPath);
+  const dir = path7.dirname(resolvedPath);
   if (!opts.readOnly)
-    fs6.mkdirSync(dir, { recursive: true });
+    fs8.mkdirSync(dir, { recursive: true });
   try {
     process.umask(63);
   } catch {
   }
   const [realPath, ...sidecars] = databaseFiles(resolvedPath);
-  const realDir = path4.dirname(realPath);
+  const realDir = path7.dirname(realPath);
   removeGroupAndOtherAccess(dir);
   guardDatabaseFiles(resolvedPath);
-  const missing = sidecars.filter((file2) => !fs6.existsSync(file2)).map((file2) => file2.slice(realPath.length));
+  const missing = sidecars.filter((file2) => !fs8.existsSync(file2)).map((file2) => file2.slice(realPath.length));
   const folderWritable = isWritable(realDir);
-  if (!folderWritable && !fs6.existsSync(realPath) && !opts.readOnly) {
+  if (!folderWritable && !fs8.existsSync(realPath) && !opts.readOnly) {
     const { notYours, fix } = folderWriteFix(realDir);
     throw Object.assign(new Error(`MeMesh: ${realDir} is read-only and holds no database yet, so one cannot be created there. ` + (notYours ? `${realDir} belongs to another user, so you cannot make it writable. ${fix}` : `Make the folder writable: ${fix}`)), { fix });
   }
-  if (missing.length > 0 && !folderWritable && fs6.existsSync(realPath)) {
+  if (missing.length > 0 && !folderWritable && fs8.existsSync(realPath)) {
     const wal = `${realPath}-wal`;
     const journal = `${realPath}-journal`;
     const walHoldsPages = holdsBytes(wal);
     const hotJournal = holdsBytes(journal);
     const { notYours, fix } = folderWriteFix(realDir);
     if (walHoldsPages || hotJournal) {
-      const why = hotJournal ? `${path4.basename(realPath)} has an unfinished transaction (${path4.basename(journal)}) that can only be rolled back by writing to the folder` : `${path4.basename(realPath)} has no ${missing.join(" or ")} file there, so it cannot be opened without writing to the folder`;
+      const why = hotJournal ? `${path7.basename(realPath)} has an unfinished transaction (${path7.basename(journal)}) that can only be rolled back by writing to the folder` : `${path7.basename(realPath)} has no ${missing.join(" or ")} file there, so it cannot be opened without writing to the folder`;
       throw Object.assign(new Error(`MeMesh: ${realDir} is read-only and ${why}. ` + (notYours ? `${realDir} belongs to another user, so you cannot make it writable. ${fix}` : `Copy the database to a writable folder and point MEMESH_DB_PATH at the copy, or make the folder writable: ${fix}`)), { fix });
     }
     db = openInitialisedDatabase(resolvedPath, opts, { immutableFile: realPath, readOnly: opts.readOnly });
-    const reason = `${realDir} is read-only, so ${path4.basename(realPath)} is open for reads only and writes are refused`;
+    const reason = `${realDir} is read-only, so ${path7.basename(realPath)} is open for reads only and writes are refused`;
     readOnlyFolder = {
       note: `${reason}. ${notYours ? fix : `To write to it again, run: ${fix}`}`,
       reason,
@@ -35361,7 +35665,7 @@ function openInitialisedDatabase(resolvedPath, opts = {}, mode = {}) {
       opening.pragma(`busy_timeout = ${opts.busyTimeoutMs}`);
       giveUpIfWriteLocked(opening);
     }
-    retryWhileLocked(() => initialiseDatabase(opening), opts.busyTimeoutMs ?? BUSY_TIMEOUT_MS, `${resolvedPath} (data folder ${path4.dirname(resolvedPath)})`);
+    retryWhileLocked(() => initialiseDatabase(opening), opts.busyTimeoutMs ?? BUSY_TIMEOUT_MS, `${resolvedPath} (data folder ${path7.dirname(resolvedPath)})`);
   } catch (err) {
     try {
       opening.close();
@@ -35675,7 +35979,7 @@ import fs20 from "node:fs";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // dist/core/native-memory-editor.js
-import { createHash as createHash7 } from "node:crypto";
+import { createHash as createHash8 } from "node:crypto";
 
 // dist/storage/memory-mutation.js
 function projectOwnershipRefusal(db2, name, project) {
@@ -35801,7 +36105,7 @@ function inferErrorPattern(error62) {
 }
 
 // dist/core/note-derive.js
-import { createHash as createHash6 } from "crypto";
+import { createHash as createHash7 } from "crypto";
 var NOTE_OBSERVATION_MAX_CHARS = 1e4;
 var NOTE_MAX_OBSERVATIONS = 100;
 var NOTE_MAX_CHARS = 2e4;
@@ -35851,7 +36155,7 @@ function deriveNote(raw) {
   const title = truncateTitle(titleSource) || "note";
   const body = splitObservations(rest);
   const observations = title === firstLine && body.length > 0 ? body : [...splitObservations(firstLine), ...body];
-  const digest = createHash6("sha256").update(text).digest("hex").slice(0, 8);
+  const digest = createHash7("sha256").update(text).digest("hex").slice(0, 8);
   const name = `${slugify2(title) || NOTE_DEFAULT_TYPE}-${digest}`;
   return { text, title, observations, name };
 }
@@ -36792,7 +37096,7 @@ async function editMemoryInteractively(name, project, sourceHost, ask, expectedR
         throw new Error("metadata_unreadable: The original metadata was left unchanged.");
       }
     }
-    const revision = createHash7("sha256").update(JSON.stringify([
+    const revision = createHash8("sha256").update(JSON.stringify([
       entity.id,
       entity.title,
       entity.type,
@@ -36853,13 +37157,13 @@ async function editMemoryInteractively(name, project, sourceHost, ask, expectedR
 }
 
 // dist/core/dreamer.js
-import { createHash as createHash10 } from "node:crypto";
-import path7 from "node:path";
+import { createHash as createHash11 } from "node:crypto";
+import path10 from "node:path";
 
 // dist/core/private-session.js
 import crypto from "node:crypto";
-import fs7 from "node:fs";
-import path5 from "node:path";
+import fs9 from "node:fs";
+import path8 from "node:path";
 import zlib from "node:zlib";
 var PRIVATE_SESSION_TOOL = "private_session";
 var PRIVATE_WINDOW_MS = 6 * 60 * 60 * 1e3;
@@ -36908,7 +37212,7 @@ function sessionFileName(sessionId) {
   return `${/^[A-Za-z0-9_-]{1,128}$/.test(sessionId) ? sessionId : crypto.createHash("sha256").update(sessionId).digest("hex").slice(0, 32)}.json`;
 }
 function privateMarkerPath(memeshDir2, sessionId) {
-  return path5.join(memeshDir2, "private-sessions", sessionFileName(sessionId));
+  return path8.join(memeshDir2, "private-sessions", sessionFileName(sessionId));
 }
 function record2(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value : null;
@@ -37026,13 +37330,13 @@ function scanBytes(bytes, deadlineAt) {
 function scanPlain(filePath, deadlineAt) {
   let fd;
   try {
-    fd = fs7.openSync(filePath, "r");
+    fd = fs9.openSync(filePath, "r");
   } catch (err) {
     throw new CheckFailure("unreadable", `a transcript cannot be read (${errCode(err)})`);
   }
   const scan = new Scan(deadlineAt);
   try {
-    if (fs7.fstatSync(fd).isDirectory())
+    if (fs9.fstatSync(fd).isDirectory())
       throw new CheckFailure("unreadable", "a transcript path is a directory");
     const chunk = Buffer.alloc(CHUNK_BYTES);
     let tail = Buffer.alloc(0);
@@ -37072,7 +37376,7 @@ function scanPlain(filePath, deadlineAt) {
         throw new CheckFailure("timeout", "the check ran out of time");
       let n;
       try {
-        n = fs7.readSync(fd, chunk, 0, chunk.length, null);
+        n = fs9.readSync(fd, chunk, 0, chunk.length, null);
       } catch (err) {
         throw new CheckFailure("unreadable", `a transcript cannot be read (${errCode(err)})`);
       }
@@ -37102,7 +37406,7 @@ function scanPlain(filePath, deadlineAt) {
     if (!scan.found && (tail.length > 0 || tailDropped))
       endLine(Buffer.alloc(0));
   } finally {
-    fs7.closeSync(fd);
+    fs9.closeSync(fd);
   }
   return scan.verdict();
 }
@@ -37113,7 +37417,7 @@ function scanZst(filePath, deadlineAt) {
     throw new CheckFailure("timeout", "too little time is left to expand an archived rollout");
   let bytes;
   try {
-    bytes = zlib.zstdDecompressSync(fs7.readFileSync(filePath), { maxOutputLength: PARENT_ZST_MAX_OUTPUT });
+    bytes = zlib.zstdDecompressSync(fs9.readFileSync(filePath), { maxOutputLength: PARENT_ZST_MAX_OUTPUT });
   } catch (err) {
     const code = errCode(err);
     throw new CheckFailure(code === "ERR_BUFFER_TOO_LARGE" ? "parent_too_large" : "parent_unreadable", `an archived rollout cannot be read (${code})`);
@@ -37126,10 +37430,10 @@ function fileVerdict(file2, stat, zst, cacheDir, deadlineAt) {
   const hit = remembered.get(key);
   if (hit)
     return hit;
-  const cacheFile = cacheDir === void 0 ? void 0 : path5.join(cacheDir, `${crypto.createHash("sha256").update(file2).digest("hex").slice(0, 40)}.json`);
+  const cacheFile = cacheDir === void 0 ? void 0 : path8.join(cacheDir, `${crypto.createHash("sha256").update(file2).digest("hex").slice(0, 40)}.json`);
   if (cacheFile !== void 0) {
     try {
-      const saved = record2(JSON.parse(fs7.readFileSync(cacheFile, "utf8")));
+      const saved = record2(JSON.parse(fs9.readFileSync(cacheFile, "utf8")));
       if (saved?.key === key && typeof saved.found === "boolean" && typeof saved.headerBroken === "boolean" && Array.isArray(saved.forks) && saved.forks.every((f) => typeof f === "string")) {
         const verdict2 = { found: saved.found, forks: saved.forks, headerBroken: saved.headerBroken };
         remembered.set(key, verdict2);
@@ -37142,10 +37446,10 @@ function fileVerdict(file2, stat, zst, cacheDir, deadlineAt) {
   remembered.set(key, verdict);
   if (cacheFile !== void 0) {
     try {
-      fs7.mkdirSync(cacheDir, { recursive: true, mode: 448 });
+      fs9.mkdirSync(cacheDir, { recursive: true, mode: 448 });
       const temp = `${cacheFile}.${process.pid}.tmp`;
-      fs7.writeFileSync(temp, JSON.stringify({ key, ...verdict }), { mode: 384 });
-      fs7.renameSync(temp, cacheFile);
+      fs9.writeFileSync(temp, JSON.stringify({ key, ...verdict }), { mode: 384 });
+      fs9.renameSync(temp, cacheFile);
     } catch {
     }
   }
@@ -37157,7 +37461,7 @@ function sessionTranscriptFiles(transcriptPath) {
   const walk = (dir, depth) => {
     let entries;
     try {
-      entries = fs7.readdirSync(dir, { withFileTypes: true });
+      entries = fs9.readdirSync(dir, { withFileTypes: true });
     } catch (err) {
       if (errCode(err) === "ENOENT" || errCode(err) === "ENOTDIR")
         return;
@@ -37166,7 +37470,7 @@ function sessionTranscriptFiles(transcriptPath) {
     for (const entry of entries) {
       if (++entriesSeen > SUBAGENT_MAX_ENTRIES)
         throw new CheckFailure("too_large", "the subagents folder holds more than can be checked");
-      const child = path5.join(dir, entry.name);
+      const child = path8.join(dir, entry.name);
       if (entry.isSymbolicLink())
         continue;
       if (entry.isDirectory()) {
@@ -37192,7 +37496,7 @@ function findCodexRollout(codexHome, id, deadlineAt = Number.POSITIVE_INFINITY) 
       throw new CheckFailure("timeout", "the check ran out of time looking for a parent rollout");
     let entries;
     try {
-      entries = fs7.readdirSync(dir, { withFileTypes: true });
+      entries = fs9.readdirSync(dir, { withFileTypes: true });
     } catch (err) {
       if (errCode(err) === "ENOENT" || errCode(err) === "ENOTDIR")
         return;
@@ -37201,12 +37505,12 @@ function findCodexRollout(codexHome, id, deadlineAt = Number.POSITIVE_INFINITY) 
     for (const entry of entries) {
       if (found2.plain)
         return;
-      const child = path5.join(dir, entry.name);
+      const child = path8.join(dir, entry.name);
       let isFile = entry.isFile();
       let isDir = entry.isDirectory();
       if (entry.isSymbolicLink()) {
         try {
-          const st = fs7.statSync(child);
+          const st = fs9.statSync(child);
           isFile = st.isFile();
           isDir = st.isDirectory();
         } catch {
@@ -37223,7 +37527,7 @@ function findCodexRollout(codexHome, id, deadlineAt = Number.POSITIVE_INFINITY) 
       }
     }
   };
-  const roots = ["sessions", "archived_sessions"].map((d) => path5.join(codexHome, d));
+  const roots = ["sessions", "archived_sessions"].map((d) => path8.join(codexHome, d));
   const found = {};
   for (const root of roots) {
     walk(root, 0, found);
@@ -37233,12 +37537,12 @@ function findCodexRollout(codexHome, id, deadlineAt = Number.POSITIVE_INFINITY) 
   return found.zst ? { file: found.zst, zst: true } : void 0;
 }
 function codexHomeOf(file2) {
-  let dir = path5.dirname(file2);
+  let dir = path8.dirname(file2);
   for (; ; ) {
-    const base = path5.basename(dir);
+    const base = path8.basename(dir);
     if (base === "sessions" || base === "archived_sessions")
-      return path5.dirname(dir);
-    const up = path5.dirname(dir);
+      return path8.dirname(dir);
+    const up = path8.dirname(dir);
     if (up === dir)
       return void 0;
     dir = up;
@@ -37261,7 +37565,7 @@ function decidePrivacy(input2) {
     return { state: "yes", evidence: "messages" };
   if (typeof input2.sessionId === "string" && input2.sessionId !== "") {
     try {
-      fs7.statSync(privateMarkerPath(input2.memeshDir, input2.sessionId));
+      fs9.statSync(privateMarkerPath(input2.memeshDir, input2.sessionId));
       return { state: "yes", evidence: "marker" };
     } catch (err) {
       if (errCode(err) !== "ENOENT")
@@ -37276,7 +37580,7 @@ function decidePrivacy(input2) {
   if (snapshot === void 0) {
     let mainStat;
     try {
-      mainStat = fs7.statSync(transcriptPath);
+      mainStat = fs9.statSync(transcriptPath);
     } catch (err) {
       if (errCode(err) === "ENOENT")
         return settled();
@@ -37298,7 +37602,7 @@ function decidePrivacy(input2) {
   }
   for (const file2 of files.slice(1)) {
     try {
-      stats.push({ file: file2, stat: fs7.statSync(file2) });
+      stats.push({ file: file2, stat: fs9.statSync(file2) });
     } catch (err) {
       note2("unreadable", `a subagent transcript cannot be read (${errCode(err)})`);
     }
@@ -37368,7 +37672,7 @@ function decidePrivacy(input2) {
     }
     let stat;
     try {
-      stat = fs7.statSync(parent.file);
+      stat = fs9.statSync(parent.file);
     } catch (err) {
       note2("parent_unreadable", `the parent rollout cannot be read (${errCode(err)})`);
       continue;
@@ -37400,9 +37704,9 @@ function decidePrivacy(input2) {
 }
 
 // dist/core/transcript-source.js
-import fs8 from "fs";
-import { createHash as createHash8 } from "node:crypto";
-import path6 from "path";
+import fs10 from "fs";
+import { createHash as createHash9 } from "node:crypto";
+import path9 from "path";
 var MAX_TRANSCRIPT_SOURCE_BYTES = 8 * 1024 * 1024;
 var MAX_TRANSCRIPT_SCAN_BYTES = 16 * 1024 * 1024;
 var MAX_TRANSCRIPT_CANDIDATES = 256;
@@ -37412,10 +37716,10 @@ function readTranscriptSnapshot(transcriptPath, expected) {
 function readTranscriptSnapshotWithin(transcriptPath, expected, aggregateBytesRemaining) {
   let fd;
   try {
-    fd = fs8.openSync(transcriptPath, fs8.constants.O_RDONLY | fs8.constants.O_NOFOLLOW);
-    if (fs8.lstatSync(transcriptPath).isSymbolicLink())
+    fd = fs10.openSync(transcriptPath, fs10.constants.O_RDONLY | fs10.constants.O_NOFOLLOW);
+    if (fs10.lstatSync(transcriptPath).isSymbolicLink())
       return { snapshot: null, aggregateLimitExceeded: false };
-    const before = fs8.fstatSync(fd, { bigint: true });
+    const before = fs10.fstatSync(fd, { bigint: true });
     const sizeBytes = Number(before.size);
     if (!before.isFile() || sizeBytes < 0 || sizeBytes > MAX_TRANSCRIPT_SOURCE_BYTES) {
       return { snapshot: null, aggregateLimitExceeded: false };
@@ -37435,16 +37739,16 @@ function readTranscriptSnapshotWithin(transcriptPath, expected, aggregateBytesRe
     const bytes = Buffer.allocUnsafe(sizeBytes);
     let offset = 0;
     while (offset < bytes.length) {
-      const count = fs8.readSync(fd, bytes, offset, bytes.length - offset, offset);
+      const count = fs10.readSync(fd, bytes, offset, bytes.length - offset, offset);
       if (count === 0)
         return { snapshot: null, aggregateLimitExceeded: false };
       offset += count;
     }
-    const after = fs8.fstatSync(fd, { bigint: true });
+    const after = fs10.fstatSync(fd, { bigint: true });
     if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) {
       return { snapshot: null, aggregateLimitExceeded: false };
     }
-    const contentHash = createHash8("sha256").update(bytes).digest("hex");
+    const contentHash = createHash9("sha256").update(bytes).digest("hex");
     if (expected && contentHash !== expected.contentHash)
       return { snapshot: null, aggregateLimitExceeded: false };
     return { snapshot: { bytes, contentHash, ...identity }, aggregateLimitExceeded: false };
@@ -37453,7 +37757,7 @@ function readTranscriptSnapshotWithin(transcriptPath, expected, aggregateBytesRe
   } finally {
     if (fd !== void 0) {
       try {
-        fs8.closeSync(fd);
+        fs10.closeSync(fd);
       } catch {
       }
     }
@@ -37463,7 +37767,7 @@ function claudeProjectsDir() {
   const override = process.env.CLAUDE_PROJECTS_DIR;
   if (override && override.trim() !== "")
     return override;
-  return path6.join(homeDir(), ".claude", "projects");
+  return path9.join(homeDir(), ".claude", "projects");
 }
 function projectTranscriptSlug(cwd) {
   return cwd.replace(/[^a-zA-Z0-9]/g, "-");
@@ -37492,10 +37796,10 @@ function recordedCwd(text) {
   }
 }
 function sameProjectPath(a, b) {
-  if (path6.normalize(a) === path6.normalize(b))
+  if (path9.normalize(a) === path9.normalize(b))
     return true;
   try {
-    if (fs8.realpathSync(a) === fs8.realpathSync(b))
+    if (fs10.realpathSync(a) === fs10.realpathSync(b))
       return true;
   } catch {
   }
@@ -37510,13 +37814,13 @@ function scanTranscripts(opts) {
   const windowDays = opts.windowDays ?? 3;
   const now = opts.now ?? /* @__PURE__ */ new Date();
   const cutoffMs = now.getTime() - windowDays * 864e5;
-  const dir = path6.join(claudeProjectsDir(), projectTranscriptSlug(cwd));
+  const dir = path9.join(claudeProjectsDir(), projectTranscriptSlug(cwd));
   let names;
   try {
-    const dirStat = fs8.lstatSync(dir);
+    const dirStat = fs10.lstatSync(dir);
     if (dirStat.isSymbolicLink() || !dirStat.isDirectory())
       return [];
-    names = fs8.readdirSync(dir).filter((name) => name.endsWith(".jsonl")).sort();
+    names = fs10.readdirSync(dir).filter((name) => name.endsWith(".jsonl")).sort();
   } catch {
     return [];
   }
@@ -37529,7 +37833,7 @@ function scanTranscripts(opts) {
   for (const name of names) {
     let stat;
     try {
-      stat = fs8.lstatSync(path6.join(dir, name));
+      stat = fs10.lstatSync(path9.join(dir, name));
     } catch {
       opts.onSkip?.("unreadable", 1);
       continue;
@@ -37550,7 +37854,7 @@ function scanTranscripts(opts) {
   const sessions = [];
   let bytesRead = 0;
   for (const name of eligibleNames) {
-    const full = path6.join(dir, name);
+    const full = path9.join(dir, name);
     const read = readTranscriptSnapshotWithin(full, void 0, MAX_TRANSCRIPT_SCAN_BYTES - bytesRead);
     if (read.aggregateLimitExceeded) {
       opts.onSkip?.("scan_too_large", eligibleNames.length);
@@ -37659,7 +37963,7 @@ function parseVisibleConversation(transcript) {
 }
 
 // dist/core/product-improvements.js
-import { createHash as createHash9 } from "node:crypto";
+import { createHash as createHash10 } from "node:crypto";
 var PRODUCT_IMPROVEMENT_KIND = "product_improvement";
 function clean(label, value, max) {
   const normalized = value.replace(/\s+/g, " ").trim();
@@ -37773,7 +38077,7 @@ function stageProductImprovement(db2, input2) {
       success_criteria: successCriteria,
       priority
     };
-    const digest = createHash9("sha256").update(JSON.stringify(canonical)).digest("hex");
+    const digest = createHash10("sha256").update(JSON.stringify(canonical)).digest("hex");
     const clusterKey = `product-improvement:${digest}`;
     const existing = db2.prepare(`SELECT id, project, source_ids, proposed_digest, status, reason, created_at, reviewed_at
        FROM dream_proposals
@@ -37980,7 +38284,7 @@ function executeWorkPackage(db2, input2, context = {}) {
   const execute = () => {
     const project = input2.action === "prepare" ? input2.project : input2.ref.project;
     const kind = input2.action === "prepare" ? input2.kind : input2.ref.kind;
-    const hash2 = (value) => createHash10("sha256").update(JSON.stringify(value)).digest("hex");
+    const hash2 = (value) => createHash11("sha256").update(JSON.stringify(value)).digest("hex");
     if (input2.action !== "prepare") {
       const submitted = input2.action === "submit" ? input2.result : void 0;
       if (submitted && holdsSecret([submitted.name, ...submitted.observations, ...submitted.tags])) {
@@ -38050,7 +38354,7 @@ function executeWorkPackage(db2, input2, context = {}) {
           sessionId: session.sessionId,
           memeshDir: memeshDir2,
           deadlineAt: Date.now() + DREAMER_PRIVACY_CHECK_MS,
-          cacheDir: path7.join(memeshDir2, "private-check-cache")
+          cacheDir: path10.join(memeshDir2, "private-check-cache")
         });
         if (privacy.state === "yes") {
           skip("private_session");
@@ -38242,8 +38546,8 @@ function computePatterns(db2, categories) {
 }
 
 // dist/core/config.js
-import fs9 from "fs";
-import path8 from "path";
+import fs11 from "fs";
+import path11 from "path";
 
 // dist/core/session-limit.js
 var SESSION_LIMIT_MIN = 1;
@@ -38315,7 +38619,7 @@ function configDir() {
   return memeshDir();
 }
 function configFilePath() {
-  return path8.join(configDir(), "config.json");
+  return path11.join(configDir(), "config.json");
 }
 var lastConfigReadWarning = null;
 function warnUnreadable(p, detail) {
@@ -38331,10 +38635,10 @@ function warnUnreadable(p, detail) {
 }
 function readRawConfigResult() {
   const p = configFilePath();
-  if (!fs9.existsSync(p))
+  if (!fs11.existsSync(p))
     return { raw: {}, state: "absent" };
   try {
-    const parsed = JSON.parse(fs9.readFileSync(p, "utf8"));
+    const parsed = JSON.parse(fs11.readFileSync(p, "utf8"));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       throw new Error("top-level JSON value is not an object");
     }
@@ -38368,14 +38672,14 @@ function readConfigResult() {
   const result = readRawConfigResult();
   return { config: selectConfig(result.raw), state: result.state };
 }
-function readConfig() {
+function readConfig2() {
   return readConfigResult().config;
 }
 
 // dist/core/repo-state.js
 import { execFileSync as execFileSync2 } from "child_process";
-import fs10 from "fs";
-import path9 from "path";
+import fs12 from "fs";
+import path12 from "path";
 var GIT_TIMEOUT_MS = 5e3;
 function tryGit2(cwd, args) {
   try {
@@ -38390,7 +38694,7 @@ function tryGit2(cwd, args) {
 }
 function declaredVersionOf(repoRoot) {
   try {
-    const raw = fs10.readFileSync(path9.join(repoRoot, "package.json"), "utf8");
+    const raw = fs12.readFileSync(path12.join(repoRoot, "package.json"), "utf8");
     const version2 = JSON.parse(raw).version;
     return typeof version2 === "string" && version2.length > 0 ? version2 : null;
   } catch {
@@ -39372,7 +39676,7 @@ function briefingLevelPolicy(level) {
 function assembleBriefing(project, recipient, cwd = project === void 0 ? process.cwd() : null) {
   const projectName2 = project ?? getProjectName();
   const db2 = getDatabase();
-  const config2 = readConfig();
+  const config2 = readConfig2();
   const resolvedLevel = resolveBriefingLevel(process.env.MEMESH_BRIEFING, config2.briefing);
   if (resolvedLevel.invalid) {
     const { source, value } = resolvedLevel.invalid;
@@ -39769,9 +40073,9 @@ var MessageSchema = external_exports.discriminatedUnion("action", [
 
 // dist/core/agent-router.js
 import { randomUUID as randomUUID3 } from "node:crypto";
-import fs11 from "node:fs";
+import fs13 from "node:fs";
 import net from "node:net";
-import path10 from "node:path";
+import path13 from "node:path";
 
 // dist/core/semver.js
 var SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
@@ -40004,280 +40308,13 @@ function isNewerVersion(candidate, current) {
   return a !== null && b !== null && compareSemVerPrecedence(a, b) > 0;
 }
 function validateSocketPath(socketPath) {
-  if (typeof socketPath !== "string" || !path10.isAbsolute(socketPath) || Buffer.byteLength(socketPath) > AGENT_ROUTER_SOCKET_PATH_MAX_BYTES) {
+  if (typeof socketPath !== "string" || !path13.isAbsolute(socketPath) || Buffer.byteLength(socketPath) > AGENT_ROUTER_SOCKET_PATH_MAX_BYTES) {
     throw new AgentRouterProtocolError("invalid_socket_path", `Router socket path must be absolute and at most ${AGENT_ROUTER_SOCKET_PATH_MAX_BYTES} bytes.`);
   }
   return socketPath;
 }
 function isPlainObject5(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-// dist/network/address.js
-import { createHash as createHash11 } from "node:crypto";
-
-// dist/network/identity.js
-import { createPrivateKey, createPublicKey, randomBytes as randomBytes2, sign, verify } from "node:crypto";
-import fs12 from "node:fs";
-import path12 from "node:path";
-
-// dist/network/types.js
-import path11 from "node:path";
-var RELAY_OFF = "off";
-var NetworkError = class extends Error {
-  code;
-  constructor(code, message) {
-    super(message);
-    this.name = "NetworkError";
-    this.code = code;
-  }
-};
-
-// dist/network/identity.js
-var PKCS8_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
-var SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
-var MACHINE_ID = /^[0-9a-f]{64}$/;
-function isMachineId(value) {
-  return typeof value === "string" && MACHINE_ID.test(value);
-}
-function verifySignature(machineId, message, signature) {
-  if (!isMachineId(machineId) || typeof signature !== "string")
-    return false;
-  try {
-    const publicKey = createPublicKey({
-      key: Buffer.concat([SPKI_PREFIX, Buffer.from(machineId, "hex")]),
-      format: "der",
-      type: "spki"
-    });
-    return verify(null, message, publicKey, Buffer.from(signature, "base64url"));
-  } catch {
-    return false;
-  }
-}
-
-// dist/network/roster.js
-var SIGNATURE_DOMAIN = "memesh-roster-v1\n";
-var MAX_MEMBERS = 256;
-var NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-var NETWORK_ID = /^[0-9a-f]{32}$/;
-var ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
-var SIGNED_ROSTER_MAX_BYTES = 128 * 1024;
-function isNetworkId(value) {
-  return typeof value === "string" && NETWORK_ID.test(value);
-}
-function assertValidName(kind, value) {
-  if (typeof value !== "string" || !NAME.test(value)) {
-    throw new NetworkError("invalid_name", `The ${kind} must start with a letter or digit and use only letters, digits, ".", "_" and "-" (at most 64 characters).`);
-  }
-}
-function invalid(detail) {
-  return new NetworkError("roster_invalid", `The team list is not valid: ${detail}.`);
-}
-function parseMember(raw) {
-  const member = raw;
-  if (member === null || typeof member !== "object")
-    throw invalid("a member is not an object");
-  if (!isMachineId(member.machine_id))
-    throw invalid("a member has a bad machine id");
-  try {
-    assertValidName("machine name", member.name);
-    assertValidName("person", member.person);
-  } catch {
-    throw invalid("a member has a bad name or person");
-  }
-  if (typeof member.joined_at !== "string" || !ISO_TIMESTAMP.test(member.joined_at) || !Number.isFinite(Date.parse(member.joined_at))) {
-    throw invalid("a member has a bad joined_at");
-  }
-  return { machine_id: member.machine_id, name: member.name, person: member.person, joined_at: member.joined_at };
-}
-function parseRoster(rosterJson) {
-  let raw;
-  try {
-    raw = JSON.parse(rosterJson);
-  } catch {
-    throw invalid("it is not JSON");
-  }
-  if (raw === null || typeof raw !== "object")
-    throw invalid("it is not an object");
-  if (!isNetworkId(raw.network_id))
-    throw invalid("bad network id");
-  if (!isMachineId(raw.owner_id))
-    throw invalid("bad owner id");
-  if (!Number.isSafeInteger(raw.version) || raw.version < 1)
-    throw invalid("bad version");
-  if (!Array.isArray(raw.members) || raw.members.length > MAX_MEMBERS)
-    throw invalid("bad member list");
-  const members2 = raw.members.map(parseMember);
-  const names = new Set(members2.map((member) => member.name.toLowerCase()));
-  const ids = new Set(members2.map((member) => member.machine_id));
-  if (names.size !== members2.length)
-    throw invalid("two machines share a name");
-  if (ids.size !== members2.length)
-    throw invalid("a machine is listed twice");
-  if (!ids.has(raw.owner_id))
-    throw invalid("the owner is not a member");
-  return {
-    network_id: raw.network_id,
-    owner_id: raw.owner_id,
-    version: raw.version,
-    members: members2
-  };
-}
-function verifyRoster(signed, expectedOwnerId, expectedNetworkId) {
-  if (typeof signed?.roster_json !== "string" || !verifySignature(expectedOwnerId, Buffer.from(SIGNATURE_DOMAIN + signed.roster_json), signed.signature)) {
-    throw new NetworkError("roster_invalid", "The team list is not signed by the network owner.");
-  }
-  const roster = parseRoster(signed.roster_json);
-  if (roster.owner_id !== expectedOwnerId)
-    throw invalid("it names a different owner");
-  if (roster.network_id !== expectedNetworkId)
-    throw invalid("it belongs to a different network");
-  return roster;
-}
-
-// dist/network/address.js
-var TARGET = /^[^/@\s]{1,200}$/;
-function parseNetworkAddress(value) {
-  const at = value.lastIndexOf("@");
-  if (at <= 0)
-    return null;
-  const machine = value.slice(at + 1);
-  const left = value.slice(0, at);
-  const slash = left.indexOf("/");
-  if (slash <= 0)
-    return null;
-  const person = left.slice(0, slash);
-  const target = left.slice(slash + 1);
-  if (!NAME.test(person) || !NAME.test(machine) || !TARGET.test(target))
-    return null;
-  return { person, target, machine };
-}
-function formatNetworkAddress(person, target, machine) {
-  return `${person}/${target}@${machine}`;
-}
-function projectHash(networkId, project) {
-  return createHash11("sha256").update(`${networkId}:${project}`).digest("hex");
-}
-
-// dist/network/store.js
-import fs13 from "node:fs";
-import path13 from "node:path";
-function readConfig2(db2) {
-  const row = db2.prepare(`SELECT network_id, owner_id, machine_id, machine_name, person, relay_url, roster_json, roster_signature
-       FROM agent_network_config WHERE id = 1`).get();
-  return row ?? null;
-}
-function signedRosterOf(config2) {
-  return { roster_json: config2.roster_json, signature: config2.roster_signature };
-}
-
-// dist/network/outbound.js
-var PRESENCE_TTL_MS = 3 * 6e4;
-function joinedNetwork(db2) {
-  let config2;
-  try {
-    config2 = readConfig2(db2);
-  } catch {
-    return null;
-  }
-  if (!config2)
-    return null;
-  return { config: config2, roster: verifyRoster(signedRosterOf(config2), config2.owner_id, config2.network_id) };
-}
-var NetworkRecipientError = class extends AgentMessagingError {
-};
-function resolveNetworkRecipient(db2, recipient) {
-  const address = parseNetworkAddress(recipient);
-  if (address === null)
-    return null;
-  const joined = joinedNetwork(db2);
-  if (joined === null)
-    return null;
-  const member = joined.roster.members.find((candidate) => candidate.name === address.machine);
-  if (!member)
-    return null;
-  if (member.machine_id === joined.config.machine_id) {
-    throw new NetworkRecipientError(`${recipient} is this machine. Send to ${JSON.stringify(address.target)} directly.`);
-  }
-  if (member.person !== address.person) {
-    throw new NetworkRecipientError(`Machine ${JSON.stringify(address.machine)} belongs to ${JSON.stringify(member.person)} in this network, not ${JSON.stringify(address.person)}. Use ${formatNetworkAddress(member.person, address.target, address.machine)}.`);
-  }
-  const path26 = joined.config.relay_url === RELAY_OFF ? "directly" : "through the relay or directly";
-  return {
-    address,
-    member,
-    note: `This goes to machine ${address.machine} ${path26}; while that machine is offline it is retried for up to one day.`
-  };
-}
-function networkReceiptFact(db2, deliveryId) {
-  let row;
-  try {
-    row = db2.prepare(`
-      SELECT delivery_id, message_id, state, attempts, last_error_code, delivered_at_ms, path
-      FROM agent_network_outbox WHERE delivery_id = ? AND state != 'local'
-    `).get(deliveryId);
-  } catch {
-    return null;
-  }
-  if (!row)
-    return null;
-  const deliveredAt = row.delivered_at_ms === null ? null : new Date(row.delivered_at_ms).toISOString();
-  return {
-    receipt_kind: "network",
-    fact_source: "agent_network_outbox",
-    message_id: row.message_id,
-    delivery_id: row.delivery_id,
-    network: {
-      state: row.state,
-      attempts: row.attempts,
-      last_error_code: row.last_error_code,
-      delivered_at: deliveredAt,
-      path: row.path
-    },
-    created_at: deliveredAt ?? (/* @__PURE__ */ new Date()).toISOString()
-  };
-}
-function networkDeliveryOf(db2, delivery) {
-  const fact = networkReceiptFact(db2, delivery.delivery_id);
-  const network = fact?.network;
-  try {
-    const address = parseNetworkAddress(delivery.recipient);
-    if (network)
-      return { state: network.state, code: network.last_error_code, machine: address?.machine ?? "the other machine" };
-    const local = db2.prepare("SELECT 1 FROM agent_network_outbox WHERE delivery_id = ? AND state = 'local'").get(delivery.delivery_id);
-    if (local || !address || !resolveNetworkRecipient(db2, delivery.recipient))
-      return null;
-    return { state: "pending", code: null, machine: address.machine };
-  } catch {
-    return null;
-  }
-}
-function remoteDiscoverCards(db2, project, now = Date.now()) {
-  const joined = joinedNetwork(db2);
-  if (joined === null)
-    return [];
-  const rows = db2.prepare(`
-    SELECT machine_id, principal, handle, host_kind, connected FROM agent_network_presence
-    WHERE project_hash = ? AND expires_at_ms > ? ORDER BY machine_id, handle
-  `).all(projectHash(joined.config.network_id, project), now);
-  const cards = [];
-  for (const row of rows) {
-    const member = joined.roster.members.find((candidate) => candidate.machine_id === row.machine_id);
-    if (!member || member.machine_id === joined.config.machine_id)
-      continue;
-    cards.push({
-      remote: true,
-      address: formatNetworkAddress(member.person, row.handle, member.name),
-      principal_address: formatNetworkAddress(member.person, row.principal, member.name),
-      machine: member.name,
-      person: member.person,
-      principal_id: row.principal,
-      handle: row.handle,
-      host_kind: row.host_kind,
-      active: row.connected === 1
-    });
-  }
-  return cards;
 }
 
 // dist/transports/agent-messaging.js
@@ -40442,10 +40479,10 @@ function resolveCanonicalDelivery(db2, project, recipient, messageId2) {
     FROM agent_message_deliveries
     WHERE project = ? AND recipient = ? AND message_id = ?
   `).get(project, recipient, messageId2);
+  const expired = expiredMessageErrorFor(db2, project, recipient, messageId2, "read");
+  if (expired)
+    throw expired;
   if (!delivery) {
-    const expired = expiredMessageErrorFor(db2, project, recipient, messageId2, "read");
-    if (expired)
-      throw expired;
     throw new AgentMessageAccessError(`Agent message ${messageId2} is not available to recipient ${recipient} in project ${project}.`);
   }
   return delivery;
@@ -42426,7 +42463,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "message",
-    description: `Use this to contact or discover another agent on the same MeMesh instance, or on another computer in this machine's team. discover is a bounded, project-scoped live-directory read of active leases and returns only the router result; it performs no send, fetch, ACK, replay, or receipt work. An empty discover result does not predict whether a principal-target send/fetch will work: those use a separate durable store-and-forward path to a named recipient that does not require the router or any live registration (an exact target_kind=session send still does, and still needs the router). send durably stores one untrusted JSON-encoded payload of at most ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes (64 KiB) idempotently. Native delivery has a separate ${AGENT_NATIVE_MESSAGE_MAX_BYTES}-byte (16 KiB) cap for the complete envelope, including routing metadata and payload. For target_kind=session, success requires the exact active native host to accept the message: Claude Channel receives the full envelope; Claude inbox and the Codex CLI queue receive only a notice, after which the agent checks receipts and fetches the body. An oversized envelope returns native_message_too_large; an unreachable local router returns router_unreachable; an unavailable or rejected exact session returns recipient_unavailable. Both sender-side failures preserve scoped recovery data. Principal targets retain durable store-and-forward behavior even when native delivery is unavailable. Every session of one principal shares its inbox: a principal send with intended_session is meant for that one session, which alone is reminded of it and alone may record intake or a disposition (any other caller, including one with no session id, gets intended_for_other_session). A session send with fallback_to_principal that the session refuses (recipient_unavailable) is sent to its principal with intended_session set to that session instead. For a full native envelope, poll/fetch remain compatibility and recovery reads; after a notice, fetch is the required read of the body. intake, ack, disposition, and activation are separate explicit facts; an agent only needs to record intake, while ack and disposition are optional. A host accept means the host took the notice: for the Claude Code inbox it was seen in the conversation (a notice Claude Code holds back is not an accept, and the message waits in the inbox until the session's next prompt or turn end); for the Claude Code Channel it was handed over and queued, and MeMesh cannot see whether it was shown; for Codex it was queued for the thread. It never means the agent read it. status reads where one message stands from what MeMesh recorded and from any intake, ack, disposition or reply the agent made: queued, accepted, handed_to_agent (intake, ack or disposition recorded) or replied; for a person/handle@machine recipient on another computer it reports the network delivery instead: handed_to_network (not yet confirmed delivered), delivered_to_machine or not_delivered. Native acceptance, polling, fetching, and discovery never imply agent acknowledgement or workflow completion. In receipts, the host_accept fact's delivery_state.target_session "not_live" only means that session had no live registration when read; it is not a permanent end. A MeMesh send cannot wake or resume an offline session (an exact-session send to it returns recipient_unavailable). Resume that session in its own host, which may not succeed at once, and read receipts again; or decide to send to the principal instead, knowing the original session may still take the first message if it comes back. MeMesh does neither automatically. After this computer joined a team (memesh network), a principal send to person/handle@machine, a member named in the team's signed roster, is stored here and forwarded to that machine through the relay or directly, retried for up to one day; its receipts add a network fact (state, attempts, last error code, path), and discover also lists other members' live agents with remote: true. Only the message crosses machines; memory never does. A message is kept for one day from creation, read or unread, then deleted (its content stays in a local archive for one more day); if its recipient recorded no intake, ack or disposition and sent no reply, its sender gets a message from memesh saying so, and fetching, acknowledging or replying to an expired id returns message_expired.`,
+    description: `Use this to contact or discover another agent on the same MeMesh instance, or on another computer in this machine's team. discover is a bounded, project-scoped live-directory read of active leases and returns only the router result; it performs no send, fetch, ACK, replay, or receipt work. An empty discover result does not predict whether a principal-target send/fetch will work: those use a separate durable store-and-forward path to a named recipient that does not require the router or any live registration (an exact target_kind=session send still does, and still needs the router). send durably stores one untrusted JSON-encoded payload of at most ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes (64 KiB) idempotently. Native delivery has a separate ${AGENT_NATIVE_MESSAGE_MAX_BYTES}-byte (16 KiB) cap for the complete envelope, including routing metadata and payload. For target_kind=session, success requires the exact active native host to accept the message: Claude Channel receives the full envelope; Claude inbox and the Codex CLI queue receive only a notice, after which the agent checks receipts and fetches the body. An oversized envelope returns native_message_too_large; an unreachable local router returns router_unreachable; an unavailable or rejected exact session returns recipient_unavailable. Both sender-side failures preserve scoped recovery data. Principal targets retain durable store-and-forward behavior even when native delivery is unavailable. Every session of one principal shares its inbox: a principal send with intended_session is meant for that one session, which alone is reminded of it and alone may record intake or a disposition (any other caller, including one with no session id, gets intended_for_other_session). A session send with fallback_to_principal that the session refuses (recipient_unavailable) is sent to its principal with intended_session set to that session instead. For a full native envelope, poll/fetch remain compatibility and recovery reads; after a notice, fetch is the required read of the body. intake, ack, disposition, and activation are separate explicit facts; an agent only needs to record intake, while ack and disposition are optional. A host accept means the host took the notice: for the Claude Code inbox it was seen in the conversation (a notice Claude Code holds back is not an accept, and the message waits in the inbox until the session's next prompt or turn end); for the Claude Code Channel it was handed over and queued, and MeMesh cannot see whether it was shown; for Codex it was queued for the thread. It never means the agent read it. status reads where one message stands from what MeMesh recorded and from any intake, ack, disposition or reply the agent made: queued, accepted, handed_to_agent (intake, ack or disposition recorded) or replied; for a person/handle@machine recipient on another computer it reports the network delivery instead: handed_to_network (not yet confirmed delivered), delivered_to_machine or not_delivered. Native acceptance, polling, fetching, and discovery never imply agent acknowledgement or workflow completion. In receipts, the host_accept fact's delivery_state.target_session "not_live" only means that session had no live registration when read; it is not a permanent end. A MeMesh send cannot wake or resume an offline session (an exact-session send to it returns recipient_unavailable). Resume that session in its own host, which may not succeed at once, and read receipts again; or decide to send to the principal instead, knowing the original session may still take the first message if it comes back. MeMesh does neither automatically. After this computer joined a team (memesh network), a principal send to person/handle@machine, a member named in the team's signed roster, is stored here and forwarded to that machine through the relay or directly, retried for up to one day; its receipts add a network fact (state, attempts, last error code, path), and discover also lists other members' live agents with remote: true. Only the message crosses machines; memory never does. A message is kept for one day from creation, read or unread, then deleted (its content stays in a local archive for one more day); if its recipient recorded no intake, ack or disposition and sent no reply, its sender gets a message from memesh saying so (for a message to another computer it says whether it was delivered there, not what its recipient did), and status, fetching, acknowledging or replying to an expired id returns message_expired.`,
     inputSchema: {
       type: "object",
       properties: {

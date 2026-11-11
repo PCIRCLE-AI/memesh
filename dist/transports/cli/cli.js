@@ -3979,7 +3979,7 @@ function migrateEntitiesSchema(db2) {
     messageColumns.add(column);
   };
   const expiryColumns = new Set(db2.prepare("PRAGMA table_info(agent_message_expiries)").all().map((column) => column.name));
-  for (const column of ["sender", "recipient"]) {
+  for (const column of ["sender", "recipient", "network_json"]) {
     if (expiryColumns.size > 0 && !expiryColumns.has(column)) {
       safeAlter(db2, `ALTER TABLE agent_message_expiries ADD COLUMN ${column} TEXT`);
     }
@@ -4416,7 +4416,8 @@ CREATE TABLE IF NOT EXISTS agent_retention_facts (
 -- the ones that did nothing; agent_message_expiries keeps only the id of a
 -- deleted message (no content) for a bounded time, so a
 -- later read of, or reply to, that id gets a specific answer: its sender and
--- recipient are kept only to decide who may be told that.
+-- recipient are kept only to decide who may be told that, and, for a message
+-- to another machine, where the network left it, for the sender's notice.
 CREATE TABLE IF NOT EXISTS agent_message_expiry_runs (
   run_id                  INTEGER PRIMARY KEY AUTOINCREMENT,
   started_at_ms           INTEGER NOT NULL,
@@ -4448,7 +4449,8 @@ CREATE TABLE IF NOT EXISTS agent_message_expiries (
   was_read                INTEGER NOT NULL,
   notice_message_id       TEXT,
   sender                  TEXT,
-  recipient               TEXT
+  recipient               TEXT,
+  network_json            TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_agent_message_events_recipient_sequence
@@ -39130,10 +39132,10 @@ function resolveCanonicalDelivery(db2, project, recipient, messageId2) {
     FROM agent_message_deliveries
     WHERE project = ? AND recipient = ? AND message_id = ?
   `).get(project, recipient, messageId2);
+  const expired = expiredMessageErrorFor(db2, project, recipient, messageId2, "read");
+  if (expired)
+    throw expired;
   if (!delivery) {
-    const expired = expiredMessageErrorFor(db2, project, recipient, messageId2, "read");
-    if (expired)
-      throw expired;
     throw new AgentMessageAccessError(`Agent message ${messageId2} is not available to recipient ${recipient} in project ${project}.`);
   }
   return delivery;
@@ -39880,13 +39882,19 @@ function selectBatch(db2, cutoff, inFlightCutoff) {
 function deleteBatch(db2, rows, tally) {
   const remember2 = db2.prepare(`
     INSERT OR REPLACE INTO agent_message_expiries
-      (message_id, project, created_at, expired_at_ms, was_read, notice_message_id, sender, recipient)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      (message_id, project, created_at, expired_at_ms, was_read, notice_message_id, sender, recipient, network_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
+  const delivery = db2.prepare("SELECT delivery_id, recipient FROM agent_message_deliveries WHERE message_id = ? LIMIT 1");
+  const bridgeTold = db2.prepare("SELECT 1 FROM agent_messages WHERE reply_to_message_id = ? AND json_extract(provenance_json, '$.via') = 'network-notice' LIMIT 1");
   const now = Date.now();
   for (const row of rows) {
-    remember2.run(row.message_id, row.project, row.created_at, now, row.was_read !== 0 ? 1 : 0, row.is_notice !== 0 ? NO_NOTICE : null, row.sender, row.recipient);
-    if (row.was_read === 0 && row.is_notice === 0)
+    const owesNotice = row.was_read === 0 && row.is_notice === 0;
+    const sent = owesNotice ? delivery.get(row.message_id) : void 0;
+    const network = sent ? networkDeliveryOf(db2, sent) : null;
+    const told = network !== null && bridgeTold.get(row.message_id) !== void 0;
+    remember2.run(row.message_id, row.project, row.created_at, now, row.was_read !== 0 ? 1 : 0, row.is_notice !== 0 || told ? NO_NOTICE : null, row.sender, row.recipient, network ? JSON.stringify(network) : null);
+    if (owesNotice)
       tally.unread += 1;
     if (Number.isNaN(Date.parse(sqliteUtcToIso(row.created_at))))
       tally.unreadableTimes += 1;
@@ -39899,7 +39907,7 @@ function deleteBatch(db2, rows, tally) {
 }
 function writeOwedNotices(db2, tally) {
   const owed = db2.prepare(`
-    SELECT message_id, project, sender, recipient, created_at FROM agent_message_expiries
+    SELECT message_id, project, sender, recipient, created_at, network_json FROM agent_message_expiries
     WHERE ${NOTICE_OWED_SQL} ORDER BY project, sender, created_at, message_id
   `).all();
   const groups = /* @__PURE__ */ new Map();
@@ -39913,16 +39921,19 @@ function writeOwedNotices(db2, tally) {
   }
   const mark = db2.prepare("UPDATE agent_message_expiries SET notice_message_id = ? WHERE message_id IN (SELECT value FROM json_each(?))");
   for (const group of groups.values()) {
+    const facts = group.map((row) => row.network_json === null ? null : JSON.parse(row.network_json));
     const state = {
       count: group.length,
-      listed: group.slice(0, NOTICE_LIST_MAX).map((row) => {
+      facts,
+      listed: group.slice(0, NOTICE_LIST_MAX).map((row, index) => {
         const createdAt = sqliteUtcToIso(row.created_at);
         const sentMs = Date.parse(createdAt);
         return {
           message_id: row.message_id,
           recipient: row.recipient,
           created_at: createdAt,
-          expired_at: Number.isNaN(sentMs) ? null : new Date(sentMs + AGENT_MESSAGE_TTL_MS).toISOString()
+          expired_at: Number.isNaN(sentMs) ? null : new Date(sentMs + AGENT_MESSAGE_TTL_MS).toISOString(),
+          ...facts[index] ? { network: facts[index] } : {}
         };
       })
     };
@@ -39934,11 +39945,34 @@ function writeOwedNotices(db2, tally) {
     mark.run(noticeId ?? NO_NOTICE, JSON.stringify(group.map((row) => row.message_id)));
   }
 }
+function noticeSummary(state) {
+  const count = state.count;
+  const plural2 = (n) => n === 1 ? "" : "s";
+  const remote = state.facts.filter((fact) => fact !== null);
+  if (remote.length === 0) {
+    return `${count} message${plural2(count)} you sent expired: MeMesh keeps a message for one day, and ${count === 1 ? "its recipient" : "their recipients"} recorded no intake, acknowledgement or disposition and sent no reply. Send it again if it still matters.`;
+  }
+  const parts = [];
+  const local = count - remote.length;
+  if (local > 0)
+    parts.push(`For ${local} sent to a recipient on this machine, the recipient recorded no intake, acknowledgement or disposition and sent no reply.`);
+  const unique = (values) => [...new Set(values.filter((value) => value !== null))];
+  const delivered = remote.filter((fact) => fact.state === "delivered");
+  const undelivered = remote.filter((fact) => fact.state !== "delivered");
+  if (undelivered.length > 0) {
+    const codes = unique(undelivered.map((fact) => fact.code));
+    parts.push(`${undelivered.length} sent to machine ${unique(undelivered.map((fact) => fact.machine)).join(", ")} ${undelivered.length === 1 ? "was" : "were"} not delivered (${codes.length > 0 ? `last error: ${codes.join(", ")}` : "no delivery attempt was recorded"}).`);
+  }
+  if (delivered.length > 0) {
+    parts.push(`${delivered.length} ${delivered.length === 1 ? "was" : "were"} delivered to machine ${unique(delivered.map((fact) => fact.machine)).join(", ")}, but no reply from there was seen on this machine.`);
+  }
+  return `${count} message${plural2(count)} you sent expired: MeMesh keeps a message for one day. ${parts.join(" ")} Send it again if it still matters.`;
+}
 function noticePayload(state) {
   const count = state.count;
   return {
     kind: "message_expired",
-    summary: `${count} message${count === 1 ? "" : "s"} you sent expired: MeMesh keeps a message for one day, and ${count === 1 ? "its recipient" : "their recipients"} recorded no intake, acknowledgement or disposition and sent no reply. Send it again if it still matters.`,
+    summary: noticeSummary(state),
     messages: state.listed,
     ...count > state.listed.length ? { not_listed: count - state.listed.length } : {}
   };
@@ -40300,6 +40334,7 @@ var init_agent_message_expiry = __esm({
     init_agent_message_ttl();
     init_agent_messaging();
     init_time_utils();
+    init_outbound();
     AGENT_MESSAGE_EXPIRY_INTERVAL_MS = 5 * 60 * 1e3;
     AGENT_MESSAGE_EXPIRED_ID_KEEP_MS = 30 * 24 * 60 * 60 * 1e3;
     AGENT_MESSAGE_ARCHIVE_FILE = "agent-messages-expired.db";
@@ -40353,6 +40388,7 @@ var init_agent_message_expiry = __esm({
     ARCHIVED_TABLES = [
       { name: "agent_messages", unique: "message_id", by: "message" },
       { name: "agent_message_deliveries", unique: "delivery_id", by: "message" },
+      { name: "agent_network_outbox", unique: "delivery_id", by: "delivery" },
       { name: "agent_message_events", unique: "event_id", by: "message" },
       { name: "agent_message_idempotency", unique: "message_id", by: "message" },
       { name: "agent_message_receipts", unique: "receipt_id", by: "message" },
@@ -75020,6 +75056,7 @@ import fs34 from "node:fs";
 
 // dist/network/courier.js
 init_agent_messaging();
+init_agent_message_ttl();
 init_time_utils();
 init_address();
 import { createHash as createHash16 } from "node:crypto";
@@ -75030,7 +75067,6 @@ var FRAME_MAX_BYTES = AGENT_MESSAGE_JSON_MAX_BYTES + 8 * 1024;
 
 // dist/network/courier.js
 init_outbound();
-var DELIVERY_WINDOW_MS = 24 * 60 * 6e4;
 var BACKOFF_MAX_MS = 5 * 6e4;
 function rememberPeer(db2, machineId, relay, addrs, now) {
   db2.prepare(`

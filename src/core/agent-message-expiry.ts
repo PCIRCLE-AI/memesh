@@ -59,6 +59,7 @@ import { removeGroupAndOtherAccess } from './file-mode.js';
 import { AGENT_MESSAGE_TTL_MS, agentMessageExpiryCutoff } from './agent-message-ttl.js';
 import { AgentMessagingError, sendAgentMessage } from './agent-messaging.js';
 import { sqliteUtcToIso } from './time-utils.js';
+import { networkDeliveryOf } from '../network/outbound.js';
 
 /** A pass is due when the last one started this long ago or more. */
 export const AGENT_MESSAGE_EXPIRY_INTERVAL_MS = 5 * 60 * 1000;
@@ -164,8 +165,13 @@ interface ExpiredRow {
 /** What one sender is told: every message of theirs that expired unread and has not been in a notice yet. */
 interface NoticeState {
   count: number;
-  listed: Array<{ message_id: string; recipient: string; created_at: string; expired_at: string | null }>;
+  /** Per message of the whole group: where the network left it, or null for a recipient on this machine. */
+  facts: Array<NetworkFact | null>;
+  listed: Array<{ message_id: string; recipient: string; created_at: string; expired_at: string | null; network?: NetworkFact }>;
 }
+
+/** Where a message to another machine stood when it expired (`networkDeliveryOf`), kept on its id row for the notice. */
+type NetworkFact = { state: string; code: string | null; machine: string };
 
 /**
  * In `agent_message_expiries.notice_message_id`: no notice is owed for this row
@@ -218,6 +224,7 @@ const LIVE_CONNECTIONS_SQL = `
 const ARCHIVED_TABLES: ReadonlyArray<{ name: string; unique: string; by: 'message' | 'delivery' }> = [
   { name: 'agent_messages', unique: 'message_id', by: 'message' },
   { name: 'agent_message_deliveries', unique: 'delivery_id', by: 'message' },
+  { name: 'agent_network_outbox', unique: 'delivery_id', by: 'delivery' },
   { name: 'agent_message_events', unique: 'event_id', by: 'message' },
   { name: 'agent_message_idempotency', unique: 'message_id', by: 'message' },
   { name: 'agent_message_receipts', unique: 'receipt_id', by: 'message' },
@@ -514,14 +521,22 @@ function selectBatch(db: MemeshDatabase, cutoff: string, inFlightCutoff: string)
 function deleteBatch(db: MemeshDatabase, rows: ExpiredRow[], tally: Tally): void {
   const remember = db.prepare(`
     INSERT OR REPLACE INTO agent_message_expiries
-      (message_id, project, created_at, expired_at_ms, was_read, notice_message_id, sender, recipient)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      (message_id, project, created_at, expired_at_ms, was_read, notice_message_id, sender, recipient, network_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
+  const delivery = db.prepare('SELECT delivery_id, recipient FROM agent_message_deliveries WHERE message_id = ? LIMIT 1');
+  // The bridge already told the sender when it refused or gave up on a message to another machine.
+  const bridgeTold = db.prepare("SELECT 1 FROM agent_messages WHERE reply_to_message_id = ? AND json_extract(provenance_json, '$.via') = 'network-notice' LIMIT 1");
   const now = Date.now();
   for (const row of rows) {
     // A notice that expires unread does not produce another notice.
-    remember.run(row.message_id, row.project, row.created_at, now, row.was_read !== 0 ? 1 : 0, row.is_notice !== 0 ? NO_NOTICE : null, row.sender, row.recipient);
-    if (row.was_read === 0 && row.is_notice === 0) tally.unread += 1;
+    const owesNotice = row.was_read === 0 && row.is_notice === 0;
+    // The outbox row goes with the delivery, so what the network knew is read now, for the notice written after the batches.
+    const sent = owesNotice ? delivery.get(row.message_id) as { delivery_id: string; recipient: string } | undefined : undefined;
+    const network = sent ? networkDeliveryOf(db, sent) : null;
+    const told = network !== null && bridgeTold.get(row.message_id) !== undefined;
+    remember.run(row.message_id, row.project, row.created_at, now, row.was_read !== 0 ? 1 : 0, row.is_notice !== 0 || told ? NO_NOTICE : null, row.sender, row.recipient, network ? JSON.stringify(network) : null);
+    if (owesNotice) tally.unread += 1;
     if (Number.isNaN(Date.parse(sqliteUtcToIso(row.created_at)))) tally.unreadableTimes += 1;
   }
   const deleted = db.prepare(
@@ -540,9 +555,9 @@ function deleteBatch(db: MemeshDatabase, rows: ExpiredRow[], tally: Tally): void
  */
 function writeOwedNotices(db: MemeshDatabase, tally: Tally): void {
   const owed = db.prepare(`
-    SELECT message_id, project, sender, recipient, created_at FROM agent_message_expiries
+    SELECT message_id, project, sender, recipient, created_at, network_json FROM agent_message_expiries
     WHERE ${NOTICE_OWED_SQL} ORDER BY project, sender, created_at, message_id
-  `).all() as Array<{ message_id: string; project: string; sender: string; recipient: string; created_at: string }>;
+  `).all() as Array<{ message_id: string; project: string; sender: string; recipient: string; created_at: string; network_json: string | null }>;
   const groups = new Map<string, typeof owed>();
   for (const row of owed) {
     const key = `${row.project}\u0000${row.sender}`;
@@ -551,9 +566,11 @@ function writeOwedNotices(db: MemeshDatabase, tally: Tally): void {
   }
   const mark = db.prepare('UPDATE agent_message_expiries SET notice_message_id = ? WHERE message_id IN (SELECT value FROM json_each(?))');
   for (const group of groups.values()) {
+    const facts = group.map((row) => (row.network_json === null ? null : JSON.parse(row.network_json) as NetworkFact));
     const state: NoticeState = {
       count: group.length,
-      listed: group.slice(0, NOTICE_LIST_MAX).map((row) => {
+      facts,
+      listed: group.slice(0, NOTICE_LIST_MAX).map((row, index) => {
         const createdAt = sqliteUtcToIso(row.created_at);
         const sentMs = Date.parse(createdAt);
         return {
@@ -561,6 +578,7 @@ function writeOwedNotices(db: MemeshDatabase, tally: Tally): void {
           recipient: row.recipient,
           created_at: createdAt,
           expired_at: Number.isNaN(sentMs) ? null : new Date(sentMs + AGENT_MESSAGE_TTL_MS).toISOString(),
+          ...(facts[index] ? { network: facts[index] } : {}),
         };
       }),
     };
@@ -570,13 +588,42 @@ function writeOwedNotices(db: MemeshDatabase, tally: Tally): void {
   }
 }
 
+/**
+ * What the sender is told. This machine only knows what happened on this machine: for a message to another
+ * machine that is whether the network delivered it, never whether anyone there recorded or answered it.
+ */
+function noticeSummary(state: NoticeState): string {
+  const count = state.count;
+  const plural = (n: number): string => (n === 1 ? '' : 's');
+  const remote = state.facts.filter((fact): fact is NetworkFact => fact !== null);
+  if (remote.length === 0) {
+    return `${count} message${plural(count)} you sent expired: MeMesh keeps a message for one day, and `
+      + `${count === 1 ? 'its recipient' : 'their recipients'} recorded no intake, acknowledgement or disposition and sent no reply. `
+      + 'Send it again if it still matters.';
+  }
+  const parts: string[] = [];
+  const local = count - remote.length;
+  if (local > 0) parts.push(`For ${local} sent to a recipient on this machine, the recipient recorded no intake, acknowledgement or disposition and sent no reply.`);
+  const unique = (values: Array<string | null>): string[] => [...new Set(values.filter((value): value is string => value !== null))];
+  const delivered = remote.filter((fact) => fact.state === 'delivered');
+  const undelivered = remote.filter((fact) => fact.state !== 'delivered');
+  if (undelivered.length > 0) {
+    const codes = unique(undelivered.map((fact) => fact.code));
+    parts.push(`${undelivered.length} sent to machine ${unique(undelivered.map((fact) => fact.machine)).join(', ')} ${undelivered.length === 1 ? 'was' : 'were'} not delivered `
+      + `(${codes.length > 0 ? `last error: ${codes.join(', ')}` : 'no delivery attempt was recorded'}).`);
+  }
+  if (delivered.length > 0) {
+    parts.push(`${delivered.length} ${delivered.length === 1 ? 'was' : 'were'} delivered to machine ${unique(delivered.map((fact) => fact.machine)).join(', ')}, `
+      + 'but no reply from there was seen on this machine.');
+  }
+  return `${count} message${plural(count)} you sent expired: MeMesh keeps a message for one day. ${parts.join(' ')} Send it again if it still matters.`;
+}
+
 function noticePayload(state: NoticeState) {
   const count = state.count;
   return {
     kind: 'message_expired',
-    summary: `${count} message${count === 1 ? '' : 's'} you sent expired: MeMesh keeps a message for one day, and `
-      + `${count === 1 ? 'its recipient' : 'their recipients'} recorded no intake, acknowledgement or disposition and sent no reply. `
-      + 'Send it again if it still matters.',
+    summary: noticeSummary(state),
     messages: state.listed,
     ...(count > state.listed.length ? { not_listed: count - state.listed.length } : {}),
   };

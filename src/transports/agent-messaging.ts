@@ -359,9 +359,10 @@ function resolveCanonicalDelivery(
     FROM agent_message_deliveries
     WHERE project = ? AND recipient = ? AND message_id = ?
   `).get(project, recipient, messageId) as CanonicalDeliveryScope | undefined;
+  // A message past its day is gone for every reader, also when the pass has not deleted it yet.
+  const expired = expiredMessageErrorFor(db, project, recipient, messageId, 'read');
+  if (expired) throw expired;
   if (!delivery) {
-    const expired = expiredMessageErrorFor(db, project, recipient, messageId, 'read');
-    if (expired) throw expired;
     throw new AgentMessageAccessError(
       `Agent message ${messageId} is not available to recipient ${recipient} in project ${project}.`,
     );

@@ -148,8 +148,9 @@ describe('native isolation', () => {
       .filter((file) => localImports(file).some((target) => target.startsWith(networkRoot + path.sep)))
       .map(relative)
       .sort();
-    // The CLI command, the message tool (network addresses, receipts, remote cards) and the router (auto-start).
-    expect(importers).toEqual(['src/host-runtime/router.ts', 'src/transports/agent-messaging.ts', 'src/transports/cli/cli.ts']);
+    // The CLI command, the message tool (network addresses, receipts, remote cards), the router (auto-start)
+    // and the expiry pass (what the network knew of a message to another machine, for its sender's notice).
+    expect(importers).toEqual(['src/core/agent-message-expiry.ts', 'src/host-runtime/router.ts', 'src/transports/agent-messaging.ts', 'src/transports/cli/cli.ts']);
   });
 
   it('nothing in src/network loads a module whose name is not in the code, except the native loader', () => {
@@ -170,6 +171,8 @@ describe('memory stays out of the network path', () => {
     expect(outside).toEqual([
       'src/core/agent-message-inbox.ts',
       'src/core/agent-message-storage.ts',
+      // The retention constant (reached through the courier and agent-messaging): no imports, no SQL.
+      'src/core/agent-message-ttl.ts',
       'src/core/agent-messaging.ts',
       'src/core/agent-router.ts',
       'src/core/agent-scope-id.ts',
@@ -192,7 +195,7 @@ describe('memory stays out of the network path', () => {
 
   /** Code without its comments: prose like "the CREATE TABLE any release adds" names no table. */
   const code = (text: string): string => ts.createPrinter({ removeComments: true }).printFile(ts.createSourceFile('x.ts', text, ts.ScriptTarget.Latest, true));
-  const tablesIn = (sql: string): string[] => [...sql.matchAll(/CREATE\s+(?:VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?["'`[]?(\w+)/gi)].map((match) => match[1]);
+  const tablesIn = (sql: string): string[] => [...sql.matchAll(/CREATE\s+(?:VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?!IF\s+NOT\s+EXISTS)["'`[]?(\w+)/gi)].map((match) => match[1]);
   // Everywhere a table is created, not only SCHEMA_SQL: src/db.ts and others make their own.
   const memoryTables = [...new Set([
     ...tablesIn(code(fs.readFileSync(path.join(srcRoot, 'storage/schema.ts'), 'utf8'))),
@@ -220,6 +223,12 @@ describe('memory stays out of the network path', () => {
     expect(memoryTables.length).toBeGreaterThanOrEqual(10);
     expect(memoryTables).toEqual(expect.arrayContaining(['dream_proposals', 'entities_fts', 'memesh_metadata']));
     expect(memoryTables).not.toEqual(expect.arrayContaining(['any']));
+    // `CREATE TABLE IF NOT EXISTS x` names x, not IF; every table the network schema creates is agent_*.
+    expect(memoryTables).not.toContain('IF');
+    expect(tablesIn('CREATE TABLE IF NOT EXISTS x (a)')).toEqual(['x']);
+    const networkTables = tablesIn(code(fs.readFileSync(path.join(srcRoot, 'storage/agent-network-schema.ts'), 'utf8')));
+    expect(networkTables.length).toBeGreaterThan(3);
+    expect(networkTables.every((name) => name.startsWith('agent_'))).toBe(true);
     for (const sql of ['SELECT name FROM entities', 'SELECT name FROM "entities"', 'SELECT name FROM main.entities', 'select * from main."entities"', 'SELECT * FROM `entities`', 'SELECT * FROM [entities]']) {
       expect(touchesMemoryTable(sql)).toEqual(['entities']);
     }
@@ -234,10 +243,13 @@ describe('memory stays out of the network path', () => {
 
   it('no SQL that src/network can reach touches a table outside the agent_* messaging and network tables', () => {
     expect(reachedSources).toContain(path.join(srcRoot, 'core/agent-messaging.ts'));
-    const hits = reachedSources.flatMap((file) => touchesMemoryTable(code(fs.readFileSync(file, 'utf8'))).map((table) => `${relative(file)}: ${table}`));
+    const hits = reachedSources.flatMap((file) => touchesMemoryTable(code(fs.readFileSync(file, 'utf8'))).map((table) => `${relative(file)}: ${table}`)).sort();
     // The router class keeps its version hold in memesh_metadata. The bridge reaches
     // that file only for the notifier and never builds a router; no memory table is here.
-    expect(hits).toEqual(['src/core/agent-router.ts: memesh_metadata']);
+    // sqlite.ts is reached through the bridge's own store (store.ts opens a MemeshDatabase). Its only
+    // such table is memesh_fts5_probe, created once in a throwaway :memory: database to ask whether
+    // this Node has FTS5; it is never the user's database and holds no user data.
+    expect(hits).toEqual(['src/core/agent-router.ts: memesh_metadata', 'src/storage/sqlite.ts: memesh_fts5_probe']);
   });
 
   it('every SQL statement in src/network can be read from the code', () => {

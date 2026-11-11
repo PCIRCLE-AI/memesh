@@ -718,9 +718,11 @@ the one-day limit on a message (see "Bounded storage and audit retention").
 after it was sent, together with its delivery, receipts, acknowledgements and
 workflow records. MeMesh does this by itself while its router, MCP server or
 `memesh serve` is running; there is no command to run and no setting to change.
-A message past its day is already invisible to `poll`, `fetch`, receipts and
-the unread count in your session briefing, even before it has been deleted from
-disk.
+A message past its day is already invisible to `poll`, `fetch`, `status`,
+receipts and the unread count in your session briefing, even before it has been
+deleted from disk. A message sent to `person/handle@machine` on another computer
+is kept, and expires, the same way: its retries stop no later than its day, and it
+is not exempt.
 
 - **The content stays one more day, in a local archive.** Before a message is
   deleted, MeMesh copies it, and every record deleted with it, into
@@ -730,7 +732,10 @@ disk.
   folder never share an archive). A copy is removed from the archive one day after it was made, so
   the content of a message exists for about two days in all: one day as a
   message and one day in the archive. If the archive cannot be written or its
-  copy does not match, nothing is deleted and `memesh doctor` says why; the
+  copy does not match, nothing is deleted and `memesh doctor` says why; for a
+  message to another computer the archive also holds the bridge's delivery row
+  (state, attempts, last error code), so what the network did can still be read
+  there; the same
   same goes for an archive path that is a symlink to the database itself or to
   nothing, or a file there that is not a database (MeMesh leaves such a file as
   it is). A
@@ -741,7 +746,11 @@ disk.
   the sender receives one message from `memesh` that lists what expired (id,
   recipient, when it was sent and when it expired; up to 20, with the number
   left out). One run writes one such message per sender and project, however
-  many of its messages expire. Read it like any other message: `poll` your own
+  many of its messages expire. For a message sent to another computer, MeMesh
+  cannot know what happened there, so the notice says what this computer knows:
+  that it was not delivered (with the last error code), or that it was delivered
+  to that computer but no reply from there was seen here. If the bridge already told
+  the sender it refused or gave up on that message, the expiry notice does not repeat it. Read it like any other message: `poll` your own
   recipient id, then `fetch`. A message the recipient did act on or reply to
   expires silently. These notices expire after a day too, and an unread notice
   does not produce another.
@@ -750,7 +759,7 @@ disk.
   deletes at most 20,000 messages and the next follows five minutes later, until
   none is left. A message with a delivery in progress in the last ten minutes
   waits for the next run.
-- **Reading, or recording a receipt for, an expired message** returns
+- **Reading, asking the `status` of, or recording a receipt for, an expired message** returns
   `message_expired` with the id and the time it expired, instead of "not
   available". Only the message's sender and its recipient are told; anyone else
   gets the ordinary "not available". A reply from its sender or recipient that
@@ -797,7 +806,9 @@ disk.
   `sqlite3 -readonly "$ARCHIVE" "SELECT message_id, sender, recipient, created_at, payload_json FROM agent_messages"`.
   A restored message comes back as a new, unread message with a fresh day (its
   receipts and acknowledgements are not restored), and is deleted and archived
-  again a day later.
+  again a day later. A restored message addressed to another computer is not sent
+  again: the bridge reports it to its sender as refused (`message_invalid`). Its
+  old delivery row stays readable in the archive.
 - **Old session records go too.** Session presence records and ended session
   connections older than a day are cleared in the same run (nothing reads them
   once a session has ended). A session that is still connected is never touched.

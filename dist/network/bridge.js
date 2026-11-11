@@ -2132,7 +2132,7 @@ function parseAck(bytes) {
 var PRESENCE_TTL_MS = 3 * 6e4;
 
 // dist/network/courier.js
-var DELIVERY_WINDOW_MS = 24 * 60 * 6e4;
+var DELIVERY_WINDOW_MS = AGENT_MESSAGE_TTL_MS;
 var BACKOFF_FIRST_MS = 5e3;
 var BACKOFF_MAX_MS = 5 * 6e4;
 var NOTICE_SENDER = "memesh-network";

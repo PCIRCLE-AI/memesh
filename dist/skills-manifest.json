@@ -163,8 +163,8 @@
     },
     {
       "path": "scripts/hooks/_generated/schema.js",
-      "sha256": "78de575fa242a9aada790047c994b1c5b8d2f73be631c0595777d6c17ec5120d",
-      "bytes": 30524
+      "sha256": "9e7c15e53a47886a99bf0d278cff16c472bfb0cb87983f9b10bcc2efaf9fc3a0",
+      "bytes": 30666
     },
     {
       "path": "scripts/hooks/_generated/scoring.js",
@@ -328,8 +328,8 @@
     },
     {
       "path": "skills/memesh/SKILL.md",
-      "sha256": "18af340cf55b8ef7c51337702b41f7794fefe9badae527e5c62e7bbe7bdc6f03",
-      "bytes": 34086
+      "sha256": "68b8ab13aa0e6bf159901d7326de4bfd077377fdf7eb8cc251a9220e05a79b7a",
+      "bytes": 34189
     }
   ]
 }

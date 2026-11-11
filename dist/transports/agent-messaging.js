@@ -191,10 +191,10 @@ function resolveCanonicalDelivery(db, project, recipient, messageId) {
     FROM agent_message_deliveries
     WHERE project = ? AND recipient = ? AND message_id = ?
   `).get(project, recipient, messageId);
+    const expired = expiredMessageErrorFor(db, project, recipient, messageId, 'read');
+    if (expired)
+        throw expired;
     if (!delivery) {
-        const expired = expiredMessageErrorFor(db, project, recipient, messageId, 'read');
-        if (expired)
-            throw expired;
         throw new AgentMessageAccessError(`Agent message ${messageId} is not available to recipient ${recipient} in project ${project}.`);
     }
     return delivery;

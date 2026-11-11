@@ -298,7 +298,8 @@ CREATE TABLE IF NOT EXISTS agent_retention_facts (
 -- the ones that did nothing; agent_message_expiries keeps only the id of a
 -- deleted message (no content) for a bounded time, so a
 -- later read of, or reply to, that id gets a specific answer: its sender and
--- recipient are kept only to decide who may be told that.
+-- recipient are kept only to decide who may be told that, and, for a message
+-- to another machine, where the network left it, for the sender's notice.
 CREATE TABLE IF NOT EXISTS agent_message_expiry_runs (
   run_id                  INTEGER PRIMARY KEY AUTOINCREMENT,
   started_at_ms           INTEGER NOT NULL,
@@ -330,7 +331,8 @@ CREATE TABLE IF NOT EXISTS agent_message_expiries (
   was_read                INTEGER NOT NULL,
   notice_message_id       TEXT,
   sender                  TEXT,
-  recipient               TEXT
+  recipient               TEXT,
+  network_json            TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_agent_message_events_recipient_sequence
@@ -577,14 +579,14 @@ export function migrateEntitiesSchema(db: MemeshDatabase): void {
     safeAlter(db, sql);
     messageColumns.add(column);
   };
-  // The expiry table shipped (unreleased) without these two; a database that
+  // The expiry table shipped (unreleased) without these columns; a database that
   // already created it gets them here.
   const expiryColumns = new Set(
     (db.prepare("PRAGMA table_info(agent_message_expiries)").all() as Array<{ name: string }>).map(
       (column) => column.name,
     ),
   );
-  for (const column of ['sender', 'recipient']) {
+  for (const column of ['sender', 'recipient', 'network_json']) {
     if (expiryColumns.size > 0 && !expiryColumns.has(column)) {
       safeAlter(db, `ALTER TABLE agent_message_expiries ADD COLUMN ${column} TEXT`);
     }

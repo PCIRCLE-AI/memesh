@@ -108,8 +108,9 @@ hosts should share memories. Not installed yet? Follow
    not, then deleted (its content stays in a local archive for one more day). If
    its recipient recorded no intake, acknowledgement or disposition and sent no
    reply, its sender receives one message from `memesh` per cleanup listing what
-   expired (poll your own recipient, then fetch); fetching, acknowledging or
-   replying to an expired id returns `message_expired`, so handle a message
+   expired (poll your own recipient, then fetch; for a message to another
+   computer it says whether it was delivered there, not what its recipient did);
+   fetching, acknowledging, checking `status` of or replying to an expired id returns `message_expired`, so handle a message
    within the day or ask for it again.
    Check a known inbox with the exact `project` and `recipient`; poll first,
    then fetch each returned `message_id`, then record `intake` for it: fetching alone does not

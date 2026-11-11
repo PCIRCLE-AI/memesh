@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
 import { AgentConversationLoopError, AgentIdempotencyConflictError, AgentMessagingError, agentHostKind, agentSessionHandle, resolveAgentSessionHandle, sendAgentMessage, } from '../core/agent-messaging.js';
+import { AGENT_MESSAGE_TTL_MS } from '../core/agent-message-ttl.js';
 import { parseSqliteUtcMs, sqliteUtcToIso } from '../core/time-utils.js';
 import { formatNetworkAddress, isLocalSenderName, parseNetworkAddress, projectHash } from './address.js';
 import { FRAME_VERSION, } from './frames.js';
 import { PRESENCE_TTL_MS } from './outbound.js';
-export const DELIVERY_WINDOW_MS = 24 * 60 * 60_000;
+export const DELIVERY_WINDOW_MS = AGENT_MESSAGE_TTL_MS;
 const BACKOFF_FIRST_MS = 5_000;
 const BACKOFF_MAX_MS = 5 * 60_000;
 export const NOTICE_SENDER = 'memesh-network';
