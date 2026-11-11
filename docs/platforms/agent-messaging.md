@@ -332,6 +332,20 @@ umask 077
 memesh-router
 ```
 
+The router ends itself when no host has been connected, and no delivery has
+been running, for 10 minutes: it writes the time to the database (`memesh doctor`
+shows it as the last idle exit), exits with status 0 and removes its socket (the
+startup lock is already released once it is listening). Nothing is lost, because
+messages are stored in the database and the next host connection starts a new
+router, which delivers the principal messages that are waiting. A sender that is
+not a host (HTTP, the CLI) starts the router the same way when it finds none, so
+`send` with `fallback_to_principal` and `discover` keep working. Set
+`MEMESH_ROUTER_IDLE_MS` (whole milliseconds) to change the time, or to `0` to keep
+the router running until it is stopped; `MEMESH_ROUTER_IDLE_CHECK_MS` (at least 50)
+sets how often it looks, 30 seconds by default. A missing router socket is
+therefore normal when no session is open. A router you start yourself with
+`memesh-router` ends the same way unless `MEMESH_ROUTER_IDLE_MS=0`.
+
 The socket path — `MEMESH_ROUTER_SOCKET` if set, otherwise derived from your
 MeMesh database location — must fit in the 103-byte limit a Unix domain
 socket allows. A long `HOME` or `MEMESH_DIR` can push the default path over
@@ -339,7 +353,7 @@ that limit; `memesh-router` then refuses to start, and `memesh doctor` names
 the path and its byte count. Set `MEMESH_ROUTER_SOCKET` to a shorter absolute
 path, or move `HOME`/`MEMESH_DIR` somewhere shorter, to fix it.
 
-If you start it yourself, leave that process running. In a second terminal,
+If you start it yourself and want it to stay, set `MEMESH_ROUTER_IDLE_MS=0` and leave that process running. In a second terminal,
 verify only the installed adapter imports and the live router socket separately:
 
 ```bash

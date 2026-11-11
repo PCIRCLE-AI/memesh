@@ -13,6 +13,7 @@ import { requirePrivateWritableDirectory } from '../core/file-mode.js';
 import { fileURLToPath } from 'node:url';
 import { maybeStartNetworkBridge } from '../network/auto-start.js';
 import { getDbPath } from '../core/paths.js';
+import { recordRouterIdleExit, routerIdleSettings, watchRouterIdle } from './router-idle.js';
 
 const dataDir = getMemeshDirFromDbPath();
 const socketFromEnv = process.env.MEMESH_ROUTER_SOCKET;
@@ -42,6 +43,7 @@ function reportFailure(error: unknown): never {
 }
 
 let router: AgentRouter;
+let database: ReturnType<typeof openDatabase>;
 try {
   assertSecureLocalHostRuntimeSupported();
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
@@ -55,7 +57,7 @@ try {
     return actual.length === expected.length && timingSafeEqual(actual, expected);
   };
 
-  const db = openDatabase();
+  const db = database = openDatabase();
   router = new AgentRouter({
     db,
     socket_path: socketPath,
@@ -84,4 +86,22 @@ async function shutdown(): Promise<void> {
 process.once('SIGINT', () => { void shutdown().finally(() => process.exit(0)); });
 process.once('SIGTERM', () => { void shutdown().finally(() => process.exit(0)); });
 
-router.start().catch(reportFailure);
+router.start().then(() => {
+  // Nothing else ever stops this process, so it leaves when no host has been connected, and
+  // nothing has been delivered, for a while. The next host connection starts a new one.
+  const { idleMs, checkMs } = routerIdleSettings(process.env);
+  watchRouterIdle({
+    db: database,
+    idleMs,
+    checkMs,
+    onIdle: () => {
+      // The hosts start this process with its output discarded, so the database is the only place a
+      // record can last: `memesh doctor` reads it to tell an idle exit from a crash. A record that cannot
+      // be written is said on stderr (which only a manual start shows) and never stops the exit.
+      try { recordRouterIdleExit(database); } catch (error) {
+        try { process.stderr.write(`MeMesh router: could not record its idle exit: ${error instanceof Error ? error.message : String(error)}\n`); } catch { /* stderr gone */ }
+      }
+      void shutdown().finally(() => process.exit(0));
+    },
+  });
+}).catch(reportFailure);

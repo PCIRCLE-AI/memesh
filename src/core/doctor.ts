@@ -43,6 +43,7 @@ import { getAgentMessageStorageReport } from './agent-message-storage.js';
 import { HANDLED_RECEIPT_KINDS_SQL } from './agent-messaging.js';
 import { readHostConfigFile } from '../host-runtime/config.js';
 import { journeyRecordPath, readJourneyRecord } from './doctor-journey.js';
+import { readRouterIdleExit } from '../host-runtime/router-idle.js';
 
 export type DoctorCheckStatus = 'pass' | 'warn' | 'fail';
 export type DoctorOverallStatus = 'PASS' | 'PASS_WITH_CONCERNS' | 'FAIL';
@@ -3423,6 +3424,7 @@ async function defaultMessageRouterStatusProbe(): Promise<MessageRouterStatusPro
 async function inspectMessageRouterStatus(
   enabled: boolean,
   probe: () => Promise<MessageRouterStatusProbe>,
+  lastIdleExit?: string,
 ): Promise<DoctorCheck> {
   if (!enabled) {
     return createInfo(
@@ -3445,8 +3447,8 @@ async function inspectMessageRouterStatus(
         'message-router-status',
         'Live message router / host registration',
         'warn',
-        `No Local router socket exists at ${result.socket_path}. No active host is registered through this router, and MeMesh will not wake a stopped or missing session.`,
-        'Start the owner-configured router with `memesh-router`, then run this opt-in probe again.',
+        `No Local router socket exists at ${result.socket_path}. No active host is registered through this router, and MeMesh will not wake a stopped or missing session.${lastIdleExit ? ` The router last ended itself for idleness at ${lastIdleExit}.` : ' No idle exit of the router is recorded, so if a session was open a moment ago the router may have stopped for another reason.'}`,
+        'The router ends itself after 10 minutes (MEMESH_ROUTER_IDLE_MS) with no host connected and nothing being delivered, so a missing socket is normal while no session is open; a host session or a message send starts it again. To check it now, start a session or the owner-configured router with `memesh-router`, then run this opt-in probe again.',
         { code: 'message-router.socket-missing', params: { path: result.socket_path } },
       );
     case 'path-too-long':
@@ -3560,8 +3562,11 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   // Staging here means the block emits exactly one `database` row, whichever
   // way it ends.
   const dbChecks: DoctorCheck[] = [];
+  let lastRouterIdleExit: string | undefined;
   try {
     const db = openDatabaseImpl(databasePath) as unknown as DatabaseLike;
+    // Only wording in the router row: when it cannot be read the row says no idle exit is recorded.
+    try { lastRouterIdleExit = readRouterIdleExit(db as unknown as MemeshDatabase); } catch { lastRouterIdleExit = undefined; }
     const count =
       (db.prepare('SELECT COUNT(*) as c FROM entities').get() as { c?: number } | undefined)?.c ?? 0;
     // #520: a database the owner made read-only opens for reads, so say it
@@ -3939,7 +3944,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   checks.push(inspectShellCli(install, packageRoot, packageVersion, resolveShellMemeshImpl, existsSyncImpl, readFileSyncImpl));
   checks.push(verifySkillsManifest(packageRoot, existsSyncImpl, readFileSyncImpl, installSupport));
   checks.push(inspectMessageCapability(packageRoot, probeMessageCapability, messageCapabilityProbeImpl));
-  checks.push(await inspectMessageRouterStatus(probeMessageRouterStatus, messageRouterStatusProbeImpl));
+  checks.push(await inspectMessageRouterStatus(probeMessageRouterStatus, messageRouterStatusProbeImpl, lastRouterIdleExit));
   checks.push(inspectInstallJourney(packageVersion));
 
   checks.push(await inspectUpdateStatus(packageVersion, getUpdateCheckImpl, installSupport, packageRoot, statSyncImpl));

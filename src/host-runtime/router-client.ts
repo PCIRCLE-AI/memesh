@@ -741,6 +741,7 @@ function requiredNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
 }
 
+/** The connection failed because no router is listening (no socket, or a socket nobody answers on). */
 function isRouterUnavailable(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException | undefined)?.code;
   return code === 'ENOENT' || code === 'ECONNREFUSED';

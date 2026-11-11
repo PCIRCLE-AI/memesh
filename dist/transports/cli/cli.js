@@ -37078,6 +37078,115 @@ var init_config2 = __esm({
   }
 });
 
+// dist/host-runtime/package-version.js
+import { readFileSync } from "node:fs";
+var init_package_version = __esm({
+  "dist/host-runtime/package-version.js"() {
+    "use strict";
+  }
+});
+
+// dist/host-runtime/router-client.js
+import { spawn as spawn3 } from "node:child_process";
+import { randomUUID as randomUUID5 } from "node:crypto";
+import fs23 from "node:fs";
+import net2 from "node:net";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+function waitForSocketConnect(socket) {
+  return new Promise((resolve2, reject) => {
+    const cleanup = () => {
+      socket.off("connect", onConnect);
+      socket.off("error", onError);
+      socket.off("close", onClose);
+    };
+    const onConnect = () => {
+      cleanup();
+      resolve2();
+    };
+    const onError = (error62) => {
+      cleanup();
+      reject(error62);
+    };
+    const onClose = () => {
+      cleanup();
+      reject(new RouterTransportError("Router disconnected before connection."));
+    };
+    socket.once("connect", onConnect);
+    socket.once("error", onError);
+    socket.once("close", onClose);
+  });
+}
+function packagedRouterEntrypoint() {
+  const candidates = ["./router.js", "../host-runtime/router.js", "../../host-runtime/router.js"].map((relative) => fileURLToPath2(new URL(relative, import.meta.url)));
+  return candidates.find((candidate) => fs23.existsSync(candidate)) ?? candidates[0];
+}
+function spawnPackagedRouter() {
+  const entrypoint = packagedRouterEntrypoint();
+  return spawn3(process.execPath, [entrypoint], { detached: true, shell: false, stdio: "ignore" });
+}
+async function routerAcceptsConnections(socketPath) {
+  const socket = net2.createConnection(socketPath);
+  try {
+    await waitForSocketConnect(socket);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    socket.destroy();
+  }
+}
+async function startRouterIfDown(socketPath, error62) {
+  if (!isRouterUnavailable(error62))
+    return false;
+  await startRouterAndWait(socketPath);
+  return true;
+}
+async function startRouterAndWait(socketPath) {
+  const child = spawnPackagedRouter();
+  let spawnError;
+  let exited;
+  child.once("error", (error62) => {
+    spawnError = error62;
+  });
+  child.once("exit", (code) => {
+    exited = { at: Date.now(), code };
+  });
+  const deadline = Date.now() + ROUTER_START_TIMEOUT_MS;
+  for (; ; ) {
+    if (await routerAcceptsConnections(socketPath)) {
+      child.unref();
+      return;
+    }
+    if (spawnError)
+      throw spawnError;
+    if (exited && Date.now() - exited.at > ROUTER_START_EXIT_GRACE_MS) {
+      throw new Error(`the router stopped right after starting (exit code ${exited.code ?? "none"})`);
+    }
+    if (Date.now() > deadline) {
+      child.kill();
+      throw new Error(`the router did not start within ${ROUTER_START_TIMEOUT_MS / 1e3} seconds`);
+    }
+    await new Promise((resolve2) => setTimeout(resolve2, 50));
+  }
+}
+function isRouterUnavailable(error62) {
+  const code = error62?.code;
+  return code === "ENOENT" || code === "ECONNREFUSED";
+}
+var ROUTER_START_TIMEOUT_MS, ROUTER_START_EXIT_GRACE_MS, RouterTransportError;
+var init_router_client = __esm({
+  "dist/host-runtime/router-client.js"() {
+    "use strict";
+    init_agent_router();
+    init_config2();
+    init_package_version();
+    ROUTER_START_TIMEOUT_MS = 8e3;
+    ROUTER_START_EXIT_GRACE_MS = 1e3;
+    RouterTransportError = class extends Error {
+    };
+  }
+});
+
 // dist/core/why.js
 var why_exports = {};
 __export(why_exports, {
@@ -65531,6 +65640,26 @@ var init_guards = __esm({
   }
 });
 
+// dist/host-runtime/router-idle.js
+function readRouterIdleExit(db2) {
+  try {
+    const row = db2.prepare("SELECT value FROM memesh_metadata WHERE key = ?").get(ROUTER_IDLE_EXIT_KEY);
+    return typeof row?.value === "string" ? row.value : void 0;
+  } catch (error62) {
+    if (/no such table: memesh_metadata/.test(error62 instanceof Error ? error62.message : String(error62)))
+      return void 0;
+    throw error62;
+  }
+}
+var DEFAULT_ROUTER_IDLE_MS, ROUTER_IDLE_EXIT_KEY;
+var init_router_idle = __esm({
+  "dist/host-runtime/router-idle.js"() {
+    "use strict";
+    DEFAULT_ROUTER_IDLE_MS = 10 * 6e4;
+    ROUTER_IDLE_EXIT_KEY = "router_idle_exit_at";
+  }
+});
+
 // dist/core/doctor.js
 var doctor_exports = {};
 __export(doctor_exports, {
@@ -66998,7 +67127,7 @@ async function defaultMessageRouterStatusProbe() {
   });
   return { socket_path: socketPath, socket: reachable ? "reachable" : "unreachable" };
 }
-async function inspectMessageRouterStatus(enabled, probe) {
+async function inspectMessageRouterStatus(enabled, probe, lastIdleExit) {
   if (!enabled) {
     return createInfo("message-router-status", "Live message router / host registration", "Not verified (opt-in). Set MEMESH_DOCTOR_PROBE_MESSAGE_ROUTER=1 to check only whether the owner-private Local router socket is live. This check never starts a router, registers a host, sends a message, or wakes a stopped session.");
   }
@@ -67007,7 +67136,7 @@ async function inspectMessageRouterStatus(enabled, probe) {
     case "reachable":
       return createCheck("message-router-status", "Live message router / host registration", "pass", `Owner-private Local router socket is reachable at ${result.socket_path}. This proves only router availability; it does not prove an active host registration, native delivery, host_accept, ACK, or stopped-session wake-up.`);
     case "missing":
-      return createCheck("message-router-status", "Live message router / host registration", "warn", `No Local router socket exists at ${result.socket_path}. No active host is registered through this router, and MeMesh will not wake a stopped or missing session.`, "Start the owner-configured router with `memesh-router`, then run this opt-in probe again.", { code: "message-router.socket-missing", params: { path: result.socket_path } });
+      return createCheck("message-router-status", "Live message router / host registration", "warn", `No Local router socket exists at ${result.socket_path}. No active host is registered through this router, and MeMesh will not wake a stopped or missing session.${lastIdleExit ? ` The router last ended itself for idleness at ${lastIdleExit}.` : " No idle exit of the router is recorded, so if a session was open a moment ago the router may have stopped for another reason."}`, "The router ends itself after 10 minutes (MEMESH_ROUTER_IDLE_MS) with no host connected and nothing being delivered, so a missing socket is normal while no session is open; a host session or a message send starts it again. To check it now, start a session or the owner-configured router with `memesh-router`, then run this opt-in probe again.", { code: "message-router.socket-missing", params: { path: result.socket_path } });
     case "path-too-long":
       return createCheck("message-router-status", "Live message router / host registration", "fail", `The router socket path is ${result.detail} \u2014 over the ${AGENT_ROUTER_SOCKET_PATH_MAX_BYTES}-byte limit a Unix domain socket allows, so \`memesh-router\` cannot create it at ${result.socket_path}. Starting the router again fails the same way.`, "Set MEMESH_ROUTER_SOCKET to a shorter absolute path, or move HOME / MEMESH_DIR somewhere with a shorter path, then start `memesh-router` again.", { code: "message-router.socket-path-too-long", params: { path: result.socket_path, bytes: result.detail ?? "unknown" } });
     case "insecure":
@@ -67034,8 +67163,14 @@ async function runDoctor(options) {
   checks.push(createCheck("install-channel", "Install method", install === "unknown" ? "warn" : "pass", `Install method detected: ${installSupport.label}.`, install === "unknown" ? "If this is a source checkout, run MeMesh from the repo root. If this is a packaged install, reinstall with `npm install -g @pcircle/memesh`." : void 0, install === "unknown" ? { code: "install-channel.unknown" } : void 0));
   const databasePath = resolveDatabasePath();
   const dbChecks = [];
+  let lastRouterIdleExit;
   try {
     const db2 = openDatabaseImpl(databasePath);
+    try {
+      lastRouterIdleExit = readRouterIdleExit(db2);
+    } catch {
+      lastRouterIdleExit = void 0;
+    }
     const count = db2.prepare("SELECT COUNT(*) as c FROM entities").get()?.c ?? 0;
     const writeBack = ownerWriteCommand(databasePath);
     const folder = readOnlyFolderState();
@@ -67177,7 +67312,7 @@ async function runDoctor(options) {
   checks.push(inspectShellCli(install, packageRoot3, packageVersion2, resolveShellMemeshImpl, existsSyncImpl, readFileSyncImpl));
   checks.push(verifySkillsManifest(packageRoot3, existsSyncImpl, readFileSyncImpl, installSupport));
   checks.push(inspectMessageCapability(packageRoot3, probeMessageCapability, messageCapabilityProbeImpl));
-  checks.push(await inspectMessageRouterStatus(probeMessageRouterStatus, messageRouterStatusProbeImpl));
+  checks.push(await inspectMessageRouterStatus(probeMessageRouterStatus, messageRouterStatusProbeImpl, lastRouterIdleExit));
   checks.push(inspectInstallJourney(packageVersion2));
   checks.push(await inspectUpdateStatus(packageVersion2, getUpdateCheckImpl, installSupport, packageRoot3, statSyncImpl));
   try {
@@ -67251,6 +67386,7 @@ var init_doctor = __esm({
     init_agent_messaging();
     init_config2();
     init_doctor_journey();
+    init_router_idle();
     EXPECTED_HOOK_TYPES = ["PreToolUse", "SessionStart", "PostToolUse", "Stop", "PreCompact"];
     AGENT_MESSAGE_STORAGE_QUOTA_ENV2 = "MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES";
     LOCALE_README_FILES = [
@@ -68790,6 +68926,7 @@ var init_server = __esm({
     init_briefing_index();
     init_schemas3();
     init_agent_messaging2();
+    init_router_client();
     init_version_check();
     init_install_channel();
     init_paths();
@@ -68968,7 +69105,7 @@ var init_server = __esm({
             transport: "http",
             sourceHost: "http",
             signal: controller.signal
-          });
+          }, { startRouterIfDown });
         } finally {
           cleanupListeners();
         }
@@ -71124,106 +71261,8 @@ function verifyExport(data, key) {
   return timingSafeEqual(expected, Buffer.from(claimed.mac, "hex")) ? "valid" : "invalid";
 }
 
-// dist/host-runtime/router-client.js
-init_agent_router();
-init_config2();
-import { spawn as spawn3 } from "node:child_process";
-import { randomUUID as randomUUID5 } from "node:crypto";
-import fs23 from "node:fs";
-import net2 from "node:net";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
-
-// dist/host-runtime/package-version.js
-import { readFileSync } from "node:fs";
-
-// dist/host-runtime/router-client.js
-var ROUTER_START_TIMEOUT_MS = 8e3;
-var ROUTER_START_EXIT_GRACE_MS = 1e3;
-var RouterTransportError = class extends Error {
-};
-function waitForSocketConnect(socket) {
-  return new Promise((resolve2, reject) => {
-    const cleanup = () => {
-      socket.off("connect", onConnect);
-      socket.off("error", onError);
-      socket.off("close", onClose);
-    };
-    const onConnect = () => {
-      cleanup();
-      resolve2();
-    };
-    const onError = (error62) => {
-      cleanup();
-      reject(error62);
-    };
-    const onClose = () => {
-      cleanup();
-      reject(new RouterTransportError("Router disconnected before connection."));
-    };
-    socket.once("connect", onConnect);
-    socket.once("error", onError);
-    socket.once("close", onClose);
-  });
-}
-function packagedRouterEntrypoint() {
-  const candidates = ["./router.js", "../host-runtime/router.js", "../../host-runtime/router.js"].map((relative) => fileURLToPath2(new URL(relative, import.meta.url)));
-  return candidates.find((candidate) => fs23.existsSync(candidate)) ?? candidates[0];
-}
-function spawnPackagedRouter() {
-  const entrypoint = packagedRouterEntrypoint();
-  return spawn3(process.execPath, [entrypoint], { detached: true, shell: false, stdio: "ignore" });
-}
-async function routerAcceptsConnections(socketPath) {
-  const socket = net2.createConnection(socketPath);
-  try {
-    await waitForSocketConnect(socket);
-    return true;
-  } catch {
-    return false;
-  } finally {
-    socket.destroy();
-  }
-}
-async function startRouterIfDown(socketPath, error62) {
-  if (!isRouterUnavailable(error62))
-    return false;
-  await startRouterAndWait(socketPath);
-  return true;
-}
-async function startRouterAndWait(socketPath) {
-  const child = spawnPackagedRouter();
-  let spawnError;
-  let exited;
-  child.once("error", (error62) => {
-    spawnError = error62;
-  });
-  child.once("exit", (code) => {
-    exited = { at: Date.now(), code };
-  });
-  const deadline = Date.now() + ROUTER_START_TIMEOUT_MS;
-  for (; ; ) {
-    if (await routerAcceptsConnections(socketPath)) {
-      child.unref();
-      return;
-    }
-    if (spawnError)
-      throw spawnError;
-    if (exited && Date.now() - exited.at > ROUTER_START_EXIT_GRACE_MS) {
-      throw new Error(`the router stopped right after starting (exit code ${exited.code ?? "none"})`);
-    }
-    if (Date.now() > deadline) {
-      child.kill();
-      throw new Error(`the router did not start within ${ROUTER_START_TIMEOUT_MS / 1e3} seconds`);
-    }
-    await new Promise((resolve2) => setTimeout(resolve2, 50));
-  }
-}
-function isRouterUnavailable(error62) {
-  const code = error62?.code;
-  return code === "ENOENT" || code === "ECONNREFUSED";
-}
-
 // dist/transports/cli/cli.js
+init_router_client();
 init_install_channel();
 init_file_mode();
 

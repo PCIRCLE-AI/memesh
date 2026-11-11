@@ -12,6 +12,7 @@ import { requirePrivateWritableDirectory } from '../core/file-mode.js';
 import { fileURLToPath } from 'node:url';
 import { maybeStartNetworkBridge } from '../network/auto-start.js';
 import { getDbPath } from '../core/paths.js';
+import { recordRouterIdleExit, routerIdleSettings, watchRouterIdle } from './router-idle.js';
 const dataDir = getMemeshDirFromDbPath();
 const socketFromEnv = process.env.MEMESH_ROUTER_SOCKET;
 const socketPath = socketFromEnv ?? getAgentRouterSocketPath();
@@ -39,6 +40,7 @@ function reportFailure(error) {
     process.exit(1);
 }
 let router;
+let database;
 try {
     assertSecureLocalHostRuntimeSupported();
     fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
@@ -51,7 +53,7 @@ try {
         const expected = Buffer.from(expectedToken);
         return actual.length === expected.length && timingSafeEqual(actual, expected);
     };
-    const db = openDatabase();
+    const db = database = openDatabase();
     router = new AgentRouter({
         db,
         socket_path: socketPath,
@@ -75,5 +77,24 @@ async function shutdown() {
 }
 process.once('SIGINT', () => { void shutdown().finally(() => process.exit(0)); });
 process.once('SIGTERM', () => { void shutdown().finally(() => process.exit(0)); });
-router.start().catch(reportFailure);
+router.start().then(() => {
+    const { idleMs, checkMs } = routerIdleSettings(process.env);
+    watchRouterIdle({
+        db: database,
+        idleMs,
+        checkMs,
+        onIdle: () => {
+            try {
+                recordRouterIdleExit(database);
+            }
+            catch (error) {
+                try {
+                    process.stderr.write(`MeMesh router: could not record its idle exit: ${error instanceof Error ? error.message : String(error)}\n`);
+                }
+                catch { }
+            }
+            void shutdown().finally(() => process.exit(0));
+        },
+    });
+}).catch(reportFailure);
 //# sourceMappingURL=router.js.map

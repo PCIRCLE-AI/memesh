@@ -5105,6 +5105,29 @@ describe('doctor rows that had no assertion', () => {
       expect(check.code).toBe('message-router.socket-missing');
       expect(check.summary).toContain('No active host is registered');
       expect(check.summary).toContain('will not wake a stopped or missing session');
+      expect(check.summary).toContain('No idle exit of the router is recorded');
+      expect(check.fix).toContain('ends itself after 10 minutes (MEMESH_ROUTER_IDLE_MS)');
+      expect(check.fix).toContain('a message send starts it again');
+    });
+
+    it('says when the router last ended itself for idleness, so that is not mistaken for a crash', async () => {
+      const packageRoot = createPackageRoot();
+      tempRoots.push(packageRoot);
+      isolateMemeshDir();
+      const db = makeDatabase(3) as unknown as { prepare: (sql: string) => unknown };
+      const original = db.prepare.bind(db);
+      db.prepare = (sql: string) => sql.includes('memesh_metadata WHERE key = ?')
+        ? { get: () => ({ value: '2026-11-11T10:00:00.000Z' }) }
+        : original(sql);
+
+      const check = row(await runDoctorImpl(options(packageRoot, {
+        openDatabaseImpl: () => db as never,
+        probeMessageRouterStatus: true,
+        messageRouterStatusProbeImpl: async () => ({ socket_path: '/tmp/memesh-router.sock', socket: 'missing', detail: 'ENOENT' }),
+      })), 'message-router-status');
+
+      expect(check.summary).toContain('The router last ended itself for idleness at 2026-11-11T10:00:00.000Z.');
+      expect(check.summary).not.toContain('No idle exit of the router is recorded');
     });
 
     // #404 — a socket path over the 103-byte limit also has no file on disk,

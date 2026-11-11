@@ -21,6 +21,7 @@ import { readBriefingIndex } from '../../core/briefing.js';
 import { INDEX_STALE_DAYS } from '../../core/briefing-index.js';
 import { RememberSchema as RememberBody, RecallSchema as RecallBody, ForgetSchema as ForgetBody, ExportSchema as ExportBody, ImportSchema as ImportBody, HttpLearnSchema as LearnBody, WhySchema as WhyBody, MessageSchema as MessageBody, } from '../schemas.js';
 import { executeAgentMessageAction } from '../agent-messaging.js';
+import { startRouterIfDown } from '../../host-runtime/router-client.js';
 import { checkForUpdate, getLastUpdateCheck, getUpdateCheck } from '../../core/version-check.js';
 import { getCurrentInstallChannel, getInstallChannelSupport } from '../../core/install-channel.js';
 import { getDbPath, getMemeshDirFromDbPath, redactTextValues, redactUserPaths } from '../../core/paths.js';
@@ -427,7 +428,7 @@ app.post('/v1/message', (req, res) => {
                 transport: 'http',
                 sourceHost: 'http',
                 signal: controller.signal,
-            });
+            }, { startRouterIfDown });
         }
         finally {
             cleanupListeners();
