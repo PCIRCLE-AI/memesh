@@ -13,13 +13,13 @@ const { hookCommands, binTargets } = require('../scripts/lib/executable-targets.
 
 describe('Installation Verification', () => {
   describe('Prerequisites', () => {
-    it('runs on the published Node 22.13+ floor', () => {
+    it('runs on the published Node 22.16+ floor', () => {
       const version = execFileSync('node', ['-v'], { encoding: 'utf8' }).trim();
       const [major, minor] = version.slice(1).split('.').map(Number);
-      expect(major > 22 || (major === 22 && minor >= 13)).toBe(true);
+      expect(major > 22 || (major === 22 && minor >= 16)).toBe(true);
       const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-      expect(pkg.engines.node).toBe('>=22.13.0');
-      expect(fs.readFileSync('llms-install.md', 'utf8')).toContain('v22.13.0');
+      expect(pkg.engines.node).toBe('>=22.16.0');
+      expect(fs.readFileSync('llms-install.md', 'utf8')).toContain('v22.16.0');
     });
   });
 

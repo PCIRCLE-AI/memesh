@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import {
   ensurePrivateDir, getDbPath, getMemeshDirFromDbPath, HOOK_BUSY_TIMEOUT_MS,
   hookErrorReason, hookMessageSessionId, isCodexHost, openMemeshDb,
-  recordHookOutcome, resolveMessageRecipient, SKIP_REASONS, waitingMessageRefs, writePrivateJson,
+  recordHookOutcome, resolveMessageRecipient, SKIP_REASONS, waitingMessageRefs, writePrivateJson, hookNodeProblem, NODE_TOO_OLD_REASON,
 } from './_shared.js';
 import { pruneSessionState, SESSION_ID_RE } from './_stop-notes.js';
 
@@ -73,6 +73,10 @@ process.stdin.on('end', () => {
     if (session.mismatch) { record('skipped', SKIP_REASONS.busyNoticeSessionMismatch); return; }
     const recipient = resolveMessageRecipient(process.env, undefined, { sessionId, cwd: payload.cwd });
     const dbPath = process.env.MEMESH_DB_PATH ?? getDbPath();
+    if (recipient && hookNodeProblem('codex-busy-message-notice')) {
+      record('error', NODE_TOO_OLD_REASON);
+      return;
+    }
     if (!recipient || !existsSync(dbPath)) { record('skipped', SKIP_REASONS.busyNoticeNoRecipient); return; }
     const dir = join(getMemeshDirFromDbPath(), 'codex-busy-message-notice');
     const statePath = join(dir, `${sessionId}.json`);

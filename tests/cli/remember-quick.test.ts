@@ -38,7 +38,7 @@ async function bundleCliFromSource(): Promise<void> {
     bundle: true,
     platform: 'node',
     format: 'esm',
-    target: 'node22.13',
+    target: 'node22.16',
     packages: 'bundle',
     external: ['node:*'],
     legalComments: 'none',

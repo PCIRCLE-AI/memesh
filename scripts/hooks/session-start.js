@@ -74,6 +74,8 @@ import {
   openMemeshDb,
   sessionProjectLine,
   jsonStringLiteral,
+  hookNodeProblem,
+  NODE_TOO_OLD_REASON,
 } from './_shared.js';
 import { recordSessionLauncher } from './_clear-alias.js';
 import { recallListName, SESSION_ID_RE } from './_stop-notes.js';
@@ -1267,6 +1269,18 @@ process.stdin.on('end', async () => {
     if (onClaudeCode) {
       const launcherOutcome = recordLauncherSession(data, claudeLauncher);
       if (data.source === 'clear' || launcherWriteFailed(launcherOutcome)) record(launcherOutcome);
+    }
+
+    // Before the no-database branch: on a Node below the floor the database
+    // can never be created, so "memories will be created as you work" is false.
+    const nodeProblem = hookNodeProblem('session-start');
+    if (nodeProblem) {
+      output(
+        withChannelFlagWarning(withRecipientRejectionWarning(withAddressLine(withCaptureWarning(`MeMesh: ${nodeProblem}`)))),
+        recipientRejectionLine ?? addressLine ?? null,
+        { outcome: 'error', reason: NODE_TOO_OLD_REASON },
+      );
+      return;
     }
 
     if (!existsSync(dbPath)) {

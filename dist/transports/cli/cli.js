@@ -3488,21 +3488,91 @@ function loadNodeSqlite() {
   try {
     return require2("node:sqlite");
   } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    throw new Error(`memesh needs Node's built-in SQLite, which this runtime (${process.version}) does not provide. It became usable without a flag in Node 22.13.0 \u2014 upgrade Node to 22.13 or newer and run memesh again. (${detail})`, { cause: err });
+    return { missing: err instanceof Error ? err.message : String(err) };
   } finally {
     process.emitWarning = original;
   }
 }
-var DatabaseSync, BUSY_TIMEOUT_MS, MemeshDatabase;
+function isUnsupportedNode(err) {
+  return err?.code === "NODE_TOO_OLD";
+}
+function atLeastMinimumNode(version2) {
+  const want = MIN_NODE_VERSION.split(".").map(Number);
+  const have = version2.replace(/^v/, "").split(".").map((part) => Number.parseInt(part, 10));
+  for (let i = 0; i < 3; i++) {
+    const h = have[i];
+    if (!Number.isFinite(h))
+      return false;
+    if (h !== want[i])
+      return h > want[i];
+  }
+  return true;
+}
+function fts5ProbeResult(createFtsTable) {
+  try {
+    createFtsTable();
+    return true;
+  } catch (err) {
+    if (/no such module/i.test(err instanceof Error ? err.message : String(err)))
+      return false;
+    throw err;
+  }
+}
+function hasFts5() {
+  if (ftsProbe === void 0) {
+    const probe = new DatabaseSync(":memory:");
+    try {
+      ftsProbe = fts5ProbeResult(() => probe.exec("CREATE VIRTUAL TABLE memesh_fts5_probe USING fts5(a)"));
+    } finally {
+      try {
+        probe.close();
+      } catch {
+      }
+    }
+  }
+  return ftsProbe;
+}
+function nodeSupportProblem(version2 = process.versions.node, fts5Available = hasFts5) {
+  const shown = version2.replace(/^v/, "");
+  if (!atLeastMinimumNode(version2)) {
+    return `This Node (v${shown}) lacks the full-text search MeMesh needs; upgrade to Node ${MIN_NODE_SERIES} or newer and run memesh again.`;
+  }
+  if (!fts5Available()) {
+    return `This Node build (v${shown}) lacks the full-text search (FTS5) MeMesh needs; install the official Node ${MIN_NODE_SERIES} or newer from nodejs.org and run memesh again.`;
+  }
+  return null;
+}
+function assertNodeSupported() {
+  const problem = nodeSupportProblem();
+  if (problem)
+    throw new UnsupportedNodeError(problem);
+}
+var loadedSqlite, MissingDatabaseSync, DatabaseSync, MIN_NODE_VERSION, MIN_NODE_SERIES, UnsupportedNodeError, ftsProbe, BUSY_TIMEOUT_MS, MemeshDatabase;
 var init_sqlite = __esm({
   "dist/storage/sqlite.js"() {
     "use strict";
-    ({ DatabaseSync } = loadNodeSqlite());
+    loadedSqlite = loadNodeSqlite();
+    MissingDatabaseSync = class {
+      constructor() {
+        const detail = "missing" in loadedSqlite ? loadedSqlite.missing : "unknown";
+        throw new UnsupportedNodeError(`memesh needs Node's built-in SQLite, which this runtime (${process.version}) does not provide. Upgrade Node to ${MIN_NODE_SERIES} or newer and run memesh again. (${detail})`);
+      }
+    };
+    DatabaseSync = "DatabaseSync" in loadedSqlite ? loadedSqlite.DatabaseSync : MissingDatabaseSync;
+    MIN_NODE_VERSION = "22.16.0";
+    MIN_NODE_SERIES = MIN_NODE_VERSION.split(".").slice(0, 2).join(".");
+    UnsupportedNodeError = class extends Error {
+      code = "NODE_TOO_OLD";
+      constructor(message) {
+        super(message);
+        this.name = "UnsupportedNodeError";
+      }
+    };
     BUSY_TIMEOUT_MS = 3e4;
     MemeshDatabase = class extends DatabaseSync {
       #depth = 0;
       constructor(path38, options = {}) {
+        assertNodeSupported();
         super(path38, options);
         this.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
       }
@@ -67363,7 +67433,10 @@ function diagnoseDatabaseFailure(err, databasePath, existsSyncImpl = fs32.exists
   let diagnosis;
   let fix;
   const ownFix = err?.fix;
-  if (typeof ownFix === "string") {
+  if (isUnsupportedNode(err)) {
+    diagnosis = message;
+    fix = `Upgrade Node to ${MIN_NODE_SERIES} or newer, then run memesh again`;
+  } else if (typeof ownFix === "string") {
     diagnosis = message;
     fix = runOrSay(ownFix);
   } else if (/database is locked|SQLITE_BUSY/i.test(message)) {
@@ -67422,6 +67495,7 @@ function diagnoseDatabaseFailure(err, databasePath, existsSyncImpl = fs32.exists
 var init_database_diagnosis = __esm({
   "dist/core/database-diagnosis.js"() {
     "use strict";
+    init_sqlite();
     init_file_mode();
   }
 });
@@ -67507,6 +67581,16 @@ var init_install_id = __esm({
     init_paths();
     init_file_mode();
     SCHEMA_VERSION = 1;
+  }
+});
+
+// dist/core/sentence.js
+function withoutFinalPeriod(text) {
+  return text.replace(/\.\s*$/, "");
+}
+var init_sentence = __esm({
+  "dist/core/sentence.js"() {
+    "use strict";
   }
 });
 
@@ -67862,6 +67946,11 @@ function inspectLocaleReadmeParity(packageRoot3, existsSyncImpl, readFileSyncImp
 function resolveDatabasePath() {
   return getDbPath();
 }
+function queryFailedSummary(err, detail, what, unknownMeans) {
+  if (isUnsupportedNode(err))
+    return NODE_TOO_OLD_SEE_DATABASE_ROW;
+  return `Could not read ${what} from the database: ${withoutFinalPeriod(detail)}. ${unknownMeans}`;
+}
 function openDatabaseForDoctor(dbPath, opts = {}) {
   const target = dbPath ?? getDbPath();
   if (!fs35.existsSync(target))
@@ -67888,6 +67977,8 @@ function schemaBehindNote(databasePath = getDbPath()) {
   return `${base}: ${update}`;
 }
 function queryFailedFix(err) {
+  if (isUnsupportedNode(err))
+    return NODE_TOO_OLD_FIX;
   const fix = err?.fix;
   if (typeof fix === "string") {
     return `MeMesh did not open the database because of its permissions; the Database row above explains why. ${runOrSay(fix)}`;
@@ -68441,7 +68532,7 @@ function inspectHookActivity(openDatabaseImpl, closeDatabaseImpl, existsSyncImpl
     if (isSchemaBehind(err))
       return createInfo("hook-activity", TITLE, `Not checked: ${schemaBehindNote()}`);
     const detail = err instanceof Error ? err.message : String(err);
-    return createCheck("hook-activity", TITLE, "fail", `Could not read hook activity from the database: ${detail}. Capture health is unknown, which is not the same as healthy.`, queryFailedFix(err), { code: "hook-activity.query-failed", params: { detail } });
+    return createCheck("hook-activity", TITLE, "fail", queryFailedSummary(err, detail, "hook activity", "Capture health is unknown, which is not the same as healthy."), queryFailedFix(err), { code: "hook-activity.query-failed", params: { detail } });
   } finally {
     try {
       if (db2)
@@ -68544,7 +68635,7 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
       return { check: createInfo("capture-liveness", TITLE, `Not checked: ${schemaBehindNote()}`) };
     const detail = err instanceof Error ? err.message : String(err);
     return {
-      check: createCheck("capture-liveness", TITLE, "fail", `Could not read capture liveness from the database: ${detail}. Whether anything is being saved is unknown, which is not the same as healthy.`, queryFailedFix(err), { code: "capture-liveness.query-failed", params: { detail } })
+      check: createCheck("capture-liveness", TITLE, "fail", queryFailedSummary(err, detail, "capture liveness", "Whether anything is being saved is unknown, which is not the same as healthy."), queryFailedFix(err), { code: "capture-liveness.query-failed", params: { detail } })
     };
   } finally {
     try {
@@ -68679,7 +68770,7 @@ function defaultNativeBindingProbe(_packageRoot) {
     }
     return { ok: true };
   } catch (err) {
-    return { ok: false, message: err instanceof Error ? err.message : String(err) };
+    return { ok: false, message: err instanceof Error ? err.message : String(err), nodeTooOld: isUnsupportedNode(err) };
   }
 }
 function satisfiesMinimumNodeRange(version2, range) {
@@ -68731,7 +68822,13 @@ function hasBuiltInSqlite() {
 }
 function inspectNativeBinding(packageRoot3, _existsSyncImpl, probeImpl = defaultNativeBindingProbe) {
   const result = probeImpl(packageRoot3);
-  return result.ok ? createCheck("native-binding", "SQLite", "pass", "node:sqlite opened a database (probe succeeded).") : createCheck("native-binding", "SQLite", "fail", `SQLite could not open a database: ${result.message}`, "Check the Node runtime and reinstall if necessary.", { code: "native-binding.load-failed", params: { detail: result.message, root: packageRoot3 } });
+  if (result.ok)
+    return createCheck("native-binding", "SQLite", "pass", "node:sqlite opened a database (probe succeeded).");
+  const failed = { code: "native-binding.load-failed", params: { detail: result.message, root: packageRoot3 } };
+  if (result.nodeTooOld) {
+    return createCheck("native-binding", "SQLite", "fail", "SQLite is not usable on this Node version (the Database row above says why).", NODE_TOO_OLD_FIX, failed);
+  }
+  return createCheck("native-binding", "SQLite", "fail", `SQLite could not open a database: ${result.message}`, "Check the Node runtime and reinstall if necessary.", failed);
 }
 function readVersionFromInstalledBinary(binaryPath, existsSyncImpl, readFileSyncImpl, realpathSyncImpl = fs35.realpathSync) {
   let resolved;
@@ -69125,7 +69222,7 @@ async function inspectUpdateStatus(packageVersion2, getUpdateCheckImpl, installS
   }
   if (update.checkSucceeded && update.lastError) {
     const hasUpdate = Boolean(update.updateAvailable && update.latestVersion);
-    const summary = hasUpdate ? `Deprecation status unknown for ${packageVersion2}: ${update.lastError}. Update ${update.latestVersion} is available.` : `Deprecation status unknown for ${packageVersion2}: ${update.lastError}.`;
+    const summary = hasUpdate ? `Deprecation status unknown for ${packageVersion2}: ${withoutFinalPeriod(update.lastError)}. Update ${update.latestVersion} is available.` : `Deprecation status unknown for ${packageVersion2}: ${withoutFinalPeriod(update.lastError)}.`;
     let upgradeHint;
     if (hasUpdate) {
       if (installSupport?.canSelfUpdate) {
@@ -69267,7 +69364,7 @@ function inspectMessageCapability(packageRoot3, enabled, probe) {
   const result = probe(packageRoot3);
   if (result.ok)
     return createCheck("message-capability", "Message adapter imports", "pass", "This installed MCP advertised the ten-action message schema and all bundled host adapters imported successfully. No live router socket, host registration, or host acceptance was verified.");
-  return createCheck("message-capability", "Message adapter imports", "fail", `Installed message capability probe failed: ${result.message}.`, "Reinstall or rebuild this package, then retry with MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY=1.", { code: "message-capability.probe-failed", params: { detail: result.message } });
+  return createCheck("message-capability", "Message adapter imports", "fail", `Installed message capability probe failed: ${withoutFinalPeriod(result.message)}.`, "Reinstall or rebuild this package, then retry with MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY=1.", { code: "message-capability.probe-failed", params: { detail: result.message } });
 }
 function inspectInstallJourney(packageVersion2) {
   const record3 = readJourneyRecord();
@@ -69552,7 +69649,7 @@ function formatDoctorReport(result, packageVersion2) {
   }
   return lines;
 }
-var EXPECTED_HOOK_TYPES, AGENT_MESSAGE_STORAGE_QUOTA_ENV2, LOCALE_README_FILES, LOCALE_H2_TOLERANCE, NoDatabaseYetError, HERMES_MARKER_FIX, PRIVATE_FOLDER_FIX, PRIVATE_STATE_ERROR_FIXES, DOCTOR_PRIVACY_CHECK_MS, DOCTOR_PRIVACY_TOTAL_MS, UNREADABLE_ATTEMPTS_FIX, MCP_PLACEHOLDER, SAFE_HANDOFF_NAME;
+var EXPECTED_HOOK_TYPES, AGENT_MESSAGE_STORAGE_QUOTA_ENV2, LOCALE_README_FILES, LOCALE_H2_TOLERANCE, NODE_TOO_OLD_FIX, NODE_TOO_OLD_SEE_DATABASE_ROW, NoDatabaseYetError, HERMES_MARKER_FIX, PRIVATE_FOLDER_FIX, PRIVATE_STATE_ERROR_FIXES, DOCTOR_PRIVACY_CHECK_MS, DOCTOR_PRIVACY_TOTAL_MS, UNREADABLE_ATTEMPTS_FIX, MCP_PLACEHOLDER, SAFE_HANDOFF_NAME;
 var init_doctor = __esm({
   "dist/core/doctor.js"() {
     "use strict";
@@ -69565,6 +69662,7 @@ var init_doctor = __esm({
     init_install_id();
     init_file_mode();
     init_database_diagnosis();
+    init_sentence();
     init_citation_rule();
     init_paths();
     init_project_identity_split();
@@ -69592,6 +69690,8 @@ var init_doctor = __esm({
       "README.zh-TW.md"
     ];
     LOCALE_H2_TOLERANCE = 1;
+    NODE_TOO_OLD_FIX = `Upgrade Node to ${MIN_NODE_SERIES} or newer, then run \`memesh doctor\` again.`;
+    NODE_TOO_OLD_SEE_DATABASE_ROW = "Not checked: this Node cannot open the MeMesh database (the Database row above says why).";
     NoDatabaseYetError = class extends Error {
       databasePath;
       constructor(databasePath) {
@@ -70746,6 +70846,7 @@ var COMPACT_MIN_CLUSTER_SIZE, COMPACT_MAX_CLUSTER_SIZE, COMPACT_TIME_WINDOW_DAYS
 var init_dreamer = __esm({
   "dist/core/dreamer.js"() {
     "use strict";
+    init_sentence();
     init_paths();
     init_private_session();
     init_transcript_source();
@@ -70774,7 +70875,7 @@ var init_dreamer = __esm({
       proposalId;
       reason;
       constructor(proposalId2, reason) {
-        super(`proposal #${proposalId2} claimed nothing: ${reason}. Nothing was written, and the proposal will not be retried.`);
+        super(`proposal #${proposalId2} claimed nothing: ${withoutFinalPeriod(reason)}. Nothing was written, and the proposal will not be retried.`);
         this.proposalId = proposalId2;
         this.reason = reason;
         this.name = "NothingToClaimError";
@@ -71049,6 +71150,8 @@ MeMesh HTTP: bearer token generated for remote access.
     const db2 = getDatabase();
     db2.prepare("SELECT COUNT(*) FROM entities").get();
   } catch (err) {
+    if (isUnsupportedNode(err))
+      throw err;
     const message = err instanceof Error ? err.message : String(err);
     const dbPath = getDbPath();
     console.error("\n\u274C MeMesh startup failed: database cannot be opened\n");
@@ -71131,6 +71234,7 @@ var init_server = __esm({
     init_paths();
     init_file_mode();
     init_database_diagnosis();
+    init_sqlite();
     init_retired_routes();
     packageJsonPath = path35.resolve(path35.dirname(fileURLToPath5(import.meta.url)), "../../../package.json");
     packageRoot = path35.dirname(packageJsonPath);
@@ -72415,6 +72519,7 @@ var {
 
 // dist/transports/cli/cli.js
 init_db();
+init_sqlite();
 init_operations();
 init_recall_agent_view();
 init_config();
@@ -74472,11 +74577,19 @@ function registerNetworkCommand(program3, networkDistDir) {
 
 // dist/transports/cli/cli.js
 init_zod();
+function readOnlyOpenFailure(err) {
+  const message = err instanceof Error ? err.message : String(err);
+  return isUnsupportedNode(err) ? `Error: ${message}` : `Error: memesh cannot open its database read-only (${message}). Run \`memesh doctor\`.`;
+}
 async function withDatabase(fn) {
   try {
     openDatabase();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    if (isUnsupportedNode(err)) {
+      console.error(`Error: ${message}`);
+      process.exit(1);
+    }
     console.error(`Error: memesh cannot open its database.`);
     console.error(`       ${message}`);
     console.error(`       Run \`memesh doctor\` \u2014 it names the file, the likely cause and the way back.`);
@@ -76025,7 +76138,7 @@ kgCmd.command("backfill-relations").description("Propose relations that connect 
     try {
       readOnlyDb = (await Promise.resolve().then(() => (init_project_tags(), project_tags_exports))).openReadOnlyForPreview(getDbPath());
     } catch (err) {
-      console.error(`Error: memesh cannot open its database read-only (${err instanceof Error ? err.message : String(err)}). Run \`memesh doctor\`.`);
+      console.error(readOnlyOpenFailure(err));
       process.exitCode = 1;
       return;
     }
@@ -76237,7 +76350,7 @@ Nothing written. Re-run with --apply to commit (the DB is backed up first).`);
   try {
     readOnlyDb = (await Promise.resolve().then(() => (init_project_tags(), project_tags_exports))).openReadOnlyForPreview(getDbPath());
   } catch (err) {
-    console.error(`Error: memesh cannot open its database read-only (${err instanceof Error ? err.message : String(err)}). Run \`memesh doctor\`.`);
+    console.error(readOnlyOpenFailure(err));
     process.exitCode = 1;
     return;
   }

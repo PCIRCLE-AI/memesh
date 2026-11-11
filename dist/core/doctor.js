@@ -14,6 +14,7 @@ import { getCurrentInstallChannel, getInstallChannelSupport, detectPluginHost, p
 import { readInstallRecordState } from './install-id.js';
 import { isWritable, ownerWriteCommand, runOrSay, shellQuote } from './file-mode.js';
 import { diagnoseDatabaseFailure } from './database-diagnosis.js';
+import { withoutFinalPeriod } from './sentence.js';
 import { citationRulePath, citationRuleState } from './citation-rule.js';
 import { getAgentRouterSocketPath, getDbPath, getMemeshDirFromDbPath, homeDir, memeshDir } from './paths.js';
 import { findProjectIdentitySplits } from './project-identity-split.js';
@@ -21,7 +22,7 @@ import { AGENT_ROUTER_SOCKET_PATH_MAX_BYTES } from './agent-router.js';
 import { detectPluginRuntime, readInstallMarker } from './install-hooks.js';
 import { manifestScope } from './manifest-scope.js';
 import { UNSPACED_SCRIPT_GLOB_RUN3 } from '../storage/fts-index.js';
-import { MemeshDatabase } from '../storage/sqlite.js';
+import { isUnsupportedNode, MemeshDatabase, MIN_NODE_SERIES } from '../storage/sqlite.js';
 import { AUTO_CAPTURE_TAG } from './types.js';
 import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
 import { parseSqliteUtcMs, sqliteUtcToIso } from './time-utils.js';
@@ -97,6 +98,13 @@ function inspectLocaleReadmeParity(packageRoot, existsSyncImpl, readFileSyncImpl
 function resolveDatabasePath() {
     return getDbPath();
 }
+const NODE_TOO_OLD_FIX = `Upgrade Node to ${MIN_NODE_SERIES} or newer, then run \`memesh doctor\` again.`;
+const NODE_TOO_OLD_SEE_DATABASE_ROW = 'Not checked: this Node cannot open the MeMesh database (the Database row above says why).';
+function queryFailedSummary(err, detail, what, unknownMeans) {
+    if (isUnsupportedNode(err))
+        return NODE_TOO_OLD_SEE_DATABASE_ROW;
+    return `Could not read ${what} from the database: ${withoutFinalPeriod(detail)}. ${unknownMeans}`;
+}
 export class NoDatabaseYetError extends Error {
     databasePath;
     constructor(databasePath) {
@@ -132,6 +140,8 @@ function schemaBehindNote(databasePath = getDbPath()) {
     return `${base}: ${update}`;
 }
 function queryFailedFix(err) {
+    if (isUnsupportedNode(err))
+        return NODE_TOO_OLD_FIX;
     const fix = err?.fix;
     if (typeof fix === 'string') {
         return `MeMesh did not open the database because of its permissions; the Database row above explains why. ${runOrSay(fix)}`;
@@ -747,7 +757,7 @@ function inspectHookActivity(openDatabaseImpl, closeDatabaseImpl, existsSyncImpl
         if (isSchemaBehind(err))
             return createInfo('hook-activity', TITLE, `Not checked: ${schemaBehindNote()}`);
         const detail = err instanceof Error ? err.message : String(err);
-        return createCheck('hook-activity', TITLE, 'fail', `Could not read hook activity from the database: ${detail}. Capture health is unknown, which is not the same as healthy.`, queryFailedFix(err), { code: 'hook-activity.query-failed', params: { detail } });
+        return createCheck('hook-activity', TITLE, 'fail', queryFailedSummary(err, detail, 'hook activity', 'Capture health is unknown, which is not the same as healthy.'), queryFailedFix(err), { code: 'hook-activity.query-failed', params: { detail } });
     }
     finally {
         try {
@@ -856,7 +866,7 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
             return { check: createInfo('capture-liveness', TITLE, `Not checked: ${schemaBehindNote()}`) };
         const detail = err instanceof Error ? err.message : String(err);
         return {
-            check: createCheck('capture-liveness', TITLE, 'fail', `Could not read capture liveness from the database: ${detail}. Whether anything is being saved is unknown, which is not the same as healthy.`, queryFailedFix(err), { code: 'capture-liveness.query-failed', params: { detail } }),
+            check: createCheck('capture-liveness', TITLE, 'fail', queryFailedSummary(err, detail, 'capture liveness', 'Whether anything is being saved is unknown, which is not the same as healthy.'), queryFailedFix(err), { code: 'capture-liveness.query-failed', params: { detail } }),
         };
     }
     finally {
@@ -1002,7 +1012,7 @@ function defaultNativeBindingProbe(_packageRoot) {
         return { ok: true };
     }
     catch (err) {
-        return { ok: false, message: err instanceof Error ? err.message : String(err) };
+        return { ok: false, message: err instanceof Error ? err.message : String(err), nodeTooOld: isUnsupportedNode(err) };
     }
 }
 export function satisfiesMinimumNodeRange(version, range) {
@@ -1059,9 +1069,13 @@ export function hasBuiltInSqlite() {
 }
 function inspectNativeBinding(packageRoot, _existsSyncImpl, probeImpl = defaultNativeBindingProbe) {
     const result = probeImpl(packageRoot);
-    return result.ok
-        ? createCheck('native-binding', 'SQLite', 'pass', 'node:sqlite opened a database (probe succeeded).')
-        : createCheck('native-binding', 'SQLite', 'fail', `SQLite could not open a database: ${result.message}`, 'Check the Node runtime and reinstall if necessary.', { code: 'native-binding.load-failed', params: { detail: result.message, root: packageRoot } });
+    if (result.ok)
+        return createCheck('native-binding', 'SQLite', 'pass', 'node:sqlite opened a database (probe succeeded).');
+    const failed = { code: 'native-binding.load-failed', params: { detail: result.message, root: packageRoot } };
+    if (result.nodeTooOld) {
+        return createCheck('native-binding', 'SQLite', 'fail', 'SQLite is not usable on this Node version (the Database row above says why).', NODE_TOO_OLD_FIX, failed);
+    }
+    return createCheck('native-binding', 'SQLite', 'fail', `SQLite could not open a database: ${result.message}`, 'Check the Node runtime and reinstall if necessary.', failed);
 }
 function readVersionFromInstalledBinary(binaryPath, existsSyncImpl, readFileSyncImpl, realpathSyncImpl = fs.realpathSync) {
     let resolved;
@@ -1523,8 +1537,8 @@ async function inspectUpdateStatus(packageVersion, getUpdateCheckImpl, installSu
     if (update.checkSucceeded && update.lastError) {
         const hasUpdate = Boolean(update.updateAvailable && update.latestVersion);
         const summary = hasUpdate
-            ? `Deprecation status unknown for ${packageVersion}: ${update.lastError}. Update ${update.latestVersion} is available.`
-            : `Deprecation status unknown for ${packageVersion}: ${update.lastError}.`;
+            ? `Deprecation status unknown for ${packageVersion}: ${withoutFinalPeriod(update.lastError)}. Update ${update.latestVersion} is available.`
+            : `Deprecation status unknown for ${packageVersion}: ${withoutFinalPeriod(update.lastError)}.`;
         let upgradeHint;
         if (hasUpdate) {
             if (installSupport?.canSelfUpdate) {
@@ -1683,7 +1697,7 @@ function inspectMessageCapability(packageRoot, enabled, probe) {
     const result = probe(packageRoot);
     if (result.ok)
         return createCheck('message-capability', 'Message adapter imports', 'pass', 'This installed MCP advertised the ten-action message schema and all bundled host adapters imported successfully. No live router socket, host registration, or host acceptance was verified.');
-    return createCheck('message-capability', 'Message adapter imports', 'fail', `Installed message capability probe failed: ${result.message}.`, 'Reinstall or rebuild this package, then retry with MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY=1.', { code: 'message-capability.probe-failed', params: { detail: result.message } });
+    return createCheck('message-capability', 'Message adapter imports', 'fail', `Installed message capability probe failed: ${withoutFinalPeriod(result.message)}.`, 'Reinstall or rebuild this package, then retry with MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY=1.', { code: 'message-capability.probe-failed', params: { detail: result.message } });
 }
 function inspectInstallJourney(packageVersion) {
     const record = readJourneyRecord();

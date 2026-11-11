@@ -3,6 +3,7 @@ import { timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { closeDatabase, openDatabase } from '../db.js';
+import { assertNodeSupported } from '../storage/sqlite.js';
 import { AgentRouter, AgentRouterError, AGENT_ROUTER_SOCKET_PATH_MAX_BYTES } from '../core/agent-router.js';
 import { createCodexCliQueueAdapter } from '../host-adapters/codex-cli-queue.js';
 import { getAgentRouterSocketPath, getMemeshDirFromDbPath } from '../core/paths.js';
@@ -42,6 +43,7 @@ function reportFailure(error) {
 let router;
 let database;
 try {
+    assertNodeSupported();
     assertSecureLocalHostRuntimeSupported();
     fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
     requirePrivateWritableDirectory(dataDir, 'the router keeps its socket, token and messages there');

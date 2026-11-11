@@ -1,5 +1,6 @@
 // Bounded agent work packages and human proposal review. No built-in generation.
 
+import { withoutFinalPeriod } from './sentence.js';
 import type { MemeshDatabase } from '../storage/sqlite.js';
 
 import { createHash } from 'node:crypto';
@@ -996,7 +997,7 @@ export function applyProposal(
 
 export class NothingToClaimError extends Error {
   constructor(readonly proposalId: number, readonly reason: string) {
-    super(`proposal #${proposalId} claimed nothing: ${reason}. Nothing was written, and the proposal will not be retried.`);
+    super(`proposal #${proposalId} claimed nothing: ${withoutFinalPeriod(reason)}. Nothing was written, and the proposal will not be retried.`);
     this.name = 'NothingToClaimError';
   }
 }

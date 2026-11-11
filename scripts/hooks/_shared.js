@@ -1,6 +1,6 @@
 import { appendFileSync, closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, unlinkSync, writeFileSync, writeSync } from 'fs';
 import { createHash, randomBytes } from 'crypto';
-import { MemeshDatabase } from './_generated/sqlite.js';
+import { MemeshDatabase, nodeSupportProblem } from './_generated/sqlite.js';
 import { databaseFiles, guardDatabaseFiles, hasPagesWaiting, immutableAddress, isWritable, ownerWriteCommand, removeGroupAndOtherAccess } from './_generated/file-mode.js';
 import { dirname, join } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
@@ -887,6 +887,27 @@ export function unreadMessageLines(env = process.env, recordFailure, onRecipient
   } finally {
     try { db?.close(); } catch { /* already closed */ }
   }
+}
+
+/** The outcome reason every hook records when this Node cannot run MeMesh (same label `hookErrorReason` makes from the error). */
+export const NODE_TOO_OLD_REASON = 'uncaught NODE_TOO_OLD';
+
+/**
+ * Is this Node below what MeMesh needs? Call it BEFORE any "no database yet"
+ * shortcut: on such a Node the database can never be created, so skipping
+ * quietly (or saying memories will be created) would be false.
+ *
+ * The caller records the outcome itself, with NODE_TOO_OLD_REASON, before it
+ * exits (hook-outcome-gate requires a visible record before every exit).
+ *
+ * @param {string} hook - the hook's name, for the stderr line
+ * @returns {string | null} the one-sentence problem, or null when this Node is fine
+ */
+export function hookNodeProblem(hook) {
+  const problem = nodeSupportProblem();
+  if (!problem) return null;
+  try { process.stderr.write(`[memesh ${hook}] ${problem}\n`); } catch { /* stderr gone */ }
+  return problem;
 }
 
 /**

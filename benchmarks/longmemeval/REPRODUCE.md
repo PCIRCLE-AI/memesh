@@ -8,7 +8,7 @@ see RESULTS.md if you are comparing against an older figure.
 
 ## Prerequisites
 
-- Node.js >= 22.13.0
+- Node.js >= 22.16.0
 - ~500MB disk space (dataset)
 
 ## Step-by-step
@@ -85,7 +85,7 @@ LongMemEval is released under the MIT license by Xiaowu0162/LongMemEval. The dat
 
 **Different results** — If your numbers differ by more than ±0.5pp, check:
 1. Dataset SHA256 matches the value above
-2. Node.js version >= 22.13.0 (the root package's supported floor)
+2. Node.js version >= 22.16.0 (the root package's supported floor)
 3. `npm run build` has run since your last checkout — the runner imports the
    compiled retrieval path from `dist/`, so a stale build measures stale code
 4. Which commit you are on. The runner now measures the shipped path, so the

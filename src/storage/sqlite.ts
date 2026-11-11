@@ -21,7 +21,7 @@ import { createRequire } from 'node:module';
  * Load node:sqlite without printing Node 22's experimental warning.
  *
  * The warning is emitted once, when the module is first loaded, and memesh
- * supports Node >= 22.13 — so on the rest of the Node 22 LTS line every CLI
+ * supports Node >= 22.16 — so on the rest of the Node 22 LTS line every CLI
  * invocation, every hook and every MCP handshake would print a line users
  * cannot act on. Node 24 and 26 emit nothing.
  *
@@ -35,7 +35,7 @@ import { createRequire } from 'node:module';
  * make every importer of this module async for no gain, and `node:sqlite` is a
  * builtin so `require` resolves it in an ESM file without a file lookup.
  */
-function loadNodeSqlite(): typeof import('node:sqlite') {
+function loadNodeSqlite(): typeof import('node:sqlite') | { missing: string } {
   const require = createRequire(import.meta.url);
   const original = process.emitWarning;
   process.emitWarning = function (warning: string | Error, ...rest: unknown[]) {
@@ -48,25 +48,125 @@ function loadNodeSqlite(): typeof import('node:sqlite') {
   try {
     return require('node:sqlite') as typeof import('node:sqlite');
   } catch (err) {
-    // A runtime below the floor fails HERE, during module evaluation, before
-    // any diagnostic code exists to explain it — `memesh doctor` included,
-    // since it imports this module. Node's own text is
-    // `No such built-in module: node:sqlite`, which says nothing about what to
-    // do. Replacing it is the only chance to tell the user anything at all, so
-    // the sentence has to carry the whole answer.
-    const detail = err instanceof Error ? err.message : String(err);
-    throw new Error(
-      `memesh needs Node's built-in SQLite, which this runtime (${process.version}) does not provide. ` +
-      'It became usable without a flag in Node 22.13.0 — upgrade Node to 22.13 or newer and run memesh again. ' +
-      `(${detail})`,
-      { cause: err },
-    );
+    // A runtime without `node:sqlite` (Node 20, or 22.5 to 22.12 without the
+    // flag) must not crash HERE, at import: every entry point, hooks included,
+    // imports this module, and a throw during module evaluation reaches the
+    // user as a stack trace and, for a hook, a non-zero exit. The failure is
+    // deferred to the first open, where it carries the one sentence that
+    // names the fix.
+    return { missing: err instanceof Error ? err.message : String(err) };
   } finally {
     process.emitWarning = original;
   }
 }
 
-const { DatabaseSync } = loadNodeSqlite();
+const loadedSqlite = loadNodeSqlite();
+
+/** What stands in for `DatabaseSync` when `node:sqlite` is absent: it refuses to be constructed, with the reason. */
+class MissingDatabaseSync {
+  constructor() {
+    const detail = 'missing' in loadedSqlite ? loadedSqlite.missing : 'unknown';
+    throw new UnsupportedNodeError(
+      `memesh needs Node's built-in SQLite, which this runtime (${process.version}) does not provide. ` +
+      `Upgrade Node to ${MIN_NODE_SERIES} or newer and run memesh again. (${detail})`,
+    );
+  }
+}
+
+const DatabaseSync: typeof import('node:sqlite').DatabaseSync =
+  'DatabaseSync' in loadedSqlite
+    ? loadedSqlite.DatabaseSync
+    : (MissingDatabaseSync as unknown as typeof import('node:sqlite').DatabaseSync);
+
+/**
+ * The oldest Node whose `node:sqlite` is built with FTS5 (nodejs/node#57621,
+ * "sqlite: enable common flags"), which the keyword index needs. 22.13 to
+ * 22.15 have `node:sqlite` but not FTS5, so every open failed there with
+ * `no such module: fts5`, a message that names neither Node nor the fix.
+ * `package.json` `engines.node` and the docs say the same number.
+ */
+export const MIN_NODE_VERSION = '22.16.0';
+
+/** The floor as users read it in messages ("22.16"). */
+export const MIN_NODE_SERIES = MIN_NODE_VERSION.split('.').slice(0, 2).join('.');
+
+/** Why MeMesh cannot use this Node; `code` is what a hook records as its outcome reason. */
+export class UnsupportedNodeError extends Error {
+  readonly code = 'NODE_TOO_OLD';
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnsupportedNodeError';
+  }
+}
+
+/** Is `err` MeMesh's refusal to run on this Node? Callers print its message as the one sentence, not as a database problem. */
+export function isUnsupportedNode(err: unknown): boolean {
+  return (err as { code?: unknown } | null)?.code === 'NODE_TOO_OLD';
+}
+
+function atLeastMinimumNode(version: string): boolean {
+  const want = MIN_NODE_VERSION.split('.').map(Number);
+  const have = version.replace(/^v/, '').split('.').map((part) => Number.parseInt(part, 10));
+  for (let i = 0; i < 3; i++) {
+    const h = have[i];
+    if (!Number.isFinite(h)) return false;
+    if (h !== want[i]) return h > want[i];
+  }
+  return true;
+}
+
+/** Runs the FTS5 probe statement: true when it works, false only on SQLite's own "no such module", anything else is thrown as itself. */
+export function fts5ProbeResult(createFtsTable: () => void): boolean {
+  try {
+    createFtsTable();
+    return true;
+  } catch (err) {
+    if (/no such module/i.test(err instanceof Error ? err.message : String(err))) return false;
+    throw err;
+  }
+}
+
+let ftsProbe: boolean | undefined;
+/** Does this Node's SQLite have FTS5? Asked once per process; a probe that fails for any other reason throws and is not cached. */
+function hasFts5(): boolean {
+  if (ftsProbe === undefined) {
+    const probe = new DatabaseSync(':memory:');
+    try {
+      ftsProbe = fts5ProbeResult(() => probe.exec('CREATE VIRTUAL TABLE memesh_fts5_probe USING fts5(a)'));
+    } finally {
+      // The probe is a throwaway in-memory database. A close that throws must
+      // not turn into a failed open of the real database (the caller's own
+      // close-failure handling is tested separately).
+      try { probe.close(); } catch { /* nothing to save: the answer is already in ftsProbe */ }
+    }
+  }
+  return ftsProbe;
+}
+
+/**
+ * One sentence saying this Node cannot run MeMesh, or `null` when it can.
+ * The version is checked first (no database touched); the FTS5 probe covers a
+ * Node that is new enough but built without it.
+ */
+export function nodeSupportProblem(
+  version: string = process.versions.node,
+  fts5Available: () => boolean = hasFts5,
+): string | null {
+  const shown = version.replace(/^v/, '');
+  if (!atLeastMinimumNode(version)) {
+    return `This Node (v${shown}) lacks the full-text search MeMesh needs; upgrade to Node ${MIN_NODE_SERIES} or newer and run memesh again.`;
+  }
+  if (!fts5Available()) {
+    return `This Node build (v${shown}) lacks the full-text search (FTS5) MeMesh needs; install the official Node ${MIN_NODE_SERIES} or newer from nodejs.org and run memesh again.`;
+  }
+  return null;
+}
+
+/** Throws {@link UnsupportedNodeError} when this Node cannot run MeMesh. */
+export function assertNodeSupported(): void {
+  const problem = nodeSupportProblem();
+  if (problem) throw new UnsupportedNodeError(problem);
+}
 
 /** A prepared statement. Named so call sites do not import from node:sqlite. */
 export type SqliteStatement = import('node:sqlite').StatementSync;
@@ -130,6 +230,9 @@ export class MemeshDatabase extends DatabaseSync {
   // so `new MemeshDatabase(p)` would throw if the parameter were passed
   // straight through.
   constructor(path: string, options: OpenOptions = {}) {
+    // Every open in the CLI, MCP server, HTTP server and hooks ends here, so
+    // this is the one place the Node floor is enforced.
+    assertNodeSupported();
     super(path, options);
     this.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
   }
