@@ -69,6 +69,55 @@ describe('Feature: #497 a principal message meant for one session reaches only t
     expect(waitingFor(undefined)).toEqual({ refs: 0, lines: 0, count: 0 });
   });
 
+  it('counts it as waiting for the session that registered its id in lower case when the sender wrote the id in capitals, and stores the registered spelling', () => {
+    registerAgentSession(PROJECT, PRINCIPAL, { sessionId: SESSION_A, adapterKind: 'claude-channel' });
+    const sent = sendIntendedPrincipalMessage(PROJECT, PRINCIPAL, SESSION_A.toUpperCase(), 'k-capitals');
+    expect(getDatabase().prepare('SELECT intended_session FROM agent_message_deliveries WHERE message_id = ?').get(sent.message_id)).toEqual({ intended_session: SESSION_A });
+    expect(waitingFor(SESSION_A)).toEqual({ refs: 1, lines: 1, count: 1 });
+    expect(waitingFor(SESSION_B)).toEqual({ refs: 0, lines: 0, count: 0 });
+    // An id nobody registered is stored in lower case, the way the hosts write theirs.
+    const unregistered = sendIntendedPrincipalMessage(PROJECT, PRINCIPAL, SESSION_B.toUpperCase(), 'k-capitals-unregistered');
+    expect(getDatabase().prepare('SELECT intended_session FROM agent_message_deliveries WHERE message_id = ?').get(unregistered.message_id)).toEqual({ intended_session: SESSION_B });
+    expect(waitingFor(SESSION_B)).toEqual({ refs: 1, lines: 1, count: 1 });
+  });
+
+  it('stores the registered spelling when the session registered its id in capitals and the sender wrote it in lower case', () => {
+    registerAgentSession(PROJECT, PRINCIPAL, { sessionId: SESSION_A.toUpperCase(), adapterKind: 'claude-channel' });
+    const sent = sendIntendedPrincipalMessage(PROJECT, PRINCIPAL, SESSION_A, 'k-registered-capitals');
+    expect(getDatabase().prepare('SELECT intended_session FROM agent_message_deliveries WHERE message_id = ?').get(sent.message_id)).toEqual({ intended_session: SESSION_A.toUpperCase() });
+    expect(waitingFor(SESSION_A.toUpperCase())).toEqual({ refs: 1, lines: 1, count: 1 });
+    expect(waitingFor(SESSION_A)).toEqual({ refs: 1, lines: 1, count: 1 });
+  });
+
+  it('stores the exact id the sender wrote when two registrations differ only in case, and lower case when it matches neither', () => {
+    registerAgentSession(PROJECT, PRINCIPAL, { sessionId: 'ABC-TWIN-9', adapterKind: 'claude-channel' });
+    registerAgentSession(PROJECT, PRINCIPAL, { sessionId: 'abc-twin-9', adapterKind: 'claude-channel' });
+    const stored = (key: string, intended: string) => {
+      const sent = sendIntendedPrincipalMessage(PROJECT, PRINCIPAL, intended, key);
+      return (getDatabase().prepare('SELECT intended_session FROM agent_message_deliveries WHERE message_id = ?').get(sent.message_id) as { intended_session: string }).intended_session;
+    };
+    expect(stored('k-twin-upper', 'ABC-TWIN-9')).toBe('ABC-TWIN-9');
+    expect(stored('k-twin-lower', 'abc-twin-9')).toBe('abc-twin-9');
+    expect(stored('k-twin-mixed', 'Abc-Twin-9')).toBe('abc-twin-9');
+  });
+
+  it('counts a message for a session whose /clear id is written in capitals, both for the new and the old id', () => {
+    const old = 'c9c9c9c9-c9c9-4c9c-8c9c-c9c9c9c9c9c9'; const fresh = 'cacacaca-caca-4aca-8aca-cacacacacaca';
+    registerAgentSession(PROJECT, PRINCIPAL, { sessionId: old, adapterKind: 'claude-channel' });
+    getDatabase().prepare('INSERT INTO agent_session_aliases (session_id, previous_session_id, created_at_ms) VALUES (?, ?, ?)').run(fresh, old, Date.now());
+    sendIntendedPrincipalMessage(PROJECT, PRINCIPAL, old, 'k-clear-capitals');
+    sendIntendedPrincipalMessage(PROJECT, PRINCIPAL, fresh, 'k-clear-capitals-fresh');
+    // One message meant for the old id and one for the new: each id, in either case, is waited for by both.
+    for (const id of [old, fresh, old.toUpperCase(), fresh.toUpperCase()]) expect(waitingFor(id), id).toEqual({ refs: 2, lines: 1, count: 2 });
+  });
+
+  it('still counts a delivery stored with the id in capitals before ids were normalised', () => {
+    const sent = sendIntendedPrincipalMessage(PROJECT, PRINCIPAL, SESSION_A, 'k-legacy-capitals');
+    getDatabase().prepare('UPDATE agent_message_deliveries SET intended_session = ? WHERE message_id = ?').run(SESSION_A.toUpperCase(), sent.message_id);
+    expect(waitingFor(SESSION_A)).toEqual({ refs: 1, lines: 1, count: 1 });
+    expect(waitingFor(SESSION_B)).toEqual({ refs: 0, lines: 0, count: 0 });
+  });
+
   it('step 5: a plain principal message (no intended session) still waits for every session', () => {
     sendAgentMessage(getDatabase(), {
       project: PROJECT, sender: 'codex-lead', recipient: PRINCIPAL,

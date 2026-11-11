@@ -9,33 +9,15 @@ import { requirePrivateWritableDirectory } from '../core/file-mode.js';
 import { resolveMcpProject } from '../transports/mcp/project-context.js';
 import { ensureRouterTokenFile } from './config.js';
 import { connectRouterHost } from './router-client.js';
-import { createClaudeActivity } from '../core/session-activity.js';
-import { homeDir } from '../core/paths.js';
+import { createClaudeActivity, defaultClaudeDir, readClaudeRegistry } from '../core/session-activity.js';
 import { projectTranscriptSlug } from '../core/transcript-source.js';
 import { messageNotice } from '../host-adapters/message-notice.js';
 import { ClaudeTranscriptReader } from './claude-transcript.js';
-function readRegistrySession(workspace) {
-    const root = process.env.CLAUDE_CONFIG_DIR || path.join(homeDir(), '.claude');
-    const file = path.join(root, 'sessions', `${process.ppid}.json`);
-    let fd;
-    try {
-        fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
-        const stat = fs.fstatSync(fd);
-        const named = fs.lstatSync(file);
-        if (!stat.isFile() || !named.isFile() || stat.dev !== named.dev || stat.ino !== named.ino || stat.size > 65536 || (typeof process.getuid === 'function' && stat.uid !== process.getuid()) || (process.platform !== 'win32' && (stat.mode & 0o022) !== 0))
-            return undefined;
-        const data = JSON.parse(fs.readFileSync(fd, 'utf8'));
-        if (data.pid !== process.ppid || typeof data.cwd !== 'string' || fs.realpathSync(data.cwd) !== fs.realpathSync(workspace) || typeof data.sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(data.sessionId))
-            return undefined;
-        return { sessionId: data.sessionId, cwd: data.cwd };
-    }
-    catch {
+export function readRegistrySession() {
+    const data = readClaudeRegistry(process.ppid);
+    if (!data || typeof data.cwd !== 'string' || typeof data.sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(data.sessionId))
         return undefined;
-    }
-    finally {
-        if (fd !== undefined)
-            fs.closeSync(fd);
-    }
+    return { sessionId: data.sessionId, cwd: data.cwd };
 }
 function sendNativeNotice(socketPath, content, timeoutMs) {
     return new Promise((resolve, reject) => {
@@ -94,7 +76,40 @@ function confirmedNotice(record, session, notice) {
     catch { }
     return undefined;
 }
+export class NoticeNotConfirmedError extends Error {
+    code = 'notice_not_confirmed';
+    constructor() { super('Claude session notice was not confirmed.'); this.name = 'NoticeNotConfirmedError'; }
+}
+export class NoticeHeldError extends Error {
+    code = 'notice_held';
+    constructor() { super('Claude Code is holding the notice for its user; MeMesh cannot see whether it was approved or denied.'); this.name = 'NoticeHeldError'; }
+}
+export class TranscriptUnreadableError extends Error {
+    code;
+    constructor(code, message) {
+        super(message);
+        this.code = code;
+        this.name = 'TranscriptUnreadableError';
+    }
+}
+function heldNotice(record, session) {
+    if (!record || typeof record !== 'object')
+        return false;
+    const entry = record;
+    return entry.type === 'system' && entry.sessionId === session && typeof entry.content === 'string'
+        && entry.content.startsWith('Held peer message') && entry.content.includes('memesh_message_notice');
+}
+const HELD_LIMIT = 500;
 export function createClaudeInboxDeliver(options) {
+    const limit = options.heldLimit ?? HELD_LIMIT;
+    const held = new Map();
+    const settled = new Map();
+    const settle = (id, how) => {
+        settled.delete(id);
+        settled.set(id, how);
+        if (settled.size > limit * 4)
+            settled.delete(settled.keys().next().value);
+    };
     return async (delivery) => {
         const timeoutMs = options.timeoutMs ?? 3000;
         const notice = messageNotice(delivery.envelope, delivery.delivery_id);
@@ -104,28 +119,71 @@ export function createClaudeInboxDeliver(options) {
             throw new Error('Claude session changed or does not match the delivery target.');
         }
         const reader = typeof options.reader === 'function' ? options.reader() : options.reader;
-        const mark = delivery.envelope.target_kind === 'session' && session ? reader.mark(session) : undefined;
-        if (delivery.envelope.target_kind === 'session' && (!session || !mark))
-            throw new Error('Claude session transcript is unavailable.');
+        const confirmationIn = (records) => {
+            for (const record of records) {
+                const confirmation = confirmedNotice(record, session, notice);
+                if (confirmation)
+                    return confirmation;
+            }
+            return undefined;
+        };
+        const closed = settled.get(delivery.delivery_id);
+        if (closed === 'held')
+            throw new NoticeHeldError();
+        if (closed === 'unconfirmed')
+            throw new NoticeNotConfirmedError();
+        const earlier = held.get(delivery.delivery_id);
+        let resent = false;
+        if (earlier) {
+            const later = reader.readNew(session, earlier.mark);
+            if (later === undefined) {
+                if (earlier.resent) {
+                    held.delete(delivery.delivery_id);
+                    settle(delivery.delivery_id, 'held');
+                    throw new NoticeHeldError();
+                }
+                held.delete(delivery.delivery_id);
+                resent = true;
+            }
+            else {
+                const confirmation = confirmationIn(later);
+                if (confirmation) {
+                    held.delete(delivery.delivery_id);
+                    return { host: 'claude-inbox', status: 'queued', content: 'notice', confirmation };
+                }
+                throw new NoticeHeldError();
+            }
+        }
+        const mark = session ? reader.mark(session) : undefined;
+        if (!session || !mark)
+            throw new TranscriptUnreadableError('transcript_unavailable', 'Claude session transcript is unavailable: there is no project folder to look in.');
         const until = Date.now() + timeoutMs;
         await sendNativeNotice(options.socketPath, JSON.stringify(notice), timeoutMs);
-        if (delivery.envelope.target_kind === 'session') {
-            while (Date.now() < until) {
-                if (currentSession() !== session)
-                    throw new Error('Claude session changed before notice confirmation.');
-                const records = reader.readNew(session, mark);
-                if (!records)
-                    throw new Error('Claude session transcript is unavailable.');
-                for (const record of records) {
-                    const confirmation = confirmedNotice(record, session, notice);
-                    if (confirmation)
-                        return { host: 'claude-inbox', status: 'queued', content: 'notice', confirmation };
+        while (Date.now() < until) {
+            if (currentSession() !== session)
+                throw new Error('Claude session changed before notice confirmation.');
+            const records = reader.readNew(session, mark);
+            if (!records)
+                throw new TranscriptUnreadableError('transcript_unavailable', 'Claude session transcript is unavailable.');
+            const confirmation = confirmationIn(records);
+            if (confirmation)
+                return { host: 'claude-inbox', status: 'queued', content: 'notice', confirmation };
+            if (records.some((record) => heldNotice(record, session))) {
+                held.set(delivery.delivery_id, { mark, resent });
+                if (held.size > limit) {
+                    const oldest = held.keys().next().value;
+                    held.delete(oldest);
+                    settle(oldest, 'held');
                 }
-                await new Promise(resolve => setTimeout(resolve, 50));
+                throw new NoticeHeldError();
             }
-            throw new Error('Claude session notice was not confirmed.');
+            await new Promise(resolve => setTimeout(resolve, 50));
         }
-        return { host: 'claude-inbox', status: 'queued', content: 'notice' };
+        if (mark.ino === undefined)
+            throw new TranscriptUnreadableError('transcript_not_found', 'Claude session transcript was not found, so the notice could not be confirmed.');
+        if (resent)
+            settle(delivery.delivery_id, 'unconfirmed');
+        throw new NoticeNotConfirmedError();
     };
 }
 export async function startClaudeInboxPresence(rootUris) {
@@ -163,8 +221,8 @@ export async function startClaudeInboxPresence(rootUris) {
         deliver: createClaudeInboxDeliver({
             socketPath: process.env.CLAUDE_CODE_MESSAGING_TOKEN ? process.env.CLAUDE_CODE_MESSAGING_SOCKET : undefined,
             sessionId: session,
-            reader: () => new ClaudeTranscriptReader(path.join(process.env.CLAUDE_CONFIG_DIR || path.join(homeDir(), '.claude'), 'projects'), projectTranscriptSlug(workspace ? readRegistrySession(workspace)?.cwd ?? workspace : '')),
-            currentSession: () => workspace ? readRegistrySession(workspace)?.sessionId : undefined,
+            reader: () => new ClaudeTranscriptReader(path.join(defaultClaudeDir(), 'projects'), projectTranscriptSlug(readRegistrySession()?.cwd ?? workspace ?? '')),
+            currentSession: () => readRegistrySession()?.sessionId,
         }),
         resilience: {
             start_router: () => new Promise((resolve, reject) => {

@@ -189,6 +189,7 @@ describe('Codex queue release watch', () => {
       idempotency_key: `codex-queue-release-${input.dispatch_id}`,
       detail: {
         host_activation: 'woken',
+        caller_session: null,
         detail: { codex_queue: 'started', checks: 3, queued_submission_id: submission },
       },
     })]);
@@ -211,7 +212,7 @@ describe('Codex queue release watch', () => {
     expect(release).toHaveBeenCalledTimes(1);
     expect(activations(input)).toEqual([expect.objectContaining({
       host_activation: activation,
-      detail: { host_activation: activation, detail: { ...detail, checks: 1, queued_submission_id: submission } },
+      detail: { host_activation: activation, caller_session: null, detail: { ...detail, checks: 1, queued_submission_id: submission } },
     })]);
   });
 
@@ -232,6 +233,7 @@ describe('Codex queue release watch', () => {
       host_activation: activation,
       detail: {
         host_activation: activation,
+        caller_session: null,
         detail: { codex_queue: status, checks: 3, queued_submission_id: submission, ...extra },
       },
     })]);
@@ -246,7 +248,7 @@ describe('Codex queue release watch', () => {
     expect(release).not.toHaveBeenCalled();
     expect(activations(input)).toEqual([expect.objectContaining({
       host_activation: 'failed',
-      detail: { host_activation: 'failed', detail: { codex_queue: 'unavailable', checks: 1, reason: 'no_submission_id' } },
+      detail: { host_activation: 'failed', caller_session: null, detail: { codex_queue: 'unavailable', checks: 1, reason: 'no_submission_id' } },
     })]);
   });
 

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 const MAX_BYTES = 1024 * 1024;
+const SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
 export class ClaudeTranscriptReader {
     projectsDir;
     projectSlug;
@@ -19,7 +20,7 @@ export class ClaudeTranscriptReader {
         return this.locate(session);
     }
     locate(session) {
-        if (!/^[A-Za-z0-9_-]{1,128}$/.test(session))
+        if (!SESSION_ID.test(session))
             return undefined;
         try {
             for (const entry of fs.readdirSync(this.projectsDir, { withFileTypes: true })) {
@@ -38,8 +39,11 @@ export class ClaudeTranscriptReader {
     }
     mark(session) {
         const file = this.locate(session);
-        if (!file)
-            return undefined;
+        if (!file) {
+            if (!this.projectSlug || !SESSION_ID.test(session))
+                return undefined;
+            return { session, file: path.join(this.projectsDir, this.projectSlug, `${session}.jsonl`), offset: 0, pending: Buffer.alloc(0), discardPartial: false };
+        }
         let fd;
         try {
             if (!fs.lstatSync(path.dirname(file)).isDirectory())
@@ -66,6 +70,19 @@ export class ClaudeTranscriptReader {
             return undefined;
         let fd;
         try {
+            if (mark.ino === undefined) {
+                let named;
+                try {
+                    named = fs.lstatSync(mark.file);
+                }
+                catch (error) {
+                    return error.code === 'ENOENT' ? [] : undefined;
+                }
+                if (!named.isFile() || (typeof process.getuid === 'function' && named.uid !== process.getuid()))
+                    return undefined;
+                mark.dev = named.dev;
+                mark.ino = named.ino;
+            }
             if (!fs.lstatSync(path.dirname(mark.file)).isDirectory())
                 return undefined;
             fd = fs.openSync(mark.file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
@@ -103,7 +120,7 @@ export class ClaudeTranscriptReader {
         }
     }
     currentTask(session) {
-        if (!/^[A-Za-z0-9_-]{1,128}$/.test(session))
+        if (!SESSION_ID.test(session))
             return undefined;
         if (session !== this.session) {
             this.session = session;

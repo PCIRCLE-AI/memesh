@@ -126,10 +126,11 @@ function intendedSessionFilter(db: InboxDb, session?: string): { sql: string; pa
   ).get() !== undefined;
   if (!hasColumn) return { sql: '', params: [] };
   if (session === undefined) return { sql: 'AND d.intended_session IS NULL', params: [] };
-  // After /clear the session answers to every id in its alias chain.
-  const ids = [...sessionAliasChain(db, session)];
+  // After /clear the session answers to every id in its alias chain. Ids are compared without regard to
+  // case, so a message stored with an id in other letters than the session's own is still counted.
+  const ids = [...sessionAliasChain(db, session)].map((id) => id.toLowerCase());
   return {
-    sql: `AND (d.intended_session IS NULL OR d.intended_session IN (${ids.map(() => '?').join(', ')}))`,
+    sql: `AND (d.intended_session IS NULL OR lower(d.intended_session) IN (${ids.map(() => '?').join(', ')}))`,
     params: ids,
   };
 }
@@ -149,8 +150,10 @@ function intendedSessionFilter(db: InboxDb, session?: string): { sql: string; pa
 export function sessionAliasChain(db: InboxDb, session: string): Set<string> {
   const chain = new Set([session]);
   try {
-    const previous = db.prepare('SELECT previous_session_id AS id FROM agent_session_aliases WHERE session_id = ?');
-    const next = db.prepare('SELECT session_id AS id FROM agent_session_aliases WHERE previous_session_id = ?');
+    // Ids are matched without regard to case (a session id is ASCII), so a /clear alias is found
+    // whichever way the id is written.
+    const previous = db.prepare('SELECT previous_session_id AS id FROM agent_session_aliases WHERE lower(session_id) = lower(?)');
+    const next = db.prepare('SELECT session_id AS id FROM agent_session_aliases WHERE lower(previous_session_id) = lower(?)');
     for (const step of [previous, next]) {
       let current = session;
       for (;;) {

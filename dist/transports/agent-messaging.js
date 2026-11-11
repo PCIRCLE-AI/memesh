@@ -1,5 +1,6 @@
+import { canonicalAgentScopeId } from '../core/agent-scope-id.js';
 import { createHash, randomUUID } from 'node:crypto';
-import { AgentIntendedSessionUnsupportedError, AgentMessageAccessError, AgentMessagingError, AgentNativeMessageTooLargeError, fetchAgentMessage, pollAgentEvents, readAgentMessageReceipts, recordAgentReceipt, resolveAgentSessionHandle, sendAgentMessage, waitForAgentEvents, } from '../core/agent-messaging.js';
+import { AgentIntendedSessionUnsupportedError, AgentMessageAccessError, AgentMessagingError, AgentNativeMessageTooLargeError, fetchAgentMessage, pollAgentEvents, assertCallerMayUseDelivery, principalsOfSession, readAgentMessageReceipts, recordAgentReceipt, resolveAgentSessionHandle, sendAgentMessage, waitForAgentEvents, HANDLED_RECEIPT_KINDS_SQL, } from '../core/agent-messaging.js';
 import { MessageSchema } from './schemas.js';
 import { AGENT_ROUTER_PROTOCOL_VERSION, AgentRouterError, createAgentRouterNotifier, sendAgentRouterRequest, } from '../core/agent-router.js';
 import { getAgentRouterSocketPath } from '../core/paths.js';
@@ -58,13 +59,51 @@ function nativeAcceptance(row) {
         accepted_at: sqliteUtcToIso(row.created_at),
     };
 }
-function publicSentMessage(sent, adapter) {
+function intendedSessionNote(session, principal) {
+    return `Session ${session} is not connected now. Only it can take this message in, the next time it runs; `
+        + `no other session of ${principal} will. If it has ended for good, send to ${principal} `
+        + 'without intended_session instead.';
+}
+function principalAvailability(db, sent) {
+    const recipient = canonicalAgentScopeId(sent.recipient);
+    const meant = sent.intended_session ? sessionAliasChain(db, sent.intended_session) : undefined;
+    const wanted = meant === undefined ? [] : [...meant].map((id) => id.toLowerCase());
+    const inWanted = meant === undefined ? '' : ` AND lower(session_instance_id) IN (${wanted.map(() => '?').join(', ')})`;
+    const live = db.prepare(`
+    SELECT principal_id FROM agent_session_connections
+    WHERE project = ? AND disconnected_at IS NULL AND lease_expires_at_ms > ?${inWanted}
+  `).all(sent.project, Date.now(), ...wanted)
+        .some((row) => canonicalAgentScopeId(row.principal_id) === recipient);
+    if (sent.intended_session) {
+        if (live)
+            return ` Session ${sent.intended_session} is connected now; use status to see whether its notice reached the conversation.`;
+        const registered = db.prepare(`
+      SELECT principal_id FROM agent_session_instances WHERE project = ?${inWanted}
+    `).all(sent.project, ...wanted)
+            .map((row) => canonicalAgentScopeId(row.principal_id));
+        if (registered.length === 0) {
+            return ` Session ${sent.intended_session} has not registered in this project, so MeMesh cannot tell whether it exists. `
+                + `Only a session with that id can take this message in; no other session of ${sent.recipient} will. `
+                + `Check the id; if it is wrong or the session has ended, send to ${sent.recipient} without intended_session instead.`;
+        }
+        if (!registered.includes(recipient)) {
+            const other = [...new Set(registered)].join(', ');
+            return ` Session ${sent.intended_session} is a session of ${other}; ${sent.recipient}'s notices do not reach it. `
+                + `Send to ${other}, or send to ${sent.recipient} without intended_session.`;
+        }
+        return ` ${intendedSessionNote(sent.intended_session, sent.recipient)}`;
+    }
+    return live
+        ? ` A session of ${sent.recipient} is connected now; use status to see whether its notice reached the conversation.`
+        : ` No session of ${sent.recipient} is connected now; the message waits in the inbox.`;
+}
+function publicSentMessage(sent, adapter, availability = '') {
     const { reused, ...message } = sent;
     const delivery_note = reused
         ? 'Reused the previous message_id; no new message was created. An unconfirmed notification may be sent again.'
         : adapter
             ? `${adapter} accepted the notification. This does not mean the model has read or accepted it.`
-            : `Stored in ${sent.recipient}'s inbox. This does not mean the recipient has read or accepted it.`;
+            : `Stored in ${sent.recipient}'s inbox. This does not mean the recipient has read or accepted it.${availability}`;
     return { ...message, delivery_note };
 }
 async function requestRouter(request, dependencies, timeoutMs, messageSaved = false) {
@@ -107,7 +146,7 @@ async function requireExactSessionNativeAcceptance(db, sent, dependencies) {
             const accepted = readHostAccept(db, sent.delivery_id);
             if (accepted)
                 return nativeAcceptance(accepted);
-            if (readLatestDispatchFailureCode(db, sent.delivery_id) === 'native_message_too_large') {
+            if (readLatestDispatchFailure(db, sent.delivery_id)?.failure_code === 'native_message_too_large') {
                 throw new AgentNativeMessageTooLargeError();
             }
             throw new AgentRecipientUnavailableError();
@@ -129,15 +168,15 @@ async function requireExactSessionNativeAcceptance(db, sent, dependencies) {
         throw new AgentRecipientUnavailableError();
     return nativeAcceptance(accepted);
 }
-function readLatestDispatchFailureCode(db, deliveryId) {
-    const row = db.prepare(`
-    SELECT failure_code
-    FROM agent_dispatch_attempts
-    WHERE delivery_id = ? AND result = 'adapter_rejected' AND failure_code IS NOT NULL
-    ORDER BY attempt_number DESC
+function readLatestDispatchFailure(db, deliveryId) {
+    return db.prepare(`
+    SELECT a.failure_code AS failure_code, c.adapter_kind AS adapter_kind
+    FROM agent_dispatch_attempts a
+    LEFT JOIN agent_session_connections c ON c.connection_id = a.connection_id
+    WHERE a.delivery_id = ? AND a.result = 'adapter_rejected' AND a.failure_code IS NOT NULL
+    ORDER BY a.attempt_number DESC
     LIMIT 1
   `).get(deliveryId);
-    return row?.failure_code;
 }
 function receiptDetail(note, context) {
     return {
@@ -173,6 +212,7 @@ function recordPublicAck(db, input, context) {
         idempotency_key: input.idempotency_key,
         receipt_kind: 'ack',
         detail: receiptDetail(undefined, context),
+        caller_session: context.hostSession,
     });
 }
 function recordPublicWorkflow(db, input, context) {
@@ -188,8 +228,99 @@ function recordPublicWorkflow(db, input, context) {
         caller_session: context.hostSession,
     });
 }
-function readPublicReceipts(db, input) {
-    return db.transaction(() => readPublicReceiptsSnapshot(db, input))();
+function acceptedNote(adapterKind) {
+    if (adapterKind === 'claude-inbox') {
+        return 'A notice is in the recipient\'s conversation; the agent has not recorded intake, an ack or a disposition yet.';
+    }
+    if (adapterKind === 'claude-channel') {
+        return 'The notice was handed to the recipient\'s Claude Code Channel and queued; MeMesh does not see it shown there, and the agent has not recorded intake, an ack or a disposition yet.';
+    }
+    if (adapterKind === 'codex-cli-queue' || adapterKind === 'codex-app-server') {
+        return 'The notice was queued for the recipient\'s Codex thread; MeMesh does not see it shown there, and the agent has not recorded intake, an ack or a disposition yet.';
+    }
+    return 'The host accepted the notice; whether the agent has seen it is not recorded here.';
+}
+function queuedNote(failure, adapterKind) {
+    const claude = adapterKind === undefined || adapterKind.startsWith('claude-');
+    const later = claude ? 'the message appears at the session\'s next prompt or turn end' : 'the message waits in the inbox until the recipient reads it';
+    switch (failure) {
+        case undefined:
+            return 'Stored in the inbox; no notice has been confirmed in the recipient\'s conversation.';
+        case 'notice_held':
+            return `Stored in the inbox. Claude Code is holding the notice for its user to approve or deny, and MeMesh cannot see which; either way ${later}.`;
+        case 'notice_not_confirmed':
+            return `Stored in the inbox. The notice reached the session but was not shown in its conversation (Claude Code may be holding it); ${later}.`;
+        case 'transcript_unavailable':
+        case 'transcript_not_found':
+            return `Stored in the inbox. MeMesh could not read the session's conversation record, so it cannot tell whether the notice arrived; ${later}.`;
+        case 'frame_too_large':
+            return `Stored in the inbox. The notice was too large to be sent and was not delivered; ${later}.`;
+        default:
+            return `Stored in the inbox. A delivery attempt ended without a result, so the notice may or may not have reached the session and nothing confirms it; ${later}.`;
+    }
+}
+function hasReplyFromRecipient(db, delivery) {
+    const original = db.prepare('SELECT sender FROM agent_messages WHERE message_id = ? AND project = ?').get(delivery.message_id, delivery.project);
+    if (!original)
+        return false;
+    const originalSender = canonicalAgentScopeId(original.sender);
+    const recipients = new Set(delivery.target_kind === 'principal'
+        ? [canonicalAgentScopeId(delivery.recipient)]
+        : [canonicalAgentScopeId(delivery.recipient), ...principalsOfSession(db, delivery.project, delivery.recipient)]);
+    const replies = db.prepare(`
+    SELECT m.sender AS sender, d.recipient AS recipient, d.target_kind AS target_kind
+    FROM agent_messages m JOIN agent_message_deliveries d ON d.message_id = m.message_id
+    WHERE m.project = ? AND m.reply_to_message_id = ?
+  `).all(delivery.project, delivery.message_id);
+    return replies.some((reply) => recipients.has(canonicalAgentScopeId(reply.sender))
+        && (canonicalAgentScopeId(reply.recipient) === originalSender
+            || (reply.target_kind === 'session' && principalsOfSession(db, delivery.project, reply.recipient).includes(originalSender))));
+}
+function readMessageStatus(db, input, callerSession) {
+    return db.transaction(() => {
+        const delivery = resolveCanonicalDelivery(db, input.project, input.recipient, input.message_id);
+        assertCallerMayUseDelivery(db, delivery, callerSession, { allowSender: true });
+        const state = readDeliveryState(db, delivery);
+        const replied = hasReplyFromRecipient(db, delivery);
+        const handled = db.prepare(`
+      SELECT 1 FROM agent_message_receipts
+      WHERE project = ? AND recipient = ? AND message_id = ? AND receipt_kind IN ${HANDLED_RECEIPT_KINDS_SQL}
+      LIMIT 1
+    `).get(delivery.project, delivery.recipient, delivery.message_id) !== undefined;
+        const hostAccept = readHostAccept(db, delivery.delivery_id);
+        const status = replied ? 'replied' : handled ? 'handed_to_agent' : hostAccept ? 'accepted' : 'queued';
+        const latestFailure = status === 'queued' ? readLatestDispatchFailure(db, delivery.delivery_id) : undefined;
+        const failure = latestFailure?.failure_code;
+        const lastHost = latestFailure?.adapter_kind ?? undefined;
+        let note;
+        if (status === 'replied')
+            note = 'A reply addressed back to the sender and linked to this message exists.';
+        else if (status === 'handed_to_agent')
+            note = 'The agent recorded intake, an ack or a disposition for this message; no reply is linked to it yet.';
+        else if (status === 'accepted')
+            note = acceptedNote(hostAccept?.adapter_kind);
+        else {
+            note = queuedNote(failure, lastHost);
+            if (failure === undefined && delivery.target_kind === 'principal') {
+                const availability = principalAvailability(db, delivery);
+                if (!availability.includes('is connected now; use status'))
+                    note += availability;
+            }
+            else if (failure === undefined && state.target_session === 'not_live') {
+                note = 'Stored in the inbox. The target session is not connected now; the message is delivered when it next connects.';
+            }
+        }
+        return {
+            message_id: delivery.message_id,
+            status,
+            note,
+            ...(failure ? { last_failure: failure } : {}),
+            delivery_state: state,
+        };
+    })();
+}
+function readPublicReceipts(db, input, callerSession) {
+    return db.transaction(() => readPublicReceiptsSnapshot(db, { ...input, caller_session: callerSession }))();
 }
 function readPublicReceiptsSnapshot(db, input) {
     const delivery = resolveCanonicalDelivery(db, input.project, input.recipient, input.message_id);
@@ -272,17 +403,17 @@ function readDeliveryState(db, delivery) {
     return { observed_at, intake, target_session: sessionLiveness(db, delivery.project, session, observedAtMs), session };
 }
 function sessionLiveness(db, project, session, observedAtMs) {
-    const ids = [...sessionAliasChain(db, session)];
+    const ids = [...sessionAliasChain(db, session)].map((id) => id.toLowerCase());
     const marks = ids.map(() => '?').join(', ');
     try {
         const registered = db.prepare(`
-      SELECT 1 FROM agent_session_instances WHERE project = ? AND session_instance_id IN (${marks}) LIMIT 1
+      SELECT 1 FROM agent_session_instances WHERE project = ? AND lower(session_instance_id) IN (${marks}) LIMIT 1
     `).get(project, ...ids) !== undefined;
         if (!registered)
             return 'unknown';
         const live = db.prepare(`
       SELECT 1 FROM agent_session_connections
-      WHERE project = ? AND session_instance_id IN (${marks})
+      WHERE project = ? AND lower(session_instance_id) IN (${marks})
         AND disconnected_at IS NULL AND lease_expires_at_ms > ?
       LIMIT 1
     `).get(project, ...ids, observedAtMs) !== undefined;
@@ -416,9 +547,7 @@ function sendPrincipalFallback(db, message, refused) {
             reason: 'recipient_unavailable',
             intended_session_connected: connected,
             ...(connected ? {} : {
-                note: `Session ${refused.recipient} is not connected now. Only it can take this message in, the next time it runs; `
-                    + `no other session of ${session.principal_id} will. If it has ended for good, send to ${session.principal_id} `
-                    + 'without intended_session instead.',
+                note: intendedSessionNote(refused.recipient, session.principal_id),
             }),
             from: {
                 message_id: refused.message_id,
@@ -475,7 +604,7 @@ export async function executeAgentMessageAction(db, rawInput, context, dependenc
             if (network)
                 return { ...publicSentMessage(sent), delivery_note: network.note };
             if (sent.target_kind !== 'session')
-                return publicSentMessage(sent);
+                return publicSentMessage(sent, undefined, principalAvailability(db, sent));
             if (hasPrincipalFallback(db, sent, input.idempotency_key)) {
                 return sendPrincipalFallback(db, message, sent);
             }
@@ -495,6 +624,7 @@ export async function executeAgentMessageAction(db, rawInput, context, dependenc
                 recipient: input.recipient,
                 cursor: input.cursor,
                 limit: input.limit,
+                caller_session: context.hostSession,
             };
             return input.wait_ms > 0
                 ? waitForAgentEvents(db, { ...query, wait_ms: input.wait_ms }, context.signal)
@@ -532,7 +662,7 @@ export async function executeAgentMessageAction(db, rawInput, context, dependenc
             }
         }
         case 'fetch':
-            return fetchAgentMessage(db, input);
+            return fetchAgentMessage(db, { ...input, caller_session: context.hostSession });
         case 'intake':
             return recordAgentReceipt(db, {
                 project: input.project,
@@ -559,13 +689,16 @@ export async function executeAgentMessageAction(db, rawInput, context, dependenc
                 receipt_kind: 'host_activation',
                 host_activation: input.activation,
                 detail: receiptDetail(input.detail, context),
+                caller_session: context.hostSession,
             });
         case 'receipts': {
-            const facts = readPublicReceipts(db, input);
+            const facts = readPublicReceipts(db, input, context.hostSession);
             const delivery = resolveCanonicalDelivery(db, input.project, input.recipient, input.message_id);
             const network = networkReceiptFact(db, delivery.delivery_id);
             return network ? [...facts, network] : facts;
         }
+        case 'status':
+            return readMessageStatus(db, input, context.hostSession);
     }
 }
 //# sourceMappingURL=agent-messaging.js.map

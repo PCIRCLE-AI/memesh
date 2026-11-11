@@ -189,7 +189,7 @@ describe('exportOpenAITools', () => {
     const tool = tools.find((t: any) => t.function.name === 'memesh_message') as any;
     expect(tool.function.parameters.required).toEqual(['action']);
     expect(tool.function.parameters.properties.action.enum).toEqual([
-      'send', 'poll', 'discover', 'fetch', 'intake', 'ack', 'disposition', 'activation', 'receipts',
+      'send', 'poll', 'discover', 'fetch', 'intake', 'ack', 'disposition', 'activation', 'receipts', 'status',
     ]);
     expect(tool.function.description).toMatch(/Reads never imply acknowledgement/);
     expect(tool.function.description).toContain(`${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes (64 KiB)`);

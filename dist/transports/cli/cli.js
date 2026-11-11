@@ -9571,6 +9571,15 @@ function agentScopeIdRejection(field, value) {
   const example = suggestion === null ? "reviewer-agent" : suggestion;
   return `${field} must be a stable identifier, not a filesystem path (received ${JSON.stringify(canonicalAgentScopeId(value))}). Use the name on its own, for example ${JSON.stringify(example)}.`;
 }
+function sessionIdRejection(field, value) {
+  const path35 = agentScopeIdRejection(field, value);
+  if (path35)
+    return path35;
+  if (/[\u0080-\uffff]/.test(value)) {
+    return `${field} must contain only ASCII characters: a session id is the UUID or thread id its host gives it (received ${JSON.stringify(canonicalAgentScopeId(value))}).`;
+  }
+  return null;
+}
 function projectScopeRejection(value) {
   if (value.trim() === "")
     return "project must not be empty.";
@@ -30154,6 +30163,10 @@ function readMessageStates(db2, cutoff) {
       JOIN agent_message_deliveries d
         ON d.message_id = r.message_id AND d.project = r.project AND d.recipient = r.recipient
       WHERE r.receipt_kind = 'ack'
+      UNION
+      SELECT delivery_id
+      FROM latest_workflow
+      WHERE is_terminal = 1
     ), delivery_states AS (
       SELECT d.message_id,
         COUNT(*) AS delivery_count,
@@ -30232,6 +30245,10 @@ function selectPrunableMessages(db2, cutoff, batchSize) {
       JOIN agent_message_deliveries d
         ON d.message_id = r.message_id AND d.project = r.project AND d.recipient = r.recipient
       WHERE r.receipt_kind = 'ack'
+      UNION
+      SELECT delivery_id
+      FROM latest_workflow
+      WHERE is_terminal = 1
     ), delivery_states AS (
       SELECT d.message_id,
         COUNT(*) AS delivery_count,
@@ -30388,17 +30405,17 @@ function intendedSessionFilter(db2, session) {
     return { sql: "", params: [] };
   if (session === void 0)
     return { sql: "AND d.intended_session IS NULL", params: [] };
-  const ids = [...sessionAliasChain(db2, session)];
+  const ids = [...sessionAliasChain(db2, session)].map((id) => id.toLowerCase());
   return {
-    sql: `AND (d.intended_session IS NULL OR d.intended_session IN (${ids.map(() => "?").join(", ")}))`,
+    sql: `AND (d.intended_session IS NULL OR lower(d.intended_session) IN (${ids.map(() => "?").join(", ")}))`,
     params: ids
   };
 }
 function sessionAliasChain(db2, session) {
   const chain = /* @__PURE__ */ new Set([session]);
   try {
-    const previous = db2.prepare("SELECT previous_session_id AS id FROM agent_session_aliases WHERE session_id = ?");
-    const next = db2.prepare("SELECT session_id AS id FROM agent_session_aliases WHERE previous_session_id = ?");
+    const previous = db2.prepare("SELECT previous_session_id AS id FROM agent_session_aliases WHERE lower(session_id) = lower(?)");
+    const next = db2.prepare("SELECT session_id AS id FROM agent_session_aliases WHERE lower(previous_session_id) = lower(?)");
     for (const step of [previous, next]) {
       let current = session;
       for (; ; ) {
@@ -30550,12 +30567,22 @@ function enforceConversationLoopLimit(db2, input2) {
     }
   }
 }
+function canonicalIntendedSession(db2, project, session) {
+  const ids = [...sessionAliasChain(db2, session)];
+  const exact = db2.prepare(`SELECT 1 AS present FROM agent_session_instances WHERE project = ? AND session_instance_id IN (${ids.map(() => "?").join(", ")}) LIMIT 1`).get(project, ...ids);
+  if (exact !== void 0)
+    return session;
+  const folded = db2.prepare("SELECT session_instance_id FROM agent_session_instances WHERE project = ? AND lower(session_instance_id) = ?").all(project, session.toLowerCase());
+  return folded.length === 1 ? folded[0].session_instance_id : session.toLowerCase();
+}
 function sendAgentMessage(db2, input2, options = {}) {
   const normalized = normalizeSendInput(options.fallback_of_message_id === void 0 ? input2 : {
     ...input2,
     provenance: { ...input2.provenance, fallback_of_message_id: options.fallback_of_message_id }
   });
+  const requestedIntendedSession = normalized.intended_session;
   if (normalized.intended_session !== null) {
+    normalized.intended_session = canonicalIntendedSession(db2, normalized.project, normalized.intended_session);
     const ids = [...sessionAliasChain(db2, normalized.intended_session)];
     const registered = db2.prepare(`
       SELECT adapter_kind FROM agent_session_instances
@@ -30574,7 +30601,7 @@ function sendAgentMessage(db2, input2, options = {}) {
     sender: normalized.sender,
     recipient: normalized.recipient,
     target_kind: normalized.target_kind,
-    ...normalized.intended_session === null ? {} : { intended_session: normalized.intended_session },
+    ...requestedIntendedSession === null ? {} : { intended_session: requestedIntendedSession },
     idempotency_key: normalized.idempotency_key,
     content_type: normalized.content_type,
     sender_host: normalized.sender_host,
@@ -30649,6 +30676,9 @@ function pollAgentEvents(db2, input2) {
   const recipient = requireScopeId("recipient", input2.recipient);
   const limit = normalizeLimit(input2.limit);
   const cursor = resolveCursor(db2, project, recipient, input2.cursor ?? null);
+  if (!callerMayReadRecipient(db2, project, recipient, input2.caller_session)) {
+    return { events: [], next_cursor: cursor.cursor_token || createCursor(db2, project, recipient, cursor.event_sequence) };
+  }
   const rows = db2.prepare(`
     SELECT
       e.event_sequence,
@@ -30692,7 +30722,8 @@ async function waitForAgentEvents(db2, input2, signal) {
       project: input2.project,
       recipient: input2.recipient,
       cursor: currentCursor,
-      limit: input2.limit
+      limit: input2.limit,
+      caller_session: input2.caller_session
     });
     if (result.events.length > 0)
       return result;
@@ -30721,6 +30752,7 @@ function fetchAgentMessage(db2, input2) {
       m.reply_to_message_id,
       m.privacy,
       m.payload_json,
+      m.payload_tombstoned_at,
       m.provenance_json,
       m.created_at
     FROM agent_messages m
@@ -30730,6 +30762,7 @@ function fetchAgentMessage(db2, input2) {
   if (!row) {
     throw new AgentMessageAccessError(`Agent message ${messageId2} is not available to recipient ${recipient} in project ${project}.`);
   }
+  assertCallerMayUseDelivery(db2, { project, recipient, message_id: messageId2, target_kind: row.target_kind }, input2.caller_session);
   return {
     message_id: row.message_id,
     project: row.project,
@@ -30743,20 +30776,25 @@ function fetchAgentMessage(db2, input2) {
     privacy: parsePrivacy(row.privacy),
     created_at: sqliteUtcToIso(row.created_at),
     payload: parseJsonObjectOrValue(row.payload_json),
-    provenance: parseJsonObject(row.provenance_json, "provenance_json")
+    provenance: parseJsonObject(row.provenance_json, "provenance_json"),
+    ...row.payload_tombstoned_at ? { note: "This message is past its retention period and its content was deleted; payload keeps only the marker with its original size and checksum." } : {}
   };
 }
 function recordAgentReceipt(db2, input2) {
   const normalized = normalizeReceiptInput(input2);
   const delivery = assertMessageAccess(db2, normalized.project, normalized.recipient, normalized.message_id);
-  if (normalized.receipt_kind === "intake" || normalized.receipt_kind === "disposition") {
-    const callerSession = input2.caller_session?.trim() ? canonicalAgentScopeId(input2.caller_session.trim()) : null;
-    if (delivery.intended_session !== null && (callerSession === null || !sessionAliasChain(db2, delivery.intended_session).has(callerSession))) {
+  assertCallerMayUseDelivery(db2, { project: normalized.project, recipient: normalized.recipient, message_id: normalized.message_id, target_kind: delivery.target_kind }, input2.caller_session);
+  const callerSession = input2.caller_session?.trim() ? canonicalAgentScopeId(input2.caller_session.trim()) : null;
+  const kind = normalized.receipt_kind;
+  if (delivery.intended_session !== null) {
+    const meantFor = sessionAliasChain(db2, delivery.intended_session);
+    const strict = kind === "intake" || kind === "disposition";
+    if (strict && callerSession === null || callerSession !== null && !isOneOf(meantFor, callerSession, { db: db2, project: normalized.project })) {
       throw new AgentIntendedForOtherSessionError(normalized.message_id, delivery.intended_session, callerSession);
     }
-    if (delivery.target_kind === "session" && callerSession !== null && !sessionAliasChain(db2, normalized.recipient).has(callerSession) && db2.prepare("SELECT 1 FROM agent_session_instances WHERE project = ? AND session_instance_id = ?").get(normalized.project, callerSession) !== void 0) {
-      throw new AgentIntendedForOtherSessionError(normalized.message_id, normalized.recipient, callerSession);
-    }
+  }
+  if (delivery.target_kind === "session" && callerSession !== null && !isOneOf(sessionAliasChain(db2, normalized.recipient), callerSession, { db: db2, project: normalized.project }) && db2.prepare("SELECT 1 FROM agent_session_instances WHERE project = ? AND lower(session_instance_id) = ?").get(normalized.project, callerSession.toLowerCase()) !== void 0) {
+    throw new AgentIntendedForOtherSessionError(normalized.message_id, normalized.recipient, callerSession);
   }
   const detail = buildReceiptDetail(normalized);
   const requestHash = hashCanonical({
@@ -30778,7 +30816,7 @@ function recordAgentReceipt(db2, input2) {
       INSERT INTO agent_message_receipts (
         receipt_id, message_id, project, recipient, receipt_kind, actor, idempotency_key, request_hash, detail_json
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(receiptId, normalized.message_id, normalized.project, normalized.recipient, normalized.receipt_kind, normalized.actor, normalized.idempotency_key, requestHash, stableStringify(detail));
+    `).run(receiptId, normalized.message_id, normalized.project, normalized.recipient, normalized.receipt_kind, normalized.actor, normalized.idempotency_key, requestHash, stableStringify({ ...detail, caller_session: callerSession }));
   });
   try {
     tx.immediate();
@@ -30802,7 +30840,8 @@ function readAgentMessageReceipts(db2, input2) {
   const project = requireScopeId("project", input2.project);
   const recipient = requireScopeId("recipient", input2.recipient);
   const messageId2 = requireText("message_id", input2.message_id, MAX_SCOPE_FIELD);
-  assertMessageAccess(db2, project, recipient, messageId2);
+  const delivery = assertMessageAccess(db2, project, recipient, messageId2);
+  assertCallerMayUseDelivery(db2, { project, recipient, message_id: messageId2, target_kind: delivery.target_kind }, input2.caller_session);
   const rows = db2.prepare(`
     SELECT receipt_id, message_id, project, recipient, receipt_kind, actor, idempotency_key, detail_json, created_at, request_hash
     FROM agent_message_receipts
@@ -30817,6 +30856,9 @@ function normalizeSendInput(input2) {
   const recipient = requireScopeId("recipient", input2.recipient);
   const target_kind = parseTargetKind(input2.target_kind ?? "principal");
   const intended_session = input2.intended_session === void 0 || input2.intended_session === null ? null : requireScopeId("intended_session", input2.intended_session);
+  const sessionRejection = (intended_session !== null ? sessionIdRejection("intended_session", intended_session) : null) ?? (target_kind === "session" ? sessionIdRejection("recipient", recipient) : null);
+  if (sessionRejection)
+    throw new AgentMessagingError(sessionRejection);
   if (intended_session !== null && target_kind !== "principal") {
     throw new AgentMessagingError('intended_session is only valid with target_kind "principal".');
   }
@@ -31023,6 +31065,60 @@ function loadSentMessage(db2, project, recipient, messageId2) {
     ORDER BY e.event_sequence ASC
     LIMIT 1
   `).get(project, project, recipient, messageId2);
+}
+function principalsOfSession(db2, project, session) {
+  const named = canonicalAgentScopeId(session);
+  const exact = [...sessionAliasChain(db2, named)];
+  let rows = db2.prepare(`SELECT DISTINCT principal_id FROM agent_session_instances WHERE project = ? AND session_instance_id IN (${exact.map(() => "?").join(", ")})`).all(project, ...exact);
+  if (rows.length === 0) {
+    const folded = [...new Set([...exact, ...sessionAliasChain(db2, named.toLowerCase())].map((id) => id.toLowerCase()))];
+    rows = db2.prepare(`SELECT DISTINCT principal_id FROM agent_session_instances WHERE project = ? AND lower(session_instance_id) IN (${folded.map(() => "?").join(", ")})`).all(project, ...folded);
+  }
+  return [...new Set(rows.map((row) => canonicalAgentScopeId(row.principal_id)))];
+}
+function isOneOf(chain, session, scope) {
+  const ids = [...chain];
+  if (ids.includes(session))
+    return true;
+  if (scope.db.prepare("SELECT 1 FROM agent_session_instances WHERE project = ? AND session_instance_id = ?").get(scope.project, session) !== void 0)
+    return false;
+  const wanted = session.toLowerCase();
+  return ids.some((id) => id.toLowerCase() === wanted);
+}
+function callerMayReadRecipient(db2, project, recipient, callerSession) {
+  const caller = callerSession?.trim();
+  if (!caller)
+    return true;
+  const callerPrincipals = principalsOfSession(db2, project, caller);
+  if (callerPrincipals.length === 0)
+    return true;
+  const owners = [canonicalAgentScopeId(recipient), ...principalsOfSession(db2, project, recipient)];
+  return callerPrincipals.some((principal) => owners.includes(principal));
+}
+function assertCallerMayUseDelivery(db2, delivery, callerSession, options = {}) {
+  const caller = callerSession?.trim();
+  if (!caller)
+    return;
+  const callerPrincipals = principalsOfSession(db2, delivery.project, caller);
+  if (callerPrincipals.length === 0)
+    return;
+  const owners = delivery.target_kind === "principal" ? [canonicalAgentScopeId(delivery.recipient)] : principalsOfSession(db2, delivery.project, delivery.recipient);
+  if (owners.length === 0 || callerPrincipals.some((principal) => owners.includes(principal)))
+    return;
+  if (options.allowSender) {
+    const sent = db2.prepare("SELECT sender, provenance_json FROM agent_messages WHERE message_id = ? AND project = ?").get(delivery.message_id, delivery.project);
+    if (sent && callerPrincipals.includes(canonicalAgentScopeId(sent.sender)))
+      return;
+    let senderSession;
+    try {
+      senderSession = JSON.parse(sent?.provenance_json ?? "{}").sender_session;
+    } catch {
+      senderSession = void 0;
+    }
+    if (typeof senderSession === "string" && isOneOf(sessionAliasChain(db2, senderSession), canonicalAgentScopeId(caller), { db: db2, project: delivery.project }))
+      return;
+  }
+  throw new AgentMessageAccessError(`Agent message ${delivery.message_id} is not available to recipient ${delivery.recipient} in project ${delivery.project}.`);
 }
 function assertMessageAccess(db2, project, recipient, messageId2) {
   const row = db2.prepare(`
@@ -31268,7 +31364,7 @@ async function waitForDelay(ms, signal) {
       onAbort();
   });
 }
-var MAX_SCOPE_FIELD, MAX_IDEMPOTENCY_KEY, MAX_CURSOR_TOKEN, AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES, DEFAULT_POLL_LIMIT, MAX_POLL_LIMIT, DEFAULT_WAIT_TIMEOUT_MS, DEFAULT_WAIT_INTERVAL_MS, MIN_WAIT_INTERVAL_MS, AgentMessagingError, AgentIdempotencyConflictError, AgentMessageAccessError, AgentConversationLoopError, AgentIntendedForOtherSessionError, INTENDED_SESSION_ADAPTERS, AgentHandleError, AgentIntendedSessionUnsupportedError, AgentWaitAbortedError, AgentNativeMessageTooLargeError;
+var HANDLED_RECEIPT_KINDS_SQL, MAX_SCOPE_FIELD, MAX_IDEMPOTENCY_KEY, MAX_CURSOR_TOKEN, AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES, DEFAULT_POLL_LIMIT, MAX_POLL_LIMIT, DEFAULT_WAIT_TIMEOUT_MS, DEFAULT_WAIT_INTERVAL_MS, MIN_WAIT_INTERVAL_MS, AgentMessagingError, AgentIdempotencyConflictError, AgentMessageAccessError, AgentConversationLoopError, AgentIntendedForOtherSessionError, INTENDED_SESSION_ADAPTERS, AgentHandleError, AgentIntendedSessionUnsupportedError, AgentWaitAbortedError, AgentNativeMessageTooLargeError;
 var init_agent_messaging = __esm({
   "dist/core/agent-messaging.js"() {
     "use strict";
@@ -31276,6 +31372,7 @@ var init_agent_messaging = __esm({
     init_agent_message_inbox();
     init_time_utils();
     init_agent_scope_id();
+    HANDLED_RECEIPT_KINDS_SQL = "('intake', 'ack', 'disposition')";
     MAX_SCOPE_FIELD = AGENT_SCOPE_ID_MAX_LENGTH;
     MAX_IDEMPOTENCY_KEY = 200;
     MAX_CURSOR_TOKEN = 160;
@@ -31302,7 +31399,7 @@ var init_agent_messaging = __esm({
       code = "intended_for_other_session";
       constructor(messageId2, intendedSession, callerSession) {
         const caller = callerSession === null ? "this caller has no session id (CLAUDE_CODE_SESSION_ID / CODEX_THREAD_ID not set or not a valid session id, or the request came over HTTP). If you are that session in Codex, record it with the CLI from your shell (`memesh message intake ...`): Codex does not pass its thread id to MCP servers" : `this caller is session ${JSON.stringify(callerSession)}`;
-        super(`intended_for_other_session: message ${messageId2} is meant for session ${JSON.stringify(intendedSession)}, and ${caller}. Otherwise leave it for that session: do not record intake or a disposition for it.`);
+        super(`intended_for_other_session: message ${messageId2} is meant for session ${JSON.stringify(intendedSession)}, and ${caller}. Otherwise leave it for that session: do not record intake, a disposition, an ack or an activation for it.`);
       }
     };
     INTENDED_SESSION_ADAPTERS = /* @__PURE__ */ new Set(["claude-channel", "claude-inbox", "codex-cli-queue"]);
@@ -31651,6 +31748,12 @@ var init_schemas3 = __esm({
         ...messageReceiptBase,
         activation: external_exports.enum(["woken", "manual_resume_required", "unsupported", "failed"]),
         detail: external_exports.string().trim().max(1e3).optional()
+      }).strict(),
+      external_exports.object({
+        action: external_exports.literal("status"),
+        project: messageProject,
+        recipient: messageRecipient,
+        message_id: messageId
       }).strict(),
       external_exports.object({
         action: external_exports.literal("receipts"),
@@ -33699,7 +33802,7 @@ function sessionFromVariable(env, name) {
   if (!raw)
     return void 0;
   const session = canonicalAgentScopeId(raw);
-  if (agentScopeIdRejection(name, session) === null)
+  if (sessionIdRejection(name, session) === null)
     return session;
   try {
     process.stderr.write(`[memesh] ignoring ${name}: set but not a valid session id
@@ -35770,6 +35873,7 @@ var init_agent_router = __esm({
     "use strict";
     init_agent_messaging();
     init_semver();
+    init_agent_scope_id();
     AGENT_ROUTER_PROTOCOL_VERSION = 2;
     AGENT_ROUTER_MAX_FRAME_BYTES = 64 * 1024;
     AGENT_ROUTER_SOCKET_PATH_MAX_BYTES = 103;
@@ -36254,9 +36358,38 @@ function nativeAcceptance(row) {
     accepted_at: sqliteUtcToIso(row.created_at)
   };
 }
-function publicSentMessage(sent, adapter) {
+function intendedSessionNote(session, principal) {
+  return `Session ${session} is not connected now. Only it can take this message in, the next time it runs; no other session of ${principal} will. If it has ended for good, send to ${principal} without intended_session instead.`;
+}
+function principalAvailability(db2, sent) {
+  const recipient = canonicalAgentScopeId(sent.recipient);
+  const meant = sent.intended_session ? sessionAliasChain(db2, sent.intended_session) : void 0;
+  const wanted = meant === void 0 ? [] : [...meant].map((id) => id.toLowerCase());
+  const inWanted = meant === void 0 ? "" : ` AND lower(session_instance_id) IN (${wanted.map(() => "?").join(", ")})`;
+  const live = db2.prepare(`
+    SELECT principal_id FROM agent_session_connections
+    WHERE project = ? AND disconnected_at IS NULL AND lease_expires_at_ms > ?${inWanted}
+  `).all(sent.project, Date.now(), ...wanted).some((row) => canonicalAgentScopeId(row.principal_id) === recipient);
+  if (sent.intended_session) {
+    if (live)
+      return ` Session ${sent.intended_session} is connected now; use status to see whether its notice reached the conversation.`;
+    const registered = db2.prepare(`
+      SELECT principal_id FROM agent_session_instances WHERE project = ?${inWanted}
+    `).all(sent.project, ...wanted).map((row) => canonicalAgentScopeId(row.principal_id));
+    if (registered.length === 0) {
+      return ` Session ${sent.intended_session} has not registered in this project, so MeMesh cannot tell whether it exists. Only a session with that id can take this message in; no other session of ${sent.recipient} will. Check the id; if it is wrong or the session has ended, send to ${sent.recipient} without intended_session instead.`;
+    }
+    if (!registered.includes(recipient)) {
+      const other = [...new Set(registered)].join(", ");
+      return ` Session ${sent.intended_session} is a session of ${other}; ${sent.recipient}'s notices do not reach it. Send to ${other}, or send to ${sent.recipient} without intended_session.`;
+    }
+    return ` ${intendedSessionNote(sent.intended_session, sent.recipient)}`;
+  }
+  return live ? ` A session of ${sent.recipient} is connected now; use status to see whether its notice reached the conversation.` : ` No session of ${sent.recipient} is connected now; the message waits in the inbox.`;
+}
+function publicSentMessage(sent, adapter, availability = "") {
   const { reused, ...message } = sent;
-  const delivery_note = reused ? "Reused the previous message_id; no new message was created. An unconfirmed notification may be sent again." : adapter ? `${adapter} accepted the notification. This does not mean the model has read or accepted it.` : `Stored in ${sent.recipient}'s inbox. This does not mean the recipient has read or accepted it.`;
+  const delivery_note = reused ? "Reused the previous message_id; no new message was created. An unconfirmed notification may be sent again." : adapter ? `${adapter} accepted the notification. This does not mean the model has read or accepted it.` : `Stored in ${sent.recipient}'s inbox. This does not mean the recipient has read or accepted it.${availability}`;
   return { ...message, delivery_note };
 }
 async function requestRouter(request2, dependencies, timeoutMs, messageSaved = false) {
@@ -36297,7 +36430,7 @@ async function requireExactSessionNativeAcceptance(db2, sent, dependencies) {
       const accepted2 = readHostAccept(db2, sent.delivery_id);
       if (accepted2)
         return nativeAcceptance(accepted2);
-      if (readLatestDispatchFailureCode(db2, sent.delivery_id) === "native_message_too_large") {
+      if (readLatestDispatchFailure(db2, sent.delivery_id)?.failure_code === "native_message_too_large") {
         throw new AgentNativeMessageTooLargeError();
       }
       throw new AgentRecipientUnavailableError();
@@ -36316,15 +36449,15 @@ async function requireExactSessionNativeAcceptance(db2, sent, dependencies) {
     throw new AgentRecipientUnavailableError();
   return nativeAcceptance(accepted);
 }
-function readLatestDispatchFailureCode(db2, deliveryId) {
-  const row = db2.prepare(`
-    SELECT failure_code
-    FROM agent_dispatch_attempts
-    WHERE delivery_id = ? AND result = 'adapter_rejected' AND failure_code IS NOT NULL
-    ORDER BY attempt_number DESC
+function readLatestDispatchFailure(db2, deliveryId) {
+  return db2.prepare(`
+    SELECT a.failure_code AS failure_code, c.adapter_kind AS adapter_kind
+    FROM agent_dispatch_attempts a
+    LEFT JOIN agent_session_connections c ON c.connection_id = a.connection_id
+    WHERE a.delivery_id = ? AND a.result = 'adapter_rejected' AND a.failure_code IS NOT NULL
+    ORDER BY a.attempt_number DESC
     LIMIT 1
   `).get(deliveryId);
-  return row?.failure_code;
 }
 function receiptDetail(note2, context) {
   return {
@@ -36359,7 +36492,8 @@ function recordPublicAck(db2, input2, context) {
     actor: input2.recipient,
     idempotency_key: input2.idempotency_key,
     receipt_kind: "ack",
-    detail: receiptDetail(void 0, context)
+    detail: receiptDetail(void 0, context),
+    caller_session: context.hostSession
   });
 }
 function recordPublicWorkflow(db2, input2, context) {
@@ -36375,8 +36509,94 @@ function recordPublicWorkflow(db2, input2, context) {
     caller_session: context.hostSession
   });
 }
-function readPublicReceipts(db2, input2) {
-  return db2.transaction(() => readPublicReceiptsSnapshot(db2, input2))();
+function acceptedNote(adapterKind) {
+  if (adapterKind === "claude-inbox") {
+    return "A notice is in the recipient's conversation; the agent has not recorded intake, an ack or a disposition yet.";
+  }
+  if (adapterKind === "claude-channel") {
+    return "The notice was handed to the recipient's Claude Code Channel and queued; MeMesh does not see it shown there, and the agent has not recorded intake, an ack or a disposition yet.";
+  }
+  if (adapterKind === "codex-cli-queue" || adapterKind === "codex-app-server") {
+    return "The notice was queued for the recipient's Codex thread; MeMesh does not see it shown there, and the agent has not recorded intake, an ack or a disposition yet.";
+  }
+  return "The host accepted the notice; whether the agent has seen it is not recorded here.";
+}
+function queuedNote(failure2, adapterKind) {
+  const claude = adapterKind === void 0 || adapterKind.startsWith("claude-");
+  const later = claude ? "the message appears at the session's next prompt or turn end" : "the message waits in the inbox until the recipient reads it";
+  switch (failure2) {
+    case void 0:
+      return "Stored in the inbox; no notice has been confirmed in the recipient's conversation.";
+    case "notice_held":
+      return `Stored in the inbox. Claude Code is holding the notice for its user to approve or deny, and MeMesh cannot see which; either way ${later}.`;
+    case "notice_not_confirmed":
+      return `Stored in the inbox. The notice reached the session but was not shown in its conversation (Claude Code may be holding it); ${later}.`;
+    case "transcript_unavailable":
+    case "transcript_not_found":
+      return `Stored in the inbox. MeMesh could not read the session's conversation record, so it cannot tell whether the notice arrived; ${later}.`;
+    case "frame_too_large":
+      return `Stored in the inbox. The notice was too large to be sent and was not delivered; ${later}.`;
+    default:
+      return `Stored in the inbox. A delivery attempt ended without a result, so the notice may or may not have reached the session and nothing confirms it; ${later}.`;
+  }
+}
+function hasReplyFromRecipient(db2, delivery) {
+  const original = db2.prepare("SELECT sender FROM agent_messages WHERE message_id = ? AND project = ?").get(delivery.message_id, delivery.project);
+  if (!original)
+    return false;
+  const originalSender = canonicalAgentScopeId(original.sender);
+  const recipients = new Set(delivery.target_kind === "principal" ? [canonicalAgentScopeId(delivery.recipient)] : [canonicalAgentScopeId(delivery.recipient), ...principalsOfSession(db2, delivery.project, delivery.recipient)]);
+  const replies = db2.prepare(`
+    SELECT m.sender AS sender, d.recipient AS recipient, d.target_kind AS target_kind
+    FROM agent_messages m JOIN agent_message_deliveries d ON d.message_id = m.message_id
+    WHERE m.project = ? AND m.reply_to_message_id = ?
+  `).all(delivery.project, delivery.message_id);
+  return replies.some((reply) => recipients.has(canonicalAgentScopeId(reply.sender)) && (canonicalAgentScopeId(reply.recipient) === originalSender || reply.target_kind === "session" && principalsOfSession(db2, delivery.project, reply.recipient).includes(originalSender)));
+}
+function readMessageStatus(db2, input2, callerSession) {
+  return db2.transaction(() => {
+    const delivery = resolveCanonicalDelivery(db2, input2.project, input2.recipient, input2.message_id);
+    assertCallerMayUseDelivery(db2, delivery, callerSession, { allowSender: true });
+    const state = readDeliveryState(db2, delivery);
+    const replied = hasReplyFromRecipient(db2, delivery);
+    const handled = db2.prepare(`
+      SELECT 1 FROM agent_message_receipts
+      WHERE project = ? AND recipient = ? AND message_id = ? AND receipt_kind IN ${HANDLED_RECEIPT_KINDS_SQL}
+      LIMIT 1
+    `).get(delivery.project, delivery.recipient, delivery.message_id) !== void 0;
+    const hostAccept = readHostAccept(db2, delivery.delivery_id);
+    const status = replied ? "replied" : handled ? "handed_to_agent" : hostAccept ? "accepted" : "queued";
+    const latestFailure = status === "queued" ? readLatestDispatchFailure(db2, delivery.delivery_id) : void 0;
+    const failure2 = latestFailure?.failure_code;
+    const lastHost = latestFailure?.adapter_kind ?? void 0;
+    let note2;
+    if (status === "replied")
+      note2 = "A reply addressed back to the sender and linked to this message exists.";
+    else if (status === "handed_to_agent")
+      note2 = "The agent recorded intake, an ack or a disposition for this message; no reply is linked to it yet.";
+    else if (status === "accepted")
+      note2 = acceptedNote(hostAccept?.adapter_kind);
+    else {
+      note2 = queuedNote(failure2, lastHost);
+      if (failure2 === void 0 && delivery.target_kind === "principal") {
+        const availability = principalAvailability(db2, delivery);
+        if (!availability.includes("is connected now; use status"))
+          note2 += availability;
+      } else if (failure2 === void 0 && state.target_session === "not_live") {
+        note2 = "Stored in the inbox. The target session is not connected now; the message is delivered when it next connects.";
+      }
+    }
+    return {
+      message_id: delivery.message_id,
+      status,
+      note: note2,
+      ...failure2 ? { last_failure: failure2 } : {},
+      delivery_state: state
+    };
+  })();
+}
+function readPublicReceipts(db2, input2, callerSession) {
+  return db2.transaction(() => readPublicReceiptsSnapshot(db2, { ...input2, caller_session: callerSession }))();
 }
 function readPublicReceiptsSnapshot(db2, input2) {
   const delivery = resolveCanonicalDelivery(db2, input2.project, input2.recipient, input2.message_id);
@@ -36455,17 +36675,17 @@ function readDeliveryState(db2, delivery) {
   return { observed_at, intake, target_session: sessionLiveness(db2, delivery.project, session, observedAtMs), session };
 }
 function sessionLiveness(db2, project, session, observedAtMs) {
-  const ids = [...sessionAliasChain(db2, session)];
+  const ids = [...sessionAliasChain(db2, session)].map((id) => id.toLowerCase());
   const marks = ids.map(() => "?").join(", ");
   try {
     const registered = db2.prepare(`
-      SELECT 1 FROM agent_session_instances WHERE project = ? AND session_instance_id IN (${marks}) LIMIT 1
+      SELECT 1 FROM agent_session_instances WHERE project = ? AND lower(session_instance_id) IN (${marks}) LIMIT 1
     `).get(project, ...ids) !== void 0;
     if (!registered)
       return "unknown";
     const live = db2.prepare(`
       SELECT 1 FROM agent_session_connections
-      WHERE project = ? AND session_instance_id IN (${marks})
+      WHERE project = ? AND lower(session_instance_id) IN (${marks})
         AND disconnected_at IS NULL AND lease_expires_at_ms > ?
       LIMIT 1
     `).get(project, ...ids, observedAtMs) !== void 0;
@@ -36591,7 +36811,7 @@ function sendPrincipalFallback(db2, message, refused) {
       reason: "recipient_unavailable",
       intended_session_connected: connected,
       ...connected ? {} : {
-        note: `Session ${refused.recipient} is not connected now. Only it can take this message in, the next time it runs; no other session of ${session.principal_id} will. If it has ended for good, send to ${session.principal_id} without intended_session instead.`
+        note: intendedSessionNote(refused.recipient, session.principal_id)
       },
       from: {
         message_id: refused.message_id,
@@ -36646,7 +36866,7 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
       if (network)
         return { ...publicSentMessage(sent), delivery_note: network.note };
       if (sent.target_kind !== "session")
-        return publicSentMessage(sent);
+        return publicSentMessage(sent, void 0, principalAvailability(db2, sent));
       if (hasPrincipalFallback(db2, sent, input2.idempotency_key)) {
         return sendPrincipalFallback(db2, message, sent);
       }
@@ -36664,7 +36884,8 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
         project: input2.project,
         recipient: input2.recipient,
         cursor: input2.cursor,
-        limit: input2.limit
+        limit: input2.limit,
+        caller_session: context.hostSession
       };
       return input2.wait_ms > 0 ? waitForAgentEvents(db2, { ...query, wait_ms: input2.wait_ms }, context.signal) : pollAgentEvents(db2, query);
     }
@@ -36697,7 +36918,7 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
       }
     }
     case "fetch":
-      return fetchAgentMessage(db2, input2);
+      return fetchAgentMessage(db2, { ...input2, caller_session: context.hostSession });
     case "intake":
       return recordAgentReceipt(db2, {
         project: input2.project,
@@ -36723,20 +36944,24 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
         idempotency_key: input2.idempotency_key,
         receipt_kind: "host_activation",
         host_activation: input2.activation,
-        detail: receiptDetail(input2.detail, context)
+        detail: receiptDetail(input2.detail, context),
+        caller_session: context.hostSession
       });
     case "receipts": {
-      const facts = readPublicReceipts(db2, input2);
+      const facts = readPublicReceipts(db2, input2, context.hostSession);
       const delivery = resolveCanonicalDelivery(db2, input2.project, input2.recipient, input2.message_id);
       const network = networkReceiptFact(db2, delivery.delivery_id);
       return network ? [...facts, network] : facts;
     }
+    case "status":
+      return readMessageStatus(db2, input2, context.hostSession);
   }
 }
 var AgentRecipientUnavailableError, AgentRouterUnavailableError, AGENT_MESSAGE_STORAGE_QUOTA_ENV, EXACT_SESSION_NATIVE_TIMEOUT_MS, PUBLIC_DISPOSITIONS;
 var init_agent_messaging2 = __esm({
   "dist/transports/agent-messaging.js"() {
     "use strict";
+    init_agent_scope_id();
     init_agent_messaging();
     init_schemas3();
     init_agent_router();
@@ -37282,7 +37507,7 @@ function exportOpenAITools() {
           properties: {
             action: {
               type: "string",
-              enum: ["send", "poll", "discover", "fetch", "intake", "ack", "disposition", "activation", "receipts"],
+              enum: ["send", "poll", "discover", "fetch", "intake", "ack", "disposition", "activation", "receipts", "status"],
               description: "Message lifecycle or live-directory action; required fields depend on the selected action."
             },
             project: { type: "string", description: "Local project scope. A stable identifier, never a filesystem path; compared exactly, after Unicode NFC normalisation." },
@@ -65555,6 +65780,53 @@ function inspectCodexQueueDaemon(db2) {
     return createCheck("codex-queue-daemon", "Codex stuck-message release", "warn", `Could not read the Codex host_activation receipts: ${err instanceof Error ? err.message : String(err)}`, "Run `memesh doctor` again; if this persists, check the database rows above for the underlying error.");
   }
 }
+function countUnsettledNotices(db2, codes) {
+  const present = db2.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'agent_dispatch_attempts'").get();
+  if (!present?.present)
+    return void 0;
+  const row = db2.prepare(`
+    SELECT COUNT(DISTINCT a.delivery_id) AS unsettled
+    FROM agent_dispatch_attempts a
+    WHERE a.failure_code IN (${codes.map(() => "?").join(", ")})
+      AND a.created_at > datetime('now', '-7 days')
+      AND a.attempt_number = (
+        SELECT MAX(l.attempt_number) FROM agent_dispatch_attempts l WHERE l.delivery_id = a.delivery_id
+      )
+      AND NOT EXISTS (SELECT 1 FROM agent_host_accepts h WHERE h.delivery_id = a.delivery_id)
+      AND NOT EXISTS (
+        SELECT 1 FROM agent_message_deliveries d JOIN agent_message_receipts r
+          ON r.message_id = d.message_id AND r.project = d.project AND r.recipient = d.recipient
+        WHERE d.delivery_id = a.delivery_id AND r.receipt_kind IN ${HANDLED_RECEIPT_KINDS_SQL}
+      )
+  `).get(...codes);
+  const count = Number(row?.unsettled);
+  return count > 0 ? count : void 0;
+}
+function inspectHeldNotices(db2) {
+  const found = countNoticeFailures(db2, ["notice_not_confirmed", "notice_held"]);
+  if (found === void 0)
+    return void 0;
+  if (typeof found !== "number") {
+    return createCheck("held-notices", "Message notices not shown to Claude", "warn", found.unreadable, UNREADABLE_ATTEMPTS_FIX);
+  }
+  return createCheck("held-notices", "Message notices not shown to Claude", "warn", `${found} message(s) in the last 7 days reached a Claude Code session's socket but their notice never showed up in its conversation. Possible causes: Claude Code is holding the notice for its user to approve or deny (for example when the sender does not state a permission mode and that session bypasses permission prompts, or when the two sessions' permission modes differ), the session was busy or has stopped, or it dropped the notice. MeMesh cannot tell these apart, and cannot see whether the user denied a held notice. The messages are safe in the inbox and are raised at the session's next prompt or turn end.`, `To get the live notice, set "crossSessionInbound" to "accept" in that Claude Code session's settings, or install the MeMesh Channel. Otherwise the message appears at the next prompt.`);
+}
+function inspectUnreadableTranscripts(db2) {
+  const found = countNoticeFailures(db2, ["transcript_unavailable", "transcript_not_found"]);
+  if (found === void 0)
+    return void 0;
+  if (typeof found !== "number") {
+    return createCheck("unreadable-transcripts", "Claude Code conversation record not readable", "warn", found.unreadable, UNREADABLE_ATTEMPTS_FIX);
+  }
+  return createCheck("unreadable-transcripts", "Claude Code conversation record not readable", "warn", `${found} message(s) in the last 7 days could not be checked: MeMesh could not read the Claude Code session's conversation record, so it could not tell whether the notice arrived. The messages are safe in the inbox and are raised at the session's next prompt or turn end.`, "Check that CLAUDE_CONFIG_DIR (when you set it) points at the folder Claude Code writes its conversation records to, and that the MeMesh MCP server is started from the project (MEMESH_PROJECT_ROOT or CLAUDE_PROJECT_DIR set, or a single workspace root). Then start a new Claude Code session.");
+}
+function countNoticeFailures(db2, codes) {
+  try {
+    return countUnsettledNotices(db2, codes);
+  } catch (err) {
+    return { unreadable: `Could not read the message dispatch attempts: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
 function inspectProjectIdentitySplit(db2) {
   let splits;
   try {
@@ -66664,11 +66936,11 @@ function probeInstalledMessageCapability(packageRoot3) {
 }
 function inspectMessageCapability(packageRoot3, enabled, probe) {
   if (!enabled) {
-    return createInfo("message-capability", "Message adapter imports", "Not verified (opt-in). Set MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY=1 to start this installed MCP and verify its nine-action message schema plus bundled host-adapter imports. This does not check a live router socket or host registration.");
+    return createInfo("message-capability", "Message adapter imports", "Not verified (opt-in). Set MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY=1 to start this installed MCP and verify its ten-action message schema plus bundled host-adapter imports. This does not check a live router socket or host registration.");
   }
   const result = probe(packageRoot3);
   if (result.ok)
-    return createCheck("message-capability", "Message adapter imports", "pass", "This installed MCP advertised the nine-action message schema and all bundled host adapters imported successfully. No live router socket, host registration, or host acceptance was verified.");
+    return createCheck("message-capability", "Message adapter imports", "pass", "This installed MCP advertised the ten-action message schema and all bundled host adapters imported successfully. No live router socket, host registration, or host acceptance was verified.");
   return createCheck("message-capability", "Message adapter imports", "fail", `Installed message capability probe failed: ${result.message}.`, "Reinstall or rebuild this package, then retry with MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY=1.", { code: "message-capability.probe-failed", params: { detail: result.message } });
 }
 function inspectInstallJourney(packageVersion2) {
@@ -66774,6 +67046,12 @@ async function runDoctor(options) {
     const codexQueueDaemon = inspectCodexQueueDaemon(db2);
     if (codexQueueDaemon)
       dbChecks.push(codexQueueDaemon);
+    const heldNotices = inspectHeldNotices(db2);
+    if (heldNotices)
+      dbChecks.push(heldNotices);
+    const unreadableTranscripts = inspectUnreadableTranscripts(db2);
+    if (unreadableTranscripts)
+      dbChecks.push(unreadableTranscripts);
     const projectSplit = inspectProjectIdentitySplit(db2);
     if (projectSplit)
       dbChecks.push(projectSplit);
@@ -66941,7 +67219,7 @@ function formatDoctorReport(result, packageVersion2) {
   }
   return lines;
 }
-var EXPECTED_HOOK_TYPES, AGENT_MESSAGE_STORAGE_QUOTA_ENV2, LOCALE_README_FILES, LOCALE_H2_TOLERANCE, NoDatabaseYetError, HERMES_MARKER_FIX, PRIVATE_FOLDER_FIX, PRIVATE_STATE_ERROR_FIXES, DOCTOR_PRIVACY_CHECK_MS, DOCTOR_PRIVACY_TOTAL_MS, MCP_PLACEHOLDER, SAFE_HANDOFF_NAME;
+var EXPECTED_HOOK_TYPES, AGENT_MESSAGE_STORAGE_QUOTA_ENV2, LOCALE_README_FILES, LOCALE_H2_TOLERANCE, NoDatabaseYetError, HERMES_MARKER_FIX, PRIVATE_FOLDER_FIX, PRIVATE_STATE_ERROR_FIXES, DOCTOR_PRIVACY_CHECK_MS, DOCTOR_PRIVACY_TOTAL_MS, UNREADABLE_ATTEMPTS_FIX, MCP_PLACEHOLDER, SAFE_HANDOFF_NAME;
 var init_doctor = __esm({
   "dist/core/doctor.js"() {
     "use strict";
@@ -66970,6 +67248,7 @@ var init_doctor = __esm({
     init_capture_liveness();
     init_guards();
     init_agent_message_storage();
+    init_agent_messaging();
     init_config2();
     init_doctor_journey();
     EXPECTED_HOOK_TYPES = ["PreToolUse", "SessionStart", "PostToolUse", "Stop", "PreCompact"];
@@ -66994,6 +67273,7 @@ var init_doctor = __esm({
     });
     DOCTOR_PRIVACY_CHECK_MS = 2e3;
     DOCTOR_PRIVACY_TOTAL_MS = 1e4;
+    UNREADABLE_ATTEMPTS_FIX = "Run `memesh doctor` again; if this persists, check the database rows above for the underlying error.";
     MCP_PLACEHOLDER = "${CLAUDE_PLUGIN_ROOT}";
     SAFE_HANDOFF_NAME = /^session-handoff:[A-Za-z0-9._-]+~[0-9a-f]{32}$/;
   }
@@ -72884,7 +73164,8 @@ messageCmd.command("watch").description("Wait once for an exact-recipient event 
         limit: opts.limit
       }, {
         transport: "cli",
-        sourceHost: "cli"
+        sourceHost: "cli",
+        hostSession: hostSessionFromEnv()
       });
       if (!isAgentPollResult(result)) {
         throw new Error("Message watch returned an invalid poll result.");
@@ -72923,14 +73204,14 @@ messageCmd.command("intake").description("Record fetched/ingested state without 
     intake_state: opts.state
   });
 });
-messageCmd.command("ack").description("Record explicit recipient acknowledgement").requiredOption("--project <name>", "Project scope").requiredOption("--recipient <id>", "Stable recipient agent/host ID").requiredOption("--message-id <id>", "Message ID").requiredOption("--idempotency-key <key>", "Stable retry key").action((opts) => runCliMessage({
+messageCmd.command("ack").description("Optional: record explicit recipient acknowledgement (an agent only needs to record intake)").requiredOption("--project <name>", "Project scope").requiredOption("--recipient <id>", "Stable recipient agent/host ID").requiredOption("--message-id <id>", "Message ID").requiredOption("--idempotency-key <key>", "Stable retry key").action((opts) => runCliMessage({
   action: "ack",
   project: opts.project,
   recipient: opts.recipient,
   message_id: opts.messageId,
   idempotency_key: opts.idempotencyKey
 }));
-messageCmd.command("disposition").description("Record a workflow disposition independently from ACK").requiredOption("--project <name>", "Project scope").requiredOption("--recipient <id>", "Stable recipient agent/host ID").requiredOption("--message-id <id>", "Message ID").requiredOption("--idempotency-key <key>", "Stable retry key").requiredOption("--value <state>", "accepted | rejected | completed | cancelled | deferred").option("--detail <text>", "Optional bounded explanation").action(async (opts) => {
+messageCmd.command("disposition").description("Optional: record a workflow disposition independently from ACK; only a message with a terminal one (completed, cancelled, rejected) can have its payload removed by `message storage prune --apply`").requiredOption("--project <name>", "Project scope").requiredOption("--recipient <id>", "Stable recipient agent/host ID").requiredOption("--message-id <id>", "Message ID").requiredOption("--idempotency-key <key>", "Stable retry key").requiredOption("--value <state>", "accepted | rejected | completed | cancelled | deferred").option("--detail <text>", "Optional bounded explanation").action(async (opts) => {
   requireOneOf(opts.value, ["accepted", "rejected", "completed", "cancelled", "deferred"], "--value");
   await runCliMessage({
     action: "disposition",
@@ -72956,6 +73237,12 @@ messageCmd.command("activation").description("Record host activation outcome ind
 });
 messageCmd.command("receipts").description("Read receipt facts for one message routed to the logical recipient").requiredOption("--project <name>", "Project scope").requiredOption("--recipient <id>", "Stable recipient agent/host ID").requiredOption("--message-id <id>", "Message ID").action((opts) => runCliMessage({
   action: "receipts",
+  project: opts.project,
+  recipient: opts.recipient,
+  message_id: opts.messageId
+}));
+messageCmd.command("status").description("Show where one message stands: queued, accepted, handed to the agent or replied").requiredOption("--project <name>", "Project scope").requiredOption("--recipient <id>", "Stable recipient agent/host ID").requiredOption("--message-id <id>", "Message ID").action((opts) => runCliMessage({
+  action: "status",
   project: opts.project,
   recipient: opts.recipient,
   message_id: opts.messageId

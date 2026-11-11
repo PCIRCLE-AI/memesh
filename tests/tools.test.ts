@@ -1589,7 +1589,7 @@ describe('message', () => {
     const tool = TOOL_DEFINITIONS.find((definition) => definition.name === 'message');
     expect(tool).toBeDefined();
     expect(tool?.inputSchema.properties.action.enum).toEqual([
-      'send', 'poll', 'discover', 'fetch', 'intake', 'ack', 'disposition', 'activation', 'receipts',
+      'send', 'poll', 'discover', 'fetch', 'intake', 'ack', 'disposition', 'activation', 'receipts', 'status',
     ]);
     expect(tool?.description).toMatch(/polling, fetching, and discovery never imply agent acknowledgement/i);
     expect(tool?.description).toContain(`${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes (64 KiB)`);
@@ -1631,7 +1631,7 @@ describe('message', () => {
     expect(skill).toMatch(/recipient_unavailable/);
     expect(skill).toMatch(/native_message_too_large/);
     expect(skill).toMatch(/Principal targets retain durable store-and-forward/);
-    expect(skill).toMatch(/remain separate from explicit `ack` and workflow `disposition`/);
+    expect(skill).toMatch(/remain separate from the optional `ack` and workflow `disposition`/);
   });
 
   it('routes exactly, keeps headers payload-free, and writes receipts only when asked', async () => {

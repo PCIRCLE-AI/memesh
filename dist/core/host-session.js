@@ -1,4 +1,4 @@
-import { agentScopeIdRejection, canonicalAgentScopeId } from './agent-scope-id.js';
+import { canonicalAgentScopeId, sessionIdRejection } from './agent-scope-id.js';
 export function hostSessionFromEnv(env = process.env) {
     return claudeCodeSessionFromEnv(env) ?? sessionFromVariable(env, 'CODEX_THREAD_ID');
 }
@@ -10,7 +10,7 @@ function sessionFromVariable(env, name) {
     if (!raw)
         return undefined;
     const session = canonicalAgentScopeId(raw);
-    if (agentScopeIdRejection(name, session) === null)
+    if (sessionIdRejection(name, session) === null)
         return session;
     try {
         process.stderr.write(`[memesh] ignoring ${name}: set but not a valid session id\n`);

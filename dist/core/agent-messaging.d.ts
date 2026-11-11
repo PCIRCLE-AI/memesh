@@ -61,11 +61,13 @@ export interface SendAgentMessageOptions {
     storage_quota_bytes?: number;
     fallback_of_message_id?: string;
 }
+export declare const HANDLED_RECEIPT_KINDS_SQL = "('intake', 'ack', 'disposition')";
 export interface PollAgentEventsInput {
     project: string;
     recipient: string;
     cursor?: string | null;
     limit?: number;
+    caller_session?: string | null;
 }
 export interface AgentMessageEventHeader {
     event_id: string;
@@ -93,6 +95,7 @@ export interface FetchAgentMessageInput {
     recipient: string;
     message_id: string;
     target_kind?: AgentTargetKind;
+    caller_session?: string | null;
 }
 export interface AgentMessagePayload {
     message_id: string;
@@ -108,6 +111,7 @@ export interface AgentMessagePayload {
     created_at: string;
     payload: AgentJsonValue;
     provenance: AgentJsonObject;
+    note?: string;
 }
 interface AgentReceiptBase {
     project: string;
@@ -159,6 +163,7 @@ export interface ReadAgentMessageReceiptsInput {
     project: string;
     recipient: string;
     message_id: string;
+    caller_session?: string | null;
 }
 export interface RecordAgentAckFactInput {
     delivery_id: string;
@@ -254,5 +259,14 @@ export declare function readAgentMessageReceipts(db: MemeshDatabase, input: Read
 export declare function recordAgentAckFact(db: MemeshDatabase, input: RecordAgentAckFactInput): AgentAckFact;
 export declare function recordAgentWorkflowFact(db: MemeshDatabase, input: RecordAgentWorkflowFactInput): AgentWorkflowFact;
 export declare function recordAgentRetentionFact(db: MemeshDatabase, input: RecordAgentRetentionFactInput): AgentRetentionFact;
+export declare function principalsOfSession(db: MemeshDatabase, project: string, session: string): string[];
+export declare function assertCallerMayUseDelivery(db: MemeshDatabase, delivery: {
+    project: string;
+    recipient: string;
+    message_id: string;
+    target_kind: string;
+}, callerSession: string | null | undefined, options?: {
+    allowSender?: boolean;
+}): void;
 export {};
 //# sourceMappingURL=agent-messaging.d.ts.map

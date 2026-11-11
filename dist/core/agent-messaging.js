@@ -2,7 +2,8 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { agentMessagePayloadStorageBytes, enforceAgentMessageStorageQuota, } from './agent-message-storage.js';
 import { sessionAliasChain } from './agent-message-inbox.js';
 import { sqliteUtcToIso } from './time-utils.js';
-import { AGENT_SCOPE_ID_MAX_LENGTH, agentScopeIdRejection, canonicalAgentScopeId, } from './agent-scope-id.js';
+import { AGENT_SCOPE_ID_MAX_LENGTH, agentScopeIdRejection, canonicalAgentScopeId, sessionIdRejection, } from './agent-scope-id.js';
+export const HANDLED_RECEIPT_KINDS_SQL = "('intake', 'ack', 'disposition')";
 const MAX_SCOPE_FIELD = AGENT_SCOPE_ID_MAX_LENGTH;
 const MAX_IDEMPOTENCY_KEY = 200;
 const MAX_CURSOR_TOKEN = 160;
@@ -35,7 +36,7 @@ export class AgentIntendedForOtherSessionError extends AgentMessageAccessError {
                 + 'Codex does not pass its thread id to MCP servers'
             : `this caller is session ${JSON.stringify(callerSession)}`;
         super(`intended_for_other_session: message ${messageId} is meant for session ${JSON.stringify(intendedSession)}, and ${caller}. `
-            + 'Otherwise leave it for that session: do not record intake or a disposition for it.');
+            + 'Otherwise leave it for that session: do not record intake, a disposition, an ack or an activation for it.');
     }
 }
 const INTENDED_SESSION_ADAPTERS = new Set(['claude-channel', 'claude-inbox', 'codex-cli-queue']);
@@ -140,12 +141,24 @@ function enforceConversationLoopLimit(db, input) {
         }
     }
 }
+function canonicalIntendedSession(db, project, session) {
+    const ids = [...sessionAliasChain(db, session)];
+    const exact = db.prepare(`SELECT 1 AS present FROM agent_session_instances WHERE project = ? AND session_instance_id IN (${ids.map(() => '?').join(', ')}) LIMIT 1`)
+        .get(project, ...ids);
+    if (exact !== undefined)
+        return session;
+    const folded = db.prepare('SELECT session_instance_id FROM agent_session_instances WHERE project = ? AND lower(session_instance_id) = ?')
+        .all(project, session.toLowerCase());
+    return folded.length === 1 ? folded[0].session_instance_id : session.toLowerCase();
+}
 export function sendAgentMessage(db, input, options = {}) {
     const normalized = normalizeSendInput(options.fallback_of_message_id === undefined ? input : {
         ...input,
         provenance: { ...input.provenance, fallback_of_message_id: options.fallback_of_message_id },
     });
+    const requestedIntendedSession = normalized.intended_session;
     if (normalized.intended_session !== null) {
+        normalized.intended_session = canonicalIntendedSession(db, normalized.project, normalized.intended_session);
         const ids = [...sessionAliasChain(db, normalized.intended_session)];
         const registered = db.prepare(`
       SELECT adapter_kind FROM agent_session_instances
@@ -164,7 +177,7 @@ export function sendAgentMessage(db, input, options = {}) {
         sender: normalized.sender,
         recipient: normalized.recipient,
         target_kind: normalized.target_kind,
-        ...(normalized.intended_session === null ? {} : { intended_session: normalized.intended_session }),
+        ...(requestedIntendedSession === null ? {} : { intended_session: requestedIntendedSession }),
         idempotency_key: normalized.idempotency_key,
         content_type: normalized.content_type,
         sender_host: normalized.sender_host,
@@ -240,6 +253,9 @@ export function pollAgentEvents(db, input) {
     const recipient = requireScopeId('recipient', input.recipient);
     const limit = normalizeLimit(input.limit);
     const cursor = resolveCursor(db, project, recipient, input.cursor ?? null);
+    if (!callerMayReadRecipient(db, project, recipient, input.caller_session)) {
+        return { events: [], next_cursor: cursor.cursor_token || createCursor(db, project, recipient, cursor.event_sequence) };
+    }
     const rows = db.prepare(`
     SELECT
       e.event_sequence,
@@ -284,6 +300,7 @@ export async function waitForAgentEvents(db, input, signal) {
             recipient: input.recipient,
             cursor: currentCursor,
             limit: input.limit,
+            caller_session: input.caller_session,
         });
         if (result.events.length > 0)
             return result;
@@ -312,6 +329,7 @@ export function fetchAgentMessage(db, input) {
       m.reply_to_message_id,
       m.privacy,
       m.payload_json,
+      m.payload_tombstoned_at,
       m.provenance_json,
       m.created_at
     FROM agent_messages m
@@ -321,6 +339,7 @@ export function fetchAgentMessage(db, input) {
     if (!row) {
         throw new AgentMessageAccessError(`Agent message ${messageId} is not available to recipient ${recipient} in project ${project}.`);
     }
+    assertCallerMayUseDelivery(db, { project, recipient, message_id: messageId, target_kind: row.target_kind }, input.caller_session);
     return {
         message_id: row.message_id,
         project: row.project,
@@ -335,24 +354,28 @@ export function fetchAgentMessage(db, input) {
         created_at: sqliteUtcToIso(row.created_at),
         payload: parseJsonObjectOrValue(row.payload_json),
         provenance: parseJsonObject(row.provenance_json, 'provenance_json'),
+        ...(row.payload_tombstoned_at ? { note: 'This message is past its retention period and its content was deleted; payload keeps only the marker with its original size and checksum.' } : {}),
     };
 }
 export function recordAgentReceipt(db, input) {
     const normalized = normalizeReceiptInput(input);
     const delivery = assertMessageAccess(db, normalized.project, normalized.recipient, normalized.message_id);
-    if (normalized.receipt_kind === 'intake' || normalized.receipt_kind === 'disposition') {
-        const callerSession = input.caller_session?.trim() ? canonicalAgentScopeId(input.caller_session.trim()) : null;
-        if (delivery.intended_session !== null
-            && (callerSession === null || !sessionAliasChain(db, delivery.intended_session).has(callerSession))) {
+    assertCallerMayUseDelivery(db, { project: normalized.project, recipient: normalized.recipient, message_id: normalized.message_id, target_kind: delivery.target_kind }, input.caller_session);
+    const callerSession = input.caller_session?.trim() ? canonicalAgentScopeId(input.caller_session.trim()) : null;
+    const kind = normalized.receipt_kind;
+    if (delivery.intended_session !== null) {
+        const meantFor = sessionAliasChain(db, delivery.intended_session);
+        const strict = kind === 'intake' || kind === 'disposition';
+        if ((strict && callerSession === null) || (callerSession !== null && !isOneOf(meantFor, callerSession, { db, project: normalized.project }))) {
             throw new AgentIntendedForOtherSessionError(normalized.message_id, delivery.intended_session, callerSession);
         }
-        if (delivery.target_kind === 'session'
-            && callerSession !== null
-            && !sessionAliasChain(db, normalized.recipient).has(callerSession)
-            && db.prepare('SELECT 1 FROM agent_session_instances WHERE project = ? AND session_instance_id = ?')
-                .get(normalized.project, callerSession) !== undefined) {
-            throw new AgentIntendedForOtherSessionError(normalized.message_id, normalized.recipient, callerSession);
-        }
+    }
+    if (delivery.target_kind === 'session'
+        && callerSession !== null
+        && !isOneOf(sessionAliasChain(db, normalized.recipient), callerSession, { db, project: normalized.project })
+        && db.prepare('SELECT 1 FROM agent_session_instances WHERE project = ? AND lower(session_instance_id) = ?')
+            .get(normalized.project, callerSession.toLowerCase()) !== undefined) {
+        throw new AgentIntendedForOtherSessionError(normalized.message_id, normalized.recipient, callerSession);
     }
     const detail = buildReceiptDetail(normalized);
     const requestHash = hashCanonical({
@@ -374,7 +397,7 @@ export function recordAgentReceipt(db, input) {
       INSERT INTO agent_message_receipts (
         receipt_id, message_id, project, recipient, receipt_kind, actor, idempotency_key, request_hash, detail_json
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(receiptId, normalized.message_id, normalized.project, normalized.recipient, normalized.receipt_kind, normalized.actor, normalized.idempotency_key, requestHash, stableStringify(detail));
+    `).run(receiptId, normalized.message_id, normalized.project, normalized.recipient, normalized.receipt_kind, normalized.actor, normalized.idempotency_key, requestHash, stableStringify({ ...detail, caller_session: callerSession }));
     });
     try {
         tx.immediate();
@@ -399,7 +422,8 @@ export function readAgentMessageReceipts(db, input) {
     const project = requireScopeId('project', input.project);
     const recipient = requireScopeId('recipient', input.recipient);
     const messageId = requireText('message_id', input.message_id, MAX_SCOPE_FIELD);
-    assertMessageAccess(db, project, recipient, messageId);
+    const delivery = assertMessageAccess(db, project, recipient, messageId);
+    assertCallerMayUseDelivery(db, { project, recipient, message_id: messageId, target_kind: delivery.target_kind }, input.caller_session);
     const rows = db.prepare(`
     SELECT receipt_id, message_id, project, recipient, receipt_kind, actor, idempotency_key, detail_json, created_at, request_hash
     FROM agent_message_receipts
@@ -519,6 +543,10 @@ function normalizeSendInput(input) {
     const intended_session = input.intended_session === undefined || input.intended_session === null
         ? null
         : requireScopeId('intended_session', input.intended_session);
+    const sessionRejection = (intended_session !== null ? sessionIdRejection('intended_session', intended_session) : null)
+        ?? (target_kind === 'session' ? sessionIdRejection('recipient', recipient) : null);
+    if (sessionRejection)
+        throw new AgentMessagingError(sessionRejection);
     if (intended_session !== null && target_kind !== 'principal') {
         throw new AgentMessagingError('intended_session is only valid with target_kind "principal".');
     }
@@ -732,6 +760,63 @@ function loadSentMessage(db, project, recipient, messageId) {
     ORDER BY e.event_sequence ASC
     LIMIT 1
   `).get(project, project, recipient, messageId);
+}
+export function principalsOfSession(db, project, session) {
+    const named = canonicalAgentScopeId(session);
+    const exact = [...sessionAliasChain(db, named)];
+    let rows = db.prepare(`SELECT DISTINCT principal_id FROM agent_session_instances WHERE project = ? AND session_instance_id IN (${exact.map(() => '?').join(', ')})`)
+        .all(project, ...exact);
+    if (rows.length === 0) {
+        const folded = [...new Set([...exact, ...sessionAliasChain(db, named.toLowerCase())].map((id) => id.toLowerCase()))];
+        rows = db.prepare(`SELECT DISTINCT principal_id FROM agent_session_instances WHERE project = ? AND lower(session_instance_id) IN (${folded.map(() => '?').join(', ')})`)
+            .all(project, ...folded);
+    }
+    return [...new Set(rows.map((row) => canonicalAgentScopeId(row.principal_id)))];
+}
+function isOneOf(chain, session, scope) {
+    const ids = [...chain];
+    if (ids.includes(session))
+        return true;
+    if (scope.db.prepare('SELECT 1 FROM agent_session_instances WHERE project = ? AND session_instance_id = ?').get(scope.project, session) !== undefined)
+        return false;
+    const wanted = session.toLowerCase();
+    return ids.some((id) => id.toLowerCase() === wanted);
+}
+function callerMayReadRecipient(db, project, recipient, callerSession) {
+    const caller = callerSession?.trim();
+    if (!caller)
+        return true;
+    const callerPrincipals = principalsOfSession(db, project, caller);
+    if (callerPrincipals.length === 0)
+        return true;
+    const owners = [canonicalAgentScopeId(recipient), ...principalsOfSession(db, project, recipient)];
+    return callerPrincipals.some((principal) => owners.includes(principal));
+}
+export function assertCallerMayUseDelivery(db, delivery, callerSession, options = {}) {
+    const caller = callerSession?.trim();
+    if (!caller)
+        return;
+    const callerPrincipals = principalsOfSession(db, delivery.project, caller);
+    if (callerPrincipals.length === 0)
+        return;
+    const owners = delivery.target_kind === 'principal' ? [canonicalAgentScopeId(delivery.recipient)] : principalsOfSession(db, delivery.project, delivery.recipient);
+    if (owners.length === 0 || callerPrincipals.some((principal) => owners.includes(principal)))
+        return;
+    if (options.allowSender) {
+        const sent = db.prepare('SELECT sender, provenance_json FROM agent_messages WHERE message_id = ? AND project = ?').get(delivery.message_id, delivery.project);
+        if (sent && callerPrincipals.includes(canonicalAgentScopeId(sent.sender)))
+            return;
+        let senderSession;
+        try {
+            senderSession = JSON.parse(sent?.provenance_json ?? '{}').sender_session;
+        }
+        catch {
+            senderSession = undefined;
+        }
+        if (typeof senderSession === 'string' && isOneOf(sessionAliasChain(db, senderSession), canonicalAgentScopeId(caller), { db, project: delivery.project }))
+            return;
+    }
+    throw new AgentMessageAccessError(`Agent message ${delivery.message_id} is not available to recipient ${delivery.recipient} in project ${delivery.project}.`);
 }
 function assertMessageAccess(db, project, recipient, messageId) {
     const row = db.prepare(`

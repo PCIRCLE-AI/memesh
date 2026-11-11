@@ -1227,8 +1227,8 @@ var SNIPPET_FETCH_CHARS = DEFAULT_TOPOLOGY_BUDGET.maxLineChars * 4;
 function sessionAliasChain(db, session) {
   const chain = /* @__PURE__ */ new Set([session]);
   try {
-    const previous = db.prepare("SELECT previous_session_id AS id FROM agent_session_aliases WHERE session_id = ?");
-    const next = db.prepare("SELECT session_id AS id FROM agent_session_aliases WHERE previous_session_id = ?");
+    const previous = db.prepare("SELECT previous_session_id AS id FROM agent_session_aliases WHERE lower(session_id) = lower(?)");
+    const next = db.prepare("SELECT session_id AS id FROM agent_session_aliases WHERE lower(previous_session_id) = lower(?)");
     for (const step of [previous, next]) {
       let current = session;
       for (; ; ) {
@@ -1276,6 +1276,15 @@ function agentScopeIdRejection(field, value) {
   const suggestion = lastPathSegment(value);
   const example = suggestion === null ? "reviewer-agent" : suggestion;
   return `${field} must be a stable identifier, not a filesystem path (received ${JSON.stringify(canonicalAgentScopeId(value))}). Use the name on its own, for example ${JSON.stringify(example)}.`;
+}
+function sessionIdRejection(field, value) {
+  const path11 = agentScopeIdRejection(field, value);
+  if (path11)
+    return path11;
+  if (/[\u0080-\uffff]/.test(value)) {
+    return `${field} must contain only ASCII characters: a session id is the UUID or thread id its host gives it (received ${JSON.stringify(canonicalAgentScopeId(value))}).`;
+  }
+  return null;
 }
 var AGENT_MESSAGE_SCOPE_COLUMNS = [
   { table: "agent_messages", columns: ["project", "recipient"] },
@@ -1379,12 +1388,22 @@ function enforceConversationLoopLimit(db, input) {
     }
   }
 }
+function canonicalIntendedSession(db, project, session) {
+  const ids = [...sessionAliasChain(db, session)];
+  const exact = db.prepare(`SELECT 1 AS present FROM agent_session_instances WHERE project = ? AND session_instance_id IN (${ids.map(() => "?").join(", ")}) LIMIT 1`).get(project, ...ids);
+  if (exact !== void 0)
+    return session;
+  const folded = db.prepare("SELECT session_instance_id FROM agent_session_instances WHERE project = ? AND lower(session_instance_id) = ?").all(project, session.toLowerCase());
+  return folded.length === 1 ? folded[0].session_instance_id : session.toLowerCase();
+}
 function sendAgentMessage(db, input, options = {}) {
   const normalized = normalizeSendInput(options.fallback_of_message_id === void 0 ? input : {
     ...input,
     provenance: { ...input.provenance, fallback_of_message_id: options.fallback_of_message_id }
   });
+  const requestedIntendedSession = normalized.intended_session;
   if (normalized.intended_session !== null) {
+    normalized.intended_session = canonicalIntendedSession(db, normalized.project, normalized.intended_session);
     const ids = [...sessionAliasChain(db, normalized.intended_session)];
     const registered = db.prepare(`
       SELECT adapter_kind FROM agent_session_instances
@@ -1403,7 +1422,7 @@ function sendAgentMessage(db, input, options = {}) {
     sender: normalized.sender,
     recipient: normalized.recipient,
     target_kind: normalized.target_kind,
-    ...normalized.intended_session === null ? {} : { intended_session: normalized.intended_session },
+    ...requestedIntendedSession === null ? {} : { intended_session: requestedIntendedSession },
     idempotency_key: normalized.idempotency_key,
     content_type: normalized.content_type,
     sender_host: normalized.sender_host,
@@ -1479,6 +1498,9 @@ function normalizeSendInput(input) {
   const recipient = requireScopeId("recipient", input.recipient);
   const target_kind = parseTargetKind(input.target_kind ?? "principal");
   const intended_session = input.intended_session === void 0 || input.intended_session === null ? null : requireScopeId("intended_session", input.intended_session);
+  const sessionRejection = (intended_session !== null ? sessionIdRejection("intended_session", intended_session) : null) ?? (target_kind === "session" ? sessionIdRejection("recipient", recipient) : null);
+  if (sessionRejection)
+    throw new AgentMessagingError(sessionRejection);
   if (intended_session !== null && target_kind !== "principal") {
     throw new AgentMessagingError('intended_session is only valid with target_kind "principal".');
   }

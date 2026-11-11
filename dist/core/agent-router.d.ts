@@ -204,6 +204,7 @@ export declare class AgentRouter {
     private loadDelivery;
     private resolveConnection;
     private connectionMatchesDelivery;
+    private isIntendedSession;
     private beginDispatchAttempt;
     private finishAttempt;
     private writeError;

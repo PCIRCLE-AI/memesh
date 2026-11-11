@@ -40,6 +40,7 @@ import {
 } from './capture-liveness.js';
 import { guardFromMetadata } from './guards.js';
 import { getAgentMessageStorageReport } from './agent-message-storage.js';
+import { HANDLED_RECEIPT_KINDS_SQL } from './agent-messaging.js';
 import { readHostConfigFile } from '../host-runtime/config.js';
 import { journeyRecordPath, readJourneyRecord } from './doctor-journey.js';
 
@@ -693,6 +694,94 @@ function inspectCodexQueueDaemon(db: MemeshDatabase): DoctorCheck | undefined {
       `Could not read the Codex host_activation receipts: ${err instanceof Error ? err.message : String(err)}`,
       'Run `memesh doctor` again; if this persists, check the database rows above for the underlying error.',
     );
+  }
+}
+
+/**
+ * Messages whose latest notice attempt (the one with the highest attempt number for its delivery) ended with
+ * one of `codes` and that nothing has since settled: no host accept, and no intake, ack or disposition from
+ * the agent. A message whose earlier attempt failed one way and whose latest failed another is counted only
+ * under the latest. Counts messages, not attempts, and only those whose latest attempt is from the newest
+ * seven days. A message has exactly one delivery, which is why the receipt join matches on the delivery's
+ * own message, project and recipient. Undefined when the table does not exist yet.
+ */
+function countUnsettledNotices(db: MemeshDatabase, codes: readonly string[]): number | undefined {
+  const present = db.prepare(
+    "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'agent_dispatch_attempts'",
+  ).get() as { present?: number } | undefined;
+  if (!present?.present) return undefined;
+  const row = db.prepare(`
+    SELECT COUNT(DISTINCT a.delivery_id) AS unsettled
+    FROM agent_dispatch_attempts a
+    WHERE a.failure_code IN (${codes.map(() => '?').join(', ')})
+      AND a.created_at > datetime('now', '-7 days')
+      AND a.attempt_number = (
+        SELECT MAX(l.attempt_number) FROM agent_dispatch_attempts l WHERE l.delivery_id = a.delivery_id
+      )
+      AND NOT EXISTS (SELECT 1 FROM agent_host_accepts h WHERE h.delivery_id = a.delivery_id)
+      AND NOT EXISTS (
+        SELECT 1 FROM agent_message_deliveries d JOIN agent_message_receipts r
+          ON r.message_id = d.message_id AND r.project = d.project AND r.recipient = d.recipient
+        WHERE d.delivery_id = a.delivery_id AND r.receipt_kind IN ${HANDLED_RECEIPT_KINDS_SQL}
+      )
+  `).get(...codes) as { unsettled?: number } | undefined;
+  const count = Number(row?.unsettled);
+  return count > 0 ? count : undefined;
+}
+
+/**
+ * The notice reached a Claude Code session's socket but not its conversation: Claude Code holds a peer
+ * message for its user in several cases (for example when the sender does not state its permission mode
+ * and the receiving session bypasses permission prompts), recorded as `notice_held` when its "Held peer
+ * message" line was seen and as `notice_not_confirmed` when nothing was. The message itself stays in the
+ * inbox and is raised at the session's next prompt or turn end; this row says why the live notice did not
+ * arrive. A notice held for a message the agent never answers is sent again each time the host is started
+ * afresh (a new MCP process), since the record of the hold lives only in the process that saw it. Names no
+ * project: doctor rows are copied into public issues.
+ */
+function inspectHeldNotices(db: MemeshDatabase): DoctorCheck | undefined {
+  const found = countNoticeFailures(db, ['notice_not_confirmed', 'notice_held']);
+  if (found === undefined) return undefined;
+  if (typeof found !== 'number') {
+    return createCheck('held-notices', 'Message notices not shown to Claude', 'warn', found.unreadable, UNREADABLE_ATTEMPTS_FIX);
+  }
+  return createCheck(
+    'held-notices',
+    'Message notices not shown to Claude',
+    'warn',
+    `${found} message(s) in the last 7 days reached a Claude Code session's socket but their notice never showed up in its conversation. Possible causes: Claude Code is holding the notice for its user to approve or deny (for example when the sender does not state a permission mode and that session bypasses permission prompts, or when the two sessions' permission modes differ), the session was busy or has stopped, or it dropped the notice. MeMesh cannot tell these apart, and cannot see whether the user denied a held notice. The messages are safe in the inbox and are raised at the session's next prompt or turn end.`,
+    'To get the live notice, set "crossSessionInbound" to "accept" in that Claude Code session\'s settings, or install the MeMesh Channel. Otherwise the message appears at the next prompt.',
+  );
+}
+
+/**
+ * MeMesh could not read the Claude Code session's conversation record (`transcript_unavailable`: there is no
+ * project folder to look in or the record is not readable; `transcript_not_found`: the session wrote none), so
+ * it could not tell whether a notice arrived. Without this row such a failure would show nothing at all.
+ */
+function inspectUnreadableTranscripts(db: MemeshDatabase): DoctorCheck | undefined {
+  const found = countNoticeFailures(db, ['transcript_unavailable', 'transcript_not_found']);
+  if (found === undefined) return undefined;
+  if (typeof found !== 'number') {
+    return createCheck('unreadable-transcripts', 'Claude Code conversation record not readable', 'warn', found.unreadable, UNREADABLE_ATTEMPTS_FIX);
+  }
+  return createCheck(
+    'unreadable-transcripts',
+    'Claude Code conversation record not readable',
+    'warn',
+    `${found} message(s) in the last 7 days could not be checked: MeMesh could not read the Claude Code session's conversation record, so it could not tell whether the notice arrived. The messages are safe in the inbox and are raised at the session's next prompt or turn end.`,
+    'Check that CLAUDE_CONFIG_DIR (when you set it) points at the folder Claude Code writes its conversation records to, and that the MeMesh MCP server is started from the project (MEMESH_PROJECT_ROOT or CLAUDE_PROJECT_DIR set, or a single workspace root). Then start a new Claude Code session.',
+  );
+}
+
+const UNREADABLE_ATTEMPTS_FIX = 'Run `memesh doctor` again; if this persists, check the database rows above for the underlying error.';
+
+/** The number of messages to report, undefined when there is nothing to say, or the reason the attempts could not be read. */
+function countNoticeFailures(db: MemeshDatabase, codes: readonly string[]): number | { unreadable: string } | undefined {
+  try {
+    return countUnsettledNotices(db, codes);
+  } catch (err) {
+    return { unreadable: `Could not read the message dispatch attempts: ${err instanceof Error ? err.message : String(err)}` };
   }
 }
 
@@ -3226,7 +3315,7 @@ function inspectMessageCapability(
     return createInfo(
       'message-capability',
       'Message adapter imports',
-      'Not verified (opt-in). Set MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY=1 to start this installed MCP and verify its nine-action message schema plus bundled host-adapter imports. This does not check a live router socket or host registration.',
+      'Not verified (opt-in). Set MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY=1 to start this installed MCP and verify its ten-action message schema plus bundled host-adapter imports. This does not check a live router socket or host registration.',
     );
   }
   const result = probe(packageRoot);
@@ -3234,7 +3323,7 @@ function inspectMessageCapability(
     'message-capability',
     'Message adapter imports',
     'pass',
-    'This installed MCP advertised the nine-action message schema and all bundled host adapters imported successfully. No live router socket, host registration, or host acceptance was verified.',
+    'This installed MCP advertised the ten-action message schema and all bundled host adapters imported successfully. No live router socket, host registration, or host acceptance was verified.',
   );
   return createCheck(
     'message-capability',
@@ -3514,6 +3603,11 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
 
     const codexQueueDaemon = inspectCodexQueueDaemon(db as unknown as MemeshDatabase);
     if (codexQueueDaemon) dbChecks.push(codexQueueDaemon);
+
+    const heldNotices = inspectHeldNotices(db as unknown as MemeshDatabase);
+    if (heldNotices) dbChecks.push(heldNotices);
+    const unreadableTranscripts = inspectUnreadableTranscripts(db as unknown as MemeshDatabase);
+    if (unreadableTranscripts) dbChecks.push(unreadableTranscripts);
 
     const projectSplit = inspectProjectIdentitySplit(db as unknown as MemeshDatabase);
     if (projectSplit) dbChecks.push(projectSplit);

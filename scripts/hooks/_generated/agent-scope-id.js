@@ -34,6 +34,16 @@ export function agentScopeIdRejection(field, value) {
     return `${field} must be a stable identifier, not a filesystem path (received ${JSON.stringify(canonicalAgentScopeId(value))}). `
         + `Use the name on its own, for example ${JSON.stringify(example)}.`;
 }
+export function sessionIdRejection(field, value) {
+    const path = agentScopeIdRejection(field, value);
+    if (path)
+        return path;
+    if (/[\u0080-\uffff]/.test(value)) {
+        return `${field} must contain only ASCII characters: a session id is the UUID or thread id its host gives it `
+            + `(received ${JSON.stringify(canonicalAgentScopeId(value))}).`;
+    }
+    return null;
+}
 export function projectScopeRejection(value) {
     if (value.trim() === '')
         return 'project must not be empty.';

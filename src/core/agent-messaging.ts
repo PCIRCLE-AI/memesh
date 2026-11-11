@@ -10,6 +10,7 @@ import {
   AGENT_SCOPE_ID_MAX_LENGTH,
   agentScopeIdRejection,
   canonicalAgentScopeId,
+  sessionIdRejection,
 } from './agent-scope-id.js';
 
 export type AgentJsonPrimitive = boolean | null | number | string;
@@ -85,11 +86,16 @@ export interface SendAgentMessageOptions {
   fallback_of_message_id?: string;
 }
 
+/** The receipts that mean the agent has taken a message in; none of them is needed to act on it. */
+export const HANDLED_RECEIPT_KINDS_SQL = "('intake', 'ack', 'disposition')";
+
 export interface PollAgentEventsInput {
   project: string;
   recipient: string;
   cursor?: string | null;
   limit?: number;
+  /** The calling host session; a session of another principal sees no events (see `callerMayReadRecipient`). */
+  caller_session?: string | null;
 }
 
 export interface AgentMessageEventHeader {
@@ -121,6 +127,8 @@ export interface FetchAgentMessageInput {
   recipient: string;
   message_id: string;
   target_kind?: AgentTargetKind;
+  /** The calling host session, when it can say which it is; see `assertCallerMayUseDelivery`. */
+  caller_session?: string | null;
 }
 
 export interface AgentMessagePayload {
@@ -137,6 +145,8 @@ export interface AgentMessagePayload {
   created_at: string;
   payload: AgentJsonValue;
   provenance: AgentJsonObject;
+  /** Present only when the content was removed after the retention period; `payload` then holds the machine-readable marker. */
+  note?: string;
 }
 
 interface AgentReceiptBase {
@@ -181,6 +191,8 @@ export interface ReadAgentMessageReceiptsInput {
   project: string;
   recipient: string;
   message_id: string;
+  /** The calling host session, when it can say which it is; see `assertCallerMayUseDelivery`. */
+  caller_session?: string | null;
 }
 
 export interface RecordAgentAckFactInput {
@@ -275,7 +287,7 @@ export class AgentIntendedForOtherSessionError extends AgentMessageAccessError {
       : `this caller is session ${JSON.stringify(callerSession)}`;
     super(
       `intended_for_other_session: message ${messageId} is meant for session ${JSON.stringify(intendedSession)}, and ${caller}. `
-      + 'Otherwise leave it for that session: do not record intake or a disposition for it.',
+      + 'Otherwise leave it for that session: do not record intake, a disposition, an ack or an activation for it.',
     );
   }
 }
@@ -413,6 +425,7 @@ type FetchRow = {
   reply_to_message_id: string | null;
   privacy: string;
   payload_json: string;
+  payload_tombstoned_at: string | null;
   provenance_json: string;
   created_at: string;
 };
@@ -482,6 +495,22 @@ function enforceConversationLoopLimit(db: MemeshDatabase, input: SendAgentMessag
   }
 }
 
+/**
+ * The spelling under which `intended_session` is stored: the registered one. An id written in other
+ * letter case than the single registration it matches is stored as registered, so a match is exact
+ * wherever it can be (matches also ignore case, so rows stored differently still match); an id nobody registered (or one two registrations share, differing only in case) is stored in
+ * lower case, which is how the hosts write their ids.
+ */
+function canonicalIntendedSession(db: MemeshDatabase, project: string, session: string): string {
+  const ids = [...sessionAliasChain(db, session)];
+  const exact = db.prepare(`SELECT 1 AS present FROM agent_session_instances WHERE project = ? AND session_instance_id IN (${ids.map(() => '?').join(', ')}) LIMIT 1`)
+    .get(project, ...ids);
+  if (exact !== undefined) return session;
+  const folded = db.prepare('SELECT session_instance_id FROM agent_session_instances WHERE project = ? AND lower(session_instance_id) = ?')
+    .all(project, session.toLowerCase()) as Array<{ session_instance_id: string }>;
+  return folded.length === 1 ? folded[0].session_instance_id : session.toLowerCase();
+}
+
 export function sendAgentMessage(
   db: MemeshDatabase,
   input: SendAgentMessageInput,
@@ -491,7 +520,11 @@ export function sendAgentMessage(
     ...input,
     provenance: { ...input.provenance, fallback_of_message_id: options.fallback_of_message_id },
   });
+  // The request is hashed as the caller wrote it; only the stored value is normalised, since what it
+  // normalises to changes with what is registered when the request is sent again.
+  const requestedIntendedSession = normalized.intended_session;
   if (normalized.intended_session !== null) {
+    normalized.intended_session = canonicalIntendedSession(db, normalized.project, normalized.intended_session);
     // An unregistered id is the normal case: a Claude session without the
     // channel host never registers.
     const ids = [...sessionAliasChain(db, normalized.intended_session)];
@@ -516,7 +549,7 @@ export function sendAgentMessage(
     target_kind: normalized.target_kind,
     // Only when set, so every request hash stored before #497 still matches
     // its own retry.
-    ...(normalized.intended_session === null ? {} : { intended_session: normalized.intended_session }),
+    ...(requestedIntendedSession === null ? {} : { intended_session: requestedIntendedSession }),
     idempotency_key: normalized.idempotency_key,
     content_type: normalized.content_type,
     sender_host: normalized.sender_host,
@@ -619,6 +652,10 @@ export function pollAgentEvents(db: MemeshDatabase, input: PollAgentEventsInput)
   const recipient = requireScopeId('recipient', input.recipient);
   const limit = normalizeLimit(input.limit);
   const cursor = resolveCursor(db, project, recipient, input.cursor ?? null);
+  // A session of another principal sees an empty inbox, as for a recipient nothing was sent to.
+  if (!callerMayReadRecipient(db, project, recipient, input.caller_session)) {
+    return { events: [], next_cursor: cursor.cursor_token || createCursor(db, project, recipient, cursor.event_sequence) };
+  }
 
   const rows = db.prepare(`
     SELECT
@@ -671,6 +708,7 @@ export async function waitForAgentEvents(
       recipient: input.recipient,
       cursor: currentCursor,
       limit: input.limit,
+      caller_session: input.caller_session,
     });
     if (result.events.length > 0) return result;
     currentCursor = result.next_cursor;
@@ -699,6 +737,7 @@ export function fetchAgentMessage(db: MemeshDatabase, input: FetchAgentMessageIn
       m.reply_to_message_id,
       m.privacy,
       m.payload_json,
+      m.payload_tombstoned_at,
       m.provenance_json,
       m.created_at
     FROM agent_messages m
@@ -711,6 +750,7 @@ export function fetchAgentMessage(db: MemeshDatabase, input: FetchAgentMessageIn
       `Agent message ${messageId} is not available to recipient ${recipient} in project ${project}.`,
     );
   }
+  assertCallerMayUseDelivery(db, { project, recipient, message_id: messageId, target_kind: row.target_kind }, input.caller_session);
 
   return {
     message_id: row.message_id,
@@ -726,38 +766,41 @@ export function fetchAgentMessage(db: MemeshDatabase, input: FetchAgentMessageIn
     created_at: sqliteUtcToIso(row.created_at),
     payload: parseJsonObjectOrValue(row.payload_json),
     provenance: parseJsonObject(row.provenance_json, 'provenance_json'),
+    ...(row.payload_tombstoned_at ? { note: 'This message is past its retention period and its content was deleted; payload keeps only the marker with its original size and checksum.' } : {}),
   };
 }
 
 export function recordAgentReceipt(db: MemeshDatabase, input: RecordAgentReceiptInput): AgentMessageReceipt {
   const normalized = normalizeReceiptInput(input);
   const delivery = assertMessageAccess(db, normalized.project, normalized.recipient, normalized.message_id);
-  if (normalized.receipt_kind === 'intake' || normalized.receipt_kind === 'disposition') {
-    const callerSession = input.caller_session?.trim() ? canonicalAgentScopeId(input.caller_session.trim()) : null;
-    // A principal delivery meant for one session: only that session — under
-    // any id it has had across /clear — and a caller that cannot say which
-    // session it is may not stand in for it.
-    if (
-      delivery.intended_session !== null
-      && (callerSession === null || !sessionAliasChain(db, delivery.intended_session).has(callerSession))
-    ) {
+  // Refused first, so a session of another principal learns nothing about the message.
+  assertCallerMayUseDelivery(db, { project: normalized.project, recipient: normalized.recipient, message_id: normalized.message_id, target_kind: delivery.target_kind }, input.caller_session);
+  const callerSession = input.caller_session?.trim() ? canonicalAgentScopeId(input.caller_session.trim()) : null;
+  const kind = normalized.receipt_kind;
+  // A principal delivery meant for one session is that session's to answer, under any id it has had
+  // across /clear. For intake and a disposition, a caller that cannot say which session it is may not
+  // stand in for it; for an ack or an activation a caller with no session id (HTTP, the router itself)
+  // is not refused, but one that names another session is.
+  if (delivery.intended_session !== null) {
+    const meantFor = sessionAliasChain(db, delivery.intended_session);
+    const strict = kind === 'intake' || kind === 'disposition';
+    if ((strict && callerSession === null) || (callerSession !== null && !isOneOf(meantFor, callerSession, { db, project: normalized.project }))) {
       throw new AgentIntendedForOtherSessionError(normalized.message_id, delivery.intended_session, callerSession);
     }
-    // A delivery addressed to one session outright: refuse a caller that is
-    // itself another registered session of this project. A caller with no
-    // session id stays allowed (a Codex MCP process has none and must still
-    // record its own), and so does an unregistered id: an MCP server keeps the
-    // session id it was started with, while `/clear` gives the session a new
-    // one, so an id nobody registered proves nothing.
-    if (
-      delivery.target_kind === 'session'
-      && callerSession !== null
-      && !sessionAliasChain(db, normalized.recipient).has(callerSession)
-      && db.prepare('SELECT 1 FROM agent_session_instances WHERE project = ? AND session_instance_id = ?')
-        .get(normalized.project, callerSession) !== undefined
-    ) {
-      throw new AgentIntendedForOtherSessionError(normalized.message_id, normalized.recipient, callerSession);
-    }
+  }
+  // A delivery addressed to one session outright: refuse a caller that is itself another registered
+  // session of this project. A caller with no session id stays allowed (a Codex MCP process has none
+  // and must still record its own), and so does an unregistered id: an MCP server keeps the session id
+  // it was started with, while `/clear` gives the session a new one, so an id nobody registered proves
+  // nothing.
+  if (
+    delivery.target_kind === 'session'
+    && callerSession !== null
+    && !isOneOf(sessionAliasChain(db, normalized.recipient), callerSession, { db, project: normalized.project })
+    && db.prepare('SELECT 1 FROM agent_session_instances WHERE project = ? AND lower(session_instance_id) = ?')
+      .get(normalized.project, callerSession.toLowerCase()) !== undefined
+  ) {
+    throw new AgentIntendedForOtherSessionError(normalized.message_id, normalized.recipient, callerSession);
   }
 
   const detail = buildReceiptDetail(normalized);
@@ -800,7 +843,7 @@ export function recordAgentReceipt(db: MemeshDatabase, input: RecordAgentReceipt
       normalized.actor,
       normalized.idempotency_key,
       requestHash,
-      stableStringify(detail),
+      stableStringify({ ...detail, caller_session: callerSession }),
     );
   });
 
@@ -844,7 +887,8 @@ export function readAgentMessageReceipts(
   const project = requireScopeId('project', input.project);
   const recipient = requireScopeId('recipient', input.recipient);
   const messageId = requireText('message_id', input.message_id, MAX_SCOPE_FIELD);
-  assertMessageAccess(db, project, recipient, messageId);
+  const delivery = assertMessageAccess(db, project, recipient, messageId);
+  assertCallerMayUseDelivery(db, { project, recipient, message_id: messageId, target_kind: delivery.target_kind }, input.caller_session);
 
   const rows = db.prepare(`
     SELECT receipt_id, message_id, project, recipient, receipt_kind, actor, idempotency_key, detail_json, created_at, request_hash
@@ -970,6 +1014,9 @@ function normalizeSendInput(input: SendAgentMessageInput): Required<Omit<SendAge
   const intended_session = input.intended_session === undefined || input.intended_session === null
     ? null
     : requireScopeId('intended_session', input.intended_session);
+  const sessionRejection = (intended_session !== null ? sessionIdRejection('intended_session', intended_session) : null)
+    ?? (target_kind === 'session' ? sessionIdRejection('recipient', recipient) : null);
+  if (sessionRejection) throw new AgentMessagingError(sessionRejection);
   if (intended_session !== null && target_kind !== 'principal') {
     throw new AgentMessagingError('intended_session is only valid with target_kind "principal".');
   }
@@ -1206,6 +1253,90 @@ function loadSentMessage(
     ORDER BY e.event_sequence ASC
     LIMIT 1
   `).get(project, project, recipient, messageId) as MessageJoinRow | undefined;
+}
+
+/**
+ * The principals the given session id (or any id it had before a /clear) is registered under in
+ * this project, in canonical (NFC) form. An id is matched as written first: two registrations that
+ * differ only in letter case are two sessions. Only when none matches exactly is it matched without
+ * regard to case, so writing a registered id in capitals names that session.
+ */
+export function principalsOfSession(db: MemeshDatabase, project: string, session: string): string[] {
+  const named = canonicalAgentScopeId(session);
+  const exact = [...sessionAliasChain(db, named)];
+  let rows = db.prepare(`SELECT DISTINCT principal_id FROM agent_session_instances WHERE project = ? AND session_instance_id IN (${exact.map(() => '?').join(', ')})`)
+    .all(project, ...exact) as Array<{ principal_id: string }>;
+  if (rows.length === 0) {
+    const folded = [...new Set([...exact, ...sessionAliasChain(db, named.toLowerCase())].map((id) => id.toLowerCase()))];
+    rows = db.prepare(`SELECT DISTINCT principal_id FROM agent_session_instances WHERE project = ? AND lower(session_instance_id) IN (${folded.map(() => '?').join(', ')})`)
+      .all(project, ...folded) as Array<{ principal_id: string }>;
+  }
+  return [...new Set(rows.map((row) => canonicalAgentScopeId(row.principal_id)))];
+}
+
+/**
+ * Whether `session` is one of the ids in the chain. An id written exactly as one in the chain is that
+ * session. Otherwise, when the id is itself a registered session of the project (a twin that differs
+ * only in letter case), it is another session; only an id nobody registered is matched without regard
+ * to case.
+ */
+function isOneOf(chain: Iterable<string>, session: string, scope: { db: MemeshDatabase; project: string }): boolean {
+  const ids = [...chain];
+  if (ids.includes(session)) return true;
+  if (scope.db.prepare('SELECT 1 FROM agent_session_instances WHERE project = ? AND session_instance_id = ?').get(scope.project, session) !== undefined) return false;
+  const wanted = session.toLowerCase();
+  return ids.some((id) => id.toLowerCase() === wanted);
+}
+
+/** Whether a caller may read a recipient's events: unless it names a session registered only under other principals. */
+function callerMayReadRecipient(db: MemeshDatabase, project: string, recipient: string, callerSession: string | null | undefined): boolean {
+  const caller = callerSession?.trim();
+  if (!caller) return true;
+  const callerPrincipals = principalsOfSession(db, project, caller);
+  if (callerPrincipals.length === 0) return true;
+  // The recipient is a principal, or the id of one of its sessions.
+  const owners = [canonicalAgentScopeId(recipient), ...principalsOfSession(db, project, recipient)];
+  return callerPrincipals.some((principal) => owners.includes(principal));
+}
+
+/**
+ * A caller that names a session registered under a different principal than the message's
+ * is not a recipient: it may not record, read or fetch anything about the message, and is
+ * refused in the words used for a message that does not exist, so it learns nothing. A
+ * session message belongs to the principal its session is registered under.
+ *
+ * Cooperative, not a security boundary. It applies only to a caller that names a registered
+ * session id. A caller with no session id (HTTP has none), or one nobody registered (an MCP
+ * server keeps the id it started with across `/clear`), proves nothing and is not refused,
+ * and any local process can open the database file itself. What it prevents is a user's own
+ * sessions touching each other's messages by mistake. Calls from the router itself pass no
+ * session and are never refused.
+ */
+export function assertCallerMayUseDelivery(
+  db: MemeshDatabase,
+  delivery: { project: string; recipient: string; message_id: string; target_kind: string },
+  callerSession: string | null | undefined,
+  options: { allowSender?: boolean } = {},
+): void {
+  const caller = callerSession?.trim();
+  if (!caller) return;
+  const callerPrincipals = principalsOfSession(db, delivery.project, caller);
+  if (callerPrincipals.length === 0) return;
+  const owners = delivery.target_kind === 'principal' ? [canonicalAgentScopeId(delivery.recipient)] : principalsOfSession(db, delivery.project, delivery.recipient);
+  if (owners.length === 0 || callerPrincipals.some((principal) => owners.includes(principal))) return;
+  // The sender may look at where its own message stands (the delivery state, never the payload).
+  if (options.allowSender) {
+    const sent = db.prepare('SELECT sender, provenance_json FROM agent_messages WHERE message_id = ? AND project = ?').get(delivery.message_id, delivery.project) as { sender: string; provenance_json: string } | undefined;
+    if (sent && callerPrincipals.includes(canonicalAgentScopeId(sent.sender))) return;
+    // The sender name is a label the sender chose; the session that sent it is recorded too.
+    // The chain of the session that sent it (every id it has had across /clear) holds the caller or not.
+    let senderSession: unknown;
+    try { senderSession = (JSON.parse(sent?.provenance_json ?? '{}') as { sender_session?: unknown }).sender_session; } catch { senderSession = undefined; }
+    if (typeof senderSession === 'string' && isOneOf(sessionAliasChain(db, senderSession), canonicalAgentScopeId(caller), { db, project: delivery.project })) return;
+  }
+  throw new AgentMessageAccessError(
+    `Agent message ${delivery.message_id} is not available to recipient ${delivery.recipient} in project ${delivery.project}.`,
+  );
 }
 
 /** Throws unless the delivery exists; returns who it is for (#497). */

@@ -2,12 +2,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const MAX_BYTES = 1024 * 1024;
+const SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
 type Item = { content: string; status: 'pending' | 'in_progress' | 'completed' };
 export interface ClaudeTranscriptMark {
   session: string;
   file: string;
-  dev: number;
-  ino: number;
+  /** Unset until the transcript file appears (a session that has not written anything yet). */
+  dev?: number;
+  ino?: number;
   offset: number;
   pending: Buffer;
   discardPartial: boolean;
@@ -31,7 +33,7 @@ export class ClaudeTranscriptReader {
   }
 
   private locate(session: string): string | undefined {
-    if (!/^[A-Za-z0-9_-]{1,128}$/.test(session)) return undefined;
+    if (!SESSION_ID.test(session)) return undefined;
     try {
       for (const entry of fs.readdirSync(this.projectsDir, { withFileTypes: true })) {
         if (!entry.isDirectory() || (this.projectSlug !== undefined && entry.name !== this.projectSlug)) continue;
@@ -44,7 +46,12 @@ export class ClaudeTranscriptReader {
 
   mark(session: string): ClaudeTranscriptMark | undefined {
     const file = this.locate(session);
-    if (!file) return undefined;
+    if (!file) {
+      // A session that has not written anything yet has no transcript. Claude Code creates it on
+      // the first record, so remember where it will be and bind to it when it appears.
+      if (!this.projectSlug || !SESSION_ID.test(session)) return undefined;
+      return { session, file: path.join(this.projectsDir, this.projectSlug, `${session}.jsonl`), offset: 0, pending: Buffer.alloc(0), discardPartial: false };
+    }
     let fd: number | undefined;
     try {
       if (!fs.lstatSync(path.dirname(file)).isDirectory()) return undefined;
@@ -61,6 +68,14 @@ export class ClaudeTranscriptReader {
     if (session !== mark.session) return undefined;
     let fd: number | undefined;
     try {
+      if (mark.ino === undefined) {
+        // Still waiting for the first record: nothing to read until the file is there.
+        let named: fs.Stats;
+        // Only "not there yet" means keep waiting; any other error (a path component that is not a folder, no permission) means it cannot be read.
+        try { named = fs.lstatSync(mark.file); } catch (error) { return (error as NodeJS.ErrnoException).code === 'ENOENT' ? [] : undefined; }
+        if (!named.isFile() || (typeof process.getuid === 'function' && named.uid !== process.getuid())) return undefined;
+        mark.dev = named.dev; mark.ino = named.ino;
+      }
       if (!fs.lstatSync(path.dirname(mark.file)).isDirectory()) return undefined;
       fd = fs.openSync(mark.file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
       const stat = fs.fstatSync(fd); const named = fs.lstatSync(mark.file);
@@ -81,7 +96,7 @@ export class ClaudeTranscriptReader {
   }
 
   currentTask(session: string): string | undefined {
-    if (!/^[A-Za-z0-9_-]{1,128}$/.test(session)) return undefined;
+    if (!SESSION_ID.test(session)) return undefined;
     if (session !== this.session) { this.session = session; this.file = undefined; this.reset(); }
     if (!this.file) this.file = this.locate(session);
     if (!this.file) return undefined;

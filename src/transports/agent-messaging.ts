@@ -1,3 +1,4 @@
+import { canonicalAgentScopeId } from '../core/agent-scope-id.js';
 import { z } from 'zod';
 import { createHash, randomUUID } from 'node:crypto';
 import type { MemeshDatabase } from '../storage/sqlite.js';
@@ -8,6 +9,8 @@ import {
   AgentNativeMessageTooLargeError,
   fetchAgentMessage,
   pollAgentEvents,
+  assertCallerMayUseDelivery,
+  principalsOfSession,
   readAgentMessageReceipts,
   recordAgentReceipt,
   resolveAgentSessionHandle,
@@ -19,6 +22,7 @@ import {
   type SendAgentMessageInput,
   type SentAgentMessage,
   type AgentWorkflowFact,
+  HANDLED_RECEIPT_KINDS_SQL,
 } from '../core/agent-messaging.js';
 import { MessageSchema } from './schemas.js';
 import {
@@ -181,13 +185,63 @@ function nativeAcceptance(row: HostAcceptRow): AgentJsonObject {
   };
 }
 
-function publicSentMessage(sent: SentAgentMessage, adapter?: string) {
+/** What the sender is told when the one session a message is meant for is not connected. */
+function intendedSessionNote(session: string, principal: string): string {
+  return `Session ${session} is not connected now. Only it can take this message in, the next time it runs; `
+    + `no other session of ${principal} will. If it has ended for good, send to ${principal} `
+    + 'without intended_session instead.';
+}
+
+/**
+ * What a principal send can truthfully say about who can take the message in:
+ * the intended session if one is named (through its /clear aliases), otherwise
+ * whether any session of the recipient holds a live connection right now.
+ */
+function principalAvailability(db: MemeshDatabase, sent: { project: string; recipient: string; intended_session?: string | null }): string {
+  const recipient = canonicalAgentScopeId(sent.recipient);
+  const meant = sent.intended_session ? sessionAliasChain(db, sent.intended_session) : undefined;
+  // Principal names are compared in canonical form and session ids without regard to case.
+  // The session match is done by SQLite: `lower()` folds ASCII letters only, which is why a session id
+  // must be ASCII (a non-ASCII one is refused at registration and at send). Only the principal, whose
+  // NFC form SQL cannot compute, is compared here.
+  const wanted = meant === undefined ? [] : [...meant].map((id) => id.toLowerCase());
+  const inWanted = meant === undefined ? '' : ` AND lower(session_instance_id) IN (${wanted.map(() => '?').join(', ')})`;
+  const live = (db.prepare(`
+    SELECT principal_id FROM agent_session_connections
+    WHERE project = ? AND disconnected_at IS NULL AND lease_expires_at_ms > ?${inWanted}
+  `).all(sent.project, Date.now(), ...wanted) as Array<{ principal_id: string }>)
+    .some((row) => canonicalAgentScopeId(row.principal_id) === recipient);
+  if (sent.intended_session) {
+    if (live) return ` Session ${sent.intended_session} is connected now; use status to see whether its notice reached the conversation.`;
+    // Not connected: say what is known about the id, since a mistyped or foreign id will never take the message in.
+    const registered = (db.prepare(`
+      SELECT principal_id FROM agent_session_instances WHERE project = ?${inWanted}
+    `).all(sent.project, ...wanted) as Array<{ principal_id: string }>)
+      .map((row) => canonicalAgentScopeId(row.principal_id));
+    if (registered.length === 0) {
+      return ` Session ${sent.intended_session} has not registered in this project, so MeMesh cannot tell whether it exists. `
+        + `Only a session with that id can take this message in; no other session of ${sent.recipient} will. `
+        + `Check the id; if it is wrong or the session has ended, send to ${sent.recipient} without intended_session instead.`;
+    }
+    if (!registered.includes(recipient)) {
+      const other = [...new Set(registered)].join(', ');
+      return ` Session ${sent.intended_session} is a session of ${other}; ${sent.recipient}'s notices do not reach it. `
+        + `Send to ${other}, or send to ${sent.recipient} without intended_session.`;
+    }
+    return ` ${intendedSessionNote(sent.intended_session, sent.recipient)}`;
+  }
+  return live
+    ? ` A session of ${sent.recipient} is connected now; use status to see whether its notice reached the conversation.`
+    : ` No session of ${sent.recipient} is connected now; the message waits in the inbox.`;
+}
+
+function publicSentMessage(sent: SentAgentMessage, adapter?: string, availability = '') {
   const { reused, ...message } = sent;
   const delivery_note = reused
     ? 'Reused the previous message_id; no new message was created. An unconfirmed notification may be sent again.'
     : adapter
       ? `${adapter} accepted the notification. This does not mean the model has read or accepted it.`
-      : `Stored in ${sent.recipient}'s inbox. This does not mean the recipient has read or accepted it.`;
+      : `Stored in ${sent.recipient}'s inbox. This does not mean the recipient has read or accepted it.${availability}`;
   return { ...message, delivery_note };
 }
 
@@ -242,7 +296,7 @@ async function requireExactSessionNativeAcceptance(
     if (result.delivered !== true) {
       const accepted = readHostAccept(db, sent.delivery_id);
       if (accepted) return nativeAcceptance(accepted);
-      if (readLatestDispatchFailureCode(db, sent.delivery_id) === 'native_message_too_large') {
+      if (readLatestDispatchFailure(db, sent.delivery_id)?.failure_code === 'native_message_too_large') {
         throw new AgentNativeMessageTooLargeError();
       }
       throw new AgentRecipientUnavailableError();
@@ -267,18 +321,19 @@ async function requireExactSessionNativeAcceptance(
   return nativeAcceptance(accepted);
 }
 
-function readLatestDispatchFailureCode(
+/** The latest rejected attempt that recorded a reason, with the kind of host connection that attempt used. */
+function readLatestDispatchFailure(
   db: MemeshDatabase,
   deliveryId: string,
-): string | undefined {
-  const row = db.prepare(`
-    SELECT failure_code
-    FROM agent_dispatch_attempts
-    WHERE delivery_id = ? AND result = 'adapter_rejected' AND failure_code IS NOT NULL
-    ORDER BY attempt_number DESC
+): { failure_code: string; adapter_kind: string | null } | undefined {
+  return db.prepare(`
+    SELECT a.failure_code AS failure_code, c.adapter_kind AS adapter_kind
+    FROM agent_dispatch_attempts a
+    LEFT JOIN agent_session_connections c ON c.connection_id = a.connection_id
+    WHERE a.delivery_id = ? AND a.result = 'adapter_rejected' AND a.failure_code IS NOT NULL
+    ORDER BY a.attempt_number DESC
     LIMIT 1
-  `).get(deliveryId) as { failure_code: string } | undefined;
-  return row?.failure_code;
+  `).get(deliveryId) as { failure_code: string; adapter_kind: string | null } | undefined;
 }
 
 function receiptDetail(
@@ -332,6 +387,7 @@ function recordPublicAck(
     idempotency_key: input.idempotency_key,
     receipt_kind: 'ack',
     detail: receiptDetail(undefined, context),
+    caller_session: context.hostSession,
   });
 }
 
@@ -353,21 +409,137 @@ function recordPublicWorkflow(
   });
 }
 
+type MessageStatus = 'queued' | 'accepted' | 'handed_to_agent' | 'replied';
+
+/**
+ * What a host accept means depends on the host. Only the Claude Code inbox reads the notice back from
+ * the conversation; the Channel and Codex hand it over and report it queued.
+ */
+function acceptedNote(adapterKind: string | undefined): string {
+  if (adapterKind === 'claude-inbox') {
+    return 'A notice is in the recipient\'s conversation; the agent has not recorded intake, an ack or a disposition yet.';
+  }
+  if (adapterKind === 'claude-channel') {
+    return 'The notice was handed to the recipient\'s Claude Code Channel and queued; MeMesh does not see it shown there, and the agent has not recorded intake, an ack or a disposition yet.';
+  }
+  if (adapterKind === 'codex-cli-queue' || adapterKind === 'codex-app-server') {
+    return 'The notice was queued for the recipient\'s Codex thread; MeMesh does not see it shown there, and the agent has not recorded intake, an ack or a disposition yet.';
+  }
+  return 'The host accepted the notice; whether the agent has seen it is not recorded here.';
+}
+
+/** Why a message is still queued, from the failure of its last delivery attempt, without turning a missing record into "it was not shown". */
+function queuedNote(failure: string | undefined, adapterKind: string | undefined): string {
+  // Only the Claude Code hooks raise a waiting message at a prompt or turn end; nothing else is promised for other hosts.
+  const claude = adapterKind === undefined || adapterKind.startsWith('claude-');
+  const later = claude ? 'the message appears at the session\'s next prompt or turn end' : 'the message waits in the inbox until the recipient reads it';
+  switch (failure) {
+    case undefined:
+      return 'Stored in the inbox; no notice has been confirmed in the recipient\'s conversation.';
+    case 'notice_held':
+      return `Stored in the inbox. Claude Code is holding the notice for its user to approve or deny, and MeMesh cannot see which; either way ${later}.`;
+    case 'notice_not_confirmed':
+      return `Stored in the inbox. The notice reached the session but was not shown in its conversation (Claude Code may be holding it); ${later}.`;
+    case 'transcript_unavailable':
+    case 'transcript_not_found':
+      return `Stored in the inbox. MeMesh could not read the session's conversation record, so it cannot tell whether the notice arrived; ${later}.`;
+    case 'frame_too_large':
+      return `Stored in the inbox. The notice was too large to be sent and was not delivered; ${later}.`;
+    default:
+      return `Stored in the inbox. A delivery attempt ended without a result, so the notice may or may not have reached the session and nothing confirms it; ${later}.`;
+  }
+}
+
+/**
+ * A reply links to the message with `reply_to`, comes from its recipient (for a message sent to a
+ * session, from the principal that owns the session) and is addressed back to its sender (or to a
+ * session of the sender's principal). Senders are labels the senders chose, so this says what the
+ * records say, not who really wrote the reply.
+ */
+function hasReplyFromRecipient(db: MemeshDatabase, delivery: CanonicalDeliveryScope): boolean {
+  const original = db.prepare('SELECT sender FROM agent_messages WHERE message_id = ? AND project = ?').get(delivery.message_id, delivery.project) as { sender: string } | undefined;
+  if (!original) return false;
+  const originalSender = canonicalAgentScopeId(original.sender);
+  const recipients = new Set(delivery.target_kind === 'principal'
+    ? [canonicalAgentScopeId(delivery.recipient)]
+    : [canonicalAgentScopeId(delivery.recipient), ...principalsOfSession(db, delivery.project, delivery.recipient)]);
+  const replies = db.prepare(`
+    SELECT m.sender AS sender, d.recipient AS recipient, d.target_kind AS target_kind
+    FROM agent_messages m JOIN agent_message_deliveries d ON d.message_id = m.message_id
+    WHERE m.project = ? AND m.reply_to_message_id = ?
+  `).all(delivery.project, delivery.message_id) as Array<{ sender: string; recipient: string; target_kind: string }>;
+  return replies.some((reply) => recipients.has(canonicalAgentScopeId(reply.sender))
+    && (canonicalAgentScopeId(reply.recipient) === originalSender
+      || (reply.target_kind === 'session' && principalsOfSession(db, delivery.project, reply.recipient).includes(originalSender))));
+}
+
+/**
+ * Where one message stands. `queued` and `accepted` come from what the host side recorded, `handed_to_agent`
+ * from an intake, ack or disposition the agent chose to record, and `replied` from a reply message linked to
+ * this one; the agent needs to report none of them separately.
+ */
+function readMessageStatus(
+  db: MemeshDatabase,
+  input: Extract<AgentMessageActionInput, { action: 'status' }>,
+  callerSession?: string,
+) {
+  return db.transaction(() => {
+    const delivery = resolveCanonicalDelivery(db, input.project, input.recipient, input.message_id);
+    assertCallerMayUseDelivery(db, delivery, callerSession, { allowSender: true });
+    const state = readDeliveryState(db, delivery);
+    const replied = hasReplyFromRecipient(db, delivery);
+    // The agent has the message once it recorded intake, an ack or a disposition: it needs none of them to act on it.
+    const handled = db.prepare(`
+      SELECT 1 FROM agent_message_receipts
+      WHERE project = ? AND recipient = ? AND message_id = ? AND receipt_kind IN ${HANDLED_RECEIPT_KINDS_SQL}
+      LIMIT 1
+    `).get(delivery.project, delivery.recipient, delivery.message_id) !== undefined;
+    const hostAccept = readHostAccept(db, delivery.delivery_id);
+    const status: MessageStatus = replied ? 'replied' : handled ? 'handed_to_agent' : hostAccept ? 'accepted' : 'queued';
+    const latestFailure = status === 'queued' ? readLatestDispatchFailure(db, delivery.delivery_id) : undefined;
+    const failure = latestFailure?.failure_code;
+    const lastHost = latestFailure?.adapter_kind ?? undefined;
+    let note: string;
+    if (status === 'replied') note = 'A reply addressed back to the sender and linked to this message exists.';
+    else if (status === 'handed_to_agent') note = 'The agent recorded intake, an ack or a disposition for this message; no reply is linked to it yet.';
+    else if (status === 'accepted') note = acceptedNote(hostAccept?.adapter_kind);
+    else {
+      note = queuedNote(failure, lastHost);
+      if (failure === undefined && delivery.target_kind === 'principal') {
+        // Same wording as the send result: a live session adds nothing here, any other case says why.
+        const availability = principalAvailability(db, delivery);
+        if (!availability.includes('is connected now; use status')) note += availability;
+      } else if (failure === undefined && state.target_session === 'not_live') {
+        note = 'Stored in the inbox. The target session is not connected now; the message is delivered when it next connects.';
+      }
+    }
+    return {
+      message_id: delivery.message_id,
+      status,
+      note,
+      ...(failure ? { last_failure: failure } : {}),
+      delivery_state: state,
+    };
+  })();
+}
+
 // One read transaction, so the facts and the observed delivery state are one snapshot.
 function readPublicReceipts(
   db: MemeshDatabase,
   input: Extract<AgentMessageActionInput, { action: 'receipts' }>,
+  callerSession?: string,
 ): ProjectedFact[] {
-  return db.transaction(() => readPublicReceiptsSnapshot(db, input))();
+  return db.transaction(() => readPublicReceiptsSnapshot(db, { ...input, caller_session: callerSession }))();
 }
 
 function readPublicReceiptsSnapshot(
   db: MemeshDatabase,
-  input: Extract<AgentMessageActionInput, { action: 'receipts' }>,
+  input: Extract<AgentMessageActionInput, { action: 'receipts' }> & { caller_session?: string },
 ): ProjectedFact[] {
   const delivery = resolveCanonicalDelivery(db, input.project, input.recipient, input.message_id);
   const projected: Array<{ fact: ProjectedFact; rank: number; order: number }> = [];
 
+  // The caller check for the whole read is made here, in the core reader, before anything else is read.
   const legacy = readAgentMessageReceipts(db, input);
   legacy.forEach((receipt, order) => projected.push({
     fact: { ...receipt, fact_source: 'agent_message_receipt' },
@@ -457,16 +629,17 @@ function sessionLiveness(
   session: string,
   observedAtMs: number,
 ): DeliveryState['target_session'] {
-  const ids = [...sessionAliasChain(db, session)];
+  // Session ids are matched without regard to case.
+  const ids = [...sessionAliasChain(db, session)].map((id) => id.toLowerCase());
   const marks = ids.map(() => '?').join(', ');
   try {
     const registered = db.prepare(`
-      SELECT 1 FROM agent_session_instances WHERE project = ? AND session_instance_id IN (${marks}) LIMIT 1
+      SELECT 1 FROM agent_session_instances WHERE project = ? AND lower(session_instance_id) IN (${marks}) LIMIT 1
     `).get(project, ...ids) !== undefined;
     if (!registered) return 'unknown';
     const live = db.prepare(`
       SELECT 1 FROM agent_session_connections
-      WHERE project = ? AND session_instance_id IN (${marks})
+      WHERE project = ? AND lower(session_instance_id) IN (${marks})
         AND disconnected_at IS NULL AND lease_expires_at_ms > ?
       LIMIT 1
     `).get(project, ...ids, observedAtMs) !== undefined;
@@ -635,9 +808,7 @@ function sendPrincipalFallback(
       reason: 'recipient_unavailable',
       intended_session_connected: connected,
       ...(connected ? {} : {
-        note: `Session ${refused.recipient} is not connected now. Only it can take this message in, the next time it runs; `
-          + `no other session of ${session.principal_id} will. If it has ended for good, send to ${session.principal_id} `
-          + 'without intended_session instead.',
+        note: intendedSessionNote(refused.recipient, session.principal_id),
       }),
       from: {
         message_id: refused.message_id,
@@ -709,7 +880,7 @@ export async function executeAgentMessageAction(
         storage_quota_bytes: configuredAgentMessageStorageQuotaBytes(),
       });
       if (network) return { ...publicSentMessage(sent), delivery_note: network.note };
-      if (sent.target_kind !== 'session') return publicSentMessage(sent);
+      if (sent.target_kind !== 'session') return publicSentMessage(sent, undefined, principalAvailability(db, sent));
       // A retry of a send that already fell back returns that principal message, with or
       // without the flag, even when the session is back by now; trying the session again
       // would deliver a second copy.
@@ -730,6 +901,7 @@ export async function executeAgentMessageAction(
         recipient: input.recipient,
         cursor: input.cursor,
         limit: input.limit,
+        caller_session: context.hostSession,
       };
       return input.wait_ms > 0
         ? waitForAgentEvents(db, { ...query, wait_ms: input.wait_ms }, context.signal)
@@ -773,7 +945,7 @@ export async function executeAgentMessageAction(
       }
     }
     case 'fetch':
-      return fetchAgentMessage(db, input);
+      return fetchAgentMessage(db, { ...input, caller_session: context.hostSession });
     case 'intake':
       return recordAgentReceipt(db, {
         project: input.project,
@@ -800,12 +972,15 @@ export async function executeAgentMessageAction(
         receipt_kind: 'host_activation',
         host_activation: input.activation,
         detail: receiptDetail(input.detail, context),
+        caller_session: context.hostSession,
       });
     case 'receipts': {
-      const facts = readPublicReceipts(db, input);
+      const facts = readPublicReceipts(db, input, context.hostSession);
       const delivery = resolveCanonicalDelivery(db, input.project, input.recipient, input.message_id);
       const network = networkReceiptFact(db, delivery.delivery_id);
       return network ? [...facts, network] : facts;
     }
+    case 'status':
+      return readMessageStatus(db, input, context.hostSession);
   }
 }

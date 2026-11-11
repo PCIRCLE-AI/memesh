@@ -9,6 +9,7 @@ import {
 } from '../../src/core/agent-message-storage.js';
 import {
   recordAgentAckFact,
+  fetchAgentMessage,
   recordAgentReceipt,
   recordAgentWorkflowFact,
   sendAgentMessage,
@@ -187,7 +188,7 @@ describe('bounded agent message storage', () => {
     expect(storedPayload(ackOnly.message_id)).toContain('ack-only');
   });
 
-  it('retains completed-without-ACK and ACK-without-terminal while pruning only all-delivery ACK plus old-terminal messages', () => {
+  it('prunes a message whose every delivery has an old terminal disposition, with or without an ACK, and keeps one with only an ACK', () => {
     const completedWithoutAck = send({ body: 'completed-without-ack' });
     workflow(completedWithoutAck, 'completed');
 
@@ -204,8 +205,8 @@ describe('bounded agent message storage', () => {
     const report = getAgentMessageStorageReport(getDatabase(), { cutoff: CUTOFF });
     expect(report).toMatchObject({
       message_count: 3,
-      protected_unresolved_message_count: 2,
-      terminal_prunable_message_count: 1,
+      protected_unresolved_message_count: 1,
+      terminal_prunable_message_count: 2,
     });
 
     const result = pruneTerminalAgentMessagePayloads(getDatabase(), {
@@ -213,10 +214,36 @@ describe('bounded agent message storage', () => {
       dryRun: false,
       batchSize: 3,
     });
-    expect(result.candidates.map((candidate) => candidate.message_id)).toEqual([allDeliveriesReady.message_id]);
-    expect(storedPayload(completedWithoutAck.message_id)).toContain('completed-without-ack');
+    expect(result.candidates.map((candidate) => candidate.message_id).sort()).toEqual([completedWithoutAck.message_id, allDeliveriesReady.message_id].sort());
+    expect(storedPayload(completedWithoutAck.message_id)).toContain('_agent_message_tombstone_v1');
     expect(storedPayload(ackWithoutTerminal.message_id)).toContain('ack-without-terminal');
     expect(storedPayload(allDeliveriesReady.message_id)).toContain('_agent_message_tombstone_v1');
+  });
+
+  it('prunes a message the agent only took in (intake) and completed, and keeps one it took in but never finished', () => {
+    const record = (message: SentAgentMessage, kind: 'intake' | 'disposition', key: string) => recordAgentReceipt(getDatabase(), {
+      project: message.project, recipient: message.recipient, message_id: message.message_id, actor: message.recipient, idempotency_key: key,
+      receipt_kind: kind, ...(kind === 'intake' ? { intake_state: 'ingested' as const } : { disposition: 'completed' as const }),
+    } as Parameters<typeof recordAgentReceipt>[1]);
+    const finished = send({ body: 'intake-then-completed' });
+    record(finished, 'intake', 'finished-intake'); record(finished, 'disposition', 'finished-done');
+    const unfinished = send({ body: 'intake-only' });
+    record(unfinished, 'intake', 'unfinished-intake');
+    getDatabase().prepare('UPDATE agent_message_receipts SET created_at = ?').run(OLD);
+    expect(getAgentMessageStorageReport(getDatabase(), { cutoff: CUTOFF })).toMatchObject({ protected_unresolved_message_count: 1, terminal_prunable_message_count: 1 });
+    expect(pruneTerminalAgentMessagePayloads(getDatabase(), { cutoff: CUTOFF, dryRun: false }).candidates.map((candidate) => candidate.message_id)).toEqual([finished.message_id]);
+    expect(storedPayload(unfinished.message_id)).toContain('intake-only');
+  });
+
+  it('tells a recipient who fetches a message whose content was removed so in words, and keeps the machine-readable marker', () => {
+    const message = send({ body: 'will be removed' });
+    ack(message); workflow(message, 'completed');
+    pruneTerminalAgentMessagePayloads(getDatabase(), { cutoff: CUTOFF, dryRun: false });
+    const fetched = fetchAgentMessage(getDatabase(), { project: message.project, recipient: message.recipient, message_id: message.message_id });
+    expect(fetched.note).toMatch(/past its retention period.*content was deleted/i);
+    expect(JSON.stringify(fetched.payload)).toContain('_agent_message_tombstone_v1');
+    const kept = send({ body: 'still here' });
+    expect(fetchAgentMessage(getDatabase(), { project: kept.project, recipient: kept.recipient, message_id: kept.message_id })).not.toHaveProperty('note');
   });
 
   it('treats explicit inbox ACK and disposition receipts as one eligible audited delivery without requiring host push', () => {

@@ -162,6 +162,41 @@ describe('CLI durable-message ingress', () => {
     }
   });
 
+  it('watch uses the caller session like poll: a session of another principal sees no events for a message that is not its principal\'s', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-watch-caller-'));
+    const dbPath = path.join(home, 'graph.db');
+    const carol = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    const db = openDatabase(dbPath);
+    db.prepare(`INSERT INTO agent_principals (project, principal_id, activation_event_sequence) VALUES ('test', 'carol', 0)`).run();
+    db.prepare(`INSERT INTO agent_session_instances (project, session_instance_id, principal_id, adapter_kind) VALUES ('test', ?, 'carol', 'claude-inbox')`).run(carol);
+    const bob = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    db.prepare(`INSERT INTO agent_principals (project, principal_id, activation_event_sequence) VALUES ('test', 'bob', 0)`).run();
+    db.prepare(`INSERT INTO agent_session_instances (project, session_instance_id, principal_id, adapter_kind) VALUES ('test', ?, 'bob', 'claude-inbox')`).run(bob);
+    closeDatabase();
+    const env = (session?: string) => ({
+      ...process.env, HOME: home, MEMESH_DB_PATH: dbPath, MEMESH_AUTO_CAPTURE: 'false',
+      CLAUDE_CODE_SESSION_ID: session, CODEX_THREAD_ID: undefined,
+    });
+    try {
+      const sent = spawnSync(process.execPath, cliArgs(
+        'message', 'send', '--project', 'test', '--sender', 'alice', '--recipient', 'bob',
+        '--idempotency-key', 'watch-caller', '--payload-stdin',
+      ), { encoding: 'utf8', input: 'for bob', env: env() });
+      expect(sent.status, sent.stderr).toBe(0);
+      const watch = (session?: string) => {
+        const run = spawnSync(process.execPath, cliArgs('message', 'watch', '--project', 'test', '--recipient', 'bob', '--wait-ms', '0'),
+          { encoding: 'utf8', env: env(session) });
+        expect(run.status, run.stderr).toBe(0);
+        return (JSON.parse(run.stdout.trim().split('\n').at(-1) as string) as { events: unknown[] }).events.length;
+      };
+      expect(watch(), 'no session id is not checked, as for HTTP').toBe(1);
+      expect(watch(carol), "another principal's session sees an empty inbox").toBe(0);
+      expect(watch(bob), "the recipient's own session still sees its inbox").toBe(1);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('#497: --fallback-to-principal is refused without --target-kind session', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-fallback-'));
     try {

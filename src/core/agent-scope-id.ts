@@ -107,6 +107,22 @@ export function agentScopeIdRejection(field: string, value: string): string | nu
 }
 
 /**
+ * The refusal for a SESSION id, or `null` when it is acceptable: everything `agentScopeIdRejection`
+ * refuses, and any non-ASCII character. A session id is the UUID or thread id its host gives it, so
+ * this costs no real session; it keeps the id comparisons without regard to case (SQLite's `lower()`
+ * and JavaScript's `toLowerCase()` agree on ASCII only) exact for every id that can be stored.
+ */
+export function sessionIdRejection(field: string, value: string): string | null {
+  const path = agentScopeIdRejection(field, value);
+  if (path) return path;
+  if (/[\u0080-\uffff]/.test(value)) {
+    return `${field} must contain only ASCII characters: a session id is the UUID or thread id its host gives it `
+      + `(received ${JSON.stringify(canonicalAgentScopeId(value))}).`;
+  }
+  return null;
+}
+
+/**
  * The refusal for a PROJECT value, or `null` when it is acceptable (#527).
  *
  * Stricter than `agentScopeIdRejection`, which also guards agent ids that may

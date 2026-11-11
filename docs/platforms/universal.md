@@ -12,7 +12,7 @@ npm install -g @pcircle/memesh
 
 ## Local Collaboration Surfaces
 
-Use the `message` MCP tool, `POST /v1/message`, or `memesh message` commands when agent discovery, exact recipient, cursor recovery, or explicit receipts matter. All three expose the same local actions: `send`, `poll`, `discover`, `fetch`, `intake`, `ack`, `disposition`, `activation`, and `receipts`.
+Use the `message` MCP tool, `POST /v1/message`, or `memesh message` commands when agent discovery, exact recipient, cursor recovery, or explicit receipts matter. All three expose the same local actions: `send`, `poll`, `discover`, `fetch`, `intake`, `ack`, `disposition`, `activation`, `receipts`, and `status`.
 
 - Delivery is durable. A verified registered host adapter receives native push without polling; `poll`/`watch` remain compatibility and diagnostic surfaces for hosts without a verified inbound channel.
 - `discover` is a bounded read of active registrations in one project. It returns routing identity, host kind, declared work metadata (`model` is always `null`), generation, and lease expiry without sending or acknowledging a message.

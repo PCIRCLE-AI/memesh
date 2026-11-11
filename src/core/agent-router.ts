@@ -5,6 +5,7 @@ import path from 'node:path';
 import type { MemeshDatabase } from '../storage/sqlite.js';
 import {
   fetchAgentMessage,
+  HANDLED_RECEIPT_KINDS_SQL,
   agentHostKind,
   agentSessionHandle,
   type AgentJsonObject,
@@ -14,6 +15,7 @@ import {
   type AgentTargetKind,
 } from './agent-messaging.js';
 import { compareSemVerPrecedence, parseSemVer } from './semver.js';
+import { sessionIdRejection } from './agent-scope-id.js';
 
 export const AGENT_ROUTER_PROTOCOL_VERSION = 2;
 export const AGENT_ROUTER_MAX_FRAME_BYTES = 64 * 1024;
@@ -886,6 +888,11 @@ export class AgentRouter {
       JOIN agent_message_events e ON e.delivery_id = d.delivery_id
       LEFT JOIN agent_host_accepts h ON h.delivery_id = d.delivery_id
       WHERE d.project = ? AND h.delivery_id IS NULL AND e.event_sequence <= ?
+        AND NOT EXISTS (
+          SELECT 1 FROM agent_message_receipts r
+          WHERE r.project = d.project AND r.recipient = d.recipient AND r.message_id = d.message_id
+            AND r.receipt_kind IN ${HANDLED_RECEIPT_KINDS_SQL}
+        )
         AND (e.event_sequence > ? OR (e.event_sequence = ? AND d.delivery_id > ?))
         AND d.target_kind = 'principal' AND d.recipient = ? AND e.event_sequence > ?
       ORDER BY e.event_sequence ASC, d.delivery_id ASC
@@ -1086,14 +1093,15 @@ export class AgentRouter {
         FROM agent_session_connections
         WHERE project = ? AND principal_id = ? AND router_instance_id = ?
           AND disconnected_at IS NULL AND lease_expires_at_ms > ?
-          AND (? IS NULL OR session_instance_id = ?)
-        ORDER BY connected_at DESC, rowid DESC
+          AND (? IS NULL OR lower(session_instance_id) = lower(?))
+        ORDER BY (session_instance_id = ?) DESC, connected_at DESC, rowid DESC
         LIMIT 1
       `).get(
         delivery.project,
         delivery.recipient,
         this.router_instance_id,
         Date.now(),
+        delivery.intended_session,
         delivery.intended_session,
         delivery.intended_session,
       ) as ConnectionRow | undefined;
@@ -1117,8 +1125,16 @@ export class AgentRouter {
     if (connection.project !== delivery.project) return false;
     return targetKind === 'principal'
       ? connection.principal_id === delivery.recipient
-        && (delivery.intended_session === null || connection.session_instance_id === delivery.intended_session)
+        && (delivery.intended_session === null || this.isIntendedSession(connection, delivery.intended_session))
       : connection.session_instance_id === delivery.recipient;
+  }
+
+  /** The connection's session is the intended one: exactly, or (when nobody registered the id exactly) without regard to case. */
+  private isIntendedSession(connection: ConnectionRow, intended: string): boolean {
+    if (connection.session_instance_id === intended) return true;
+    if (connection.session_instance_id.toLowerCase() !== intended.toLowerCase()) return false;
+    return this.db.prepare('SELECT 1 FROM agent_session_instances WHERE project = ? AND session_instance_id = ?')
+      .get(connection.project, intended) === undefined;
   }
 
   private beginDispatchAttempt(
@@ -1373,7 +1389,7 @@ function parseRequest(frame: Buffer, maxHops: number): AgentRouterRequest {
         request_id: requestId,
         project: validateField('project', value.project),
         principal_id: validateField('principal_id', value.principal_id),
-        session_instance_id: validateField('session_instance_id', value.session_instance_id),
+        session_instance_id: validateSessionId('session_instance_id', value.session_instance_id),
         adapter_kind: validateField('adapter_kind', value.adapter_kind),
         ...(value.work_summary === undefined || value.work_summary === null
           ? {} : { work_summary: validateField('work_summary', value.work_summary) }),
@@ -1411,7 +1427,7 @@ function parseRequest(frame: Buffer, maxHops: number): AgentRouterRequest {
         type,
         request_id: requestId,
         project: validateField('project', value.project),
-        session_instance_id: validateField('session_instance_id', value.session_instance_id),
+        session_instance_id: validateSessionId('session_instance_id', value.session_instance_id),
         connection_id: validateField('connection_id', value.connection_id),
         generation: validateInteger('generation', value.generation, 1, Number.MAX_SAFE_INTEGER),
         ...(type === 'heartbeat' && value.work_summary !== undefined ? { work_summary: value.work_summary === null ? null : validateField('work_summary', value.work_summary) } : {}),
@@ -1468,7 +1484,7 @@ function assertAllowedKeys(value: Record<string, unknown>, allowed: readonly str
 
 function validateField(label: string, value: unknown): string {
   if (typeof value !== 'string') throw new AgentRouterProtocolError('invalid_field', `${label} must be a string.`);
-  const normalized = value.trim();
+  const normalized = value.normalize('NFC').trim();
   if (!normalized || normalized.length > MAX_FIELD_LENGTH) {
     throw new AgentRouterProtocolError(
       'invalid_field',
@@ -1476,6 +1492,13 @@ function validateField(label: string, value: unknown): string {
     );
   }
   return normalized;
+}
+
+function validateSessionId(label: string, value: unknown): string {
+  const session = validateField(label, value);
+  const rejection = sessionIdRejection(label, session);
+  if (rejection) throw new AgentRouterProtocolError('invalid_field', rejection);
+  return session;
 }
 
 function validateVersion(label: string, value: unknown): string {

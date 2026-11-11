@@ -1389,6 +1389,7 @@ messageCmd
         }, {
           transport: 'cli',
           sourceHost: 'cli',
+          hostSession: hostSessionFromEnv(),
         });
         if (!isAgentPollResult(result)) {
           throw new Error('Message watch returned an invalid poll result.');
@@ -1440,7 +1441,7 @@ messageCmd
 
 messageCmd
   .command('ack')
-  .description('Record explicit recipient acknowledgement')
+  .description('Optional: record explicit recipient acknowledgement (an agent only needs to record intake)')
   .requiredOption('--project <name>', 'Project scope')
   .requiredOption('--recipient <id>', 'Stable recipient agent/host ID')
   .requiredOption('--message-id <id>', 'Message ID')
@@ -1452,7 +1453,7 @@ messageCmd
 
 messageCmd
   .command('disposition')
-  .description('Record a workflow disposition independently from ACK')
+  .description('Optional: record a workflow disposition independently from ACK; only a message with a terminal one (completed, cancelled, rejected) can have its payload removed by `message storage prune --apply`')
   .requiredOption('--project <name>', 'Project scope')
   .requiredOption('--recipient <id>', 'Stable recipient agent/host ID')
   .requiredOption('--message-id <id>', 'Message ID')
@@ -1494,6 +1495,16 @@ messageCmd
   .requiredOption('--message-id <id>', 'Message ID')
   .action((opts) => runCliMessage({
     action: 'receipts', project: opts.project, recipient: opts.recipient, message_id: opts.messageId,
+  }));
+
+messageCmd
+  .command('status')
+  .description('Show where one message stands: queued, accepted, handed to the agent or replied')
+  .requiredOption('--project <name>', 'Project scope')
+  .requiredOption('--recipient <id>', 'Stable recipient agent/host ID')
+  .requiredOption('--message-id <id>', 'Message ID')
+  .action((opts) => runCliMessage({
+    action: 'status', project: opts.project, recipient: opts.recipient, message_id: opts.messageId,
   }));
 
 const messageStorageCmd = messageCmd
