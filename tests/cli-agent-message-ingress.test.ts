@@ -1223,8 +1223,8 @@ describe('CLI durable-message ingress', () => {
       const builtCli = path.join(__dirname, '..', 'dist', 'transports', 'cli', 'cli.js');
       const setup = spawnSync(process.execPath, [builtCli, 'agent', 'setup', 'claude', '--principal', 'claude-a', '--json'], {
         encoding: 'utf8',
-        // A set MEMESH_UPDATE_CHECK_PATH (the suite sets one) would move the cache
-        // elsewhere and hide the marker this test looks for.
+        // A set MEMESH_UPDATE_CHECK_PATH (the suite does not set one, but a developer's shell may)
+        // would move the cache elsewhere and hide the marker this test looks for.
         env: Object.fromEntries(Object.entries({
           ...process.env, HOME: home, MEMESH_DIR: dataDir, MEMESH_DB_PATH: path.join(dataDir, 'knowledge-graph.db'), MEMESH_AUTO_CAPTURE: 'false',
           MEMESH_UPDATE_CHECK_PATH: undefined,

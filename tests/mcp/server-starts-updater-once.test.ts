@@ -31,20 +31,10 @@ function plugin() {
 }
 
 describe.skipIf(process.platform === 'win32')('the packaged MCP server starts the updater, and only one of several starts a runner', () => {
-  /**
-   * [WORKAROUND: database is locked 缺陷，修好後恢復嚴格斷言]
-   * The strict version of this test says: three servers started together, all three survive, one DISPATCHED, two THROTTLED.
-   * Until the defect below is fixed it is relaxed in two ways (servers that stopped with "database is locked" are not counted;
-   * a round with fewer than two survivors is run again), and nothing else is relaxed.
-   *
-   * Three servers started at the same moment on one data directory. Every MeMesh at the base of this branch does this: some of
-   * them (measured: 8 of 90 on main, the same code, no update involved) stop with "database is locked" while they open the
-   * database. That is a different defect and not this test's: a server that stopped that way is not counted, and a round in which
-   * fewer than two servers survived proves nothing about the updater and is run again.
-   */
+  /** Three servers started at the same moment on one data directory, in a plugin copy under a throwaway HOME. */
   async function round() {
     const p = plugin();
-    const env = { PATH: process.env.PATH ?? '', HOME: p.home, USERPROFILE: p.home, MEMESH_DIR: p.data, MEMESH_DB_PATH: path.join(p.data, 'knowledge-graph.db'), MEMESH_AUTO_UPDATE: 'major' };
+    const env = { PATH: process.env.PATH ?? '', HOME: p.home, USERPROFILE: p.home, MEMESH_DIR: p.data, MEMESH_DB_PATH: path.join(p.data, 'knowledge-graph.db'), MEMESH_AUTO_UPDATE: 'major', NODE_OPTIONS: process.env.NODE_OPTIONS ?? '' };
     const exited: string[] = [];
     for (let i = 0; i < 3; i += 1) {
       const child = spawn(process.execPath, [path.join(p.root, 'dist', 'mcp', 'server.js')], { env, stdio: ['pipe', 'ignore', 'pipe'] });
@@ -65,16 +55,11 @@ describe.skipIf(process.platform === 'win32')('the packaged MCP server starts th
   }
 
   it('servers started together in one HOME: the runner starts once, and the log says so once', async () => {
-    for (let attempt = 1; attempt <= 5; attempt += 1) {
-      const r = await round();
-      expect(r.exited.filter((e) => !e.includes('database is locked')), 'a server stopped for another reason').toEqual([]);
-      const alive = 3 - r.exited.length;
-      if (alive < 2) continue; // too few survived to say anything about the updater: again
-      expect(r.dispatched).toBe(1);
-      expect(r.runs).toHaveLength(1);
-      expect(r.throttled).toBe(alive - 1);
-      return;
-    }
-    throw new Error('in five rounds fewer than two of the three servers survived their start: the updater could not be observed');
+    const r = await round();
+    // All three survive their start (none stopped, not even with "database is locked"): one dispatches the runner, two are throttled.
+    expect(r.exited, 'a server stopped').toEqual([]);
+    expect(r.dispatched).toBe(1);
+    expect(r.runs).toHaveLength(1);
+    expect(r.throttled).toBe(2);
   }, 300_000);
 });

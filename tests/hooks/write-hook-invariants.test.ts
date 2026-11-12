@@ -400,7 +400,7 @@ describe('write-hook invariants (fake-working gates)', () => {
     }
   });
 
-  it('a read-only database FILE still opens and reads — opening must not write when there is nothing to write', () => {
+  it.skipIf(process.platform === 'win32')('a read-only database FILE still opens and reads — opening must not write when there is nothing to write', () => {
     // The regression this pins: two DML statements (the hook_runs_since
     // INSERT OR IGNORE, and a tags-dedup DELETE that predates this PR) lived
     // inside the SCHEMA_SQL block every open executes. Even as no-ops they
@@ -408,7 +408,6 @@ describe('write-hook invariants (fake-working gates)', () => {
     // a permissions accident — failed to open at all ("attempt to write a
     // readonly database"). Both now run behind SELECT-first guards: a
     // database that already has the marker and the index gets pure reads.
-    if (process.platform === 'win32') return; // chmod read-only semantics differ
 
     const first = shared.openHookDb({ ...process.env, MEMESH_DB_PATH: dbPath }, { fts: true });
     expect(first).not.toBeNull();
@@ -473,14 +472,13 @@ describe('write-hook invariants (fake-working gates)', () => {
     }
   });
 
-  it('a read-only database from BEFORE this release still opens for reads', () => {
+  it.skipIf(process.platform === 'win32')('a read-only database from BEFORE this release still opens for reads', () => {
     // The general form of the reader-breaking bug: any release that adds a
     // table makes the first open of an older database a WRITE. Simulated by
     // dropping hook_runs (this release's new table) and the tracking
     // marker, then making the file read-only — the exact pre-upgrade
     // backup/snapshot shape. "Cannot migrate" must degrade to "opened for
     // reads", not kill the open.
-    if (process.platform === 'win32') return; // chmod read-only semantics differ
 
     const first = shared.openHookDb({ ...process.env, MEMESH_DB_PATH: dbPath }, { fts: true });
     shared.captureEntity(first.db, { name: 'legacy-entity', type: 'note', observations: ['kept'], tags: [] });

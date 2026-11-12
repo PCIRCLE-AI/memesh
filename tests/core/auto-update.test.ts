@@ -2496,8 +2496,8 @@ describe('the release commit is confirmed to be part of main by the updater itse
     expect((judgeCommitOnMain({ status: 1, stdout: '', stderr: 'TimeoutError' }, RELEASE_COMMIT) as { detail: string }).detail).not.toContain('proxy');
   });
 
-  it('the real lookup script goes through a proxy with the environment compareEnv gives it, and does not without it', async () => {
-    if (!nodeUsesEnvProxy()) return; // this node cannot: covered above by the version table
+  // A node that cannot use the proxy environment is covered by the version table above; here it shows as skipped, not passed.
+  it.skipIf(!nodeUsesEnvProxy())('the real lookup script goes through a proxy with the environment compareEnv gives it, and does not without it', async () => {
     const http = await import('node:http');
     const seen: string[] = [];
     // Node tunnels even a plain-http address with CONNECT: answer it, then serve the request that arrives inside the tunnel.

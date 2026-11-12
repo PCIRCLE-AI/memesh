@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it, expect, vi } from 'vitest';
 import { spawn } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { closeDatabase, getDatabase, openDatabase, openInitialisedDatabase } from '../../src/db.js';
 import { MemeshDatabase } from '../../src/storage/sqlite.js';
 import { openHookDb } from '../../scripts/hooks/_shared.js';
@@ -165,15 +166,23 @@ describe('marking records that earlier versions archived by compression', () => 
       const claim = `99999:${Date.now() + 600_000}`;
       getDatabase().prepare('INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)').run(leaseKey, claim);
       closeDatabase();
-      const script = "import('" + path.resolve('dist/db.js') + "').then((m) => { m.openDatabase(); m.closeDatabase(); })";
+      const script = `import(${JSON.stringify(pathToFileURL(path.resolve('dist/db.js')).href)}).then((m) => { m.openDatabase(); m.closeDatabase(); })`;
       const env = { ...process.env, MEMESH_DB_PATH: handle.dbPath, MEMESH_DIR: path.dirname(handle.dbPath) };
-      const errs = await Promise.all([0, 1].map(() => new Promise<string>((resolve) => {
+      const runOnce = () => new Promise<{ err: string; code: number | null }>((resolve) => {
         const child = spawn(process.execPath, ['-e', script], { env });
         let err = '';
         child.stderr.on('data', (d) => { err += String(d); });
-        child.on('close', () => resolve(err));
-      })));
-      expect(errs.join('')).not.toMatch(/marked \d+ archived record/);
+        child.on('close', (code) => resolve({ err, code }));
+      });
+      // One after the other, so each meets the claim (two at once can instead meet each other's write lock).
+      const runs = [await runOnce(), await runOnce()];
+      // Each process must have RUN and met the held claim: a script that never started (a dist/ that is missing, or
+      // that does not load) exits non-zero, and one that ran but ignored the claim does not print this line.
+      for (const run of runs) {
+        expect(run.code, run.err).toBe(0);
+        expect(run.err).toMatch(/marker backfill skipped: another process is running it/);
+      }
+      expect(runs.map((run) => run.err).join('')).not.toMatch(/marked \d+ archived record/);
       expect(finalBackups()).toEqual([]);
       openDatabase(handle.dbPath, { busyTimeoutMs: 2000 });
       expect(totalCommits()).toBe(0);

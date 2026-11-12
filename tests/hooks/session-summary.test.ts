@@ -711,14 +711,13 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     expect(run!.run_count).toBe(1);
   });
 
-  it('Scenario: an UNREADABLE transcript leaves no heartbeat — capture was lost, not skipped', () => {
+  it.skipIf(process.platform === 'win32' || (typeof process.getuid === 'function' && process.getuid() === 0))('Scenario: an UNREADABLE transcript leaves no heartbeat — capture was lost, not skipped', () => {
     // Permission/I-O failure while reading: parseTranscript returns zeros,
     // which are indistinguishable from a quiet session — except for the
     // readFailed flag. Stamping here would keep doctor green through
     // repeated read failures while every session's capture is lost.
     // Root reads through chmod 000; Windows maps it differently — same
     // skip guard as tests/hooks/session-start-unwritable.test.ts.
-    if (process.platform === 'win32' || (typeof process.getuid === 'function' && process.getuid() === 0)) return;
     writeQualifyingTranscript();
     fs.chmodSync(transcriptPath, 0o000);
     try {
